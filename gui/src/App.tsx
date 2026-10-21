@@ -6,6 +6,7 @@ import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from 
 import { prefs } from "./state/prefs";
 import { agentFocus, paletteOpen, requestComposerFocus, review, setAgentFocus, setModelPickerOpen, setPaletteOpen, setReview, setSettingsTab, settingsTab } from "./state/ui";
 import { copyText, isTauri, os } from "./lib/platform";
+import { canStop } from "./lib/session-status";
 import { actionOf, setEnterSends } from "./state/keybindings";
 import { warmUp } from "./lib/highlight";
 import { Sidebar } from "./components/Sidebar";
@@ -253,7 +254,7 @@ export function App() {
                 if (review()) return e.preventDefault(), setReview(undefined);
             }
             // And otherwise interrupts a working session.
-            if (action === "app:interrupt" && active()?.view.state.busy && !active()?.view.state.interactions.length) {
+            if (action === "app:interrupt" && canStop(active()?.view.state) && !active()?.view.state.interactions.length) {
                 e.preventDefault();
                 interrupt();
             }

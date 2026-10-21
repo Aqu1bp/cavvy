@@ -41,6 +41,7 @@
 // FAKE_CONFIG_TIER     the tier Codex's own config gives a new thread
 // FAKE_CODEX_SKILL    a skill of Codex's own that skills/list reports; FAKE_NO_SKILLS=1: an older Codex, without skills/extraRoots/set
 // FAKE_SLOW_RESUME, FAKE_SLOW_TURN_START  milliseconds before answering thread/resume, turn/start
+// FAKE_TURN_MS        how long every turn works before it answers
 // FAKE_STEER_WAKES=1  turn/steer is refused unless its expectedTurnId is the turn running now; in the "slow"
 //                     scenario a steer ends the first turn's wait, and its answer repeats what was steered
 // FAKE_MCP_CALLS      the "mcp" scenario's calls to servers from the thread's config: [{ server?, tool, args }]
@@ -51,6 +52,11 @@
 // FAKE_RATE_LIMITS_RELEASE  hold the read's snapshot and turn until this file exists (cross-session races)
 // FAKE_CODEX_REROUTED_FIRST=1  FAKE_CODEX_REROUTED applies only to the first turn
 // FAKE_SCENARIO=usage-limit  the turn fails on the plan's limit (codexErrorInfo usageLimitExceeded)
+// FAKE_GOAL_TURNS     thread goals (thread/goal/get, set, clear): while one is active, each turn that ends (and
+//                     making it active while idle) starts another of Codex's own, until this many have run
+//                     (default 2) and it's complete;
+//                     FAKE_NO_GOALS=1: an older Codex without them; FAKE_GOAL_RACE=1: the first turn/start while the goal is
+//                     active loses to a turn Codex starts itself (refused); the usage-limit scenario stops it (usageLimited)
 // FAKE_USER_MCP       config/read's mcp_servers: the user's own servers (JSON); FAKE_NO_CONFIG_READ=1 fails config/read
 // FAKE_CONFIG_LAYERS  overrides config/read provenance (JSON)
 // Hooks: like Codex 0.163, hooks given with -c hooks=… run only when hooks.state trusts them by the hash Codex
@@ -229,6 +235,22 @@ function serverRequest(method: string, params: unknown): Promise<any> {
 }
 
 const notify = (method: string, params: unknown) => out({ method, params });
+/** Each thread's goal, kept beside the log as Codex keeps it with the thread. */
+type Goal = { threadId: string; objective: string; status: string; tokenBudget: null; tokensUsed: number; timeUsedSeconds: number; createdAt: number; updatedAt: number; turns: number };
+const goalFile = process.env.FAKE_LOG ? process.env.FAKE_LOG + ".goals.json" : undefined;
+const goals = new Map<string, Goal>(goalFile && existsSync(goalFile) ? Object.entries(JSON.parse(readFileSync(goalFile, "utf8"))) : []);
+const saveGoals = () => goalFile && writeFileSync(goalFile, JSON.stringify(Object.fromEntries(goals)));
+const goalOut = ({ turns: _turns, ...g }: Goal) => g;
+let lastPolicy: any = {};
+/** FAKE_GOAL_RACE refuses one turn/start, the first it can. */
+let racedOnce = false;
+let turnStarts = 0;
+let refusals = 0;
+/** A thread started or resumed with a policy: the goal's turns Codex starts itself run under it, until a turn/start gives another. */
+function threadPolicy(p: any) {
+    const sandbox: Record<string, string> = { "danger-full-access": "dangerFullAccess", "workspace-write": "workspaceWrite", "read-only": "readOnly" };
+    lastPolicy = { approvalPolicy: p.approvalPolicy, sandboxPolicy: { type: sandbox[p.sandbox] }, approvalsReviewer: p.approvalsReviewer };
+}
 let delayedLimits: (() => void) | undefined;
 let releasedLimits: Promise<void> | undefined;
 
@@ -237,7 +259,20 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     current = t;
     const finish = (status: string) => {
         t.done = true;
+        const g = goals.get(threadId);
+        const going = g?.status === "active" && status === "completed";
+        if (going) {
+            g.turns++;
+            g.tokensUsed += 150;
+            if (g.turns >= Number(process.env.FAKE_GOAL_TURNS ?? 2)) g.status = "complete";
+            saveGoals();
+            notify("thread/goal/updated", { threadId, turnId, goal: goalOut(g) });
+        }
         notify("turn/completed", { threadId, turn: { id: turnId, status, error: null } });
+        // Still active: Codex goes on with it by itself, unless a turn has started since.
+        const goOn = () => void ((!current || current.done) && runTurn(threadId, `turn-${++turnSeq}`, lastPolicy));
+        // FAKE_GOAL_CONTINUE_MS: how soon (default 5; 0: at once, before anything else is read).
+        if (going && g.status === "active") process.env.FAKE_GOAL_CONTINUE_MS === "0" ? goOn() : setTimeout(goOn, Number(process.env.FAKE_GOAL_CONTINUE_MS ?? 5));
     };
     notify("turn/started", { threadId, turn: { id: turnId, status: "inProgress" } });
     for (let i = 0; process.env.FAKE_LIMIT_UPDATE && i < Number(process.env.FAKE_LIMIT_REPEAT ?? 1); i++) notify("account/rateLimits/updated", JSON.parse(readFileSync(process.env.FAKE_LIMIT_UPDATE, "utf-8")));
@@ -245,9 +280,18 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     delayedLimits?.();
     delayedLimits = undefined;
     await releasedLimits;
+    if (process.env.FAKE_TURN_MS) await Bun.sleep(Number(process.env.FAKE_TURN_MS));
     if (scenario === "usage-limit") {
         const error = { message: "You've hit your usage limit. Upgrade to Pro or try again later.", codexErrorInfo: "usageLimitExceeded", additionalDetails: null };
         notify("error", { error, willRetry: false, threadId, turnId });
+        t.done = true;
+        // Its goal stops there too.
+        const g = goals.get(threadId);
+        if (g?.status === "active") {
+            g.status = "usageLimited";
+            saveGoals();
+            notify("thread/goal/updated", { threadId, turnId, goal: goalOut(g) });
+        }
         return notify("turn/completed", { threadId, turn: { id: turnId, status: "failed", error } });
     }
     notify("item/started", { threadId, turnId, item: { type: "agentMessage", id: `msg-${turnId}`, text: "", ...phase("commentary") } });
@@ -579,6 +623,7 @@ async function handle(m: any) {
                 log({ oneOffThread: { baseInstructions: p.baseInstructions, config: p.config, approvalPolicy: p.approvalPolicy, sandbox: p.sandbox, cwd: p.cwd } });
                 return reply({ thread: { id: "thr-oneoff" }, model: p.model ?? "gpt-test" });
             }
+            threadPolicy(p);
             await startMcp(p.config);
             setTier("thr-new", "serviceTier" in p ? p.serviceTier : (process.env.FAKE_CONFIG_TIER ?? null));
             // A new thread starts with no usage.
@@ -587,6 +632,7 @@ async function handle(m: any) {
         case "thread/resume":
             if (process.env.FAKE_SLOW_RESUME) await Bun.sleep(Number(process.env.FAKE_SLOW_RESUME));
             if (String(p.threadId).startsWith("gone") || p.threadId === process.env.FAKE_GONE_ID) return fail(`thread not found: ${p.threadId}`);
+            threadPolicy(p);
             await startMcp(p.config);
             if (!tiers.has(p.threadId)) setTier(p.threadId, process.env.FAKE_THREAD_TIER ?? null);
             if ("serviceTier" in p) setTier(p.threadId, p.serviceTier);
@@ -616,10 +662,26 @@ async function handle(m: any) {
                 notify("turn/completed", { threadId: "thr-oneoff", turn: { id: "turn-oneoff", status: fail ? "failed" : "completed", error: fail ? { message: fail } : null } });
                 break;
             }
+            // FAKE_GOAL_RACE=1: with the goal active, Codex has just started its own next turn, and refuses this one.
+            const raced = goals.get(p.threadId);
+            // FAKE_REFUSE_TURN_START_AT=n: the nth turn/start is refused that way, the goal active or not (its pause not taken in yet).
+            if (process.env.FAKE_REFUSE_TURN_START_AT && ++refusals === Number(process.env.FAKE_REFUSE_TURN_START_AT) && (!current || current.done)) {
+                void runTurn(p.threadId, `turn-${++turnSeq}`, lastPolicy);
+                return fail("a turn is already running");
+            }
+            if (process.env.FAKE_GOAL_RACE === "1" && !racedOnce && raced?.status === "active" && (!current || current.done)) {
+                racedOnce = true;
+                void runTurn(p.threadId, `turn-${++turnSeq}`, lastPolicy);
+                return fail("a turn is already running");
+            }
             // Like Codex's: a value (or null) changes the thread's tier from this turn on; leaving it out keeps it.
             if ("serviceTier" in p) setTier(p.threadId, p.serviceTier);
             const turnId = `turn-${++turnSeq}`;
+            lastPolicy = p;
             if (process.env.FAKE_SLOW_TURN_START && turnSeq === 1) await Bun.sleep(Number(process.env.FAKE_SLOW_TURN_START));
+            // FAKE_SLOW_TURN_START_AT=n:ms: the nth turn/start answers that late.
+            const slowAt = process.env.FAKE_SLOW_TURN_START_AT?.split(":").map(Number);
+            if (slowAt && ++turnStarts === slowAt[0]) await Bun.sleep(slowAt[1]!);
             reply({ turn: { id: turnId, status: "inProgress" } });
             void runTurn(p.threadId, turnId, p);
             return;
@@ -632,6 +694,8 @@ async function handle(m: any) {
         case "skills/list":
             return reply({ data: [{ cwd: p.cwds?.[0] ?? cwd, skills: listSkills(), errors: [] }] });
         case "turn/interrupt":
+            // FAKE_IGNORE_INTERRUPT=1: answers, and the turn goes on.
+            if (process.env.FAKE_IGNORE_INTERRUPT === "1") return reply({});
             if (current) {
                 current.interrupted = true;
                 current.wake?.();
@@ -657,6 +721,31 @@ async function handle(m: any) {
             spend(p.threadId, turnId, tokens(400, 0, 40));
             notify("item/completed", { threadId: p.threadId, turnId, item: { type: "contextCompaction", id: `cc-${turnId}` } });
             notify("turn/completed", { threadId: p.threadId, turn: { id: turnId, status: "completed", error: null } });
+            return;
+        }
+        case "thread/goal/get":
+            if (process.env.FAKE_NO_GOALS === "1") return fail(`unknown method ${m.method}`);
+            return reply({ goal: goals.has(p.threadId) ? goalOut(goals.get(p.threadId)!) : null });
+        case "thread/goal/set": {
+            if (process.env.FAKE_NO_GOALS === "1") return fail(`unknown method ${m.method}`);
+            const was = goals.get(p.threadId);
+            if (!was && !p.objective) return fail("no goal to update");
+            const now = Math.floor(Date.now() / 1000);
+            const g: Goal = { ...(was ?? { threadId: p.threadId, objective: "", status: "active", tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0, createdAt: now, updatedAt: now, turns: 0 }), ...(p.objective ? { objective: p.objective } : {}), ...(p.status ? { status: p.status } : {}), updatedAt: now };
+            goals.set(p.threadId, g);
+            saveGoals();
+            reply({ goal: goalOut(g) });
+            notify("thread/goal/updated", { threadId: p.threadId, turnId: null, goal: goalOut(g) });
+            // Made active while the thread is idle: Codex goes on with it by itself.
+            if (g.status === "active" && (!current || current.done)) setTimeout(() => void runTurn(p.threadId, `turn-${++turnSeq}`, lastPolicy), 5);
+            return;
+        }
+        case "thread/goal/clear": {
+            if (process.env.FAKE_NO_GOALS === "1") return fail(`unknown method ${m.method}`);
+            const had = goals.delete(p.threadId);
+            saveGoals();
+            reply({ cleared: had });
+            if (had) notify("thread/goal/cleared", { threadId: p.threadId });
             return;
         }
         case "account/rateLimits/read":

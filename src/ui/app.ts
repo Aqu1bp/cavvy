@@ -24,6 +24,7 @@ import { loadImageFile, planPaste, prepareImage, readClipboardImage, type NamedI
 import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
 import { DELEGATE_TOOL } from "../agent/delegation";
 import { fireHooks, type HookEvent } from "../agent/hooks";
+import { backgroundWork, canAnswerOneOff, GoalController, limitedCodexGoal, loopGoalDropped, nativeGoalEnd, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, queuedGoalSet, sessionTokens, type NativeGoal } from "../agent/goal";
 import { sessionHookServices, sessionStartHooks } from "../agent/session-hooks";
 import { Notifier } from "./notify";
 import { Session } from "../agent/session";
@@ -125,6 +126,9 @@ export class App {
     client?: ProviderClient;
     agent?: Agent;
     session!: Session;
+    /** The session's /goal (src/agent/goal.ts); a new one with each session. */
+    goal?: GoalController;
+    private goalSession?: Session;
     toolState: ToolState;
     customCommands: CustomCommand[] = [];
     skills: Skill[] = [];
@@ -224,7 +228,7 @@ export class App {
             session: () => this.session,
             settings: () => this.settings,
             idle: () => this.schedulable(),
-            run: (prompt, _job, label) => this.runScheduled(prompt, label),
+            run: (prompt, job, label) => this.runScheduled(prompt, label, job.kind === "resume"),
             notice: (text, level) => this.notice(text, level),
             changed: () => this.renderLive(),
         });
@@ -237,18 +241,21 @@ export class App {
     /** /loop, cron jobs and the resume after a usage limit (src/agent/schedule.ts). */
     readonly schedules: SessionSchedules;
     /** The next turn to start is a schedule's, not the user's. */
-    private scheduledTurn = false;
+    /** The turn starting is a scheduled prompt ("resume": the one after a usage limit, which picks a paused goal up again). */
+    private scheduledTurn: boolean | "resume" = false;
 
     /** A scheduled prompt may start now: nothing running, waiting, or being set up. */
     private schedulable(): boolean {
-        return !this.busy && !this.dialogs.length && !this.dialogQueue.length && !this.switching && !this.pendingSubmit && !this.exiting && this.modelReady && Boolean(this.session);
+        // A goal between its turns (checking, retrying, waiting on background work) goes first: scheduled prompts wait for it.
+        return !this.busy && !this.dialogs.length && !this.dialogQueue.length && !this.switching && !this.pendingSubmit && !this.exiting && this.modelReady && Boolean(this.session) && !this.goal?.pending();
     }
 
-    private runScheduled(prompt: string, label: string): Promise<unknown> {
+    private runScheduled(prompt: string, label: string, resume = false): Promise<unknown> {
         // A line of its own, so it doesn't read as part of the answer before it.
         this.print(["", theme.muted(`⏱ ${label}`)]);
-        this.scheduledTurn = true;
-        return this.submitText(prompt).finally(() => (this.scheduledTurn = false));
+        this.scheduledTurn = resume ? "resume" : true;
+        // Codex stopped its goal at the limit: the resume makes it active again, for Codex to go on with.
+        return this.submitText(resume && limitedCodexGoal(this.nativeGoal) ? "/goal resume" : prompt).finally(() => (this.scheduledTurn = false));
     }
 
     get cwd(): string {
@@ -315,6 +322,7 @@ export class App {
         if (this.init.resumeFile) this.resume(this.init.resumeFile);
         else this.session = Session.create(this.cwd);
         this.schedules.restore();
+        this.bindGoal();
         if (this.init.fastMode !== undefined) this.session.setFastMode(this.init.fastMode);
         void this.sessionHook("SessionStart", { source: this.init.resumeFile ? "resume" : "startup" });
 
@@ -357,6 +365,7 @@ export class App {
         }
         this.exiting = true;
         this.schedules.dispose();
+        this.goal?.dispose();
         this.abort?.abort();
         stopWatchers(this.toolState);
         this.toolState.wakes?.dispose();
@@ -534,6 +543,9 @@ export class App {
         const prev = this.model;
         this.model = info;
         this.client = client;
+        // A CLI's own goal stays with that CLI: another provider doesn't carry it on.
+        if (this.nativeGoal && this.nativeGoal.provider !== info.provider) this.nativeGoal = undefined;
+        this.dropLoopGoal();
         this.updateHelpers();
         if (!this.agent) this.makeAgent();
         else {
@@ -726,6 +738,7 @@ export class App {
         this.checker.resetSession();
         this.makeAgent();
         this.schedules.switchSession();
+        this.bindGoal();
         this.sessionSwitched(prev, "clear");
     }
 
@@ -750,11 +763,156 @@ export class App {
         if (this.agent) this.makeAgent();
         this.replayTranscript();
         this.restoreSavedQueue();
+        this.bindGoal();
         // At startup, run() fires SessionStart (and restores its schedules).
         if (prev) {
             this.schedules.switchSession();
             this.sessionSwitched(prev, "resume");
         }
+    }
+
+    /** A controller for the current session's /goal; a resumed session's goal comes back paused. */
+    private bindGoal() {
+        if (this.goalSession === this.session) return;
+        this.goal?.dispose();
+        this.goalSession = this.session;
+        // A CLI's own goal was the last session's: this one's comes with its next turn.
+        this.nativeGoal = undefined;
+        const session = this.session;
+        this.goal = new GoalController({
+            session,
+            tokens: () => sessionTokens(session),
+            canJudge: () => this.helperAnswers(),
+            judge: (system, prompt, signal) => this.complete(system, prompt, signal),
+            backgroundRunning: () => backgroundWork(this.agent?.delegatedTasks, this.toolState.shells),
+            idle: () => !this.busy && !this.queued.length && !this.pendingSubmit && this.session === session,
+            notice: (text, level) => {
+                session.recordNotice(level, text);
+                if (text.startsWith("✓")) this.screen.print((cols) => text.split("\n").flatMap((line) => wrapLine(line, cols - 6)).map((l, i) => (i === 0 ? `  ⎿  ${theme.success(l)}` : `     ${theme.muted(l)}`)));
+                else this.notice(text, level);
+            },
+            changed: () => this.goalChanged(),
+            alert: (kind, _text, elapsed) => void this.notifier.notify(kind, elapsed),
+            startTurn: (prompt, display) => void this.startTurn(prompt, { display, kind: "command", goal: true }),
+        });
+        if (session.goal) {
+            this.goal.restore(session.goal);
+            if (!this.dropLoopGoal()) this.notice(`◎ Goal restored: ${truncate(session.goal.condition.replace(/\s+/g, " "), 200)}. It continues after your next message, or /goal resume.`);
+        }
+    }
+
+    /** Claude Code and Codex keep goals of their own (and get /goal): the loop's goal doesn't go on with them. True if one was dropped. */
+    private dropLoopGoal(): boolean {
+        const provider = this.model?.provider;
+        if (!nativeGoals(provider)) return false;
+        const dropped = this.goal?.clear();
+        const said = dropped && loopGoalDropped(dropped, provider!);
+        if (said) {
+            this.session.recordNotice("info", said);
+            this.notice(said);
+        }
+        return Boolean(dropped);
+    }
+
+    /** Whether one-off requests (titles, the /goal check) have a model that answers them: not Claude Code or Codex, which run whole turns only. */
+    helperAnswers(): boolean {
+        return canAnswerOneOff(this.settings.smallModel, this.model?.provider);
+    }
+
+    /** A goal check or retry is coming: the session isn't free for other automatic prompts (scheduled ones). */
+    goalPending(): boolean {
+        return this.goal?.pending() ?? false;
+    }
+
+    /** /goal clear: a /goal <condition> sent mid-turn, still waiting in the queue, goes too. Their conditions. */
+    dropQueuedGoals(): string[] {
+        const dropped = this.queued.flatMap((d) => {
+            const c = queuedGoalSet(plainText(d.text));
+            return c === undefined ? [] : [{ d, c }];
+        });
+        if (!dropped.length) return [];
+        this.queued = this.queued.filter((d) => !dropped.some((x) => x.d === d));
+        this.queueUpdated();
+        return dropped.map((x) => x.c);
+    }
+
+    /** Claude Code's or Codex's own goal, as it last reported it (src/agent/goal.ts NativeGoal). */
+    nativeGoal?: NativeGoal;
+    /** After the running turn has been stopped: the /goal command that stopped it (clear, pause), sent to the CLI then. */
+    private afterStop?: string;
+
+    /** /goal goes to the session's agent CLI (Claude Code, Codex) rather than the loop here. */
+    nativeGoals(): boolean {
+        return nativeGoals(this.model?.provider);
+    }
+
+    /**
+     * /goal on Claude Code or Codex: what needs no turn is answered here, a clear or pause mid-turn stops the
+     * turn and is sent after. False: it's sent to the CLI as it is (queued while a turn runs).
+     */
+    nativeGoalCommand(text: string, args: string): boolean {
+        const c = parseGoalCommand(args);
+        if (c.kind === "invalid") {
+            this.notice(c.message, "error");
+            return true;
+        }
+        if (this.model?.provider === "claude-code" && (c.kind === "pause" || c.kind === "resume")) {
+            this.notice(c.kind === "pause" ? "Claude Code's goals don't pause: press esc to stop the turn (it carries on with your next message), or /goal clear." : "Claude Code carries on with the goal when you send a message.");
+            return true;
+        }
+        if (!this.busy) return false;
+        if (c.kind === "status") {
+            this.notice(nativeGoalStatus(this.nativeGoal, true));
+            return true;
+        }
+        if (c.kind === "clear" || c.kind === "pause") {
+            this.afterStop = text;
+            this.interrupt();
+            return true;
+        }
+        return false;
+    }
+
+    private nativeGoalReported(g: NativeGoal | null) {
+        const end = g && nativeGoalEnd(g);
+        if (end) {
+            // Said once, as it ends: Codex still reports a met goal at the start of later runs.
+            if (this.nativeGoal?.condition === g!.condition) {
+                const failed = g!.status === "failed";
+                this.session.recordNotice(failed ? "warn" : "info", end);
+                this.screen.print((cols) => ["", ...end.split("\n").flatMap((line, i) => wrapLine(line, cols - 6).map((l, j) => (i === 0 && j === 0 ? `  ⎿  ${failed ? theme.warning(l) : theme.success(l)}` : `     ${theme.muted(l)}`)))]);
+            }
+            g = null;
+        }
+        this.nativeGoal = g ?? undefined;
+        this.renderLive();
+    }
+
+    private goalChanged() {
+        // A check or a wait has a spinner and a clock of its own while no turn runs.
+        if (this.goal?.pending() && !this.busy) this.startTicker();
+        else if (!this.busy) this.stopTicker();
+        this.renderLive();
+    }
+
+    /** The line under the output while a goal is set. */
+    private goalLine(cols: number): string | undefined {
+        const v = this.goal?.view() ?? (this.nativeGoal ? nativeGoalView(this.nativeGoal, this.busy) : undefined);
+        if (!v) return undefined;
+        if (v.judge === "native") {
+            const turns = v.turns ? ` · ${v.turns} check${v.turns === 1 ? "" : "s"}` : "";
+            if (v.state === "paused") return truncate(`${theme.muted(`◎ /goal (${v.by})`)} ${theme.subtle(`· ${v.note ?? "paused"} · /goal clear removes it`)}`, cols - 1);
+            return truncate(`${theme.accent(`◎ /goal active (${v.by})`)} ${theme.muted(`· ${formatDuration(Date.now() - v.since)}${turns}`)}`, cols - 1);
+        }
+        const clock = formatDuration(Date.now() - v.since);
+        const turns = v.turns ? ` · ${v.turns} check${v.turns === 1 ? "" : "s"}` : "";
+        if (v.state === "paused") return truncate(`${theme.muted("◎ /goal paused")} ${theme.subtle(`· send a message or /goal resume to continue · /goal clear removes it`)}`, cols - 1);
+        if (v.state === "checking" || v.state === "waiting") {
+            const glyph = SPINNER_FRAMES[this.frame % SPINNER_FRAMES.length]!;
+            const what = v.state === "checking" ? "Checking the goal…" : v.retryAt ? `Retrying in ${formatDuration(Math.max(0, v.retryAt - Date.now()))}` : "Waiting for background tasks before checking the goal";
+            return truncate(`${theme.accent(glyph)} ${theme.accent(what)} ${theme.muted(`(${clock}${turns} · ${(this.keys.label("chat:cancel") ?? "esc").replace(/^escape$/, "esc")} to pause)`)}`, cols - 1);
+        }
+        return truncate(`${theme.accent("◎ /goal active")} ${theme.muted(`· ${clock}${turns}`)}`, cols - 1);
     }
 
     /** /clear or /resume: SessionEnd for the old session, then SessionStart for the new one. */
@@ -838,7 +996,7 @@ export class App {
 
     notice(msg: string, level: "info" | "warn" | "error" = "info") {
         const color = level === "error" ? theme.error : level === "warn" ? theme.warning : theme.muted;
-        this.screen.print((cols) => wrapLine(msg, cols - 6).map((l, i) => (i === 0 ? `  ⎿  ` : "     ") + color(l)));
+        this.screen.print((cols) => msg.split("\n").flatMap((line) => wrapLine(line, cols - 6)).map((l, i) => (i === 0 ? `  ⎿  ` : "     ") + color(l)));
     }
 
     private printUser(text: string) {
@@ -1002,6 +1160,9 @@ export class App {
                 this.thinkingNow = false;
                 this.receiving.clear();
                 this.status = `${e.reason.slice(0, 80)} · retrying in ${Math.ceil(e.delayMs / 1000)}s (attempt ${e.attempt})`;
+                break;
+            case "goal":
+                this.nativeGoalReported(e.goal);
                 break;
             case "cli_commands":
                 this.cliCommands = { provider: e.provider, names: new Set(e.names) };
@@ -1533,6 +1694,11 @@ export class App {
             this.takeBackBlockedAt = 0;
             return this.interrupt();
         }
+        if (this.goal?.pending()) {
+            this.goal.pause("Stopped with esc. It continues after your next message, or /goal resume.");
+            this.notice("Goal paused. Send a message or /goal resume to continue; /goal clear removes it.", "warn");
+            return;
+        }
         if (this.showHelp) return void (this.showHelp = false);
         const again = this.keys.label("chat:cancel") ?? "esc";
         if (Date.now() - this.escAt < 800) {
@@ -1862,11 +2028,18 @@ export class App {
 
     /** `draft` carries the images typed with the prompt (or with the command that built it). */
     /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files (a skill's instructions are sent as written). */
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; draft?: Draft; mentionsIn?: string; wakes?: Wake[] } = {}) {
+    /** `goal`: a turn the goal started (src/agent/goal.ts). */
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; draft?: Draft; mentionsIn?: string; wakes?: Wake[]; goal?: boolean } = {}) {
         if (!this.agent) {
             this.notice("No model is selected. Pick one with /model (or add an API key with /login).", "error");
             return;
         }
+        // The user's own turn overtakes a pending goal check, and a paused goal picks up after it. A scheduled prompt
+        // leaves a paused goal paused; the resume after a usage limit is the exception, as in Claude Code.
+        // A watch's events don't either: they aren't the user's.
+        if (!opts.goal && opts.kind !== "wake" && this.scheduledTurn !== true) this.goal?.userTurn();
+        const goal = this.goal;
+        const from = this.session.messages.length;
         // Busy from here on, so prompts typed while MCP servers finish connecting queue up.
         const agent = this.agent;
         this.busy = true;
@@ -1925,15 +2098,23 @@ export class App {
             this.status = undefined;
             this.renderLive();
         }
-        if (reason) void this.notifier.turnEnded(reason, Date.now() - this.turnStart);
+        // While a goal keeps going its turns don't each notify: the goal says when it stops (GoalHost.alert).
+        if (reason && !(goal?.active && goal.view()?.state !== "paused")) void this.notifier.turnEnded(reason, Date.now() - this.turnStart);
         if (reason) this.schedules.turnEnded(reason, agent.limitStop);
         if (ac.signal.aborted) {
+            if (goal === this.goal) void goal?.afterTurn("aborted", from, Boolean(opts.goal));
             this.returnQueued();
+            // The /goal clear or pause that stopped the turn: now the CLI gets it.
+            const after = this.afterStop;
+            this.afterStop = undefined;
+            if (after) return void (await this.submitText(after));
             return this.schedules.poke();
         }
         const next = this.nextQueued();
-        // Nothing the user typed is waiting: a schedule, or events a watch raised meanwhile, can have their turn.
         if (next === undefined) {
+            // Nothing the user typed is waiting: the goal decides whether another turn starts; then a schedule, or
+            // events a watch raised meanwhile, can have their turn.
+            if (reason && goal === this.goal) await goal?.afterTurn(reason, from, Boolean(opts.goal), this.turnStart);
             this.toolState.wakes?.poke();
             return this.schedules.poke();
         }
@@ -2044,8 +2225,9 @@ export class App {
     private wake() {
         // Busy or with messages queued, the turn's end looks again.
         if (this.exiting || this.busy || this.queued.length) return;
-        // A model switch, a dialog open, no agent yet: look again in a moment.
-        if (this.switching || !this.agent || this.dialogs.length) {
+        // A model switch, a dialog open, no agent yet, a goal between its turns (it goes first, as with scheduled
+        // prompts): look again in a moment.
+        if (this.switching || !this.agent || this.dialogs.length || this.goalPending()) {
             setTimeout(() => this.toolState.wakes?.poke(), 1000).unref?.();
             return;
         }
@@ -2262,6 +2444,8 @@ export class App {
         const rows = termRows();
         // The reply and running tools continue the output; the spinner, prompt and footer stay on the bottom rows.
         const { flow, status } = this.busy ? this.renderActivity(cols, rows) : { flow: [], status: [] };
+        const goal = this.goalLine(cols);
+        if (goal) status.push(goal);
         const lines = [...flow];
         if (status.length) lines.push("", ...status);
         lines.push("");

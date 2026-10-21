@@ -126,6 +126,8 @@ export interface BackendTurn {
     /** The CLI config folder selection; omitted means its Default account. */
     accountId?: string;
     prompt: string;
+    /** With a /goal command as the prompt: what Harness would have put before it (the conversation so far), kept apart. */
+    goalContext?: string;
     /**
      * The prompt isn't only the user's own words (an event a watch raised, or what the harness adds before
      * them): Claude Code reads it as written, with no @mention expansion or slash command.

@@ -44,9 +44,13 @@
 // shell-background / shell-background-stuck / monitor-background report live tasks;
 // partial-error / partial-error-exit / result-error separate diagnostics from replies.
 // FAKE_CLAUDE_VERSION overrides the initialize version for compatibility tests.
+// /goal: goal_status entries in the session's transcript (as 2.1.305), and active_goal on stdout only with
+// CLAUDE_CODE_REMOTE; FAKE_GOAL_HOLD=1 waits for an interrupt after the first check, FAKE_GOAL_IMPOSSIBLE=1 ends
+// it judged impossible
 
-import { appendFileSync, existsSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "fs";
-import { join } from "path";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "fs";
+import { homedir } from "os";
+import { dirname, join } from "path";
 import { callTool, connect, type McpServerRef } from "./mcp-call";
 
 const log = (o: unknown) => {
@@ -186,6 +190,8 @@ let prompts = 0;
 let answering: string | undefined;
 // A busy CLI folds these into the current turn, rather than starting concurrent turns.
 let steering: { uuid?: string; text: string }[] | undefined;
+/** FAKE_GOAL_HOLD=1: the goal's second turn waits for an interrupt. */
+let goalRelease: (() => void) | undefined;
 let steeringWake: (() => void) | undefined;
 /**
  * What the session has spent so far: like Claude Code's, each result's
@@ -500,6 +506,43 @@ async function turn(content: any[], uuid?: string) {
         await sdkHook("SessionStart", { source: "compact" });
         return result("success", { result: "" });
     }
+    // /goal is Claude Code's own too, and the loop runs inside the one query. As 2.1.305 does, it records the goal in
+    // the session's transcript (goal_status entries) and reports it on stdout (active_goal) only in a remote session.
+    const goal = String(content.find((c) => c?.type === "text")?.text ?? "").match(/^\/goal(?:\s+([\s\S]*))?$/);
+    if (goal) {
+        const condition = (goal[1] ?? "").trim();
+        const setAt = Date.now();
+        const report = (value: unknown) => process.env.CLAUDE_CODE_REMOTE && out({ type: "active_goal", value, uuid: `g-${Date.now()}`, session_id: sessionId });
+        const transcript = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects", cwd.replace(/[^A-Za-z0-9]/g, "-"), `${sessionId}.jsonl`);
+        const record = (attachment: Record<string, unknown>) => {
+            mkdirSync(dirname(transcript), { recursive: true });
+            appendFileSync(transcript, JSON.stringify({ type: "attachment", uuid: `a-${Math.random()}`, timestamp: new Date().toISOString(), sessionId, attachment: { type: "goal_status", ...attachment } }) + "\n");
+        };
+        // The goal set now, from the transcript as Claude Code's own resume reads it.
+        const current = () => {
+            const lines = existsSync(transcript) ? readFileSync(transcript, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+            const last = lines.reverse().find((e) => e.attachment?.type === "goal_status")?.attachment;
+            return last && !last.met && !last.failed ? (last.condition as string) : undefined;
+        };
+        if (!condition || condition === "clear") {
+            const was = current();
+            if (condition && was) record({ met: true, sentinel: true, condition: was });
+            report(null);
+            return result("success", { result: condition ? (was ? "Goal cleared" : "No goal set") : was ? `Goal: ${was}` : "No goal set" });
+        }
+        record({ met: false, sentinel: true, condition });
+        report({ condition, iterations: 0, set_at: setAt, tokens_at_start: 0 });
+        text("Working toward the goal.");
+        record({ met: false, condition, reason: "The tests haven't run yet." });
+        report({ condition, iterations: 1, set_at: setAt, tokens_at_start: 0, last_reason: "The tests haven't run yet." });
+        if (process.env.FAKE_GOAL_HOLD === "1") await new Promise<void>((r) => (goalRelease = r));
+        if (interrupted) return result("success", { result: "" });
+        text("Ran the tests: they pass.");
+        if (process.env.FAKE_GOAL_IMPOSSIBLE === "1") record({ met: false, failed: true, condition, reason: "There is no test suite.", iterations: 2, durationMs: 5, tokens: 10 });
+        else record({ met: true, condition, reason: "The tests pass.", iterations: 2, durationMs: 5, tokens: 10 });
+        report(null);
+        return result("success", { result: "Goal achieved" });
+    }
     if (process.env.FAKE_CLAUDE_LIMIT_INFO) out({ type: "rate_limit_event", rate_limit_info: JSON.parse(process.env.FAKE_CLAUDE_LIMIT_INFO) });
     if (process.env.FAKE_LIMIT_ERROR === "1") {
         out({ type: "assistant", error: "rate_limit", message: { role: "assistant", content: [] } });
@@ -784,6 +827,7 @@ for await (const chunk of Bun.stdin.stream()) {
                 interrupted = true;
                 out({ type: "control_response", response: { subtype: "success", request_id: m.request_id } });
                 wake?.();
+                goalRelease?.();
             } else {
                 if (sub === "set_permission_mode") mode = m.request.mode;
                 out({ type: "control_response", response: { subtype: "success", request_id: m.request_id } });

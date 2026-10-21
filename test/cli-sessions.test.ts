@@ -612,7 +612,7 @@ describe("carrying on", () => {
             const snap = (await e.handle(c, "cliSessions.import", { cwd, source: "codex", id: x.id })) as SessionSnapshot;
             expect(snap.state.model?.ref).toStartWith("codex:");
             await send(e, c, snap.state.id, "and the call sites");
-            const methods = received().map((m) => m.method).filter((m) => m?.startsWith("thread/"));
+            const methods = received().map((m) => m.method).filter((m) => m?.startsWith("thread/") && !m.startsWith("thread/goal/"));
             expect(methods).toEqual(["thread/resume"]);
             expect(received().find((m) => m.method === "thread/resume").params.threadId).toBe(x.id);
             const input: string = received().find((m) => m.method === "turn/start").params.input[0].text;

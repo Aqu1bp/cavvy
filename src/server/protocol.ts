@@ -437,6 +437,30 @@ export interface ScheduleInfo {
     due: boolean;
 }
 
+/** A /goal set in the session (src/agent/goal.ts): it keeps working, turn after turn, until a check finds the condition holds. */
+export interface GoalState {
+    condition: string;
+    /** active: working or about to; checking: the check is running; waiting: on background tasks or a retry; paused: until the user's next message. */
+    state: "active" | "checking" | "waiting" | "paused";
+    /** When it was set (or restored), ms. */
+    since: number;
+    /** Turns checked so far. */
+    turns: number;
+    /** Tokens spent since it was set. */
+    tokens: number;
+    /** The last check's reason. */
+    lastReason?: string;
+    /** Why it's paused or waiting. */
+    note?: string;
+    /** When a retry is due (waiting), ms. */
+    retryAt?: number;
+    /** Who checks: a separate model, the working model's own report, or the agent CLI's own /goal (Claude Code, Codex). */
+    judge: "model" | "self" | "native";
+    /** judge "native": the CLI that keeps the goal ("Claude Code"), and whether it can be paused (Codex's can). */
+    by?: string;
+    canPause?: boolean;
+}
+
 export interface SessionState {
     accounts?: Record<string, string>;
     id: string;
@@ -487,6 +511,8 @@ export interface SessionState {
     secrets: string[];
     /** Its schedules (/loop, cron jobs, the resume after a usage limit), soonest first as the server keeps them. */
     schedules: ScheduleInfo[];
+    /** The session's /goal, while one is set. */
+    goal?: GoalState;
 }
 
 export interface SessionSnapshot {

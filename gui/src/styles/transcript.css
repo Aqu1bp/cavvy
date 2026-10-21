@@ -1103,6 +1103,14 @@ button.wrow:hover {
     margin-top: 3px;
 }
 
+.notice > span {
+    white-space: pre-line;
+}
+
+.notice.goal-met svg {
+    color: var(--add-fg);
+}
+
 .notice.warn {
     color: color-mix(in srgb, var(--warning) 75%, var(--fg));
     background: var(--warning-soft);

@@ -50,6 +50,11 @@ import { claudeMcpPolicy } from "./claude-mcp-policy";
 import { writeAgentsFile } from "./claude-agents";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn } from "./types";
 import type { TurnEndReason } from "../agent/agent";
+import type { NativeGoal } from "../agent/goal";
+import { ClaudeGoalWatch, claudeTranscriptFile } from "./claude-goal";
+
+/** How often the transcript is looked at for the goal's progress while Claude Code runs. */
+const GOAL_POLL_MS = 400;
 
 /** How long each turn waits for approved MCP servers and delegation before sending the prompt (changeable for tests). */
 export const attachTiming = { timeoutMs: 30_000 };
@@ -355,6 +360,8 @@ class ClaudeTurn {
     private texts: string[] = [];
     private actions: string[] = [];
     private sessionId?: string;
+    /** Its /goal, followed in its transcript. */
+    private goals?: ClaudeGoalWatch;
     private billedToPlan = false;
     private resolvedModel?: string;
     private contextTokens?: number;
@@ -454,7 +461,7 @@ class ClaudeTurn {
         if (t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort))) a.push("--effort", t.effort);
         if (t.resumeId) a.push("--resume", t.resumeId, ...(t.forkSession ? ["--fork-session"] : []));
         if (t.maxTurns && Number.isFinite(t.maxTurns)) a.push("--max-turns", String(t.maxTurns));
-        a.push("--append-system-prompt", [t.appendSystemPrompt,
+        a.push("--append-system-prompt", [t.appendSystemPrompt, t.goalContext,
             `Harness waits up to ${claudeBackgroundWaitMs(t.backgroundWaitSec) / 1000} seconds after an answer for reported background commands and monitors; sub-agents retain their 60-minute limit. Background commands and monitors do not survive process shutdown, a user interrupt, or their grace timeout. Recognized dev servers/watchers are stopped without waiting after the answer. Consume finite-work results before declaring success; do not expect a background server to outlive the turn. Work not reported by the CLI cannot be waited for.`,
         ].filter(Boolean).join("\n\n"));
         for (const d of t.additionalDirectories) a.push("--add-dir", d);
@@ -756,12 +763,16 @@ class ClaudeTurn {
     async run(content: unknown[]): Promise<BackendResult> {
         const { signal } = this.t;
         if (signal.aborted) return { reason: "aborted", text: "", actions: [] };
+        let env: ReturnType<typeof accountEnv>;
         try {
-            this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd, env: accountEnv(this.def.id, this.t.accountId, this.t.cwd) });
+            env = accountEnv(this.def.id, this.t.accountId, this.t.cwd);
+            this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd, env });
         } catch (e) {
             this.agentsFile?.remove();
             throw e;
         }
+        // Its /goal, as it goes: read from its transcript (src/backends/claude-goal.ts).
+        this.goals = new ClaudeGoalWatch(() => (this.sessionId ? claudeTranscriptFile(env.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR, this.t.cwd, this.sessionId) : undefined), Date.now(), (goal) => this.host.emit({ type: "goal", goal }));
         const stopAccountWatch = watchAccountFolders(() => {
             this.failure = "Account folders changed while Claude Code was running. Send again to apply their updated protections.";
             this.reason = "error";
@@ -780,9 +791,11 @@ class ClaudeTurn {
         this.proc.send({ type: "control_request", request_id: requestId(), request: { subtype: "initialize", ...this.hookRegistration() } });
         // The prompt waits for the MCP server, so its first request has the harness's tools.
         void this.attach().then(() => this.aborted || this.sendUser(content, this.t.synthetic));
+        const goalTimer = setInterval(() => this.goals?.poll(), GOAL_POLL_MS);
         try {
             for await (const m of this.proc.messages()) {
                 if (m.type === "result") {
+                    this.goals?.poll();
                     this.commandWaitingSince.clear();
                     this.busy = false;
                     const ours = this.answers(m);
@@ -802,6 +815,8 @@ class ClaudeTurn {
                 if (!this.busy && (await this.idle())) break;
             }
         } finally {
+            clearInterval(goalTimer);
+            this.goals?.poll();
             stopAccountWatch();
             signal.removeEventListener("abort", onAbort);
             this.stopWaiting();
@@ -891,6 +906,11 @@ class ClaudeTurn {
                 break;
             case "rate_limit_event":
                 this.onRateLimit(m.rate_limit_info ?? {});
+                break;
+            case "active_goal":
+                // Its remote sessions report the goal themselves; the transcript says the same, and more (met, impossible).
+                this.goals?.poll();
+                if (!this.goals?.found) this.host.emit({ type: "goal", goal: claudeGoal(m.value) });
                 break;
         }
     }
@@ -1538,4 +1558,20 @@ function claudeConfigDir(provider: string, t: BackendTurn): string | undefined {
     } catch {
         return process.env.CLAUDE_CONFIG_DIR;
     }
+}
+
+/** Claude Code's `active_goal` value (its /goal, set or with a new verdict; null once it's cleared or met). */
+export function claudeGoal(v: unknown): NativeGoal | null {
+    if (!v || typeof v !== "object") return null;
+    const g = v as { condition?: unknown; iterations?: unknown; set_at?: unknown; last_reason?: unknown };
+    if (typeof g.condition !== "string" || !g.condition.trim()) return null;
+    const at = typeof g.set_at === "number" && g.set_at > 0 ? (g.set_at < 1e12 ? g.set_at * 1000 : g.set_at) : Date.now();
+    return {
+        provider: "claude-code",
+        condition: g.condition,
+        status: "active",
+        since: at,
+        ...(typeof g.iterations === "number" ? { turns: g.iterations } : {}),
+        ...(typeof g.last_reason === "string" && g.last_reason.trim() ? { lastReason: redact(g.last_reason) } : {}),
+    };
 }

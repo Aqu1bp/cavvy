@@ -916,7 +916,7 @@ describe("Codex backend", () => {
         rmSync(LOG, { force: true });
         session.setBackendSession("codex", "gone-9", session.messages.length);
         expect(await run("three")).toBe("done");
-        const methods = received().map((m) => m.method).filter((m) => m?.startsWith("thread/"));
+        const methods = received().map((m) => m.method).filter((m) => m?.startsWith("thread/") && !m.startsWith("thread/goal/"));
         expect(methods).toEqual(["thread/resume", "thread/start"]);
     }, 20_000);
 
@@ -1696,7 +1696,7 @@ describe("forked sessions", () => {
                 expect(resumes()).toEqual([change === "none" ? `${shared} (fork)` : "new"]);
                 if (change !== "none") expect(userTexts().at(-1)).toContain("User: first on work");
             } else {
-                const threads = received().filter((m) => m.method?.startsWith("thread/"));
+                const threads = received().filter((m) => m.method?.startsWith("thread/") && !m.method.startsWith("thread/goal/"));
                 expect(threads.map((m) => m.method)).toEqual([change === "none" ? "thread/fork" : "thread/start"]);
                 if (change === "none") expect(threads[0].params.threadId).toBe(shared);
                 else expect(JSON.stringify(received().find((m) => m.method === "turn/start")?.params.input)).toContain("User: first on work");
@@ -1786,7 +1786,7 @@ describe("forked sessions", () => {
         const fork = await makeAgent({ provider: "codex", session: forkSession(orig.session, { cut: orig.session.messages.length }), settings });
         rmSync(LOG, { force: true });
         await fork.run("in the fork");
-        const threads = () => received().filter((m) => m.method?.startsWith("thread/")).map((m) => `${m.method} ${m.params.threadId ?? ""}`.trim());
+        const threads = () => received().filter((m) => m.method?.startsWith("thread/") && !m.method.startsWith("thread/goal/")).map((m) => `${m.method} ${m.params.threadId ?? ""}`.trim());
         expect(threads()).toEqual(["thread/fork thr-new"]);
         const forkThread = fork.session.backends.get("codex")!.id;
         expect(forkThread).toMatch(/^thr-fork-/);
@@ -1852,7 +1852,7 @@ describe("forked sessions", () => {
             expect(resumes()).toEqual(["gone-source (fork)", "new"]);
             expect(userTexts().at(-1)).toContain("User: first");
         } else {
-            expect(received().filter((m) => m.method?.startsWith("thread/")).map((m) => m.method)).toEqual(["thread/fork", "thread/start"]);
+            expect(received().filter((m) => m.method?.startsWith("thread/") && !m.method.startsWith("thread/goal/")).map((m) => m.method)).toEqual(["thread/fork", "thread/start"]);
             expect(JSON.stringify(received().find((m) => m.method === "turn/start")?.params.input)).toContain("User: first");
         }
         expect(fork.session.backends.get(provider)?.fork).toBeUndefined();
@@ -1867,7 +1867,7 @@ describe("forked sessions", () => {
         const fork = await makeAgent({ provider: "codex", session: forkSession(orig.session, { cut: forkCut(orig.session.messages, 0) }), settings });
         rmSync(LOG, { force: true });
         await fork.run("in the fork");
-        expect(received().filter((m) => m.method?.startsWith("thread/")).map((m) => m.method)).toEqual(["thread/start"]);
+        expect(received().filter((m) => m.method?.startsWith("thread/") && !m.method.startsWith("thread/goal/")).map((m) => m.method)).toEqual(["thread/start"]);
         const input = JSON.stringify(received().find((m) => m.method === "turn/start")?.params.input);
         expect(input).toContain("conversation-so-far");
         expect(input).toContain("User: one");

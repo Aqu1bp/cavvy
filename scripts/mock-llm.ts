@@ -21,6 +21,8 @@
 //   "waitcheck"      starts a background command, then waits and checks it in one response
 //   "use the x skill" loads skill x (Skill tool), then quotes the start of its instructions
 //   "schedule"       schedules the test suite for weekday mornings (CronCreate)
+//   "goaldemo"       runs the tests (for /goal); the goal check answers "not met" on its first check and
+//                    "met" after, or "impossible" when the goal says so
 //   "ship"           commits, opens a pull request and watches it (GitCommit, CreatePullRequest)
 //   (a wake)         answers a watched pull request's news: failed checks, comments, passing checks
 //   anything else    a short markdown answer
@@ -91,7 +93,7 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         if (/passed/.test(p)) return { text: "All checks passed. The pull request is ready for your review." };
         return { text: "Noted." };
     }
-    if (/\bship\b/.test(p)) {
+    if (/\bship\b/.test(p) && !/\bgoaldemo\b/.test(p)) {
         const steps: Step[] = [
             { text: "I'll commit the SSO work first.", calls: [{ name: "GitCommit", args: { message: "Add SAML SSO sign-in\n\nRegisters a SamlProvider strategy next to email sign-in." } }] },
             {
@@ -249,6 +251,10 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         if (toolRounds === 0) return { text: `Loading the ${skill[1]} skill.`, calls: [{ name: "Skill", args: { skill: skill[1] } }] };
         if (toolRounds === 1) return { text: `Following the skill. It starts: ${lastResult.split("\n").find((l) => l.trim() && !l.startsWith("<") && !l.startsWith("Base directory")) ?? lastResult.slice(0, 80)}` };
     }
+    if (/\bgoaldemo\b/.test(p)) {
+        if (toolRounds === 0) return { text: "Running the auth tests.", calls: [{ name: "Bash", args: { command: "echo 'test/auth: 12 pass, 0 fail'", description: "Run the auth tests" } }] };
+        return { text: `The auth tests pass: ${lastResult.trim() || "12 pass, 0 fail"}.` };
+    }
     if (/\bstubborn\b/.test(p)) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: "trap '' TERM; sleep 3", description: "Wait, ignoring SIGTERM" } }] } : { text: "Done." };
     if (/\bslow\b/.test(p)) return { reasoning: "Let me think about this carefully. ".repeat(6), text: Array.from({ length: 12 }, (_, i) => `Paragraph ${i + 1}: streaming text arrives a few words at a time so the interface can be checked for smooth rendering and stable scrolling.`).join("\n\n") };
     if (toolRounds > 0) return { text: "Done." };
@@ -256,6 +262,15 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         reasoning: "A short, direct answer will do.",
         text: `Here's a quick overview.\n\n1. **Server** — \`src/server/\` runs sessions\n2. **GUI** — talks to it over a WebSocket\n\n\`\`\`ts\nconst x: number = 42;\n\`\`\``,
     };
+}
+
+/** The /goal check (src/agent/goal.ts): not met on the first check, met after; impossible when the goal asks for it. */
+function goalVerdict(prompt: string): string {
+    const goal = /<goal>\n([\s\S]*?)\n<\/goal>/.exec(prompt)?.[1] ?? "";
+    const check = Number(/Check (\d+) of this goal/.exec(prompt)?.[1] ?? 1);
+    if (/\bimpossible\b/i.test(goal)) return JSON.stringify({ verdict: "impossible", reason: "The goal asks for something that contradicts itself, so it can never hold." });
+    if (check < 2) return JSON.stringify({ verdict: "not_met", reason: "The conversation shows no linter run yet; run it and show that it's clean." });
+    return JSON.stringify({ verdict: "met", reason: "The output shows 12 auth tests passing with 0 failures, and the linter is clean." });
 }
 
 function titleFor(prompt: string): string {
@@ -346,6 +361,11 @@ export function startMockLlm(o: MockOptions = {}) {
 
             let step: Step;
             if (/name coding-assistant sessions/.test(system)) step = { text: titleFor(prompt) };
+            else if (/check whether a coding agent has reached a goal/.test(system)) {
+                // A real check takes a moment: long enough to see it (not in tests, which run with no delay).
+                if (delay) await Bun.sleep(delay * 100);
+                step = { text: goalVerdict(prompt) };
+            }
             else if (!body.tools?.length) step = { text: "Summary: the user asked for help; the work is in progress." };
             else if (/what was my first message/i.test(prompt)) step = { text: recall(messages) };
             else if (/\bpause\b/i.test(prompt)) {

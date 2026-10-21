@@ -90,6 +90,7 @@ import { isTrusted, trustedByUser } from "../config/trust";
 import { deniedWithin } from "../permissions/rules";
 import { canonical, expandPath, isInside } from "../util/files";
 import type { PlanLimits } from "../server/protocol";
+import type { NativeGoal } from "./goal";
 
 // ---------------------------------------------------------------------------
 // Host interface (implemented by the TUI and by headless mode)
@@ -117,6 +118,8 @@ export type AgentEvent =
     | { type: "limits"; limits: PlanLimits; partial: boolean }
     /** The commands an agent CLI says it runs itself (Claude Code's skills and built-ins). */
     | { type: "cli_commands"; provider: string; names: string[] }
+    /** The goal an agent CLI keeps itself (src/agent/goal.ts NativeGoal); null when it has none. */
+    | { type: "goal"; goal: NativeGoal | null }
     | { type: "turn_end"; reason: TurnEndReason };
 
 export type TurnEndReason = "done" | "aborted" | "error" | "denied" | "max_turns" | "blocked";
@@ -298,6 +301,9 @@ function readOnlyRefusal(toolName: string, command?: string, why?: string): stri
 
 /** For a backend whose last turn was stopped without its knowing (Harness was closed or died while it worked). */
 const BACKEND_CUT_OFF = "Your last turn in this session was cut off: Harness stopped while you were working (it was closed, or it crashed), so that turn may not have finished what it set out to do.";
+
+/** A /goal command, which a CLI backend runs as its own. */
+const GOAL_COMMAND = /^\s*\/goal(\s|$)/i;
 
 function reminder(text: string): TextPart {
     return { type: "text", text: `<system-reminder>\n${text}\n</system-reminder>` };
@@ -569,9 +575,11 @@ export class Agent {
         // Delegated tasks that ended during a turn on another model (not a backend's) go with this prompt.
         this.deliverTasks(false);
         const parts: UserContent[] = [...content];
-        for (const r of this.pendingReminders.splice(0)) parts.push(reminder(r.text));
-        // Codex's edits are checked too: what came after their wait goes with this prompt.
-        const late = this.lateDiagnostics();
+        // A /goal to Claude Code or Codex is their own command, sent as typed: Harness's notes wait for the next prompt.
+        const goalCommand = isAgentBackend(this.client) && GOAL_COMMAND.test(promptText);
+        for (const r of goalCommand ? [] : this.pendingReminders.splice(0)) parts.push(reminder(r.text));
+        // Codex's edits are checked too: what came after their wait goes with this prompt (after a /goal, with the next).
+        const late = goalCommand ? undefined : this.lateDiagnostics();
         if (late) parts.push(late);
         const prompt = this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint } });
         this.prompted = true;
@@ -1504,6 +1512,10 @@ export class Agent {
         const first = !this.o.isSubagent && !woken && parts[0]?.type === "text" && text.startsWith(parts[0].text) ? parts[0].text : undefined;
         const asked = { request: first, requestAfter: first === undefined ? undefined : text.slice(first.length) };
         let prompt = text;
+        // The conversation so far goes beside a /goal (goalContext), so the command stays the whole prompt.
+        const goalCommand = GOAL_COMMAND.test(text);
+        const toSend = (r?: { synced: number }) =>
+            goalCommand && prompt === text ? { prompt, goalContext: this.backendPrompt("", promptIndex, r).trim() || undefined } : { prompt: this.backendPrompt(prompt, promptIndex, r) };
         let promptImages = images;
         let promptDocuments = documents;
         while (true) {
@@ -1512,14 +1524,14 @@ export class Agent {
             let result: BackendResult;
             try {
                 // A sub-agent kept going (a Stop hook) takes up a speed change since.
-                const sent = this.backendPrompt(prompt, promptIndex, resume);
-                result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: sent, synthetic: woken || sent !== prompt, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork });
+                const sent = toSend(resume);
+                result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...sent, synthetic: woken || sent.prompt !== prompt, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork });
                 if (result.resumeFailed) {
                     // Gone, or made in another folder: start a new one with this conversation as context.
                     this.session.forgetBackendSession(provider);
                     this.emit({ type: "notice", level: "warn", message: `${redact(result.error ?? `Couldn't continue the earlier ${name} session`)}. Starting a new one with this conversation as context.` });
-                    const fresh = this.backendPrompt(prompt, promptIndex);
-                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: fresh, synthetic: woken || fresh !== prompt, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: undefined });
+                    const fresh = toSend();
+                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...fresh, synthetic: woken || fresh.prompt !== prompt, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: undefined });
                 }
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);

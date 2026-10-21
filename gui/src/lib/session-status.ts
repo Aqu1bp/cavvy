@@ -1,4 +1,4 @@
-import type { SessionSummary } from "@shared/protocol";
+import type { SessionState, SessionSummary } from "@shared/protocol";
 import { duration } from "./format";
 
 export function sessionStatus(s: SessionSummary, now: number): { text: string; tone: string } | undefined {
@@ -15,4 +15,10 @@ export function sessionStatus(s: SessionSummary, now: number): { text: string; t
     if (s.status === "error") return { text: "Stopped", tone: "err" };
     if (s.messages > 0) return { text: "Done", tone: "muted" };
     return undefined;
+}
+
+/** Stop (Esc) does something: a turn is running, or a goal of the loop here is between its turns (a check or a retry coming), which it pauses. */
+export function canStop(s: Pick<SessionState, "busy" | "goal"> | undefined): boolean {
+    if (!s) return false;
+    return s.busy || (s.goal !== undefined && s.goal.judge !== "native" && s.goal.state !== "paused");
 }
