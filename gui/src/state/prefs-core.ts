@@ -37,6 +37,8 @@ export interface Prefs {
     groupBy: "date" | "project";
     /** The sidebar's Settled list is open. */
     settledOpen: boolean;
+    /** Grouped by project: the projects (by path) whose sessions are folded under their heading. */
+    collapsedProjects: string[];
     /** Enter sends (shift+enter for a newline); otherwise mod+enter sends. */
     enterSends: boolean;
     notifications: boolean;
@@ -67,6 +69,7 @@ export const PREF_DEFAULTS: Prefs = {
     panel: false,
     groupBy: "date",
     settledOpen: true,
+    collapsedProjects: [],
     enterSends: true,
     notifications: true,
     expandActivity: false,
@@ -109,6 +112,8 @@ export function migratePrefs(saved: unknown): Partial<Prefs> {
     if (!GLASSES.includes(out.glass as string)) delete out.glass;
     if (!TINTS.includes(out.tint as string)) delete out.tint;
     if (!ACCENTS.some((a) => a.id === out.accent)) delete out.accent;
+    // Folded projects: a list of paths, or the default (none).
+    if ("collapsedProjects" in out && !(Array.isArray(out.collapsedProjects) && out.collapsedProjects.every((c) => typeof c === "string"))) delete out.collapsedProjects;
     return out as Partial<Prefs>;
 }
 

@@ -10,8 +10,9 @@ export type SettingsTab = "general" | "appearance" | "providers" | "plugins" | "
 export const [paletteOpen, setPaletteOpen] = createSignal(false);
 export const [settingsTab, setSettingsTab] = createSignal<SettingsTab | undefined>();
 export const [rewindOpen, setRewindOpen] = createSignal(false);
-/** The session the delete dialog asks about. */
-export const [deleteRequest, setDeleteRequest] = createSignal<{ id: string; title: string; projectName: string } | undefined>();
+/** What the delete dialog asks about: one session (with its project), or several picked in the rail. */
+export type DeleteRequest = { id: string; title: string; projectName: string } | { ids: string[]; titles: string[] };
+export const [deleteRequest, setDeleteRequest] = createSignal<DeleteRequest | undefined>();
 /** The image shown full size over everything (a prompt's or a reply's). */
 export const [viewedImage, setViewedImage] = createSignal<{ src: string; alt: string } | undefined>();
 /** Files checked in the review pane when Commit was clicked. */
