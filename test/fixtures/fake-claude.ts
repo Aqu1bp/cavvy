@@ -626,6 +626,23 @@ async function turn(content: any[], uuid?: string) {
         text(results.join("\n---\n"));
         return result("success", { result: results.join("\n---\n") });
     }
+    else if (scenario === "native-agent-write") {
+        // A sub-agent's Write, asked with its agent_id as Claude Code does (its task_started names the agent's type).
+        const id = "toolu_agent";
+        const type = process.env.FAKE_AGENT_TYPE ?? "writer";
+        toolUse(id, "Agent", { description: "Write it", prompt: "Write x.txt", subagent_type: type });
+        out({ type: "system", subtype: "task_started", task_id: "agent-1", tool_use_id: id, description: "Write it", subagent_type: type, is_backgrounded: false, session_id: sessionId });
+        const input = { file_path: join(cwd, "x.txt"), content: "hi" };
+        sub(id, "assistant", [{ type: "tool_use", id: "toolu_w", name: "Write", input }]);
+        const request_id = `req-${++seq}`;
+        out({ type: "control_request", request_id, request: { subtype: "can_use_tool", tool_name: "Write", display_name: "Write", input, tool_use_id: "toolu_w", agent_id: "agent-1", permission_suggestions: [] } });
+        const r: any = await new Promise((resolve) => pending.set(request_id, resolve));
+        log({ agentWrite: r.behavior });
+        sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_w", content: r.behavior === "allow" ? "Wrote x.txt" : String(r.message), is_error: r.behavior !== "allow" }]);
+        toolResult(id, "Done.", false);
+        text("Done.");
+        return result("success", { result: "Done." });
+    }
     else if (scenario === "ask") {
         const input = { questions: [{ question: "Which color?", header: "Color", options: [{ label: "Red", description: "warm" }, { label: "Blue", description: "cool" }], multiSelect: false }] };
         toolUse("toolu_q", "AskUserQuestion", input);

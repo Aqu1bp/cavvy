@@ -45,6 +45,8 @@ export interface BackendPermission {
     agentLabel?: string;
     /** The call it asks about, as its tool_start names it: its row waits while it asks. */
     callId?: string;
+    /** The backend's sub-agent asking, by its type (a harness agent Claude Code runs natively): its own mode applies. */
+    agentType?: string;
 }
 
 export type PermissionAnswer =

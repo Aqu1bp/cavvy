@@ -3,11 +3,12 @@
 // them with its own Agent tool rather than through the harness's delegate
 // tool. Agents pinned to another provider's model stay with delegate.
 
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { Effort, McpServerConfig, Settings } from "../config/settings";
-import { approvalOf } from "../mcp/approval";
+import { approvalOf, serverCwd } from "../mcp/approval";
+import { paths } from "../config/paths";
 import { serverSegment } from "../mcp/manager";
 import type { PermissionMode } from "../permissions/modes";
 import { parseModelRef } from "../providers/types";
@@ -34,7 +35,8 @@ export interface ClaudeAgentDefinition {
 /**
  * Claude Code's mode for each harness mode, as for the session (MODES in
  * claude-code.ts): its acceptEdits also runs file commands without asking, so
- * an acceptEdits agent runs in default there and the harness approves its edits.
+ * an acceptEdits agent runs in default there, and the harness approves its
+ * edits with the agent's own mode (its asks name it: Agent.backendPermission).
  */
 const CLAUDE_MODES: Record<PermissionMode, string> = {
     default: "default",
@@ -59,8 +61,12 @@ export interface ClaudeAgentsOptions {
     mode: PermissionMode;
     /** The user trusted the folder: project agents are passed only then. */
     trusted: boolean;
+    /** Where Claude Code runs, and so where it starts an agent's stdio servers (it has no cwd for them). */
+    cwd: string;
     projectRoot: string;
     settings: Settings;
+    /** Gets what was left out of a definition, and why. */
+    notes?: string[];
 }
 
 /** The definitions Claude Code runs itself, by name. */
@@ -118,21 +124,51 @@ function claudeHooks(def: AgentDef): ClaudeAgentDefinition["hooks"] {
     return Object.keys(out).length ? out : undefined;
 }
 
-/** Names as they are; its own servers with the approval and name rules the harness applies when it runs them. */
+/**
+ * Names as they are; its own servers only where Claude Code would run what
+ * the harness would (startAgentServers): no name a configured or .mcp.json
+ * server has, a project agent's approved as .mcp.json servers are, and none
+ * Claude Code would read differently. It ignores a server's cwd (stdio servers
+ * start where it runs) and expands ${VAR}, which an approval doesn't cover.
+ */
 function claudeServers(def: AgentDef, o: ClaudeAgentsOptions): NonNullable<ClaudeAgentDefinition["mcpServers"]> {
     const out: NonNullable<ClaudeAgentDefinition["mcpServers"]> = [];
-    const configured = Object.keys(o.settings.mcpServers ?? {});
+    const configured = [...Object.keys(o.settings.mcpServers ?? {}), ...(o.trusted ? projectServers(o.projectRoot) : [])];
     for (const s of def.mcpServers ?? []) {
         if (!s.config) {
             out.push(s.name);
             continue;
         }
-        if (s.config.disabled || configured.some((n) => serverSegment(n) === serverSegment(s.name))) continue;
-        if (def.source === "project" && approvalOf(s.name, s.config, o.settings, o.projectRoot, o.trusted).state !== "approved") continue;
-        out.push({ [s.name]: claudeServer(s.config) });
+        const skip = (why: string) => o.notes?.push(`The ${def.name} agent's MCP server "${s.name}" isn't passed to Claude Code: ${why}.`);
+        if (s.config.disabled) continue;
+        if (configured.some((n) => serverSegment(n) === serverSegment(s.name))) skip("a configured server has that name");
+        else if (!s.config.url && !sameFolder(serverCwd(s.config, o.projectRoot), o.cwd)) skip("Claude Code would start it in this folder, not the one it names (it has no cwd for servers)");
+        else if (def.source === "project" && expands(s.config)) skip("Claude Code would expand its ${VAR}s, which its approval doesn't cover");
+        else if (def.source === "project" && approvalOf(s.name, s.config, o.settings, o.projectRoot, o.trusted).state !== "approved") skip("a project's agent's servers need the approval .mcp.json servers do (/mcp)");
+        else out.push({ [s.name]: claudeServer(s.config) });
     }
     return out;
 }
+
+/** The project's .mcp.json server names. */
+function projectServers(root: string): string[] {
+    try {
+        const f = JSON.parse(readFileSync(paths.projectMcp(root), "utf-8"));
+        return f?.mcpServers && typeof f.mcpServers === "object" ? Object.keys(f.mcpServers) : [];
+    } catch {
+        return [];
+    }
+}
+
+function sameFolder(a: string, b: string): boolean {
+    try {
+        return realpathSync(a) === realpathSync(b);
+    } catch {
+        return false;
+    }
+}
+
+const expands = (v: unknown): boolean => (typeof v === "string" ? v.includes("${") : Array.isArray(v) ? v.some(expands) : v && typeof v === "object" ? Object.values(v).some(expands) : false);
 
 function claudeServer(c: McpServerConfig): Record<string, unknown> {
     if (c.url) return { type: "http", url: c.url, ...(c.headers ? { headers: c.headers } : {}) };

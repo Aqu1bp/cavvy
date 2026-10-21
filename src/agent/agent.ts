@@ -357,6 +357,9 @@ export class Agent {
     private recentActions: string[] = [];
     /** Tasks a backend (Claude Code, Codex) delegated to other models through the harness's MCP tools. */
     private delegations?: Delegations;
+    /** The harness agents this turn passed to Claude Code (--agents), by name: their permission modes apply to their asks. */
+    private nativeDefs = new Map<string, AgentDef>();
+    private nativeNotes = new Set<string>();
     private registration?: Registration;
     /** What the harness MCP server offers this turn, and its instructions (read by the server on each request). */
     private serverTools: ServerTool[] = [];
@@ -961,9 +964,19 @@ export class Agent {
 
     /** On Claude Code, the harness's agents run on its own Agent tool; none for sub-agents, which can't start more. */
     private nativeAgents(trusted: boolean): BackendTurn["agents"] {
+        this.nativeDefs.clear();
         if (this.model.provider !== "claude-code" || this.o.isSubagent || this.o.readOnly) return undefined;
         try {
-            return claudeAgents(loadAgents(this.state.projectRoot), { mode: this.o.mode.get(), trusted, projectRoot: this.state.projectRoot, settings: this.o.settings() });
+            const defs = loadAgents(this.state.projectRoot);
+            const notes: string[] = [];
+            const agents = claudeAgents(defs, { mode: this.o.mode.get(), trusted, cwd: this.state.cwd, projectRoot: this.state.projectRoot, settings: this.o.settings(), notes });
+            for (const d of defs) if (Object.hasOwn(agents, d.name)) this.nativeDefs.set(d.name, d);
+            // Said once a session, not every turn.
+            for (const n of notes) if (!this.nativeNotes.has(n)) {
+                this.nativeNotes.add(n);
+                this.emit({ type: "notice", level: "warn", message: n });
+            }
+            return agents;
         } catch {
             return undefined;
         }
@@ -1527,7 +1540,9 @@ export class Agent {
     private async backendPermission(req: BackendPermission, signal: AbortSignal): Promise<PermissionAnswer> {
         const tool = this.findTool(req.toolName) ?? backendTool(req.toolName, req.title);
         const input = req.input;
-        const mode = this.o.mode.get();
+        // One of the harness's agents Claude Code runs: its own permissionMode, as when the harness runs it.
+        const own = req.agentType ? this.nativeDefs.get(req.agentType) : undefined;
+        const mode = childMode(this.o.mode.get(), own?.permissionMode);
         const cwd = this.state.cwd;
         // A read-only agent (explore) on a backend: reads, searches and read-only commands only.
         if (this.o.readOnly) {
@@ -1536,12 +1551,12 @@ export class Agent {
         }
         // Approved without asking: by an allow rule, or an edit the harness's mode approves (accept edits: inside the workspace).
         const approves = (d: Decision) => d.behavior === "allow" && (Boolean(d.rule) || d.remembered === true || tool.category === "edit");
-        const own = { memoryDir: this.o.memoryDir };
-        let decision = this.o.checker.check(tool, input, mode, cwd, own);
+        const memory = { memoryDir: this.o.memoryDir };
+        let decision = this.o.checker.check(tool, input, mode, cwd, memory);
         let ruled = approves(decision);
         for (const p of req.otherPaths ?? []) {
             if (decision.behavior === "deny") break;
-            const d = this.o.checker.check(tool, { ...input, file_path: p }, mode, cwd, own);
+            const d = this.o.checker.check(tool, { ...input, file_path: p }, mode, cwd, memory);
             if (d.behavior === "deny") decision = d;
             else if (!approves(d)) ruled = false;
         }

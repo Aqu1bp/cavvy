@@ -365,6 +365,8 @@ class ClaudeTurn {
     private toldStopped = false;
     /** The harness's skills, as a plugin folder (src/backends/native-skills.ts). */
     pluginDir?: string;
+    /** Each sub-agent's type, by the id it asks permission with. */
+    private agentTypes = new Map<string, string>();
     /** Where --agents reads from, removed when the process exits. */
     private agentsFile?: { path: string; remove: () => void };
 
@@ -886,6 +888,8 @@ class ClaudeTurn {
                 const id = String(m.tool_use_id ?? "");
                 if (this.shellCommands.has(id) && typeof m.task_id === "string") this.taskCommands.set(m.task_id, this.shellCommands.get(id)!);
                 if (this.agentLabels.has(id) && typeof m.task_id === "string") this.agentTasks.set(id, m.task_id);
+                // Its permission requests carry this id (agent_id): which agent asks.
+                if (typeof m.task_id === "string" && typeof m.subagent_type === "string") this.agentTypes.set(m.task_id, m.subagent_type);
                 if (m.is_backgrounded === true && this.agentLabels.has(id)) this.backgroundAgents.add(id);
                 this.agentStarted(id);
                 break;
@@ -1280,7 +1284,8 @@ class ClaudeTurn {
         if (own && String(req.tool_name ?? "").startsWith(`mcp__${own.name}__`)) return { behavior: "allow", updatedInput: raw };
         const { name, input } = toHarness(String(req.tool_name ?? ""), raw);
         const reason = typeof req.decision_reason === "string" && req.decision_reason.trim() ? req.decision_reason : undefined;
-        const a = await this.host.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined });
+        const agentType = typeof req.agent_id === "string" ? this.agentTypes.get(req.agent_id) : undefined;
+        const a = await this.host.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ...(agentType ? { agentType } : {}) });
         if (a.allow) return { behavior: "allow", updatedInput: raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
         return { behavior: "deny", message: a.message, interrupt: a.stop };
     }

@@ -19,7 +19,7 @@ const file = (front: string, body = "Do the thing.") => `---\n${front}\n---\n${b
 const user = (front: string, body?: string) => parseAgentFile(file(front, body), "x", "user");
 const project = (front: string, body?: string) => parseAgentFile(file(front, body), "x", "project");
 const root = tempDir("claude-agents-");
-const opts = { mode: "default" as const, trusted: true, projectRoot: root, settings: {} };
+const opts = { mode: "default" as const, trusted: true, cwd: root, projectRoot: root, settings: {} };
 
 describe("claudeAgents", () => {
     test("every field maps to Claude Code's", () => {
@@ -142,6 +142,36 @@ mcpServers:
         // A project's agent: its own servers need .mcp.json's approval; named ones are Claude Code's to load (or not).
         expect(claudeAgents([project(front)], { ...opts, settings }).m!.mcpServers).toEqual(["github"]);
         expect(claudeAgents([project(front)], { ...opts, settings: { ...settings, enableAllProjectMcpServers: true } }).m!.mcpServers).toHaveLength(3);
+    });
+
+    test("an own server Claude Code would start somewhere else, or read differently, isn't passed (it has no cwd and expands ${VAR})", () => {
+        const def = (src: "user" | "project", server: string) => parseAgentFile(file(`name: m\ndescription: d\nmcpServers:\n  - s:\n${server}`), "m", src);
+        const notes: string[] = [];
+        const approved = { ...opts, settings: { enableAllProjectMcpServers: true }, notes };
+        // An approved project server in "tools": Claude Code would run server.js from the session folder, maybe another program.
+        expect(claudeAgents([def("project", "      command: node\n      args: [server.js]\n      cwd: tools")], approved).m!.mcpServers).toBeUndefined();
+        expect(notes.pop()).toMatch(/would start it in this folder/);
+        expect(claudeAgents([def("user", "      command: node\n      cwd: tools")], approved).m!.mcpServers).toBeUndefined();
+        // A cwd that is where Claude Code runs is fine, and so is a URL server.
+        expect(claudeAgents([def("project", "      command: node\n      cwd: .")], approved).m!.mcpServers).toHaveLength(1);
+        expect(claudeAgents([def("project", "      url: https://example.com/mcp\n      cwd: tools")], approved).m!.mcpServers).toHaveLength(1);
+        // A session in a subfolder: Claude Code starts it there, the harness at the project root.
+        mkdirSync(join(root, "sub"), { recursive: true });
+        expect(claudeAgents([def("user", "      command: node")], { ...approved, cwd: join(root, "sub") }).m!.mcpServers).toBeUndefined();
+        // ${VAR}: Claude Code expands it, the approval covers the literal text.
+        expect(claudeAgents([def("project", '      command: "${TOOL}"')], approved).m!.mcpServers).toBeUndefined();
+        expect(notes.pop()).toMatch(/expand/);
+        expect(claudeAgents([def("user", '      command: "${TOOL}"')], approved).m!.mcpServers).toHaveLength(1);
+    });
+
+    test("an own server named like the project's .mcp.json one isn't passed, as the harness refuses it", () => {
+        writeFileSync(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { shared: { command: "x" } } }));
+        const notes: string[] = [];
+        const def = user("name: c\ndescription: d\nmcpServers:\n  - shared:\n      command: y");
+        expect(claudeAgents([def], { ...opts, notes }).c!.mcpServers).toBeUndefined();
+        expect(notes).toEqual([`The c agent's MCP server "shared" isn't passed to Claude Code: a configured server has that name.`]);
+        // An untrusted folder's .mcp.json isn't loaded, so it can't clash.
+        expect(claudeAgents([def], { ...opts, trusted: false }).c!.mcpServers).toHaveLength(1);
     });
 
     test("the file is private and goes away when removed", () => {
