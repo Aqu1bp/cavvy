@@ -227,7 +227,7 @@ describe("Codex", () => {
         const listed = [own, { name: "lint", path: realpathSync(s.file) }];
         const { skills, own: theirs } = native.codexSkills(listed, [s], folder);
         expect(theirs).toEqual(["imagegen"]);
-        expect(native.codexInput("$acme:lint now", "$acme:lint now", skills).items).toEqual([{ type: "skill", name: "lint", path: realpathSync(s.file) }]);
+        expect(native.codexInput("$acme:lint now", "$acme:lint now", skills, [s]).items).toEqual([{ type: "skill", name: "lint", path: realpathSync(s.file) }]);
     });
 
     test("one whose SKILL.md the folder fills in is known by the folder's copy, where Codex reads it", () => {
@@ -238,7 +238,48 @@ describe("Codex", () => {
         expect(copy).not.toBe(realpathSync(s.file));
         const { skills, own } = native.codexSkills([{ name: "tools", path: copy }], [s], folder);
         expect(own).toEqual([]);
-        expect(native.codexInput("/tools", "/tools", skills).items).toEqual([{ type: "skill", name: "tools", path: copy }]);
+        expect(native.codexInput("/tools", "/tools", skills, [s]).items).toEqual([{ type: "skill", name: "tools", path: copy }]);
+    });
+});
+
+describe("review round 2", () => {
+    test("Codex: a name the harness has is the harness's skill, even where Codex has its own by that name", () => {
+        const s = fake("deploy");
+        const folder = native.skillFolder([s])!;
+        const theirs = { name: "deploy", path: "/codex/skills/deploy/SKILL.md" };
+        const { skills, own } = native.codexSkills([theirs, { name: "deploy", path: realpathSync(native.skillFile(folder, s)) }], [s], folder);
+        expect(own).toEqual([]);
+        expect(native.codexInput("/deploy", "/deploy", skills, [s]).items).toEqual([{ type: "skill", name: "deploy", path: realpathSync(native.skillFile(folder, s)) }]);
+        // Ours not registered: it's pasted, not sent to Codex's own.
+        const pasted = native.codexInput("/deploy prod", "/deploy prod", [theirs], [s]);
+        expect(pasted.items).toEqual([]);
+        expect(pasted.text).toContain("Body of deploy.");
+        expect(native.codexInput("use $deploy", "use $deploy", [theirs], [s]).items).toEqual([]);
+    });
+
+    test("Codex: one the user can't run (user-invocable: false) isn't run by /name or $name", () => {
+        const s = fake("hidden", { userInvocable: false });
+        const folder = native.skillFolder([s])!;
+        const { skills } = native.codexSkills([{ name: "hidden", path: realpathSync(native.skillFile(folder, s)) }], [s], folder);
+        expect(native.codexInput("/hidden", "/hidden", skills, [s])).toEqual({ text: "/hidden", items: [] });
+        expect(native.codexInput("try $hidden", "try $hidden", skills, [s])).toEqual({ text: "try $hidden", items: [] });
+    });
+
+    test("Claude Code: one of its own that uses ${HARNESS_SKILL_DIR} is pasted, since it wouldn't fill that in", () => {
+        const dir = skill(claudeRoot(), "tools", "description: tools", "Run ${HARNESS_SKILL_DIR}/run.sh");
+        const s: Skill = { name: "tools", description: "tools", modelInvocable: true, userInvocable: true, source: "user", file: join(dir, "SKILL.md"), dir };
+        const names = native.claudeNames([s], [], cwd, true);
+        expect(names.get("tools")).toBe("tools");
+        const format = (x: Skill, args: string) => `<skill ${x.name}${args ? ` ${args}` : ""}>`;
+        expect(native.claudePrompt("/tools", "/tools", [s], names, format)).toBe("<skill tools>");
+        expect(native.claudePrompt("use $tools", "use $tools", [s], names, format)).toBe("use $tools\n\n<skill tools>");
+    });
+
+    test("Claude Code: a name with a colon is run by its folder's name", () => {
+        const s = fake("deploy", { name: "team:deploy" });
+        const dir = native.skillFolder([s], { plugin: true })!;
+        expect(existsSync(join(dir, "skills", "team__deploy", "SKILL.md"))).toBe(true);
+        expect(native.claudeNames([s], [s], cwd, true).get("team:deploy")).toBe("harness:team__deploy");
     });
 });
 

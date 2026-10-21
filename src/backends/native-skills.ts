@@ -80,8 +80,12 @@ const touched = new Map<string, number>();
 
 /** Where `s` is in the folder `dir` (its SKILL.md, or with `file` "" its folder). */
 export function skillFile(dir: string, s: Skill, file = "SKILL.md"): string {
-    // A plugin's skill is <plugin>:<name>, which can't be a folder's name everywhere (Codex reads the name from SKILL.md).
-    return join(dir, "skills", s.name.replace(/:/g, "__"), file);
+    return join(dir, "skills", folderName(s), file);
+}
+
+/** A name with a colon (a plugin's <plugin>:<name>) can't be a folder's name everywhere; Claude Code names a plugin's skills by folder. */
+function folderName(s: Skill): string {
+    return s.name.replace(/:/g, "__");
 }
 
 function addSkill(at: string, s: Skill) {
@@ -152,7 +156,7 @@ function isDir(p: string): boolean {
 export function claudeNames(skills: readonly Skill[], plugged: readonly Skill[], cwd: string, trusted: boolean, configDir?: string): Map<string, string> {
     const own = claudeRoots(cwd, trusted, configDir);
     const names = new Map(skills.filter((s) => s.source !== "plugin" && own.has(resolve(dirname(s.dir)))).map((s) => [s.name, s.name]));
-    for (const s of plugged) names.set(s.name, CLAUDE_PREFIX + s.name);
+    for (const s of plugged) names.set(s.name, CLAUDE_PREFIX + folderName(s));
     return names;
 }
 
@@ -184,17 +188,32 @@ export function claudePrompt(prompt: string, request: string | undefined, skills
     const named = slash && skills.find((s) => s.userInvocable && s.name === slash[1]!.toLowerCase());
     if (named) {
         const args = (slash![2] ?? "").trim();
-        const name = names.get(named.name);
+        const name = runnable(named, names);
         if (name && !head) return `/${name}${args ? ` ${args}` : ""}`;
         return head + (format(named, args) ?? request);
     }
     const mentioned = skillMentions(request, skills);
     if (!mentioned.length) return prompt;
     const notes = mentioned.map((s) => {
-        const name = names.get(s.name);
+        const name = runnable(s, names);
         return name && s.modelInvocable ? `Load the "${name}" skill with the Skill tool and follow it.` : format(s, "");
     });
     return `${prompt}\n\n${notes.filter(Boolean).join("\n\n")}`;
+}
+
+/**
+ * The name Claude Code runs `s` by, if it runs it as the harness would: one
+ * in its own folders that uses ${HARNESS_SKILL_DIR}, which Claude Code doesn't
+ * fill in (it does ${CLAUDE_SKILL_DIR}), is pasted in instead.
+ */
+function runnable(s: Skill, names: ReadonlyMap<string, string>): string | undefined {
+    const name = names.get(s.name);
+    if (name !== s.name) return name;
+    try {
+        return /\$\{HARNESS_SKILL_DIR\}/.test(readFileSync(s.file, "utf8")) ? undefined : name;
+    } catch {
+        return name;
+    }
 }
 
 /** A skill Codex has (skills/list): the item that runs it is { type: "skill", name, path }. */
@@ -205,6 +224,8 @@ export interface CodexSkill {
     enabled?: boolean;
     /** Codex's name for it, when this is the harness's name for one of its skills. */
     codexName?: string;
+    /** The harness's skill it is (the harness's name for it). */
+    harness?: string;
 }
 
 /**
@@ -216,8 +237,13 @@ export interface CodexSkill {
 export function codexInput(prompt: string, request: string | undefined, skills: readonly CodexSkill[], harness: readonly Skill[] = []): { text: string; items: { type: "skill"; name: string; path: string }[] } {
     if (!request || !prompt.endsWith(request)) return { text: prompt, items: [] };
     const head = prompt.slice(0, prompt.length - request.length);
-    const byName = new Map(skills.filter((s) => s.enabled !== false).map((s) => [s.name.toLowerCase(), s]));
-    const missing = harness.filter((s) => !byName.has(s.name));
+    // A name the harness has is the harness's skill, as in its menus, even where Codex has one of its own by that name;
+    // and one the user can't run (user-invocable: false) isn't a skill to run.
+    const ours = new Map(harness.map((s) => [s.name, s]));
+    const byName = new Map<string, CodexSkill>();
+    for (const s of skills) if (s.enabled !== false && !s.harness && !ours.has(s.name.toLowerCase())) byName.set(s.name.toLowerCase(), s);
+    for (const s of skills) if (s.enabled !== false && s.harness && ours.get(s.harness)?.userInvocable) byName.set(s.harness, s);
+    const missing = harness.filter((s) => s.userInvocable && !byName.has(s.name));
     let text = request;
     const slash = request.match(/^\/([a-z0-9][a-z0-9:_-]*)(?=\s|$)/i);
     if (slash && byName.has(slash[1]!.toLowerCase())) text = `$${slash[1]}${request.slice(slash[0].length)}`;
@@ -234,19 +260,20 @@ export function codexInput(prompt: string, request: string | undefined, skills: 
 /**
  * Codex's skills (skills/list) as the harness names them: one of the
  * harness's goes by its harness name (a plugin's is <plugin>:<name>) as well
- * as Codex's; `own` are those that aren't the harness's, for its menus.
+ * as Codex's; `own` are those that aren't the harness's, for its menus (not
+ * one whose name the harness has, which is the harness's there).
  */
 export function codexSkills(listed: readonly CodexSkill[], harness: readonly Skill[], folder: string | undefined): { skills: CodexSkill[]; own: string[] } {
     // Codex reports each by its real path: the skill's own SKILL.md through a link, or the folder's copy.
     const byFile = new Map(folder ? harness.map((s) => [real(skillFile(folder, s)), s]) : []);
     const skills: CodexSkill[] = [];
     const own: string[] = [];
+    const names = new Set(harness.map((s) => s.name));
     for (const c of listed) {
         if (c.enabled === false) continue;
         const ours = byFile.get(real(c.path));
-        skills.push(c);
-        if (ours && ours.name !== c.name.toLowerCase()) skills.push({ ...c, name: ours.name, codexName: c.name });
-        if (!ours) own.push(c.name);
+        skills.push(ours ? { ...c, name: ours.name, codexName: c.name, harness: ours.name } : c);
+        if (!ours && !names.has(c.name.toLowerCase())) own.push(c.name);
     }
     return { skills, own };
 }
