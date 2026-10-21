@@ -221,7 +221,7 @@ describe("the agent's cache", () => {
     const reply = (usage: Usage): AssistantMessage => ({ role: "assistant", provider: "anthropic", model: "claude-opus-5-5", stopReason: "end_turn", content: [{ type: "text", text: "done" }], usage });
     const big: Usage = { inputTokens: 3, outputTokens: 50, cacheWriteTokens: 240_000 };
 
-    function setup(o: { provider?: string; usage?: Usage; subagent?: boolean; settings?: Record<string, unknown>; fail?: boolean; before?: (call: number) => void } = {}) {
+    function setup(o: { provider?: string; usage?: Usage; subagent?: boolean; settings?: Record<string, unknown>; fail?: boolean; before?: (call: number, onEvent: (e: any) => void) => void } = {}) {
         const proj = tempDir("idle-agent-");
         const session = Session.create(proj, { system: "test system" });
         const settings = { idleCompaction: "always", ...o.settings } as any;
@@ -231,9 +231,9 @@ describe("the agent's cache", () => {
             session,
             model: { provider: o.provider ?? "anthropic", id: "claude-opus-5-5", contextWindow: 1_000_000 },
             client: {
-                async stream(req: { messages: unknown[]; signal?: AbortSignal }) {
+                async stream(req: { messages: unknown[]; signal?: AbortSignal }, onEvent: (e: any) => void) {
                     requests.push(req);
-                    o.before?.(requests.length);
+                    o.before?.(requests.length, onEvent);
                     if (o.fail) throw new Error("overloaded");
                     return reply(o.usage ?? big);
                 },
@@ -287,6 +287,25 @@ describe("the agent's cache", () => {
         }
     });
 
+    test("a request the provider sent again itself (malformed tool JSON, say) dates the cache from then", async () => {
+        const realNow = Date.now;
+        let shift = 0;
+        Date.now = () => realNow() + shift;
+        try {
+            const { agent, run } = setup({
+                before: (_call, onEvent) => {
+                    shift = 10 * MIN;
+                    onEvent({ type: "notice", message: "Tool input arrived malformed; re-issuing the request.", resent: true });
+                },
+            });
+            const started = realNow();
+            await run("review everything");
+            expect(agent.idleCompactPlan()!.expiresAt - FIVE_MINUTES).toBeGreaterThanOrEqual(started + 10 * MIN);
+        } finally {
+            Date.now = realNow;
+        }
+    });
+
     test("an idle compaction tried once (failed or cancelled) isn't planned again until the next request", async () => {
         let failing = false;
         const { agent, run } = setup({
@@ -298,6 +317,9 @@ describe("the agent's cache", () => {
         expect(agent.idleCompactPlan()).not.toBeNull();
         failing = true;
         await expect(agent.compact({ auto: true, idle: true, signal: new AbortController().signal })).rejects.toThrow();
+        expect(agent.idleCompactPlan()).toBeNull();
+        // Usage reported again for the same request (Claude Code's cancelled /compact) is the same cache.
+        (agent as any).noteCache(big, (agent as any).cache.at);
         expect(agent.idleCompactPlan()).toBeNull();
         failing = false;
         await run("one more thing");
@@ -464,8 +486,10 @@ describe("the GUI server, against a cached Anthropic API", () => {
             const history = rt.session.messages.length;
             fire(rt);
             await until(() => rt.snapshot().state.activity?.label === "Compacting while idle");
-            // Marked as one: the GUI leaves the controls that take over from it enabled.
+            // Marked as one: the GUI leaves the controls that take over from it enabled. A retry (Claude Code's) keeps the mark.
             expect(rt.snapshot().state.activity.idle).toBe(true);
+            rt.activity("Retrying in 2s", "overloaded (attempt 1)");
+            expect(rt.snapshot().state.activity).toMatchObject({ label: "Retrying in 2s", idle: true });
             const sent = (await engine.handle(c, "session.send", { id, text: "one more thing" })) as { queued: boolean };
             expect(sent.queued).toBe(true);
             await until(() => rt.idle && rt.session.messages.length === history + 2);
@@ -641,6 +665,36 @@ describe("the GUI server, against a cached Anthropic API", () => {
             expect(notices.map((b: any) => b.text).join("\n")).not.toMatch(/compact|cancel/i);
             // Idle again after it: planned afresh from the scheduled turn's cache.
             expect(rt.idleCompact.due).toBeDefined();
+        } finally {
+            release();
+            mock.hold = undefined;
+            await engine.stop();
+        }
+    });
+
+    test("opening Rewind (or picking a prompt in it) stops an idle compaction already running", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        let release!: () => void;
+        const gate = new Promise<void>((r) => (release = r));
+        mock.hold = (r) => (r.compaction ? gate : undefined);
+        try {
+            // Opening the dialog.
+            await longTurn(engine, c, id, rt);
+            fire(rt);
+            await until(() => rt.snapshot().state.activity?.label === "Compacting while idle");
+            const targets = (await engine.handle(c, "session.rewindTargets", { id })) as any[];
+            expect(rt.compactingWhileIdle).toBe(false);
+            expect(rt.session.summary).toBeUndefined();
+            expect(targets.length).toBeGreaterThan(0);
+            // A prompt picked in a dialog opened before it started.
+            await longTurn(engine, c, id, rt);
+            const shown = (await engine.handle(c, "session.rewindTargets", { id })) as any[];
+            fire(rt);
+            await until(() => rt.snapshot().state.activity?.label === "Compacting while idle");
+            const plan = await engine.handle(c, "session.rewindPlan", { id, index: shown.at(-1).index });
+            expect(plan).toBeDefined();
+            expect(rt.compactingWhileIdle).toBe(false);
+            expect(rt.session.summary).toBeUndefined();
         } finally {
             release();
             mock.hold = undefined;

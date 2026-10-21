@@ -786,7 +786,8 @@ export class Runtime {
     private activity(label: string, detail?: string) {
         const cur = this.view.state.activity;
         if (cur?.label === label && cur.detail === detail) return;
-        this.setState({ activity: { label, since: cur?.label === label ? cur.since : Date.now(), detail } });
+        // A retry during an idle compaction is still one: the GUI keeps what takes over from it enabled.
+        this.setState({ activity: { label, since: cur?.label === label ? cur.since : Date.now(), detail, ...(this.idleCompacting ? { idle: true } : {}) } });
     }
 
     // -----------------------------------------------------------------------

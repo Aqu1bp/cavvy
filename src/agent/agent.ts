@@ -1016,7 +1016,8 @@ export class Agent {
     idleCompactPlan(now = Date.now()): IdleCompactPlan | null {
         if (this.o.isSubagent || this.running || this.lastEnd !== "done") return null;
         if (this.delegations?.running().length) return null;
-        if (this.cache && this.cache === this.idleTried) return null;
+        // By when it was sent: usage reported again for the same request (a cancelled backend compaction) is the same cache.
+        if (this.cache && this.cache.at === this.idleTried?.at) return null;
         return idleCompactPlan({ settings: this.o.settings(), cache: this.cache, contextTokens: this.contextTokens, now });
     }
 
@@ -1082,6 +1083,8 @@ export class Agent {
                 this.emit(e);
                 break;
             case "notice":
+                // Sent again by the provider itself: the cache dates from now.
+                if (e.resent) this.sentAt = Date.now();
                 this.emit({ type: "notice", level: "info", message: e.message });
                 break;
             case "retry":

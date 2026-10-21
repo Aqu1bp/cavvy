@@ -2011,10 +2011,17 @@ export class Engine {
             case "session.compact":
                 await this.runtime(p.id).compact(optStr(p.instructions));
                 return null;
-            case "session.rewindTargets":
-                return this.runtime(p.id).rewindTargets();
-            case "session.rewindPlan":
-                return this.runtime(p.id).rewindPlan(num(p.index, -1));
+            // The Rewind dialog opening, or a prompt picked in it: an idle compaction stops, so what it shows can still be rewound to.
+            case "session.rewindTargets": {
+                const rt = this.runtime(p.id);
+                if (rt.compactingWhileIdle) await rt.yieldIdleCompaction();
+                return rt.rewindTargets();
+            }
+            case "session.rewindPlan": {
+                const rt = this.runtime(p.id);
+                if (rt.compactingWhileIdle) await rt.yieldIdleCompaction();
+                return rt.rewindPlan(num(p.index, -1));
+            }
             case "session.rewind":
                 await this.runtime(p.id).yieldIdleCompaction();
                 return this.runtime(p.id).rewind(num(p.index, -1), str(p.planId, "planId"), Boolean(p.code), Boolean(p.conversation));
