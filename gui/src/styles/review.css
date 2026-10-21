@@ -5,6 +5,7 @@
    look (.diff, .dl, .sl) is transcript.css's; the inspector's shared parts
    (.insp-body, .insp-foot, .fs, pills) are panel.css's. */
 
+/* A size container: the narrow rules below go by its width, the compact ones by its height. */
 .review {
     position: relative;
     display: flex;
@@ -12,7 +13,7 @@
     min-width: 0;
     min-height: 0;
     font-size: 0.929rem;
-    container: review / inline-size;
+    container: review / size;
 }
 
 /* ---- Head ---- */
@@ -505,3 +506,67 @@
     }
 }
 
+/* ---- Short (a floating reader at 1024×700 and 720×480): the diff keeps most of the height ----
+   The PR line and the closing note go; the scope, "Earlier turns" and Refresh share one row that
+   scrolls sideways; the files stay one row of pills; the gaps tighten. Everything stays reachable. */
+
+@container review (height < 560px) {
+    .rv-h {
+        height: 44px;
+        padding: 4px 8px 2px;
+    }
+
+    .rv-bar {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        scrollbar-width: none;
+        padding-bottom: 6px;
+    }
+
+    .rv-bar > *,
+    .rv-bar .segmented {
+        flex: none;
+        overflow: visible;
+    }
+
+    .rv-tools {
+        flex: none;
+    }
+
+    .review-turn {
+        flex: none;
+        width: 150px;
+    }
+
+    .rv-files {
+        flex-wrap: nowrap;
+        max-height: none;
+        overflow: auto hidden;
+        padding-bottom: 6px;
+    }
+
+    .rv-file {
+        flex: none;
+    }
+
+    .rv-pr,
+    .rv-note {
+        display: none;
+    }
+
+    .rv-warn {
+        margin-bottom: 6px;
+        padding: 5px 10px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .review .insp-foot {
+        padding: 8px 10px;
+    }
+
+    .review .insp-foot .btn {
+        height: 28px;
+    }
+}

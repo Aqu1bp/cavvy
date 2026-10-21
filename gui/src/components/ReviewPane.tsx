@@ -435,7 +435,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                     </div>
                 </Show>
                 <Show when={shownScope() !== "harness" && (git()?.incomplete || git()?.notes?.length)}>
-                    <div class="rv-warn selectable" role="status">
+                    <div class="rv-warn selectable" role="status" title={`${git()?.incomplete ? "This turn’s snapshot is incomplete. " : ""}${git()?.notes?.join(" ") ?? ""}`}>
                         {git()?.incomplete ? "This turn’s snapshot is incomplete. " : ""}
                         {git()?.notes?.join(" ")}
                     </div>
