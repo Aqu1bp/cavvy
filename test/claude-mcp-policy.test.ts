@@ -96,7 +96,7 @@ describe("Claude native project MCP policy", () => {
     });
 
     test("an approved server with an oauth block is passed on (Claude Code signs in itself); a changed oauth block needs approving again", () => {
-        const secure = { type: "http", url: "https://example.invalid/mcp", oauth: { clientId: "harness-client", callbackPort: 8765 } };
+        const secure = { type: "http", url: "https://example.invalid/mcp", oauth: { clientId: "harness-client", callbackPort: 8765, scopes: "read write" } };
         write({ secure });
         saveApproval(cwd, "secure", mcpFingerprint(secure, cwd));
         const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
@@ -107,6 +107,20 @@ describe("Claude native project MCP policy", () => {
         write({ secure: { ...secure, oauth: { clientId: "someone-else" } } });
         manager.load();
         expect(claudeMcpPolicy(cwd, manager.approvedServers()).settings?.enabledMcpjsonServers).toEqual([]);
+    });
+
+    test.each([
+        ["an inline clientSecret", { clientId: "c", clientSecret: "s" }],
+        ["scopes as a list", { clientId: "c", scopes: ["read", "write"] }],
+    ])("an approved oauth block Claude Code reads differently (%s) isn't passed on", (_label, oauth) => {
+        const secure = { type: "http", url: "https://example.invalid/mcp", oauth };
+        write({ secure });
+        saveApproval(cwd, "secure", mcpFingerprint(secure, cwd));
+        const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
+        manager.load();
+        const policy = claudeMcpPolicy(cwd, manager.approvedServers());
+        expect(policy.settings?.enabledMcpjsonServers).toEqual([]);
+        expect(policy.warning).toContain("oauth block it reads differently");
     });
 
     test("a type change that switches an approved URL server to its command stays disabled after reload", () => {

@@ -30,8 +30,8 @@ export interface McpOAuthConfig {
     clientSecret?: string;
     /** The loopback port the sign-in listens on (a registered redirect URI needs it fixed). */
     callbackPort?: number;
-    /** Scopes to ask for, instead of what the server's challenge or metadata names. */
-    scopes?: string[];
+    /** Scopes to ask for, instead of what the server's challenge or metadata names: a list, or space-separated as Claude Code writes them. */
+    scopes?: string | string[];
 }
 
 interface Tokens {
@@ -416,15 +416,17 @@ export async function signIn(name: string, cfg: McpServerConfig, o: SignInOption
         const redirect = `http://127.0.0.1:${server.port}/callback`;
         let client: Entry["client"];
         if (oauth.clientId) {
-            const authMethods = meta.token_endpoint_auth_methods_supported ?? [];
-            client = { client_id: oauth.clientId, client_secret: oauth.clientSecret, redirect_uri: redirect, auth_method: oauth.clientSecret && !authMethods.includes("client_secret_post") && authMethods.includes("client_secret_basic") ? "client_secret_basic" : "client_secret_post" };
+            // Unlisted, the token endpoint takes client_secret_basic (RFC 8414 §2); post only where it says so and basic isn't offered.
+            const authMethods = meta.token_endpoint_auth_methods_supported ?? ["client_secret_basic"];
+            client = { client_id: oauth.clientId, client_secret: oauth.clientSecret, redirect_uri: redirect, auth_method: oauth.clientSecret && (authMethods.includes("client_secret_basic") || !authMethods.includes("client_secret_post")) ? "client_secret_basic" : "client_secret_post" };
         } else if (reuse && reuse.redirect_uri === redirect) {
             client = reuse;
         } else {
             if (!meta.registration_endpoint) throw new McpError(`the authorization server doesn't let ${APP_TITLE} register itself. Register a client there and add "oauth": { "clientId": "…" } to this server's settings.`);
             client = await register(meta.registration_endpoint, redirect, signal);
         }
-        const scope = (oauth.scopes?.length ? oauth.scopes : scopes)?.join(" ");
+        const own = typeof oauth.scopes === "string" ? oauth.scopes.split(/\s+/).filter(Boolean) : Array.isArray(oauth.scopes) ? oauth.scopes.filter((x) => typeof x === "string") : undefined;
+        const scope = (own?.length ? own : scopes)?.join(" ");
         const auth = new URL(meta.authorization_endpoint);
         auth.searchParams.set("response_type", "code");
         auth.searchParams.set("client_id", client.client_id);

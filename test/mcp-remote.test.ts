@@ -488,6 +488,23 @@ describe("OAuth", () => {
         await m.closeAll();
     });
 
+    test("a token lost after connecting shows as needing sign-in when a changed list is fetched again", async () => {
+        const f = startOAuthMcpServer();
+        stops.push(f.stop);
+        const m = new McpManager(WORK, () => ({ mcpServers: { s: { url: f.url } } }), false);
+        m.load();
+        await m.startAll();
+        await m.signIn("s", (u) => void browse(u).catch(() => {}));
+        const st = m.servers.get("s")!;
+        f.valid.clear();
+        f.refuseRefresh = true;
+        // As a list_changed notification does.
+        st.client!.onResourcesChanged!();
+        for (let i = 0; i < 100 && st.status === "connected"; i++) await Bun.sleep(10);
+        expect(st.status).toBe("needs-auth");
+        await m.closeAll();
+    });
+
     test("a token lost after connecting shows as needing sign-in from a prompt or resource read too", async () => {
         const f = startOAuthMcpServer();
         stops.push(f.stop);
@@ -500,6 +517,21 @@ describe("OAuth", () => {
         await expect(m.readResource("s", "fixture://readme", {})).rejects.toThrow(/needs signing in again/);
         expect(m.servers.get("s")!.status).toBe("needs-auth");
         await m.closeAll();
+    });
+
+    test("a preset client secret goes in Basic auth unless the server lists only client_secret_post (RFC 8414's default is basic)", async () => {
+        const f = startOAuthMcpServer({ register: false });
+        stops.push(f.stop);
+        const cfg = { url: f.url, oauth: { clientId: "preset-client", clientSecret: "preset-secret" } };
+        await signIn("s", cfg, { open: (u) => void browse(u).catch(() => {}) });
+        expect(f.tokenAuth).toEqual(["basic preset-client:preset-secret"]);
+        f.metaExtra = { token_endpoint_auth_methods_supported: ["client_secret_post"] };
+        await signIn("s2", cfg, { open: (u) => void browse(u).catch(() => {}) });
+        expect(f.tokenAuth.at(-1)).toBe("post");
+        expect(f.tokenRequests.at(-1)).toMatchObject({ client_id: "preset-client", client_secret: "preset-secret" });
+        // Scopes written as Claude Code's .mcp.json has them: one space-separated string.
+        await signIn("s3", { ...cfg, oauth: { ...cfg.oauth, scopes: "mcp:read  custom" } }, { open: (u) => void browse(u).catch(() => {}) });
+        expect(f.authorizeParams.at(-1)!.scope).toBe("mcp:read custom");
     });
 
     test("sign out forgets the tokens and the server asks again", async () => {

@@ -29,7 +29,8 @@ export interface McpServerConfig {
     url?: string;
     headers?: Record<string, string>;
     /** OAuth sign-in for a remote server: a client registered by hand, a fixed callback port, scopes. */
-    oauth?: { clientId?: string; clientSecret?: string; callbackPort?: number; scopes?: string[] };
+    /** `scopes` as a list, or space-separated as Claude Code's .mcp.json has it. */
+    oauth?: { clientId?: string; clientSecret?: string; callbackPort?: number; scopes?: string | string[] };
     disabled?: boolean;
     /** Set on servers a plugin adds: its id (name@marketplace). */
     plugin?: string;

@@ -215,6 +215,8 @@ export interface OAuthFixture {
     log: string[];
     registrations: Json[];
     tokenRequests: Record<string, string>[];
+    /** How each token request authenticated the client: "basic id:secret", "post" (in the form) or "none". */
+    tokenAuth: string[];
     authorizeParams: Record<string, string>[];
     /** Access tokens the MCP endpoint accepts now (revoke by clearing). */
     valid: Set<string>;
@@ -246,6 +248,7 @@ export function startOAuthMcpServer(o: { register?: boolean; prmAt?: "header" | 
         log: [],
         registrations: [],
         tokenRequests: [],
+        tokenAuth: [],
         authorizeParams: [],
         valid: new Set(),
         expiresIn: 3600,
@@ -309,6 +312,12 @@ export function startOAuthMcpServer(o: { register?: boolean; prmAt?: "header" | 
             }
             if (u.pathname === "/token" && req.method === "POST") {
                 const form = Object.fromEntries(new URLSearchParams(await req.text()));
+                const basic = req.headers.get("authorization")?.match(/^Basic (.+)$/)?.[1];
+                if (basic) {
+                    const [id, secret] = Buffer.from(basic, "base64").toString().split(":").map(decodeURIComponent);
+                    form.client_id ??= id!;
+                    f.tokenAuth.push(`basic ${id}:${secret}`);
+                } else f.tokenAuth.push(form.client_secret ? "post" : "none");
                 f.tokenRequests.push(form);
                 if (form.grant_type === "authorization_code") {
                     const c = codes.get(form.code ?? "");

@@ -34,8 +34,14 @@ function oneTransport(config: Record<string, unknown>): boolean {
     return false;
 }
 
+/**
+ * An oauth block Claude Code reads as Harness does: its schema has scopes as one string and no
+ * inline clientSecret (it keeps that in its own credential store), so a block with either isn't passed on.
+ */
+const claudeOAuth = (oauth: unknown) => oauth === undefined || (record(oauth) && Object.keys(oauth).every((k) => ["clientId", "callbackPort", "scopes"].includes(k)) && (oauth.scopes === undefined || typeof oauth.scopes === "string"));
+
 /** What Claude Code would run is exactly what the approval covers. */
-const bound = (config: Record<string, unknown>) => Object.keys(config).every((k) => BOUND_FIELDS.has(k)) && oneTransport(config) && !expands(config);
+const bound = (config: Record<string, unknown>) => Object.keys(config).every((k) => BOUND_FIELDS.has(k)) && claudeOAuth(config.oauth) && oneTransport(config) && !expands(config);
 
 function exists(file: string): boolean {
     try {
@@ -109,7 +115,7 @@ export function claudeMcpPolicy(cwd: string, approved: ApprovedMcpServers | unde
             ...(incompatibleCwd || unboundField || stale ? { warning: [
                 incompatibleCwd && "Claude Code skipped approved project MCP servers whose working directory differs from the project root because it ignores server cwd.",
                 stale && "Claude Code skipped approved project MCP servers whose definitions no longer resolve to what was approved (a symlinked working directory may point elsewhere now); reopen /mcp to review them.",
-                unboundField && "Claude Code skipped approved project MCP servers that it would read differently from what Harness approved: fields an approval doesn't cover (such as headersHelper), ${VAR} expansion, or a type that doesn't match a single command or URL.",
+                unboundField && "Claude Code skipped approved project MCP servers that it would read differently from what Harness approved: fields an approval doesn't cover (such as headersHelper) or an oauth block it reads differently (an inline clientSecret, scopes as a list), ${VAR} expansion, or a type that doesn't match a single command or URL.",
             ].filter(Boolean).join(" ") } : {}),
         };
     } catch {

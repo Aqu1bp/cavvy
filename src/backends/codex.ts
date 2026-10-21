@@ -216,7 +216,7 @@ function codexPolicyKey(m: PermissionMode, readOnly: boolean): string {
     return `${p.approvalPolicy}|${p.sandbox}|${p.approvalsReviewer}`;
 }
 
-/** A one-off's thread: only the question, so no shell, web search, sub-agents, goals, apps or memories (and no MCP servers: stream()). */
+/** A one-off's thread: only the question, so no shell, web search, sub-agents, goals, apps or memories (and no MCP servers, turned off by name). */
 const ONE_OFF_CONFIG = { web_search: "disabled", "features.multi_agent": false, "features.goals": false, "features.apps": false, "features.memories": false, "features.shell_tool": false, "features.unified_exec": false };
 
 /** Our name to Codex: it records it as the originator of the threads we start. */
@@ -313,9 +313,15 @@ export class CodexBackend implements AgentBackendClient {
         try {
             await withTimeout(handshake(rpc), 30_000, "Codex didn't start (no answer to initialize)");
             const model = req.model.id === "default" ? undefined : req.model.id;
-            // No MCP servers either: every one Codex has is turned off, as for a read-only agent (an unreadable config refuses).
-            const servers = codexMcpOverrides(await rpc.request("config/read", { cwd: homedir(), includeLayers: true }), true).config;
-            const r: any = await rpc.request("thread/start", { cwd: homedir(), model, ephemeral: true, approvalPolicy: "never", sandbox: "read-only", baseInstructions: req.system, config: { ...ONE_OFF_CONFIG, ...servers } });
+            // No MCP servers either: every one Codex is configured with is turned off for this thread (as a read-only turn's are).
+            // Without a list it can be trusted for, it doesn't run: a server could run tools in what offers none.
+            const mcp = await rpc
+                .request("config/read", { cwd: homedir(), includeLayers: true })
+                .then((c) => codexMcpOverrides(c, true).config)
+                .catch(() => {
+                    throw new ProviderError(`${this.def.name} didn't list its MCP servers, so they couldn't be turned off for this request`);
+                });
+            const r: any = await rpc.request("thread/start", { cwd: homedir(), model, ephemeral: true, approvalPolicy: "never", sandbox: "read-only", baseInstructions: req.system, config: { ...ONE_OFF_CONFIG, ...mcp } });
             threadId = r?.thread?.id;
             if (!threadId) throw new ProviderError("Codex didn't start a thread");
             const t: any = await rpc.request("turn/start", { threadId, input: [{ type: "text", text: oneOffPrompt(req), text_elements: [] }] });

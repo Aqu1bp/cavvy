@@ -336,19 +336,25 @@ export class McpManager {
             const current = () => !superseded() && st.client === c;
             client.onResourcesChanged = () => {
                 if (!current()) return;
-                void this.listExtras(c, undefined, "resources").then((x) => {
-                    if (!current()) return;
-                    Object.assign(st, x);
-                    this.onChange?.();
-                });
+                void this.listExtras(c, undefined, "resources").then(
+                    (x) => {
+                        if (!current()) return;
+                        Object.assign(st, x);
+                        this.onChange?.();
+                    },
+                    (e) => void this.authLost(st, c, e),
+                );
             };
             client.onPromptsChanged = () => {
                 if (!current()) return;
-                void this.listExtras(c, undefined, "prompts").then((x) => {
-                    if (!current()) return;
-                    Object.assign(st, x);
-                    this.onChange?.();
-                });
+                void this.listExtras(c, undefined, "prompts").then(
+                    (x) => {
+                        if (!current()) return;
+                        Object.assign(st, x);
+                        this.onChange?.();
+                    },
+                    (e) => void this.authLost(st, c, e),
+                );
             };
             client.onToolsChanged = () => {
                 if (!current()) return;
@@ -358,7 +364,7 @@ export class McpManager {
                         this.setTools(st, t);
                         this.onChange?.();
                     })
-                    .catch(() => {});
+                    .catch((e) => void this.authLost(st, c, e));
             };
         } catch (e) {
             await client?.close();
@@ -403,7 +409,12 @@ export class McpManager {
 
     /** A server's resources, templates and prompts, as far as it offers them; a list that fails is left empty. */
     private async listExtras(c: McpClient, signal?: AbortSignal, only?: "resources" | "prompts"): Promise<Pick<ServerState, "resources" | "templates" | "prompts">> {
-        const quiet = <T>(p: Promise<T[]>) => p.then((x) => x.slice(0, MAX_LISTED_ITEMS)).catch(() => [] as T[]);
+        // A list that fails leaves it empty, unless the server stopped taking the token: that needs signing in.
+        const quiet = <T>(p: Promise<T[]>) =>
+            p.then((x) => x.slice(0, MAX_LISTED_ITEMS)).catch((e) => {
+                if (e instanceof McpAuthError) throw e;
+                return [] as T[];
+            });
         const out: Pick<ServerState, "resources" | "templates" | "prompts"> = {};
         const jobs: Promise<unknown>[] = [];
         if (only !== "prompts") {
@@ -672,7 +683,7 @@ export class McpManager {
         if (st.status !== "connected" || !st.client || !mayStart(st) || !this.stillApproved(st)) throw new McpError(`MCP server ${server} isn't connected${st.status === "needs-auth" ? " (sign in with /mcp)" : ""}.`);
         const client = st.client;
         const contents = await client.readResource(uri, { signal, input: this.inputFor(st, asker) }).catch((e) => {
-            throw this.authLost(st, client, e) ? new McpError(`MCP server ${server} needs signing in again (sign in with /mcp).`) : e;
+            throw this.authLost(st, client, e) ? new McpError(`MCP server ${server} needs signing in again (sign in with /mcp).`) : maskedError(e, st.config);
         });
         const f = formatResourceContents(contents);
         return { text: truncateMiddle(maskConfigValues(f.text, st.config), MAX_OUTPUT), images: f.images, uri: maskConfigValues(uri, st.config) };
@@ -769,7 +780,7 @@ export class McpManager {
         if (missing.length) throw new McpError(`/${pc.command} needs ${missing.map((a) => a.name).join(", ")}. Usage: /${pc.command} ${pc.args ?? ""}`.trim());
         const client = st.client;
         const r = await client.getPrompt(pc.prompt.name, args, { signal, input: this.inputFor(st, asker) }).catch((e) => {
-            throw this.authLost(st, client, e) ? new McpError(`MCP server ${pc.server} needs signing in again (sign in with /mcp).`) : e;
+            throw this.authLost(st, client, e) ? new McpError(`MCP server ${pc.server} needs signing in again (sign in with /mcp).`) : maskedError(e, st.config);
         });
         const f = formatPromptMessages(r.messages);
         if (!f.text.trim() && !f.images.length) throw new McpError(`${pc.server}'s prompt ${pc.prompt.name} came back empty.`);
@@ -837,6 +848,13 @@ function visibleName(name: string): string {
 const IMAGE_TYPES = /^image\/(png|jpeg|gif|webp)$/;
 
 /** A resource's contents as text for the model, images as image parts; other binaries named, not attached. */
+/** A server's error as shown: masked for its own configuration, as its results are. */
+function maskedError(e: unknown, config: McpServerConfig): Error {
+    if (!(e instanceof Error)) return new McpError(maskConfigValues(String(e), config));
+    e.message = maskConfigValues(e.message, config);
+    return e;
+}
+
 export function formatResourceContents(contents: McpResourceContents[]): { text: string; images: ImagePart[] } {
     const texts: string[] = [];
     const images: ImagePart[] = [];

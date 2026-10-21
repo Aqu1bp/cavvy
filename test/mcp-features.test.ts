@@ -298,6 +298,22 @@ describe("the manager: resources, prompts and the model's resource tools", () =>
         }
     });
 
+    test("a server's error from reading a resource or running a prompt is masked, as a tool call's is", async () => {
+        const read = await m.readResource("leg", `fixture://gone/${secret}`, {}).catch((e) => e);
+        expect(read.message).toContain("Resource not found");
+        expect(read.message).not.toContain(secret);
+        const st = m.servers.get("leg")!;
+        const before = st.prompts!;
+        st.prompts = [...before, { name: "vanished" }];
+        try {
+            // The server doesn't know it: its error names it, and a secret in the arguments isn't echoed back.
+            const run = await m.runPrompt("mcp__leg__vanished", "", {}).catch((e) => e);
+            expect(run.message).toContain("Unknown prompt");
+        } finally {
+            st.prompts = before;
+        }
+    });
+
     test("a prompt whose name carries a configured secret isn't offered as a command", () => {
         const st = m.servers.get("leg")!;
         const before = st.prompts!;

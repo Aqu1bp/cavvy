@@ -184,6 +184,18 @@ describe("agent providers", () => {
         expect(logLines().find((l) => l.oneOffThread)?.oneOffThread).toMatchObject({ baseInstructions: "Answer briefly.", approvalPolicy: "never", sandbox: "read-only", config: { "features.shell_tool": false, "features.unified_exec": false } });
     });
 
+    test("a Codex one-off turns off every MCP server Codex is configured with, and won't run when it can't list them", async () => {
+        process.env.FAKE_USER_MCP = JSON.stringify({ github: { command: "gh-mcp", default_tools_approval_mode: "approve" } });
+        await oneOff("codex");
+        expect(logLines().find((l) => l.oneOffThread)?.oneOffThread.config).toMatchObject({ mcp_servers: { github: { enabled: false } }, "features.shell_tool": false });
+        rmSync(LOG, { force: true });
+        process.env.FAKE_NO_CONFIG_READ = "1";
+        await expect(oneOff("codex")).rejects.toThrow(/couldn't be turned off/);
+        expect(logLines().some((l) => l.oneOffThread)).toBe(false);
+        delete process.env.FAKE_NO_CONFIG_READ;
+        delete process.env.FAKE_USER_MCP;
+    });
+
     test("a one-off that fails is an error, on both CLIs", async () => {
         for (const provider of ["codex", "claude-code"] as const) {
             process.env.FAKE_ONEOFF_FAIL = "overloaded";
