@@ -215,6 +215,11 @@ export interface AgentOptions {
      * resumed session and isn't kept by later runs without the flag.
      */
     appendSystemPrompt?: string;
+    /**
+     * The system prompt for this run in place of the session's frozen one, not saved: a resumed session
+     * the run doesn't trust, whose prompt was frozen with the project's memory files in it.
+     */
+    systemPrompt?: string;
     /** Use the provider's server-side web search when available. */
     nativeWebSearch?: boolean;
     /**
@@ -476,7 +481,7 @@ export class Agent {
 
     /** The system prompt as sent: the session's, plus --append-system-prompt. */
     systemPrompt(): string {
-        const base = this.session.meta.system ?? "";
+        const base = this.o.systemPrompt ?? this.session.meta.system ?? "";
         const append = this.o.appendSystemPrompt;
         // Sessions frozen by older versions may end with it already, as its own paragraph.
         if (!append || base === append || base.endsWith(`\n\n${append}`)) return base;
@@ -1136,8 +1141,9 @@ export class Agent {
         let trusted = false;
         let approvedMcpServers: ApprovedMcpServers | undefined;
         try {
-            // Implicit session trust does not authorize CLI project configuration.
-            trusted = trustedByUser(this.state.cwd);
+            // Implicit session trust does not authorize CLI project configuration, and a run told not to trust the folder
+            // (the SDK's trusted: false) keeps it off even where the user trusted it.
+            trusted = this.projectTrusted() !== false && trustedByUser(this.state.cwd);
             approvedMcpServers = this.o.approvedMcpServers?.();
         } catch {
             trusted = false;
@@ -1219,6 +1225,7 @@ export class Agent {
                     caller: () => this.model.provider,
                     listings: () => this.listings(),
                     projectRoot: () => this.state.projectRoot,
+                    projectTrusted: () => this.projectTrusted(),
                     checkModel: (ref) => this.checkModel(ref),
                     claimCall: (args, meta) => this.claimDelegateCall(args, meta),
                     tasks: this.tasks(),
@@ -1262,6 +1269,14 @@ export class Agent {
 
     private listings(): ProviderListing[] {
         return this.o.listings?.() ?? cachedListings();
+    }
+
+    /**
+     * The host's decision about the folder (whether this run uses the project's memory files, agents and
+     * skills), or undefined when it made none and the folder's own trust decides.
+     */
+    private projectTrusted(): boolean | undefined {
+        return this.o.trusted?.();
     }
 
     /** A non-interactive run (-p): it ends with this turn, and tasks still running end with it. */
@@ -2054,7 +2069,7 @@ export class Agent {
             hidden: (toolName, abs) => this.o.checker.hiddenFromSearch(toolName, abs),
             runSubagent: this.o.isSubagent ? undefined : (opts, sig) => this.runSubagent(callId, opts, sig),
             taskStatus: this.o.isSubagent ? undefined : (id, ms, sig) => this.taskStatus(id, ms, sig),
-            listModels: this.o.isSubagent ? undefined : (opts, sig) => catalog(this.state.projectRoot, { ...opts, listings: this.o.listings?.(), current: modelRef(this.model), signal: sig }),
+            listModels: this.o.isSubagent ? undefined : (opts, sig) => catalog(this.state.projectRoot, { ...opts, projectAgents: this.projectTrusted(), listings: this.o.listings?.(), current: modelRef(this.model), signal: sig }),
             webSearch: this.o.helpers?.webSearch,
             sample: this.o.helpers?.sample,
             summarize: this.o.helpers?.complete
@@ -2440,7 +2455,7 @@ export class Agent {
 
     private async runSubagent(callId: string, opts: { description: string; prompt: string; agentType?: string; model?: string; background?: boolean }, signal: AbortSignal): Promise<{ report: string; isError?: boolean; model?: string; background?: boolean }> {
         const agent = opts.agentType || "general-purpose";
-        const def = loadAgents(this.state.projectRoot).find((a) => a.name === agent);
+        const def = loadAgents(this.state.projectRoot, this.projectTrusted()).find((a) => a.name === agent);
         const req: ChildRequest = { description: opts.description, prompt: opts.prompt, agent, model: opts.model, callId, def };
         // A one-shot run (-p) ends with this turn: nothing would be there to take a background result.
         if (def && (opts.background || def.background) && !this.oneShot) return this.startBackground(req, def);
@@ -2480,7 +2495,7 @@ export class Agent {
         const started = Date.now();
         const fail = (report: string, model = req.model ?? modelRef(this.model)): ChildResult => ({ status: "failed", report, model, tokens: 0, durationMs: Date.now() - started });
         const type = req.agent || "general-purpose";
-        const defs = req.def?.name === type ? [req.def] : loadAgents(this.state.projectRoot);
+        const defs = req.def?.name === type && (req.def.source !== "project" || this.projectTrusted() !== false) ? [req.def] : loadAgents(this.state.projectRoot, this.projectTrusted());
         const def = defs.find((a) => a.name === type);
         if (!def) return fail(`Unknown agent type "${type}". Available: ${defs.map((d) => d.name).join(", ")}`);
 
@@ -2542,7 +2557,7 @@ export class Agent {
         // What goes in its system prompt besides its own: the skills it preloads, its memory, its servers' instructions.
         const extra: string[] = [];
         for (const name of def.skills ?? []) {
-            const skill = findSkill(name, this.state.projectRoot);
+            const skill = findSkill(name, this.state.projectRoot, this.projectTrusted());
             if (skill) extra.push(`# Skill: ${name}\n\n${skill.body}`);
             else notes.push(`Skill "${name}" wasn't found, so it wasn't loaded.`);
         }
@@ -2550,7 +2565,7 @@ export class Agent {
         const memoryDir = def.memory ? agentMemoryDir(def.memory, def.name, this.state.projectRoot) : undefined;
         if (def.memory && memoryDir) {
             const dir = memoryDir;
-            const readable = def.memory === "user" || isTrusted(this.state.projectRoot);
+            const readable = def.memory === "user" || (this.projectTrusted() ?? isTrusted(this.state.projectRoot));
             if (def.memory === "local") keepLocal(dir);
             extra.push(agentMemoryPrompt(def.memory, dir, readable ? readAgentMemory(dir) : undefined));
         }
@@ -2564,6 +2579,7 @@ export class Agent {
             replaceCore: own ? `${SUBAGENT_CORE}\n\n${own}` : SUBAGENT_CORE,
             append: def.readOnly ? EXPLORE_APPEND : undefined,
             includeGit: false,
+            projectFiles: this.projectTrusted(),
         });
         const session = Session.create(projectRoot, { persist: false, system });
         // Not saved itself: a Claude Code or Codex session it runs on is recorded in this one.
@@ -2583,6 +2599,7 @@ export class Agent {
             client,
             tools,
             isSubagent: true,
+            systemPrompt: undefined,
             settings: () => {
                 const parent = this.o.settings();
                 return { ...parent, effort, hooks: withAgentHooks(parent.hooks, def.hooks) };

@@ -41,14 +41,20 @@ function readCapped(file: string, within: string): string | undefined {
     }
 }
 
-export function loadMemory(cwd: string): MemoryFile[] {
+/**
+ * `trusted`: the run's own decision about the folder, when it made one. False
+ * keeps to the user's file even in a folder the user trusted; true reads the
+ * project's files (a run that trusted a folder with nothing to protect, or
+ * was told to). Left out, the folder's saved or session trust decides.
+ */
+export function loadMemory(cwd: string, trusted?: boolean): MemoryFile[] {
     const out: MemoryFile[] = [];
     const user = readCapped(paths.userMemory(), harnessHome());
     if (user) out.push({ path: paths.userMemory(), scope: "user", content: user });
     // The repository's files are presented as the user's instructions, so they
     // wait for trust like its settings do. (A folder with no project config is
     // trusted for the session without asking.)
-    if (!isTrusted(cwd)) return out;
+    if (!(trusted ?? isTrusted(cwd))) return out;
 
     // Directories from the repo root (or home, or cwd) down to cwd.
     const top = gitRoot(cwd) ?? cwd;

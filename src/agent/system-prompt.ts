@@ -53,6 +53,8 @@ export interface SystemPromptOptions {
     replaceCore?: string;
     includeGit?: boolean;
     includeMemory?: boolean;
+    /** The run's decision about the folder, for its memory files (see loadMemory). Left out, the folder's trust decides. */
+    projectFiles?: boolean;
 }
 
 export function environmentBlock(cwd: string, model: ModelInfo, includeGit = true): string {
@@ -101,7 +103,7 @@ export function shellNotes(os: string, shell: string, which: (prog: string) => s
 export function buildSystemPrompt(o: SystemPromptOptions): string {
     const parts = [o.replaceCore ?? CORE, environmentBlock(o.cwd, o.model, o.includeGit ?? true)];
     if (o.includeMemory ?? true) {
-        const mem = formatMemory(loadMemory(o.cwd), o.cwd);
+        const mem = formatMemory(loadMemory(o.cwd, o.projectFiles), o.cwd);
         if (mem) parts.push(mem);
     }
     if (o.append) parts.push(o.append);

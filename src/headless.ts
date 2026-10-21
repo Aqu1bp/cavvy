@@ -2,34 +2,19 @@
 // and prints the result. Anything that would need an approval prompt is
 // denied unless a rule, --allowedTools or the permission mode allows it.
 
-import { Agent, type AgentEvent } from "./agent/agent";
-import { fireHooks } from "./agent/hooks";
-import { sessionHookServices, sessionStartHooks } from "./agent/session-hooks";
-import { Session } from "./agent/session";
-import { buildSystemPrompt } from "./agent/system-prompt";
-import { loadSettings, type Effort, type Settings } from "./config/settings";
+import type { AgentEvent, TurnEndReason } from "./agent/agent";
+import type { Effort } from "./config/settings";
 import type { PermissionMode } from "./permissions/modes";
-import { PermissionChecker } from "./permissions/checker";
-import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "./permissions/classifier";
-import { McpManager } from "./mcp/manager";
-import { BUILTIN_TOOLS } from "./tools/index";
-import { skillTool } from "./tools/skill-tool";
-import { formatSkill, loadSkills, skillMentions, withSkills } from "./agent/skills";
+import { formatSkill, skillMentions, withSkills } from "./agent/skills";
 import { cliRunsSkills } from "./backends/native-skills";
 import { slashCommand } from "./commands/custom";
-import type { Tool, ToolState } from "./tools/types";
-import { killAllShells } from "./tools/bash";
-import { availableSearchBackend, formatHits, searchWeb } from "./tools/web-tools";
-import { cachedListings, clientFor, defaultModelFrom, listAllModels, lookupModel, resolveModelInfo, reviewTarget, smallModelFor } from "./providers/models";
-import { getProvider, resolveBaseUrl } from "./providers/registry";
-import { modelRef, parseModelRef, textOf, type ModelInfo, type ProviderClient, type Usage } from "./providers/types";
-import { addUsage, costOf, emptyUsage } from "./providers/pricing";
 import { expandMentions } from "./ui/mentions";
 import { expandMcpMentions } from "./mcp/mentions";
 import { redact, redactedJson } from "./util/redact";
 import { sanitizeLine } from "./ui/ansi";
 import { isAgentBackend } from "./backends/types";
-import { sessionHookSettings } from "./plugins/native";
+import { createRunAgent, endRun, setupRun, startRun, SetupError, type RunSetup } from "./run-setup";
+import { messageOf, TurnTally, type SDKSystemInitMessage } from "./sdk/messages";
 
 export type OutputFormat = "text" | "json" | "stream-json";
 
@@ -53,10 +38,6 @@ export interface HeadlessOptions {
     fallbackModel?: string;
 }
 
-function sleep(ms: number) {
-    return new Promise((r) => setTimeout(r, ms));
-}
-
 export async function runHeadless(o: HeadlessOptions): Promise<number> {
     const started = Date.now();
     const json = (obj: unknown) => process.stdout.write(redactedJson(obj) + "\n");
@@ -69,154 +50,43 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
         return 1;
     };
 
-    const settings: Settings = loadSettings(o.cwd, { trusted: o.trusted });
-    const perms = (settings.permissions ??= {});
-    perms.allow = [...(perms.allow ?? []), ...o.allowedTools];
-    perms.deny = [...(perms.deny ?? []), ...o.disallowedTools];
-    perms.additionalDirectories = [...(perms.additionalDirectories ?? []), ...o.addDirs];
-    if (o.effort) settings.effort = o.effort;
     for (const n of o.startupNotes) stderr(`warning: ${n}`);
+    const warn = (m: string, level: "info" | "warn" = "warn") => stderr(level === "info" ? m : `warning: ${m}`);
+    const tally = new TurnTally();
 
-    // ---- session to resume (its model comes before the default)
-    let resumed: Session | undefined;
-    if (o.resumeFile) {
-        try {
-            resumed = Session.load(o.resumeFile);
-        } catch (e) {
-            return fail(`Could not resume: ${(e as Error).message}`);
-        }
-    }
-
-    // ---- model
-    let listings = cachedListings();
-    let ref = o.modelRef ?? settings.model ?? o.fallbackModel;
-    if (!o.modelRef && resumed?.model && resumed.model !== ref) {
-        const p = parseModelRef(resumed.model);
-        const usable = p && getProvider(p.provider) && resolveModelInfo(resumed.model) && (await clientFor(p.provider).then(() => true, () => false));
-        if (usable) ref = resumed.model;
-        else stderr(`warning: this session used ${resumed.model}, which isn't available now; using ${ref ?? "the default model"}.`);
-    }
-    if (!ref) {
-        let pick = defaultModelFrom(listings);
-        if (!pick) {
-            listings = await listAllModels().catch(() => []);
-            pick = defaultModelFrom(listings);
-        }
-        if (pick) ref = modelRef(pick);
-    }
-    if (!ref) return fail("No model configured. Add a key with `harness auth add` (or run `harness` and use /login), or pass --model provider:model.");
-    const parsed = parseModelRef(ref);
-    if (!parsed || !getProvider(parsed.provider)) return fail(`Invalid model "${ref}". Use provider:model, e.g. anthropic:claude-opus-5-5. See \`harness models\`.`);
-    let client: ProviderClient;
+    let setup: RunSetup;
     try {
-        client = await clientFor(parsed.provider);
+        setup = await setupRun({ ...o, warn, onUsage: (u, usd) => tally.addUsage(u, usd) });
     } catch (e) {
-        return fail((e as Error).message);
+        if (e instanceof SetupError) return fail(e.message);
+        throw e;
     }
-    let model: ModelInfo | undefined = listings.find((l) => l.provider.id === parsed.provider)?.models.find((m) => m.id === parsed.id) ?? resolveModelInfo(ref);
-    if (model && !model.contextWindow) model = (await lookupModel(ref).catch(() => undefined)) ?? model;
-    if (!model) return fail(`Unknown model "${ref}".`);
-
-    // ---- session and tools
-    if (o.fastMode && !model.supportsFastMode) return fail("Fast mode is not available for this model/backend. Refresh the model list or choose a supported model.");
-    const session: Session = resumed ?? Session.create(o.cwd);
-    if (o.fastMode !== undefined) session.setFastMode(o.fastMode);
-    const toolState: ToolState = { cwd: o.cwd, projectRoot: o.cwd, fileState: new Map(), todos: [], shells: new Map() };
-    const checker = new PermissionChecker(() => settings, o.cwd);
-    const mcp = new McpManager(o.cwd, () => settings, o.trusted);
-    mcp.load();
-    await Promise.race([mcp.startAll(), sleep(15_000)]);
-    for (const s of mcp.servers.values()) {
-        if (s.status === "failed") stderr(`warning: MCP server ${s.name} failed: ${(s.error ?? "").split("\n")[0]}`);
-        if (s.status === "needs-approval") stderr(`warning: MCP server ${s.name} from .mcp.json is not approved${s.approval?.reason === "changed" ? " (what it runs changed since it was approved)" : ""}; run harness interactively and use /mcp to approve it.`);
-    }
-
-    const def = getProvider(model.provider)!;
-    const pref = settings.webSearch ?? "auto";
-    const nativeWebSearch = def.kind === "anthropic" && /^https:\/\/api\.anthropic\.com$/.test(resolveBaseUrl(def)) && (pref === "auto" || pref === "anthropic");
+    const { session, client, ref, model, skills, toolState, checker, mcp, settings } = setup;
     let mode = o.mode;
-    const skills = loadSkills(o.cwd, o.trusted);
-    const skill = skillTool(skills);
-    const tools = (): Tool<any>[] => [
-        // Nobody can answer a question in -p mode.
-        ...BUILTIN_TOOLS.filter((t) => t.name !== "AskUserQuestion" && !(t.name === "WebSearch" && (nativeWebSearch || pref === "off"))),
-        ...(skill ? [skill] : []),
-        ...mcp.tools(),
-    ];
 
-    const smallClient = async (): Promise<{ client: ProviderClient; model: ModelInfo }> => {
-        const smallRef = settings.smallModel;
-        if (smallRef) {
-            const p = parseModelRef(smallRef);
-            const m = resolveModelInfo(smallRef);
-            if (p && m) {
-                try {
-                    return { client: await clientFor(p.provider), model: m };
-                } catch {
-                    // fall through
-                }
-            }
-        }
-        return { client, model: smallModelFor(model!.provider, listings) ?? model! };
-    };
-    const complete = async (system: string, prompt: string, signal?: AbortSignal, opts?: { main?: boolean; review?: ReviewStage }) => {
-        // The reviewer (with none, the session's own model), the session's model, or the small one.
-        const s = opts?.review ? ((await reviewTarget(settings.reviewModel)) ?? { client, model: model! }) : opts?.main ? { client, model: model! } : await smallClient();
-        // Not a session message, so redact here (WebFetch pages, reviewer prompts).
-        const res = await s.client.stream({ model: s.model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: 2048, effort: "low", lightweight: true, signal, ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) }, () => {});
-        if (res.usage) {
-            const est = costOf(res.usage, s.model);
-            const c = est.usd;
-            session.recordUsage(modelRef(s.model), res.usage, c, est.unknown);
-            totalCost += c;
-            totalUsage = addUsage(totalUsage, res.usage);
-        }
-        return opts?.review ? reviewText(res) : textOf(res);
-    };
-
-    // --append-system-prompt isn't frozen in: the agent adds this run's to every request.
-    if (!session.meta.system) session.setSystem(buildSystemPrompt({ cwd: o.cwd, model, append: mcp.instructions() || undefined }));
 
     // ---- output
-    let lastText = "";
-    let numTurns = 0;
-    let totalCost = 0;
-    let totalUsage: Usage = emptyUsage();
-    const denials: { tool: string; reason: string }[] = [];
+    const map = { sessionId: session.meta.id, thinking: o.verbose, partial: false, subagents: false };
     const emit = (e: AgentEvent) => {
+        tally.observe(e);
+        if (o.outputFormat === "stream-json") {
+            const m = messageOf(e, map);
+            if (m) json(m);
+            return;
+        }
         switch (e.type) {
-            case "assistant": {
-                numTurns++;
-                const t = textOf(e.message).trim();
-                if (t) lastText = t;
-                if (o.outputFormat === "stream-json") json({ type: "assistant", session_id: session.meta.id, message: { role: "assistant", content: e.message.content.filter((p) => p.type !== "thinking" || o.verbose) } });
-                break;
-            }
             case "tool_start":
                 if (o.outputFormat === "text" && o.verbose) stderr(`⏺ ${e.title}`);
                 break;
-            case "tool_end": {
-                const r = e.result;
-                if (r.isError && /not granted \(non-interactive session\)/.test(r.content)) denials.push({ tool: e.call.name, reason: r.content });
-                if (o.outputFormat === "stream-json") json({ type: "tool_result", session_id: session.meta.id, tool_use_id: e.call.id, tool: e.call.name, is_error: Boolean(r.isError), content: r.content.slice(0, 20_000) });
-                else if (o.verbose) stderr(`  ⎿  ${r.isError ? "error: " : ""}${r.display?.summary ?? r.content.split("\n")[0]?.slice(0, 200) ?? ""}`);
+            case "tool_end":
+                if (o.verbose) stderr(`  ⎿  ${e.result.isError ? "error: " : ""}${e.result.display?.summary ?? e.result.content.split("\n")[0]?.slice(0, 200) ?? ""}`);
                 break;
-            }
             case "notice":
-                if (o.outputFormat === "stream-json") json({ type: "system", subtype: "notice", level: e.level, message: e.message });
-                else if (e.level !== "info" || o.verbose) stderr(`${e.level}: ${e.message}`);
+                if (e.level !== "info" || o.verbose) stderr(`${e.level}: ${e.message}`);
                 break;
             case "retry":
-                if (o.outputFormat === "stream-json") json({ type: "system", subtype: "retry", attempt: e.attempt, delay_ms: e.delayMs, reason: e.reason });
                 // Always: otherwise a provider that's down looks like a hang for minutes.
-                else stderr(`retrying in ${Math.ceil(e.delayMs / 1000)}s (attempt ${e.attempt}): ${e.reason}`);
-                break;
-            case "usage":
-                totalCost += e.cost.usd;
-                totalUsage = addUsage(totalUsage, e.usage);
-                break;
-            case "compact_end":
-                if (o.outputFormat === "stream-json") json({ type: "system", subtype: "compact", summary_chars: e.summary.length });
+                stderr(`retrying in ${Math.ceil(e.delayMs / 1000)}s (attempt ${e.attempt}): ${e.reason}`);
                 break;
             case "subagent":
                 if (o.verbose && o.outputFormat === "text" && e.event.type === "tool_start") stderr(`  ↳ ${e.label}: ${e.event.title}`);
@@ -224,21 +94,8 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
         }
     };
 
-    const agent = new Agent({
-        session,
-        trusted: () => o.trusted,
-        skills: () => skills,
-        model,
-        client,
-        settings: () => settings,
-        approvedMcpServers: () => mcp.approvedServers(),
-        checker,
-        classifier: new AutoClassifier(complete),
-        tools,
+    const agent = createRunAgent(setup, {
         mode: { get: () => mode, set: (m) => (mode = m) },
-        toolState,
-        nativeWebSearch,
-        listings: () => listings,
         maxTurns: o.maxTurns,
         appendSystemPrompt: o.appendSystemPrompt,
         host: {
@@ -248,28 +105,10 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
                 approvePlan: async () => ({ approved: false, feedback: "This is a non-interactive run, so the plan can't be approved here. Give the complete plan as your final answer." }),
             },
         },
-        helpers: {
-            complete,
-            webSearch: async (query, signal) => {
-                const backend = await availableSearchBackend(settings.webSearch);
-                if (!backend) throw new Error("Web search is turned off (settings.webSearch = off)");
-                return formatHits(query, await searchWeb(query, backend, signal));
-            },
-            resolveModel: async (r) => {
-                const p = parseModelRef(r);
-                const m = resolveModelInfo(r);
-                if (!p || !m) return undefined;
-                try {
-                    return { model: m, client: await clientFor(p.provider) };
-                } catch {
-                    return undefined;
-                }
-            },
-        },
     });
 
     if (o.outputFormat === "stream-json") {
-        json({
+        const init: SDKSystemInitMessage = {
             type: "system",
             subtype: "init",
             session_id: session.meta.id,
@@ -277,16 +116,14 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
             model: ref,
             permission_mode: mode,
             // An agent backend (Claude Code, Codex) uses its own tools.
-            tools: isAgentBackend(client) ? [] : tools().map((t) => t.name),
-            ...(isAgentBackend(client) ? { agent_backend: def.name } : {}),
+            tools: isAgentBackend(client) ? [] : setup.tools().map((t) => t.name),
+            ...(isAgentBackend(client) ? { agent_backend: setup.provider.name } : {}),
             mcp_servers: [...mcp.servers.values()].map((s) => ({ name: s.name, status: s.status })),
-        });
+        };
+        json(init);
     }
 
-    const hookWarning = (m: string, level: "info" | "warn" = "warn") => stderr(level === "info" ? m : `warning: ${m}`);
-    // Claude Code runs the plugins' own (src/plugins/native.ts).
-    const sessionSettings = sessionHookSettings(settings, model.provider);
-    const sessionStarted = sessionStartHooks(sessionSettings, session, resumed ? "resume" : "startup", o.cwd, hookWarning, sessionHookServices({ session: () => session, warn: hookWarning, complete, mcpTools: () => mcp.tools() }));
+    const sessionStarted = startRun(setup, warn);
     const ac = new AbortController();
     const onSig = () => ac.abort();
     process.on("SIGINT", onSig);
@@ -312,42 +149,19 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
         reason = await agent.run(parts, { signal: ac.signal, display: o.prompt });
     } catch (e) {
         reason = "error";
+        tally.errors.push((e as Error).message);
         stderr(`error: ${(e as Error).message}`);
     } finally {
         process.off("SIGINT", onSig);
         process.off("SIGTERM", onSig);
-        // A SessionStart hook still running and the SessionEnd hooks get at most 5 seconds between them.
-        // (Raced too: a hook's leftover background process can hold its output open after the abort.)
-        const deadline = AbortSignal.timeout(5000);
-        const timedOut = new Promise<void>((r) => deadline.addEventListener("abort", () => r(), { once: true }));
-        const ended = Promise.race([
-            Promise.race([sessionStarted, timedOut]).then(() => (deadline.aborted ? undefined : fireHooks(sessionSettings, "SessionEnd", { session_id: session.meta.id, reason: "exit" }, o.cwd, hookWarning, deadline))),
-            timedOut,
-        ]);
-        // Delegated tasks still running end with the run.
-        await Promise.all([ended, agent.dispose(), killAllShells({ state: toolState }), toolState.lsp?.dispose(), Promise.race([mcp.closeAll(), sleep(1500)])]);
+        await endRun(setup, agent, sessionStarted, warn);
     }
 
-    const isError = reason !== "done";
-    const subtype = reason === "done" ? "success" : reason === "max_turns" ? "error_max_turns" : reason === "aborted" ? "error_aborted" : "error_during_execution";
+    const result = tally.result(reason as TurnEndReason, session.meta.id, ref);
     if (o.outputFormat === "text") {
-        if (lastText) process.stdout.write((process.stdout.isTTY ? sanitizeLine(redact(lastText)) : redact(lastText)) + "\n");
-        if (isError && reason !== "done") stderr(`(stopped: ${reason})`);
-        if (denials.length && !o.verbose) stderr(`note: ${denials.length} tool call(s) were denied because they need approval. Use --allowedTools, --permission-mode, or permission rules.`);
-    } else {
-        json({
-            type: "result",
-            subtype,
-            is_error: isError,
-            result: lastText,
-            session_id: session.meta.id,
-            model: ref,
-            num_turns: numTurns,
-            duration_ms: Date.now() - started,
-            total_cost_usd: Number(totalCost.toFixed(6)),
-            usage: { input_tokens: totalUsage.inputTokens, output_tokens: totalUsage.outputTokens, cache_read_input_tokens: totalUsage.cacheReadTokens ?? 0, cache_creation_input_tokens: totalUsage.cacheWriteTokens ?? 0 },
-            permission_denials: denials.map((d) => d.tool),
-        });
-    }
-    return isError ? 1 : 0;
+        if (tally.lastText) process.stdout.write((process.stdout.isTTY ? sanitizeLine(redact(tally.lastText)) : redact(tally.lastText)) + "\n");
+        if (result.is_error) stderr(`(stopped: ${reason})`);
+        if (tally.denials.length && !o.verbose) stderr(`note: ${tally.denials.length} tool call(s) were denied because they need approval. Use --allowedTools, --permission-mode, or permission rules.`);
+    } else json(result);
+    return result.is_error ? 1 : 0;
 }
