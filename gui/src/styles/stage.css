@@ -6,7 +6,25 @@
      --lane-l / --lane-r  the scroller's side padding
      --stage-top          room above the first message, clear of the title bar
      --dock-h             the composer dock's height (requests included)
-   The composer and request cards go in .composer-dock > .composer-col. */
+   The composer and request cards go in .composer-dock > .composer-col.
+
+   --dock-h changes whenever the composer grows or shrinks (a prompt wrapping
+   to another line, say), so it isn't inherited: the transcript's few boxes
+   that use it inherit it explicitly, and its turns aren't restyled with it. */
+
+@property --dock-h {
+    syntax: "<length>";
+    inherits: false;
+    initial-value: 140px;
+}
+
+.stage .transcript-wrap,
+.stage .transcript,
+.stage .transcript-col,
+.stage .transcript-end,
+.stage .jump {
+    --dock-h: inherit;
+}
 
 .stage {
     position: absolute;
