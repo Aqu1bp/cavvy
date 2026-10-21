@@ -42,6 +42,8 @@ import { notifyAfterMs } from "../ui/notify";
 import { displayPath } from "../util/files";
 import { gitBranch } from "../util/git";
 import { redact, redactPrefix, lineRedactor } from "../util/redact";
+import { redactedReport } from "../lsp/diagnostics";
+import { trustedByUser } from "../config/trust";
 import { attachedLabel, attachedPrompt, toWire } from "./attachments";
 import { followUpDefault, loadQueue, saveQueue, type FollowUp } from "../agent/queue-store";
 import { RpcError } from "./rpc-error";
@@ -116,7 +118,7 @@ function steerable(q: Queued): boolean {
 }
 
 /** The slash commands the server runs itself (the GUI runs the others). */
-const SERVER_COMMANDS = new Set(["compact", "init", "review", "loop", "schedules"]);
+const SERVER_COMMANDS = new Set(["compact", "init", "review", "loop", "schedules", "trust"]);
 
 /** A session title as it's stored: one line, 120 characters at most ("" if there's nothing left). */
 export function cleanTitle(title: string): string {
@@ -1267,10 +1269,11 @@ export class Runtime {
         if (result.images?.length) patch.images = result.images.length;
         // A new file (Write says "Wrote", an Edit with an empty old_string "Created"): no "before" side.
         if (d?.diff) patch.diff = fileDiff(d.diff.path, d.diff.before === "" && /^(Created|Wrote)\b/.test(d.summary ?? "") ? null : d.diff.before, d.diff.after);
+        if (d?.diagnostics) patch.diagnostics = redactedReport(d.diagnostics);
         this.patchBlock(call.id, patch, this.toolTurn.get(call.id));
         this.noteShell(call, d?.summary);
         const b = this.blockIn(this.toolTurn.get(call.id), call.id) as ToolBlock | undefined;
-        this.ui.write({ t: "tool", id: call.id, summary: patch.summary, diff: patch.diff, durationMs, approval: b?.approval, sandboxed: b?.sandboxed, images: patch.images, job: b?.job, at: Date.now() });
+        this.ui.write({ t: "tool", id: call.id, summary: patch.summary, diff: patch.diff, diagnostics: patch.diagnostics, durationMs, approval: b?.approval, sandboxed: b?.sandboxed, images: patch.images, job: b?.job, at: Date.now() });
         if (call.name === "TodoWrite") this.setState({ todos: this.toolState.todos.map((t) => ({ ...t })) });
         // A Task's result is its sub-agent's report (a delegated task's comes when it settles). One
         // still working (Claude Code's in the background) only says it started: its report comes when it ends.
@@ -1407,6 +1410,7 @@ export class Runtime {
                 if (e.title) Object.assign(patch, { title: e.title, input: trimInput(e.call.input) });
                 if (d?.summary) patch.summary = d.summary;
                 if (d?.diff) patch.diff = fileDiff(d.diff.path, d.diff.before === "" && /^(Created|Wrote)\b/.test(d.summary ?? "") ? null : d.diff.before, d.diff.after);
+                if (d?.diagnostics) patch.diagnostics = redactedReport(d.diagnostics);
                 this.op({ op: "agent.block.patch", id, blockId: e.call.id, patch });
                 this.noteShell(e.call, d?.summary);
                 // Its own sub-agent's call: the result is that one's report, as a Task's in a turn is (one still working only says it started).
@@ -1870,6 +1874,14 @@ export class Runtime {
         return c.name;
     }
 
+    /** /trust: the folder trusted by the user (saved), not for this session only; that turns on what needs it (diagnostics after edits). */
+    private async trustCommand() {
+        const cwd = this.ws.cwd;
+        if (trustedByUser(cwd)) return this.notice(`You've trusted ${cwd}.`);
+        await this.engine.trustProject(cwd, true);
+        this.notice(trustedByUser(cwd) ? `Trusted ${cwd}. Diagnostics after edits are on for it.` : `Trusted ${cwd} for this run only.`, trustedByUser(cwd) ? "info" : "warn");
+    }
+
     private async dispatch(text: string, attachments?: AttachedPart[], literal = false) {
         if (literal) return this.startTurn(text, { attachments });
         const trimmed = text.trim();
@@ -1886,6 +1898,7 @@ export class Runtime {
                 const r = this.schedules.manage(args) ?? { text: this.scheduleList() };
                 return this.notice(r.text, r.level ?? "info");
             }
+            if (cmd === "trust") return this.trustCommand();
             if (cmd === "init") return this.startTurn(INIT_PROMPT, { display: "/init", kind: "command", attachments });
             if (cmd === "review") return this.startTurn(reviewPrompt(args.trim()), { display: `/review${args.trim() ? ` ${args.trim()}` : ""}`, kind: "command", attachments });
             const custom = this.ws.commands.find((c) => c.name === cmd);
@@ -2662,6 +2675,7 @@ export class Runtime {
             this.hook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000)),
             this.agent?.dispose(),
             killAllShells({ state: this.toolState }),
+            this.toolState.lsp?.dispose(),
             commit,
         ]);
         try {

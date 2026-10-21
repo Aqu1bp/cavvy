@@ -17,7 +17,7 @@ import { bold, dim, italic, strike, stripAnsi, theme, truncate, width, wrapLine,
 import { inline, MarkdownStream, renderMarkdown } from "./markdown";
 import { SelectDialog, InputDialog, MessageDialog, type Dialog } from "./dialogs";
 import type { Ask as WorktreeAsk } from "./worktree";
-import { BULLET, SPINNER_FRAMES, SPINNER_VERBS, formatDuration, renderDiff, renderFilePreview, resultLines, toolLine, type SelectItem } from "./components";
+import { BULLET, SPINNER_FRAMES, SPINNER_VERBS, formatDuration, renderDiagnostics, renderDiff, renderFilePreview, resultLines, toolLine, type SelectItem } from "./components";
 import { FileIndex, expandMentions } from "./mentions";
 import { formatBytes } from "../util/files";
 import { loadImageFile, planPaste, prepareImage, readClipboardImage, type NamedImage, type Prepared, type PrepareOptions } from "./images";
@@ -42,7 +42,7 @@ import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "..
 import { toolPath } from "../permissions/rules";
 import { McpManager } from "../mcp/manager";
 import { BUILTIN_TOOLS } from "../tools/index";
-import type { Tool, ToolState, TodoItem } from "../tools/types";
+import type { Tool, ToolDisplay, ToolState, TodoItem } from "../tools/types";
 import { killAllShells, runShell, childEnv } from "../tools/bash";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
 import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveModelInfo, reviewTarget, smallModelFor, lookupModel, type ProviderListing } from "../providers/models";
@@ -260,6 +260,20 @@ export class App {
         if (this.init.effort) this.settings.effort = this.init.effort;
     }
 
+    /**
+     * The user trusted the folder (/trust) after it was opened untrusted: its
+     * project settings (language servers among them), commands and skills
+     * apply from now on. True if anything changed.
+     */
+    projectTrusted(): boolean {
+        if (this.init.trusted) return false;
+        this.init.trusted = true;
+        this.reloadSettings();
+        this.customCommands = loadCustomCommands(this.cwd, true);
+        this.skills = loadSkills(this.cwd, true);
+        return true;
+    }
+
     reloadSettings() {
         const reviewer = this.settings.reviewModel;
         this.settings = loadSettings(this.cwd, { trusted: this.init.trusted });
@@ -354,7 +368,7 @@ export class App {
         this.screen.flushNow();
         // SessionEnd hooks get at most 5 seconds.
         const ended = this.sessionHook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000));
-        await Promise.all([ended, disposed, killAllShells({ state: this.toolState }), Promise.race([this.mcp.closeAll(), new Promise((r) => setTimeout(r, 1500))])]);
+        await Promise.all([ended, disposed, killAllShells({ state: this.toolState }), this.toolState.lsp?.dispose(), Promise.race([this.mcp.closeAll(), new Promise((r) => setTimeout(r, 1500))])]);
         if (finishWorktree) {
             for (const line of await finishWorktree().catch((e: Error) => [theme.error(`Couldn't remove the worktree: ${redact(e.message)}`)])) this.screen.print(line);
             this.screen.flushNow();
@@ -1046,7 +1060,7 @@ export class App {
         }
     }
 
-    private printToolResult(call: ToolCallPart, result: { content: string; isError?: boolean; display?: { summary?: string; body?: string; diff?: { path: string; before: string; after: string } } }, durationMs: number) {
+    private printToolResult(call: ToolCallPart, result: { content: string; isError?: boolean; display?: ToolDisplay }, durationMs: number) {
         const a = this.active.get(call.id);
         const title = a?.title ?? call.name;
         const tool = a?.tool;
@@ -1082,6 +1096,7 @@ export class App {
                 out.push(theme.muted(`  ⎿  ${d.summary ?? "Updated"}`));
                 const body = before ? renderDiff(path, before, after, cols - 6, { maxLines: verbose ? 400 : 24 }) : renderFilePreview(path, after, cols - 6, verbose ? 400 : 10);
                 out.push(...body.map((l) => "     " + l));
+                if (d.diagnostics) out.push(...renderDiagnostics(d.diagnostics, cols, verbose ? 40 : 3));
             } else if (d?.body !== undefined || call.name === "Bash" || call.name === "BashOutput") {
                 // With a display, its body is what to show (none: the summary says it all).
                 const body = d ? (d.body ?? "") : result.content;

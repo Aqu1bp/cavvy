@@ -98,6 +98,13 @@ export interface BackendHost {
      * turn, so they reach it even after a restart.
      */
     undelivered?(texts: string[]): void;
+    /**
+     * Files the backend changed (absolute paths): the language servers' new
+     * problems in them, as a note for the model, or undefined when there's
+     * nothing new. The user is told either way (a notice). For a backend
+     * without diagnostics of its own (Codex).
+     */
+    diagnose?(paths: string[]): Promise<string | undefined>;
 }
 
 export interface BackendTurn {

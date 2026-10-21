@@ -1088,6 +1088,7 @@ class CodexTurn {
                 const content = item.status === "declined" ? this.takeRefusal(id, "The change was declined.") : failed ? "The change was not applied." : `Changed ${changes.length} file${changes.length === 1 ? "" : "s"}: ${changes.map((c) => c.path).join(", ")}`;
                 const body = changes.map((c) => `${c.kind} ${c.path}\n${c.diff}`).join("\n").slice(0, 20_000);
                 this.endItem(id, open, content, failed, failed ? undefined : { summary: `Changed ${changes.length} file${changes.length === 1 ? "" : "s"}`, body });
+                if (!failed && !sub) this.diagnose(changes);
                 break;
             }
             case "mcpToolCall": {
@@ -1403,6 +1404,23 @@ class CodexTurn {
                 this.unsteered.push(...texts);
             }
         }).catch(() => {});
+    }
+
+    /**
+     * The language servers' new problems in files Codex changed (it has no
+     * diagnostics of its own): into the turn that made them while it runs;
+     * once it has ended, the user is told (a notice) and no turn starts.
+     */
+    private diagnose(changes: FileChange[]) {
+        const paths = changes.filter((c) => c.kind !== "delete").map((c) => resolve(this.t.cwd, c.movePath ?? c.path));
+        const turnId = this.turnId;
+        if (!paths.length || !turnId || !this.host.diagnose) return;
+        void this.host.diagnose(paths).then(
+            (note) => {
+                if (note && !this.aborted && this.turnId === turnId) this.steer(`<system-reminder>\n${note}\n</system-reminder>`, false);
+            },
+            () => {},
+        );
     }
 
     /**

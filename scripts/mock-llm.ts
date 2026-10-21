@@ -3,6 +3,7 @@
 // and picks a script from keywords in the prompt:
 //
 //   "sso" / "demo"   explore, read, edit (asks permission), run tests, summarize
+//   "diagnostics"    an edit with a type error, then its fix (shows the language server's report)
 //   "question"       asks a multiple-choice question
 //   "plan"           presents a plan for approval
 //   "todo"           keeps a todo list while working
@@ -148,6 +149,21 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
             };
         return { text: "Both reviews are back.\n\n- **Auth:** strategies live in one list in `src/auth/index.ts`, so SSO can be appended there.\n- **Tests:** only the happy path of email sign-in is covered; SSO and failures need tests." };
     }
+    // An edit with a type error the language server catches, then the fix (needs typescript-language-server installed).
+    if (/\bdiagnostics\b/.test(p)) {
+        const line = "        return email ? { id: email, email } : null;";
+        const typo = "        return email ? { id: email, mail: email } : null;";
+        const steps: Step[] = [
+            { text: "I'll rename the field in the email strategy.", calls: [{ name: "Read", args: { file_path: "src/auth/email.ts" } }] },
+            { calls: [{ name: "Edit", args: { file_path: "src/auth/email.ts", old_string: line, new_string: typo } }] },
+            {
+                text: lastResult.includes("<new-diagnostics>") ? "The language server caught it: `User` has no `mail` field. Putting it back." : "Checking it again.",
+                calls: [{ name: "Edit", args: { file_path: "src/auth/email.ts", old_string: typo, new_string: line } }],
+            },
+            { text: "Done. `src/auth/email.ts` type-checks again." },
+        ];
+        return steps[toolRounds];
+    }
     if (/\b(sso|demo)\b/.test(p)) {
         const steps: Step[] = [
             {
@@ -245,6 +261,7 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
 function titleFor(prompt: string): string {
     const p = prompt.toLowerCase();
     if (/\bsso\b|\bdemo\b/.test(p)) return "Add enterprise SSO";
+    if (/\bdiagnostics\b/.test(p)) return "Rename the email field";
     if (/\bplan\b/.test(p)) return "Plan the SSO rollout";
     if (/\bquestion\b/.test(p)) return "Choose an identity protocol";
     if (/\bsecret\b/.test(p)) return "Use a demo token";

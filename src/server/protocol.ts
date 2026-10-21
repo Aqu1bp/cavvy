@@ -5,6 +5,7 @@
 // Requests:  client -> { id, method, params }      server -> { id, result } | { id, error }
 // Events:    server -> { event }                   (session timelines, sidebar updates, notifications)
 
+import type { DiagnosticReport } from "../lsp/diagnostics";
 import type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus } from "../mcp/info";
 
 export const PROTOCOL_VERSION = 1;
@@ -132,6 +133,8 @@ export interface ToolBlock {
     output?: string;
     outputTruncated?: boolean;
     diff?: FileDiff;
+    /** What the language server found after an edit. */
+    diagnostics?: DiagnosticReport;
     images?: number;
     /** Live output while it runs (a shell command's tail). */
     progress?: string;

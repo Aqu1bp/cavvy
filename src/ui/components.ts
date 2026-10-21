@@ -3,6 +3,7 @@
 import { bold, dim, inverse, padEnd, theme, truncate, width, wrapLine, stripAnsi } from "./ansi";
 import { diffLines, hunks, diffStats, type DiffOp } from "../util/diff";
 import { Highlighter, langFromPath } from "./highlight";
+import { summaryLine, type DiagnosticReport } from "../lsp/diagnostics";
 
 export const SPINNER_FRAMES = ["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"];
 
@@ -285,6 +286,33 @@ export function resultLines(text: string, cols: number, maxLines: number, style:
         out.push(prefix + style(truncate(l, cols - 6)));
     });
     if (lines.length > maxLines) out.push("     " + theme.subtle(`… +${lines.length - maxLines} lines (ctrl+o to expand)`));
+    return out;
+}
+
+/**
+ * A language server's report under an edit: a colored headline, then the
+ * problems ("src/a.ts:12:5 Type … ts(2322)"), a few unless expanded.
+ */
+export function renderDiagnostics(r: DiagnosticReport, cols: number, maxItems: number): string[] {
+    const items = r.files.flatMap((f) => f.items);
+    const errors = r.files.some((f) => f.newErrors > 0);
+    const warnings = r.files.some((f) => f.newWarnings > 0);
+    const mark = errors ? theme.error("✗") : warnings ? theme.warning("!") : theme.success("✓");
+    const head = summaryLine(r);
+    const where = r.files.length === 1 ? ` in ${r.files[0]!.path}` : ` in ${r.files.length} files`;
+    const out = [`     ${mark} ${theme.muted(truncate(`${head}${where}`, cols - 9))}`];
+    const multi = r.files.length > 1;
+    for (const i of items.slice(0, maxItems)) {
+        const tag = i.code ? ` ${i.source ? `${i.source}(${i.code})` : i.code}` : "";
+        const at = `${multi ? `${i.path}:` : ""}${i.line}:${i.col}`;
+        const style = i.severity === "error" ? theme.error : theme.warning;
+        const room = Math.max(10, cols - 9 - width(at));
+        const msg = truncate(i.message, Math.max(4, room - tag.length));
+        out.push(`       ${style(at)} ${msg}${tag && width(msg) + tag.length <= room ? theme.subtle(tag) : ""}`);
+    }
+    // omitted counts every problem the caps left out, in any file.
+    const hidden = items.length - Math.min(items.length, maxItems) + r.omitted;
+    if (hidden > 0) out.push("       " + theme.subtle(`… +${hidden} more${items.length > maxItems ? " (ctrl+o to expand)" : ""}`));
     return out;
 }
 

@@ -60,7 +60,11 @@ import { registerTools, type Registration, type ServerTool, type ServerToolResul
 import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
 import { SECRET_INSTRUCTIONS, secretTools, secretToolTitle } from "./secret-tools";
+import { readFile } from "fs/promises";
+import { join, relative } from "path";
 import { BashTool } from "../tools/bash";
+import { LspManager, DIAGNOSED_TOOLS, MAX_FILE_CHARS } from "../lsp/manager";
+import { formatForModel, redactedReport, summaryLine } from "../lsp/diagnostics";
 import {
     DELEGATE_TOOL,
     DELEGATION_LIMITS,
@@ -81,7 +85,7 @@ import {
 import { suggestBashRules } from "../permissions/bash-safety";
 import { isTrusted, trustedByUser } from "../config/trust";
 import { deniedWithin } from "../permissions/rules";
-import { expandPath } from "../util/files";
+import { canonical, expandPath, isInside } from "../util/files";
 import type { PlanLimits } from "../server/protocol";
 
 // ---------------------------------------------------------------------------
@@ -383,6 +387,10 @@ export class Agent {
         if (!o.isSubagent) {
             this.state.fileHistory = FileHistory.for(o.session);
             this.turnSnapshots = TurnSnapshots.for(o.session, this.state.cwd);
+            // Language servers start on the first edit they handle and outlive this Agent (a model switch makes a new one).
+            const root = this.state.projectRoot;
+            this.state.lsp ??= new LspManager({ root, settings: o.settings, trusted: () => userTrusts(root) });
+            this.state.lsp.attach(o.session.meta.id, (level, message) => this.emit({ type: "notice", level, message }));
         }
     }
 
@@ -532,6 +540,9 @@ export class Agent {
         this.deliverTasks(false);
         const parts: UserContent[] = [...content];
         for (const r of this.pendingReminders.splice(0)) parts.push(reminder(r.text));
+        // Codex's edits are checked too: what came after their wait goes with this prompt.
+        const late = this.lateDiagnostics();
+        if (late) parts.push(late);
         const prompt = this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint } });
         this.prompted = true;
 
@@ -667,6 +678,8 @@ export class Agent {
             maxTokenStrikes = 0;
             const { results, denied } = await this.executeTools(calls, signal);
             const extra: UserContent[] = [...this.toolHookContext.splice(0).map(reminder), ...this.takeTaskResults()];
+            const late = this.lateDiagnostics();
+            if (late) extra.push(late);
             let recorded = false;
             const record = (checkpoint?: number) => {
                 this.session.push({ role: "user", content: [...results, ...extra], meta: { kind: "tool_results", ...(checkpoint !== undefined ? { checkpoint } : {}) } });
@@ -1273,6 +1286,7 @@ export class Agent {
                 return () => this.queueListeners.delete(listener);
             },
             // Saved past the sync cursor (see runBackend), so the next turn is sent them, after a restart too.
+            diagnose: (paths) => this.diagnoseBackendEdits(paths, signal),
             undelivered: (texts) => {
                 const news = texts.filter((t) => wakeTexts.has(t));
                 const typed = texts.filter((t) => !wakeTexts.has(t));
@@ -1921,6 +1935,7 @@ export class Agent {
         }
         // Tools redact their own output; this catches any that print a secret (RequestSecret's) without doing so, before hooks, windows or the model.
         result = redactResult(result);
+        if (!result.isError && DIAGNOSED_TOOLS.has(tool.name) && this.state.lsp && !signal.aborted) result = await this.withDiagnostics(result, input, signal);
         const settings = this.o.settings();
         if (settings.hooks?.PostToolUse?.length && !signal.aborted) {
             const h = await runHooks(settings, "PostToolUse", { tool_name: tool.name, tool_input: input, tool_response: { content: result.content.slice(0, 20_000), is_error: Boolean(result.isError) }, session_id: this.session.meta.id }, this.state.cwd, signal).catch(() => undefined);
@@ -1937,6 +1952,58 @@ export class Agent {
             images: result.images as ImagePart[] | undefined,
             isError: result.isError,
         };
+    }
+
+    /** The language server's news on an edited file, after the tool's result (and under it, for the user). */
+    private async withDiagnostics(result: ToolResult, input: { file_path?: unknown }, signal: AbortSignal): Promise<ToolResult> {
+        if (typeof input.file_path !== "string") return result;
+        const abs = expandPath(input.file_path, this.state.cwd);
+        if (!this.state.lsp!.handles(abs) || Bun.file(abs).size > MAX_FILE_CHARS) return result;
+        try {
+            // From disk: what the result shows is redacted.
+            const text = await readFile(abs, "utf-8");
+            const report = await this.state.lsp!.afterEdit(abs, text, signal);
+            if (!report) return result;
+            return { ...result, content: `${result.content}\n\n${redact(formatForModel(report))}`, display: { ...result.display, diagnostics: redactedReport(report) } };
+        } catch {
+            return result;
+        }
+    }
+
+    /**
+     * The language server's news on files a backend changed itself (Codex has
+     * no diagnostics of its own): a note for the model, and a line for the user.
+     */
+    private async diagnoseBackendEdits(paths: string[], signal: AbortSignal): Promise<string | undefined> {
+        const lsp = this.state.lsp;
+        if (!lsp || signal.aborted) return undefined;
+        const root = this.state.projectRoot;
+        const real = canonical(root);
+        const files: { path: string; text: string }[] = [];
+        for (const p of paths) {
+            let abs = expandPath(p, this.state.cwd);
+            // The backend names files by their real path; the servers know the project by the path it was opened at.
+            if (!isInside(abs, root) && isInside(abs, real)) abs = join(root, relative(real, abs));
+            if (!lsp.handles(abs)) continue;
+            try {
+                if (Bun.file(abs).size <= MAX_FILE_CHARS) files.push({ path: abs, text: await readFile(abs, "utf-8") });
+            } catch {
+                // gone (deleted, or moved again)
+            }
+        }
+        if (!files.length) return undefined;
+        const report = await lsp.afterEdits(files, signal).catch(() => undefined);
+        if (!report || signal.aborted) return undefined;
+        this.emit({ type: "notice", level: "info", message: `Diagnostics: ${summaryLine(report)} in ${report.files.map((f) => f.path).join(", ")}` });
+        return redact(formatForModel(report));
+    }
+
+    /** Diagnostics that came after their edit stopped waiting, as a note for the model (and a line for the user). */
+    private lateDiagnostics(): UserContent | undefined {
+        const late = this.state.lsp?.takeLate();
+        if (!late) return undefined;
+        this.emit({ type: "notice", level: "info", message: `Diagnostics: ${summaryLine(late)} in ${late.files.map((f) => f.path).join(", ")}` });
+        return reminder(redact(formatForModel(late)));
     }
 
     /**
@@ -2168,6 +2235,8 @@ export class Agent {
                 fileHistory: this.state.fileHistory,
                 // Its Bash sees the secrets the user gave this session (only the main agent can ask for one).
                 secrets: this.state.secrets,
+                // Same servers, its own record of what it edited and was told.
+                lsp: this.state.lsp?.fork(),
             },
             host: {
                 emit: (e) => {
@@ -2307,4 +2376,13 @@ function nestedAgentLabel(parent: string, label: string): string {
 export function readOnlyBackendMode(mode: PermissionMode, provider: string): PermissionMode {
     if (mode === "plan") return "plan";
     return mode === "auto" && provider === "codex" ? "auto" : "default";
+}
+
+/** Whether the user trusted the folder themselves (not for the session only); no when that can't be read. */
+function userTrusts(dir: string): boolean {
+    try {
+        return trustedByUser(dir);
+    } catch {
+        return false;
+    }
 }

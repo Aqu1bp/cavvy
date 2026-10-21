@@ -96,7 +96,7 @@ export interface UiState {
 export type AgentHead = { [K in keyof Omit<AgentRun, "blocks">]?: AgentRun[K] | null };
 
 export type UiRecord =
-    | { t: "tool"; id: string; summary?: string; diff?: FileDiff; durationMs?: number; approval?: string; sandboxed?: boolean; images?: number; job?: ToolBlock["job"]; at?: number }
+    | { t: "tool"; id: string; summary?: string; diff?: FileDiff; diagnostics?: ToolBlock["diagnostics"]; durationMs?: number; approval?: string; sandboxed?: boolean; images?: number; job?: ToolBlock["job"]; at?: number }
     /** A turn's start (no `end`) begins its record afresh; its end adds to it, and so does its prompt's promptKey once that's in the history. */
     | { t: "turn"; seg: number; index: number; at: number; end?: number; status?: TurnStatus; prompt?: string }
     | { t: "pending-turn"; text: string; at: number }
@@ -654,6 +654,7 @@ function applyResult(b: ToolBlock | undefined, p: ToolResultPart, ui: UiLog) {
     if (rec?.sandboxed !== undefined) b.sandboxed = rec.sandboxed;
     if (p.images?.length || rec?.images) b.images = p.images?.length ?? rec?.images;
     if (rec?.job) b.job = rec.job;
+    if (rec?.diagnostics) b.diagnostics = rec.diagnostics;
 }
 
 /** A one-line summary for a result the GUI didn't see happen (sessions from the terminal). */
