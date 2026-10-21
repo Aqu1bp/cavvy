@@ -153,7 +153,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                     <button ref={providerMenu} class="hb sm" aria-label={`${p.provider.name} actions`} aria-haspopup="menu" aria-expanded={menu() === ""} onClick={() => setMenu(menu() === "" ? undefined : "")}><MoreHorizontal size={16} /></button>
                     <Menu open={menu() === ""} anchor={() => providerMenu} onClose={() => setMenu(undefined)} label={`${p.provider.name} actions`} width={220} align="end">
                         <button class="menu-item" role="menuitem" disabled={busy() || adding()} onClick={() => choose(() => { setActionError(undefined); setAdding(true); })}>Add account…</button>
-                        <Show when={single()}>{(a) => accountItems(a())}</Show>
+                        <Show when={single()} keyed>{(a) => accountItems(a)}</Show>
                         <button class="menu-item" role="menuitem" disabled={busy()} onClick={() => choose(refreshNow)}>Refresh status</button>
                         <button class="menu-item" role="menuitem" onClick={() => choose(() => setHelp(true))}>Learn more…</button>
                         <Show when={p.provider.configured && p.onTurnOff}>

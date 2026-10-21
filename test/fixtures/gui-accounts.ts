@@ -62,6 +62,8 @@ function fixture(initial = [defaultAccount], provider = "claude-code", extra: { 
     return { root, nodes, button, input, form, enter, submit, openAdd, calls, logins, menus, opened, dispose,
         get focus() { return focus; }, failRefresh: (error?: Error) => { refreshError = error; },
         handle: (fn?: typeof handler) => { handler = fn; },
+        /** What the next status check finds. */
+        replace: (list: AccountInfo[]) => { catalog = list; },
     };
 }
 
@@ -105,6 +107,21 @@ test("a connected provider shows its plan, a status dot and its one account's em
         f.calls.length = 0;
         f.button("Claude Code actions").props.onClick(); f.button("Refresh status").props.onClick(); await settle();
         expect(f.calls).toEqual([{ method: "accounts.list", params: { provider: "claude-code", refresh: true } }]);
+    } finally { f.dispose(); }
+});
+
+test("a lone account's menu follows a status refresh", async () => {
+    const f = fixture(undefined, "codex", { info: { configured: true } });
+    try {
+        await settle();
+        f.button("Codex actions").props.onClick();
+        expect(f.button("Sign in")).toBeDefined();
+        f.replace([{ ...defaultAccount, signedIn: true, email: "me@example.test" }]);
+        f.button("Refresh status").props.onClick(); await settle();
+        f.button("Codex actions").props.onClick();
+        expect(f.button("Sign in")).toBeUndefined();
+        expect(f.button("Sign in again")).toBeDefined();
+        expect(text(f.root)).toContain("me@example.test");
     } finally { f.dispose(); }
 });
 
