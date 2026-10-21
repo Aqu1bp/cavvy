@@ -258,7 +258,10 @@ function DiffViewContent(p: DiffProps) {
         if (d) {
             const active = document.activeElement;
             boxFocus = Boolean(active && rowsEl?.contains(active) && active.closest(".dc-box:not([data-edit])"));
-            setDraft(follow(d.lo, d.hi));
+            const moved = follow(d.lo, d.hi);
+            // Closed: the next box opened by hand takes the focus as usual.
+            if (!moved) boxFocus = true;
+            setDraft(moved);
         }
         const c = untrack(cursor);
         if (c !== undefined) setCursor(follow(c, c)?.hi);

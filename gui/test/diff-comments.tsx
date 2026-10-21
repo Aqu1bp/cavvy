@@ -251,6 +251,25 @@ export async function checkDiffComments(root: HTMLElement) {
         setDiff(twinEdited);
         await settle();
         check(!root.querySelector(".dc-input"), `the box closes rather than jump to the other copy (${root.querySelector(".dc-input")?.closest(".dc-slot")?.previousElementSibling?.getAttribute("data-i")})`);
+        // A box that closes on a refresh while focus is elsewhere doesn't stop the next one from taking it.
+        setDiff(twin);
+        await settle();
+        pointer("pointerdown", gutter(root, 4));
+        pointer("pointerup", gutter(root, 4));
+        await settle();
+        const elsewhere = document.createElement("input");
+        document.body.append(elsewhere);
+        elsewhere.focus();
+        setDiff(structuredClone(twinEdited));
+        await settle();
+        elsewhere.remove();
+        check(!root.querySelector(".dc-input"), "an unfocused box whose lines changed closes");
+        pointer("pointerdown", gutter(root, 1));
+        pointer("pointerup", gutter(root, 1));
+        await settle();
+        await type(root, "Next one");
+        key(root.querySelector<HTMLTextAreaElement>(".dc-input")!, "Escape");
+        await settle();
         setDiff(small);
         await settle();
 

@@ -360,8 +360,9 @@ describe("keeping comments between reloads", () => {
         store.removeSent("s", [withAround]);
         const back = splitComments(withComments("Hi", [withAround])).comments[0]!;
         expect(back.before).toBeUndefined();
-        expect(aroundOf(back)).toEqual({ before: ["+b();"], after: ["+d();"] });
-        expect(aroundOf({ ...back, text: "something else" })).toEqual({});
+        expect(aroundOf("s", back)).toEqual({ before: ["+b();"], after: ["+d();"] });
+        expect(aroundOf("s", { ...back, text: "something else" })).toEqual({});
+        expect(aroundOf("another session", back)).toEqual({}); // the same words in another project's file aren't these lines
     });
 
     test("past the storage budget, the sessions left out of storage keep their comments in this tab", () => {
@@ -381,6 +382,20 @@ describe("keeping comments between reloads", () => {
         store.remove("mid", ["m"]);
         store.flush();
         expect(Object.keys(JSON.parse(s.data.get(REVIEW_COMMENTS_KEY)!)).sort()).toEqual(["new", "old"]);
+    });
+
+    test("past the storage budget, sessions saved earlier stay on screen too", () => {
+        const s = memory();
+        const store = createReviewCommentStore(() => s, () => 5000);
+        const big = (id: string, created: number) => c(id, created, "x".repeat(400_000));
+        for (const [session, id, at] of [["A", "a", 2000], ["B", "b", 3000], ["C", "c", 4000]] as const) {
+            store.add(session, big(id, at));
+            store.flush();
+        }
+        expect(Object.keys(JSON.parse(s.data.get(REVIEW_COMMENTS_KEY)!)).sort()).toEqual(["B", "C"]);
+        expect(store.list("A").map((x) => x.id)).toEqual(["a"]);
+        store.refresh();
+        expect(store.list("A").map((x) => x.id)).toEqual(["a"]);
     });
 
     test("two windows adding to the same session before either writes keep both", () => {

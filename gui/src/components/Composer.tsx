@@ -89,7 +89,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         h()!.setDraft(undefined);
         // Comments sent with it come back as comments, not as their markup.
         const back = splitComments(d.text);
-        if (back.comments.length) reviewComments.restore(h()!.id, back.comments.map((c) => ({ ...c, ...aroundOf(c), id: newCommentId(), created: Date.now() })));
+        if (back.comments.length) reviewComments.restore(h()!.id, back.comments.map((c) => ({ ...c, ...aroundOf(h()!.id, c), id: newCommentId(), created: Date.now() })));
         if (back.text) setText((t) => (t.trim() ? `${back.text}\n${t}` : back.text));
         if (d.images?.length || d.files?.length) setAttachments((a) => [...a, ...fromWire(d.images, d.files)]);
         requestAnimationFrame(() => {
