@@ -103,6 +103,31 @@ describe("GitCommit", () => {
         expect(git(cwd, "status", "--porcelain")).toBe("?? keep.txt");
     });
 
+    test("from a subfolder, paths are taken from that folder, as the model sees them", async () => {
+        const { cwd } = repo();
+        mkdirSync(join(cwd, "src", "src"), { recursive: true });
+        writeFileSync(join(cwd, "src", "a.ts"), "a\n");
+        writeFileSync(join(cwd, "src", "src", "a.ts"), "decoy\n");
+        writeFileSync(join(cwd, "top.txt"), "t\n");
+        const ctx = ctxFor(join(cwd, "src"));
+        const r = await run(GitCommitTool, { message: "Just a", paths: ["a.ts", "../top.txt"] }, ctx);
+        expect(r.isError).toBeFalsy();
+        expect(git(cwd, "show", "--name-only", "--format=", "HEAD").split("\n").sort()).toEqual(["src/a.ts", "top.txt"]);
+        expect(git(cwd, "status", "--porcelain")).toBe("?? src/src/");
+    });
+
+    test("more changed files than one commit takes is refused up front, not cut short", async () => {
+        const { cwd } = repo();
+        for (let i = 0; i < 301; i++) writeFileSync(join(cwd, `f${i}.txt`), `${i}\n`);
+        const ctx = ctxFor(cwd);
+        const input = { message: "Everything" };
+        const p = await GitCommitTool.preview!(input, ctx);
+        expect(p?.summary).toContain("301");
+        const r = await run(GitCommitTool, input, ctx);
+        expect(r).toMatchObject({ isError: true, content: expect.stringContaining("at most 300") });
+        expect(git(cwd, "rev-list", "--count", "HEAD")).toBe("2");
+    });
+
     test("nothing to commit, a path outside the repository, an unchanged file and an untrusted folder are errors", async () => {
         const { cwd } = repo();
         const ctx = ctxFor(cwd);

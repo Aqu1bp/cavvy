@@ -3,7 +3,8 @@
 // Commit and Publish dialogs (private index, bounded hooks, no force push,
 // audited remotes); pull requests are read and watched through `gh`.
 
-import { isAbsolute, relative, resolve } from "path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "path";
+import { canonical } from "../agent/checkpoints";
 import type { Tool, ToolContext, ToolDisplay } from "./types";
 import type { ServerTool, ServerToolResult } from "../mcp/server";
 import { gitCommit } from "../server/git-commit";
@@ -32,25 +33,39 @@ const message = (e: unknown) => redact(e instanceof Error ? e.message : String(e
 const fail = (content: string) => ({ content, isError: true });
 const prLine = (pr: GitPrInfo) => `#${pr.number} (${pr.state}): ${pr.title}\n${pr.url}`;
 
-/** Changed files git would list, as paths from the repository root; new folders of many files are left out (named in `skipped`). */
-async function changedFiles(cwd: string): Promise<{ files: string[]; skipped: string[]; reason?: string }> {
+/** The most files one commit takes (as the GUI's commit dialog). */
+const MAX_COMMIT_FILES = 300;
+
+/**
+ * Changed files git would list, as paths from the working directory (../ for the rest of the
+ * repository), as the commit code takes them; new folders of many files are left out (named in
+ * `skipped`). `total` counts past what's listed.
+ */
+async function changedFiles(cwd: string): Promise<{ files: string[]; skipped: string[]; total: number; reason?: string }> {
     const listed = await gitChanges(cwd, { scope: "uncommitted" });
-    if (!listed.repo) return { files: [], skipped: [], reason: listed.reason ?? "This folder isn't a Git repository." };
+    if (!listed.repo) return { files: [], skipped: [], total: 0, reason: listed.reason ?? "This folder isn't a Git repository." };
     const files: string[] = [];
     const skipped: string[] = [];
     for (const f of listed.files) (f.kind === "folder" || f.kind === "repo" ? skipped : files).push(f.path);
-    return { files, skipped };
+    return { files, skipped, total: files.length + (listed.more ?? 0) };
 }
 
-/** Paths as the model gave them (absolute, or from the working directory), from the repository root. */
-function fromRoot(cwd: string, paths: string[]): string[] | string {
+const tooMany = (n: number) => `${n} changed files: one commit takes at most ${MAX_COMMIT_FILES}. Name the files for this commit in paths, and commit the rest after.`;
+
+/** Paths as the model gave them (absolute, or from the working directory), as the commit code names them: from the working directory. */
+function fromCwd(cwd: string, paths: string[]): string[] | string {
     const root = gitRoot(cwd);
     if (!root) return "This folder isn't a Git repository.";
+    const top = canonical(root);
+    const here = canonical(cwd);
     const out: string[] = [];
     for (const p of paths) {
-        const rel = relative(root, isAbsolute(p) ? p : resolve(cwd, p));
-        if (!rel || rel.startsWith("..") || isAbsolute(rel)) return `Not inside the repository: ${p}`;
-        out.push(rel.split("\\").join("/"));
+        const given = isAbsolute(p) ? p : resolve(here, p);
+        // The folder is resolved, not the file: a changed link is itself the change.
+        const abs = join(canonical(dirname(given)), basename(given));
+        const inRepo = relative(top, abs);
+        if (!inRepo || inRepo.startsWith("..") || isAbsolute(inRepo)) return `Not inside the repository: ${p}`;
+        out.push((relative(here, abs) || ".").split("\\").join("/"));
     }
     return out;
 }
@@ -102,12 +117,14 @@ Only the named files are committed; anything already staged for other files stay
         return undefined;
     },
     async preview(i, ctx): Promise<ToolDisplay> {
-        const listed = i.paths?.length ? fromRoot(ctx.state.cwd, i.paths) : (await changedFiles(ctx.state.cwd)).files;
+        const all = i.paths?.length ? undefined : await changedFiles(ctx.state.cwd);
+        const listed = all ? all.files : fromCwd(ctx.state.cwd, i.paths!);
         const files = typeof listed === "string" ? [] : listed;
+        const count = all ? all.total : files.length;
         const branch = gitBranch(ctx.state.cwd);
         shown.set(i, { branch: branch ?? "a detached HEAD", ...(i.paths?.length ? {} : { files }) });
         return {
-            summary: `${files.length} file${files.length === 1 ? "" : "s"}${branch ? ` on ${branch}` : ""}`,
+            summary: `${count} file${count === 1 ? "" : "s"}${branch ? ` on ${branch}` : ""}${count > MAX_COMMIT_FILES ? ` (more than one commit takes: it will be refused)` : ""}`,
             body: `${i.message.trim()}\n\n${files.slice(0, 30).map((f) => `  ${f}`).join("\n")}${files.length > 30 ? `\n  … and ${files.length - 30} more` : ""}`,
         };
     },
@@ -122,12 +139,13 @@ Only the named files are committed; anything already staged for other files stay
         let late: string[] = [];
         const approved = shown.get(i)?.files;
         if (i.paths?.length) {
-            const r = fromRoot(cwd, i.paths);
+            const r = fromCwd(cwd, i.paths);
             if (typeof r === "string") return fail(r);
             paths = r;
         } else {
             const c = await changedFiles(cwd);
             if (c.reason) return fail(c.reason);
+            if (c.total > MAX_COMMIT_FILES) return fail(tooMany(c.total));
             paths = c.files;
             skipped = c.skipped;
             if (approved) {
