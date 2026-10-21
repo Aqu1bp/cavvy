@@ -3,6 +3,7 @@
 // The Git side is src/server/worktrees.ts (shared with the GUI); this is the
 // terminal side: the questions, and what's printed.
 
+import { realpathSync } from "fs";
 import { homedir } from "os";
 import { relative, sep } from "path";
 import { APP_NAME } from "../config/paths";
@@ -24,10 +25,18 @@ export function shortPath(wt: { main: string; path: string }): string {
     return rel && !rel.startsWith("..") ? rel : wt.path;
 }
 
-/** ~/code/x rather than /Users/me/code/x. */
+/** ~/code/x rather than /Users/me/code/x, also when HOME is reached through a symlink (macOS's /var is /private/var). */
 function tildePath(path: string): string {
     const home = homedir();
-    return home && home !== "/" && isInside(path, home) && path !== home ? `~${sep}${relative(home, path)}` : path;
+    if (!home || home === "/") return path;
+    let real = home;
+    try {
+        real = realpathSync(home);
+    } catch {
+        // A HOME that doesn't exist is compared as it's written.
+    }
+    for (const h of new Set([home, real])) if (isInside(path, h) && path !== h) return `~${sep}${relative(h, path)}`;
+    return path;
 }
 
 /** The welcome box's line: where, on which branch, from what. */
@@ -131,7 +140,8 @@ export async function decideWorktree(wt: SessionWorktree, o: { cleanup: CleanupM
                     // A trust list that can't be read now is left alone.
                 }
             }
-            return r.removed ? { kind: "removed", branchDeleted: r.branchDeleted } : { kind: "kept", why: "its ignored files changed meanwhile" };
+            if (r.removed) return { kind: "removed", branchDeleted: r.branchDeleted };
+            return { kind: "kept", why: r.changed ? "its HEAD changed since it was checked" : "its ignored files changed meanwhile" };
         } catch (e) {
             return { kind: "kept", why: clean(e) };
         }

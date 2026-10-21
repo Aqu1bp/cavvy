@@ -793,6 +793,9 @@ export interface WorktreeWork {
     commits: number;
     /** HEAD is still the base commit, on the branch it was made with. */
     atBase: boolean;
+    /** HEAD's commit and branch (undefined when detached) as they were seen: removal goes ahead only if they still are. */
+    head: string;
+    branch?: string;
     /** Ignored files and folders removal would delete (at most a dozen named). */
     ignored: string[];
     ignoredTotal: number;
@@ -803,7 +806,7 @@ export interface WorktreeWork {
 /** The checks removal makes (a managed worktree, not locked, no other session in it, trusted config), then what's in it. */
 export async function worktreeWork(o: { main: string; path: string; marker: WorktreeMarker; inUse: (path: string) => boolean }, log?: Log): Promise<{ plan: Removal; work: WorktreeWork }> {
     const plan = planRemoval({ path: o.main, worktree: o.path, inUse: o.inUse });
-    if (!plan.exists) return { plan, work: { changes: 0, commits: 0, atBase: true, ignored: [], ignoredTotal: 0 } };
+    if (!plan.exists) return { plan, work: { changes: 0, commits: 0, atBase: true, ignored: [], ignoredTotal: 0, head: o.marker.base, branch: o.marker.branch } };
     const status = await runGitAsync(plan.path, ["status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignore-submodules=none"], REMOVE_TIMEOUT_MS);
     if (status.code !== 0 || status.timedOut) {
         logFailure(log, "git status failed", status.stderr);
@@ -824,7 +827,7 @@ export async function worktreeWork(o: { main: string; path: string; marker: Work
     const waiting = await ignoredWaiting(plan, undefined, log);
     return {
         plan,
-        work: { changes, commits, atBase: head === o.marker.base && branch === o.marker.branch, ignored: waiting?.ignored ?? [], ignoredTotal: waiting?.total ?? 0, confirm: waiting?.confirm },
+        work: { changes, commits, atBase: head === o.marker.base && branch === o.marker.branch, head, branch: branch || undefined, ignored: waiting?.ignored ?? [], ignoredTotal: waiting?.total ?? 0, confirm: waiting?.confirm },
     };
 }
 
@@ -846,7 +849,15 @@ export function deleteBranchAtBase(main: string, branch: string, base: string): 
 }
 
 /** Removes the worktree (Git refuses if anything uncommitted is there) and, when it was never moved, its branch. */
-export async function removeSessionWorktree(o: { plan: Removal; marker: WorktreeMarker; work: WorktreeWork }, log?: Log): Promise<{ removed: boolean; branchDeleted: boolean }> {
+export async function removeSessionWorktree(o: { plan: Removal; marker: WorktreeMarker; work: WorktreeWork }, log?: Log): Promise<{ removed: boolean; branchDeleted: boolean; changed?: boolean }> {
+    // A commit made since it was looked at (by a SessionEnd hook, another terminal) keeps it: on a
+    // detached HEAD nothing else would hold that commit once the worktree's HEAD and reflog are gone.
+    if (o.plan.exists) {
+        const head = runGit(o.plan.path, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])?.trim();
+        const branch = runGit(o.plan.path, ["symbolic-ref", "--quiet", "--short", "HEAD"])?.trim() || undefined;
+        if (head !== o.work.head || branch !== o.work.branch) return { removed: false, branchDeleted: false, changed: true };
+        if (!branch && !reachable(o.plan.main, head)) return { removed: false, branchDeleted: false, changed: true };
+    }
     const r = await runRemoval(o.plan, { deleteIgnored: o.work.confirm }, log);
     if (!r.removed) return { removed: false, branchDeleted: false };
     const branchDeleted = o.marker.ownBranch !== false && o.work.atBase && o.work.commits === 0 && deleteBranchAtBase(o.plan.main, o.marker.branch, o.marker.base);

@@ -5,7 +5,7 @@
 
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join, relative, resolve } from "path";
 import { isolate } from "./helpers/isolate";
@@ -323,6 +323,33 @@ describe("on exit", () => {
         expect(worktreePaths(main)).toContain(wt.path);
     });
 
+    test("a commit made on a detached HEAD after the question keeps it, and the commit stays reachable", async () => {
+        for (const cleanup of ["auto", "ask"] as const) {
+            const { main, wt } = await fresh();
+            const finish = await decideWorktree(wt, { cleanup, ask: answer("remove") });
+            git(wt.path, "checkout", "-q", "--detach");
+            writeFileSync(join(wt.path, "late.txt"), "x\n");
+            git(wt.path, "add", "late.txt");
+            git(wt.path, "commit", "-m", "late work");
+            const late = git(wt.path, "rev-parse", "HEAD");
+            const end = await finish();
+            expect(end.kind).toBe("kept");
+            expect((end as { why?: string }).why).toContain("HEAD changed since it was checked");
+            expect(worktreePaths(main)).toContain(wt.path);
+            expect(git(wt.path, "rev-parse", "HEAD")).toBe(late);
+        }
+    });
+
+    test("a commit on its branch after the question keeps it too", async () => {
+        const { main, wt } = await fresh();
+        const finish = await decideWorktree(wt, { cleanup: "auto" });
+        git(wt.path, "commit", "--allow-empty", "-m", "late work");
+        const end = await finish();
+        expect(end.kind).toBe("kept");
+        expect(worktreePaths(main)).toContain(wt.path);
+        expect(branches(main)).toContain("harness/w");
+    });
+
     test("removing a worktree forgets trust saved for it, and only for it", async () => {
         const { trustFolder, trustedByUser } = await import("../src/config/trust");
         const { main, wt } = await fresh();
@@ -578,8 +605,8 @@ describe("harness -p --worktree", () => {
     });
     afterAll(() => server.stop(true));
 
-    async function harness(args: string[], cwd: string): Promise<{ code: number; stdout: string; stderr: string }> {
-        const env: Record<string, string> = { PATH: process.env.PATH ?? "", HOME: iso.home, HARNESS_HOME: iso.home, HARNESS_NO_KEYCHAIN: "1" };
+    async function harness(args: string[], cwd: string, home = iso.home): Promise<{ code: number; stdout: string; stderr: string }> {
+        const env: Record<string, string> = { PATH: process.env.PATH ?? "", HOME: home, HARNESS_HOME: iso.home, HARNESS_NO_KEYCHAIN: "1" };
         const child = spawn(process.execPath, ["--no-env-file", `--config=${join(ROOT, "bunfig.toml")}`, join(ROOT, "src/index.ts"), "-p", "--model", "mock:m1", ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
         let stdout = "";
         let stderr = "";
@@ -612,15 +639,18 @@ describe("harness -p --worktree", () => {
     test("--worktree=name, and with cleanup keep it stays and says how to come back", async () => {
         const main = repo();
         writeFileSync(join(iso.home, "settings.json"), JSON.stringify({ worktree: { cleanup: "keep", branchPrefix: "bot/" } }));
+        // HOME reached through a symlink, as macOS's /var is /private/var: the path still prints from ~.
+        const home = join(iso.home, `home-link-${++n}`);
+        symlinkSync(realpathSync(iso.home), home);
         let r;
         try {
-            r = await harness(["--worktree=kept", "say ok"], main);
+            r = await harness(["--worktree=kept", "say ok"], main, home);
         } finally {
             rmSync(join(iso.home, "settings.json"));
         }
         expect(r.code).toBe(0);
         expect(r.stderr).toContain("branch bot/kept");
-        expect(r.stderr).toContain(`harness: Worktree kept kept, on branch bot/kept\nharness:   at ~/${relative(iso.home, join(main, ".claude", "worktrees", "kept"))}\nharness:   come back with: harness -w kept --continue`);
+        expect(r.stderr).toContain(`harness: Worktree kept kept, on branch bot/kept\nharness:   at ~/${relative(realpathSync(iso.home), join(main, ".claude", "worktrees", "kept"))}\nharness:   come back with: harness -w kept --continue`);
     });
 
     test("an untrusted project is warned about once, for the worktree", async () => {
