@@ -708,9 +708,9 @@ function ToolRowContent(p: { tool: ToolBlock; activity?: boolean; detailsOnly?: 
 }
 
 // ---------------------------------------------------------------------------
-// Cards: an edit with its diff, a command with its output. As find reads a
-// tool row, the header's text is the verb (for the screen reader), the
-// argument and the summary; the rest is skipped.
+// Cards: an edit with its diff, a command with its output. Find reads a
+// card's header as the argument and the summary; the verb is there for the
+// screen reader only, and like the rest it isn't searched, since it isn't seen.
 
 /** "Done", or a test run's tally ("14 pass") when its output ends with one. */
 function okLabel(t: ToolBlock): string {
@@ -788,7 +788,7 @@ function EditCardContent(p: { tool: ToolBlock }) {
                         </Show>
                     </Show>
                 </span>
-                <span class="sr-only" data-find-skip={live() || undefined}>{live() ? runningVerb(t()) : label().verb}</span>{!live() && " "}
+                <span class="sr-only" data-find-skip>{live() ? runningVerb(t()) : label().verb}{" "}</span>
                 <Show when={label().arg && t().status !== "streaming"}>
                     <span class="tcard-p truncate" title={label().arg}>{label().arg}</span>{!live() && " "}
                 </Show>
@@ -869,7 +869,7 @@ function CommandCardContent(p: { tool: ToolBlock }) {
                 <span class="tcard-ic">
                     <SquareTerminal size={14} />
                 </span>
-                <span class="sr-only" data-find-skip={live() || undefined}>{label().verb}</span>{!live() && " "}
+                <span class="sr-only" data-find-skip>{label().verb}{" "}</span>
                 <Show when={label().arg && t().status !== "streaming"}>
                     <span class="tcard-p truncate" title={command()}>{label().arg}</span>{!live() && " "}
                 </Show>

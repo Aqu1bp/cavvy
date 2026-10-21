@@ -16,16 +16,23 @@ import "../src/styles/transcript.css";
 const root = document.getElementById("root")!;
 const result = document.getElementById("result")!;
 const frame = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+/** Drawn where the reader can see it: not clipped to a pixel, as screen-reader-only text is. */
+const visible = (r: Range) => {
+    const el = r.startContainer.parentElement!;
+    const box = el.getBoundingClientRect();
+    return el.checkVisibility() && box.width > 1 && box.height > 1;
+};
 function check(ok: unknown, message: string): asserts ok {
     if (!ok) throw new Error(message);
 }
-const tool = (id: string, command: string): ToolBlock => ({
-    t: "tool", id, name: "Bash", title: command, input: { command }, status: "running",
-    summary: "Run summary", progress: "Run output", startedAt: Date.now(),
+// A call that stays a row in its group (commands and edits get cards of their own, checked below).
+const tool = (id: string, description: string): ToolBlock => ({
+    t: "tool", id, name: "Monitor", title: description, input: { description }, status: "running",
+    summary: "Monitor summary", progress: "Monitor output", startedAt: Date.now(),
 });
 const [tools, setTools] = createStore([
     tool("first", `echo ${"long-argument-".repeat(45)}quokka-end`),
-    tool("second", "sleep 60; echo Run"),
+    tool("second", "sleep 60; echo Monitor"),
 ]);
 const turn = (): Turn => ({ id: "turn", blocks: tools, status: "running" });
 const row = (id: string) => root.querySelector<HTMLElement>(`[data-find="${id}"]`)!;
@@ -61,24 +68,24 @@ async function run() {
         for (const status of ["running", "queued", "awaiting"] as const) {
             setTools(1, "status", status);
             await frame();
-            const matches = findMatches([turn()], "Run");
-            const ranges = textRanges(row("second"), "Run");
+            const matches = findMatches([turn()], "Monitor");
+            const ranges = textRanges(row("second"), "Monitor");
             check(matches.length === 1 && matches[0]!.part === "second", `${status}: count only the argument`);
             check(ranges.length === matches.length, `${status}: drawn matches equal counted matches`);
             check(ranges[0]!.startContainer.parentElement?.classList.contains("tool-arg"), `${status}: highlight argument, not verb`);
             const button = row("second").querySelector<HTMLButtonElement>(".tool-line")!;
             button.click();
             await frame();
-            check(textRanges(row("second"), "Run").length === 1, `${status}: expanded details must not add live matches`);
+            check(textRanges(row("second"), "Monitor").length === 1, `${status}: expanded details must not add live matches`);
             button.click();
         }
         setTools(1, "status", "streaming");
         await frame();
-        check(findMatches([turn()], "Run").length === 0 && textRanges(row("second"), "Run").length === 0, "input still arriving is not searched in either rendering path");
+        check(findMatches([turn()], "Monitor").length === 0 && textRanges(row("second"), "Monitor").length === 0, "input still arriving is not searched in either rendering path");
         setTools(1, "status", "ok");
         await frame();
-        check(findMatches([turn()], "Run").length === 3 && textRanges(row("second"), "Run").length === 3, "finished call restores verb and summary matching");
-        check(findMatches([turn()], "Run sleep").length === 1 && textRanges(row("second"), "Run sleep").length === 1, "finished row retains spaces between title parts");
+        check(findMatches([turn()], "Monitor").length === 3 && textRanges(row("second"), "Monitor").length === 3, "finished call restores verb and summary matching");
+        check(findMatches([turn()], "Monitor sleep").length === 1 && textRanges(row("second"), "Monitor sleep").length === 1, "finished row retains spaces between title parts");
     } finally {
         dispose();
     }
@@ -106,8 +113,13 @@ async function checkCards() {
                 const id = cards[i]!.id;
                 const card = box.querySelector<HTMLElement>(`[data-find="${id}"]`)!;
                 check(card.classList.contains("tcard"), `${id} ${status}: drawn as a card`);
-                const counted = findMatches([{ id: "cards", blocks: [cards[i]!], status: "running" }], "kiwi").length;
-                check(textRanges(card, "kiwi").length === counted, `${id} ${status}: drawn matches (${textRanges(card, "kiwi").length}) equal counted matches (${counted})`);
+                // The argument and summary, and the verb ("Run", "Edit") the screen reader hears but the card doesn't show.
+                for (const query of ["kiwi", i === 0 ? "Run" : "Edit"]) {
+                    const counted = findMatches([{ id: "cards", blocks: [cards[i]!], status: "running" }], query).length;
+                    const drawn = textRanges(card, query);
+                    check(drawn.length === counted, `${id} ${status}: drawn matches of "${query}" (${drawn.length}) equal counted matches (${counted})`);
+                    for (const r of drawn) check(visible(r), `${id} ${status}: a match of "${query}" is in "${r.startContainer.parentElement?.className}", which isn't visible`);
+                }
             }
         }
     } finally {
