@@ -812,6 +812,19 @@ describe("Claude Code's background work (live test findings)", () => {
             expect(q.waits).toEqual(["a fine one"]);
         }, 20_000);
 
+        test("after one its hook blocks, the next goes in order, through its own hooks: a steer one doesn't skip ahead unchecked", async () => {
+            const settings = { hooks: { UserPromptSubmit: [{ command: `grep -q forbidden && { echo "no forbidden words" >&2; exit 2; }; exit 0` }] } };
+            const { q, done } = await waiting({ settings });
+            q.items.push({ text: "A forbidden", mode: "queue" }, { text: "B fine", mode: "queue" }, { text: "C forbidden too", mode: "steer" });
+            expect(await before(() => Boolean(userSent("B fine")), done)).toBe(true);
+            expect(await done).toBe("done");
+            expect(userSent("A forbidden")).toBeUndefined();
+            expect(userSent("C forbidden too")).toBeUndefined();
+            expect(userTexts().slice(-1)).toEqual(["B fine"]);
+            expect(q.waits).toEqual(["B fine"]);
+            expect(q.items).toEqual([]);
+        }, 20_000);
+
         test("what a UserPromptSubmit hook adds goes with it", async () => {
             const { q, done } = await waiting({ settings: { hooks: { UserPromptSubmit: [{ command: "echo branch is main" }] } } });
             q.items.push({ text: "and the tests?", mode: "queue" });

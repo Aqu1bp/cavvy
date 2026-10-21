@@ -1630,17 +1630,24 @@ export class Agent {
             drainWaiting: async (progress) => {
                 if (this.cutOff || !this.o.host.drainWaiting) return undefined;
                 let context: string | undefined;
-                const taken = await this.o.host.drainWaiting({
-                    record: () => {
-                        if (progress) this.recordBackendTurn(provider, name, progress());
-                    },
-                    // Its hooks, as for a prompt sent on its own (runInner): one can block it.
-                    admit: async (parts) => {
-                        const h = await this.promptHooks(promptTextOf(parts), signal);
-                        context = h.context;
-                        return !h.blocked && !this.cutOff;
-                    },
-                });
+                let taken: { parts: UserContent[]; display: string } | undefined;
+                // One its hooks block doesn't go; the next does, in order and through its own hooks.
+                for (let blocked = true; blocked && !taken; ) {
+                    blocked = false;
+                    taken = await this.o.host.drainWaiting({
+                        record: () => {
+                            if (progress) this.recordBackendTurn(provider, name, progress());
+                        },
+                        // Its hooks, as for a prompt sent on its own (runInner): one can block it.
+                        admit: async (parts) => {
+                            const h = await this.promptHooks(promptTextOf(parts), signal);
+                            context = h.context;
+                            blocked = Boolean(h.blocked);
+                            return !h.blocked && !this.cutOff && !signal.aborted;
+                        },
+                    });
+                    if (this.cutOff || signal.aborted) blocked = false;
+                }
                 if (!taken) return undefined;
                 // Stored as a prompt sent then would be, with what a hook adds after it.
                 let content: UserContent[] = [];
