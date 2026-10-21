@@ -34,8 +34,24 @@ export function createReviewCommentStore(storage: () => Storage | undefined, now
         const [all, setAll] = createSignal<ReadonlyMap<string, readonly ReviewComment[]>>(new Map());
         let timer: ReturnType<typeof setTimeout> | undefined;
 
-        /** Sessions changed here and not yet written: what this window writes, and keeps over another's. */
-        const dirty = new Set<string>();
+        /**
+         * What this window changed and hasn't written, per session and per comment: added or edited
+         * ones by id, and the ids it deleted. Applied over what's in storage, so another window's
+         * comments for the same session stand.
+         */
+        const pending = new Map<string, { put: Map<string, ReviewComment>; gone: Set<string> }>();
+        const ops = (id: string) => {
+            let p = pending.get(id);
+            if (!p) pending.set(id, (p = { put: new Map(), gone: new Set() }));
+            return p;
+        };
+        function apply(id: string, list: readonly ReviewComment[]): readonly ReviewComment[] {
+            const p = pending.get(id);
+            if (!p) return list;
+            const out = list.filter((c) => !p.gone.has(c.id)).map((c) => p.put.get(c.id) ?? c);
+            for (const c of p.put.values()) if (!list.some((t) => t.id === c.id)) out.push(c);
+            return out.slice(-MAX_PER_SESSION);
+        }
 
         function read(target: Storage | undefined): Map<string, readonly ReviewComment[]> {
             const out = new Map<string, readonly ReviewComment[]>();
@@ -50,7 +66,20 @@ export function createReviewCommentStore(storage: () => Storage | undefined, now
             } catch { /* Unreadable storage counts as empty. */ }
             return out;
         }
-        /** Storage's comments, with this window's unwritten changes and its tab-only (secret-looking) comments kept. */
+        /** What this window shows: storage's comments, its unwritten changes, and its tab-only (secret-looking) ones. */
+        function view(remote: Map<string, readonly ReviewComment[]>) {
+            const local = all();
+            const out = new Map<string, readonly ReviewComment[]>();
+            for (const id of new Set([...local.keys(), ...remote.keys(), ...pending.keys()])) {
+                const list = apply(id, remote.get(id) ?? EMPTY);
+                const mine = local.get(id) ?? EMPTY;
+                const hidden = mine.filter((c) => secret(c) && !pending.get(id)?.gone.has(c.id) && !list.some((t) => t.id === c.id));
+                const at = (c: ReviewComment) => mine.findIndex((m) => m.id === c.id);
+                const both = hidden.length ? [...list, ...hidden].sort((a, b) => a.created - b.created || at(a) - at(b)) : list;
+                if (both.length) out.set(id, both);
+            }
+            return out;
+        }
         function load() {
             let remote: Map<string, readonly ReviewComment[]>;
             try {
@@ -58,31 +87,19 @@ export function createReviewCommentStore(storage: () => Storage | undefined, now
             } catch {
                 return;
             }
-            const local = all();
-            for (const id of new Set([...local.keys(), ...remote.keys()])) {
-                const mine = local.get(id) ?? EMPTY;
-                if (dirty.has(id)) {
-                    if (mine.length) remote.set(id, mine);
-                    else remote.delete(id);
-                    continue;
-                }
-                const theirs = remote.get(id) ?? EMPTY;
-                const hidden = mine.filter((c) => secret(c) && !theirs.some((t) => t.id === c.id));
-                if (hidden.length) remote.set(id, [...theirs, ...hidden].sort((a, b) => a.created - b.created));
-            }
-            setAll(remote);
+            setAll(view(remote));
         }
         function flush() {
             clearTimeout(timer);
             timer = undefined;
-            if (!dirty.size) return;
+            if (!pending.size) return;
             try {
                 const target = storage();
                 if (!target) return;
-                // Only the sessions changed here: another window's writes to the rest stand.
+                // Only the comments changed here: another window's, in these sessions or others, stand.
                 const merged = read(target);
-                for (const id of dirty) {
-                    const list = (all().get(id) ?? EMPTY).filter((c) => !secret(c) && now() - c.created < MAX_AGE);
+                for (const id of pending.keys()) {
+                    const list = apply(id, merged.get(id) ?? EMPTY).filter((c) => !secret(c) && now() - c.created < MAX_AGE);
                     if (list.length) merged.set(id, list);
                     else merged.delete(id);
                 }
@@ -96,39 +113,61 @@ export function createReviewCommentStore(storage: () => Storage | undefined, now
                 }
                 if (entries.length) target.setItem(REVIEW_COMMENTS_KEY, JSON.stringify(Object.fromEntries(entries)));
                 else target.removeItem(REVIEW_COMMENTS_KEY);
-                dirty.clear();
+                pending.clear();
+                // Another window's comments this one hadn't heard of yet show here too.
+                setAll(view(new Map(entries)));
             } catch { /* Quota or private mode: they stay in this tab, and are tried again on the next change. */ }
         }
-        const change = (id: string, f: (list: readonly ReviewComment[]) => readonly ReviewComment[]) => {
-            setAll((old) => {
-                const next = new Map(old);
-                const list = f(old.get(id) ?? EMPTY);
-                if (list.length) next.set(id, list);
-                else next.delete(id);
-                return next;
-            });
-            dirty.add(id);
+        const changed = () => {
             clearTimeout(timer);
             timer = setTimeout(flush, 250);
+        };
+        const put = (id: string, comments: readonly ReviewComment[]) => {
+            const p = ops(id);
+            for (const c of comments) {
+                p.gone.delete(c.id);
+                p.put.set(c.id, c);
+            }
+            const ids = new Set(comments.map((c) => c.id));
+            setAll((old) => new Map(old).set(id, [...(old.get(id) ?? EMPTY).filter((c) => !ids.has(c.id)), ...comments].slice(-MAX_PER_SESSION)));
+            changed();
         };
         load();
 
         return {
             list: (id: string | undefined): readonly ReviewComment[] => (id ? (all().get(id) ?? EMPTY) : EMPTY),
             add(id: string, c: ReviewComment) {
-                change(id, (list) => [...list, c].slice(-MAX_PER_SESSION));
+                put(id, [c]);
             },
             /** Puts back comments from a message returned to the box, after any still waiting. */
             restore(id: string, comments: readonly ReviewComment[]) {
-                if (comments.length) change(id, (list) => [...list, ...comments].slice(-MAX_PER_SESSION));
+                if (comments.length) put(id, comments);
             },
             edit(id: string, commentId: string, text: string) {
                 const t = text.trim();
-                if (t) change(id, (list) => list.map((c) => (c.id === commentId ? { ...c, text: t } : c)));
+                const c = all().get(id)?.find((c) => c.id === commentId);
+                if (!t || !c) return;
+                const next = { ...c, text: t };
+                const p = ops(id);
+                p.put.set(c.id, next);
+                setAll((old) => new Map(old).set(id, (old.get(id) ?? EMPTY).map((x) => (x.id === c.id ? next : x))));
+                changed();
             },
             remove(id: string, commentIds: readonly string[]) {
                 const gone = new Set(commentIds);
-                change(id, (list) => list.filter((c) => !gone.has(c.id)));
+                const p = ops(id);
+                for (const g of gone) {
+                    p.put.delete(g);
+                    p.gone.add(g);
+                }
+                setAll((old) => {
+                    const next = new Map(old);
+                    const list = (old.get(id) ?? EMPTY).filter((c) => !gone.has(c.id));
+                    if (list.length) next.set(id, list);
+                    else next.delete(id);
+                    return next;
+                });
+                changed();
             },
             load,
             /** Another window wrote: take its version, keeping this one's changes still to be written. */

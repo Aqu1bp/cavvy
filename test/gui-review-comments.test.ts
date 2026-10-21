@@ -284,16 +284,61 @@ describe("keeping comments between reloads", () => {
         expect(a.list("s1").map((x) => x.id).sort()).toEqual(["other", "secret"]);
     });
 
-    test("another window's write doesn't wipe edits still to be written here", () => {
+    test("another window's write and edits still to be written here both stand", () => {
         const s = memory();
         const store = createReviewCommentStore(() => s, () => 2000);
         store.add("s1", c("mine"));
         s.setItem(REVIEW_COMMENTS_KEY, JSON.stringify({ s1: [c("theirs", 2000)] }));
         store.refresh();
-        expect(store.list("s1").map((x) => x.id)).toEqual(["mine"]);
+        expect(store.list("s1").map((x) => x.id)).toEqual(["theirs", "mine"]);
         store.flush();
         store.refresh();
-        expect(store.list("s1").map((x) => x.id)).toEqual(["mine"]);
+        expect(store.list("s1").map((x) => x.id)).toEqual(["theirs", "mine"]);
+    });
+
+    test("two windows adding to the same session before either writes keep both", () => {
+        const s = memory();
+        const a = createReviewCommentStore(() => s, () => 2000);
+        const b = createReviewCommentStore(() => s, () => 2000);
+        a.add("s1", c("from-a"));
+        b.add("s1", c("from-b"));
+        a.flush();
+        b.refresh();
+        b.flush();
+        a.refresh();
+        for (const ids of [a.list("s1"), b.list("s1"), JSON.parse(s.data.get(REVIEW_COMMENTS_KEY)!).s1 as ReviewComment[]].map((l) => l.map((x) => x.id))) expect(ids).toEqual(["from-a", "from-b"]);
+        // Flushing without hearing of the other's write first loses nothing either.
+        a.add("s1", c("a2"));
+        b.add("s1", c("b2"));
+        a.flush();
+        b.flush();
+        a.refresh();
+        expect(a.list("s1").map((x) => x.id)).toEqual(["from-a", "from-b", "a2", "b2"]);
+        expect(b.list("s1").map((x) => x.id)).toEqual(["from-a", "from-b", "a2", "b2"]);
+    });
+
+    test("an edit or delete in one window touches only that comment in the other", () => {
+        const s = memory();
+        const a = createReviewCommentStore(() => s, () => 2000);
+        a.add("s1", c("one"));
+        a.add("s1", c("two"));
+        a.flush();
+        const b = createReviewCommentStore(() => s, () => 2000);
+        a.edit("s1", "one", "edited in a");
+        b.remove("s1", ["two"]);
+        b.add("s1", c("three"));
+        b.flush();
+        a.flush();
+        a.refresh();
+        b.refresh();
+        for (const st of [a, b]) expect(st.list("s1").map((x) => [x.id, x.text])).toEqual([["one", "edited in a"], ["three", "fix this"]]);
+        // A delete here isn't undone by the other window's older copy.
+        a.remove("s1", ["one"]);
+        b.edit("s1", "three", "again");
+        a.flush();
+        b.flush();
+        a.refresh();
+        expect(a.list("s1").map((x) => [x.id, x.text])).toEqual([["three", "again"]]);
     });
 });
 

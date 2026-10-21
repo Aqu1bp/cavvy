@@ -147,6 +147,13 @@ export function findMentions(text: string, cwd: string): Mention[] {
 }
 
 /**
+ * A review comment's quoted diff lines (gui/src/lib/review-comments): the repository's code,
+ * not something the user named. What the user wrote above it still counts.
+ */
+const REVIEW_CODE = /(<review_comment file="[^"]*" lines="[^"]*">\n[\s\S]*?\n\n)(`{3,})diff\n[\s\S]*?\n\2\n(?=<\/review_comment>)/g;
+const typedText = (text: string) => (text.includes("<review_comment ") ? text.replace(REVIEW_CODE, "$1") : text);
+
+/**
  * Turn "@path" mentions into attached file contents (like a Read), images
  * into image parts. Records read state so the model can edit right away.
  * Mentions reach outside the workspace only for images the user names, and
@@ -158,7 +165,7 @@ export async function expandMentions(text: string, state: ToolState, allowedRoot
     const attached: string[] = [];
     const notices: string[] = [];
     const seen = new Set<string>();
-    for (const { raw, abs } of findMentions(text, state.cwd)) {
+    for (const { raw, abs } of findMentions(typedText(text), state.cwd)) {
         if (seen.has(abs) || !existsSync(abs)) continue;
         seen.add(abs);
         let st;
