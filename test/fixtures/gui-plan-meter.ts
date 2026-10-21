@@ -60,6 +60,8 @@ test("API context-only control, compaction, spend, busy state, and usage navigat
     try {
         expect(all(m.root).filter(n => n.tag === "button")).toHaveLength(1);
         expect(m.trigger().props["aria-label"]).toBe("Context: 25% used");
+        // The ring has its percentage inside.
+        expect(text(m.trigger())).toBe("25");
         m.show();
         expect(text(m.root)).toContain("50k of 200k tokens25%");
         expect(text(m.root)).toContain("Automatic compaction is off.");
@@ -109,6 +111,7 @@ for (const plan of [undefined, 100]) test(`unknown size ${plan ? "still shows th
         if (plan === undefined) {
             expect(m.stroke().stroke).toBe("var(--fg-muted)");
             expect(m.stroke()["stroke-dasharray"]).toStartWith("0 ");
+            expect(text(m.trigger())).toBe("");
         } else {
             // Known plan usage must not disappear just because context size is unknown (e.g. on Home).
             const circumference = 2 * Math.PI * (26 - 2.5) / 2;
