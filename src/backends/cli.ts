@@ -156,15 +156,38 @@ export class JsonLinesProcess {
         }
     }
 
-    /** Each line of stdout that is a JSON object; other lines go with stderr. Ends when stdout does, or after kill(). */
-    async *messages(): AsyncGenerator<Record<string, any>> {
+    /**
+     * Each line of stdout that is a JSON object; other lines go with stderr. Ends when stdout does, or after
+     * kill(). With `quietAfterExitMs`: also once the process has exited and nothing more comes for that long
+     * (a child it started may hold stdout open). Only time spent waiting for output counts, so output already
+     * written is all read, however slowly the caller takes it.
+     */
+    async *messages(o: { quietAfterExitMs?: number } = {}): AsyncGenerator<Record<string, any>> {
         const d = new TextDecoder();
         let buf = "";
         const reader = (this.reader = this.proc.stdout.getReader());
+        const quiet = o.quietAfterExitMs;
         while (true) {
-            let r: Awaited<ReturnType<typeof reader.read>>;
+            let r: Awaited<ReturnType<typeof reader.read>> | undefined;
             try {
-                r = await reader.read();
+                const read = reader.read();
+                if (quiet === undefined) r = await read;
+                else {
+                    let timer: ReturnType<typeof setTimeout> | undefined;
+                    let settled = false;
+                    const silent = this.exited.then(() => new Promise<undefined>((resolve) => {
+                        if (!settled) timer = setTimeout(resolve, quiet) as ReturnType<typeof setTimeout>;
+                    }));
+                    r = await Promise.race([read, silent]).finally(() => {
+                        settled = true;
+                        clearTimeout(timer);
+                    });
+                    if (!r) {
+                        // Gone and quiet: what's still held open won't be read.
+                        await reader.cancel().catch(() => {});
+                        break;
+                    }
+                }
             } catch {
                 break;
             }

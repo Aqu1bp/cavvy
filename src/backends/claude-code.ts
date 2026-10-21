@@ -75,7 +75,7 @@ export const backgroundTiming = {
      * going for good. A command still within its own timeout isn't cut short. (At most maxWaitMs, when that's set.)
      */
     commandsMaxWaitMs: 60 * 60_000,
-    /** After Claude Code exits, how long its output is still read (a child it started may hold it open). */
+    /** After Claude Code exits, how long its output may stay quiet before it's no longer read (a child it started may hold it open). */
     exitDrainMs: 2000,
     /** The grace for a background command that passes no timeout, and for monitors: Claude Code's default background timeout. */
     commandWaitMs: 30 * 60_000,
@@ -874,13 +874,6 @@ class ClaudeTurn {
             void this.proc.kill();
         });
         let killTimer: ReturnType<typeof setTimeout> | undefined;
-        // Claude Code gone (a crash) while something it started still holds its output open: what it wrote is
-        // read for a moment, then nothing more can come, so the run ends rather than waiting for good.
-        let goneTimer: ReturnType<typeof setTimeout> | undefined;
-        let ended = false;
-        void this.proc.exited.then(() => {
-            if (!ended) goneTimer = setTimeout(() => void this.proc.kill(), backgroundTiming.exitDrainMs);
-        });
         const onAbort = () => {
             this.aborted = true;
             // Nothing to interrupt before the prompt is sent, or while Claude Code only waits on its background work.
@@ -895,7 +888,9 @@ class ClaudeTurn {
         void this.attach().then(() => this.aborted || this.sendUser(content, this.t.synthetic));
         const goalTimer = setInterval(() => this.goals?.poll(), GOAL_POLL_MS);
         try {
-            for await (const m of this.proc.messages()) {
+            // Claude Code gone (a crash) while something it started holds its output open: once all it wrote is
+            // read and nothing more comes for a moment, the run ends rather than waiting for good.
+            for await (const m of this.proc.messages({ quietAfterExitMs: backgroundTiming.exitDrainMs })) {
                 if (m.type === "result") {
                     this.goals?.poll();
                     this.commandWaitingSince.clear();
@@ -930,8 +925,6 @@ class ClaudeTurn {
             await this.idlePending;
             await this.deliveryPending;
             if (killTimer) clearTimeout(killTimer);
-            ended = true;
-            clearTimeout(goneTimer);
         }
         // Anything still open never got a result. Sub-agents still working (in the background) stopped with Claude Code.
         const lost = [...this.liveAgents].filter((id) => this.backgroundAgents.has(id));
