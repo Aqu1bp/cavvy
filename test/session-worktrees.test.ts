@@ -10,7 +10,7 @@ import { isolate } from "./helpers/isolate";
 const iso = isolate();
 const { Engine } = await import("../src/server/engine");
 const { gitArgv, gitEnv } = await import("../src/util/git");
-const { committerTime } = await import("../src/server/session-worktrees");
+const { committerTime, sameFolder } = await import("../src/server/session-worktrees");
 const { gitChanges } = await import("../src/server/git-changes");
 import type { AgentRun, GitChangesInfo, SessionSnapshot, SessionWorktreeInfo } from "../src/server/protocol";
 afterAll(() => iso.cleanup());
@@ -192,6 +192,37 @@ describe("session.gitChanges with a worktree", () => {
             const read = await gitChanges(linked, { scope: "uncommitted" }, undefined, { gitDir });
             expect(read.files.map((f) => f.path)).toEqual(["readme.txt"]);
             expect(read.head?.branch).toBe("agent/work");
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("the same folder, by its parent's real place and its name, on any platform's separators", () => {
+        const home = realpathSync(iso.home);
+        mkdirSync(join(home, "same real"));
+        symlinkSync(join(home, "same real"), join(home, "same alias"));
+        mkdirSync(join(home, "same real", "wt"));
+        expect(sameFolder(join(home, "same alias", "wt"), join(home, "same real", "wt"))).toBe(true);
+        expect(sameFolder(`${home}/same real/./wt/`, join(home, "same real", "wt"))).toBe(true);
+        // A folder that is itself a link isn't the folder it leads to.
+        symlinkSync(join(home, "same real", "wt"), join(home, "same real", "wt-link"));
+        expect(sameFolder(join(home, "same real", "wt-link"), join(home, "same real", "wt"))).toBe(false);
+        expect(sameFolder(undefined, join(home, "same real", "wt"))).toBe(false);
+    });
+
+    test("a worktree whose gitdir file names it through a linked folder is still read, as git lists it", async () => {
+        const { main, engine, call } = await setup("aliased");
+        const home = realpathSync(iso.home);
+        mkdirSync(join(home, "aliased real"));
+        symlinkSync(join(home, "aliased real"), join(home, "aliased alias"));
+        const third = join(home, "aliased real", "third");
+        git(main, "worktree", "add", "-b", "agent/third", third);
+        writeFileSync(join(third, "third.txt"), "third\n");
+        // A relative gitdir through the link: git resolves it physically, so it lists the real folder.
+        writeFileSync(join(main, ".git", "worktrees", "third", "gitdir"), "../../../../aliased alias/third/.git\n");
+        try {
+            expect(git(main, "worktree", "list", "--porcelain")).toContain(`worktree ${third}`);
+            expect((await call<GitChangesInfo>("session.gitChanges", { scope: "uncommitted", worktree: third })).files.map((f) => f.path)).toEqual(["third.txt"]);
         } finally {
             await engine.stop();
         }

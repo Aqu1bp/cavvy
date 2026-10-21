@@ -4,7 +4,7 @@
 // the repository's config runs (see git-changes.ts).
 
 import { readFileSync, realpathSync } from "fs";
-import { dirname, join, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { defaultBase, git } from "./git-changes";
 import type { SessionWorktreeInfo, WorktreeInfo } from "./protocol";
 import { RpcError } from "./rpc-error";
@@ -69,7 +69,7 @@ export async function sessionWorktree(cwd: string, wanted: string): Promise<Work
     ]);
     if (!expected || common !== expected || !own || top !== want) throw missing();
     // Git lists a linked worktree's folder from its entry's gitdir file: the entry found in the folder must be that one.
-    if (record.main ? own !== expected : dirname(own) !== join(expected, "worktrees") || backLink(own) !== record.path) throw missing();
+    if (record.main ? own !== expected : dirname(own) !== join(expected, "worktrees") || !sameFolder(backLink(own), record.path)) throw missing();
     return { ...record, real: want, gitDir: own };
 }
 
@@ -77,10 +77,24 @@ export async function sessionWorktree(cwd: string, wanted: string): Promise<Work
 function backLink(entry: string): string | undefined {
     try {
         const file = readFileSync(join(entry, "gitdir"), "utf-8").replace(/\r?\n$/, "");
+        // A relative one counts from the entry as it really is (`entry` has its links resolved), as git takes it.
         return file ? dirname(resolve(entry, file)) : undefined;
     } catch {
         return undefined;
     }
+}
+
+/**
+ * The same folder, by its parent's real path and its own name: a gitdir file can name it through a
+ * linked folder (git lists the real one) and with the platform's separators, but a folder that is
+ * itself a link (to another worktree, say) isn't the folder it leads to.
+ */
+export function sameFolder(a: string | undefined, b: string): boolean {
+    const place = (p: string) => {
+        const full = resolve(p);
+        return join(canonical(dirname(full)), basename(full));
+    };
+    return a !== undefined && place(a) === place(b);
 }
 
 /** The repository's worktrees, each with how far its HEAD is ahead of the main branch and when it was committed. */
