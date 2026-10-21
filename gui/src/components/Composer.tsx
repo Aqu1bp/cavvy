@@ -291,7 +291,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         const closesStatus = !items.length && menuOpen() && eventStrokes(e).some((id) => keymap().table.get("Autocomplete")?.get(id) === "autocomplete:dismiss");
         const r: MatchResult = closesStatus ? { kind: "action", action: "autocomplete:dismiss", context: "Autocomplete", abandoned: 0 } : matchKey(e, items.length ? ["Autocomplete", "Chat", "Global"] : ["Chat", "Global"]);
         // Keep the mid-turn shortcut when no custom binding or chord claims it.
-        if (r.kind === "none" && !r.unbound && !items.length && e.key === "Enter" && isMod(e) && e.shiftKey && !e.altKey && busy()) {
+        if (r.kind === "none" && !r.unbound && e.key === "Enter" && isMod(e) && e.shiftKey && !e.altKey && busy()) {
             e.preventDefault();
             if (hasContent()) void submit(true);
             else sendFirstQueued();

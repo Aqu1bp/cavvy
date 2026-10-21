@@ -1408,7 +1408,12 @@ export class App {
         const e = this.editor;
         const n = k.name;
         // Tab keeps the mid-turn shortcut unless a binding, chord, or explicit unbinding claims it.
-        if (!unbound && n === "tab" && !k.shift && !k.ctrl && !k.meta && this.busy && this.inputMode === "prompt" && e.text.trim()) return void this.submit(true);
+        if (!unbound && n === "tab" && !k.shift && !k.ctrl && !k.meta && this.busy && this.inputMode === "prompt" && e.text.trim()) {
+            const contexts = menu?.items.length ? ["Autocomplete", "Chat", "Global"] as const : ["Chat", "Global"] as const;
+            // A held chord prefix also comes here on timeout; preserve an explicit null then too.
+            const binding = contexts.map((context) => this.keys.keymap.table.get(context)?.get("tab")).find((value) => value !== undefined);
+            if (binding !== null) return void this.submit(true);
+        }
         if (n === "enter" && menu?.items.length && !k.shift && !k.meta && !k.ctrl) return this.applyCompletion(menu, true);
         // Any other modified Enter nobody unbound adds a line, in terminals that tell them apart.
         if (n === "enter" && (k.shift || k.meta || k.ctrl)) return unbound ? undefined : e.insert("\n");

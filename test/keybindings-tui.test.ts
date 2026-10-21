@@ -84,6 +84,19 @@ describe("defaults (no file)", () => {
 });
 
 describe("a keybindings file", () => {
+    test("an explicitly unbound Tab prefix stays unsent after its chord times out", async () => {
+        write([{ context: "Chat", bindings: { tab: null, "tab t": "chat:externalEditor" } }]);
+        const { app, a, press } = testApp();
+        const sent: boolean[] = [];
+        a.busy = true;
+        a.submit = async (opposite: boolean) => void sent.push(opposite);
+        app.editor.set("unsent follow-up");
+        press("\t");
+        await Bun.sleep(CHORD_TIMEOUT_MS + 80);
+        expect(sent).toEqual([]);
+        expect(app.editor.text).toBe("unsent follow-up");
+    });
+
     test("mid-turn Tab respects a custom action or explicit unbinding", () => {
         for (const action of [null, "chat:externalEditor"]) {
             write([{ context: "Chat", bindings: { tab: action } }]);

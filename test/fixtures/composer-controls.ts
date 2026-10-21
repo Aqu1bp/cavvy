@@ -218,6 +218,15 @@ assert.equal(sends, sendsBefore);
 key("t");
 assert.equal(sends, sendsBefore);
 applyKeybindingsFile({ path: "/test/keybindings.json" });
+// The opposite-send shortcut still works with file suggestions open.
+input("@queue-file");
+await Bun.sleep(80);
+replies.at(-1)!.resolve(["queue-file.ts"]);
+await Bun.sleep(0);
+assert.equal(ta.props["aria-expanded"], true);
+assert.equal(key("Enter", { metaKey: true, shiftKey: true }).prevented, true);
+await Bun.sleep(0);
+assert.deepEqual(sent.at(-1), { text: "@queue-file", followUp: "steer" });
 input("");
 appState.settings.followUpBehavior = undefined;
 setWorking(false);
