@@ -3,7 +3,7 @@ import { Archive, ArrowRight, Bot, ChartColumn, FileDiff, FolderGit2, FolderOpen
 import { MODE_LABELS, type SessionSearchHit } from "@shared/protocol";
 import { activate, app, handleFor, reportError, rpc, sessionPresenceVersion } from "../state/app";
 import { archive, chooseProject, exportSession, fork, newSession, openProject, openReview, setMode, togglePanel, toggleSidebar } from "../state/actions";
-import { setPrefs, THEMES } from "../state/prefs";
+import { setPrefs } from "../state/prefs";
 import { terminalOpen, setTerminalOpen, paletteOpen, setAgentFocus, setJumpTarget, setModelPickerOpen, setPaletteOpen, setRewindOpen, setSettingsTab } from "../state/ui";
 import { ago, tildify } from "../lib/format";
 import { ModeIcon, MODES } from "./ModePicker";
@@ -149,8 +149,11 @@ export function CommandPalette() {
             );
             for (const m of MODES) out.push({ id: `mode-${m}`, section: "Permission mode", label: `Mode: ${MODE_LABELS[m].label}`, hint: MODE_LABELS[m].description, icon: <ModeIcon mode={m} size={15} />, run: () => void setMode(m) });
         }
-        for (const t of THEMES) out.push({ id: `theme-${t.id}`, section: "Theme", label: `Theme: ${t.name}`, keywords: "appearance color dark light", icon: t.scheme === "dark" ? <Moon size={15} /> : <Sun size={15} />, run: () => setPrefs("theme", t.id) });
-        out.push({ id: "theme-system", section: "Theme", label: "Theme: Match system", keywords: "appearance auto", icon: <Sun size={15} />, run: () => setPrefs("theme", "system") });
+        out.push(
+            { id: "theme-light", section: "Theme", label: "Theme: Light", keywords: "appearance color scheme", icon: <Sun size={15} />, run: () => setPrefs("scheme", "light") },
+            { id: "theme-dark", section: "Theme", label: "Theme: Dark", keywords: "appearance color scheme", icon: <Moon size={15} />, run: () => setPrefs("scheme", "dark") },
+            { id: "theme-system", section: "Theme", label: "Theme: Match system", keywords: "appearance color scheme auto", icon: <Sun size={15} />, run: () => setPrefs("scheme", "system") },
+        );
         for (const s of app.sessions) out.push({ id: `s-${s.id}`, section: "Sessions", label: s.title, hint: `${s.projectName} · ${ago(s.updatedAt)}`, keywords: s.projectName, icon: <MessageSquare size={15} />, run: () => void activate(s.id) });
         for (const p of app.projects) out.push({ id: `p-${p.path}`, section: "Projects", label: `New session in ${p.name}`, hint: tildify(p.path, app.hello?.homeDir), keywords: p.path, icon: <FolderGit2 size={15} />, run: () => void openProject(p.path) });
         return out;

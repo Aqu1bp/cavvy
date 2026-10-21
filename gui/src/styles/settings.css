@@ -156,294 +156,6 @@
     color: var(--fg-muted);
 }
 
-.scheme-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    padding: 0 0 18px;
-    border-bottom: 1px solid var(--hairline);
-}
-
-.scheme {
-    width: 156px;
-    flex: none;
-    text-align: left;
-}
-
-.wire {
-    --w-bg: #ffffff;
-    --w-side: #f5f5f6;
-    --w-line: rgba(0, 0, 0, 0.1);
-    --w-bub: #ededee;
-    --w-card: #ffffff;
-    position: relative;
-    display: block;
-    height: 96px;
-    border-radius: 10px;
-    overflow: hidden;
-    background: var(--w-bg);
-}
-
-/* Drawn over the wireframe, so the dark tile keeps its edge on a dark page. */
-.wire::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 14%, transparent);
-    pointer-events: none;
-}
-
-.wire-system {
-    --w-side: rgba(128, 128, 128, 0.18);
-    --w-line: rgba(128, 128, 128, 0.35);
-    --w-bub: rgba(128, 128, 128, 0.3);
-    --w-card: transparent;
-}
-
-.wire-dark {
-    --w-bg: #0b0b0c;
-    --w-side: #070708;
-    --w-line: rgba(255, 255, 255, 0.09);
-    --w-bub: #161617;
-    --w-card: #111112;
-}
-
-.scheme:hover .wire::after {
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 28%, transparent);
-}
-
-.scheme.on .wire {
-    box-shadow: 0 0 0 2px var(--accent);
-}
-
-.wire > span {
-    position: absolute;
-}
-
-.wire-half {
-    inset: 0;
-    background: #0b0b0c;
-    clip-path: polygon(100% 0, 100% 100%, 0 100%);
-}
-
-.w-side {
-    left: 0;
-    top: 0;
-    bottom: 0;
-    width: 34px;
-    background: var(--w-side);
-    border-right: 1px solid var(--w-line);
-}
-
-.w-title {
-    left: 46px;
-    top: 12px;
-    width: 44px;
-    height: 5px;
-    border-radius: 3px;
-    background: var(--w-line);
-}
-
-.w-bub {
-    right: 12px;
-    top: 28px;
-    width: 46px;
-    height: 12px;
-    border-radius: 6px;
-    background: var(--w-bub);
-}
-
-.w-line {
-    left: 46px;
-    top: 48px;
-    width: 80px;
-    height: 4px;
-    border-radius: 2px;
-    background: var(--w-line);
-}
-
-.w-line.short {
-    top: 57px;
-    width: 60px;
-}
-
-.w-box {
-    left: 44px;
-    right: 10px;
-    bottom: 9px;
-    height: 16px;
-    border-radius: 6px;
-    background: var(--w-card);
-    box-shadow: inset 0 0 0 1px var(--w-line);
-}
-
-.w-send {
-    right: 14px;
-    bottom: 13px;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--accent);
-}
-
-.scheme-label {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 8px 2px 0;
-    font-size: 0.929rem;
-    font-weight: 500;
-}
-
-.orb-row {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: 8px;
-}
-
-.orbc {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    height: 32px;
-    padding: 0 12px 0 8px;
-    border-radius: 10px;
-    box-shadow: inset 0 0 0 1px var(--border-strong);
-    font-size: 0.893rem;
-    font-weight: 500;
-    color: var(--fg-prose);
-    white-space: nowrap;
-}
-
-.orbc:hover {
-    background: var(--bg-hover);
-}
-
-.orbc.on {
-    box-shadow: inset 0 0 0 2px var(--accent);
-    background: color-mix(in srgb, var(--accent) 6%, transparent);
-    color: var(--fg);
-}
-
-.orbs {
-    display: flex;
-}
-
-.orbs span {
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    box-shadow:
-        0 0 0 1.5px var(--bg),
-        inset 0 0 0 1px rgba(128, 128, 128, 0.35);
-}
-
-.orbs span + span {
-    margin-left: -5px;
-}
-
-.swatches {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: 6px;
-}
-
-.sw {
-    width: 20px;
-    height: 20px;
-    border-radius: 50%;
-    flex: none;
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 15%, transparent);
-}
-
-.sw.on {
-    box-shadow:
-        0 0 0 2px var(--bg),
-        0 0 0 3.5px var(--fg);
-}
-
-.sw-theme {
-    background: conic-gradient(#3b72f6, #b18cff, #f472b6, #fb923c, #4ade80, #2dd4bf, #3b72f6);
-}
-
-.stepper {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-    padding: 2px;
-    border-radius: 8px;
-    box-shadow: inset 0 0 0 1px var(--border-strong);
-}
-
-.stepper .num {
-    width: 44px;
-    text-align: center;
-    font-size: 0.929rem;
-    font-weight: 500;
-}
-
-.type-preview {
-    margin: 2px 0 14px;
-    padding: 16px;
-    border-radius: 14px;
-    background: var(--bg-subtle);
-    box-shadow: inset 0 0 0 1px var(--hairline);
-    font-size: 1rem;
-}
-
-.tp-user {
-    display: flex;
-    justify-content: flex-end;
-}
-
-.tp-user span {
-    max-width: 80%;
-    padding: 8px 13px;
-    border-radius: 18px;
-    background: var(--bg-user);
-    line-height: 1.55;
-}
-
-.tp-reply {
-    margin-top: 10px;
-    line-height: 1.625;
-    color: var(--fg-prose);
-}
-
-.tp-reply code {
-    font-family: var(--font-mono);
-    font-size: 0.86em;
-    color: var(--fg);
-    padding: 1px 5px;
-    border-radius: 6px;
-    box-shadow: inset 0 0 0 1px var(--border-strong);
-}
-
-.tp-box {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 40px;
-    margin-top: 12px;
-    padding: 0 6px 0 14px;
-    border-radius: 16px;
-    box-shadow: inset 0 0 0 1px var(--border);
-    color: var(--fg-subtle);
-}
-
-.tp-send {
-    width: 28px;
-    height: 28px;
-    border-radius: 50%;
-    display: grid;
-    place-items: center;
-    background: var(--accent);
-    color: var(--accent-fg);
-}
-
 .sc-keys .kbd-row {
     display: inline-flex;
     gap: 3px;
@@ -457,3 +169,218 @@
     flex: none;
 }
 
+
+/* ---- Appearance ---------------------------------------------------------
+   Settings → Appearance, from the mockup's Settings rules: grouped rounded
+   lists, scheme tiles with a picture of the window, accent swatches,
+   segmented controls, a text-size stepper with a preview. */
+
+.ap > .sgroup {
+    margin: 24px 4px 8px;
+    padding: 0;
+    font-size: 0.857rem;
+    font-weight: 600;
+    color: var(--fg-3);
+}
+
+.ap-group {
+    background: var(--group);
+    border-radius: var(--r-card);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+    overflow: hidden;
+}
+
+.ap-group > .srow {
+    min-height: 52px;
+    padding: 12px 8px 12px 14px;
+    gap: 12px;
+    border-bottom: 0;
+}
+
+.ap-group > .srow + .srow {
+    border-top: 0.5px solid var(--line);
+}
+
+.ap-group .srow-title {
+    font-size: 0.929rem;
+    font-weight: 500;
+    color: var(--fg);
+}
+
+.ap-group .srow-desc {
+    margin-top: 2px;
+    font-size: 0.857rem;
+    line-height: 1.4;
+    color: var(--fg-3);
+}
+
+/* Colour scheme: System, Light, Dark. */
+.ap-tiles {
+    display: flex;
+    gap: 12px;
+    padding: 14px;
+}
+
+.ap-tile {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.929rem;
+    font-weight: 500;
+    color: var(--fg-2);
+}
+
+.ap-tile.on {
+    color: var(--fg);
+}
+
+.ap-pv {
+    position: relative;
+    width: 112px;
+    height: 72px;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 0 0 0.5px var(--line);
+    transition: box-shadow 200ms;
+}
+
+.ap-tile:hover:not(.on) .ap-pv {
+    box-shadow: 0 0 0 0.5px var(--fg-4);
+}
+
+.ap-tile.on .ap-pv {
+    box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* One face per scheme, drawn with that scheme's tokens (its own data-theme). */
+.ap-face {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    grid-template-columns: 30% 1fr;
+    gap: 4px;
+    padding: 5px;
+    background: var(--backdrop);
+}
+
+.ap-face.half {
+    clip-path: inset(0 0 0 50%);
+}
+
+.ap-face i,
+.ap-face u {
+    display: block;
+    border-radius: 5px;
+}
+
+.ap-face i {
+    background: var(--rail-sel);
+}
+
+.ap-face u {
+    background: var(--sheet);
+}
+
+/* Accent. */
+.ap-swatches {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.ap-swatches button {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    flex: none;
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.ap-swatches button.on {
+    outline: 2px solid var(--fg);
+    outline-offset: 2px;
+}
+
+/* Window, Contrast, Density, Chat width, Panel animations. */
+.ap .segmented {
+    display: inline-flex;
+    gap: 0;
+    padding: 3px;
+    border-radius: var(--pill);
+    background: var(--sheet-2);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+}
+
+.ap .segmented button,
+.ap .segmented.seg-sm button {
+    height: 26px;
+    padding: 0 12px;
+    border-radius: var(--pill);
+    font-size: 0.929rem;
+    font-weight: 500;
+    color: var(--fg-3);
+    transition: background 200ms var(--ease), color 200ms, box-shadow 200ms;
+}
+
+.ap .segmented button.on {
+    background: var(--seg-on);
+    color: var(--fg);
+    box-shadow: 0 0 0 0.5px var(--line), var(--shadow-sm);
+}
+
+.ap .segmented button:hover:not(.on) {
+    color: var(--fg-2);
+}
+
+/* Text size. */
+.ap-stepper {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border-radius: var(--pill);
+    background: var(--sheet);
+    box-shadow: 0 0 0 0.5px var(--line);
+}
+
+.ap-stepper .hb {
+    border-radius: var(--pill);
+}
+
+.ap-stepper .num {
+    min-width: 44px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    font-weight: 500;
+}
+
+/* Reads at the chosen size: 1rem is the text size. */
+.ap-preview {
+    padding: 14px;
+    font-size: 1rem;
+    line-height: 1.6;
+    color: var(--fg);
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+.ap-preview code {
+    font-family: var(--font-mono);
+    font-size: 0.86em;
+    padding: 1px 5px;
+    border-radius: 5px;
+    background: var(--sheet-2);
+}
+
+@container main (max-width: 520px) {
+    .ap-tiles {
+        flex-wrap: wrap;
+    }
+
+    .ap-pv {
+        width: 88px;
+        height: 58px;
+    }
+}

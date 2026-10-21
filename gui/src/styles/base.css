@@ -14,14 +14,17 @@ body,
 #root {
     height: 100%;
     margin: 0;
+    /* The window is glass: in the app, macOS's own material shows through. */
+    background: transparent;
 }
 
+/* Behaves like a native app, not a page: chrome isn't selectable text and
+   the cursor stays an arrow; content, code and fields are selectable. */
 body {
     font-family: var(--font-ui);
     font-feature-settings: "cv11", "ss01", "ss03";
     font-optical-sizing: auto;
     color: var(--fg);
-    background: var(--bg);
     line-height: 1.5;
     letter-spacing: -0.003em;
     -webkit-font-smoothing: antialiased;
@@ -29,6 +32,119 @@ body {
     text-rendering: optimizeLegibility;
     overflow: hidden;
     overscroll-behavior: none;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: default;
+}
+
+.selectable,
+.transcript,
+.prompt-comment-text,
+.dc-text,
+.user-text,
+.md,
+.md-block,
+.reply,
+.narration,
+.thinking-text,
+.wthought,
+.wtext,
+.wake-text,
+.code,
+.code-body,
+.diff-rows,
+.tool-detail,
+.detail-section,
+.diag-msg,
+.diag-code,
+.compacted-summary,
+.shell-block,
+.xterm,
+.mono,
+.srow-value,
+.set-val,
+.err,
+.tone-err,
+pre,
+code,
+input,
+textarea,
+[contenteditable="true"] {
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+/* The conversation reads as a document: all of it is selectable, its buttons aren't. */
+.transcript button {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* The window: its tint over the native material in the macOS app (Liquid
+   Glass, or the sidebar material before macOS 26). A browser has no desktop
+   behind the page, and the app elsewhere gets a transparent window with no
+   material, so those get the tint over a calm gradient. The shell lays the
+   rail on this and the sheet over it. */
+.app.tauri.os-macos {
+    background: var(--win-tint);
+}
+
+.app.browser,
+.app.tauri:not(.os-macos) {
+    background: linear-gradient(var(--win-tint), var(--win-tint)), var(--backdrop);
+}
+
+/* ---- Glass ----
+   Controls that float over the sheet: the title-bar capsule, the composer,
+   request cards, menus, popovers, the palette, toasts. */
+.glass {
+    position: relative;
+    background: var(--ctl);
+    -webkit-backdrop-filter: blur(20px) saturate(1.9);
+    backdrop-filter: blur(20px) saturate(1.9);
+    box-shadow: 0 0 0 0.5px var(--ctl-stroke), inset 0 1px 0 var(--ctl-hi), inset 0 -1px 0 var(--ctl-lo), var(--ctl-shadow);
+}
+
+.glass::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: var(--sheen);
+    pointer-events: none;
+}
+
+.glass > * {
+    position: relative;
+}
+
+/* Settings → Window → Solid drops every backdrop-filter (tokens.css makes
+   the tint and controls opaque). */
+[data-glass="solid"] *,
+[data-glass="solid"] *::before,
+[data-glass="solid"] *::after {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+}
+
+/* The system's Reduce transparency: no blur anywhere, and, as there's
+   nothing blurred behind them any more, the solid window's opaque surfaces. */
+@media (prefers-reduced-transparency: reduce) {
+    /* Doubled to outweigh tokens.css's [data-glass][data-theme] rules. */
+    :root:root {
+        --win-tint: var(--sheet-2);
+        --ctl: var(--sheet);
+        --ctl-strong: var(--sheet);
+        --rail-sel: var(--sheet);
+        --rail-float: var(--sheet-2);
+    }
+
+    *,
+    *::before,
+    *::after {
+        -webkit-backdrop-filter: none !important;
+        backdrop-filter: none !important;
+    }
 }
 
 body.resizing,
@@ -50,7 +166,7 @@ select {
 }
 
 button {
-    cursor: pointer;
+    cursor: default;
     background: none;
     border: 0;
     padding: 0;
@@ -559,7 +675,7 @@ input[type="range"] {
     border-radius: 999px;
     background: var(--border-strong);
     position: relative;
-    transition: background var(--dur);
+    transition: background 200ms;
     flex: none;
 }
 
@@ -576,7 +692,7 @@ input[type="range"] {
     border-radius: 50%;
     background: #fff;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-    transition: transform var(--dur) var(--ease-out);
+    transition: transform 200ms var(--ease-out);
 }
 
 .toggle.on .toggle-knob {
