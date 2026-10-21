@@ -2148,7 +2148,7 @@ function allCommands(app: App): Command[] {
     for (const c of custom) names.add(c.name);
     const skills = (app.skills ?? []).filter((s) => s.userInvocable && !names.has(s.name));
     for (const sk of skills) names.add(sk.name);
-    const prompts = app.mcp.promptCommands().filter((p) => !names.has(p.command));
+    const prompts = (app.mcp?.promptCommands() ?? []).filter((p) => !names.has(p.command));
     return [...BUILTIN, ...custom.map(customToCommand), ...skills.map(skillToCommand), ...prompts.map(promptToCommand)];
 }
 
