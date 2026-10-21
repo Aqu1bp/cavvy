@@ -487,7 +487,7 @@ class ClaudeTurn {
         if (t.resumeId) a.push("--resume", t.resumeId, ...(t.forkSession ? ["--fork-session"] : []));
         if (t.maxTurns && Number.isFinite(t.maxTurns)) a.push("--max-turns", String(t.maxTurns));
         a.push("--append-system-prompt", [t.appendSystemPrompt, t.goalContext,
-            `After an answer, Harness waits for a reported background Bash command until its own \`timeout\` runs out, counted from its start (at most ${span(backgroundTiming.commandMaxTimeoutMs)}); for one without a timeout, and for each monitor, it waits up to ${claudeBackgroundWaitMs(t.backgroundWaitSec) / 1000} seconds after the answer. Sub-agents and other background work have a ${span(backgroundTiming.maxWaitMs)} limit, which doesn't cut short a command still within its own timeout (nor, while one is, any sub-agent). For a long finite job in the background (a test suite, a build, a benchmark), pass \`timeout\` with \`run_in_background\`, set to how long it may take. Background commands and monitors do not survive process shutdown, a user interrupt, or the end of their wait. Recognized dev servers/watchers are stopped without waiting after the answer, timeout or not. Consume finite-work results before declaring success; do not expect a background server to outlive the turn. Work not reported by the CLI cannot be waited for.`,
+            `After an answer, Harness waits for a reported background Bash command until its own \`timeout\` runs out, counted from its start (at most ${span(backgroundTiming.commandMaxTimeoutMs)}); for one without a timeout, and for each monitor, it waits up to ${claudeBackgroundWaitMs(t.backgroundWaitSec) / 1000} seconds after the answer. Sub-agents and other background work have a ${span(backgroundTiming.maxWaitMs)} limit, which doesn't cut short a command still within its own timeout (nor, while one is, any sub-agent or workflow). For a long finite job in the background (a test suite, a build, a benchmark), pass \`timeout\` with \`run_in_background\`, set to how long it may take. Background commands and monitors do not survive process shutdown, a user interrupt, or the end of their wait. Recognized dev servers/watchers are stopped without waiting after the answer, timeout or not. Consume finite-work results before declaring success; do not expect a background server to outlive the turn. Work not reported by the CLI cannot be waited for.`,
         ].filter(Boolean).join("\n\n"));
         for (const d of t.additionalDirectories) a.push("--add-dir", d);
         if (this.pluginDir) a.push("--plugin-dir", this.pluginDir);
@@ -650,10 +650,10 @@ class ClaudeTurn {
             // Waited long enough (only between Claude Code's turns, so none is cut short). A command still
             // within its own timeout goes on (until it's up, above); what else is left stops.
             const ms = backgroundTiming.maxWaitMs;
-            // Sub-agents go on too while one does: stopping a sub-agent ends the shells it started (its sub-agents' too),
-            // and a command's completion goes to the sub-agent that ran it. Its timeout bounds the wait.
+            // Sub-agents and workflows go on too while one does: stopping one ends the shells under it (a grandchild's
+            // too), and a command's completion goes to the sub-agent that ran it. Its timeout bounds the wait.
             const timed = left.some((t) => ownDeadline(t) !== undefined);
-            const over = left.filter((t) => ownDeadline(t) === undefined && !(timed && t.agent));
+            const over = left.filter((t) => ownDeadline(t) === undefined && !(timed && !t.commandTask));
             // So too while a finished command's report is still due: stop the rest by task id and let that turn come.
             if (over.length < left.length || (this.reportsDue && over.every((t) => t.id))) {
                 for (const task of over) this.stopTask(task, `waited ${span(ms)}, the limit for background work`);
