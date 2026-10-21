@@ -154,6 +154,20 @@ describe("skills in the GUI", () => {
         c.close();
     });
 
+    test("Codex's own skills, once it has listed them, are skills in the menus; Claude Code's commands aren't", async () => {
+        const c = await client();
+        const cwd = project();
+        srv.engine.cliCommandsReported("codex", cwd, ["imagegen", "explain"]);
+        srv.engine.cliCommandsReported("claude-code", cwd, ["code-review"]);
+        const codex = await c.call<CommandInfo[]>("commands.list", { cwd, provider: "codex" });
+        expect(codex.filter((x) => x.name === "imagegen")).toEqual([{ name: "imagegen", description: "Codex's own skill", skill: true }]);
+        // One the harness has itself is listed once, as the harness's.
+        expect(codex.filter((x) => x.name === "explain")).toEqual([{ name: "explain", description: "Explain code simply", args: "<path>", skill: true }]);
+        const claude = await c.call<CommandInfo[]>("commands.list", { cwd, provider: "claude-code" });
+        expect(claude.find((x) => x.name === "code-review")).toEqual({ name: "code-review", description: "Claude Code's own command" });
+        c.close();
+    });
+
     test("/name runs it: the transcript shows the command, the model gets the instructions", async () => {
         const c = await client();
         const id = await c.create(project());
