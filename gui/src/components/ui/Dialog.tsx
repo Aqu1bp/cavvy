@@ -13,6 +13,8 @@ export interface DialogProps {
     bare?: boolean;
     /** A bare dialog's name: the id of the heading its content brings. */
     labelledBy?: string;
+    /** Opens near the top of the window (the command palette) instead of in its middle. */
+    top?: boolean;
     children: JSX.Element;
     footer?: JSX.Element;
 }
@@ -73,10 +75,10 @@ function DialogInner(p: DialogProps) {
     });
     return (
         <Portal>
-            <div class="dialog-backdrop" onPointerDown={(e) => e.target === e.currentTarget && p.onClose()}>
+            <div class={`dialog-backdrop ${p.top ? "top" : ""}`} onPointerDown={(e) => e.target === e.currentTarget && p.onClose()}>
                 <div
                     ref={box}
-                    class={`dialog ${p.class ?? ""}`}
+                    class={`dialog glass ${p.class ?? ""}`}
                     style={{ width: `min(${p.width ?? 520}px, calc(100vw - 32px))` }}
                     role="dialog"
                     aria-modal="true"
@@ -88,7 +90,7 @@ function DialogInner(p: DialogProps) {
                             <div>
                                 <div class="dialog-title" id={titleId}>{p.title}</div>
                                 <Show when={p.subtitle}>
-                                    <div class="dialog-sub">{p.subtitle}</div>
+                                    <div class="dialog-sub selectable">{p.subtitle}</div>
                                 </Show>
                             </div>
                             <button class="icon-btn dialog-close" onClick={() => p.onClose()} aria-label="Close">
@@ -96,7 +98,7 @@ function DialogInner(p: DialogProps) {
                             </button>
                         </div>
                     </Show>
-                    <div class="dialog-body">{p.children}</div>
+                    <div class="dialog-body selectable">{p.children}</div>
                     <Show when={p.footer}>
                         <div class="dialog-foot">{p.footer}</div>
                     </Show>

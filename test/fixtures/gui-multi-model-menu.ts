@@ -49,6 +49,8 @@ function picker(available = true) {
             focus() { active = n; n.props.onFocus?.(); },
             click() { if (!n.props.disabled) n.props.onClick?.(); },
             scrollIntoView() {}, getClientRects: () => [{}],
+            // mountMenu's click guard for aria-disabled rows; click() here calls the handler directly.
+            addEventListener() {}, removeEventListener() {},
             matches: (s: string) => matches(n, s),
             getAttribute: (s: string) => n.props[s] === undefined ? null : String(n.props[s]),
             contains: (target: Node) => all(n).includes(target),

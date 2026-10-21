@@ -1,31 +1,206 @@
-/* ---- Settings → Usage ------------------------------------------------------ */
+/* ---- Settings → Usage ------------------------------------------------------
+   Plan limits as bars in grouped lists (the mockup's .useb); the local
+   dashboard's parts in the same rounded groups. The dashboard's older rules
+   live in runs.css; `.usage-view` here outranks them. */
 
 .usage-bar {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 8px;
 }
 
-.usage-plan {
-    display: flex;
-    gap: 10px;
-    align-items: flex-start;
-    padding: 12px 0;
-    border-bottom: 1px solid var(--hairline);
+.usage-view .usage-tools {
+    margin-bottom: 18px;
+}
+
+.usage-view .set-h {
+    margin: 22px 4px 8px;
+    font-size: 0.857rem;
+    font-weight: 600;
+    color: var(--fg-3);
+}
+
+.usage-view .usage-tools + .set-h {
+    margin-top: 0;
+}
+
+.usage-view .set-h.usage-bar h3 {
+    font-weight: 600;
 }
 
 .usage-plan-name {
+    flex-wrap: wrap;
+}
+
+.usage-plan-name svg {
+    flex: none;
+}
+
+.plan-asof {
     font-weight: 500;
 }
 
-.usage-plan-line {
-    margin-top: 3px;
+/* One limit window: its name and where it stands, then the bar. */
+.useb {
+    padding: 12px 14px;
+}
+
+.useb + .useb,
+.plan-reached + .useb {
+    border-top: 0.5px solid var(--line);
+}
+
+.useb-top {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.useb-top b {
+    flex: 1;
+    min-width: 0;
+    font-weight: 500;
+}
+
+.useb-sub {
+    color: var(--fg-3);
     font-size: 0.857rem;
-    color: var(--fg-muted);
+    text-align: right;
+}
+
+.useb-bar {
+    height: 6px;
+    border-radius: var(--pill);
+    background: var(--press);
+    overflow: hidden;
+}
+
+.useb-bar i {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--accent);
+}
+
+.useb.reached .useb-bar i {
+    background: var(--danger);
+}
+
+.useb.reached .useb-sub {
+    color: var(--danger);
+}
+
+.usage-plan .plan-reached {
+    padding: 10px 14px;
+    color: var(--danger);
+    font-weight: 500;
+    font-size: 0.857rem;
+}
+
+/* The local dashboard. */
+.usage-view .usage-sub {
+    margin: 2px 0 0;
+    font-size: 0.821rem;
+    color: var(--fg-3);
+}
+
+.usage-view .usage-dashboard > .usage-sub {
+    margin: 0 4px;
+}
+
+.usage-view .usage-headline {
+    margin: 2px 4px 0;
+    font-size: clamp(1.8rem, 5vw, 2.6rem);
+    font-weight: 650;
+    letter-spacing: -0.03em;
+}
+
+.usage-view .usage-sources {
+    display: block;
+    margin: 18px 0 0;
+}
+
+.usage-view .usage-source {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    padding: 12px 14px;
+}
+
+.usage-view .usage-source + .usage-source {
+    border-top: 0.5px solid var(--line);
+}
+
+.usage-view .usage-source strong {
+    font-weight: 500;
+}
+
+.usage-view .usage-chart {
+    margin: 12px 0 0;
+    padding: 12px 14px 10px;
+}
+
+.usage-view .usage-chart figcaption {
+    margin-bottom: 8px;
+    font-size: 0.821rem;
+    color: var(--fg-3);
+}
+
+.usage-view .usage-chart text {
+    fill: var(--fg-3);
+}
+
+.usage-view .usage-cards {
+    gap: 8px;
+}
+
+.usage-view .usage-card {
+    padding: 12px 14px;
+    border: 0;
+    border-radius: 12px;
+    background: var(--group);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+}
+
+.usage-view .usage-card span {
+    color: var(--fg-3);
+    font-size: 0.821rem;
+}
+
+.usage-view .usage-card strong {
+    margin-top: 6px;
+    font-weight: 600;
+}
+
+.usage-cost {
+    padding: 14px;
+}
+
+.usage-view .usage-cost-bar {
+    height: 8px;
+    border-radius: var(--pill);
+    background: var(--press);
+}
+
+.usage-view .usage-cost-legend {
+    margin: 12px 0 0;
+    color: var(--fg-2);
+}
+
+.usage-view .usage-cost-legend i {
+    border-radius: 50%;
+}
+
+.usage-view .usage-share > div {
+    height: 6px;
+    border-radius: var(--pill);
+    background: var(--press);
 }
 
 .usage-table-wrap {
-    margin-top: 8px;
     overflow-x: auto;
 }
 
@@ -36,19 +211,25 @@
 }
 
 .usage-table th {
-    padding: 6px 8px;
+    padding: 10px 12px 8px;
     text-align: left;
     font-size: 0.786rem;
-    font-weight: 500;
-    color: var(--fg-muted);
-    border-bottom: 1px solid var(--hairline);
+    font-weight: 600;
+    color: var(--fg-3);
+    border-bottom: 0.5px solid var(--line);
     white-space: nowrap;
 }
 
-.usage-table td {
-    padding: 8px;
+.usage-table td,
+.usage-table tbody th {
+    padding: 10px 12px;
     vertical-align: top;
-    border-bottom: 1px solid var(--hairline);
+    border-bottom: 0.5px solid var(--line);
+}
+
+.usage-table tbody tr:last-child td,
+.usage-table tbody tr:last-child th {
+    border-bottom: 0;
 }
 
 .usage-table .num {
@@ -66,17 +247,22 @@
     align-items: center;
     gap: 6px;
     min-width: 0;
+    font-weight: 500;
     overflow-wrap: anywhere;
 }
 
 .usage-sub {
     margin-top: 2px;
     font-size: 0.786rem;
-    color: var(--fg-muted);
+    color: var(--fg-3);
 }
 
 .usage-unknown {
-    color: var(--fg-muted);
+    color: var(--fg-3);
     font-style: italic;
 }
 
+.usage-view .usage-table-wrap:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+    outline-offset: 2px;
+}

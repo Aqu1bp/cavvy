@@ -101,6 +101,7 @@ export function Popover(p: PopoverProps) {
                         "max-height": `${Math.min(pos()?.maxHeight ?? 480, p.maxHeight ?? 560)}px`,
                     }}
                     data-side={pos()?.bottom !== undefined ? "top" : "bottom"}
+                    data-align={!p.point && p.align === "end" ? "end" : "start"}
                 >
                     {p.children}
                 </div>

@@ -3,8 +3,8 @@
 // when it's been changed.
 
 import { createEffect, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
-import { AlertTriangle, ArrowLeft, ChartColumn, Copy, ExternalLink, FolderOpen, Info, Keyboard, KeyRound, Minus, Palette, Plug, Plus, Puzzle, RotateCcw, Settings as Gear, SlidersHorizontal, Trash2 } from "lucide-solid";
-import { MODE_LABELS, type EffortLevel, type FollowUpMode, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
+import { AlertTriangle, ArrowLeft, ChartColumn, ChevronDown, Copy, ExternalLink, FolderOpen, Info, Keyboard, Minus, Palette, Plug, Plus, Puzzle, RotateCcw, Settings as Gear, SlidersHorizontal, X } from "lucide-solid";
+import { MODE_LABELS, type FollowUpMode, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
 import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
 import { connectCli, editors, refreshEditors } from "../state/actions";
 import { ACCENTS, CHAT_WIDTHS, prefs, PREF_DEFAULTS, setPrefs, type AccentId, type Scheme } from "../state/prefs";
@@ -15,10 +15,11 @@ import { ACTIONS, CONTEXTS, KEYBINDINGS_DOCS, formatKeys } from "../../../src/ke
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { Accounts } from "./Accounts";
-import { MODES } from "./ModePicker";
-import { CrumbSep, TitleBar } from "./Header";
+import { ModeIcon, MODES } from "./ModePicker";
+import { EffortBars } from "./ModelPicker";
+import { effortLevels, effortOf } from "../lib/effort";
 import { SidebarFrame } from "./Sidebar";
-import { Kbd, Segmented, Spinner, Toggle } from "./ui/bits";
+import { Segmented, Spinner, Toggle } from "./ui/bits";
 import { UsageView } from "./UsageView";
 import { Plugins } from "./Plugins";
 
@@ -72,30 +73,45 @@ export function SettingsNav() {
     );
 }
 
-/** One setting: title and description on the left, the control, then Reset when it differs from the default. */
+/** One setting: title and description on the left, its control on the right, then Reset when it differs from the default. */
 function Row(p: { title: string; desc?: JSX.Element; children?: JSX.Element; reset?: () => void; changed?: boolean; class?: string }) {
     return (
-        <div class={`srow ${p.class ?? ""}`}>
-            <div class="srow-text">
-                <div class="srow-title">{p.title}</div>
+        <div class={`set-row ${p.class ?? ""}`}>
+            <div class="set-lab">
+                <div class="set-title">{p.title}</div>
                 <Show when={p.desc}>
-                    <div class="srow-desc">{p.desc}</div>
+                    <div class="set-desc">{p.desc}</div>
                 </Show>
             </div>
-            <div class="srow-control">{p.children}</div>
-            <span class="srow-reset">
-                <Show when={p.changed && p.reset}>
-                    <button class="hb sm" title="Reset" aria-label={`Reset ${p.title.toLowerCase()}`} onClick={() => p.reset!()}>
-                        <RotateCcw size={14} />
-                    </button>
-                </Show>
-            </span>
+            <div class="set-ctl">{p.children}</div>
+            <Show when={p.reset}>
+                <span class="set-reset">
+                    <Show when={p.changed}>
+                        <button class="hb sm" title="Reset" aria-label={`Reset ${p.title.toLowerCase()}`} onClick={() => p.reset!()}>
+                            <RotateCcw size={14} />
+                        </button>
+                    </Show>
+                </span>
+            </Show>
         </div>
     );
 }
 
+/** A heading over a group of settings. */
 function Group(p: { children: JSX.Element }) {
-    return <div class="sgroup">{p.children}</div>;
+    return <div class="set-h">{p.children}</div>;
+}
+
+/** A heading, and its settings in one rounded list. */
+function Section(p: { title?: JSX.Element; children: JSX.Element; class?: string }) {
+    return (
+        <>
+            <Show when={p.title}>
+                <Group>{p.title}</Group>
+            </Show>
+            <div class={`set-group ${p.class ?? ""}`}>{p.children}</div>
+        </>
+    );
 }
 
 /** "" clears a model (undefined wouldn't reach the server: JSON leaves it out). */
@@ -107,24 +123,38 @@ async function update(patch: GuiSettings) {
     }
 }
 
-function ModelSelect(p: { value?: string; onChange: (v: string) => void; empty: string; label: string; apiOnly?: boolean }) {
-    // Claude Code and Codex run whole turns: they can't answer a one-off request.
-    const groups = () => (p.apiOnly ? app.models.filter((g) => app.providers.find((x) => x.id === g.provider)?.kind !== "agent") : app.models);
+/** A native select drawn as the mockup's .selbtn: a small raised pill with a chevron, and a glyph before its value when there is one. */
+function SelectButton(p: { icon?: JSX.Element; children: JSX.Element }) {
     return (
-        <select class="select" aria-label={p.label} value={p.value ?? ""} onChange={(e) => p.onChange(e.currentTarget.value)}>
-            <option value="">{p.empty}</option>
-            <For each={groups()}>
-                {(g) => (
-                    <optgroup label={g.providerName}>
-                        <For each={g.models}>{(m) => <option value={m.ref}>{m.name}</option>}</For>
-                    </optgroup>
-                )}
-            </For>
-        </select>
+        <span class={`selbtn ${p.icon ? "has-ic" : ""}`}>
+            <Show when={p.icon}>
+                <span class="selbtn-ic" aria-hidden="true">{p.icon}</span>
+            </Show>
+            {p.children}
+            <ChevronDown size={13} class="selbtn-chev" aria-hidden="true" />
+        </span>
     );
 }
 
-const EFFORT_LABELS: Record<EffortLevel, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
+function ModelSelect(p: { value?: string; onChange: (v: string) => void; empty: string; label: string; apiOnly?: boolean }) {
+    // Claude Code and Codex run whole turns: they can't answer a one-off request.
+    const groups = () => (p.apiOnly ? app.models.filter((g) => app.providers.find((x) => x.id === g.provider)?.kind !== "agent") : app.models);
+    const provider = () => (p.value ? app.models.find((g) => g.models.some((m) => m.ref === p.value)) : undefined);
+    return (
+        <SelectButton icon={provider() ? <ProviderIcon id={provider()!.provider} name={provider()!.providerName} size={15} /> : undefined}>
+            <select class="select" aria-label={p.label} value={p.value ?? ""} onChange={(e) => p.onChange(e.currentTarget.value)}>
+                <option value="">{p.empty}</option>
+                <For each={groups()}>
+                    {(g) => (
+                        <optgroup label={g.providerName}>
+                            <For each={g.models}>{(m) => <option value={m.ref}>{m.name}</option>}</For>
+                        </optgroup>
+                    )}
+                </For>
+            </select>
+        </SelectButton>
+    );
+}
 
 // Confirmation can be dismissed and Settings remounted while the request runs.
 const [enablingBypass, setEnablingBypass] = createSignal(false);
@@ -154,103 +184,124 @@ function General() {
     const editorChoices = () => editors().filter((e) => e.installed || e.id === s().editor);
     return (
         <>
-            <Group>Defaults for new sessions</Group>
-            <Row title="Model" desc="Also changes when you pick a model in a session.">
-                <ModelSelect label="Model" value={s().model} empty="Automatic" onChange={(v) => void update({ model: v })} />
-            </Row>
-            <Row title="Small model" desc="For session titles and page summaries.">
-                <ModelSelect label="Small model" value={s().smallModel} empty="Provider's small default" onChange={(v) => void update({ smallModel: v })} />
-            </Row>
-            <Row title="Auto-mode reviewer" desc="Checks actions in Auto before they run, on API models. Claude Code and Codex use their own.">
-                <ModelSelect apiOnly label="Auto-mode reviewer" value={s().reviewModel} empty="Sonnet 5.5, or the session's model" onChange={(v) => void update({ reviewModel: v })} />
-            </Row>
-            <Row title="Permission mode" desc="Shift-Tab cycles it in the composer.">
-                <select class="select" aria-label="Permission mode" value={s().defaultMode ?? "default"} onChange={(e) => void update({ defaultMode: e.currentTarget.value as PermissionModeId })}>
-                    <For each={MODES.filter((m) => m !== "bypassPermissions" || s().allowBypass)}>{(m) => <option value={m}>{MODE_LABELS[m].label}</option>}</For>
-                </select>
-            </Row>
-            <Row title="Reasoning effort">
-                <select class="select" aria-label="Reasoning effort" value={s().effort ?? ""} onChange={(e) => void update({ effort: e.currentTarget.value as EffortLevel })}>
-                    <Show when={!s().effort}>
-                        <option value="" disabled>
-                            Provider's default
-                        </option>
-                    </Show>
-                    <For each={Object.keys(EFFORT_LABELS) as EffortLevel[]}>{(e) => <option value={e}>{EFFORT_LABELS[e]}</option>}</For>
-                </select>
-            </Row>
-            <Group>Behaviour</Group>
-            <Row title="Show thinking" desc="The model's reasoning, when the provider shares it.">
-                <Toggle
-                    label="Show thinking"
-                    checked={prefs.showThinking}
-                    onChange={(v) => {
-                        setPrefs("showThinking", v);
-                        void update({ showThinking: v });
-                    }}
-                />
-            </Row>
-            <Row title="Compact automatically" desc="Summarize the conversation when the context window is nearly full.">
-                <Toggle label="Compact automatically" checked={s().autoCompact !== false} onChange={(v) => void update({ autoCompact: v })} />
-            </Row>
-            <Row title="Messages sent while working" desc={`Steer joins the running turn at its next step; queue waits for it to end. ${mod}+Shift+Enter does the other for one message.`}>
-                <select class="select" aria-label="Messages sent while working" value={s().followUpBehavior ?? "steer"} onChange={(e) => void update({ followUpBehavior: e.currentTarget.value as FollowUpMode })}>
-                    <option value="steer">Steer the current turn</option>
-                    <option value="queue">Queue for after it</option>
-                </select>
-            </Row>
-            <Row
-                title="Compact while idle"
-                desc="Summarize a long conversation (200K tokens or more) just before its prompt cache expires, so coming back costs less and answers sooner. Sending a message cancels it."
-                changed={s().idleCompaction !== undefined && s().idleCompaction !== true}
-                reset={() => void update({ idleCompaction: true })}
-            >
-                <select
-                    class="select"
-                    aria-label="Compact while idle"
-                    disabled={s().autoCompact === false}
-                    title={s().autoCompact === false ? "Turn on Compact automatically to use this" : undefined}
-                    value={s().autoCompact === false || s().idleCompaction === false ? "off" : s().idleCompaction === "always" ? "always" : "hour"}
-                    onChange={(e) => {
-                        const v = e.currentTarget.value;
-                        void update({ idleCompaction: v === "always" ? "always" : v === "off" ? false : true });
-                    }}
+            <Section title="Defaults for new sessions">
+                <Row title="Model" desc="Also changes when you pick a model in a session.">
+                    <ModelSelect label="Model" value={s().model} empty="Automatic" onChange={(v) => void update({ model: v })} />
+                </Row>
+                <Row title="Small model" desc="For session titles and page summaries.">
+                    <ModelSelect label="Small model" value={s().smallModel} empty="Provider's small default" onChange={(v) => void update({ smallModel: v })} />
+                </Row>
+                <Row title="Auto-mode reviewer" desc="Checks actions in Auto before they run, on API models. Claude Code and Codex use their own.">
+                    <ModelSelect apiOnly label="Auto-mode reviewer" value={s().reviewModel} empty="Sonnet 5.5, or the session's model" onChange={(v) => void update({ reviewModel: v })} />
+                </Row>
+                <Row title="Permission mode" desc="Shift-Tab cycles it in the composer.">
+                    <SelectButton icon={<ModeIcon mode={s().defaultMode ?? "default"} size={14} />}>
+                        <select class="select" aria-label="Permission mode" value={s().defaultMode ?? "default"} onChange={(e) => void update({ defaultMode: e.currentTarget.value as PermissionModeId })}>
+                            <For each={MODES.filter((m) => m !== "bypassPermissions" || s().allowBypass)}>{(m) => <option value={m}>{MODE_LABELS[m].label}</option>}</For>
+                        </select>
+                    </SelectButton>
+                </Row>
+                {/* The composer's effort bars, smaller. Every level: it's where new sessions start, whatever their model. */}
+                <Row title="Reasoning effort" desc="Where new sessions start.">
+                    <span class="set-effort">
+                        <span class="set-effort-l">{effortOf(s().effort)?.label ?? "Provider's default"}</span>
+                        <EffortBars size="sm" levels={effortLevels(undefined)} value={s().effort} onChange={(v) => void update({ effort: v })} />
+                    </span>
+                </Row>
+            </Section>
+            <Section title="Conversation">
+                <Row title="Show thinking" desc="The model's reasoning, when the provider shares it.">
+                    <Toggle
+                        label="Show thinking"
+                        checked={prefs.showThinking}
+                        onChange={(v) => {
+                            setPrefs("showThinking", v);
+                            void update({ showThinking: v });
+                        }}
+                    />
+                </Row>
+                <Row title="Compact automatically" desc="Summarize the conversation when the context window is nearly full.">
+                    <Toggle label="Compact automatically" checked={s().autoCompact !== false} onChange={(v) => void update({ autoCompact: v })} />
+                </Row>
+                <Row title="Messages sent while working" desc={`Steer joins the running turn at its next step; queue waits for it to end. ${mod}+Shift+Enter does the other for one message.`}>
+                    <SelectButton>
+                        <select class="select" aria-label="Messages sent while working" value={s().followUpBehavior ?? "steer"} onChange={(e) => void update({ followUpBehavior: e.currentTarget.value as FollowUpMode })}>
+                            <option value="steer">Steer the current turn</option>
+                            <option value="queue">Queue for after it</option>
+                        </select>
+                    </SelectButton>
+                </Row>
+                <Row
+                    title="Compact while idle"
+                    desc="Summarize a long conversation (200K tokens or more) just before its prompt cache expires, so coming back costs less and answers sooner. Sending a message cancels it."
+                    // Unset arrives as null over the wire: only a real choice shows Reset.
+                    changed={s().idleCompaction === false || s().idleCompaction === "always"}
+                    reset={() => void update({ idleCompaction: true })}
                 >
-                    <option value="hour">After an hour away</option>
-                    <option value="always">After five minutes too</option>
-                    <option value="off">Off</option>
-                </select>
-            </Row>
-            <Row title="Web search">
-                <select class="select" aria-label="Web search" value={s().webSearch ?? "auto"} onChange={(e) => void update({ webSearch: e.currentTarget.value })}>
-                    <option value="auto">Automatic</option>
-                    <option value="anthropic">Anthropic (built in)</option>
-                    <option value="brave">Brave</option>
-                    <option value="tavily">Tavily</option>
-                    <option value="duckduckgo">DuckDuckGo</option>
-                    <option value="off">Off</option>
-                </select>
-            </Row>
-            <Row title="Open files with" desc="For file links in replies, changed files and tool rows. It opens on the computer running Harness.">
-                {/* Each option says whether it's the one chosen: the list arrives after the
-                    saved choice, and a select's value set before its options matches nothing. */}
-                <select class="select" aria-label="Open files with" onChange={(e) => void update({ editor: e.currentTarget.value })}>
-                    <option value="" disabled={!s().editor} selected={!s().editor}>
-                        {s().editor ? "None" : "Choose an editor"}
-                    </option>
-                    <For each={editorChoices()}>
-                        {(e) => (
-                            <option value={e.id} selected={e.id === s().editor}>
-                                {e.name}
-                                {!e.installed ? " (not found)" : e.lines || e.id === "finder" ? "" : " (without line numbers)"}
+                    <SelectButton>
+                        <select
+                            class="select"
+                            aria-label="Compact while idle"
+                            disabled={s().autoCompact === false}
+                            title={s().autoCompact === false ? "Turn on Compact automatically to use this" : undefined}
+                            value={s().autoCompact === false || s().idleCompaction === false ? "off" : s().idleCompaction === "always" ? "always" : "hour"}
+                            onChange={(e) => {
+                                const v = e.currentTarget.value;
+                                void update({ idleCompaction: v === "always" ? "always" : v === "off" ? false : true });
+                            }}
+                        >
+                            <option value="hour">After an hour away</option>
+                            <option value="always">After five minutes too</option>
+                            <option value="off">Off</option>
+                        </select>
+                    </SelectButton>
+                </Row>
+                <Row title="Web search">
+                    <SelectButton>
+                        <select class="select" aria-label="Web search" value={s().webSearch ?? "auto"} onChange={(e) => void update({ webSearch: e.currentTarget.value })}>
+                            <option value="auto">Automatic</option>
+                            <option value="anthropic">Anthropic (built in)</option>
+                            <option value="brave">Brave</option>
+                            <option value="tavily">Tavily</option>
+                            <option value="duckduckgo">DuckDuckGo</option>
+                            <option value="off">Off</option>
+                        </select>
+                    </SelectButton>
+                </Row>
+                <Row title="Expand tool activity" desc="Show every tool call instead of a one-line summary.">
+                    <Toggle label="Expand tool activity" checked={prefs.expandActivity} onChange={(v) => setPrefs("expandActivity", v)} />
+                </Row>
+                <Row title="Enter sends" desc={`Off: ${mod}+Enter sends and Enter adds a line.`}>
+                    <Toggle label="Enter sends" checked={prefs.enterSends} onChange={(v) => setPrefs("enterSends", v)} />
+                </Row>
+            </Section>
+            <Section title="This computer">
+                <Row title="Open files with" desc="For file links in replies, changed files and tool rows. It opens on the computer running Harness.">
+                    {/* Each option says whether it's the one chosen: the list arrives after the
+                        saved choice, and a select's value set before its options matches nothing. */}
+                    <SelectButton>
+                        <select class="select" aria-label="Open files with" onChange={(e) => void update({ editor: e.currentTarget.value })}>
+                            <option value="" disabled={!s().editor} selected={!s().editor}>
+                                {s().editor ? "None" : "Choose an editor"}
                             </option>
-                        )}
-                    </For>
-                </select>
-            </Row>
-            <Row title="Allow bypass mode" desc="Lets sessions run everything without asking. Only for sandboxes and containers.">
-                <Toggle label="Allow bypass mode" checked={Boolean(s().allowBypass)} onChange={(v) => (v ? setConfirmBypass(true) : void update({ allowBypass: false }))} />
-            </Row>
+                            <For each={editorChoices()}>
+                                {(e) => (
+                                    <option value={e.id} selected={e.id === s().editor}>
+                                        {e.name}
+                                        {!e.installed ? " (not found)" : e.lines || e.id === "finder" ? "" : " (without line numbers)"}
+                                    </option>
+                                )}
+                            </For>
+                        </select>
+                    </SelectButton>
+                </Row>
+                <Row title="Notifications" desc="When a session needs you or finishes while you're elsewhere.">
+                    <Toggle label="Notifications" checked={prefs.notifications} onChange={(v) => setPrefs("notifications", v)} />
+                </Row>
+                <Row title="Allow bypass mode" desc="Lets sessions run everything without asking. Only for sandboxes and containers.">
+                    <Toggle tone="danger" label="Allow bypass mode" checked={Boolean(s().allowBypass)} onChange={(v) => (v ? setConfirmBypass(true) : void update({ allowBypass: false }))} />
+                </Row>
+            </Section>
             <ConfirmDialog
                 open={confirmBypass()}
                 onClose={() => setConfirmBypass(false)}
@@ -261,16 +312,6 @@ function General() {
             >
                 Lets sessions run tools without asking for permission. Enable only in a sandbox or container.
             </ConfirmDialog>
-            <Group>This computer</Group>
-            <Row title="Notifications" desc="When a session needs you or finishes while you're elsewhere.">
-                <Toggle label="Notifications" checked={prefs.notifications} onChange={(v) => setPrefs("notifications", v)} />
-            </Row>
-            <Row title="Enter sends" desc={`Off: ${mod}+Enter sends and Enter adds a line.`}>
-                <Toggle label="Enter sends" checked={prefs.enterSends} onChange={(v) => setPrefs("enterSends", v)} />
-            </Row>
-            <Row title="Expand tool activity" desc="Show every tool call instead of a one-line summary.">
-                <Toggle label="Expand tool activity" checked={prefs.expandActivity} onChange={(v) => setPrefs("expandActivity", v)} />
-            </Row>
         </>
     );
 }
@@ -458,6 +499,13 @@ function ProviderRow(p: { pr: ProviderInfo }) {
         await connectCli(p.pr);
         setBusy(false);
     };
+    const removable = () => (p.pr.agentCli ? p.pr.configured : p.pr.requiresKey && p.pr.configured && !p.pr.source?.startsWith("$"));
+    // The line under the name: the key as stored (masked), or what's missing.
+    const sub = () =>
+        p.pr.masked ? undefined
+        : p.pr.agentCli ? (p.pr.agentCli.installed ? (p.pr.configured ? undefined : "Not set up") : "Not installed")
+        : !p.pr.configured ? (p.pr.requiresKey ? "Not set up" : "Set up in the terminal")
+        : undefined;
     return (
         <div class="prov">
             <ConfirmDialog
@@ -471,80 +519,85 @@ function ProviderRow(p: { pr: ProviderInfo }) {
                 {p.pr.agentCli ? `Stops using ${p.pr.name} in Harness. It stays signed in.` : `Removes the stored ${p.pr.name} key from Harness. You'll need to add it again to use this provider.`}
             </ConfirmDialog>
             <div class="prov-line">
-                <span class="prov-ico" title={p.pr.configured ? "Set up" : "Not set up"}>
+                <span class="prov-logo" title={p.pr.configured ? "Set up" : "Not set up"}>
                     <ProviderIcon id={p.pr.id} name={p.pr.name} size={18} />
-                    <span class={`dot ${p.pr.configured ? "ok" : ""}`} />
                 </span>
-                <span class="prov-name">{p.pr.name}</span>
-                <Show when={p.pr.masked}>
-                    <code class="prov-key">{p.pr.masked}</code>
-                </Show>
-                <Show when={p.pr.source && p.pr.source !== "local"}>
-                    <span class="chip tiny">{p.pr.source}</span>
-                </Show>
-                <Show when={p.pr.local}>
-                    <span class="chip tiny">local</span>
-                </Show>
-                <span class="grow" />
-                <Show when={p.pr.agentCli}>
-                    {(cli) => (
-                        <Show
-                            when={!p.pr.configured}
-                            fallback={
-                                <button class="hb sm" title={`Turn off (${p.pr.name} stays signed in)`} aria-label={`Turn off ${p.pr.name}`} onClick={() => setConfirmRemove(true)}>
-                                    <Trash2 size={14} />
-                                </button>
-                            }
-                        >
+                <div class="prov-lab">
+                    <div class="prov-name">
+                        <span class="truncate">{p.pr.name}</span>
+                        <Show when={p.pr.agentCli && p.pr.configured}>
+                            <span class="tag ok">Connected</span>
+                        </Show>
+                        <Show when={p.pr.local}>
+                            <span class="tag">local</span>
+                        </Show>
+                    </div>
+                    <Show when={p.pr.masked || sub()}>
+                        <div class="prov-sub">
+                            <Show when={p.pr.masked} fallback={sub()}>
+                                <code class="prov-key">{p.pr.masked}</code>
+                            </Show>
+                        </div>
+                    </Show>
+                </div>
+                <span class="prov-end">
+                    <Show when={p.pr.source && p.pr.source !== "local"}>
+                        <span class="tag">{p.pr.source}</span>
+                    </Show>
+                    <Show when={p.pr.agentCli}>
+                        {(cli) => (
                             <Show
-                                when={cli().installed}
+                                when={!p.pr.configured}
                                 fallback={
-                                    <>
-                                        <span class="muted small">Not installed</span>
+                                    <button class="btn ghost sm" title={`Turn off (${p.pr.name} stays signed in)`} aria-label={`Turn off ${p.pr.name}`} onClick={() => setConfirmRemove(true)}>
+                                        Turn off
+                                    </button>
+                                }
+                            >
+                                <Show
+                                    when={cli().installed}
+                                    fallback={
                                         <Show when={p.pr.keyUrl}>
                                             <button class="link-btn" onClick={() => void openExternal(p.pr.keyUrl!)}>
                                                 Install <ExternalLink size={11} />
                                             </button>
                                         </Show>
-                                    </>
-                                }
-                            >
-                                <button class="btn secondary sm" disabled={busy()} onClick={() => void connect()}>
-                                    {busy() ? <Spinner size={12} /> : `Use my ${cli().plan}`}
-                                </button>
-                            </Show>
-                        </Show>
-                    )}
-                </Show>
-                <Show when={!p.pr.requiresKey && !p.pr.configured && !p.pr.agentCli}>
-                    <span class="muted small">Set up in the terminal</span>
-                </Show>
-                <Show when={p.pr.requiresKey}>
-                    <Show
-                        when={p.pr.configured && !p.pr.source?.startsWith("$")}
-                        fallback={
-                            <Show when={!p.pr.configured}>
-                                <Show when={p.pr.keyUrl}>
-                                    <button class="link-btn" onClick={() => void openExternal(p.pr.keyUrl!)}>
-                                        Get a key <ExternalLink size={11} />
+                                    }
+                                >
+                                    <button class="btn secondary sm" disabled={busy()} onClick={() => void connect()}>
+                                        {busy() ? <Spinner size={12} /> : `Use my ${cli().plan}`}
                                     </button>
                                 </Show>
-                                <button class="btn secondary sm" onClick={() => setAdding(!adding())}>
-                                    Add key
-                                </button>
                             </Show>
-                        }
-                    >
-                        <button class="hb sm" title="Remove key" aria-label={`Remove the ${p.pr.name} key`} onClick={() => setConfirmRemove(true)}>
-                            <Trash2 size={14} />
-                        </button>
+                        )}
                     </Show>
-                </Show>
+                    <Show when={p.pr.requiresKey}>
+                        <Show
+                            when={removable()}
+                            fallback={
+                                <Show when={!p.pr.configured}>
+                                    <Show when={p.pr.keyUrl}>
+                                        <button class="link-btn" onClick={() => void openExternal(p.pr.keyUrl!)}>
+                                            Get a key <ExternalLink size={11} />
+                                        </button>
+                                    </Show>
+                                    <button class="btn secondary sm" aria-expanded={adding()} onClick={() => setAdding(!adding())}>
+                                        Add key
+                                    </button>
+                                </Show>
+                            }
+                        >
+                            <button class="hb sm" title="Remove key" aria-label={`Remove the ${p.pr.name} key`} onClick={() => setConfirmRemove(true)}>
+                                <X size={14} />
+                            </button>
+                        </Show>
+                    </Show>
+                </span>
             </div>
             <Show when={p.pr.agentCli?.installed}><Accounts provider={p.pr} /></Show>
             <Show when={adding()}>
                 <div class="prov-add">
-                    <input class="input mono" type="password" autofocus placeholder={`Paste your ${p.pr.name} key`} value={key()} onInput={(e) => setKey(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && void save()} />
+                    <input class="input mono" type="password" autofocus aria-label={`${p.pr.name} key`} placeholder={`Paste your ${p.pr.name} key`} value={key()} onInput={(e) => setKey(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && void save()} />
                     <button class="btn primary sm" disabled={!key().trim() || busy()} onClick={() => void save()}>
                         {busy() ? <Spinner size={12} /> : "Save"}
                     </button>
@@ -571,22 +624,32 @@ function Providers() {
             setBusy(false);
         }
     };
+    // Grouped as the mockup has them: subscriptions (the CLIs), API keys, models on this computer, then web search.
     const models = () => app.providers.filter((p) => !p.search);
-    const search = () => app.providers.filter((p) => p.search);
+    const groups = () => [
+        { title: "Subscriptions", list: models().filter((p) => p.agentCli) },
+        { title: "API keys", list: models().filter((p) => !p.agentCli && !p.local) },
+        { title: "On this computer", list: models().filter((p) => !p.agentCli && p.local) },
+        { title: "Web search", list: app.providers.filter((p) => p.search) },
+    ].filter((g) => g.list.length);
     return (
         <>
-            <div class="prov-quick">
-                <KeyRound size={16} />
-                <input class="input mono" type="password" aria-label="API key" placeholder="Paste any API key; the provider is detected from its format" value={key()} onInput={(e) => setKey(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && void quickAdd()} />
-                <button class="btn primary sm" disabled={!key().trim() || busy()} onClick={() => void quickAdd()}>
-                    {busy() ? <Spinner size={12} /> : "Add"}
-                </button>
+            <div class="set-group">
+                <div class="keyin">
+                    <input class="input mono" type="password" aria-label="API key" placeholder="Paste any API key; the provider is detected from its format" value={key()} onInput={(e) => setKey(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && void quickAdd()} />
+                    <button class="btn primary sm" disabled={!key().trim() || busy()} onClick={() => void quickAdd()}>
+                        {busy() ? <Spinner size={12} /> : "Add"}
+                    </button>
+                </div>
             </div>
+            <For each={groups()}>
+                {(g) => (
+                    <Section title={g.title} class="prov-group">
+                        <For each={g.list}>{(pr) => <ProviderRow pr={pr} />}</For>
+                    </Section>
+                )}
+            </For>
             <div class="set-note">Keys are checked with one cheap request, then stored in your OS keychain (or a private file when there's none). They're only ever sent to their own provider and are masked everywhere else.</div>
-            <Group>Models</Group>
-            <For each={models()}>{(pr) => <ProviderRow pr={pr} />}</For>
-            <Group>Web search</Group>
-            <For each={search()}>{(pr) => <ProviderRow pr={pr} />}</For>
             <div class="set-note">
                 Claude Code and Codex use your own Claude subscription or ChatGPT plan through the CLI installed on this computer; it stays signed in on its own and nothing secret is stored here. Gemini on Google Cloud (Vertex AI) is set up from the terminal with <code>harness auth add vertex</code>. Custom OpenAI-compatible endpoints: <code>/login custom</code> in the terminal app.
             </div>
@@ -607,11 +670,16 @@ const BUILT_IN: [string, string][] = [
 
 const CONTEXT_TITLES: Record<string, string> = { Global: "Anywhere", Chat: "In the input box", Autocomplete: "In the / and @ menu" };
 
+/** One keystroke as one key cap: "⌘ K". */
+function Cap(p: { keys: string }) {
+    return <kbd>{p.keys.split("+").join(" ")}</kbd>;
+}
+
 /** One key sequence as key caps: a chord's strokes one after another. */
 function KeySeq(p: { keys: string }) {
     return (
         <span class="sc-seq">
-            <For each={p.keys.split(" ")}>{(stroke, i) => <>{i() > 0 && <span class="sc-then">then</span>}<Kbd keys={stroke} /></>}</For>
+            <For each={p.keys.split(" ")}>{(stroke, i) => <>{i() > 0 && <span class="sc-then">then</span>}<Cap keys={stroke} /></>}</For>
         </span>
     );
 }
@@ -638,26 +706,28 @@ function Shortcuts() {
     const rows = (context: string) => ACTIONS.filter((a) => a.context === context && keymap().keysOf.has(a.id));
     return (
         <>
-            <Row
-                title="Keybindings file"
-                desc={
-                    <>
-                        <span class="mono">{path()}</span>
-                        <br />
-                        Same format as Claude Code's <code>keybindings.json</code>, shared with the terminal app. Saved changes apply at once.{" "}
-                        <a href={KEYBINDINGS_DOCS} onClick={(e) => { e.preventDefault(); void openExternal(KEYBINDINGS_DOCS); }}>Format</a>
-                    </>
-                }
-            >
-                <span class="sc-file-actions">
-                    <Show when={exists()} fallback={<button class="btn sm" disabled={creating()} onClick={() => void create()}><Plus size={14} /> Create file</button>}>
-                        <button class="btn sm" onClick={() => void copyPath()}><Copy size={14} /> Copy path</button>
-                    </Show>
-                    <Show when={canReveal && exists()}>
-                        <button class="btn sm" onClick={() => void revealPath(path())}><FolderOpen size={14} /> Show</button>
-                    </Show>
-                </span>
-            </Row>
+            <Section>
+                <Row
+                    title="Keybindings file"
+                    desc={
+                        <>
+                            <span class="mono">{path()}</span>
+                            <br />
+                            Same format as Claude Code's <code>keybindings.json</code>, shared with the terminal app. Saved changes apply at once.{" "}
+                            <a href={KEYBINDINGS_DOCS} onClick={(e) => { e.preventDefault(); void openExternal(KEYBINDINGS_DOCS); }}>Format</a>
+                        </>
+                    }
+                >
+                    <span class="sc-file-actions">
+                        <Show when={exists()} fallback={<button class="btn sm" disabled={creating()} onClick={() => void create()}><Plus size={14} /> Create file</button>}>
+                            <button class="btn sm" onClick={() => void copyPath()}><Copy size={14} /> Copy path</button>
+                        </Show>
+                        <Show when={canReveal && exists()}>
+                            <button class="btn sm" onClick={() => void revealPath(path())}><FolderOpen size={14} /> Show</button>
+                        </Show>
+                    </span>
+                </Row>
+            </Section>
             <Show when={issues().length}>
                 <div class="sc-issues" role="alert">
                     <div class="sc-issues-title">
@@ -671,71 +741,63 @@ function Shortcuts() {
             <For each={CONTEXTS}>
                 {(context) => (
                     <Show when={rows(context).length}>
-                        <Group>{CONTEXT_TITLES[context]}</Group>
-                        <For each={rows(context)}>
-                            {(a) => {
-                                const keys = () => (keymap().keysOf.get(a.id) ?? []).map((k) => formatKeys(k, "gui", os));
-                                const custom = () => keymap().customized.has(a.id);
-                                return (
-                                    <Row title={a.description} desc={<span class="mono sc-action">{a.id}</span>}>
-                                        <span class="sc-keys">
-                                            <Show when={custom()}><span class="sc-custom" title="Set in your keybindings file">Custom</span></Show>
-                                            <Show when={keys().length} fallback={<span class="sc-none">Not bound</span>}>
-                                                <For each={keys()}>{(k) => <KeySeq keys={k} />}</For>
-                                            </Show>
-                                        </span>
-                                    </Row>
-                                );
-                            }}
-                        </For>
+                        <Section title={CONTEXT_TITLES[context]}>
+                            <For each={rows(context)}>
+                                {(a) => {
+                                    const keys = () => (keymap().keysOf.get(a.id) ?? []).map((k) => formatKeys(k, "gui", os));
+                                    const custom = () => keymap().customized.has(a.id);
+                                    return (
+                                        <Row title={a.description} desc={<span class="mono sc-action">{a.id}</span>}>
+                                            <span class="sc-keys">
+                                                <Show when={custom()}><span class="sc-custom" title="Set in your keybindings file">Custom</span></Show>
+                                                <Show when={keys().length} fallback={<span class="sc-none">Not bound</span>}>
+                                                    <For each={keys()}>{(k) => <KeySeq keys={k} />}</For>
+                                                </Show>
+                                            </span>
+                                        </Row>
+                                    );
+                                }}
+                            </For>
+                        </Section>
                     </Show>
                 )}
             </For>
-            <Group>Built in</Group>
-            <For each={BUILT_IN}>
-                {([k, d]) => (
-                    <Row title={d}>
-                        <span class="sc-keys">
-                            <For each={k.split("  ")}>{(part) => <Kbd keys={part} />}</For>
-                        </span>
-                    </Row>
-                )}
-            </For>
+            <Section title="Built in">
+                <For each={BUILT_IN}>
+                    {([k, d]) => (
+                        <Row title={d}>
+                            <span class="sc-keys">
+                                <For each={k.split("  ")}>{(part) => <Cap keys={part} />}</For>
+                            </span>
+                        </Row>
+                    )}
+                </For>
+            </Section>
         </>
     );
 }
 
 function About() {
     return (
-        <>
+        <Section>
             <Row title="Version">
-                <span class="srow-value">{app.hello?.version ?? "—"}</span>
+                <span class="set-val">{app.hello?.version ?? "—"}</span>
             </Row>
             <Row title="Protocol">
-                <span class="srow-value">{app.hello?.protocol ?? "—"}</span>
+                <span class="set-val">{app.hello?.protocol ?? "—"}</span>
             </Row>
             <Row title="Data">
-                <span class="srow-value mono">{app.hello?.home ?? "—"}</span>
+                <span class="set-val">{app.hello?.home ?? "—"}</span>
             </Row>
             <Row title="Platform">
-                <span class="srow-value">{app.hello?.platform ?? "—"}</span>
+                <span class="set-val">{app.hello?.platform ?? "—"}</span>
             </Row>
             <Row title="Connection">
-                <span class="srow-value">{app.conn}</span>
+                <span class="set-val">{app.conn}</span>
             </Row>
-        </>
+        </Section>
     );
 }
-
-const INTRO: Record<SettingsTab, string> = {
-    general: "Defaults for new sessions, and how Harness behaves.",
-    appearance: "How Harness looks on this computer. Changes apply as you pick.",
-    providers: "Where the models come from: API keys, and the CLIs signed in on this computer.",
-    plugins: "Commands, agents, skills, hooks and MCP servers, installed from marketplaces.",
-    usage: "Your plans' limits, and the tokens and cost of your sessions by model.",
-    shortcuts: "Keys that work across the app, with any you set in your keybindings file.",
-    about: "This build, and where it keeps its data.",
-};
 
 export function SettingsPage() {
     const label = () => TABS.find((t) => t.id === tab())?.label ?? "Settings";
@@ -743,41 +805,49 @@ export function SettingsPage() {
     // Each section starts at its top.
     createEffect(on(tab, () => page?.scrollTo({ top: 0 }), { defer: true }));
     return (
-        <>
-            <TitleBar>
-                <span class="bc static">Settings</span>
-                <CrumbSep />
-                <span class="bc static current">{label()}</span>
-            </TitleBar>
-            <div ref={page} class="settings-page">
-                <div class="settings-col">
-                    <h1 class="set-h1">{label()}</h1>
-                    <p class="set-intro">{INTRO[tab()]}</p>
-                    <Switch>
-                        <Match when={tab() === "general"}>
-                            <General />
-                        </Match>
-                        <Match when={tab() === "appearance"}>
-                            <Appearance />
-                        </Match>
-                        <Match when={tab() === "providers"}>
-                            <Providers />
-                        </Match>
-                        <Match when={tab() === "plugins"}>
-                            <Plugins />
-                        </Match>
-                        <Match when={tab() === "usage"}>
-                            <UsageView />
-                        </Match>
-                        <Match when={tab() === "shortcuts"}>
-                            <Shortcuts />
-                        </Match>
-                        <Match when={tab() === "about"}>
-                            <About />
-                        </Match>
-                    </Switch>
+        <div ref={page} class={`settings-page ${prefs.sidebar ? "" : "rail-off"}`}>
+            <div class="set-in">
+                {/* The header stays while the page scrolls; the window drags from it. */}
+                <div class="set-top" data-tauri-drag-region>
+                    <h2 data-tauri-drag-region>{label()}</h2>
+                    <button class="set-close" title={`${withShortcut("Close settings", "app:settings")}, or Esc`} aria-label="Close settings" onClick={() => setSettingsTab(undefined)}>
+                        <X size={16} />
+                    </button>
                 </div>
+                {/* With no sidebar beside it, the sections as a row of pills. */}
+                <nav class="set-pills" aria-label="Settings sections">
+                    <For each={TABS}>
+                        {(t) => (
+                            <button class={tab() === t.id ? "on" : ""} aria-current={tab() === t.id ? "page" : undefined} onClick={() => open(t.id)}>
+                                {t.label}
+                            </button>
+                        )}
+                    </For>
+                </nav>
+                <Switch>
+                    <Match when={tab() === "general"}>
+                        <General />
+                    </Match>
+                    <Match when={tab() === "appearance"}>
+                        <Appearance />
+                    </Match>
+                    <Match when={tab() === "providers"}>
+                        <Providers />
+                    </Match>
+                    <Match when={tab() === "plugins"}>
+                        <Plugins />
+                    </Match>
+                    <Match when={tab() === "usage"}>
+                        <UsageView />
+                    </Match>
+                    <Match when={tab() === "shortcuts"}>
+                        <Shortcuts />
+                    </Match>
+                    <Match when={tab() === "about"}>
+                        <About />
+                    </Match>
+                </Switch>
             </div>
-        </>
+        </div>
     );
 }
