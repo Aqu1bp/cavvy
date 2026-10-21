@@ -59,7 +59,7 @@ mock.module("../../gui/src/state/ui", () => ({
     setContextCardOpen: (open: boolean) => contextOpenings.push(open),
     setMcpOpen: (value: { focus?: string }) => mcpOpenings.push(value),
     ...Object.fromEntries([
-        "requestComposerFocus", "setAgentFocus", "setArchiveRequest", "setFolderPickerOpen", "setModePickerOpen",
+        "requestComposerFocus", "setAgentFocus", "setArchiveRequest", "setDeleteRequest", "setFolderPickerOpen", "setModePickerOpen",
         "setModelPickerOpen", "setReview", "setRewindOpen", "setSettingsTab", "railOpen", "setRailOpen",
     ].map((name) => [name, noop])),
     shellLayout: () => ({ railMode: "dock" }),
