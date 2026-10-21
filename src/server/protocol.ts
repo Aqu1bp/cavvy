@@ -847,6 +847,8 @@ export interface AccountInfo {
     description?: string;
     email?: string;
     plan?: string;
+    /** Signed in with an API key: usage is billed to that key, so there's no plan to show. */
+    apiKey?: boolean;
 }
 
 export interface ProviderInfo {
@@ -1426,7 +1428,7 @@ export interface Methods {
     "plugins.action": { params: PluginActionParams; result: PluginsInfo & { message: string } };
     "settings.get": { params: { cwd?: string }; result: GuiSettings };
     "settings.update": { params: { patch: GuiSettings }; result: GuiSettings };
-    /** The agent CLIs' plan limits known so far (since the server started). */
+    /** The agent CLIs' plan limits known so far: the last ones saved before the server started, then any newer report. */
     "limits.get": { params: Record<string, never>; result: PlanLimits[] };
     /** Tokens and cost per provider and model, from the session transcripts. */
     "usage.summary": { params: { days: UsageDays }; result: UsageSummary };

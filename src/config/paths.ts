@@ -20,6 +20,8 @@ export const paths = {
     mcpOAuth: () => join(harnessHome(), "mcp-oauth.json"),
     history: () => join(harnessHome(), "history.jsonl"),
     modelCache: () => join(harnessHome(), "cache", "models.json"),
+    /** The last plan limits the agent CLIs reported (src/server/limits-store.ts). */
+    planLimits: () => join(harnessHome(), "limits.json"),
     userCommands: () => join(harnessHome(), "commands"),
     userAgents: () => join(harnessHome(), "agents"),
     userMemory: () => join(harnessHome(), "HARNESS.md"),
