@@ -208,9 +208,11 @@ describe("one-off requests on Claude Code and Codex (prompt hooks, MCP sampling)
     test("Codex answers in an ephemeral thread with its system prompt as instructions, and no shell, MCP servers or other tools", async () => {
         process.env.FAKE_ONEOFF_ANSWER = '{"ok": false, "reason": "no"}';
         process.env.FAKE_USER_MCP = JSON.stringify({ notes: { command: "notes-server" } });
+        // A plugin installed with `codex plugin add`: its servers start unless the plugin is off.
+        process.env.FAKE_USER_PLUGINS = JSON.stringify({ "fmt@local": { enabled: true } });
         const r = await ask("codex");
         expect(r.content).toEqual([{ type: "text", text: '{"ok": false, "reason": "no"}' }]);
-        expect(logLines().find((l) => l.oneOffThread)?.oneOffThread).toMatchObject({ baseInstructions: "Reply with JSON.", approvalPolicy: "never", sandbox: "read-only", config: { "features.shell_tool": false, "features.unified_exec": false, "features.multi_agent": false, web_search: "disabled", mcp_servers: { notes: { enabled: false } } } });
+        expect(logLines().find((l) => l.oneOffThread)?.oneOffThread).toMatchObject({ baseInstructions: "Reply with JSON.", approvalPolicy: "never", sandbox: "read-only", config: { "features.shell_tool": false, "features.unified_exec": false, "features.multi_agent": false, web_search: "disabled", mcp_servers: { notes: { enabled: false } }, plugins: { "fmt@local": { enabled: false } } } });
         expect(logLines().find((l) => "oneOffPrompt" in l)?.oneOffPrompt).toBe("Is it fine?");
     });
 

@@ -124,7 +124,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_PROJECT_MCP", "FAKE_NO_CONFIG_LAYERS", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_SCENARIO", "FAKE_CODEX_SCENARIO", "FAKE_MCP_CALLS", "FAKE_MCP_REFUSE", "FAKE_DECLINE", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_REJECT_CONFIG", "FAKE_USER_MCP", "FAKE_NO_CONFIG_READ", "FAKE_LOG_ENV"]) delete process.env[k];
+    for (const k of ["FAKE_PROJECT_MCP", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_SCENARIO", "FAKE_CODEX_SCENARIO", "FAKE_MCP_CALLS", "FAKE_MCP_REFUSE", "FAKE_DECLINE", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_REJECT_CONFIG", "FAKE_USER_MCP", "FAKE_NO_CONFIG_READ", "FAKE_LOG_ENV"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -1324,6 +1324,15 @@ describe("Codex as the main agent", () => {
             expect(threads[0].config.mcp_servers.project).toEqual({ enabled: false });
             expect(threads[1].config).toEqual({ mcp_servers: { project: { enabled: false } } });
         }
+    });
+
+    test("a project's plugin stays off alongside the delegation server", async () => {
+        process.env.FAKE_PROJECT_PLUGINS = JSON.stringify({ "theirs@local": { enabled: true } });
+        const { run } = await makeAgent({ provider: "codex" });
+        expect(await run("hello")).toBe("done");
+        const config = received().find((m) => m.method === "thread/start").params.config;
+        expect(config.plugins).toEqual({ "theirs@local": { enabled: false } });
+        expect(config.mcp_servers.harness.url).toBeString();
     });
 
     test("a project harness server stays disabled instead of merging with delegation", async () => {

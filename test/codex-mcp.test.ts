@@ -62,3 +62,26 @@ for (const disabledReason of [undefined, null, "", {}, false]) {
         expect(result.config).toEqual({ mcp_servers: { project: { enabled: false } } });
     });
 }
+
+// Codex 0.163 lists a native plugin's MCP servers nowhere in mcp_servers (checked against a real install),
+// so only turning the plugin off keeps them from starting.
+test("read-only turns and missing provenance also turn off Codex's own plugins, whose servers mcp_servers doesn't list", () => {
+    const config = { mcp_servers: {}, plugins: { "fmt@local": { enabled: true }, "old@local": { enabled: false }, "bad@local": "x" } };
+    const layers = [{ name: { type: "user" }, config }];
+    expect(codexMcpOverrides({ config, layers }, true).config).toEqual({ plugins: { "fmt@local": { enabled: false } } });
+    expect(codexMcpOverrides({ config, layers }, false).config).toBeUndefined();
+    const lost = codexMcpOverrides({ config: { ...config, mcp_servers: { personal: {} } }, layers }, false);
+    expect(lost.missingProvenance).toBe(true);
+    expect(lost.config).toEqual({ mcp_servers: { personal: { enabled: false } }, plugins: { "fmt@local": { enabled: false } } });
+});
+
+test("a plugin a project layer turns on is turned off, like the project's own servers", () => {
+    const config = { plugins: { "mine@local": { enabled: true }, "theirs@local": { enabled: true } } };
+    const result = codexMcpOverrides({ config, layers: [
+        { name: { type: "user" }, config: { plugins: { "mine@local": { enabled: true }, "theirs@local": { enabled: false } } } },
+        { name: { type: "project" }, config: { plugins: { "theirs@local": { enabled: true } } } },
+        { name: { type: "project" }, config: { plugins: { "mine@local": { enabled: true } } }, disabledReason: "untrusted" },
+    ] }, false);
+    expect(result.missingProvenance).toBe(false);
+    expect(result.config).toEqual({ plugins: { "theirs@local": { enabled: false } } });
+});

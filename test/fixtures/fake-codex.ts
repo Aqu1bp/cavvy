@@ -58,6 +58,7 @@
 //                     FAKE_NO_GOALS=1: an older Codex without them; FAKE_GOAL_RACE=1: the first turn/start while the goal is
 //                     active loses to a turn Codex starts itself (refused); the usage-limit scenario stops it (usageLimited)
 // FAKE_USER_MCP       config/read's mcp_servers: the user's own servers (JSON); FAKE_NO_CONFIG_READ=1 fails config/read
+// FAKE_USER_PLUGINS / FAKE_PROJECT_PLUGINS  config/read's plugins table per layer (JSON), as Codex 0.163 reports native plugins
 // FAKE_CONFIG_LAYERS  overrides config/read provenance (JSON)
 // Hooks: like Codex 0.163, hooks given with -c hooks=… run only when hooks.state trusts them by the hash Codex
 //                     computes (sha256 of the normalized handler as sorted JSON). A trusted PreToolUse mcp_tool hook
@@ -610,12 +611,15 @@ async function handle(m: any) {
             if (process.env.FAKE_NO_CONFIG_READ === "1") return fail("config/read failed: invalid configuration");
             const userMcp = JSON.parse(process.env.FAKE_USER_MCP ?? "{}");
             const projectMcp = JSON.parse(process.env.FAKE_PROJECT_MCP ?? "{}");
+            const userPlugins = JSON.parse(process.env.FAKE_USER_PLUGINS ?? "null");
+            const projectPlugins = JSON.parse(process.env.FAKE_PROJECT_PLUGINS ?? "null");
+            const plugins = userPlugins || projectPlugins ? { plugins: { ...userPlugins, ...projectPlugins } } : {};
             return reply({
-                config: { model: null, mcp_servers: { ...userMcp, ...projectMcp } },
+                config: { model: null, mcp_servers: { ...userMcp, ...projectMcp }, ...plugins },
                 origins: {},
                 ...(process.env.FAKE_NO_CONFIG_LAYERS === "1" ? {} : { layers: process.env.FAKE_CONFIG_LAYERS ? JSON.parse(process.env.FAKE_CONFIG_LAYERS) : [
-                    { name: { type: "user", file: "/tmp/fake/config.toml" }, config: { mcp_servers: userMcp } },
-                    { name: { type: "project", dotCodexFolder: `${cwd}/.codex` }, config: { mcp_servers: projectMcp } },
+                    { name: { type: "user", file: "/tmp/fake/config.toml" }, config: { mcp_servers: userMcp, ...(userPlugins ? { plugins: userPlugins } : {}) } },
+                    { name: { type: "project", dotCodexFolder: `${cwd}/.codex` }, config: { mcp_servers: projectMcp, ...(projectPlugins ? { plugins: projectPlugins } : {}) } },
                 ] }),
             });
         case "initialized":
