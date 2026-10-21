@@ -2619,7 +2619,7 @@ describe("Claude Code background commands' own timeouts (#193)", () => {
         } finally { restore(); }
     });
 
-    test("at the overall cap a sub-agent is stopped while a command within its timeout runs on", async () => {
+    test("at the overall cap a sub-agent waits while a command within its timeout runs on, then is stopped", async () => {
         process.env.FAKE_SCENARIO = "shell-background-mixed";
         process.env.FAKE_TIMEOUT = "3600000";
         process.env.FAKE_SHELL_MS = "600";

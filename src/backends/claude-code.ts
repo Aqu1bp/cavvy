@@ -134,8 +134,6 @@ interface BackgroundWork {
     started?: number;
     /** A sub-agent's Agent call. */
     toolUseId?: string;
-    /** A command a sub-agent ran: that sub-agent's Agent call (stopping the sub-agent ends its shells too). */
-    ownerToolUseId?: string;
     label: string;
 }
 
@@ -436,8 +434,8 @@ class ClaudeTurn {
     private commandWaitingSince = new Map<string, number>();
     private waitingLabel?: string;
     /** Each Bash call's command and own background timeout, by its tool_use id; then by the task it started (task_started), from when. */
-    private shellCommands = new Map<string, { command: string; timeoutMs?: number; agent?: string }>();
-    private taskCommands = new Map<string, { command: string; timeoutMs?: number; agent?: string; started: number }>();
+    private shellCommands = new Map<string, { command: string; timeoutMs?: number }>();
+    private taskCommands = new Map<string, { command: string; timeoutMs?: number; started: number }>();
     private stoppedTaskIds = new Set<string>();
     private stoppedBackground = new Set<string>();
     private pendingStops = new Map<string, { task: BackgroundWork; since: number }>();
@@ -489,7 +487,7 @@ class ClaudeTurn {
         if (t.resumeId) a.push("--resume", t.resumeId, ...(t.forkSession ? ["--fork-session"] : []));
         if (t.maxTurns && Number.isFinite(t.maxTurns)) a.push("--max-turns", String(t.maxTurns));
         a.push("--append-system-prompt", [t.appendSystemPrompt, t.goalContext,
-            `After an answer, Harness waits for a reported background Bash command until its own \`timeout\` runs out, counted from its start (at most ${span(backgroundTiming.commandMaxTimeoutMs)}); for one without a timeout, and for each monitor, it waits up to ${claudeBackgroundWaitMs(t.backgroundWaitSec) / 1000} seconds after the answer. Sub-agents and other background work have a ${span(backgroundTiming.maxWaitMs)} limit, which doesn't cut short a command still within its own timeout. For a long finite job in the background (a test suite, a build, a benchmark), pass \`timeout\` with \`run_in_background\`, set to how long it may take. Background commands and monitors do not survive process shutdown, a user interrupt, or the end of their wait. Recognized dev servers/watchers are stopped without waiting after the answer, timeout or not. Consume finite-work results before declaring success; do not expect a background server to outlive the turn. Work not reported by the CLI cannot be waited for.`,
+            `After an answer, Harness waits for a reported background Bash command until its own \`timeout\` runs out, counted from its start (at most ${span(backgroundTiming.commandMaxTimeoutMs)}); for one without a timeout, and for each monitor, it waits up to ${claudeBackgroundWaitMs(t.backgroundWaitSec) / 1000} seconds after the answer. Sub-agents and other background work have a ${span(backgroundTiming.maxWaitMs)} limit, which doesn't cut short a command still within its own timeout (nor, while one is, any sub-agent). For a long finite job in the background (a test suite, a build, a benchmark), pass \`timeout\` with \`run_in_background\`, set to how long it may take. Background commands and monitors do not survive process shutdown, a user interrupt, or the end of their wait. Recognized dev servers/watchers are stopped without waiting after the answer, timeout or not. Consume finite-work results before declaring success; do not expect a background server to outlive the turn. Work not reported by the CLI cannot be waited for.`,
         ].filter(Boolean).join("\n\n"));
         for (const d of t.additionalDirectories) a.push("--add-dir", d);
         if (this.pluginDir) a.push("--plugin-dir", this.pluginDir);
@@ -576,7 +574,7 @@ class ClaudeTurn {
         const listed = (this.background ?? []).filter((t) => !this.stoppedTaskIds.has(t.id) && !tasks.has(t.id) && !(t.type === "local_agent" && labels.has(t.description)));
         return [...agents.map((id) => ({ id: this.agentTasks.get(id), toolUseId: id, agent: true, label: this.agentLabels.get(id) ?? "sub-agent" })), ...listed.map((t) => {
             const shell = t.type === "local_bash" ? this.taskCommands.get(t.id) : undefined;
-            return { id: t.id, agent: t.type === "local_agent", commandTask: t.type === "local_bash" || t.type.startsWith("monitor"), monitor: t.type.startsWith("monitor"), command: t.type === "local_bash" ? shell?.command ?? t.description : undefined, timeoutMs: shell?.timeoutMs, started: shell?.started, ownerToolUseId: shell?.agent, label: t.description || "background task" };
+            return { id: t.id, agent: t.type === "local_agent", commandTask: t.type === "local_bash" || t.type.startsWith("monitor"), monitor: t.type.startsWith("monitor"), command: t.type === "local_bash" ? shell?.command ?? t.description : undefined, timeoutMs: shell?.timeoutMs, started: shell?.started, label: t.description || "background task" };
         })];
     }
 
@@ -652,9 +650,10 @@ class ClaudeTurn {
             // Waited long enough (only between Claude Code's turns, so none is cut short). A command still
             // within its own timeout goes on (until it's up, above); what else is left stops.
             const ms = backgroundTiming.maxWaitMs;
-            // Stopping a sub-agent ends the shells it started, so one whose command is still within its timeout goes on too.
-            const owners = new Set(left.filter((t) => ownDeadline(t) !== undefined && t.ownerToolUseId).map((t) => t.ownerToolUseId));
-            const over = left.filter((t) => ownDeadline(t) === undefined && !(t.toolUseId && owners.has(t.toolUseId)));
+            // Sub-agents go on too while one does: stopping a sub-agent ends the shells it started (its sub-agents' too),
+            // and a command's completion goes to the sub-agent that ran it. Its timeout bounds the wait.
+            const timed = left.some((t) => ownDeadline(t) !== undefined);
+            const over = left.filter((t) => ownDeadline(t) === undefined && !(timed && t.agent));
             // So too while a finished command's report is still due: stop the rest by task id and let that turn come.
             if (over.length < left.length || (this.reportsDue && over.every((t) => t.id))) {
                 for (const task of over) this.stopTask(task, `waited ${span(ms)}, the limit for background work`);
@@ -1105,7 +1104,7 @@ class ClaudeTurn {
                 if (over) continue;
                 const { name, input } = toHarness(b.name, b.input ?? {});
                 const title = titleFor(name, input);
-                if (b.name === "Bash" && typeof input.command === "string") this.shellCommands.set(b.id, { command: input.command, timeoutMs: claudeCommandTimeoutMs(input), agent: parent });
+                if (b.name === "Bash" && typeof input.command === "string") this.shellCommands.set(b.id, { command: input.command, timeoutMs: claudeCommandTimeoutMs(input) });
                 this.subTools.set(b.id, { name, input, title, started: Date.now(), parent });
                 this.host.emit({ type: "subagent", parentId: parent, label, event: { type: "tool_start", call: { type: "tool_call", id: b.id, name, input }, title } });
             }
