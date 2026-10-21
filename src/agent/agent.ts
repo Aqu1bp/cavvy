@@ -1147,17 +1147,20 @@ export class Agent {
         if (!(await this.preCompact(opts))) return false;
         this.emit({ type: "compact_start", auto: opts.auto, ...(opts.idle ? { idle: true } : {}) });
         const req = [...history, compactRequestMessage(opts.instructions)];
-        // Retried like a turn's request; an idle compaction is worth it only before the cache expires, so it gets one try.
-        const send = (r: ChatRequest) => (opts.idle ? this.client.stream(r, () => {}) : this.withRetries(opts.signal, () => this.client.stream(r, () => {})));
-        let summary = "";
-        try {
-            // Same system prompt and tools as the session, so the cached prefix is reused.
-            const res = await send(this.request(req, opts.signal, { maxTokens: 16_000 }));
-            summary = textOf(res);
+        // Each summary request (the transcript fallback's too) is retried like a turn's, and its spend recorded.
+        // An idle compaction is worth it only before the cache expires, so it gets one try.
+        const send = async (r: ChatRequest) => {
+            const res = await (opts.idle ? this.client.stream(r, () => {}) : this.withRetries(opts.signal, () => this.client.stream(r, () => {})));
             if (res.usage) {
                 const cost = costOf(res.usage, this.model);
                 this.session.recordUsage(modelRef(this.model), res.usage, cost.usd, cost.unknown);
             }
+            return res;
+        };
+        let summary = "";
+        try {
+            // Same system prompt and tools as the session, so the cached prefix is reused.
+            summary = textOf(await send(this.request(req, opts.signal, { maxTokens: 16_000 })));
         } catch (e) {
             if (isAbort(e, opts.signal)) throw e;
             if (!isContextOverflow(e)) throw e;
@@ -1177,8 +1180,7 @@ export class Agent {
                 maxTokens: maxOut,
                 lightweight: true,
             });
-            const res = await send(req);
-            summary = textOf(res);
+            summary = textOf(await send(req));
         }
         if (!summary.trim()) throw new Error("The model returned an empty summary");
         const keep: Message[] = [summaryMessage(summary, Boolean(opts.continuing))];

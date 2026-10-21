@@ -249,6 +249,20 @@ describe("the agent loop's compaction", () => {
         expect(session.messages.length).toBe(2);
     });
 
+    test("both summary requests' spend is recorded: the first, and the transcript fallback's", async () => {
+        const { agent, session } = setup((_req, n) => {
+            // The summary request answers with a tool call only: the transcript fallback runs.
+            if (n === 1) return todo("t1", usage(1000, 100));
+            return say("SUMMARY", usage(2000, 500));
+        });
+        twoMessages(session);
+        const before = session.cost;
+        expect(await agent.compact({ auto: false, signal: new AbortController().signal })).toBe(true);
+        // (1000 * 3 + 100 * 15) / 1e6, then (2000 * 3 + 500 * 15) / 1e6.
+        expect(session.cost - before).toBeCloseTo(0.0045 + 0.0135, 9);
+        expect(session.usageByModel.get("anthropic:claude-x")?.usage).toMatchObject({ inputTokens: 3000, outputTokens: 600 });
+    });
+
     test("an error that isn't transient isn't retried", async () => {
         const { agent, session, requests } = setup(() => {
             throw new ProviderError("invalid x-api-key", 401, false);
