@@ -597,8 +597,7 @@
         max-width: 100%;
     }
 
-    .prov-add,
-    .prov .accounts {
+    .prov-add {
         padding-left: 14px;
     }
 }
