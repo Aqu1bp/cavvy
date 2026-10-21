@@ -67,7 +67,7 @@ const scope = {
     jumpTarget: jump, setJumpTarget: setJump, findOpen: () => false,
     openFind() {}, setFindQuery() {}, toast() { throw new Error("unexpected toast"); },
     turnAt: (turns: any[], _seg: number, index: number) => turns[index], BAR_ROOM: 48,
-    rewindTarget: { set() {} }, setRewindOpen() {}, ArrowDown: () => node("icon"), FindBar: () => node("find"),
+    rewindTarget: { set() {} }, setRewindOpen() {}, ArrowDown: () => node("icon"), FindBar: () => node("find"), CardFoldsProvider: (p: any) => p.children,
     setTimeout() {},
     TurnView: (p: any) => {
         restoredOpen ||= p.workOpen;

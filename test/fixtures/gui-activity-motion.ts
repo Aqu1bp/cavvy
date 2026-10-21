@@ -17,7 +17,7 @@ const command = (id: string, status = "running"): any => ({ t: "tool", id, name:
 const has = (n: Node, cls: string) => n.props.class?.split(" ").includes(cls);
 const row = (root: Node, id: string) => all(root).find((n) => n.props["data-find"] === id)!;
 
-function setup(blocks: any[], expanded = true, agents: any[] = []) {
+function setup(blocks: any[], expanded = true, agents: any[] = [], session?: string) {
     const [view, setView] = createStore<any>({ state: { id: "session", busy: true, interactions: [] }, turns: [{ id: "turn", status: "running", startedAt: 1000, blocks }], agents });
     const [clock, setClock] = solid.createSignal(2000);
     const [reveal, setReveal] = solid.createSignal<any>();
@@ -30,13 +30,19 @@ function setup(blocks: any[], expanded = true, agents: any[] = []) {
         Markdown: () => node("markdown"), CopyButton: icon, Spinner: icon, openReview: () => {}, openInEditor: () => {},
         ...Object.fromEntries(["AlertTriangle", "Bot", "Check", "ChevronDown", "ChevronRight", "ClipboardList", "FileDiff", "FilePen", "FilePlus2", "FileText", "FolderTree", "Globe", "Hand", "ListChecks", "MessageCircleQuestion", "Plug", "Radar", "Search", "ShieldCheck", "SquareArrowOutUpRight", "SquareTerminal", "Wrench", "X", "Brain"].map((name) => [name, icon])),
     };
-    const ActivityGroup = component(activity, "ActivityGroup", scope);
-    const groupBlocks = component(activity, "groupBlocks", scope);
+    // One copy of the module, as the app has: its components share its state (the command cards' folds).
+    const { ActivityGroup, CardFoldsProvider, groupBlocks } = component(`${activity}\nconst moduleExports = { ActivityGroup, CardFoldsProvider, groupBlocks };`, "moduleExports", scope);
     const TurnView = component(source("TurnView"), "TurnView", { ...scope, ActivityGroup, groupBlocks: (b: any) => { groups++; return groupBlocks(b); } });
-    const root = node("root");
-    const dispose = renderer.render(() => TurnView({ get turn() { return view.turns[0]; }, get state() { return view.state; }, get agents() { return view.agents; }, last: true }), root);
+    /** Draws the turn again, as a session's transcript does when it's opened (in `session`'s folds, when given). */
+    const mount = (session?: string) => {
+        const root = node("root");
+        const turn = () => TurnView({ get turn() { return view.turns[0]; }, get state() { return view.state; }, get agents() { return view.agents; }, last: true });
+        const dispose = renderer.render(() => (session ? CardFoldsProvider({ sessionId: session, get children() { return turn(); } }) : turn()), root);
+        return { root, dispose };
+    };
+    const { root, dispose } = mount(session);
     const op = (value: any) => setView(produce((v: any) => applyOp(v, { turnId: "turn", ...value })));
-    return { root, view, op, dispose, setClock, setReveal, icons: () => icons, groups: () => groups };
+    return { root, view, setView, op, dispose, mount, setClock, setReveal, icons: () => icons, groups: () => groups };
 }
 
 test("one row and icon survive progress, completion, next calls, folding and find", () => {
@@ -274,5 +280,133 @@ test("an edit with no diff still offers its input and output, as its row did", (
         }
         expect(text(row(h.root, "nb"))).toContain("Show full output");
         expect(text(h.root)).not.toContain("Couldn't render");
+    } finally { h.dispose(); }
+});
+
+
+// A command card: one line until it's opened.
+const head = (card: Node) => all(card).find((n) => n.tag === "button" && has(n, "cmd-h"))!;
+const body = (card: Node) => all(card).find((n) => has(n, "tcard-body"));
+const finished = (id: string, status = "ok", output = "kiwi output\n 14 pass\n") => ({ ...command(id, status), durationMs: 2000, output });
+
+test("a command card is folded to its header line by default", () => {
+    const h = setup([finished("cmd")], false);
+    try {
+        const card = row(h.root, "cmd");
+        expect(head(card).props["aria-expanded"]).toBe(false);
+        expect(body(card)).toBeUndefined();
+        // The command, how long it took and how it went; not what it printed.
+        expect(text(head(card))).toContain("echo cmd");
+        expect(text(head(card))).toContain("2s");
+        expect(text(head(card))).toContain("14 pass");
+        expect(text(card)).not.toContain("kiwi output");
+        expect(all(card).some((n) => has(n, "tcard-tail"))).toBe(false);
+        // A multi-line command shows its first line; the whole of it is in the body.
+        h.op({ op: "block", block: { ...finished("multi"), input: { command: "cd app\nmake all" } } });
+        const multi = row(h.root, "multi");
+        expect(head(multi).props["aria-expanded"]).toBe(false);
+        expect(text(multi)).toContain("cd app");
+        expect(text(multi)).not.toContain("make all");
+        // With nothing to open, there's no chevron and nothing to toggle.
+        h.op({ op: "block", block: { ...finished("quiet", "ok", ""), summary: "(no output)" } });
+        const quiet = row(h.root, "quiet");
+        expect(head(quiet).props.disabled).toBe(true);
+        expect(head(quiet).props["aria-expanded"]).toBeUndefined();
+        expect(text(h.root)).not.toContain("Couldn't render");
+    } finally { h.dispose(); }
+});
+
+test("a running command shows its last line folded; a failed one stays folded on its last line of output", () => {
+    const h = setup([command("cmd")], false);
+    try {
+        const card = row(h.root, "cmd");
+        for (let i = 0; i < 5; i++) h.op({ op: "append", blockId: "cmd", field: "progress", text: `line ${i}\n` });
+        expect(body(card)).toBeUndefined();
+        const tail = () => all(card).find((n) => has(n, "tcard-tail"));
+        expect(text(tail()!)).toBe("line 4");
+        expect(tail()!.props["data-find-skip"]).toBe(true);
+        expect(text(card)).not.toContain("line 3");
+        expect(text(card)).toContain("Running");
+        h.op({ op: "block.patch", blockId: "cmd", patch: { status: "error", durationMs: 2000, output: "Compiling\nerror: kiwi is undefined\n\n" } });
+        expect(row(h.root, "cmd")).toBe(card);
+        expect(body(card)).toBeUndefined();
+        expect(text(tail()!)).toBe("error: kiwi is undefined");
+        expect(has(tail()!, "err")).toBe(true);
+        expect(text(card)).toContain("Failed");
+        expect(text(card)).not.toContain("Compiling");
+        // Opened, the output is in the body and the header's glimpse goes.
+        head(card).props.onClick();
+        expect(text(body(card)!)).toContain("Compiling");
+        expect(tail()).toBeUndefined();
+    } finally { h.dispose(); }
+});
+
+test("a command card opens on click and stays open when it's drawn again", () => {
+    const h = setup([finished("cmd"), finished("other")], false);
+    try {
+        const card = row(h.root, "cmd");
+        head(card).props.onClick();
+        expect(head(card).props["aria-expanded"]).toBe(true);
+        expect(text(body(card)!)).toContain("kiwi output");
+        // Its neighbour is still folded.
+        expect(body(row(h.root, "other"))).toBeUndefined();
+        // The turn ends: the work folds away under "Worked for", the cards with it; opened again, they're drawn anew.
+        h.setView("turns", 0, { status: "done", endedAt: 5000 });
+        h.setView("state", "busy", false);
+        expect(row(h.root, "cmd")).toBeUndefined();
+        all(h.root).find((n) => n.tag === "button" && has(n, "fold"))!.props.onClick();
+        const again = row(h.root, "cmd");
+        expect(again).toBeDefined();
+        expect(again).not.toBe(card);
+        expect(head(again).props["aria-expanded"]).toBe(true);
+        expect(text(body(again)!)).toContain("kiwi output");
+        expect(body(row(h.root, "other"))).toBeUndefined();
+        // Folded again, it stays folded.
+        head(again).props.onClick();
+        all(h.root).find((n) => n.tag === "button" && has(n, "fold"))!.props.onClick();
+        all(h.root).find((n) => n.tag === "button" && has(n, "fold"))!.props.onClick();
+        expect(body(row(h.root, "cmd"))).toBeUndefined();
+        expect(text(h.root)).not.toContain("Couldn't render");
+    } finally { h.dispose(); }
+});
+
+test("a session's command cards stay as they were left when the session is drawn again, and only in that session", () => {
+    const h = setup([finished("cmd")], false, [], "session-a");
+    head(row(h.root, "cmd")).props.onClick();
+    // Another session is opened: this one's transcript goes.
+    h.dispose();
+    {
+        const back = h.mount("session-a");
+        try {
+            expect(head(row(back.root, "cmd")).props["aria-expanded"]).toBe(true);
+            expect(text(body(row(back.root, "cmd"))!)).toContain("kiwi output");
+        } finally { back.dispose(); }
+        // A fork has the same calls, under another session: folded there.
+        const fork = h.mount("session-b");
+        try {
+            expect(head(row(fork.root, "cmd")).props["aria-expanded"]).toBe(false);
+            expect(body(row(fork.root, "cmd"))).toBeUndefined();
+        } finally { fork.dispose(); }
+    }
+});
+
+test("find opens a folded command card, and it stays open", () => {
+    const h = setup([finished("cmd")], false);
+    try {
+        const card = row(h.root, "cmd");
+        expect(body(card)).toBeUndefined();
+        h.setReveal({ turnId: "turn", part: "cmd" });
+        expect(head(card).props["aria-expanded"]).toBe(true);
+        expect(text(body(card)!)).toContain("kiwi output");
+        h.setReveal(undefined);
+        expect(text(body(card)!)).toContain("kiwi output");
+    } finally { h.dispose(); }
+});
+
+test("with tool activity set to open, a command card starts open", () => {
+    const h = setup([finished("cmd")], true);
+    try {
+        expect(head(row(h.root, "cmd")).props["aria-expanded"]).toBe(true);
+        expect(text(row(h.root, "cmd"))).toContain("kiwi output");
     } finally { h.dispose(); }
 });

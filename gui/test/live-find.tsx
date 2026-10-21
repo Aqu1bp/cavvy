@@ -94,10 +94,17 @@ async function run() {
     await checkCards();
 }
 
-/** Command and edit cards: what find counts is what it can highlight, in every state. */
+/**
+ * Command and edit cards: what find counts is what it can highlight, in every state. A command card is
+ * folded until it's opened; find counts a finished one's output too, and opens it to show a match.
+ */
 async function checkCards() {
     const box = root.appendChild(document.createElement("div"));
-    const command: ToolBlock = { t: "tool", id: "cmd", name: "Bash", title: "echo kiwi", input: { command: "echo kiwi" }, status: "running", summary: "kiwi summary", output: "kiwi output", progress: "kiwi progress", startedAt: Date.now() };
+    // More than one line, so its card opens on the whole command; its output cut short, so it offers the rest.
+    const command: ToolBlock = {
+        t: "tool", id: "cmd", name: "Bash", title: "echo kiwi", input: { command: "echo kiwi\necho kiwi again" }, status: "running",
+        summary: "kiwi summary", output: "kiwi output\nlast kiwi line", outputTruncated: true, progress: "kiwi progress", startedAt: Date.now(),
+    };
     const edit: ToolBlock = {
         t: "tool", id: "edit", name: "Edit", title: "Edit(src/kiwi.ts)", input: { file_path: "src/kiwi.ts" }, status: "running", summary: "kiwi summary", startedAt: Date.now(),
         diff: { path: "src/kiwi.ts", status: "modified", added: 1, removed: 0, hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 1, lines: [{ t: "add", text: "kiwi line" }] }] },
@@ -107,24 +114,54 @@ async function checkCards() {
         <ActivityGroup tools={[cards[0]!]} steps={[cards[0]!]} card="command" turnRunning />
         <ActivityGroup tools={[cards[1]!]} steps={[cards[1]!]} card="edit" turnRunning />
     </>, box);
+    const card = (id: string) => box.querySelector<HTMLElement>(`[data-find="${id}"]`)!;
+    const counted = (i: 0 | 1, query: string) => findMatches([{ id: "cards", blocks: [cards[i]!], status: "running" }], query).length;
+    /** What find highlights in the card matches what it counts, and every highlight can be seen. */
+    const same = (i: 0 | 1, status: string, when: string) => {
+        const id = cards[i]!.id;
+        // The argument, summary and output, and the verb ("Run", "Edit") the screen reader hears but the card doesn't show.
+        for (const query of ["kiwi", i === 0 ? "Run" : "Edit"]) {
+            const drawn = textRanges(card(id), query);
+            check(drawn.length === counted(i, query), `${id} ${status} ${when}: drawn matches of "${query}" (${drawn.length}) equal counted matches (${counted(i, query)})`);
+            for (const r of drawn) check(visible(r), `${id} ${status} ${when}: a match of "${query}" is in "${r.startContainer.parentElement?.className}", which isn't visible`);
+        }
+    };
     try {
         for (const status of ["streaming", "queued", "awaiting", "running", "ok", "error", "denied"] as const) {
             for (const i of [0, 1] as const) {
                 setCards(i, "status", status);
+                setFindReveal(undefined);
                 await frame();
                 const id = cards[i]!.id;
-                const card = box.querySelector<HTMLElement>(`[data-find="${id}"]`)!;
-                check(card.classList.contains("tcard"), `${id} ${status}: drawn as a card`);
-                // The argument and summary, and the verb ("Run", "Edit") the screen reader hears but the card doesn't show.
-                for (const query of ["kiwi", i === 0 ? "Run" : "Edit"]) {
-                    const counted = findMatches([{ id: "cards", blocks: [cards[i]!], status: "running" }], query).length;
-                    const drawn = textRanges(card, query);
-                    check(drawn.length === counted, `${id} ${status}: drawn matches of "${query}" (${drawn.length}) equal counted matches (${counted})`);
-                    for (const r of drawn) check(visible(r), `${id} ${status}: a match of "${query}" is in "${r.startContainer.parentElement?.className}", which isn't visible`);
+                check(card(id).classList.contains("tcard"), `${id} ${status}: drawn as a card`);
+                if (i === 1) {
+                    same(i, status, "as drawn");
+                    continue;
                 }
+                // Folded, as every command card starts (and as this one is left after find opened it).
+                const head = card(id).querySelector<HTMLButtonElement>("button.cmd-h")!;
+                check(head, `${id} ${status}: the header is a button`);
+                if (head.getAttribute("aria-expanded") === "true") head.click();
+                await frame();
+                check(!card(id).querySelector(".tcard-body"), `${id} ${status}: folded, the card shows no body`);
+                const folded = textRanges(card(id), "kiwi").length;
+                check(folded <= counted(i, "kiwi"), `${id} ${status}: folded, no more drawn matches (${folded}) than counted`);
+                // A glimpse of the output in the header isn't counted, since the body find opens has it.
+                const tail = card(id).querySelector<HTMLElement>(".tcard-tail");
+                check(status === "running" || status === "error" ? tail?.textContent === (status === "running" ? "kiwi progress" : "last kiwi line") : !tail, `${id} ${status}: last line in the header is "${tail?.textContent}"`);
+                check(!tail || tail.closest("[data-find-skip]"), `${id} ${status}: the header's last line is skipped by find`);
+                // Find opens it, on everything it counted.
+                setFindReveal({ turnId: "cards", part: id });
+                await frame();
+                // (Its command has more than one line, so there's a body in every state: while it's live, find counts none of it.)
+                check(head.getAttribute("aria-expanded") === "true", `${id} ${status}: find opens the card (aria-expanded ${head.getAttribute("aria-expanded")})`);
+                check(card(id).querySelector(".tcard-body"), `${id} ${status}: the body is drawn once find opened the card`);
+                same(i, status, "opened by find");
+                check(textRanges(card(id), "Show full output").length === 0, `${id} ${status}: "Show full output" isn't counted`);
             }
         }
     } finally {
+        setFindReveal(undefined);
         dispose();
         box.remove();
     }
@@ -136,6 +173,10 @@ async function checkCommandFollow() {
     const [cmd, setCmd] = createStore<ToolBlock>({ t: "tool", id: "follow", name: "Bash", title: "make", input: { command: "make" }, status: "running", progress: lines(0, 9), startedAt: Date.now() });
     const dispose = render(() => <ActivityGroup tools={[cmd]} steps={[cmd]} card="command" turnRunning />, box);
     try {
+        await paint();
+        // Folded until it's opened: its last line in the header, the output only once opened.
+        check(!box.querySelector(".tcard-out") && box.querySelector(".tcard-tail")?.textContent === "line 8", "follow: a running command starts folded on its last line");
+        box.querySelector<HTMLButtonElement>("button.cmd-h")!.click();
         await paint();
         const out = box.querySelector<HTMLElement>(".tcard-out")!;
         const gap = () => out.scrollHeight - out.scrollTop - out.clientHeight;
