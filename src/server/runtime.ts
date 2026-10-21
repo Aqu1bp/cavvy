@@ -20,7 +20,7 @@ import { sessionHookServices, sessionStartHooks } from "../agent/session-hooks";
 import { Session } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { INIT_PROMPT, reviewPrompt } from "../commands/index";
-import { expandCommand, slashCommand } from "../commands/custom";
+import { expandCommand, pluginCommandFor, slashCommand } from "../commands/custom";
 import { addPermissionRule, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { MODE_INFO, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { PermissionChecker } from "../permissions/checker";
@@ -30,6 +30,7 @@ import { BUILTIN_TOOLS } from "../tools/index";
 import { skillTool } from "../tools/skill-tool";
 import { formatSkill, skillMentions, withSkills } from "../agent/skills";
 import { cliRunsSkills } from "../backends/native-skills";
+import { loadsPluginsNatively, onlyPluginHooks, runsPluginCommand, sessionHookSettings, withoutPluginHooks } from "../plugins/native";
 import { childEnv, killAllShells, runShell } from "../tools/bash";
 import type { Tool, ToolResult, ToolState } from "../tools/types";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
@@ -358,7 +359,19 @@ export class Runtime {
         // Saved schedules come back once there's a model to run them with.
         void this.ready.then(() => !this.closed && this.schedules.restore(), () => undefined);
         const warn = (msg: string, level: "info" | "warn" = "warn") => this.notice(msg, level);
-        void sessionStartHooks(this.settings(), session, opts.resumed ? "resume" : "startup", this.toolState.cwd, warn, sessionHookServices({ session: () => this.session, warn, complete: (s, p, sig) => this.complete(s, p, sig), mcpTools: () => this.ws.mcp.tools() }));
+        const services = sessionHookServices({ session: () => this.session, warn, complete: (s, p, sig) => this.complete(s, p, sig), mcpTools: () => this.ws.mcp.tools() });
+        // The plugins' own wait for the model: on Claude Code, it runs them itself.
+        const source = opts.resumed ? "resume" : "startup";
+        void sessionStartHooks(withoutPluginHooks(this.settings()), session, source, this.toolState.cwd, warn, services);
+        void this.ready.then(() => {
+            if (this.closed || loadsPluginsNatively(this.agent?.model.provider)) return;
+            const plugins = onlyPluginHooks(this.settings());
+            if (!plugins.hooks?.SessionStart?.length && !plugins.hooks?.InstructionsLoaded?.length) return;
+            // The first prompt waits for these too.
+            const before = session.hooksStarting;
+            void sessionStartHooks(plugins, session, source, this.toolState.cwd, warn, services);
+            if (before) session.hooksStarting = Promise.all([before, session.hooksStarting]).then(() => {});
+        }, () => undefined);
     }
 
     get id(): string {
@@ -2059,7 +2072,7 @@ export class Runtime {
     /** The /name a message starts with when it names no command this server or the project has. */
     unknownCommand(text: string): string | undefined {
         const c = slashCommand(text);
-        if (!c || SERVER_COMMANDS.has(c.name) || this.ws.commands.some((x) => x.name === c.name) || this.ws.freshSkills().some((s) => s.userInvocable && s.name === c.name)) return undefined;
+        if (!c || SERVER_COMMANDS.has(c.name) || this.ws.commands.some((x) => x.name === c.name) || pluginCommandFor(this.ws.commands, c.name) || this.ws.freshSkills().some((s) => s.userInvocable && s.name === c.name)) return undefined;
         // One the session's agent CLI runs itself (Claude Code's /code-review, a skill).
         const provider = this.agent?.model.provider;
         const commands = this.engine.cliCommands(provider, this.ws.cwd);
@@ -2096,12 +2109,16 @@ export class Runtime {
             if (cmd === "trust") return this.trustCommand();
             if (cmd === "init") return this.startTurn(INIT_PROMPT, { display: "/init", kind: "command", attachments });
             if (cmd === "review") return this.startTurn(reviewPrompt(args.trim()), { display: `/review${args.trim() ? ` ${args.trim()}` : ""}`, kind: "command", attachments });
-            const custom = this.ws.commands.find((c) => c.name === cmd);
-            if (custom) return this.startTurn(expandCommand(custom.body, args.trim()), { display: trimmed, kind: "command", attachments });
             const skill = this.ws.skills.find((s) => s.userInvocable && s.name === cmd);
+            const provider = this.agent?.model.provider;
+            // A bare name finds a plugin's command only when nothing else has it: a command, a skill, or one of the agent CLI's own.
+            const custom = this.ws.commands.find((c) => c.name === cmd) ?? (skill || this.engine.cliCommands(provider, this.ws.cwd)?.has(cmd) ? undefined : pluginCommandFor(this.ws.commands, cmd));
+            // Claude Code loads the plugins itself, so it runs their commands (by full name) with its own handling.
+            if (custom?.source === "plugin" && runsPluginCommand(provider, custom.name, this.engine.cliCommands(provider, this.ws.cwd))) return this.startTurn(`/${custom.name}${args.trim() ? ` ${args.trim()}` : ""}`, { display: trimmed, attachments });
+            if (custom) return this.startTurn(expandCommand(custom.body, args.trim()), { display: trimmed, kind: "command", attachments });
             const about = skill && `${skill.description}${args.trim() ? `: ${args.trim()}` : ""}`;
             // Claude Code and Codex run skills themselves, with their own handling (allowed-tools and the rest): they're sent the /name.
-            if (skill && cliRunsSkills(this.agent?.model.provider)) return this.startTurn(trimmed, { attachments, about });
+            if (skill && cliRunsSkills(provider)) return this.startTurn(trimmed, { attachments, about });
             if (skill) {
                 const body = formatSkill(skill, args.trim());
                 if (body === undefined) return this.notice(`The ${skill.name} skill is gone: ${skill.file} can't be read.`, "error");
@@ -2881,8 +2898,8 @@ export class Runtime {
 
     // -----------------------------------------------------------------------
 
-    private async hook(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
-        await fireHooks(this.settings(), event, { session_id: this.id, ...payload }, this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level), signal);
+    private async hook(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal, settings = sessionHookSettings(this.settings(), this.agent?.model.provider)): Promise<void> {
+        await fireHooks(settings, event, { session_id: this.id, ...payload }, this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level), signal);
     }
 
     /** Nothing running, waiting for the user, or still to be delivered to the model: closing it loses nothing. */

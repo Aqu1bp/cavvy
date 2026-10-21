@@ -61,6 +61,8 @@ import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { loadSkills, skillMentions, withSkills, type Skill } from "../agent/skills";
 import { cliRunsSkills } from "../backends/native-skills";
 import { skillTool } from "../tools/skill-tool";
+import { pluginsFor } from "../plugins/loader";
+import { loadsPluginsNatively, onlyPluginHooks, sessionHookSettings, withoutPluginHooks } from "../plugins/native";
 import { displayPath } from "../util/files";
 import { redact } from "../util/redact";
 import { SecretStore, secretValueError } from "../agent/secrets";
@@ -284,6 +286,15 @@ export class App {
         return true;
     }
 
+    /** Plugins that are on but not installed (a project's), or that have problems. */
+    private pluginNotices() {
+        if (!this.settings.enabledPlugins) return;
+        const { plugins, missing } = pluginsFor(this.settings.enabledPlugins);
+        if (missing.length) this.notice(`Settings turn on plugin${missing.length === 1 ? "" : "s"} that ${missing.length === 1 ? "isn't" : "aren't"} installed: ${missing.join(", ")}. Install with /plugin install <name>.`, "info");
+        const broken = plugins.filter((p) => p.errors.length);
+        if (broken.length) this.notice(`Plugin${broken.length === 1 ? "" : "s"} with problems: ${broken.map((p) => p.name).join(", ")}. Run /plugin to see them.`, "warn");
+    }
+
     reloadSettings() {
         const reviewer = this.settings.reviewModel;
         this.settings = loadSettings(this.cwd, { trusted: this.init.trusted });
@@ -318,15 +329,19 @@ export class App {
         const approvals = this.mcp.needsApproval();
         if (approvals.length) this.notice(`This project's .mcp.json defines ${approvals.length} MCP server${approvals.length === 1 ? "" : "s"} (${approvals.map((s) => s.name).join(", ")}). Run /mcp to review and enable them.`, "info");
         this.mcpStarting = this.mcp.startAll().catch(() => undefined);
+        this.pluginNotices();
 
         if (this.init.resumeFile) this.resume(this.init.resumeFile);
         else this.session = Session.create(this.cwd);
         this.schedules.restore();
         this.bindGoal();
         if (this.init.fastMode !== undefined) this.session.setFastMode(this.init.fastMode);
-        void this.sessionHook("SessionStart", { source: this.init.resumeFile ? "resume" : "startup" });
+        // The plugins' own wait for the model: on Claude Code, it runs them itself.
+        const source = this.init.resumeFile ? "resume" : "startup";
+        void this.sessionHook("SessionStart", { source }, undefined, withoutPluginHooks(this.settings));
 
         await this.trackSwitch(this.initModel());
+        if (!loadsPluginsNatively(this.model?.provider)) void this.sessionHook("SessionStart", { source }, undefined, onlyPluginHooks(this.settings));
         if (this.init.fastMode && !this.model?.supportsFastMode) {
             this.session.setFastMode(false);
             this.notice("Fast mode is not available for this model/backend; using standard speed.", "warn");
@@ -925,13 +940,17 @@ export class App {
     }
 
     /** SessionStart and SessionEnd hooks only inform: they run in the background, and problems show as notices. */
-    private async sessionHook(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
+    private async sessionHook(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal, settings = sessionHookSettings(this.settings, this.model?.provider)): Promise<void> {
         // SessionStart also loads memory files (InstructionsLoaded) and keeps its context for the first prompt.
         if (event === "SessionStart") {
             const warn = (msg: string, level: "info" | "warn" = "warn") => this.notice(msg, level);
-            return sessionStartHooks(this.settings, this.session, String(payload.source), this.toolState.cwd, warn, sessionHookServices({ session: () => this.session, warn, complete: this.client ? (s, p, sig) => this.complete(s, p, sig) : undefined, mcpTools: () => this.mcp.tools(), mcpReady: () => Promise.race([this.mcpStarting, Bun.sleep(MCP_START_WAIT_MS)]) }));
+            // A second batch (the plugins', once the model is known) adds to what the first prompt waits for.
+            const before = this.session.hooksStarting;
+            const started = sessionStartHooks(settings, this.session, String(payload.source), this.toolState.cwd, warn, sessionHookServices({ session: () => this.session, warn, complete: this.client ? (s, p, sig) => this.complete(s, p, sig) : undefined, mcpTools: () => this.mcp.tools(), mcpReady: () => Promise.race([this.mcpStarting, Bun.sleep(MCP_START_WAIT_MS)]) }));
+            if (before) this.session.hooksStarting = Promise.all([before, this.session.hooksStarting]).then(() => {});
+            return started;
         }
-        await fireHooks(this.settings, event, { session_id: this.session?.meta.id, ...payload }, this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level), signal);
+        await fireHooks(settings, event, { session_id: this.session?.meta.id, ...payload }, this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level), signal);
     }
 
     private replayTranscript() {

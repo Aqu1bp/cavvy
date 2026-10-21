@@ -4,7 +4,7 @@ import { createSignal } from "solid-js";
 import type { ArchiveOffer } from "@shared/protocol";
 import type { ReviewScope } from "./changes";
 
-export type SettingsTab = "general" | "appearance" | "providers" | "usage" | "shortcuts" | "about";
+export type SettingsTab = "general" | "appearance" | "providers" | "plugins" | "usage" | "shortcuts" | "about";
 
 export const [paletteOpen, setPaletteOpen] = createSignal(false);
 export const [settingsTab, setSettingsTab] = createSignal<SettingsTab | undefined>();

@@ -348,6 +348,11 @@ export class McpManager {
         await this.start(st);
     }
 
+    /** Start again every server `match` picks that's running or failed (its program changed on disk, though its configuration didn't). */
+    async restartWhere(match: (name: string) => boolean): Promise<void> {
+        await Promise.all([...this.servers.values()].filter((s) => match(s.name) && ["connecting", "connected", "failed"].includes(s.status)).map((s) => this.restart(s.name)));
+    }
+
     /** Turned back on after "disable for this session", once settings and .mcp.json are read again (the other front end may have rejected it since). */
     async enable(name: string): Promise<void> {
         await this.refresh();

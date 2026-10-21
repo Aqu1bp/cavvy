@@ -234,7 +234,7 @@ Rules (`/permissions` to edit them):
 - `/rewind` (or `esc esc` on an empty prompt) goes back to before one of your prompts: restore the files Harness changed since then, the conversation, or both. The prompt goes back in the input box to edit and resend. Before an edit tool first changes a file during a prompt, Harness saves a copy in `~/.harness/projects/<project>/file-history/<session>/` (private to you; files over 10 MB aren't saved), so it works after `-c`/`-r` too. Files changed outside Harness since it last wrote them are listed before they're overwritten, and if a file can't be restored the conversation is kept, so you can try again. Shell and backend edits are recorded separately in Git turn snapshots for review, but `/rewind` still restores only the edit tools’ copies. Prompts from before a `/compact` can't be rewound to. Both kinds of history are deleted 30 days after the session was last used.
 - `/fork` (GUI or terminal) continues in a new session from the latest finished response. In the GUI, use **Fork from here** on an earlier response or ⌘K → **Fork session**; **Forked from …** opens the original. The terminal prints its `/resume <id>` command. A fork keeps the conversation, timeline, frozen system prompt, and current model, effort, permission mode and speed, with the title "Fork of <title>". Spend starts at zero; queues, shells, delegated tasks and file history aren't copied. Rewinding before the fork restores only the conversation and files changed by the fork itself; earlier file changes can only be restored from the original. Imported CLI responses can be forked too, while their original rewind restrictions remain. Running turns and turns before the last compaction can't be forked. Claude Code (`--resume --fork-session`) and Codex (`thread/fork`) copy eligible backend sessions on next use: both sessions first persist a marker preventing either from continuing the shared backend in place. For an earlier cut or a busy original, the fork instead starts a fresh backend with conversation context.
 
-Commands: `/help /model /login /logout /providers /effort /permissions /mode /plan /clear /compact /cost /context /status /resume /rewind /fork /rename /export /copy /init /review /memory /config /thinking /mcp /agents /hooks /todos /tasks /bashes /add-dir /doctor /exit`.
+Commands: `/help /model /login /logout /providers /effort /permissions /mode /plan /clear /compact /cost /context /status /resume /rewind /fork /rename /export /copy /init /review /memory /config /thinking /mcp /plugin /agents /hooks /todos /tasks /bashes /add-dir /doctor /exit`.
 
 Custom commands are markdown files in `~/.harness/commands/` or `.harness/commands/`. The body is the prompt; `$ARGUMENTS` and `$1`…`$9` are substituted; `commands/git/pr.md` becomes `/git:pr`.
 
@@ -304,6 +304,35 @@ Add or replace servers in settings (the shape of Claude Code's `lspServers`), or
 ```
 
 A server named like a built-in replaces it. Each takes `command`, `args`, `env`, `extensionToLanguage`, `initializationOptions`, `settings` (answers to the server's `workspace/configuration` requests) and `startupTimeout` (ms). Project settings count only in folders you trust. Codex has no language servers of its own: when one of its patches finishes, the harness checks the files it changed and steers new problems into its running turn (`turn/steer`), in the same format and with the same limits. If that turn has already ended, you get a notice instead, and no turn starts. Claude Code gets diagnostics from its own LSP plugins.
+
+## Plugins
+
+A plugin bundles slash commands, sub-agents, skills, hooks and MCP servers (and language servers, for the LSP support). Plugins come from marketplaces: catalogs you add once. The format is Claude Code's, so Claude Code plugins and marketplaces (Anthropic's `anthropics/claude-plugins-official`, say) install as they are.
+
+```bash
+harness plugin marketplace add anthropics/claude-plugins-official   # owner/repo, a git URL (#branch), a folder, or a marketplace.json path or URL
+harness plugin install commit-commands                             # name, or name@marketplace when two have it
+harness plugin install pr-review-toolkit --scope project           # user (default) | project | local
+harness plugin list
+harness plugin disable commit-commands                             # enable | disable | update [name|--all] | uninstall
+harness plugin validate ./my-plugin                                # check a plugin or marketplace folder
+```
+
+In the terminal, `/plugin` opens a browser: installed plugins first, then what your marketplaces offer (type to filter), with install, enable/disable, update and uninstall, and the marketplaces themselves. `/plugin install …` and the rest work as in the shell. In the GUI, it's **Settings → Plugins** (or `/plugin`). Changes apply at once: commands, agents and hooks load, and MCP servers start.
+
+| Scope | Setting | Effect |
+|---|---|---|
+| `user` | `~/.harness/settings.json` | On for you in every folder. |
+| `project` | `.harness/settings.json` | On for everyone working in the repo (commit it). Teammates without the plugin are told to install it. |
+| `local` | `.harness/settings.local.json` | On just for you, in this repo. |
+
+The setting is `"enabledPlugins": { "name@marketplace": true }`; a narrower scope wins (local over project over user), so `false` in local settings turns a project's plugin off for you. In a folder you haven't trusted, only your user-scope plugins load.
+
+A plugin's parts are named after it: commands are `/plugin:command` (a bare `/command` works when no other command has that name and only one plugin does), agents `plugin:agent`, MCP servers `plugin:plugin:server` (tools `mcp__plugin_…`). Hooks run alongside yours and are listed by `/hooks` with the plugin's name. `${CLAUDE_PLUGIN_ROOT}` (or `${HARNESS_PLUGIN_ROOT}`) in a plugin's MCP configuration is its folder, and hook commands get both as environment variables.
+
+On Claude Code, Claude Code loads the plugins itself: each enabled plugin's installed folder is passed with `--plugin-dir`, so it runs their commands, agents, skills, hooks, MCP and language servers natively, as plugins it installed would run. The harness then doesn't run their hooks itself (except Notification hooks, for its own notices), and sends a plugin's `/command` or skill to Claude Code as typed. On Codex and API models, the harness loads them as described above; language servers run only on Claude Code. Codex takes MCP servers only from its own config, so a plugin's MCP servers reach Codex sessions only if you also install the plugin in Codex (`codex plugin marketplace add …`, then `codex plugin add …`), which reads the same format. Read-only sub-agents get no plugins on Claude Code.
+
+Plugin sources in a marketplace: a path inside the marketplace (`./plugins/x`), `{ "source": "github", "repo": "o/r" }`, `{ "source": "url", "url": "….git" }`, `{ "source": "git-subdir", "url", "path" }` (each with an optional `ref` or `sha`), and `{ "source": "npm", "package", "version" }` (a version, tag or range; the tarball is checked against its integrity hash, and no install scripts run). Fetching runs no code from the plugin: git hooks are off, git never prompts for credentials (a private repository fails with git's message instead), and a manifest path that points outside the plugin is ignored. Installed copies live in `~/.harness/plugins/cache/`; a plugin's hooks and MCP servers run commands on your computer, so install plugins you trust.
 
 ## Hooks
 

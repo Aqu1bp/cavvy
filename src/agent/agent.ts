@@ -25,6 +25,7 @@ import type {
 } from "../providers/types";
 import { ProviderError, modelRef, parseModelRef, textOf, toolCallsOf } from "../providers/types";
 import type { Effort, Settings } from "../config/settings";
+import { claudePluginDirs, loadsPluginsNatively, withoutPluginHooks } from "../plugins/native";
 import type { ApprovedMcpServers } from "../mcp/manager";
 import type { PermissionMode } from "../permissions/modes";
 import { MODE_INFO } from "../permissions/modes";
@@ -552,7 +553,7 @@ export class Agent {
 
     private async runInner(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" | "wake" }): Promise<TurnEndReason> {
         const { signal } = opts;
-        const settings = this.o.settings();
+        const settings = this.hookSettings();
         const promptText = [...content.filter((p): p is TextPart => p.type === "text").map((p) => p.text), ...pastedTexts(content)].join("\n");
         const checkpoint = await this.checkpoint(opts.display ?? promptText);
         if (this.cutOff) return "aborted";
@@ -1116,6 +1117,17 @@ export class Agent {
         }
     }
 
+    /** Claude Code runs this turn with the plugins loaded itself (src/plugins/native.ts). */
+    private pluginsNative(): boolean {
+        return isAgentBackend(this.client) && !this.o.readOnly && loadsPluginsNatively(this.model.provider);
+    }
+
+    /** Settings for the hooks the harness runs: without the plugins' when Claude Code runs those. */
+    private hookSettings(): Settings {
+        const s = this.o.settings();
+        return this.pluginsNative() ? withoutPluginHooks(s) : s;
+    }
+
     private backendTurn(signal: AbortSignal, host: BackendHost): Omit<BackendTurn, "prompt" | "images" | "resumeId"> {
         const s = this.o.settings();
         let trusted = false;
@@ -1141,11 +1153,13 @@ export class Agent {
             trusted,
             // The backend registers a project's own only where the user trusted it (the list may come from implicit trust).
             skills: this.o.skills?.() ?? [],
+            ...(this.pluginsNative() ? { pluginDirs: claudePluginDirs(this.state.cwd, trusted) } : {}),
             approvedMcpServers,
             rules: { deny: s.permissions?.deny ?? [], ask: s.permissions?.ask ?? [], root: this.state.projectRoot },
             maxTurns: this.o.maxTurns,
             // Claude Code runs some of them itself; Codex only says what it does, so it hears of all of them.
-            hooks: this.model.provider === "claude-code" ? backendOwnedHooks(s) : s.hooks,
+            // Claude Code runs the plugins' hooks with the plugins (--plugin-dir), so only the harness's own are registered with it.
+            hooks: this.model.provider === "claude-code" ? backendOwnedHooks(this.hookSettings()) : s.hooks,
             orchestrator: this.orchestrator(),
             readOnly: this.o.readOnly,
             agents: this.nativeAgents(trusted),
@@ -1555,7 +1569,7 @@ export class Agent {
                 this.endNotice("warn", `Stopped after ${this.o.maxTurns ?? "the maximum"} model turns (max turns).`);
                 return this.endBackendTurn(provider, "max_turns");
             }
-            const settings = this.o.settings();
+            const settings = this.hookSettings();
             // A sub-agent's turn ends with SubagentStop, as one the harness runs does.
             const stopEvent = this.o.isSubagent ? "SubagentStop" : "Stop";
             if (settings.hooks?.[stopEvent]?.length && stopRounds < 3) {

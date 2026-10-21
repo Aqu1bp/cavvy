@@ -5,6 +5,8 @@ import type { PermissionMode } from "../permissions/modes";
 import { normalizeHooks, type HookEvent, type HookType } from "./hook-config";
 import type { FollowUp } from "../agent/queue-store";
 import type { LspServerConfig } from "../lsp/config";
+import { stripJsonComments } from "../util/jsonc";
+import { applyPlugins, mergeEnabled, pluginsFor } from "../plugins/loader";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORT_LEVELS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
@@ -21,6 +23,8 @@ export interface McpServerConfig {
     url?: string;
     headers?: Record<string, string>;
     disabled?: boolean;
+    /** Set on servers a plugin adds: its id (name@marketplace). */
+    plugin?: string;
 }
 
 /**
@@ -54,6 +58,8 @@ export interface HookConfig {
     server?: string;
     tool?: string;
     input?: Record<string, unknown>;
+    /** Set on hooks a plugin adds: its id (name@marketplace). */
+    plugin?: string;
     /** Set for a plugin's hooks: HARNESS_PLUGIN_ROOT and CLAUDE_PLUGIN_ROOT. */
     pluginRoot?: string;
 }
@@ -130,6 +136,8 @@ export interface Settings {
      * lspServers shape). false turns it off.
      */
     lsp?: false | { enabled?: boolean; servers?: Record<string, LspServerConfig> };
+    /** Plugins turned on or off at this scope, by "name@marketplace" (src/plugins). */
+    enabledPlugins?: Record<string, boolean>;
     /** The GUI's "Open files with" editor, an id from src/server/editors.ts. User settings only: a project mustn't choose what gets launched. */
     editor?: string;
     /** `harness --worktree`: the new branch's name prefix (default "harness/"), where it starts, and what happens to it on exit. */
@@ -229,62 +237,6 @@ export function readJson<T>(file: string): T | undefined {
     }
 }
 
-/** Allow // and /* *\/ comments and trailing commas in settings files. Strings are respected. */
-function stripJsonComments(text: string): string {
-    return stripTrailingCommas(stripComments(text));
-}
-
-function stripTrailingCommas(text: string): string {
-    let out = "";
-    let inStr = false;
-    for (let i = 0; i < text.length; i++) {
-        const c = text[i]!;
-        if (inStr) {
-            out += c;
-            if (c === "\\") out += text[++i] ?? "";
-            else if (c === '"') inStr = false;
-            continue;
-        }
-        if (c === '"') inStr = true;
-        if (c === ",") {
-            let j = i + 1;
-            while (j < text.length && /\s/.test(text[j]!)) j++;
-            if (text[j] === "}" || text[j] === "]") continue;
-        }
-        out += c;
-    }
-    return out;
-}
-
-function stripComments(text: string): string {
-    let out = "";
-    let inStr = false;
-    for (let i = 0; i < text.length; i++) {
-        const c = text[i]!;
-        const n = text[i + 1];
-        if (inStr) {
-            out += c;
-            if (c === "\\") {
-                out += n ?? "";
-                i++;
-            } else if (c === '"') inStr = false;
-            continue;
-        }
-        if (c === '"') {
-            inStr = true;
-            out += c;
-        } else if (c === "/" && n === "/") {
-            while (i < text.length && text[i] !== "\n") i++;
-            out += "\n";
-        } else if (c === "/" && n === "*") {
-            i += 2;
-            while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i++;
-            i++;
-        } else out += c;
-    }
-    return out;
-}
-
 export function writeJson(file: string, data: unknown, mode = 0o644) {
     ensureDir(dirname(file));
     writeFileSync(file, JSON.stringify(data, null, 2) + "\n", { encoding: "utf-8", mode });
@@ -322,7 +274,7 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
     const merged: Settings = {};
     const warnings = new Set<string>();
     for (const s of layers) {
-        const { permissions, env, mcpServers, hooks, worktree, lsp, ...rest } = s;
+        const { permissions, env, mcpServers, hooks, worktree, lsp, enabledPlugins: _, ...rest } = s;
         // JSON.parse keeps a "__proto__" key as data; assigning it would set merged's prototype (and settings it seems to have).
         for (const [k, v] of Object.entries(rest)) if (k !== "__proto__") (merged as Record<string, unknown>)[k] = v;
         if (permissions) {
@@ -343,6 +295,12 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
             const h = (merged.hooks ??= {});
             for (const [k, v] of Object.entries(flat) as [HookEvent, HookConfig[]][]) h[k] = [...(h[k] ?? []), ...v];
         }
+    }
+    // Plugins: the user's own in any folder; a project's (and its local file's) only once it's trusted.
+    const enabled = mergeEnabled(trusted ? layers : [user]);
+    if (Object.keys(enabled).length) {
+        merged.enabledPlugins = enabled;
+        applyPlugins(merged, pluginsFor(enabled).plugins);
     }
     if (user.reviewModel) merged.reviewModel = user.reviewModel;
     else delete merged.reviewModel;

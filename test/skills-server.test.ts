@@ -262,4 +262,39 @@ describe("skills in the GUI", () => {
         expect((await c.call<CommandInfo[]>("commands.list", { cwd })).some((x) => x.name === "project-only")).toBe(true);
         c.close();
     });
+
+    test("a skill keeps its bare name when a plugin has a command by the same name", async () => {
+        const { addMarketplace } = await import("../src/plugins/marketplaces");
+        const { installPlugin, removeMarketplace } = await import("../src/plugins/install");
+        const mk = tempDir("harness-skills-mk-");
+        writeFileSync(join(mk, "marketplace.json"), JSON.stringify({ name: "clash", plugins: [{ name: "doc", source: "./doc" }] }));
+        mkdirSync(join(mk, "doc", "commands"), { recursive: true });
+        writeFileSync(join(mk, "doc", "commands", "explain.md"), "The plugin's explain.");
+        writeFileSync(join(mk, "doc", "commands", "polish.md"), "The plugin's polish.");
+        const cwd = project();
+        await addMarketplace(join(mk, "marketplace.json"), cwd);
+        await installPlugin("doc", "user", cwd);
+        try {
+            const c = await client();
+            const id = await c.create(cwd);
+            await c.call("session.send", { id, text: "/explain src/auth" });
+            await c.until(() => done(c.view(id)));
+            expect(lastPrompt()).toContain('<skill name="explain">');
+            expect(lastPrompt()).not.toContain("The plugin's explain.");
+            // Its full name still runs the plugin's.
+            await c.call("session.send", { id, text: "/doc:explain" });
+            await c.until(() => done(c.view(id)) && c.view(id).turns.length === 2);
+            expect(lastPrompt()).toContain("The plugin's explain.");
+            // Nor does it take a name the session's agent CLI lists as its own: that goes to the CLI as typed.
+            srv.engine.cliCommandsReported("mock", cwd, ["polish"]);
+            await c.call("session.send", { id, text: "/polish it" });
+            await c.until(() => done(c.view(id)) && c.view(id).turns.length === 3);
+            expect(lastPrompt()).toContain("/polish it");
+            expect(lastPrompt()).not.toContain("The plugin's polish.");
+            c.close();
+        } finally {
+            removeMarketplace("clash", cwd);
+        }
+        // An install and three turns: more than the default 5 s on a loaded machine.
+    }, 30_000);
 });

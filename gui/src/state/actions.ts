@@ -100,6 +100,9 @@ function clientCommand(id: string | undefined, text: string): boolean {
         case "settings":
             setSettingsTab("general");
             return true;
+        case "plugins":
+            setSettingsTab("plugins");
+            return true;
         case "usage":
             setSettingsTab("usage");
             return true;

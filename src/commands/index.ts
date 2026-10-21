@@ -59,7 +59,9 @@ import { toSchema } from "../tools/index";
 import { displayPath, expandPath } from "../util/files";
 import { gitRoot } from "../util/git";
 import { childEnv } from "../util/env";
-import { expandCommand, type CustomCommand } from "./custom";
+import { expandCommand, pluginCommandFor, type CustomCommand } from "./custom";
+import { pluginCommand } from "./plugins";
+import { runsPluginCommand } from "../plugins/native";
 import { formatSkill, loadSkills, sameSkills, skillRoots, type Skill } from "../agent/skills";
 import { cliRunsSkills } from "../backends/native-skills";
 import { rewindCommand } from "./rewind";
@@ -1522,7 +1524,7 @@ async function mcpCommand(app: App, args: string) {
         const pick = (await app.showDialog(
             new SelectDialog<string>({
                 title: "MCP servers",
-                items: servers.map((s) => ({ label: bold(visible(s.name).text), value: s.name, description: statusText(s), detail: s.source === "project" ? ".mcp.json" : "settings" })),
+                items: servers.map((s) => ({ label: bold(visible(s.name).text), value: s.name, description: statusText(s), detail: s.source === "project" ? ".mcp.json" : s.config.plugin ? `plugin ${s.config.plugin.split("@")[0]}` : "settings" })),
                 numbers: true,
             }),
         )) as string | undefined;
@@ -1544,7 +1546,7 @@ async function mcpCommand(app: App, args: string) {
         if (project && approval === "approved" && !st.approval?.viaAll) actions.push({ label: "Revoke approval", value: "revoke", description: "stops it; it asks again" });
         const header = project
             ? mcpCardLines(app, info)
-            : [theme.muted(info.transport === "http" ? (info.url ?? "") : [info.command, ...(info.args ?? []).map((a) => `‹${a}›`)].join(" ")), theme.muted("source: settings")];
+            : [theme.muted(info.transport === "http" ? (info.url ?? "") : [info.command, ...(info.args ?? []).map((a) => `‹${a}›`)].join(" ")), theme.muted(st.config.plugin ? `source: plugin ${st.config.plugin}` : "source: settings")];
         if (project && offInFile) header.unshift(theme.muted('Turned off in .mcp.json ("disabled": true).'));
         if (approval === "rejected") header.unshift(theme.muted("You rejected this server."));
         const a = (await app.showDialog(new SelectDialog<A>({ title: info.label, header, items: actions, numbers: true }))) as A | undefined;
@@ -1721,7 +1723,7 @@ function hooksCommand(app: App) {
         for (const x of list) {
             const what = x.type === "http" ? `POST ${x.url}` : x.type === "prompt" ? `prompt: ${truncate(x.prompt ?? "", 60)}` : x.type === "mcp_tool" ? `mcp__${x.server}__${x.tool}` : [x.command, ...(x.args ?? [])].join(" ");
             const notes = [x.if ? `if ${x.if}` : "", x.async ? "async" : "", x.timeout ? `timeout ${x.timeout}s` : ""].filter(Boolean).join(", ");
-            lines.push(`    ${theme.muted(x.matcher ? `[${x.matcher}]` : "[*]")} ${what}${notes ? theme.subtle(` (${notes})`) : ""}`);
+            lines.push(`    ${theme.muted(x.matcher ? `[${x.matcher}]` : "[*]")} ${what}${notes ? theme.subtle(` (${notes})`) : ""}${x.plugin ? theme.subtle(` (plugin ${x.plugin})`) : ""}`);
         }
     }
     if (!any) lines.push(theme.muted("  None configured."));
@@ -1987,6 +1989,7 @@ const BUILTIN: Command[] = [
         app.notice(`Thinking text ${app.settings.showThinking ? "shown" : "hidden"}`);
     } },
     { name: "mcp", description: "MCP servers: status, approval, tools, reconnect", run: mcpCommand },
+    { name: "plugin", aliases: ["plugins"], description: "Browse, install and manage plugins and marketplaces", args: "[install|uninstall|enable|disable|update|marketplace …]", run: pluginCommand },
     { name: "agents", description: "List sub-agents", whileBusy: true, run: (app) => agentsCommand(app) },
     { name: "skills", description: "List skills (and pick up new ones)", args: "[filter]", whileBusy: true, run: skillsCommand },
     { name: "keybindings", description: "Customize keyboard shortcuts (keybindings.json)", args: "[edit]", whileBusy: true, run: keybindingsCommand },
@@ -2014,7 +2017,13 @@ function customToCommand(c: CustomCommand): Command {
         noEcho: true,
         custom: c,
         images: true,
-        run: (app, args, draft) => app.startTurn(expandCommand(c.body, args), { display: `/${c.name}${args ? " " + args : ""}`, kind: "command", draft }),
+        run: (app, args, draft) => {
+            const display = `/${c.name}${args ? " " + args : ""}`;
+            // Claude Code loads the plugins itself, so it runs their commands with its own handling.
+            const listed = app.cliCommands?.provider === app.model?.provider ? app.cliCommands?.names : undefined;
+            if (c.source === "plugin" && runsPluginCommand(app.model?.provider, c.name, listed)) return app.startTurn(display, { draft });
+            return app.startTurn(expandCommand(c.body, args), { display, kind: "command", draft });
+        },
     };
 }
 
@@ -2056,7 +2065,10 @@ export function commandList(app: App): Command[] {
 
 function findCommand(app: App, name: string): Command | undefined {
     const all = allCommands(app);
-    return all.find((c) => c.name === name) ?? all.find((c) => c.aliases?.includes(name));
+    // A bare name finds a plugin's command only when nothing else has it, the agent CLI's own commands included.
+    const cli = app.cliCommands?.provider === app.model?.provider ? app.cliCommands?.names : undefined;
+    const plugin = () => (cli?.has(name) ? undefined : pluginCommandFor(app.customCommands, name));
+    return all.find((c) => c.name === name) ?? all.find((c) => c.aliases?.includes(name)) ?? (plugin() && customToCommand(plugin()!));
 }
 
 function parseCommand(text: string): { name: string; args: string } | undefined {

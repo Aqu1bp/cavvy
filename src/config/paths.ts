@@ -23,6 +23,7 @@ export const paths = {
     userMemory: () => join(harnessHome(), "HARNESS.md"),
     projectsDir: () => join(harnessHome(), "projects"),
     logs: () => join(harnessHome(), "logs"),
+    plugins: () => join(harnessHome(), "plugins"),
 
     projectDir: (cwd: string) => join(cwd, ".harness"),
     projectSettings: (cwd: string) => join(cwd, ".harness", "settings.json"),

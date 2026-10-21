@@ -7,6 +7,7 @@
 
 import type { DiagnosticReport } from "../lsp/diagnostics";
 import type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus } from "../mcp/info";
+import type { PluginListing, PluginScope } from "../plugins/info";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -1400,6 +1401,10 @@ export interface Methods {
     "fs.image": { params: { sessionId?: string; cwd?: string; path: string }; result: { mediaType: string; data: string } };
     /** Uses the cwd's default provider unless given; an optional command name is checked before creating a session. */
     "commands.list": { params: { cwd: string; provider?: string; command?: string }; result: CommandInfo[] };
+    /** Plugins and marketplaces, with each plugin's state for `cwd`'s folder (without one: the user's own settings only). */
+    "plugins.list": { params: { cwd?: string }; result: PluginsInfo };
+    /** Change plugins or marketplaces. Fetching (git, npm) happens before it answers; every open folder reloads after. */
+    "plugins.action": { params: PluginActionParams; result: PluginsInfo & { message: string } };
     "settings.get": { params: { cwd?: string }; result: GuiSettings };
     "settings.update": { params: { patch: GuiSettings }; result: GuiSettings };
     /** The agent CLIs' plan limits known so far (since the server started). */
@@ -1421,6 +1426,21 @@ export interface Methods {
 }
 
 export type Method = keyof Methods;
+
+export type { PluginInfo, PluginListing, PluginScope, MarketplaceInfo as PluginMarketplaceInfo } from "../plugins/info";
+
+export interface PluginsInfo extends PluginListing {
+    /** The folder the states are for, and whether its project settings count. */
+    cwd?: string;
+    trusted: boolean;
+}
+
+export type PluginActionParams =
+    | { action: "install"; id: string; scope: PluginScope; cwd?: string }
+    | { action: "uninstall" | "enable" | "disable"; id: string; scope?: PluginScope; cwd?: string }
+    | { action: "update"; id?: string; cwd?: string }
+    | { action: "marketplaceAdd"; source: string; cwd?: string }
+    | { action: "marketplaceRemove" | "marketplaceUpdate"; name: string; cwd?: string };
 export type ParamsOf<M extends Method> = Methods[M]["params"];
 export type ResultOf<M extends Method> = Methods[M]["result"];
 
