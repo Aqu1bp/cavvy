@@ -6,6 +6,7 @@
 // provider's prompt cache is a prefix match.
 
 import type { Effort } from "../config/settings";
+import type { TodoItem } from "../tools/types";
 
 export type TextPart = { type: "text"; text: string };
 export type ImagePart = { type: "image"; mediaType: string; data: string /* base64 */ };
@@ -61,6 +62,8 @@ export interface UserMessage {
         checkpoint?: number;
         /** Brought in from a Claude Code or Codex session started elsewhere: shown, never rewound to. */
         imported?: boolean;
+        /** State at a compaction boundary, restored before replaying later tool calls. */
+        compactedState?: { todos: TodoItem[]; approvedPlan?: string };
     };
 }
 
