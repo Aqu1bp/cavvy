@@ -137,6 +137,7 @@ function kv(label: string, value: string, w = 18): string {
 async function withProgress<T>(app: App, lines: string[], fn: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> {
     const ac = new AbortController();
     const d = new MessageDialog([...lines, "", theme.subtle("esc to cancel")], theme.permission, () => ac.abort());
+    d.yields = true;
     app.pushDialog(d);
     try {
         return await Promise.race([fn(ac.signal), new Promise<undefined>((r) => ac.signal.addEventListener("abort", () => r(undefined)))]);

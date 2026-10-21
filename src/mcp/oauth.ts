@@ -109,6 +109,13 @@ export function canonicalResource(url: string): string {
     return u.pathname === "/" && !u.search ? s.replace(/\/$/, "") : s;
 }
 
+/** The http(s) address of a server: a ws(s) URL's handshake is an HTTP request to the same place. */
+export function webForm(url: string): string {
+    const u = new URL(url);
+    if (u.protocol === "ws:" || u.protocol === "wss:") u.protocol = u.protocol === "ws:" ? "http:" : "https:";
+    return u.href;
+}
+
 /** A WWW-Authenticate Bearer challenge's parameters (lower-cased names). */
 export function parseChallenge(header: string): Record<string, string> {
     const out: Record<string, string> = {};
@@ -142,8 +149,10 @@ async function getJson(url: string, signal?: AbortSignal): Promise<Record<string
 }
 
 /** Where the server's authorization server is, and what scopes it names (RFC 9728, with the 2025-03-26 fallback). */
-export async function discoverResource(serverUrl: string, challenge: string, signal?: AbortSignal): Promise<{ resource: string; authServer: string; scopes?: string[] }> {
+export async function discoverResource(url: string, challenge: string, signal?: AbortSignal): Promise<{ resource: string; authServer: string; scopes?: string[] }> {
     const c = parseChallenge(challenge);
+    // A WebSocket server's metadata and resource are at its http(s) address.
+    const serverUrl = webForm(url);
     const u = new URL(serverUrl);
     const candidates = c.resource_metadata ? [c.resource_metadata] : [`${u.origin}/.well-known/oauth-protected-resource${u.pathname === "/" ? "" : u.pathname.replace(/\/$/, "")}`, `${u.origin}/.well-known/oauth-protected-resource`];
     for (const url of [...new Set(candidates)]) {
@@ -339,7 +348,7 @@ export async function signIn(name: string, cfg: McpServerConfig, o: SignInOption
     let challenge = o.challenge ?? "";
     if (!challenge) {
         try {
-            const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...(cfg.headers ?? {}) }, body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "server/discover", params: {} }), signal: AbortSignal.any([AbortSignal.timeout(FETCH_TIMEOUT_MS), ...(signal ? [signal] : [])]) });
+            const r = await fetch(webForm(url), { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...(cfg.headers ?? {}) }, body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "server/discover", params: {} }), signal: AbortSignal.any([AbortSignal.timeout(FETCH_TIMEOUT_MS), ...(signal ? [signal] : [])]) });
             challenge = r.headers.get("www-authenticate") ?? "";
             await r.body?.cancel();
         } catch {

@@ -1,7 +1,7 @@
 // "@server:uri" in a prompt: the MCP resource attached, as "@path" attaches a
-// file (src/ui/mentions.ts). The server part is a connected server's name
-// that offers resources; the rest, up to the next space, is the URI (one of
-// its resources, or a template filled in).
+// file (src/ui/mentions.ts). The server part is a configured server's name;
+// the rest, up to the next space, is the URI (one of its resources, or a
+// template filled in).
 
 import type { UserContent } from "../providers/types";
 import type { McpAsker } from "./elicitation";
@@ -44,7 +44,12 @@ export function findMcpMentions(text: string, servers: string[]): McpMention[] {
 export async function expandMcpMentions(text: string, mcp: McpManager | undefined, asker: McpAsker, signal?: AbortSignal): Promise<{ parts: UserContent[]; attached: string[]; notices: string[] }> {
     const out = { parts: [] as UserContent[], attached: [] as string[], notices: [] as string[] };
     if (!mcp) return out;
-    const mentions = findMcpMentions(text, mcp.resourceServers().map((s) => s.name));
+    // Every configured server's name: one that isn't connected (or needs signing in) gets a notice, not silence.
+    const mentions = findMcpMentions(text, [...mcp.servers.keys()]);
+    // A name no server has, before what is plainly a URI ("@gh:repo://x"): most likely a server that isn't configured here.
+    for (const m of text.matchAll(/(^|\s)@([\w.-]+):([a-z][\w+.-]*:\/\/\S*)/gi)) {
+        if (!mcp.servers.has(m[2]!) && !mentions.some((x) => x.raw.startsWith(`${m[2]}:`))) out.notices.push(`Couldn't attach @${m[2]}:${m[3]!.replace(/[.,;:!?]+$/, "")}: there's no MCP server named "${m[2]}".`);
+    }
     if (mentions.length > MAX_MENTIONS) out.notices.push(`Only the first ${MAX_MENTIONS} MCP resources were attached.`);
     for (const m of mentions.slice(0, MAX_MENTIONS)) {
         if (signal?.aborted) break;

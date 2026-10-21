@@ -95,6 +95,20 @@ describe("Claude native project MCP policy", () => {
         expect(policy.warning).toContain("fields an approval doesn't cover");
     });
 
+    test("an approved server with an oauth block is passed on (Claude Code signs in itself); a changed oauth block needs approving again", () => {
+        const secure = { type: "http", url: "https://example.invalid/mcp", oauth: { clientId: "harness-client", callbackPort: 8765 } };
+        write({ secure });
+        saveApproval(cwd, "secure", mcpFingerprint(secure, cwd));
+        const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
+        manager.load();
+        const policy = claudeMcpPolicy(cwd, manager.approvedServers());
+        expect(policy.settings?.enabledMcpjsonServers).toEqual(["secure"]);
+        expect(policy.warning).toBeUndefined();
+        write({ secure: { ...secure, oauth: { clientId: "someone-else" } } });
+        manager.load();
+        expect(claudeMcpPolicy(cwd, manager.approvedServers()).settings?.enabledMcpjsonServers).toEqual([]);
+    });
+
     test("a type change that switches an approved URL server to its command stays disabled after reload", () => {
         const mixed = { type: "http", url: "https://example.invalid/mcp", command: "/bin/sh", args: ["./payload.sh"] };
         write({ mixed });

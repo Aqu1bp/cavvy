@@ -3937,6 +3937,42 @@ describe("a project's MCP servers (.mcp.json approval)", () => {
         expect(notices).toContain("Attached user-picked.txt");
         c.close();
     }, 20_000);
+
+    test("while an MCP prompt waits on a question the session is busy: a message sent meanwhile queues and runs after", async () => {
+        const { c, id } = await mcpProject((d) => ({ srv: fx(join(d, "started"), { MCP_FIXTURE_ASK_TIMEOUT_MS: "15000" }) }));
+        await c.until(id, (v) => srvOf(v)?.status === "needs-approval");
+        const card = (await c.call<McpListInfo>("session.mcp", { id })).servers.find((s) => s.name === "srv")!;
+        await c.call("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint });
+        await c.until(id, (v) => srvOf(v)?.status === "connected" && (srvOf(v)!.prompts ?? 0) > 2);
+        await c.call("session.send", { id, text: "/mcp__srv__welcome" });
+        await c.until(id, (v) => v.state.interactions.length > 0);
+        expect(c.view(id).state.busy).toBe(true);
+        expect(await c.call<{ queued: boolean }>("session.send", { id, text: "explain the layout", mode: "queue" })).toMatchObject({ queued: true });
+        await c.answer(id, { kind: "question", answers: ["Ada"] });
+        await c.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 2 && !v.state.queued.length);
+        const prompts = c.view(id).turns.flatMap((t) => (t.prompt ? [t.prompt.text] : []));
+        expect(prompts).toEqual(["/mcp__srv__welcome", "explain the layout"]);
+        expect(c.view(id).turns.every((t) => t.status !== "error")).toBe(true);
+        c.close();
+    }, 30_000);
+
+    test("interrupting an MCP prompt that waits on a question puts it and what was queued back in the composer", async () => {
+        const { c, id } = await mcpProject((d) => ({ srv: fx(join(d, "started"), { MCP_FIXTURE_ASK_TIMEOUT_MS: "15000" }) }));
+        await c.until(id, (v) => srvOf(v)?.status === "needs-approval");
+        const card = (await c.call<McpListInfo>("session.mcp", { id })).servers.find((s) => s.name === "srv")!;
+        await c.call("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint });
+        await c.until(id, (v) => srvOf(v)?.status === "connected" && (srvOf(v)!.prompts ?? 0) > 2);
+        await c.call("session.send", { id, text: "/mcp__srv__welcome" });
+        await c.until(id, (v) => v.state.interactions.length > 0);
+        await c.call("session.send", { id, text: "and then this", mode: "queue" });
+        await c.call("session.interrupt", { id });
+        await c.until(id, (v) => !v.state.busy && !v.state.interactions.length);
+        await Bun.sleep(100);
+        const drafts = c.events.filter((e) => e.type === "draft" && e.sessionId === id) as Extract<ServerEvent, { type: "draft" }>[];
+        expect(drafts.map((d) => d.text)).toEqual(["/mcp__srv__welcome\n\nand then this"]);
+        expect(c.view(id).turns).toHaveLength(0);
+        c.close();
+    }, 30_000);
 });
 
 // A message sent while a turn runs steers it (joins at its next step) or waits for it to end; the queue

@@ -109,7 +109,7 @@ for (const era of ["legacy", "modern"] as const) {
 
         test("prompts/list and prompts/get with arguments; the server's error for a missing one comes back", async () => {
             const p = await c.listPrompts();
-            expect(p.map((x) => x.name)).toEqual(["greet", "rich"]);
+            expect(p.map((x) => x.name)).toEqual(["greet", "rich", "welcome"]);
             expect(p[0]!.arguments).toEqual([{ name: "name", description: "Who", required: true }, { name: "tone", description: "How" }]);
             const g = await c.getPrompt("greet", { name: "Ada", tone: "warmly" });
             expect(g.messages).toEqual([{ role: "user", content: { type: "text", text: "Say hello to Ada, warmly." } }]);
@@ -248,9 +248,9 @@ describe("the manager: resources, prompts and the model's resource tools", () =>
             expect(st.status).toBe("connected");
             expect(st.resources).toHaveLength(5);
             expect(st.templates).toHaveLength(1);
-            expect(st.prompts).toHaveLength(2);
+            expect(st.prompts).toHaveLength(3);
         }
-        expect(m.describe("leg")).toMatchObject({ resources: 6, prompts: 2 });
+        expect(m.describe("leg")).toMatchObject({ resources: 6, prompts: 3 });
     });
 
     test("a server that offers resources but no tools still connects", async () => {
@@ -298,6 +298,26 @@ describe("the manager: resources, prompts and the model's resource tools", () =>
         }
     });
 
+    test("a prompt whose name carries a configured secret isn't offered as a command", () => {
+        const st = m.servers.get("leg")!;
+        const before = st.prompts!;
+        st.prompts = [...before, { name: `leak_${secret}`, description: "leaks" }];
+        try {
+            const cmds = m.promptCommands();
+            expect(cmds.filter((c) => c.server === "leg")).toHaveLength(before.length);
+            expect(JSON.stringify(cmds)).not.toContain(secret);
+        } finally {
+            st.prompts = before;
+        }
+    });
+
+    test("an OAuth client secret is masked in what the server says, like env and headers", async () => {
+        const { maskConfigValues } = await import("../src/mcp/approval");
+        const masked = maskConfigValues("token endpoint said: bad client_secret=cs-1 for client harness", { url: "https://x.invalid/mcp", oauth: { clientId: "harness", clientSecret: "cs-1" } });
+        expect(masked).not.toContain("cs-1");
+        expect(masked).toContain("[REDACTED OAuth client secret]");
+    });
+
     test("readResource formats text, attaches images, caps size, and masks configured secrets", async () => {
         const r = await m.readResource("leg", "fixture://readme", {});
         expect(r.text).toBe("# Fixture\nHello from a resource.");
@@ -320,7 +340,7 @@ describe("the manager: resources, prompts and the model's resource tools", () =>
 
     test("prompt commands: mcp__<server>__<prompt>, with argument hints", () => {
         const cmds = m.promptCommands();
-        expect(cmds.map((c) => c.command).sort()).toEqual(["mcp__leg__greet", "mcp__leg__rich", "mcp__mod__greet", "mcp__mod__rich"]);
+        expect(cmds.map((c) => c.command).sort()).toEqual(["mcp__leg__greet", "mcp__leg__rich", "mcp__leg__welcome", "mcp__mod__greet", "mcp__mod__rich", "mcp__mod__welcome"]);
         expect(cmds.find((c) => c.command === "mcp__leg__greet")).toMatchObject({ args: "<name> [tone]", description: "Says hello (MCP prompt from leg)" });
     });
 
@@ -387,6 +407,22 @@ describe("the manager: resources, prompts and the model's resource tools", () =>
         expect(denied.content).toContain("declined the sampling request");
     });
 
+    test("sampling asks the model for the server's token limit and reports why it stopped", async () => {
+        const budgets: (number | undefined)[] = [];
+        const ctx = {
+            ui: { askQuestion: async () => ["Allow"] },
+            sample: async (_s: string, _p: string, _sig: AbortSignal, maxTokens?: number) => (budgets.push(maxTokens), { text: "Par", model: "anthropic:test", stopReason: "max_tokens" }),
+            signal: new AbortController().signal,
+        } as any;
+        const tool = m.tools().find((t) => t.name === "mcp__leg__sample")!;
+        const r = JSON.parse((await tool.run({ q: "capital of France?" }, ctx)).content);
+        expect(budgets).toEqual([50]);
+        expect(r.stopReason).toBe("maxTokens");
+        const { samplingBudget, mcpStopReason } = await import("../src/mcp/elicitation");
+        expect([samplingBudget(undefined), samplingBudget(0), samplingBudget(10.7), samplingBudget(10_000_000)]).toEqual([2048, 2048, 10, 32_000]);
+        expect([mcpStopReason(undefined), mcpStopReason("end_turn"), mcpStopReason("stop_sequence"), mcpStopReason("refusal")]).toEqual(["endTurn", "endTurn", "stopSequence", "refusal"]);
+    });
+
     test("a headless manager (not interactive) declines forms without asking", async () => {
         const m2 = new McpManager(WORK, () => ({ mcpServers: { h: stdio("modern") } }), false);
         managers.push(m2);
@@ -437,6 +473,19 @@ describe("@server:uri mentions", () => {
         expect(await expandMcpMentions("@docs:fixture://readme", undefined, {})).toEqual({ parts: [], attached: [], notices: [] });
     });
 
+    test("a mention of a configured server that isn't connected gets a notice; a name no server has gets one only before a URI", async () => {
+        const m = new McpManager(WORK, () => ({ mcpServers: { docs: stdio("legacy"), off: { ...stdio("legacy"), disabled: true } } }), false, undefined, true);
+        managers.push(m);
+        m.load();
+        await m.startAll();
+        const r = await expandMcpMentions("read @off:fixture://readme, @gh:repo://issues/1. and @notes.md:12", m, {});
+        expect(r.attached).toEqual([]);
+        expect(r.notices.sort()).toEqual([
+            "Couldn't attach @gh:repo://issues/1: there's no MCP server named \"gh\".",
+            "Couldn't attach @off:fixture://readme: MCP server off isn't connected.",
+        ]);
+    });
+
     test("searchResources: prefix of server:uri first, then name/title matches; empty query lists none", () => {
         const all = [
             { mention: "gh:repo://a", name: "alpha", title: "Alpha doc", uri: "repo://a" },
@@ -467,6 +516,16 @@ describe("helpers", () => {
         ]);
         expect(f.text).toBe("a://1:\none\n\n[binary resource a://2 (application/pdf), 0 KB, not attached]");
         expect(f.images).toEqual([]);
+    });
+
+    test("formatPromptMessages attaches an embedded image resource; other binary resources stay a note", () => {
+        const r = formatPromptMessages([
+            { role: "user", content: { type: "text", text: "Look." } },
+            { role: "user", content: { type: "resource", resource: { uri: "fixture://pixel", mimeType: "image/png", blob: "iVBORw0K" } } },
+            { role: "user", content: { type: "resource", resource: { uri: "fixture://doc", mimeType: "application/pdf", blob: "JVBERi0" } } },
+        ] as any);
+        expect(r.images).toEqual([{ type: "image", mediaType: "image/png", data: "iVBORw0K" }]);
+        expect(r.text).toBe("Look.\n\n[binary resource fixture://doc (application/pdf) omitted]");
     });
 
     test("formatPromptMessages marks roles only in a conversation", () => {

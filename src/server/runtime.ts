@@ -32,7 +32,7 @@ import { formatSkill, skillMentions, withSkills } from "../agent/skills";
 import { cliRunsSkills } from "../backends/native-skills";
 import { loadsPluginsNatively, onlyPluginHooks, runsPluginCommand, sessionHookSettings, withoutPluginHooks } from "../plugins/native";
 import { childEnv, killAllShells, runShell } from "../tools/bash";
-import type { Tool, ToolResult, ToolState } from "../tools/types";
+import type { Sampler, Tool, ToolResult, ToolState } from "../tools/types";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
 import { clientFor, defaultModelFrom, lookupModel, resolveModelInfo, reviewTarget, smallModelFor } from "../providers/models";
 import { costOf } from "../providers/pricing";
@@ -891,7 +891,7 @@ export class Runtime {
     }
 
     /** One-shot completion on a cheap model (reviewer, titles, page summaries), or the session's own with `main`. */
-    async complete(system: string, prompt: string, signal?: AbortSignal, opts?: { main?: boolean; review?: ReviewStage; target?: { model: ModelInfo; client: ProviderClient } }): Promise<string> {
+    async complete(system: string, prompt: string, signal?: AbortSignal, opts?: { main?: boolean; review?: ReviewStage; target?: { model: ModelInfo; client: ProviderClient }; maxTokens?: number; stopped?: (reason: string | undefined) => void }): Promise<string> {
         let model = this.model!;
         let client = this.client!;
         if (opts?.target) ({ model, client } = opts.target);
@@ -903,7 +903,7 @@ export class Runtime {
             // the session's own model
         } else ({ model, client } = await this.smallTarget());
         const res = await client.stream(
-            { model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: 2048, effort: "low", lightweight: true, signal, ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) },
+            { model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: opts?.maxTokens ?? 2048, effort: "low", lightweight: true, signal, ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) },
             () => {},
         );
         if (res.usage) {
@@ -911,6 +911,7 @@ export class Runtime {
             this.session.recordUsage(modelRef(model), res.usage, c.usd, c.unknown);
             this.setState({ cost: this.session.cost, costUnknown: this.session.costUnknown, ...this.tokenTotals() });
         }
+        opts?.stopped?.(res.stopReason);
         return opts?.review ? reviewText(res) : textOf(res);
     }
 
@@ -1049,6 +1050,15 @@ export class Runtime {
         }
     }
 
+    /** MCP sampling: the session's own model, the server's token limit, and why it stopped. */
+    private sampler(): Sampler {
+        return async (system, prompt, signal, maxTokens) => {
+            let stopReason: string | undefined;
+            const text = await this.complete(system, prompt, signal, { main: true, maxTokens, stopped: (r) => (stopReason = r) });
+            return { text, model: this.model ? modelRef(this.model) : "unknown", stopReason };
+        };
+    }
+
     /** Who answers one-off requests (titles, summaries): smallModel, else a small model of the session's provider, else its own. */
     private async smallTarget(): Promise<{ model: ModelInfo; client: ProviderClient }> {
         let model = this.model!;
@@ -1129,7 +1139,7 @@ export class Runtime {
             },
             helpers: {
                 complete: (s, p, sig) => this.complete(s, p, sig),
-                sample: async (s, p, sig) => ({ text: await this.complete(s, p, sig, { main: true }), model: this.model ? modelRef(this.model) : "unknown" }),
+                sample: this.sampler(),
                 webSearch: async (query, signal) => {
                     const backend = await availableSearchBackend(this.settings().webSearch);
                     if (!backend) throw new Error("Web search is turned off (settings.webSearch = off)");
@@ -1894,7 +1904,7 @@ export class Runtime {
     mcpAsker(): McpAsker {
         return {
             askQuestion: (q, opts, multi) => this.askQuestion(q, opts, multi),
-            sample: async (s, p, sig) => ({ text: await this.complete(s, p, sig, { main: true }), model: this.model ? modelRef(this.model) : "unknown" }),
+            sample: this.sampler(),
             warn: (m) => this.notice(m, "warn"),
         };
     }
@@ -2145,17 +2155,29 @@ export class Runtime {
 
     /** An MCP server's prompt as a slash command: fetched (it may ask the user something first), then sent as the prompt. */
     private async runMcpPrompt(command: string, args: string, display: string, attachments?: AttachedPart[]) {
-        this.setState({ activity: { label: `Getting /${command}`, since: Date.now() } });
-        let r: { text: string; images: AttachedPart[] };
+        // Busy while it's fetched, as a turn is: a message sent meanwhile queues, and Stop cancels it.
+        this.busy = true;
+        const ac = (this.abort = new AbortController());
+        this.setState({ busy: true, status: "running", activity: { label: `Getting /${command}`, since: Date.now() } });
+        let r: { text: string; images: AttachedPart[] } | undefined;
         try {
-            r = await this.ws.mcp.runPrompt(command, args.trim(), this.mcpAsker());
+            r = await this.ws.mcp.runPrompt(command, args.trim(), this.mcpAsker(), ac.signal);
+            if (ac.signal.aborted) r = undefined;
         } catch (e) {
-            this.notice(redact((e as Error).message), "error");
-            // The message goes back to the composer, as an interrupted one does.
-            this.engine.draft(this, display, attachments);
-            return;
+            if (!ac.signal.aborted) this.notice(redact((e as Error).message), "error");
         } finally {
-            if (!this.busy) this.setState({ activity: undefined });
+            this.busy = false;
+            this.abort = undefined;
+            this.setState({ busy: false, activity: undefined });
+            this.setStatus(this.pending.size ? "waiting" : "idle");
+        }
+        if (!r) {
+            // The message goes back to the composer, as an interrupted one does, with what was queued after it.
+            const back = [{ text: display, attachments }, ...this.queued];
+            this.queued = [];
+            if (back.length > 1) this.queueUpdated();
+            this.engine.draft(this, back.map((q) => q.text).filter((t) => t.trim()).join("\n\n"), back.flatMap((q) => q.attachments ?? []));
+            return;
         }
         // What the server wrote isn't the user's: only the arguments they typed attach files or resources.
         return this.startTurn(r.text, { display, kind: "command", attachments: [...(attachments ?? []), ...r.images], mentionsIn: args });

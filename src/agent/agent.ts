@@ -34,7 +34,7 @@ import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, needsSummary, summaryFits, type ReviewContext } from "../permissions/classifier";
 import { sandboxKind, sandboxPolicy, type Sandbox } from "../permissions/sandbox";
 import { APP_TITLE, harnessHome } from "../config/paths";
-import type { Tool, ToolContext, ToolDisplay, ToolResult, ToolState, UiBridge } from "../tools/types";
+import type { Sampler, Tool, ToolContext, ToolDisplay, ToolResult, ToolState, UiBridge } from "../tools/types";
 import { formatWakes, wakeDisplay } from "./wakes";
 import { isReadOnly } from "../tools/types";
 import { coerceInput, validateInput, EXPLORE_TOOLS, toSchema } from "../tools/index";
@@ -171,7 +171,7 @@ export interface Helpers {
     complete?(system: string, prompt: string, signal?: AbortSignal): Promise<string>;
     webSearch?(query: string, signal: AbortSignal): Promise<string>;
     /** One completion on the session's own model (an MCP server's sampling request): its text and the model. */
-    sample?(system: string, prompt: string, signal: AbortSignal): Promise<{ text: string; model: string }>;
+    sample?: Sampler;
     /** Resolve "provider:model" into a client (custom agents with their own model). */
     resolveModel?(ref: string): Promise<{ model: ModelInfo; client: ProviderClient } | undefined>;
 }

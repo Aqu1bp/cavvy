@@ -1116,7 +1116,7 @@ export class McpClient {
     }
 
     async readResource(uri: string, opts: { signal?: AbortSignal; input?: McpInput; timeoutMs?: number } = {}): Promise<McpResourceContents[]> {
-        const r = await this.call("resources/read", { uri }, { signal: opts.signal, timeoutMs: opts.timeoutMs ?? 60_000, input: opts.input, headers: this.isHttp && this.era === "modern" ? { "Mcp-Name": headerValue(uri) } : undefined });
+        const r = await this.call("resources/read", { uri }, { signal: opts.signal, timeoutMs: opts.timeoutMs ?? 30_000, input: opts.input, headers: this.isHttp && this.era === "modern" ? { "Mcp-Name": headerValue(uri) } : undefined });
         return (Array.isArray(r.contents) ? r.contents : []).filter((c: any) => c && typeof c === "object" && typeof c.uri === "string");
     }
 

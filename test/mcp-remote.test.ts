@@ -8,7 +8,7 @@ import { isolate, tempDir } from "./helpers/isolate";
 const iso = isolate();
 const { McpClient, McpAuthError, transportOf, sseTiming } = await import("../src/mcp/client");
 const { McpManager, SignInReplaced } = await import("../src/mcp/manager");
-const { signIn, oauthFor, parseChallenge, canonicalResource, discoverAuthServer, hasOAuthTokens, isWebUrl } = await import("../src/mcp/oauth");
+const { signIn, oauthFor, parseChallenge, canonicalResource, discoverAuthServer, discoverResource, hasOAuthTokens, isWebUrl } = await import("../src/mcp/oauth");
 const { paths } = await import("../src/config/paths");
 const { startSseMcpServer, startWsMcpServer, startOAuthMcpServer, browse } = await import("./fixtures/mcp-remote-servers");
 import type { McpClient as McpClientT } from "../src/mcp/client";
@@ -198,6 +198,23 @@ describe("WebSocket transport", () => {
 });
 
 describe("remote auth across transports", () => {
+    test.each(["header", "path", "root"] as const)("WebSocket: OAuth discovery looks at the server's http address (metadata %s)", async (prmAt) => {
+        const f = startOAuthMcpServer({ prmAt });
+        stops.push(f.stop);
+        const ws = f.url.replace(/^http:/, "ws:");
+        const challenge = prmAt === "header" ? `Bearer resource_metadata="${f.issuer}/meta/prm"` : "";
+        // The metadata names the https resource: that's this server, not someone else's.
+        expect(await discoverResource(ws, challenge)).toEqual({ resource: f.url, authServer: f.issuer, scopes: ["mcp:read", "mcp:write"] });
+        expect(await discoverAuthServer(f.issuer)).toMatchObject({ issuer: f.issuer });
+    });
+
+    test("WebSocket: with no metadata at all, the server's http origin is its authorization server", async () => {
+        const f = startOAuthMcpServer({ prmAt: "header" });
+        stops.push(f.stop);
+        const r = await discoverResource(f.url.replace(/^http:/, "ws:"), "");
+        expect(r).toEqual({ resource: f.url, authServer: f.issuer, scopes: undefined });
+    });
+
     /** An McpAuth whose token can be rotated: unauthorized() picks up the current one if it changed. */
     function rotating(start: string, current: () => string) {
         let have = start;
@@ -444,6 +461,45 @@ describe("OAuth", () => {
         await signIn("s", { url: f.url }, { open: (u) => void browse(u).catch(() => {}) });
         expect(f.registrations).toHaveLength(1);
         expect(f.authorizeParams[0]!.redirect_uri).toBe(f.authorizeParams[1]!.redirect_uri);
+    });
+
+    test("a token lost after connecting (revoked, refresh refused) shows the server as needing sign-in, from a tool call", async () => {
+        const f = startOAuthMcpServer();
+        stops.push(f.stop);
+        const m = new McpManager(WORK, () => ({ mcpServers: { s: { url: f.url } } }), false);
+        m.load();
+        await m.startAll();
+        await m.signIn("s", (u) => void browse(u).catch(() => {}));
+        const st = m.servers.get("s")!;
+        expect(st.status).toBe("connected");
+        const echo = m.tools().find((t) => t.name === "mcp__s__echo")!;
+        f.valid.clear();
+        f.refuseRefresh = true;
+        const r = await echo.run({ text: "x" }, { signal: new AbortController().signal } as any);
+        expect(r.isError).toBe(true);
+        expect(r.content).toMatch(/needs signing in again.*\/mcp/);
+        expect(st.status).toBe("needs-auth");
+        expect(st.client).toBeUndefined();
+        expect(m.tools().some((t) => t.name === "mcp__s__echo")).toBe(false);
+        // Signing in again brings it back.
+        f.refuseRefresh = false;
+        await m.signIn("s", (u) => void browse(u).catch(() => {}));
+        expect(st.status).toBe("connected");
+        await m.closeAll();
+    });
+
+    test("a token lost after connecting shows as needing sign-in from a prompt or resource read too", async () => {
+        const f = startOAuthMcpServer();
+        stops.push(f.stop);
+        const m = new McpManager(WORK, () => ({ mcpServers: { s: { url: f.url } } }), false);
+        m.load();
+        await m.startAll();
+        await m.signIn("s", (u) => void browse(u).catch(() => {}));
+        f.valid.clear();
+        f.refuseRefresh = true;
+        await expect(m.readResource("s", "fixture://readme", {})).rejects.toThrow(/needs signing in again/);
+        expect(m.servers.get("s")!.status).toBe("needs-auth");
+        await m.closeAll();
     });
 
     test("sign out forgets the tokens and the server asks again", async () => {

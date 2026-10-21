@@ -15,10 +15,11 @@ const record = (value: unknown): value is Record<string, unknown> => value !== n
 
 /**
  * The definition fields Harness's approval fingerprint covers (mcpFingerprint), plus ones that
- * run nothing. Claude Code acts on others (headersHelper runs a program, oauth signs in), which
- * an approval doesn't bind, so a definition with any other field isn't passed on.
+ * run nothing. Claude Code acts on others (headersHelper runs a program), which an approval
+ * doesn't bind, so a definition with any other field isn't passed on. `oauth` is fingerprinted:
+ * Claude Code signs in to such a server itself.
  */
-const BOUND_FIELDS = new Set(["command", "args", "env", "cwd", "url", "headers", "type", "disabled"]);
+const BOUND_FIELDS = new Set(["command", "args", "env", "cwd", "url", "headers", "type", "disabled", "oauth"]);
 
 /** Claude Code expands ${VAR} in definitions; Harness doesn't, so an approval binds only the literal text. */
 const expands = (v: unknown): boolean => typeof v === "string" ? v.includes("${") : Array.isArray(v) ? v.some(expands) : record(v) ? Object.values(v).some(expands) : false;
@@ -108,7 +109,7 @@ export function claudeMcpPolicy(cwd: string, approved: ApprovedMcpServers | unde
             ...(incompatibleCwd || unboundField || stale ? { warning: [
                 incompatibleCwd && "Claude Code skipped approved project MCP servers whose working directory differs from the project root because it ignores server cwd.",
                 stale && "Claude Code skipped approved project MCP servers whose definitions no longer resolve to what was approved (a symlinked working directory may point elsewhere now); reopen /mcp to review them.",
-                unboundField && "Claude Code skipped approved project MCP servers that it would read differently from what Harness approved: fields an approval doesn't cover (such as headersHelper or oauth), ${VAR} expansion, or a type that doesn't match a single command or URL.",
+                unboundField && "Claude Code skipped approved project MCP servers that it would read differently from what Harness approved: fields an approval doesn't cover (such as headersHelper), ${VAR} expansion, or a type that doesn't match a single command or URL.",
             ].filter(Boolean).join(" ") } : {}),
         };
     } catch {

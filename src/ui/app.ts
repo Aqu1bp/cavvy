@@ -46,7 +46,7 @@ import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "..
 import { toolPath } from "../permissions/rules";
 import { McpManager } from "../mcp/manager";
 import { BUILTIN_TOOLS } from "../tools/index";
-import type { Tool, ToolDisplay, ToolState, TodoItem } from "../tools/types";
+import type { Sampler, Tool, ToolDisplay, ToolState, TodoItem } from "../tools/types";
 import { killAllShells, runShell, childEnv } from "../tools/bash";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
 import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveModelInfo, reviewTarget, smallModelFor, lookupModel, type ProviderListing } from "../providers/models";
@@ -617,7 +617,7 @@ export class App {
     }
 
     /** One-shot completion on a cheap model (summaries), the auto-mode reviewer with `review`, or with `main` on the session's model. */
-    async complete(system: string, prompt: string, signal?: AbortSignal, opts?: { main?: boolean; review?: ReviewStage }): Promise<string> {
+    async complete(system: string, prompt: string, signal?: AbortSignal, opts?: { main?: boolean; review?: ReviewStage; maxTokens?: number; stopped?: (reason: string | undefined) => void }): Promise<string> {
         let model = this.model!;
         let client = this.client!;
         const smallRef = this.settings.smallModel;
@@ -642,7 +642,7 @@ export class App {
         }
         const res = await client.stream(
             // Not a session message, so redact here (WebFetch pages, reviewer prompts).
-            { model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: 2048, effort: "low", lightweight: true, signal, ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) },
+            { model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: opts?.maxTokens ?? 2048, effort: "low", lightweight: true, signal, ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) },
             () => {},
         );
         if (res.usage) {
@@ -650,7 +650,17 @@ export class App {
             const c = costOf(res.usage, model);
             this.session.recordUsage(modelRef(model), res.usage, c.usd, c.unknown);
         }
+        opts?.stopped?.(res.stopReason);
         return opts?.review ? reviewText(res) : textOf(res);
+    }
+
+    /** MCP sampling: the session's own model, the server's token limit, and why it stopped. */
+    private sampler(): Sampler {
+        return async (system, prompt, signal, maxTokens) => {
+            let stopReason: string | undefined;
+            const text = await this.complete(system, prompt, signal, { main: true, maxTokens, stopped: (r) => (stopReason = r) });
+            return { text, model: this.model ? modelRef(this.model) : "unknown", stopReason };
+        };
     }
 
     tools(): Tool<any>[] {
@@ -701,7 +711,7 @@ export class App {
             },
             helpers: {
                 complete: (s, p, sig) => this.complete(s, p, sig),
-                sample: async (s, p, sig) => ({ text: await this.complete(s, p, sig, { main: true }), model: this.model ? modelRef(this.model) : "unknown" }),
+                sample: this.sampler(),
                 webSearch: async (query, signal) => {
                     const backend = await availableSearchBackend(this.settings.webSearch);
                     if (!backend) throw new Error("Web search is turned off (settings.webSearch = off)");
@@ -1323,7 +1333,11 @@ export class App {
     pushDialog(d: Dialog) {
         // A sub-agent must never redirect keystrokes meant for a masked input
         // into a permission or question. All interactive dialogs share the queue.
-        if (this.dialogs.length || this.dialogQueue.length) this.dialogQueue.push(d);
+        // A progress box waits on work that may itself need an answer: that question
+        // goes on top of it, or the two would wait on each other.
+        const top = this.dialogs[this.dialogs.length - 1];
+        if (top?.yields) this.dialogs.push(d);
+        else if (this.dialogs.length || this.dialogQueue.length) this.dialogQueue.push(d);
         else this.dialogs.push(d);
         this.renderLive();
     }
@@ -1491,7 +1505,7 @@ export class App {
     mcpAsker(): McpAsker {
         return {
             askQuestion: (q, opts, multi) => this.askQuestion(q, opts, multi),
-            sample: async (s, p, sig) => ({ text: await this.complete(s, p, sig, { main: true }), model: this.model ? modelRef(this.model) : "unknown" }),
+            sample: this.sampler(),
             warn: (m) => this.notice(m, "warn"),
         };
     }

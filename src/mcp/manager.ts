@@ -119,6 +119,8 @@ export function formatMcpResult(r: McpCallResult): { content: string; images: Im
                 break;
             case "resource":
                 if (typeof c.resource.text === "string") texts.push(`Resource ${c.resource.uri}:\n${c.resource.text}`);
+                // An embedded image is attached, as one read with readResource is.
+                else if (typeof c.resource.blob === "string" && c.resource.mimeType && IMAGE_TYPES.test(c.resource.mimeType)) images.push({ type: "image", mediaType: c.resource.mimeType, data: c.resource.blob });
                 else texts.push(`[binary resource ${c.resource.uri}${c.resource.mimeType ? ` (${c.resource.mimeType})` : ""} omitted]`);
                 break;
         }
@@ -600,6 +602,7 @@ export class McpManager {
                                 display: { summary: r.isError ? "Error" : `${content.split("\n").length} lines${f.images.length ? `, ${f.images.length} image(s)` : ""}` },
                             };
                         } catch (e) {
+                            if (self.authLost(st, client, e)) return { content: `MCP server ${st.name} needs signing in again. Ask the user to sign in with /mcp, then try again.`, isError: true };
                             return { content: `MCP error from ${st.name}: ${maskConfigValues((e as Error).message, st.config)}`, isError: true };
                         }
                     },
@@ -608,6 +611,22 @@ export class McpManager {
         }
         if (this.resourceServers().length) out.push(...this.resourceTools());
         return out;
+    }
+
+    /**
+     * A connected server that stops accepting its token (revoked, expired with no refresh) needs
+     * signing in again, as one that refused it at start does: the same status, so /mcp and the GUI offer it.
+     */
+    private authLost(st: ServerState, client: McpClient, e: unknown): e is McpAuthError {
+        if (!(e instanceof McpAuthError)) return false;
+        if (st.client !== client || this.servers.get(st.name) !== st) return true;
+        st.status = "needs-auth";
+        st.challenge = e.challenge;
+        st.error = maskConfigValues(e.message, st.config);
+        st.client = undefined;
+        void client.close();
+        this.onChange?.();
+        return true;
     }
 
     /** What a server asks of the user while one of its requests is open, through `asker` (masked for its own configuration). */
@@ -651,7 +670,10 @@ export class McpManager {
         const st = this.servers.get(server);
         if (!st) throw new McpError(`There's no MCP server named "${server}".`);
         if (st.status !== "connected" || !st.client || !mayStart(st) || !this.stillApproved(st)) throw new McpError(`MCP server ${server} isn't connected${st.status === "needs-auth" ? " (sign in with /mcp)" : ""}.`);
-        const contents = await st.client.readResource(uri, { signal, input: this.inputFor(st, asker) });
+        const client = st.client;
+        const contents = await client.readResource(uri, { signal, input: this.inputFor(st, asker) }).catch((e) => {
+            throw this.authLost(st, client, e) ? new McpError(`MCP server ${server} needs signing in again (sign in with /mcp).`) : e;
+        });
         const f = formatResourceContents(contents);
         return { text: truncateMiddle(maskConfigValues(f.text, st.config), MAX_OUTPUT), images: f.images, uri: maskConfigValues(uri, st.config) };
     }
@@ -712,6 +734,8 @@ export class McpManager {
         for (const st of this.servers.values()) {
             if (st.status !== "connected" || !st.client) continue;
             for (const p of st.prompts ?? []) {
+                // A name becomes a command anyone sees unmasked: one holding a configured secret is left out, as a tool's is.
+                if (hasConfigValue(p.name, st.config)) continue;
                 let command = `mcp__${serverSegment(st.name)}__${clean(p.name)}`.toLowerCase();
                 const n = seen.get(command) ?? 0;
                 seen.set(command, n + 1);
@@ -743,7 +767,10 @@ export class McpManager {
         });
         const missing = defs.filter((a) => a.required && args[a.name] === undefined);
         if (missing.length) throw new McpError(`/${pc.command} needs ${missing.map((a) => a.name).join(", ")}. Usage: /${pc.command} ${pc.args ?? ""}`.trim());
-        const r = await st.client.getPrompt(pc.prompt.name, args, { signal, input: this.inputFor(st, asker) });
+        const client = st.client;
+        const r = await client.getPrompt(pc.prompt.name, args, { signal, input: this.inputFor(st, asker) }).catch((e) => {
+            throw this.authLost(st, client, e) ? new McpError(`MCP server ${pc.server} needs signing in again (sign in with /mcp).`) : e;
+        });
         const f = formatPromptMessages(r.messages);
         if (!f.text.trim() && !f.images.length) throw new McpError(`${pc.server}'s prompt ${pc.prompt.name} came back empty.`);
         return { text: truncateMiddle(maskConfigValues(f.text, st.config), MAX_OUTPUT), images: f.images };

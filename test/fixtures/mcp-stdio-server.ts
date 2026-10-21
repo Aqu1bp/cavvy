@@ -72,6 +72,7 @@ const TEMPLATES: Json[] = [{ uriTemplate: "fixture://items/{id}", name: "item", 
 const PROMPTS: Json[] = [
     { name: "greet", title: "Greet someone", description: "Says hello", arguments: [{ name: "name", description: "Who", required: true }, { name: "tone", description: "How" }] },
     { name: "rich", description: "Text, an embedded resource and an image", arguments: [] },
+    { name: "welcome", description: "Asks who to welcome first", arguments: [] },
 ];
 const PAGE = 4;
 
@@ -275,6 +276,9 @@ function getPrompt(id: unknown, params: Json) {
                 { role: "user", content: { type: "image", data: PNG, mimeType: "image/png" } },
             ],
         });
+    }
+    if (params.name === "welcome") {
+        return ask(id, params, "name", "elicitation/create", NAME_FORM, (a) => ({ messages: [{ role: "user", content: { type: "text", text: `Welcome ${a.content?.name ?? "nobody"}.` } }] }));
     }
     return error(id, -32602, `Unknown prompt: ${params.name}`);
 }

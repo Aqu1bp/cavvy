@@ -248,6 +248,7 @@ function configSecrets(config: McpServerConfig): [string, string][] {
             }
         }
     }
+    add(record(config.oauth).clientSecret, "OAuth client secret", 1);
     return out.sort((a, b) => b[0].length - a[0].length);
 }
 

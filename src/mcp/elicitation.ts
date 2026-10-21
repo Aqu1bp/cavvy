@@ -4,6 +4,7 @@
 
 import { APP_TITLE } from "../config/paths";
 import { McpError, type McpElicitResult, type McpInput, type McpSamplingParams } from "./client";
+import type { Sampler } from "../tools/types";
 
 export interface FormQuestion {
     question: string;
@@ -134,7 +135,7 @@ export interface McpAsker {
     /** One question at a time (the UiBridge's askQuestion); undefined when dismissed. */
     askQuestion?(question: string, options: { label: string; description?: string }[], multi: boolean): Promise<string[] | undefined>;
     /** One completion on the session's model, for sampling: its text and the model's name. */
-    sample?(system: string, prompt: string, signal: AbortSignal): Promise<{ text: string; model: string }>;
+    sample?: Sampler;
     /** A warning for the user (a form that can't be shown). */
     warn?(message: string): void;
 }
@@ -162,6 +163,16 @@ export function samplingPrompt(p: McpSamplingParams): string {
  * and sampling runs only after the user allows it. With no way to ask,
  * there's nothing to answer with (forms are declined, sampling refused).
  */
+/** The server's token limit, within what a one-off request may ask for (the 2048 used when it gives none). */
+export function samplingBudget(maxTokens: unknown): number {
+    return typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens >= 1 ? Math.min(Math.floor(maxTokens), 32_000) : 2048;
+}
+
+/** A provider's stop reason as MCP names it (endTurn, maxTokens, stopSequence), others as they are. */
+export function mcpStopReason(r: string | undefined): string {
+    return r === undefined || r === "end_turn" ? "endTurn" : r === "max_tokens" ? "maxTokens" : r === "stop_sequence" ? "stopSequence" : r;
+}
+
 export function mcpInput(server: string, a: McpAsker): McpInput | undefined {
     const askOne = a.askQuestion?.bind(a);
     if (!askOne) return undefined;
@@ -194,8 +205,8 @@ export function mcpInput(server: string, a: McpAsker): McpInput | undefined {
                       false,
                   );
                   if (r?.[0] !== "Allow") throw new McpError("The user declined the sampling request", -1);
-                  const out = await a.sample!(p.systemPrompt ?? "", prompt, signal);
-                  return { role: "assistant", content: { type: "text", text: out.text }, model: out.model, stopReason: "endTurn" };
+                  const out = await a.sample!(p.systemPrompt ?? "", prompt, signal, samplingBudget(p.maxTokens));
+                  return { role: "assistant", content: { type: "text", text: out.text }, model: out.model, stopReason: mcpStopReason(out.stopReason) };
               }
             : undefined,
     };
