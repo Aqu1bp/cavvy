@@ -11,7 +11,10 @@ describe("the harness's PreToolUse hook as one of Codex's", () => {
         expect(codexHookHash("pre_tool_use", { hooks: [{ timeout: 600, input: handler.input, tool: handler.tool, server: handler.server, type: handler.type }] })).toBe(codexHookHash("pre_tool_use", { hooks: [handler] }));
         const arg = codexHookArgs()[1]!;
         expect(codexHookArgs()[0]).toBe("-c");
-        expect(arg).toContain('"/<session-flags>/config.toml:pre_tool_use:0:0"={"trusted_hash"="sha256:419b558b');
+        // The hook as given (an hour's timeout, so a hook that asks can wait on the user), trusted by its own hash.
+        const given = { ...handler, timeout: 3600 };
+        expect(arg).toContain(`"/<session-flags>/config.toml:pre_tool_use:0:0"={"trusted_hash"="${codexHookHash("pre_tool_use", { hooks: [given] })}"}`);
+        expect(arg).toContain('"timeout"=3600');
         expect(arg).toStartWith('hooks={"PreToolUse"=[{"hooks"=[{"type"="mcp_tool","server"="harness_hooks","tool"="pre_tool_use"');
     });
 

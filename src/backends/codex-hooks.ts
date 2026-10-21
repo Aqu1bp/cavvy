@@ -15,9 +15,9 @@ export const CODEX_HOOK_TOOL = "pre_tool_use";
 
 /** What Codex passes to the tool: placeholders it fills in from its PreToolUse input. */
 const HOOK_INPUT = { tool_name: "${tool_name}", tool_input: "${tool_input}", tool_use_id: "${tool_use_id}" };
-const HANDLER = { type: "mcp_tool", server: CODEX_HOOK_SERVER, tool: CODEX_HOOK_TOOL, input: HOOK_INPUT };
-/** Codex's own default, which its trust hash includes. */
-const TIMEOUT_SEC = 600;
+/** Long enough for a hook that asks the user to wait on them (Codex's default is 10 minutes; the hash includes it). */
+const TIMEOUT_SEC = 3600;
+const HANDLER = { type: "mcp_tool", server: CODEX_HOOK_SERVER, tool: CODEX_HOOK_TOOL, input: HOOK_INPUT, timeout: TIMEOUT_SEC };
 
 /** The key Codex keeps the hook's state under: hooks given with -c come from a "session flags" layer of its own. */
 const HOOK_KEY = `${process.platform === "win32" ? "C:\\" : "/"}<session-flags>/config.toml:pre_tool_use:0:0`;
@@ -37,7 +37,7 @@ const toml = (v: unknown): string =>
 
 /** The app-server arguments that add the hook, trusted. Nothing secret: the server's address and token go in the thread's config. */
 export function codexHookArgs(): string[] {
-    const hash = codexHookHash("pre_tool_use", { hooks: [{ ...HANDLER, timeout: TIMEOUT_SEC }] });
+    const hash = codexHookHash("pre_tool_use", { hooks: [HANDLER] });
     return ["-c", `hooks=${toml({ PreToolUse: [{ hooks: [HANDLER] }], state: { [HOOK_KEY]: { trusted_hash: hash } } })}`];
 }
 
