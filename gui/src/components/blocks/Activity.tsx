@@ -771,13 +771,18 @@ export function EditCard(p: { tool: ToolBlock }) {
 
 function EditCardContent(p: { tool: ToolBlock }) {
     const t = () => p.tool;
-    const [open, setOpen] = createSignal(true);
-    createEffect(on(findReveal, (r) => r?.part === p.tool.id && setOpen(true)));
+    // Open on the change, a problem or a failure; an edit with only its input and output to show
+    // (no diff: a notebook edit, a MultiEdit) starts folded, as its row did, until it's opened.
+    const [folded, setFolded] = createSignal<boolean>();
+    createEffect(on(findReveal, (r) => r?.part === p.tool.id && setFolded(false)));
     const label = createMemo(() => toolLabel(t()));
     const live = () => isLive(t());
     const ok = () => t().status === "ok";
     const meta = () => (t().status === "denied" || (t().diff && ok()) ? undefined : t().summary);
-    const hasBody = () => Boolean(t().diff || t().diagnostics || (t().status === "error" && t().output?.trim()));
+    const input = () => (t().diff ? undefined : Object.keys(t().input ?? {}).length ? JSON.stringify(t().input, null, 2) : undefined);
+    const showOutput = () => (!t().diff || t().status === "error") && Boolean(t().output?.trim());
+    const hasBody = () => Boolean(t().diff || t().diagnostics || input() || showOutput());
+    const open = () => !(folded() ?? !(t().diff || t().diagnostics || t().status === "error"));
     return (
         <div class={`tcard edit-card st-${t().status} ${findReveal()?.part === t().id ? "found" : ""}`} data-find={t().id}>
             <div class="tcard-h">
@@ -815,7 +820,7 @@ function EditCardContent(p: { tool: ToolBlock }) {
                 </Show>
                 <Show when={toolFile(t())}>{(f) => <OpenFileButton path={f().path} line={f().line} />}</Show>
                 <Show when={hasBody()}>
-                    <button class="icon-btn tcard-btn" data-find-skip title={open() ? "Collapse" : "Expand"} aria-label={open() ? "Collapse the change" : "Show the change"} aria-expanded={open()} onClick={() => setOpen(!open())}>
+                    <button class="icon-btn tcard-btn" data-find-skip title={open() ? "Collapse" : "Expand"} aria-label={`${open() ? "Collapse" : "Show"} the ${t().diff ? "change" : "details"}`} aria-expanded={open()} onClick={() => setFolded(open())}>
                         <Show when={open()} fallback={<ChevronRight size={14} />}>
                             <ChevronDown size={14} />
                         </Show>
@@ -825,6 +830,15 @@ function EditCardContent(p: { tool: ToolBlock }) {
             <Show when={open() && hasBody()}>
                 <div class="tcard-body" data-find-skip>
                     <Show when={t().diff}>{(d) => <DiffView diff={d()} maxLines={40} class="inline" />}</Show>
+                    <Show when={input()}>
+                        {(code) => (
+                            <div class="tcard-sec">
+                                <Section label="Input">
+                                    <CodeBlock code={code()} lang="json" bare maxHeight={240} />
+                                </Section>
+                            </div>
+                        )}
+                    </Show>
                     <Show when={t().diagnostics}>
                         {(r) => (
                             <div class="tcard-sec">
@@ -832,7 +846,7 @@ function EditCardContent(p: { tool: ToolBlock }) {
                             </div>
                         )}
                     </Show>
-                    <Show when={t().status === "error"}>
+                    <Show when={showOutput()}>
                         <Output tool={t()} bare />
                     </Show>
                 </div>

@@ -1146,8 +1146,14 @@
     border-top: 0;
 }
 
-.tcard-body > .diff + .tcard-out {
+.tcard-body > .diff + .tcard-out,
+.tcard-body > .tcard-sec + .tcard-out {
     border-top: 0.5px solid var(--line);
+}
+
+/* The body's own rule is above the first section. */
+.tcard-body > .tcard-sec:first-child {
+    border-top: 0;
 }
 
 /* Small state pills at the end of a card's header. */

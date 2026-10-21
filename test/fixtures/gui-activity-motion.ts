@@ -255,3 +255,24 @@ test("commands and edits are cards of their own, kept through output, completion
         expect(text(h.root)).not.toContain("Couldn't render");
     } finally { h.dispose(); }
 });
+
+test("an edit with no diff still offers its input and output, as its row did", () => {
+    // Claude Code builds diffs only for Write and Edit: a notebook edit or a MultiEdit comes back without one.
+    const notebook = { t: "tool", id: "nb", name: "NotebookEdit", title: "NotebookEdit", input: { notebook_path: "/p/a.ipynb", new_source: "print('kiwi')" }, status: "ok", output: "Updated cell kiwi", outputTruncated: true };
+    const multi = { t: "tool", id: "multi", name: "MultiEdit", title: "MultiEdit", input: { file_path: "/p/b.ts", edits: [{ old_string: "a", new_string: "mango" }] }, status: "ok", output: "Applied 1 edit to b.ts" };
+    const h = setup([notebook, multi], false);
+    try {
+        for (const [id, input, output] of [["nb", "print('kiwi')", "Updated cell kiwi"], ["multi", "mango", "Applied 1 edit to b.ts"]] as const) {
+            const card = row(h.root, id);
+            expect(has(card, "edit-card")).toBe(true);
+            // Folded at first, as the row was; its button opens the details.
+            const toggle = all(card).find((n) => n.tag === "button" && n.props["aria-expanded"] !== undefined);
+            expect(toggle).toBeDefined();
+            if (!toggle!.props["aria-expanded"]) toggle!.props.onClick();
+            expect(text(card)).toContain(input);
+            expect(text(card)).toContain(output);
+        }
+        expect(text(row(h.root, "nb"))).toContain("Show full output");
+        expect(text(h.root)).not.toContain("Couldn't render");
+    } finally { h.dispose(); }
+});
