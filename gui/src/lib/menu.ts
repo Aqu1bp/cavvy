@@ -108,10 +108,18 @@ export function mountMenu(panel: HTMLElement, behavior: MenuBehavior): () => voi
             if (next >= 0) focus(items[next]);
         }
     };
+    // A row marked aria-disabled can't be picked by pointer either (a disabled button already isn't).
+    const onClick = (e: MouseEvent) => {
+        if (!(e.target as HTMLElement | null)?.closest?.('[aria-disabled="true"]')) return;
+        e.preventDefault();
+        e.stopPropagation();
+    };
     doc.addEventListener("keydown", onKey, true);
+    panel.addEventListener("click", onClick, true);
     return () => {
         cancelAnimationFrame(frame);
         doc.removeEventListener("keydown", onKey, true);
+        panel.removeEventListener("click", onClick, true);
         // Actions can open dialogs or focus a rename field. Never steal that focus,
         // nor the destination of an outside click.
         if (trigger?.isConnected && (panel.contains(doc.activeElement) || doc.activeElement === doc.body)) trigger.focus({ preventScroll: true });
