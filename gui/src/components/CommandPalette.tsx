@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, type JSX } from "solid-js";
-import { Archive, Bot, ChartColumn, FileDiff, FolderGit2, FolderOpen, GitFork, History, MessageSquare, Moon, PanelLeft, PanelRight, Plus, Search, Settings, SquareTerminal, Share, Shrink, Sparkles, Sun, Trash2, User } from "lucide-solid";
+import { Archive, Bot, ChartColumn, FileDiff, FolderGit2, FolderOpen, GitFork, History, MessageSquare, Moon, MoreHorizontal, PanelLeft, PanelRight, Plus, Search, Settings, SquareTerminal, Share, Shrink, Sparkles, Sun, Trash2, User } from "lucide-solid";
 import { MODE_LABELS, type SessionSearchHit } from "@shared/protocol";
 import { activate, app, handleFor, reportError, rpc, sessionPresenceVersion } from "../state/app";
 import { archive, chooseProject, exportSession, fork, newSession, openProject, openReview, setMode, togglePanel, toggleSidebar } from "../state/actions";
@@ -12,7 +12,7 @@ import { askDelete } from "./Header";
 import { Spinner } from "./ui/bits";
 import { searchRounds } from "../lib/search";
 import { plainSnippet } from "../lib/plain-snippet";
-import { groupSections, keepSelection } from "../lib/palette-order";
+import { groupSections, keepSelection, messagesShown } from "../lib/palette-order";
 import { shortcutHint } from "../state/keybindings";
 
 interface Entry {
@@ -29,6 +29,8 @@ interface Entry {
     keywords?: string;
     /** A message hit: the words around the match, as plain text, and where the match is in them. */
     snippet?: { text: string; match?: [number, number] };
+    /** Acts inside the palette (Show more), which stays open. */
+    stay?: boolean;
     run: () => void;
 }
 
@@ -71,7 +73,10 @@ function score(q: string, text: string): number {
 export function CommandPalette() {
     const [q, setQ] = createSignal("");
     const [sel, setSel] = createSignal(0);
+    /** Every message hit, not only the first few (Show more). */
+    const [allMessages, setAllMessages] = createSignal(false);
     let list: HTMLDivElement | undefined;
+    let input: HTMLInputElement | undefined;
     const close = () => setPaletteOpen(false);
     const id = () => app.activeId;
 
@@ -199,10 +204,17 @@ export function CommandPalette() {
                 run: () => openHit(h, said.query),
             };
         });
-        return groupSections([...found, ...messages], SECTION_ORDER);
+        // The first few, so the actions under them stay in sight; the rest a click away.
+        const shown = messagesShown(messages.length, found.length, allMessages());
+        const more: Entry[] =
+            shown < messages.length
+                ? [{ id: "messages-more", section: "Messages", label: `Show ${messages.length - shown} more`, icon: <MoreHorizontal size={15} />, stay: true, run: () => setAllMessages(true) }]
+                : [];
+        return groupSections([...found, ...messages.slice(0, shown), ...more], SECTION_ORDER);
     });
 
     createEffect(on(paletteOpen, (o) => o && (setQ(""), setSel(0))));
+    createEffect(on(q, () => setAllMessages(false), { defer: true }));
     // A new query starts at the top. Otherwise (message hits arriving, a list
     // that shrinks) the selection stays on its entry, or as near as it can.
     let shownFor = q();
@@ -221,6 +233,11 @@ export function CommandPalette() {
     const runAt = (i: number) => {
         const e = results()[i];
         if (!e) return;
+        if (e.stay) {
+            e.run();
+            input?.focus();
+            return;
+        }
         close();
         e.run();
     };
@@ -241,7 +258,7 @@ export function CommandPalette() {
         <Dialog open={paletteOpen()} onClose={close} bare top width={620} class="palette">
             <div class="pal-in">
                 <Search size={17} class="pal-search" />
-                <input autofocus value={q()} onInput={(e) => setQ(e.currentTarget.value)} onKeyDown={onKey} placeholder="Search sessions, messages, projects and actions" aria-label="Search sessions, messages, projects and actions" spellcheck={false} />
+                <input ref={input} autofocus value={q()} onInput={(e) => setQ(e.currentTarget.value)} onKeyDown={onKey} placeholder="Search sessions, messages, projects and actions" aria-label="Search sessions, messages, projects and actions" spellcheck={false} />
                 <Show when={searching()}>
                     <Spinner size={13} class="muted" />
                 </Show>

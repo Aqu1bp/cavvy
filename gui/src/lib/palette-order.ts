@@ -28,3 +28,16 @@ export function keepSelection(prev: readonly { id: string }[] | undefined, next:
     const same = id === undefined ? -1 : next.findIndex((e) => e.id === id);
     return same >= 0 ? same : Math.min(at, Math.max(0, next.length - 1));
 }
+
+/** Message hits shown before "Show more", when other results follow them (the mockup shows three). */
+export const MESSAGES_FIRST = 3;
+
+/**
+ * How many message hits to show: all of them when nothing else matched or the
+ * user asked for all; otherwise the first few, so they don't push the actions
+ * below them out of sight. One left over is shown rather than hidden behind a row.
+ */
+export function messagesShown(total: number, others: number, showAll: boolean, first = MESSAGES_FIRST): number {
+    if (showAll || others === 0 || total <= first + 1) return total;
+    return first;
+}

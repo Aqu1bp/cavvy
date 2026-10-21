@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { groupSections, keepSelection } from "../gui/src/lib/palette-order";
+import { groupSections, keepSelection, messagesShown } from "../gui/src/lib/palette-order";
 
 const ORDER = ["Sessions", "Messages", "Actions"];
 const e = (id: string, section: string) => ({ id, section });
@@ -39,4 +39,14 @@ test("when the selected entry is gone, the selection stays in place, inside the 
     expect(keepSelection(before, [e("a", ""), e("c", "")], 1, false)).toBe(1);
     expect(keepSelection(before, [e("a", "")], 2, false)).toBe(0);
     expect(keepSelection(before, [], 2, false)).toBe(0);
+});
+
+test("message hits: the first three when other results follow, all when asked or when they're all there is", () => {
+    expect(messagesShown(12, 4, false)).toBe(3);
+    expect(messagesShown(12, 4, true)).toBe(12);
+    expect(messagesShown(12, 0, false)).toBe(12);
+    // One more than three isn't worth a "Show more" row.
+    expect(messagesShown(4, 4, false)).toBe(4);
+    expect(messagesShown(2, 4, false)).toBe(2);
+    expect(messagesShown(0, 4, false)).toBe(0);
 });
