@@ -163,3 +163,44 @@ test("the Changes pane: counts, a row per file opening the reader on it, and the
         dispose();
     }
 });
+
+/** useFolderChanges with git's answer and the server's replies under the test's control. */
+function folderChanges(reply: () => Promise<unknown>) {
+    const calls: string[] = [];
+    const errors: unknown[] = [];
+    const [git, setGit] = solid.createSignal<any>(undefined);
+    const [busy, setBusy] = solid.createSignal(false);
+    const use = component(between(panel, "function useFolderChanges(", "function FileRow("), "useFolderChanges", {
+        useGitChanges: () => [git],
+        sessionReadReady: () => true,
+        reportError: (e: unknown) => errors.push(e),
+        rpc: { call: (method: string) => (calls.push(method), reply()) },
+    });
+    const handle = { id: "s1", view: { state: { filesChanged: 0, get busy() { return busy(); } } } };
+    let changes!: () => any;
+    const dispose = solid.createRoot((d: () => void) => ((changes = use(() => handle)), d));
+    return { calls, errors, setGit, setBusy, changes, dispose };
+}
+const settle = () => new Promise((r) => setTimeout(r, 0));
+
+test("outside a repository, Harness's record is asked for once per change, not again for each git reply", async () => {
+    const f = folderChanges(async () => ({ files: [{ path: "notes.md", status: "added", added: 2, removed: 0, hunks: [] }], added: 2, removed: 0, tracked: true }));
+    try {
+        f.setGit({ repo: false, files: [], added: 0, removed: 0, bases: [], more: 0 });
+        await settle();
+        expect(f.calls).toEqual(["session.changes"]);
+        expect(f.changes()).toMatchObject({ repo: false, count: 1, added: 2 });
+        // Git answers again (its own refetch on the same change): the same "not a repository".
+        f.setGit({ repo: false, files: [], added: 0, removed: 0, bases: [], more: 0 });
+        await settle();
+        expect(f.calls).toEqual(["session.changes"]);
+        // A real change (a turn starts): one more.
+        f.setBusy(true);
+        await settle();
+        f.setGit({ repo: false, files: [], added: 0, removed: 0, bases: [], more: 0 });
+        await settle();
+        expect(f.calls).toEqual(["session.changes", "session.changes"]);
+    } finally {
+        f.dispose();
+    }
+});

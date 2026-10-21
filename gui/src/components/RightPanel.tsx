@@ -73,9 +73,11 @@ type Listed = { path: string; change: Change; added: number; removed: number; ki
  */
 function useFolderChanges(handle: () => SessionHandle) {
     const [git] = useGitChanges(handle);
-    // Only asked for outside a repository, where git has nothing to say.
+    // Only asked for outside a repository, where git has nothing to say. On a yes or no, not on
+    // git's reply itself: each new reply would otherwise ask again for the same change.
+    const notRepo = createMemo(() => git()?.repo === false);
     const [edits] = createResource(
-        () => git()?.repo === false && sessionReadReady(handle()) && { id: handle().id, n: handle().view.state.filesChanged, busy: handle().view.state.busy },
+        () => notRepo() && sessionReadReady(handle()) && { id: handle().id, n: handle().view.state.filesChanged, busy: handle().view.state.busy },
         ({ id }) => rpc.call("session.changes", { id }).catch(() => undefined),
     );
     return createMemo(() => {
