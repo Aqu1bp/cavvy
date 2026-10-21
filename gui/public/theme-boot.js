@@ -5,7 +5,7 @@
 // that both give <html> the same attributes and properties.
 (function () {
     var ACCENTS = ["blue", "indigo", "violet", "pink", "red", "orange", "green", "teal", "graphite"];
-    var DEFAULTS = { scheme: "system", glass: "glass", tint: "clear", contrast: "standard", density: "comfortable", motion: "instant", fontSize: 14, sidebarWidth: 260, reviewWidth: 720, chatWidth: "default" };
+    var DEFAULTS = { scheme: "system", glass: "glass", tint: "clear", contrast: "standard", density: "comfortable", motion: "quick", fontSize: 14, sidebarWidth: 260, reviewWidth: 720, chatWidth: "default" };
     var COLUMNS = { narrow: 640, default: 736, wide: 880 };
 
     function migrate(saved) {
