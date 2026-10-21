@@ -184,6 +184,8 @@
     position: relative;
     overflow: hidden;
     container: main / size;
+    /* Its layers (title bar, dock, pills) stay under a floating inspector and the terminal. */
+    isolation: isolate;
 }
 
 /* The title bar: the top row of the conversation column, over what scrolls under it. */

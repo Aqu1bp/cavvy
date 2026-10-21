@@ -43,12 +43,20 @@ test("the diff reader widens the inspector: 55% of the sheet up to 860px, 68% up
     expect(reviewWidth(360, 2000, false)).toBe(860);
     expect(reviewWidth(360, 1000, true)).toBe(680);
     expect(reviewWidth(360, 2000, true)).toBe(1120);
-    // Never narrower than the width it was given (its own resize handle), even past the cap.
-    expect(reviewWidth(720, 1000, false)).toBe(720);
-    expect(reviewWidth(900, 2000, false)).toBe(900);
-    const l = windowLayout({ ...base, review: true, reviewBase: 420 });
-    expect(l.inspector).toMatchObject({ open: true, width: 601, mode: "dock" });
-    expect(windowLayout({ ...base, review: true, split: true, reviewBase: 420 }).inspector).toMatchObject({ width: 743, mode: "float" });
+    // Never narrower than the inspector it replaces.
+    expect(reviewWidth(360, 600, false, 400)).toBe(400);
+    // Its own handle widens it, as far as the conversation keeps 480px, and past the cap.
+    expect(reviewWidth(720, 1000, false)).toBe(550);
+    expect(reviewWidth(720, 1300, false)).toBe(720);
+    expect(reviewWidth(900, 1300, false)).toBe(820);
+    expect(reviewWidth(1000, 2000, false)).toBe(1000);
+    // At 1360×880 the default (720) docks at what's left beside 480px of conversation.
+    expect(windowLayout({ ...base, review: true }).inspector).toMatchObject({ open: true, width: 612, mode: "dock" });
+    expect(windowLayout({ ...base, review: true, reviewBase: 420 }).inspector).toMatchObject({ width: 601, mode: "dock" });
+    // Side by side it needs 743px there, so it floats.
+    expect(windowLayout({ ...base, review: true, split: true }).inspector).toMatchObject({ width: 743, mode: "float" });
+    // 1024 wide: 55% of the sheet, floating.
+    expect(windowLayout({ ...base, win: { w: 1024, h: 700 }, review: true }).inspector).toMatchObject({ width: 416, mode: "float" });
 });
 
 test("the inspector's resizer stays within 280-620px and keeps it docked", () => {

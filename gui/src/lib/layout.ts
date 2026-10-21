@@ -41,12 +41,14 @@ export function sheetSize(win: Size, railDocked: boolean, railWidth: number): Si
 
 /**
  * The diff reader widens the inspector: to 55% of the sheet (68% side by side), up to 860px
- * (1120px side by side), and never narrower than the width the reader was given (`base`).
+ * (1120px side by side), and never narrower than the inspector (`inspector`). Its own resize
+ * handle (`base`) widens it further, as far as it still docks.
  */
-export function reviewWidth(base: number, sheetWidth: number, split: boolean): number {
+export function reviewWidth(base: number, sheetWidth: number, split: boolean, inspector = INSPECTOR_DEFAULT): number {
     const cap = split ? 1120 : 860;
     const share = Math.round(sheetWidth * (split ? 0.68 : 0.55));
-    return Math.max(base, Math.min(cap, share));
+    const least = Math.min(cap, Math.max(inspector, share));
+    return Math.max(least, Math.min(base, sheetWidth - CONVERSATION_MIN));
 }
 
 /** The inspector docks while the conversation keeps `CONVERSATION_MIN` beside it. */
@@ -134,7 +136,8 @@ export function windowLayout(o: {
     const mode = railMode(o.win.w);
     const docked = mode === "dock" && o.rail;
     const sheet = sheetSize(o.win, docked, o.railWidth);
-    const width = o.review ? reviewWidth(o.reviewBase, sheet.w, o.split) : Math.max(INSPECTOR_MIN, Math.min(INSPECTOR_MAX, o.inspectorWidth));
+    const inspector = Math.max(INSPECTOR_MIN, Math.min(INSPECTOR_MAX, o.inspectorWidth));
+    const width = o.review ? reviewWidth(o.reviewBase, sheet.w, o.split, inspector) : inspector;
     const term = o.terminalShown ? terminalHeight(o.terminalPreferred, sheet.h, o.terminalMax) : 0;
     const short = floatShort(sheet.h, term, o.dock);
     return {
