@@ -240,7 +240,8 @@ function General() {
                 <Row
                     title="Compact while idle"
                     desc="Summarize a long conversation (200K tokens or more) just before its prompt cache expires, so coming back costs less and answers sooner. Sending a message cancels it."
-                    changed={s().idleCompaction !== undefined && s().idleCompaction !== true}
+                    // Unset arrives as null over the wire: only a real choice shows Reset.
+                    changed={s().idleCompaction === false || s().idleCompaction === "always"}
                     reset={() => void update({ idleCompaction: true })}
                 >
                     <SelectButton>
