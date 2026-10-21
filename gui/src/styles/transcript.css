@@ -142,10 +142,10 @@
     height: 36px;
     padding: 0 6px 0 12px;
     border-radius: 10px;
-    background: var(--pop);
+    background: var(--ctl-strong);
     -webkit-backdrop-filter: blur(16px);
     backdrop-filter: blur(16px);
-    box-shadow: var(--shadow-pop);
+    box-shadow: var(--pop-shadow);
     animation: rise 160ms var(--ease-out);
     max-width: calc(100% - 24px);
 }
@@ -165,14 +165,14 @@
 }
 
 .find-bar input::placeholder {
-    color: var(--fg-subtle);
+    color: var(--fg-3);
     opacity: 1;
 }
 
 
 .find-count {
     font-size: 0.8rem;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
     white-space: nowrap;
     padding: 0 4px;
 }
@@ -354,17 +354,16 @@
     background: color-mix(in srgb, var(--ok) 7%, var(--sheet-2));
 }
 
+/* Inline, not a flex box: a long command flows around the corner's buttons
+   instead of dropping below them as one block. */
 .user-bubble .user-text.mono {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 6px;
     font-size: 0.929rem;
 }
 
 .user-bubble .user-text.mono svg {
     color: var(--ok);
-    flex: none;
-    transform: translateY(2px);
+    vertical-align: -2px;
+    margin-right: 2px;
 }
 
 /* Attachments: small pills on the sheet, and thumbnails for images. */
@@ -915,15 +914,15 @@
 }
 
 .diag-warn {
-    color: var(--warning);
+    color: var(--warn);
 }
 
 .diag-ok {
-    color: var(--success);
+    color: var(--ok);
 }
 
 .diag-aside {
-    color: var(--fg-subtle);
+    color: var(--fg-3);
     font-variant-numeric: tabular-nums;
 }
 
@@ -966,7 +965,7 @@
 }
 
 .diag-item.warning .diag-icon {
-    color: var(--warning);
+    color: var(--warn);
 }
 
 .diag-at {
@@ -974,7 +973,7 @@
     padding: 0;
     border: 0;
     background: none;
-    color: var(--fg-muted);
+    color: var(--fg-2);
     font-size: 0.786rem;
     cursor: pointer;
 }
@@ -998,7 +997,7 @@
 
 .diag-code {
     flex: none;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
     font-size: 0.75rem;
 }
 
@@ -1499,9 +1498,9 @@
 
 .diff {
     /* Code tint over a solid panel, shared by the code area and sticky gutters. */
-    --diff-bg: linear-gradient(var(--bg-code), var(--bg-code)), var(--bg-panel);
+    --diff-bg: linear-gradient(var(--sheet-2), var(--sheet-2)), var(--insp-bg);
     border-radius: var(--radius-md);
-    box-shadow: 0 0 0 1px var(--border);
+    box-shadow: 0 0 0 1px var(--line);
     overflow: hidden;
     background: var(--diff-bg);
     font-size: 0.82rem;
@@ -1512,13 +1511,13 @@
     align-items: center;
     gap: 8px;
     padding: 7px 12px;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--line);
     font-size: 0.857rem;
     min-width: 0;
 }
 
 .diff-head > svg {
-    color: var(--fg-muted);
+    color: var(--fg-2);
     flex: none;
 }
 
@@ -1574,7 +1573,7 @@
     left: 0;
     text-align: right;
     padding: 0 8px 0 4px;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
     user-select: none;
     -webkit-user-select: none;
     background: linear-gradient(var(--diff-gutter-tint, transparent), var(--diff-gutter-tint, transparent)), var(--diff-bg);
@@ -1584,7 +1583,7 @@
 .dl .ln + .ln {
     /* The grid's em uses the row font; these cells use a smaller font. */
     left: calc(3.4em / 0.92);
-    border-right: 1px solid var(--border);
+    border-right: 1px solid var(--line);
 }
 
 .dl .txt {
@@ -1597,7 +1596,7 @@
 .dl .txt::before {
     position: absolute;
     left: 7px;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
 }
 
 .dl.add .txt {
@@ -1610,7 +1609,7 @@
 }
 
 .dl.add .ln {
-    --diff-gutter-tint: color-mix(in srgb, var(--add-bg-strong) 70%, var(--bg-code));
+    --diff-gutter-tint: color-mix(in srgb, var(--add-bg-strong) 70%, var(--sheet-2));
     color: var(--add-fg);
 }
 
@@ -1624,19 +1623,19 @@
 }
 
 .dl.del .ln {
-    --diff-gutter-tint: color-mix(in srgb, var(--del-bg-strong) 70%, var(--bg-code));
+    --diff-gutter-tint: color-mix(in srgb, var(--del-bg-strong) 70%, var(--sheet-2));
     color: var(--del-fg);
 }
 
 .dl.sep .txt {
-    color: var(--fg-subtle);
-    background: var(--bg-subtle);
+    color: var(--fg-3);
+    background: color-mix(in srgb, var(--hover) 50%, transparent);
     padding: 3px 12px;
     font-size: 0.92em;
 }
 
 .dl.sep .ln {
-    --diff-gutter-tint: var(--bg-subtle);
+    --diff-gutter-tint: color-mix(in srgb, var(--hover) 50%, transparent);
 }
 
 /* Side by side: wrapped, so both halves stay in view. */
@@ -1652,15 +1651,15 @@
 .sl .ln {
     text-align: right;
     padding: 0 8px 0 4px;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
     user-select: none;
     -webkit-user-select: none;
     font-size: 0.92em;
-    border-right: 1px solid var(--border);
+    border-right: 1px solid var(--line);
 }
 
 .sl .ln:nth-child(3) {
-    border-left: 1px solid var(--border);
+    border-left: 1px solid var(--line);
 }
 
 .sl .txt {
@@ -1675,7 +1674,7 @@
 }
 
 .sl .ln.add {
-    background: color-mix(in srgb, var(--add-bg-strong) 70%, var(--bg-code));
+    background: color-mix(in srgb, var(--add-bg-strong) 70%, var(--sheet-2));
     color: var(--add-fg);
 }
 
@@ -1684,12 +1683,12 @@
 }
 
 .sl .ln.del {
-    background: color-mix(in srgb, var(--del-bg-strong) 70%, var(--bg-code));
+    background: color-mix(in srgb, var(--del-bg-strong) 70%, var(--sheet-2));
     color: var(--del-fg);
 }
 
 .sl .none {
-    background: var(--bg-subtle);
+    background: color-mix(in srgb, var(--hover) 50%, transparent);
 }
 
 .sl.sep {
@@ -1697,8 +1696,8 @@
 }
 
 .sl.sep .txt {
-    color: var(--fg-subtle);
-    background: var(--bg-subtle);
+    color: var(--fg-3);
+    background: color-mix(in srgb, var(--hover) 50%, transparent);
     padding: 3px 12px;
     font-size: 0.92em;
 }
@@ -1710,11 +1709,11 @@
     gap: 6px;
     width: 100%;
     padding: 6px;
-    border-top: 1px solid var(--border);
-    color: var(--fg-muted);
+    border-top: 1px solid var(--line);
+    color: var(--fg-2);
     font-size: 0.8rem;
     font-weight: 550;
-    background: var(--bg-subtle);
+    background: color-mix(in srgb, var(--hover) 50%, transparent);
 }
 
 .diff-more:hover {
@@ -1723,7 +1722,7 @@
 
 .diff-note {
     padding: 8px 12px;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
     font-size: 0.8rem;
 }
 
@@ -1881,15 +1880,15 @@
 }
 
 .todo-list li.completed {
-    color: var(--fg-subtle);
+    color: var(--fg-3);
     text-decoration: line-through;
-    text-decoration-color: color-mix(in srgb, var(--fg-faint) 60%, transparent);
+    text-decoration-color: color-mix(in srgb, var(--fg-4) 60%, transparent);
 }
 
 .todo-list li.completed .todo-box {
-    background: var(--success);
-    border-color: var(--success);
-    color: #fff;
+    background: var(--ok);
+    border-color: var(--ok);
+    color: var(--sheet);
 }
 
 .todo-list li.in_progress {
@@ -2059,7 +2058,7 @@
     display: grid;
     place-items: center;
     background: var(--accent);
-    color: var(--accent-fg);
+    color: var(--accent-ink);
     font-weight: 700;
     line-height: 1;
 }
@@ -2105,8 +2104,8 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-    background: var(--bg-subtle);
-    border-block: 1px solid var(--border);
+    background: color-mix(in srgb, var(--hover) 50%, transparent);
+    border-block: 1px solid var(--line);
     font-family: var(--font-ui);
     line-height: 1.45;
     white-space: normal;
@@ -2122,13 +2121,13 @@
     gap: 8px;
     padding: 8px 8px 8px 10px;
     border-radius: var(--radius-md);
-    background: var(--bg-card);
-    box-shadow: inset 0 0 0 1px var(--border), inset 3px 0 0 var(--accent);
+    background: var(--sheet);
+    box-shadow: inset 0 0 0 1px var(--line), inset 3px 0 0 var(--accent);
     font-size: 0.88rem;
 }
 
 .dc-card.outdated {
-    box-shadow: inset 0 0 0 1px var(--border), inset 3px 0 0 var(--fg-subtle);
+    box-shadow: inset 0 0 0 1px var(--line), inset 3px 0 0 var(--fg-3);
 }
 
 .dc-icon {
@@ -2138,7 +2137,7 @@
 }
 
 .dc-card.outdated .dc-icon {
-    color: var(--fg-muted);
+    color: var(--fg-2);
 }
 
 .dc-body {
@@ -2154,7 +2153,7 @@
     align-items: center;
     gap: 8px;
     font-size: 0.8rem;
-    color: var(--fg-muted);
+    color: var(--fg-2);
 }
 
 .dc-label {
@@ -2183,8 +2182,8 @@
     max-height: 9em;
     overflow: auto;
     border-radius: 6px;
-    background: var(--bg-code);
-    color: var(--fg-muted);
+    background: var(--sheet-2);
+    color: var(--fg-2);
     font-size: 0.8rem;
     white-space: pre;
 }
@@ -2213,7 +2212,7 @@
     gap: 6px;
     padding: 8px;
     border-radius: var(--radius-md);
-    background: var(--bg-card);
+    background: var(--sheet);
     box-shadow: inset 0 0 0 1px var(--accent-border);
 }
 
@@ -2223,9 +2222,9 @@
     min-height: 3.2em;
     resize: none;
     padding: 6px 8px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--line);
     border-radius: 6px;
-    background: var(--bg);
+    background: var(--sheet);
     color: var(--fg);
     font: inherit;
     font-size: 0.9rem;
@@ -2246,7 +2245,7 @@
 .dc-hint {
     margin-right: auto;
     font-size: 0.75rem;
-    color: var(--fg-muted);
+    color: var(--fg-2);
 }
 
 .dc-outdated {
@@ -2254,14 +2253,14 @@
     flex-direction: column;
     gap: 6px;
     padding: 8px 10px;
-    background: var(--bg-subtle);
-    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--hover) 50%, transparent);
+    border-bottom: 1px solid var(--line);
     font-family: var(--font-ui);
 }
 
 .dc-outdated-head {
     font-size: 0.8rem;
-    color: var(--fg-muted);
+    color: var(--fg-2);
 }
 
 /* Sent with a prompt: under its text, in the bubble. */
@@ -2278,7 +2277,7 @@
     gap: 2px;
     padding: 6px 10px;
     border-radius: 10px;
-    background: color-mix(in srgb, var(--bg-card) 60%, transparent);
+    background: color-mix(in srgb, var(--sheet) 60%, transparent);
     box-shadow: inset 2px 0 0 var(--accent);
     font-size: 0.9rem;
 }
@@ -2292,7 +2291,7 @@
     padding: 0;
     border: 0;
     background: none;
-    color: var(--fg-muted);
+    color: var(--fg-2);
     font-size: 0.78rem;
     cursor: pointer;
 }
