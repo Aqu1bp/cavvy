@@ -247,8 +247,13 @@ export class Session {
         return s;
     }
 
-    /** A separate conversation keeps its selected homes, but cannot share a mutable native thread. */
-    fork(opts: { persist?: boolean } = {}): Session {
+    /**
+     * A separate conversation keeps its selected homes, but cannot share a mutable native thread.
+     * `shareBackends`: its agent backends' sessions are forked natively (--fork-session, thread/fork) on
+     * their next turn instead, never continued in place; the caller holds the original for as long as the
+     * copy may fork from it, so the native sessions don't move on under it.
+     */
+    fork(opts: { persist?: boolean; shareBackends?: boolean } = {}): Session {
         const copy = Session.create(this.meta.cwd, { persist: opts.persist, system: this.meta.system });
         for (const provider of ["claude-code", "codex"]) copy.setAccount(provider, this.accountId(provider));
         if (this.model) copy.setModel(this.model);
@@ -256,6 +261,12 @@ export class Session {
         if (this.title) copy.setTitle(this.title);
         if (this.summary !== undefined) copy.compact(this.summary, []);
         for (const message of this.messages) copy.push(structuredClone(message));
+        if (opts.shareBackends) for (const [provider, b] of this.backends) {
+            const folder = this.backendFolders.get(provider);
+            copy.backends.set(provider, { id: b.id, synced: b.synced, fork: true });
+            if (folder) copy.backendFolders.set(provider, folder);
+            copy.write({ t: "backend", provider, id: b.id, synced: b.synced, fork: true, ...(folder ? { folder } : {}) });
+        }
         for (const notice of this.notices) {
             copy.notices.push({ ...notice });
             copy.write({ t: "notice", ...notice });
@@ -520,12 +531,13 @@ export class Session {
         for (const m of messages) this.push(m);
     }
 
-    static load(file: string): Session {
+    /** `persist: false`: read only; nothing is written to the file, not even the repair of a crash's dangling tool call. */
+    static load(file: string, opts: { persist?: boolean } = {}): Session {
         // Claimed before it's read, so what's read has everything the process
         // that had it open wrote (and nothing is written under that process).
         hold(file);
         try {
-            const s = Session.read(file);
+            const s = Session.read(file, opts.persist ?? true);
             s.holding = true;
             return s;
         } catch (e) {
@@ -534,7 +546,7 @@ export class Session {
         }
     }
 
-    private static read(file: string): Session {
+    private static read(file: string, persist = true): Session {
         const text = readFileSync(file, "utf-8");
         let meta: SessionMeta | undefined;
         const lines: Line[] = [];
@@ -549,10 +561,10 @@ export class Session {
             }
         }
         if (!meta) throw new Error(`Not a session file: ${file}`);
-        const s = new Session(meta, { file });
+        const s = new Session(meta, { file, persist });
         // End a torn last line, or the next record appended would join it and
         // both would be unreadable on the following load.
-        if (text && !text.endsWith("\n")) {
+        if (persist && text && !text.endsWith("\n")) {
             try {
                 appendFileSync(file, "\n");
             } catch {

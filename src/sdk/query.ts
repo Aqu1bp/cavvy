@@ -61,9 +61,9 @@ class QueryImpl implements Query {
                     this.queue.push(m);
                     this.wake();
                 },
-                end: (error) => {
+                end: (failure) => {
                     this.ended = true;
-                    if (error !== undefined) this.failure = { error };
+                    this.failure = failure;
                     this.wake();
                 },
             });

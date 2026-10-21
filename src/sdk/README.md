@@ -43,7 +43,7 @@ Returns a `Query`, an async generator of `SDKMessage`. Nothing runs until you st
 | `effort`, `fastMode` | As the CLI flags. |
 | `resume` | A session id, or the start of one, in `cwd`. |
 | `continue` | Continue the latest session in `cwd`. |
-| `persistSession` | Default `true`: saved like the CLI's sessions, so `harness -r <id>` and the GUI open it. |
+| `persistSession` | Default `true`: saved like the CLI's sessions, so `harness -r <id>` and the GUI open it. `false` with `resume` goes on in an unsaved copy and writes nothing to the original. Claude Code and Codex fork their own session for it (`--fork-session`, `thread/fork`), so they keep the conversation's context. |
 | `trusted` | Load the project's `.harness/settings.json`, `.mcp.json`, memory files, agents and skills. `true` trusts the folder until the process exits, as answering yes to the trust prompt does (not saved), so Claude Code and Codex get the project's own configuration too. `false` keeps all of it out, even in a folder you trusted, and a resumed session is sent without the memory files its saved prompt was made with. Default: as `harness -p`, which trusts folders you trusted and, for that query only, folders with no project configuration. |
 | `settings` | Settings over those loaded from disk: `hooks`, `mcpServers`, `env`, `permissions`, … Rule lists and hooks add up; maps merge by key. |
 | `abortController` | Aborting it ends the query. |

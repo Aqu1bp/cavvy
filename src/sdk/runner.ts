@@ -22,8 +22,8 @@ import type { CanUseTool, Options, QueryParams, SDKUserMessage } from "./types";
 
 export interface Sink {
     push(m: SDKMessage): void;
-    /** The query is over: with an error, the iterator throws it. */
-    end(error?: unknown): void;
+    /** The query is over: with a failure, the iterator throws its error (whatever was thrown, null included). */
+    end(failure?: { error: unknown }): void;
 }
 
 export interface RunControl {
@@ -145,7 +145,8 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
 
     // ---- input: a string is one turn; an iterable is read from the start, alongside the turns.
     let inputDone = false;
-    let inputError: unknown;
+    /** The input iterable threw: what it threw, kept as is (a falsy value too). */
+    let inputFailure: { error: unknown } | undefined;
     let reading = false;
     function readInput() {
         if (reading) return;
@@ -171,7 +172,7 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
                 }
             } catch (e) {
                 if (!closed.signal.aborted) {
-                    inputError = e;
+                    inputFailure = { error: e };
                     closed.abort();
                 }
             } finally {
@@ -185,14 +186,14 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
 
     const done = run().then(
         () => ((accepting = false), sink.end()),
-        (e) => ((accepting = false), sink.end(e)),
+        (e) => ((accepting = false), sink.end({ error: e })),
     );
 
     async function run(): Promise<void> {
         let setup: RunSetup | undefined;
         let agent: Agent | undefined;
         let started: Promise<unknown> | undefined;
-        let held: string | undefined;
+        let held: string[] | undefined;
         let tally: TurnTally | undefined;
         // Warnings from before the init message wait for it: init comes first.
         let early: string[] | undefined = [];
@@ -223,7 +224,7 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
             } else if (o.continue) resumeFile = listSessions(cwd, 1)[0]?.file;
             if (resumeFile && openSessions.has(resumeFile)) throw new HarnessSdkError(`Session ${o.resume ?? resumeFile} is open in another query in this process. Close that one first.`);
             if (closed.signal.aborted) {
-                if (inputError) throw inputError;
+                if (inputFailure) throw inputFailure.error;
                 return;
             }
 
@@ -248,12 +249,11 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
                 throw e instanceof SetupError ? new HarnessSdkError(e.message.replace("pass --model provider:model", 'set the model option ("provider:model")')) : e;
             }
             const s = setup;
-            held = s.session.path;
-            if (openSessions.has(held)) {
-                held = undefined;
-                throw new HarnessSdkError(`Session ${s.session.meta.id} is open in another query in this process. Close that one first.`);
-            }
-            openSessions.add(held);
+            // An unsaved copy holds its original too: the copy forks the original's agent backend sessions.
+            const files = [s.session.path, ...(s.original ? [s.original.path] : [])];
+            if (files.some((f) => openSessions.has(f))) throw new HarnessSdkError(`Session ${s.original?.meta.id ?? s.session.meta.id} is open in another query in this process. Close that one first.`);
+            held = files;
+            for (const f of files) openSessions.add(f);
             resolveId(s.session.meta.id);
 
             // ---- permission mode: options > settings (bypass from settings only from the user's own, or from options.settings)
@@ -330,14 +330,15 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
                     reason = turn.signal.aborted ? "aborted" : "error";
                     if (reason === "error") tally.errors.push((e as Error)?.message ?? String(e));
                 }
-                sink.push(tally.result(reason, s.session.meta.id, s.ref));
+                // A turn stopped because the input failed has no result: the query throws that failure instead.
+                if (!inputFailure) sink.push(tally.result(reason, s.session.meta.id, s.ref));
                 tally = undefined;
                 turn = undefined;
                 // Sent too late for the turn to take: the next turn.
                 pending.unshift(...steering.splice(0));
             }
             accepting = false;
-            if (inputError) throw inputError;
+            if (inputFailure) throw inputFailure.error;
         } catch (e) {
             // What was said before it failed (an MCP server that didn't start, say) still helps.
             for (const message of early ?? []) sink.push({ type: "system", subtype: "notice", level: "warn", message });
@@ -352,7 +353,7 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
                 await endRun(setup, agent, started, warn).catch(() => {});
                 setup.session.release();
             }
-            if (held) openSessions.delete(held);
+            for (const f of held ?? []) openSessions.delete(f);
             rejectId(new HarnessSdkError("The query ended before its session started."));
         }
     }

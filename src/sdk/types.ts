@@ -67,7 +67,10 @@ export interface Options {
     resume?: string;
     /** Continue the latest session in `cwd` (ignored with `resume`). */
     continue?: boolean;
-    /** Save the session like the CLI does, so `harness -r <id>` opens it. Default true. */
+    /**
+     * Save the session like the CLI does, so `harness -r <id>` opens it. Default true. False with
+     * `resume`: an unsaved copy, nothing written to the original; agent CLIs fork their own session.
+     */
     persistSession?: boolean;
     /**
      * Load the project's own settings, .mcp.json, memory files, agents and

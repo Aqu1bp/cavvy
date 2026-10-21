@@ -57,6 +57,8 @@ export interface RunSetup {
     trusted: boolean;
     /** The system prompt this run sends in place of the session's (see AgentOptions.systemPrompt). */
     system?: string;
+    /** A resumed session that goes on unsaved in `session`, held until endRun. */
+    original?: Session;
     settings: Settings;
     session: Session;
     resumed: boolean;
@@ -117,7 +119,8 @@ export async function setupRun(o: RunSetupOptions): Promise<RunSetup> {
     let resumed: Session | undefined;
     if (o.resumeFile) {
         try {
-            resumed = Session.load(o.resumeFile);
+            // Not saved: read only, so even a crash's repair isn't written to the original.
+            resumed = Session.load(o.resumeFile, { persist: o.persist !== false });
         } catch (e) {
             throw new SetupError(`Could not resume: ${(e as Error).message}`);
         }
@@ -165,11 +168,13 @@ async function setupWith(o: RunSetupOptions, settings: Settings, resumed: Sessio
     const mainModel = model;
 
     // ---- session and tools
-    // Not saved: a resumed session goes on in a copy, and the file stays as it was.
+    // Not saved: a resumed session goes on in a copy, and the file stays as it was. The original stays
+    // held until the run ends, so its agent backends' sessions, which the copy forks, don't move on meanwhile.
     let session: Session;
+    let original: Session | undefined;
     if (resumed && o.persist === false) {
-        session = resumed.fork({ persist: false });
-        resumed.release();
+        session = resumed.fork({ persist: false, shareBackends: true });
+        original = resumed;
     } else session = resumed ?? Session.create(o.cwd, { persist: o.persist ?? true });
     if (o.fastMode !== undefined) session.setFastMode(o.fastMode);
     const toolState: ToolState = { cwd: o.cwd, projectRoot: o.cwd, fileState: new Map(), todos: [], shells: new Map() };
@@ -228,7 +233,7 @@ async function setupWith(o: RunSetupOptions, settings: Settings, resumed: Sessio
     // that doesn't trust the folder sends one without them, and leaves the saved one as it was.
     const system = resumed && !o.trusted ? prompt() : undefined;
 
-    return { cwd: o.cwd, trusted: o.trusted, system, settings, session, resumed: Boolean(resumed), ref, model, client, provider, toolState, checker, mcp, nativeWebSearch, skills, listings, tools, complete };
+    return { cwd: o.cwd, trusted: o.trusted, system, settings, session, original, resumed: Boolean(resumed), ref, model, client, provider, toolState, checker, mcp, nativeWebSearch, skills, listings, tools, complete };
 }
 
 export interface RunAgentOptions {
@@ -305,5 +310,9 @@ export async function endRun(s: RunSetup, agent: Agent | undefined, started: Pro
           ])
         : undefined;
     // Delegated tasks still running end with the run.
-    await Promise.all([ended, agent?.dispose(), killAllShells({ state: s.toolState }), s.toolState.lsp?.dispose(), within(s.mcp.closeAll(), 1500)]);
+    try {
+        await Promise.all([ended, agent?.dispose(), killAllShells({ state: s.toolState }), s.toolState.lsp?.dispose(), within(s.mcp.closeAll(), 1500)]);
+    } finally {
+        s.original?.release();
+    }
 }

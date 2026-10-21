@@ -942,6 +942,80 @@ describe("found in the Codex review", () => {
         expect(JSON.stringify(requests[0]!.messages)).toContain("RESUME-MEMORY-MARKER");
     });
 
+    test("an input iterable that throws while a turn runs throws without a result for that turn", async () => {
+        script = () => ({ text: "slow", delayMs: 400 });
+        async function* input() {
+            yield "first";
+            await Bun.sleep(50);
+            throw new Error("input broke mid-turn");
+        }
+        const seen: SDKMessage[] = [];
+        await expect(
+            (async () => {
+                for await (const m of query({ prompt: input(), options: { cwd: project(), model: MODEL, persistSession: false } })) seen.push(m);
+            })(),
+        ).rejects.toThrow("input broke mid-turn");
+        expect(results(seen)).toEqual([]);
+    });
+
+    test("whatever the input throws comes out as is, null and an empty string included", async () => {
+        for (const value of [null, "", 0]) {
+            async function* input(): AsyncGenerator<string> {
+                throw value;
+            }
+            let caught: unknown = "nothing thrown";
+            try {
+                await collect(query({ prompt: input(), options: { cwd: project(), model: MODEL, persistSession: false } }));
+            } catch (e) {
+                caught = e;
+            }
+            expect(caught).toBe(value);
+        }
+    });
+
+    test("persistSession: false with resume doesn't write the repair of a crash's dangling tool call", async () => {
+        const cwd = project();
+        const first = query({ prompt: "keep me", options: { cwd, model: MODEL } });
+        await collect(first);
+        const { findSession } = await import("../src/agent/session");
+        const file = findSession(cwd, await first.sessionId)!;
+        // What a crash mid-tool-call leaves: the call, with no result.
+        writeFileSync(file, readFileSync(file, "utf-8") + JSON.stringify({ t: "msg", m: { role: "assistant", content: [{ type: "tool_call", id: "dangling", name: "Bash", input: { command: "true" } }] } }) + "\n");
+        const before = readFileSync(file, "utf-8");
+        const ms = await collect(query({ prompt: "again", options: { cwd, model: MODEL, resume: await first.sessionId, persistSession: false } }));
+        expect(results(ms)[0]!.subtype).toBe("success");
+        // The copy has the repair (providers need it), the file doesn't.
+        expect(lastSent()).toContain("Interrupted");
+        expect(readFileSync(file, "utf-8")).toBe(before);
+    });
+
+    test("persistSession: false with resume forks Claude Code's own session instead of starting a new one", async () => {
+        const cli = await fakeCli("claude-code", { FAKE_SCENARIO: "silent" });
+        try {
+            const cwd = project();
+            const first = query({ prompt: "hello", options: { cwd, model: "claude-code:default", canUseTool: () => ({ behavior: "deny" }) } });
+            await collect(first);
+            const id = await first.sessionId;
+            const { findSession, Session } = await import("../src/agent/session");
+            const file = findSession(cwd, id)!;
+            const s = Session.load(file);
+            const native = s.backendSession("claude-code", s.backendFolder("claude-code"))?.id;
+            s.release();
+            expect(native).toBeTruthy();
+            const before = readFileSync(file, "utf-8");
+
+            const turns = () => cli.lines().filter((l) => Array.isArray(l.argv) && l.cwd === cwd).map((l) => l.argv as string[]);
+            const launched = turns().length;
+            await collect(query({ prompt: "again", options: { cwd, model: "claude-code:default", resume: id, persistSession: false, canUseTool: () => ({ behavior: "deny" }) } }));
+            const argv = turns()[launched]!;
+            expect(argv[argv.indexOf("--resume") + 1]).toBe(native!);
+            expect(argv).toContain("--fork-session");
+            expect(readFileSync(file, "utf-8")).toBe(before);
+        } finally {
+            cli.restore();
+        }
+    });
+
     test("a tool can't be named Skill, even where no skills are loaded", async () => {
         const skill = tool("Skill", "mine", { type: "object", properties: {} }, () => "mine");
         await expect(collect(query({ prompt: "x", options: { cwd: project(), model: MODEL, tools: [skill] } }))).rejects.toThrow(/built-in tool/);
