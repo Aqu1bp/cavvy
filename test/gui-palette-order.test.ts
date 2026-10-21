@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { groupSections, keepSelection, messagesShown } from "../gui/src/lib/palette-order";
+import { entryScore, groupSections, keepSelection, messagesShown } from "../gui/src/lib/palette-order";
 
 const ORDER = ["Sessions", "Messages", "Actions"];
 const e = (id: string, section: string) => ({ id, section });
@@ -49,4 +49,15 @@ test("message hits: the first three when other results follow, all when asked or
     expect(messagesShown(4, 4, false)).toBe(4);
     expect(messagesShown(2, 4, false)).toBe(2);
     expect(messagesShown(0, 4, false)).toBe(0);
+});
+
+test("an action's shortcut is searched too: '⌘ N' finds New session", () => {
+    const newSession = { label: "New session", kbd: "⌘ N" };
+    const settings = { label: "Settings", kbd: "⌘ ," };
+    expect(entryScore("⌘ N", newSession)).toBeGreaterThan(0);
+    expect(entryScore("⌘ N", newSession)).toBeGreaterThan(entryScore("⌘ N", settings));
+    // The label still counts most, then keywords, then what's beside it.
+    expect(entryScore("new", newSession)).toBeGreaterThan(entryScore("new", { label: "Open", keywords: "new" }));
+    expect(entryScore("acme", { label: "Fix login", end: "acme · 2h" })).toBeGreaterThan(0);
+    expect(entryScore("zzz", newSession)).toBe(0);
 });

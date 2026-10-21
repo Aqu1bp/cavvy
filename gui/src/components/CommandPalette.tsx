@@ -12,7 +12,7 @@ import { askDelete } from "./Header";
 import { Spinner } from "./ui/bits";
 import { searchRounds } from "../lib/search";
 import { plainSnippet } from "../lib/plain-snippet";
-import { groupSections, keepSelection, messagesShown } from "../lib/palette-order";
+import { entryScore, groupSections, keepSelection, messagesShown } from "../lib/palette-order";
 import { shortcutHint } from "../state/keybindings";
 
 interface Entry {
@@ -53,21 +53,6 @@ function Snippet(p: { text: string; match?: [number, number] }) {
             )}
         </Show>
     );
-}
-
-function score(q: string, text: string): number {
-    if (!q) return 1;
-    const t = text.toLowerCase();
-    const qq = q.toLowerCase();
-    const i = t.indexOf(qq);
-    if (i >= 0) return 100 - i + (i === 0 || t[i - 1] === " " ? 20 : 0);
-    let j = 0;
-    let gaps = 0;
-    for (let k = 0; k < t.length && j < qq.length; k++) {
-        if (t[k] === qq[j]) j++;
-        else if (j) gaps++;
-    }
-    return j === qq.length ? Math.max(1, 50 - gaps) : 0;
 }
 
 export function CommandPalette() {
@@ -182,7 +167,7 @@ export function CommandPalette() {
             return [...recent.map((e) => ({ ...e, section: "Recent sessions" })), ...actions];
         }
         const found = entries()
-            .map((e) => ({ e, s: Math.max(score(query, e.label), score(query, e.keywords ?? "") * 0.6, score(query, [e.desc, e.end].filter(Boolean).join(" ")) * 0.4) }))
+            .map((e) => ({ e, s: entryScore(query, e) }))
             .filter((x) => x.s > 0)
             .sort((a, b) => b.s - a.s)
             .slice(0, 40)

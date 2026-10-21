@@ -41,3 +41,27 @@ export function messagesShown(total: number, others: number, showAll: boolean, f
     if (showAll || others === 0 || total <= first + 1) return total;
     return first;
 }
+
+/** How well `text` matches the query: a substring scores by how early (more at a word's start), letters in order score less. 0: no match. */
+export function score(q: string, text: string): number {
+    if (!q) return 1;
+    const t = text.toLowerCase();
+    const qq = q.toLowerCase();
+    const i = t.indexOf(qq);
+    if (i >= 0) return 100 - i + (i === 0 || t[i - 1] === " " ? 20 : 0);
+    let j = 0;
+    let gaps = 0;
+    for (let k = 0; k < t.length && j < qq.length; k++) {
+        if (t[k] === qq[j]) j++;
+        else if (j) gaps++;
+    }
+    return j === qq.length ? Math.max(1, 50 - gaps) : 0;
+}
+
+/**
+ * An entry's match: its label, then its keywords, then what's beside it (the
+ * second line, the quiet end text and its shortcut, so "⌘ N" finds New session).
+ */
+export function entryScore(q: string, e: { label: string; keywords?: string; desc?: string; end?: string; kbd?: string }): number {
+    return Math.max(score(q, e.label), score(q, e.keywords ?? "") * 0.6, score(q, [e.desc, e.end, e.kbd].filter(Boolean).join(" ")) * 0.4);
+}
