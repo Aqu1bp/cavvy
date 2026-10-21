@@ -228,8 +228,8 @@ export function Transcript(p: { handle: SessionHandle }) {
                 <FindBar turns={turns} scroller={() => scroller} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={() => { reading = capture(); }} />
             </Show>
             <Show when={!stick()}>
-                <button class="jump" onClick={() => { setStick(true); toBottom(true); }}>
-                    <ArrowDown size={14} /> Jump to latest
+                <button class="jump glass" title="Jump to latest" aria-label="Jump to latest" onClick={() => { setStick(true); toBottom(true); }}>
+                    <ArrowDown size={14} /> Latest
                 </button>
             </Show>
         </div>

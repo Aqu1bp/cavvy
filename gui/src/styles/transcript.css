@@ -1,3 +1,7 @@
+/* The conversation, in the glass redesign's transcript language
+   (design/glass/styles.css "Transcript"). Sizes are in rem so Settings →
+   Text size scales them: 1rem is 14px, the mockup's --fs (14.5px) is 1.036rem. */
+
 /* ---- Scroll container ----------------------------------------------- */
 
 .transcript-wrap {
@@ -12,7 +16,7 @@
     right: 0;
     top: 0;
     height: 28px;
-    background: linear-gradient(var(--bg), color-mix(in srgb, var(--bg) 0%, transparent));
+    background: linear-gradient(var(--sheet), color-mix(in srgb, var(--sheet) 0%, transparent));
     z-index: 2;
     pointer-events: none;
 }
@@ -22,13 +26,16 @@
     inset: 0;
     overflow-y: auto;
     overflow-anchor: none;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
     padding: 0 var(--lane-r) 0 var(--lane-l);
 }
 
+/* --bar-room: what a title bar laid over the conversation covers (the shell sets it). */
 .transcript-col {
     max-width: var(--column-w);
     margin: 0 auto;
-    padding-top: 20px;
+    padding-top: calc(var(--bar-room, 6px) + 14px);
     display: flex;
     flex-direction: column;
 }
@@ -38,19 +45,29 @@
     flex: none;
 }
 
+/* "Show 20 earlier turns": a quiet pill, like the mockup's ghost buttons. */
 .earlier {
     align-self: center;
-    margin: 4px 0 20px;
-    padding: 5px 12px;
-    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    height: 26px;
+    margin: 0 0 22px;
+    padding: 0 11px;
+    border-radius: var(--pill);
     font-size: 0.857rem;
-    color: var(--fg-muted);
-    box-shadow: inset 0 0 0 1px var(--border);
+    font-weight: 600;
+    color: var(--fg-2);
+    background: var(--ctl-strong);
+    box-shadow: inset 0 0 0 0.5px var(--ctl-stroke);
+    transition: color 140ms, transform 160ms var(--ease);
 }
 
 .earlier:hover {
     color: var(--fg);
-    background: var(--bg-hover);
+}
+
+.earlier:active {
+    transform: scale(0.96);
 }
 
 /* A fork's origin, above its first turn: opens the original. */
@@ -60,36 +77,56 @@
     align-items: center;
     gap: 6px;
     max-width: 100%;
-    margin: 0 0 16px;
-    padding: 3px 0;
-    font-size: 0.857rem;
-    color: var(--fg-subtle);
+    height: 26px;
+    margin: 0 0 14px -4px;
+    padding: 0 8px 0 4px;
+    border-radius: var(--pill);
+    font-size: 0.893rem;
+    color: var(--fg-3);
+    transition: background 140ms, color 140ms;
 }
 
 .forked-from:hover {
-    color: var(--fg);
+    color: var(--fg-2);
+    background: var(--hover);
 }
 
+/* "Latest": a small glass pill over the end of the conversation, above the composer. */
 .jump {
     position: absolute;
     left: 50%;
-    bottom: calc(var(--dock-h) + 14px);
+    bottom: calc(var(--dock-h) + 12px);
     transform: translateX(-50%);
     z-index: 25;
     display: inline-flex;
     align-items: center;
     gap: 6px;
     height: 30px;
-    padding: 0 12px;
-    border-radius: 999px;
-    font-size: 0.857rem;
+    padding: 0 12px 0 10px;
+    border-radius: var(--pill);
+    font-size: 0.929rem;
     font-weight: 500;
+    color: var(--fg-2);
+    animation: jump-in 300ms var(--spring);
+    transition: color 140ms;
+}
+
+.jump:hover {
     color: var(--fg);
-    background: var(--pop);
-    -webkit-backdrop-filter: blur(16px);
-    backdrop-filter: blur(16px);
-    box-shadow: var(--shadow-pop);
-    animation: rise 180ms var(--ease-out);
+}
+
+@keyframes jump-in {
+    from {
+        opacity: 0;
+        transform: translateX(-50%) translateY(8px);
+    }
+}
+
+/* Too short to spare the room: the end is a scroll away anyway. */
+@container main (max-height: 360px) {
+    .jump {
+        display: none;
+    }
 }
 
 /* ---- Find in the conversation (⌘F) ---------------------------------- */
@@ -105,10 +142,10 @@
     height: 36px;
     padding: 0 6px 0 12px;
     border-radius: 10px;
-    background: var(--pop);
+    background: var(--ctl-strong);
     -webkit-backdrop-filter: blur(16px);
     backdrop-filter: blur(16px);
-    box-shadow: var(--shadow-pop);
+    box-shadow: var(--pop-shadow);
     animation: rise 160ms var(--ease-out);
     max-width: calc(100% - 24px);
 }
@@ -128,26 +165,26 @@
 }
 
 .find-bar input::placeholder {
-    color: var(--fg-subtle);
+    color: var(--fg-3);
     opacity: 1;
 }
 
 
 .find-count {
     font-size: 0.8rem;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
     white-space: nowrap;
     padding: 0 4px;
 }
 
 ::highlight(find-match) {
-    background-color: var(--find-bg);
+    background-color: var(--find);
     color: var(--fg);
 }
 
 ::highlight(find-current) {
-    background-color: var(--find-current-bg);
-    color: var(--accent-fg);
+    background-color: var(--find-cur);
+    color: var(--fg);
 }
 
 @media (forced-colors: active) {
@@ -171,33 +208,31 @@
 .tool.found .tool-line .truncate,
 .wrow.live.found .warg,
 .agr.found .truncate,
-.shell-block.found .shell-head code {
+.tcard.found .tcard-h .truncate {
     white-space: normal;
     overflow-wrap: anywhere;
 }
 
 /* A turn opened from a search: marked for a moment. */
 .turn.flash {
-    animation: turn-flash 1.8s var(--ease-out);
-    border-radius: 12px;
+    animation: turn-flash 1400ms var(--ease);
+    border-radius: var(--r-card);
 }
 
 @keyframes turn-flash {
     0%,
     30% {
-        background: color-mix(in srgb, var(--accent) 10%, transparent);
-        box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 10%, transparent);
+        background: color-mix(in srgb, var(--accent) 14%, transparent);
     }
     100% {
         background: transparent;
-        box-shadow: 0 0 0 8px transparent;
     }
 }
 
 @media (prefers-reduced-motion: reduce) {
     .turn.flash {
         animation: none;
-        box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 10%, transparent);
+        background: color-mix(in srgb, var(--accent) 14%, transparent);
     }
 }
 
@@ -206,35 +241,34 @@
 .turn {
     display: flex;
     flex-direction: column;
-    padding-bottom: 36px;
+    padding-bottom: 26px;
 }
 
 /* De-emphasize archived prompts without fading all their text below AA. */
 .turn.archived .user-bubble {
-    color: var(--fg-muted);
+    color: var(--fg-2);
 }
 
 .user-row {
     display: flex;
-    justify-content: flex-end;
-    align-items: flex-start;
-    gap: 6px;
-    margin-bottom: 28px;
+    flex-direction: column;
+    margin-bottom: 16px;
 }
 
+/* Started by an event the agent asked to be woken for. */
 .wake-row {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-bottom: 20px;
-    padding: 6px 12px;
+    margin-bottom: 16px;
+    padding: 0 12px 0 10px;
+    height: 30px;
     width: fit-content;
     max-width: 100%;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    color: var(--fg-muted);
-    font-size: 0.929rem;
-    line-height: 1.4;
+    border-radius: var(--pill);
+    background: var(--sheet-2);
+    color: var(--fg-2);
+    font-size: 0.893rem;
 }
 
 .wake-row svg {
@@ -249,12 +283,28 @@
     white-space: nowrap;
 }
 
+/* What you said: the column's width, on a slightly deeper sheet. */
+.user-bubble {
+    min-width: 0;
+    background: var(--sheet-2);
+    border-radius: 16px;
+    padding: 12px 16px;
+    font-size: 1.036rem;
+    line-height: 1.55;
+    color: var(--fg);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+/* Copy and rewind sit in the bubble's corner, shown on hover; the text flows around them. */
 .user-actions {
+    float: right;
     display: flex;
     gap: 2px;
-    margin-top: 6px;
+    margin: -7px -11px 0 8px;
+    white-space: normal;
     opacity: 0;
-    transition: opacity var(--dur-fast);
+    transition: opacity 140ms;
 }
 
 .user-row:hover .user-actions,
@@ -262,29 +312,24 @@
     opacity: 1;
 }
 
+.user-actions .icon-btn {
+    width: 26px;
+    height: 26px;
+    border-radius: var(--pill);
+    color: var(--fg-3);
+}
+
+.user-actions .icon-btn:hover {
+    color: var(--fg);
+}
+
 .prompt-scheduled {
     display: flex;
     align-items: center;
     gap: 5px;
-    margin-bottom: 4px;
-    font-size: 0.786rem;
-    color: var(--fg-muted);
-}
-
-.user-bubble {
-    max-width: 80%;
-    min-width: 0;
-    background: var(--bg-user);
-    border-radius: 18px;
-    padding: 10px 14px;
-    font-size: 1rem;
-    line-height: 1.55;
-    color: var(--fg);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
+    margin-bottom: 6px;
+    font-size: 0.857rem;
+    color: var(--fg-3);
 }
 
 .user-bubble.clamped .user-text {
@@ -295,8 +340,9 @@
 }
 
 .user-bubble .more {
-    align-self: flex-start;
-    color: var(--fg-muted);
+    display: flex;
+    margin-top: 6px;
+    color: var(--fg-2);
 }
 
 .user-bubble.command .user-text {
@@ -305,31 +351,52 @@
 }
 
 .user-bubble.shell {
-    background: color-mix(in srgb, var(--shell) 8%, var(--bg-user));
+    background: color-mix(in srgb, var(--ok) 7%, var(--sheet-2));
 }
 
+/* Inline, not a flex box: a long command flows around the corner's buttons
+   instead of dropping below them as one block. */
 .user-bubble .user-text.mono {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 6px;
     font-size: 0.929rem;
 }
 
 .user-bubble .user-text.mono svg {
-    color: var(--shell);
-    flex: none;
-    transform: translateY(2px);
+    color: var(--ok);
+    vertical-align: -2px;
+    margin-right: 2px;
 }
 
-.user-bubble .chip {
-    align-self: flex-start;
-}
-
+/* Attachments: small pills on the sheet, and thumbnails for images. */
 .prompt-attachments {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
+    align-items: center;
+    gap: 6px;
+    margin-top: 10px;
     white-space: normal;
+}
+
+.prompt-attachments .chip {
+    height: 26px;
+    max-width: 280px;
+    gap: 6px;
+    padding: 0 10px 0 8px;
+    border-radius: var(--pill);
+    background: var(--sheet);
+    box-shadow: 0 0 0 0.5px var(--line);
+    font-size: 0.857rem;
+    font-weight: 400;
+    color: var(--fg-2);
+}
+
+.prompt-attachments .chip svg {
+    color: var(--fg-3);
+    flex: none;
+}
+
+.prompt-attachments .chip .truncate {
+    min-width: 0;
+    max-width: 180px;
 }
 
 .prompt-image {
@@ -337,10 +404,10 @@
     height: 72px;
     padding: 0;
     border: 0;
-    border-radius: var(--radius-md);
+    border-radius: 10px;
     overflow: hidden;
-    background: var(--bg-hover);
-    box-shadow: inset 0 0 0 1px var(--border);
+    background: var(--sheet);
+    box-shadow: 0 0 0 0.5px var(--line);
     cursor: zoom-in;
 }
 
@@ -360,58 +427,86 @@
     outline-offset: 2px;
 }
 
-.prompt-attachments .chip .truncate {
-    min-width: 0;
-    max-width: 180px;
-}
-
 /* The reply: no avatar, no name. Work, folded once it's done, then what was said. */
 .reply {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
     min-width: 0;
+}
+
+.reply > .md {
+    margin: 4px 0;
 }
 
 .reply > .md + .md {
     margin-top: 2px;
 }
 
-.fold {
+/* A disclosure line: "Read 3 files and searched once", "Worked for 1m 12s", "Thought for 41s". */
+.acts-h {
     align-self: flex-start;
-    display: flex;
+    display: inline-flex;
     align-items: center;
     gap: 6px;
-    height: 24px;
+    max-width: calc(100% + 4px);
+    min-height: 26px;
+    margin-left: -4px;
+    padding: 0 8px 0 4px;
+    border-radius: var(--pill);
     font-size: 0.929rem;
-    color: var(--fg-muted);
-    transition: color var(--dur-fast);
+    color: var(--fg-3);
+    text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+    transition: background 140ms, color 140ms;
 }
 
-.fold:hover {
-    color: var(--fg);
+.acts-h:hover {
+    background: var(--hover);
+    color: var(--fg-2);
 }
 
-.fold .chev {
-    transition: transform var(--dur-fast);
+.acts-h .chev {
+    flex: none;
+    transition: transform 220ms var(--ease);
 }
 
+.acts.open > .acts-h .chev,
+.wgroup.open > .acts-h .chev,
 .fold[aria-expanded="true"] .chev {
     transform: rotate(90deg);
 }
 
-.rule {
-    height: 1px;
-    background: var(--hairline);
-    margin: -2px 0 4px;
+.acts-h .spinner {
+    flex: none;
+    margin: 0 1px;
+}
+
+.acts-h .wtext {
+    min-width: 0;
+}
+
+.acts-h code,
+.wtext code {
+    font: 0.857rem var(--font-mono);
+    padding: 1px 5px;
+    border-radius: 5px;
+    background: var(--sheet-2);
+    color: var(--fg-2);
+}
+
+.acts-h .stat {
+    font-size: 0.857rem;
 }
 
 .live-head {
     display: flex;
     align-items: center;
     gap: 8px;
-    height: 24px;
+    min-height: 26px;
     font-size: 0.929rem;
+    color: var(--fg-3);
 }
 
 .live-label {
@@ -421,39 +516,37 @@
     min-width: 0;
 }
 
+.live-label .muted {
+    color: var(--fg-3);
+}
+
 .live-tail {
-    margin-top: 4px;
-    color: var(--fg-muted);
+    margin-top: 2px;
 }
 
-.live-hint {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 0.857rem;
-    color: var(--fg-subtle);
-    white-space: nowrap;
-}
-
-.live-hint kbd {
-    height: 18px;
-}
-
+/* After the reply: copy and fork, shown when the turn is pointed at. */
 .turn-foot {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 4px;
     min-height: 24px;
     margin-top: -4px;
     font-size: 0.857rem;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
+    white-space: nowrap;
 }
 
 .turn-foot .foot-btn {
-    opacity: 0;
     width: 24px;
     height: 24px;
-    transition: opacity var(--dur-fast);
+    border-radius: var(--pill);
+    color: var(--fg-3);
+    opacity: 0;
+    transition: opacity 140ms, background 140ms, color 140ms;
+}
+
+.turn-foot .foot-btn:hover {
+    color: var(--fg);
 }
 
 .turn:hover .turn-foot .foot-btn,
@@ -461,14 +554,42 @@
     opacity: 1;
 }
 
-.end-error,
-.end-blocked {
-    color: var(--danger);
+/* Notes: the agent's notices and how a turn ended, as one quiet line. */
+.notice {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 2px 0;
+    font-size: 0.893rem;
+    line-height: 1.45;
+    color: var(--fg-3);
+    overflow-wrap: anywhere;
 }
 
-.end-max_turns,
-.end-denied {
-    color: var(--warning);
+.notice svg {
+    flex: none;
+    margin-top: 2px;
+}
+
+.notice > span {
+    white-space: pre-line;
+}
+
+.notice.goal-met svg {
+    color: var(--ok);
+}
+
+.notice.warn,
+.end-note.end-max_turns,
+.end-note.end-denied {
+    color: var(--warn);
+}
+
+.notice.error,
+.end-note.end-aborted,
+.end-note.end-error,
+.end-note.end-blocked {
+    color: var(--danger);
 }
 
 /* ---- The work log ---------------------------------------------------- */
@@ -476,76 +597,15 @@
 .worklog {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 6px;
     min-width: 0;
 }
 
+.acts,
 .wgroup {
     display: flex;
     flex-direction: column;
     min-width: 0;
-}
-
-.wrow {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: 100%;
-    min-height: 24px;
-    font-size: 0.929rem;
-    color: var(--fg-muted);
-    min-width: 0;
-    text-align: left;
-    transition: color var(--dur-fast);
-}
-
-button.wrow:hover {
-    color: var(--fg);
-}
-
-.wrow .slot {
-    width: 24px;
-    height: 24px;
-    display: grid;
-    place-items: center;
-    flex: none;
-    margin-left: -4px;
-}
-
-.wrow .wtext {
-    min-width: 0;
-}
-
-.wtext code,
-.wrow code {
-    font-size: 0.857rem;
-    padding: 0 4px;
-    border-radius: 5px;
-    box-shadow: inset 0 0 0 1px var(--border);
-    color: var(--fg);
-}
-
-.wrow .stat {
-    margin-left: 4px;
-}
-
-.wrow .end {
-    margin-left: auto;
-    display: grid;
-    place-items: center;
-    width: 16px;
-    flex: none;
-    color: var(--fg-subtle);
-}
-
-.wgroup .chev,
-.ag-head .chev {
-    transition: transform var(--dur-fast);
-}
-
-.wgroup.open > .wrow .chev,
-.ag-head[aria-expanded="true"] .chev {
-    transform: rotate(90deg);
 }
 
 .wflag {
@@ -562,74 +622,77 @@ button.wrow:hover {
 }
 
 .wflag.warn {
-    color: var(--warning);
+    color: var(--warn);
 }
 
-.wrow.live .wverb {
-    flex: none;
-}
-
-.wrow.awaiting {
-    color: var(--warning);
-}
-
-/* Arrived, and waiting for the call before it to finish. */
-.wrow.queued {
-    color: var(--fg-subtle);
-}
-
-.wrow .wjob {
-    font-size: 0.857rem;
-    color: var(--fg-subtle);
-    flex: none;
-}
-
-.wrow .warg {
-    font-size: 0.857rem;
-    color: color-mix(in srgb, var(--fg-muted) 70%, var(--fg));
-}
-
-.wrow .wtime {
-    margin-left: auto;
-    padding-left: 8px;
-    font-size: 0.857rem;
-    color: var(--fg-subtle);
-    flex: none;
-}
-
-/* Opened: plain lines under the sentence. */
-.wkids {
-    display: flex;
-    flex-direction: column;
-    margin: 2px 0 6px 20px;
-    padding-left: 10px;
-    border-left: 1px solid var(--hairline);
-}
-
-/* Stable rows share one list; completed work is indented without reparenting. */
+/* Opened: a timeline, a dot per call on a hairline; the live one in the accent. */
 .activity-steps {
+    position: relative;
     display: flex;
     flex-direction: column;
+    margin: 2px 0 2px 10px;
+    padding-left: 18px;
 }
 
-.activity-step:not(.current) {
-    margin-left: 20px;
-    padding-left: 10px;
-    border-left: 1px solid var(--hairline);
+.activity-steps::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 8px;
+    bottom: 8px;
+    width: 1px;
+    background: var(--line);
+}
+
+/* Folded, with nothing running: no empty timeline. */
+.activity-steps:not(:has(> :not([hidden]))) {
+    display: none;
+}
+
+.activity-step {
+    position: relative;
+    min-width: 0;
+    animation: step-in 300ms var(--ease);
+}
+
+.activity-step::before {
+    content: "";
+    position: absolute;
+    left: -21px;
+    top: 9.5px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--sheet);
+    box-shadow: inset 0 0 0 1.5px var(--fg-4);
+}
+
+.activity-step.live::before {
+    background: var(--accent);
+    box-shadow: inset 0 0 0 1.5px var(--accent);
 }
 
 .activity-step[hidden] {
     display: none;
 }
 
-.activity-step.current .tool-line {
-    padding: 0;
-    gap: 6px;
-    font-size: 0.929rem;
+@keyframes step-in {
+    from {
+        opacity: 0;
+        transform: translateY(4px);
+    }
+}
+
+.wkids {
+    display: flex;
+    flex-direction: column;
+    margin: 2px 0 6px 10px;
+    padding-left: 18px;
+    border-left: 1px solid var(--line);
 }
 
 .wkids.narration {
-    padding: 4px 0 4px 12px;
+    padding: 4px 0 4px 18px;
 }
 
 .wkids .tool-detail {
@@ -638,22 +701,22 @@ button.wrow:hover {
 
 .wthought {
     font-size: 0.857rem;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
     font-style: italic;
-    padding: 3px 0 3px 4px;
+    line-height: 26px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
+/* A running call's last lines, under its row. */
 .activity-tail {
-    margin: 2px 0 4px 20px;
-    padding: 6px 10px;
-    font-size: 0.786rem;
-    line-height: 1.5;
-    color: var(--fg-muted);
-    background: var(--bg-subtle);
-    border-radius: 8px;
+    margin: 2px 0 6px;
+    padding: 7px 12px;
+    font: 0.786rem/1.6 var(--font-mono);
+    color: var(--fg-2);
+    background: var(--sheet-2);
+    border-radius: 10px;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     max-height: 96px;
@@ -670,66 +733,41 @@ button.wrow:hover {
     min-width: 0;
 }
 
-.tool-line {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    min-height: 24px;
-    padding: 0 4px;
-    border-radius: 6px;
-    font-size: 0.857rem;
-    color: var(--fg-muted);
-    min-width: 0;
-    text-align: left;
-}
-
-.tool-line:hover,
-.tool.open > .tool-head > .tool-line {
-    color: var(--fg);
-    background: var(--bg-subtle);
-}
-
 .tool-head {
     display: flex;
     align-items: center;
     min-width: 0;
 }
 
-/* "Open in editor" beside a tool row, a changed file or a diff header: shown on hover or focus. */
-.icon-btn.row-open {
-    width: 24px;
-    height: 24px;
-    opacity: 0;
-}
-
-.tool-head:hover > .row-open,
-.frow-line:hover > .row-open,
-.diff-head:hover > .row-open,
-.row-open:focus-visible {
-    opacity: 1;
-}
-
-.link-btn.tool-open {
-    margin-bottom: 6px;
-}
-
-.frow-line {
+/* One call: its icon, what it did, where, and a word on how it went. */
+.tool-line {
     display: flex;
     align-items: center;
-    gap: 2px;
+    gap: 8px;
+    width: calc(100% + 6px);
+    min-height: 26px;
+    margin-left: -6px;
+    padding: 0 6px;
+    border-radius: 8px;
+    font-size: 0.929rem;
+    color: var(--fg-2);
     min-width: 0;
+    text-align: left;
+    white-space: nowrap;
+    transition: background 140ms, color 140ms;
 }
 
-.frow-line > .frow {
-    flex: 1;
+.tool-line:hover,
+.tool.open > .tool-head > .tool-line {
+    color: var(--fg);
+    background: var(--hover);
 }
 
 .tool-icon {
     display: grid;
     place-items: center;
     flex: none;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
 }
 
 .tool-verb {
@@ -739,20 +777,46 @@ button.wrow:hover {
 
 .tool-arg {
     font-family: var(--font-mono);
-    font-size: 0.786rem;
-    color: color-mix(in srgb, var(--fg-muted) 75%, var(--fg));
+    font-size: 0.857rem;
+    color: var(--fg);
+}
+
+.activity-step.live .tool-arg {
+    color: var(--accent);
 }
 
 .tool-meta {
-    margin-left: auto;
     display: flex;
     align-items: center;
     gap: 8px;
-    padding-left: 8px;
-    color: var(--fg-subtle);
-    font-size: 0.786rem;
+    color: var(--fg-3);
+    font-size: 0.857rem;
     min-width: 0;
-    max-width: 45%;
+}
+
+.tool-meta .stat {
+    font-size: 0.857rem;
+}
+
+.wrow.live .wverb {
+    flex: none;
+}
+
+.wrow.awaiting .tool-verb,
+.wrow.awaiting .tool-icon {
+    color: var(--warn);
+}
+
+/* Arrived, and waiting for the call before it to finish. */
+.wrow.queued {
+    color: var(--fg-3);
+}
+
+.wrow .wjob,
+.wrow .wtime {
+    font-size: 0.857rem;
+    color: var(--fg-3);
+    flex: none;
 }
 
 .tool-dur {
@@ -771,11 +835,33 @@ button.wrow:hover {
 }
 
 .tool.st-awaiting .tool-verb {
-    color: var(--warning);
+    color: var(--warn);
 }
 
+/* "Open in editor" beside a tool row, a changed file or a card: shown on hover or focus. */
+.icon-btn.row-open {
+    width: 24px;
+    height: 24px;
+    border-radius: var(--pill);
+    color: var(--fg-3);
+    opacity: 0;
+}
+
+.tool-head:hover > .row-open,
+.frow-line:hover > .row-open,
+.diff-head:hover > .row-open,
+.tcard-h:hover > .row-open,
+.row-open:focus-visible {
+    opacity: 1;
+}
+
+.link-btn.tool-open {
+    margin-bottom: 6px;
+}
+
+/* Opened: the call's details, under its row. */
 .tool-detail {
-    padding: 6px 4px 10px 26px;
+    padding: 4px 0 10px 22px;
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -791,19 +877,19 @@ button.wrow:hover {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    font-size: 0.75rem;
+    font-size: 0.786rem;
     font-weight: 600;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
     letter-spacing: 0.01em;
 }
 
 .detail-q {
-    font-size: 0.93rem;
+    font-size: 0.929rem;
 }
 
 .detail-note {
     font-size: 0.857rem;
-    color: var(--fg-muted);
+    color: var(--fg-3);
 }
 
 /* ---- Diagnostics after an edit ---------------------------------------- */
@@ -828,15 +914,15 @@ button.wrow:hover {
 }
 
 .diag-warn {
-    color: var(--warning);
+    color: var(--warn);
 }
 
 .diag-ok {
-    color: var(--success);
+    color: var(--ok);
 }
 
 .diag-aside {
-    color: var(--fg-subtle);
+    color: var(--fg-3);
     font-variant-numeric: tabular-nums;
 }
 
@@ -879,7 +965,7 @@ button.wrow:hover {
 }
 
 .diag-item.warning .diag-icon {
-    color: var(--warning);
+    color: var(--warn);
 }
 
 .diag-at {
@@ -887,7 +973,7 @@ button.wrow:hover {
     padding: 0;
     border: 0;
     background: none;
-    color: var(--fg-muted);
+    color: var(--fg-2);
     font-size: 0.786rem;
     cursor: pointer;
 }
@@ -911,7 +997,7 @@ button.wrow:hover {
 
 .diag-code {
     flex: none;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
     font-size: 0.75rem;
 }
 
@@ -919,11 +1005,11 @@ button.wrow:hover {
     display: flex;
     align-items: flex-start;
     gap: 6px;
-    font-size: 0.82rem;
-    color: var(--auto);
-    background: var(--auto-soft);
+    font-size: 0.857rem;
+    color: var(--warn);
+    background: var(--warn-bg);
     padding: 6px 10px;
-    border-radius: var(--radius-sm);
+    border-radius: 10px;
 }
 
 .approval-note svg {
@@ -931,12 +1017,196 @@ button.wrow:hover {
     margin-top: 2px;
 }
 
+/* ---- Cards: an edit, a command ---------------------------------------- */
+
+.tcard {
+    margin: 2px 0 6px;
+    border-radius: var(--r-card);
+    background: var(--sheet);
+    box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px var(--hover);
+    overflow: hidden;
+    min-width: 0;
+    animation: step-in 380ms var(--ease);
+}
+
+.tcard-h {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 38px;
+    padding: 0 6px 0 12px;
+    min-width: 0;
+    font-size: 0.929rem;
+    white-space: nowrap;
+}
+
+.tcard-ic {
+    display: grid;
+    place-items: center;
+    flex: none;
+    color: var(--fg-2);
+}
+
+.tcard-p {
+    font: 0.857rem var(--font-mono);
+    color: var(--fg);
+}
+
+.tcard-h .stat {
+    font-size: 0.857rem;
+    font-weight: 600;
+}
+
+.tcard-dim {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: none;
+    max-width: 50%;
+    font-size: 0.857rem;
+    color: var(--fg-3);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.tcard-dim.truncate {
+    display: block;
+    flex: 0 1 auto;
+}
+
+.tcard-btn {
+    width: 26px;
+    height: 26px;
+    border-radius: var(--pill);
+    color: var(--fg-3);
+}
+
+.tcard-btn:hover:not(:disabled) {
+    color: var(--fg);
+}
+
+.tcard-h .row-open {
+    width: 26px;
+    height: 26px;
+}
+
+/* "You ran": a command from the composer's "!". */
+.tcard-who {
+    flex: none;
+    font-size: 0.786rem;
+    font-weight: 600;
+    color: var(--fg-3);
+    background: var(--hover);
+    padding: 2px 7px;
+    border-radius: var(--pill);
+}
+
+.tcard-body {
+    border-top: 0.5px solid var(--line);
+    min-width: 0;
+}
+
+/* A command's output: wrapped under itself, scrolling past a few lines. */
+.tcard-out {
+    margin: 0;
+    padding: 8px 14px;
+    font: 0.857rem/1.7 var(--font-mono);
+    color: var(--fg-2);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 180px;
+    overflow: auto;
+    tab-size: 4;
+}
+
+.tcard-out.cmd {
+    color: var(--fg);
+    max-height: 120px;
+}
+
+.tcard-out.cmd + .tcard-out {
+    border-top: 0.5px solid var(--line);
+}
+
+.tcard-out.err {
+    color: color-mix(in srgb, var(--danger) 80%, var(--fg));
+}
+
+.tcard-more {
+    padding: 0 14px 8px;
+}
+
+.tcard-sec {
+    padding: 10px 12px;
+    border-top: 0.5px solid var(--line);
+}
+
+.tcard-body > .tcard-out:first-child + .tcard-more,
+.tcard-body > .diff + .tcard-out {
+    border-top: 0;
+}
+
+.tcard-body > .diff + .tcard-out,
+.tcard-body > .tcard-sec + .tcard-out {
+    border-top: 0.5px solid var(--line);
+}
+
+/* The body's own rule is above the first section. */
+.tcard-body > .tcard-sec:first-child {
+    border-top: 0;
+}
+
+/* Small state pills at the end of a card's header. */
+.tpill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 22px;
+    padding: 0 9px 0 7px;
+    border-radius: var(--pill);
+    font-size: 0.857rem;
+    font-weight: 600;
+    white-space: nowrap;
+    flex: none;
+}
+
+.tpill.ok {
+    color: var(--ok);
+    background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+.tpill.fail {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.tpill.run {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.tpill.warn {
+    color: var(--warn);
+    background: var(--warn-bg);
+}
+
 /* ---- Sub-agents, inline ------------------------------------------------ */
 
 .subagents {
+    position: relative;
     display: flex;
     flex-direction: column;
     min-width: 0;
+    margin: 4px 0 6px;
+    border-radius: var(--r-card);
+    background: var(--sheet);
+    box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px var(--hover);
+    overflow: hidden;
+}
+
+/* In a timeline, the card spans it rather than sitting on its line. */
+.activity-steps > .subagents {
+    margin-left: -28px;
 }
 
 .ag-head {
@@ -944,10 +1214,25 @@ button.wrow:hover {
     align-items: center;
     gap: 10px;
     width: 100%;
-    padding: 6px 0;
-    margin-top: 2px;
+    min-height: 48px;
+    padding: 6px 10px 6px 12px;
     text-align: left;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
+    transition: background 140ms;
+}
+
+.ag-head:hover {
+    background: var(--hover);
+}
+
+.ag-head .chev,
+.agr .chev {
+    flex: none;
+    transition: transform 220ms var(--ease);
+}
+
+.ag-head[aria-expanded="true"] .chev {
+    transform: rotate(90deg);
 }
 
 .stack {
@@ -960,11 +1245,11 @@ button.wrow:hover {
     width: 24px;
     height: 24px;
     border-radius: 50%;
-    background: var(--bg-elev);
-    box-shadow: 0 0 0 2px var(--bg), inset 0 0 0 1px var(--border);
+    background: var(--sheet-2);
+    box-shadow: 0 0 0 2px var(--sheet), inset 0 0 0 0.5px var(--line);
     display: grid;
     place-items: center;
-    color: var(--fg-muted);
+    color: var(--fg-2);
     flex: none;
 }
 
@@ -975,7 +1260,7 @@ button.wrow:hover {
 .av .nd {
     right: -3px;
     bottom: -3px;
-    box-shadow: 0 0 0 2px var(--bg);
+    box-shadow: 0 0 0 2px var(--sheet);
 }
 
 .ag-text,
@@ -994,32 +1279,33 @@ button.wrow:hover {
     font-size: 0.929rem;
     font-weight: 600;
     color: var(--fg);
-    line-height: 16px;
+    line-height: 17px;
 }
 
 .ag-sub {
-    font-size: 0.786rem;
-    line-height: 15px;
+    font-size: 0.857rem;
+    line-height: 16px;
+}
+
+.ag-sub.tone-info {
+    color: var(--accent);
 }
 
 .tone-muted {
-    color: var(--fg-muted);
+    color: var(--fg-3);
 }
 
 .ag-time {
     font-size: 0.857rem;
-    color: var(--fg-muted);
+    color: var(--fg-3);
     flex: none;
 }
 
 .agl {
-    border-radius: 10px;
-    background: var(--bg-subtle);
-    box-shadow: inset 0 0 0 1px var(--hairline);
-    padding: 4px;
-    margin: 4px 0 2px 26px;
     display: flex;
     flex-direction: column;
+    padding: 4px;
+    border-top: 0.5px solid var(--line);
 }
 
 .agr {
@@ -1028,22 +1314,19 @@ button.wrow:hover {
     gap: 10px;
     width: 100%;
     padding: 7px 8px;
-    border-radius: 7px;
+    border-radius: 8px;
     text-align: left;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
     min-width: 0;
+    transition: background 140ms;
 }
 
 .agr:hover {
-    background: var(--bg-hover);
+    background: var(--hover);
 }
 
 .agr .av {
-    box-shadow: inset 0 0 0 1px var(--border);
-}
-
-.agr .av .nd {
-    box-shadow: 0 0 0 2px var(--bg-card);
+    box-shadow: inset 0 0 0 0.5px var(--line);
 }
 
 .agr-name {
@@ -1055,17 +1338,22 @@ button.wrow:hover {
 
 .agr-sub {
     font-size: 0.857rem;
-    color: var(--fg-muted);
+    color: var(--fg-2);
     line-height: 16px;
 }
 
 /* ---- Thinking ------------------------------------------------------- */
 
+.wgroup.thinking.live .acts-h {
+    font-size: 1rem;
+}
+
 .thinking-peek,
 .thinking-text {
-    margin: 2px 0 4px 20px;
-    font-size: 0.857rem;
-    color: var(--fg-subtle);
+    margin: 2px 0 6px 10px;
+    padding-left: 18px;
+    font-size: 0.893rem;
+    color: var(--fg-3);
     line-height: 1.55;
 }
 
@@ -1080,57 +1368,13 @@ button.wrow:hover {
     white-space: pre-wrap;
     max-height: 340px;
     overflow-y: auto;
-    padding-left: 10px;
-    border-left: 1px solid var(--hairline);
+    border-left: 1px solid var(--line);
 }
 
-/* ---- Notices, compaction, shell ------------------------------------- */
-
-.notice {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    font-size: 0.9rem;
-    color: var(--fg-muted);
-    padding: 7px 12px;
-    border-radius: var(--radius-md);
-    background: var(--bg-subtle);
-    overflow-wrap: anywhere;
-}
-
-.notice svg {
-    flex: none;
-    margin-top: 3px;
-}
-
-.notice > span {
-    white-space: pre-line;
-}
-
-.notice.goal-met svg {
-    color: var(--add-fg);
-}
-
-.notice.warn {
-    color: color-mix(in srgb, var(--warning) 75%, var(--fg));
-    background: var(--warning-soft);
-}
-
-.notice.warn svg {
-    color: var(--warning);
-}
-
-.notice.error {
-    color: color-mix(in srgb, var(--danger) 80%, var(--fg));
-    background: var(--danger-soft);
-}
-
-.notice.error svg {
-    color: var(--danger);
-}
+/* ---- Compaction and imports: a hairline with its label ---------------- */
 
 .compacted {
-    margin: 8px 0;
+    margin: 10px 0;
 }
 
 .compacted-rule {
@@ -1142,12 +1386,17 @@ button.wrow:hover {
 .compacted-rule span {
     flex: 1;
     height: 1px;
-    background: var(--border);
+    background: var(--line);
 }
 
 .compacted-rule .link-btn {
-    color: var(--fg-muted);
+    color: var(--fg-3);
+    font-size: 0.857rem;
     font-weight: 500;
+}
+
+.compacted-rule .link-btn:hover {
+    color: var(--fg-2);
 }
 
 /* "Imported from Claude Code · date": the rule's label, not a line. */
@@ -1155,7 +1404,7 @@ button.wrow:hover {
     flex: none;
     height: auto;
     background: none;
-    color: var(--fg-muted);
+    color: var(--fg-3);
     font-weight: 500;
     font-size: 0.857rem;
 }
@@ -1163,73 +1412,42 @@ button.wrow:hover {
 .compacted-summary {
     margin-top: 10px;
     padding: 12px 16px;
-    border-radius: var(--radius-md);
-    background: var(--bg-card);
-    box-shadow: 0 0 0 1px var(--border);
-}
-
-.shell-block {
-    border-radius: var(--radius-md);
-    box-shadow: 0 0 0 1px var(--border);
-    background: var(--bg-card);
-    overflow: hidden;
-}
-
-.shell-head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 7px 12px;
-    font-size: 0.857rem;
-    min-width: 0;
-}
-
-.shell-head code {
-    flex: 1;
-}
-
-.shell-block .term {
-    box-shadow: none;
-    border-radius: 0;
-    border-top: 1px solid var(--border);
+    border-radius: var(--r-card);
+    background: var(--sheet-2);
 }
 
 /* ---- Terminal output ------------------------------------------------ */
 
 .term {
     margin: 0;
-    padding: 10px 12px;
-    background: var(--bg-code);
-    box-shadow: 0 0 0 1px var(--border);
-    border-radius: var(--radius-md);
-    font-size: 0.82rem;
-    line-height: 1.55;
+    padding: 8px 12px;
+    background: var(--sheet-2);
+    border-radius: 10px;
+    font: 0.857rem/1.6 var(--font-mono);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     max-height: 360px;
     overflow-y: auto;
-    color: var(--fg);
+    color: var(--fg-2);
 }
 
 .term.err {
-    color: color-mix(in srgb, var(--danger) 70%, var(--fg));
-    background: var(--danger-soft);
-    border-color: color-mix(in srgb, var(--danger) 25%, transparent);
+    color: color-mix(in srgb, var(--danger) 80%, var(--fg));
+    background: color-mix(in srgb, var(--danger) 9%, var(--sheet-2));
 }
 
 /* ---- Code blocks ---------------------------------------------------- */
 
 .code {
     position: relative;
-    border-radius: 10px;
-    background: var(--bg-code);
-    box-shadow: inset 0 0 0 1px var(--hairline);
+    border-radius: var(--r-card);
+    background: var(--sheet-2);
     overflow: hidden;
     min-width: 0;
 }
 
 .code.bare {
-    border-radius: var(--radius-sm);
+    border-radius: 10px;
 }
 
 /* The language and Copy appear on hover, over the code's top right. */
@@ -1240,15 +1458,17 @@ button.wrow:hover {
     z-index: 1;
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 0 0 0 8px;
-    border-radius: 7px;
+    gap: 4px;
+    height: 28px;
+    padding: 0 2px 0 10px;
+    border-radius: var(--pill);
     font-size: 0.786rem;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
     font-weight: 500;
-    background: var(--pop);
+    background: var(--ctl-strong);
+    box-shadow: 0 0 0 0.5px var(--ctl-stroke);
     opacity: 0;
-    transition: opacity var(--dur-fast);
+    transition: opacity 140ms;
 }
 
 .code:hover .code-head,
@@ -1259,20 +1479,20 @@ button.wrow:hover {
 .code-head .icon-btn {
     width: 24px;
     height: 24px;
+    border-radius: var(--pill);
 }
 
 .code-body {
     margin: 0;
-    padding: 12px 16px;
+    padding: 10px 14px;
     overflow: auto;
-    font-size: 0.857rem;
-    line-height: 1.6;
+    font: 0.857rem/1.7 var(--font-mono);
     tab-size: 4;
     color: var(--shiki-foreground);
 }
 
 .code.bare .code-body {
-    padding: 9px 12px;
+    padding: 8px 12px;
 }
 
 .code-body code {
@@ -1284,9 +1504,9 @@ button.wrow:hover {
 
 .diff {
     /* Code tint over a solid panel, shared by the code area and sticky gutters. */
-    --diff-bg: linear-gradient(var(--bg-code), var(--bg-code)), var(--bg-panel);
+    --diff-bg: linear-gradient(var(--sheet-2), var(--sheet-2)), var(--insp-bg);
     border-radius: var(--radius-md);
-    box-shadow: 0 0 0 1px var(--border);
+    box-shadow: 0 0 0 1px var(--line);
     overflow: hidden;
     background: var(--diff-bg);
     font-size: 0.82rem;
@@ -1297,13 +1517,13 @@ button.wrow:hover {
     align-items: center;
     gap: 8px;
     padding: 7px 12px;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--line);
     font-size: 0.857rem;
     min-width: 0;
 }
 
 .diff-head > svg {
-    color: var(--fg-muted);
+    color: var(--fg-2);
     flex: none;
 }
 
@@ -1359,7 +1579,7 @@ button.wrow:hover {
     left: 0;
     text-align: right;
     padding: 0 8px 0 4px;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
     user-select: none;
     -webkit-user-select: none;
     background: linear-gradient(var(--diff-gutter-tint, transparent), var(--diff-gutter-tint, transparent)), var(--diff-bg);
@@ -1369,7 +1589,7 @@ button.wrow:hover {
 .dl .ln + .ln {
     /* The grid's em uses the row font; these cells use a smaller font. */
     left: calc(3.4em / 0.92);
-    border-right: 1px solid var(--border);
+    border-right: 1px solid var(--line);
 }
 
 .dl .txt {
@@ -1382,7 +1602,7 @@ button.wrow:hover {
 .dl .txt::before {
     position: absolute;
     left: 7px;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
 }
 
 .dl.add .txt {
@@ -1395,7 +1615,7 @@ button.wrow:hover {
 }
 
 .dl.add .ln {
-    --diff-gutter-tint: color-mix(in srgb, var(--add-bg-strong) 70%, var(--bg-code));
+    --diff-gutter-tint: color-mix(in srgb, var(--add-bg-strong) 70%, var(--sheet-2));
     color: var(--add-fg);
 }
 
@@ -1409,19 +1629,19 @@ button.wrow:hover {
 }
 
 .dl.del .ln {
-    --diff-gutter-tint: color-mix(in srgb, var(--del-bg-strong) 70%, var(--bg-code));
+    --diff-gutter-tint: color-mix(in srgb, var(--del-bg-strong) 70%, var(--sheet-2));
     color: var(--del-fg);
 }
 
 .dl.sep .txt {
-    color: var(--fg-subtle);
-    background: var(--bg-subtle);
+    color: var(--fg-3);
+    background: color-mix(in srgb, var(--hover) 50%, transparent);
     padding: 3px 12px;
     font-size: 0.92em;
 }
 
 .dl.sep .ln {
-    --diff-gutter-tint: var(--bg-subtle);
+    --diff-gutter-tint: color-mix(in srgb, var(--hover) 50%, transparent);
 }
 
 /* Side by side: wrapped, so both halves stay in view. */
@@ -1437,15 +1657,15 @@ button.wrow:hover {
 .sl .ln {
     text-align: right;
     padding: 0 8px 0 4px;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
     user-select: none;
     -webkit-user-select: none;
     font-size: 0.92em;
-    border-right: 1px solid var(--border);
+    border-right: 1px solid var(--line);
 }
 
 .sl .ln:nth-child(3) {
-    border-left: 1px solid var(--border);
+    border-left: 1px solid var(--line);
 }
 
 .sl .txt {
@@ -1460,7 +1680,7 @@ button.wrow:hover {
 }
 
 .sl .ln.add {
-    background: color-mix(in srgb, var(--add-bg-strong) 70%, var(--bg-code));
+    background: color-mix(in srgb, var(--add-bg-strong) 70%, var(--sheet-2));
     color: var(--add-fg);
 }
 
@@ -1469,12 +1689,12 @@ button.wrow:hover {
 }
 
 .sl .ln.del {
-    background: color-mix(in srgb, var(--del-bg-strong) 70%, var(--bg-code));
+    background: color-mix(in srgb, var(--del-bg-strong) 70%, var(--sheet-2));
     color: var(--del-fg);
 }
 
 .sl .none {
-    background: var(--bg-subtle);
+    background: color-mix(in srgb, var(--hover) 50%, transparent);
 }
 
 .sl.sep {
@@ -1482,8 +1702,8 @@ button.wrow:hover {
 }
 
 .sl.sep .txt {
-    color: var(--fg-subtle);
-    background: var(--bg-subtle);
+    color: var(--fg-3);
+    background: color-mix(in srgb, var(--hover) 50%, transparent);
     padding: 3px 12px;
     font-size: 0.92em;
 }
@@ -1495,11 +1715,11 @@ button.wrow:hover {
     gap: 6px;
     width: 100%;
     padding: 6px;
-    border-top: 1px solid var(--border);
-    color: var(--fg-muted);
+    border-top: 1px solid var(--line);
+    color: var(--fg-2);
     font-size: 0.8rem;
     font-weight: 550;
-    background: var(--bg-subtle);
+    background: color-mix(in srgb, var(--hover) 50%, transparent);
 }
 
 .diff-more:hover {
@@ -1508,8 +1728,126 @@ button.wrow:hover {
 
 .diff-note {
     padding: 8px 12px;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
     font-size: 0.8rem;
+}
+
+/* In an edit card: one line-number column (the old number on a removed line,
+   the new one otherwise), whole rows tinted, long lines wrapped under
+   themselves rather than cut off. The review pane's diff keeps its own look. */
+.diff.inline {
+    --diff-bg: var(--sheet);
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
+    font-size: 0.857rem;
+}
+
+.diff.inline .diff-scroll {
+    overflow-x: hidden;
+    max-height: none;
+}
+
+.diff.inline .diff-rows {
+    min-width: 0;
+    padding: 6px 0;
+    line-height: 1.7;
+}
+
+.diff.inline .dl {
+    grid-template-columns: 40px minmax(0, 1fr);
+}
+
+.diff.inline .dl .ln {
+    position: static;
+    grid-column: 1;
+    grid-row: 1;
+    padding: 0 10px 0 0;
+    background: none;
+    border-right: 0;
+    font-size: 1em;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-3);
+}
+
+.diff.inline .dl:not(.del) .ln:first-child,
+.diff.inline .dl.del .ln + .ln {
+    visibility: hidden;
+}
+
+.diff.inline .dl .txt {
+    grid-column: 2;
+    grid-row: 1;
+    padding: 0 12px 0 18px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.diff.inline .dl .txt::before {
+    left: 2px;
+    color: var(--fg-4);
+}
+
+/* The row carries the tint; the code cell doesn't add a second layer of it. */
+.diff.inline .dl.add {
+    background: var(--add-bg);
+}
+
+.diff.inline .dl.del {
+    background: var(--del-bg);
+}
+
+.diff.inline .dl.add .txt,
+.diff.inline .dl.del .txt {
+    background: none;
+}
+
+.diff.inline .dl.add .ln,
+.diff.inline .dl.add .txt::before {
+    color: var(--add-fg);
+}
+
+.diff.inline .dl.del .ln,
+.diff.inline .dl.del .txt::before {
+    color: var(--del-fg);
+}
+
+.diff.inline .dl.sep {
+    margin: 2px 0;
+    background: var(--sheet-2);
+}
+
+.diff.inline .dl.sep .txt {
+    grid-column: 1 / -1;
+    padding: 2px 12px 2px 50px;
+    background: none;
+    font-style: italic;
+    color: var(--fg-3);
+}
+
+.diff.inline .dl.sep .ln {
+    display: none;
+}
+
+.diff.inline .diff-more {
+    height: 30px;
+    padding: 0;
+    border-top: 0.5px solid var(--line);
+    background: transparent;
+    font-size: 0.857rem;
+    font-weight: 500;
+    color: var(--fg-3);
+}
+
+.diff.inline .diff-more:hover {
+    color: var(--fg);
+    background: var(--hover);
+}
+
+.diff.inline .diff-note {
+    padding: 8px 14px;
+    font-size: 0.857rem;
+    color: var(--fg-3);
 }
 
 /* ---- Todos ---------------------------------------------------------- */
@@ -1548,15 +1886,15 @@ button.wrow:hover {
 }
 
 .todo-list li.completed {
-    color: var(--fg-subtle);
+    color: var(--fg-3);
     text-decoration: line-through;
-    text-decoration-color: color-mix(in srgb, var(--fg-faint) 60%, transparent);
+    text-decoration-color: color-mix(in srgb, var(--fg-4) 60%, transparent);
 }
 
 .todo-list li.completed .todo-box {
-    background: var(--success);
-    border-color: var(--success);
-    color: #fff;
+    background: var(--ok);
+    border-color: var(--ok);
+    color: var(--sheet);
 }
 
 .todo-list li.in_progress {
@@ -1570,28 +1908,53 @@ button.wrow:hover {
 /* ---- A turn's result: what it changed, ready to review ---------------- */
 
 .files-card {
-    margin-top: 4px;
-    border-radius: 10px;
-    background: var(--bg-subtle);
-    box-shadow: inset 0 0 0 1px var(--hairline);
-    padding: 4px;
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-}
-
-.files-head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 32px;
-    padding: 0 4px 0 8px;
+    margin-top: 2px;
 }
 
 .files-title {
     font-size: 0.929rem;
-    font-weight: 500;
-    color: color-mix(in srgb, var(--fg) 85%, transparent);
+    font-weight: 600;
+    color: var(--fg);
+}
+
+/* A small ghost pill, like the mockup's ".btn.ghost.sm". */
+.tbtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 11px;
+    border-radius: var(--pill);
+    font-size: 0.857rem;
+    font-weight: 600;
+    color: var(--fg-2);
+    background: var(--ctl-strong);
+    box-shadow: inset 0 0 0 0.5px var(--ctl-stroke);
+    white-space: nowrap;
+    flex: none;
+    transition: color 140ms, transform 160ms var(--ease);
+}
+
+.tbtn:hover:not(:disabled) {
+    color: var(--fg);
+}
+
+.tbtn:active:not(:disabled) {
+    transform: scale(0.96);
+}
+
+.files-rows {
+    display: flex;
+    flex-direction: column;
+    padding: 4px 6px 6px;
+    border-top: 0.5px solid var(--line);
+}
+
+.files-card .review-note {
+    padding: 8px 12px;
+    border-top: 0.5px solid var(--line);
+    font-size: 0.857rem;
+    color: var(--fg-3);
 }
 
 .ghost-btn {
@@ -1600,21 +1963,32 @@ button.wrow:hover {
     gap: 6px;
     height: 24px;
     padding: 0 8px;
-    border-radius: 7px;
+    border-radius: var(--pill);
     font-size: 0.857rem;
     font-weight: 500;
-    color: color-mix(in srgb, var(--fg-muted) 70%, var(--fg));
+    color: var(--fg-2);
     white-space: nowrap;
 }
 
 .ghost-btn:hover:not(:disabled) {
-    background: var(--bg-hover);
+    background: var(--hover);
     color: var(--fg);
 }
 
 .ghost-btn.outlined {
-    box-shadow: inset 0 0 0 1px var(--border-strong);
+    box-shadow: inset 0 0 0 0.5px var(--ctl-stroke);
     color: var(--fg);
+}
+
+.frow-line {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+}
+
+.frow-line > .frow {
+    flex: 1;
 }
 
 .frow {
@@ -1624,15 +1998,16 @@ button.wrow:hover {
     width: 100%;
     height: 28px;
     padding: 0 8px;
-    border-radius: 6px;
+    border-radius: 8px;
     font-family: var(--font-mono);
     font-size: 0.857rem;
     text-align: left;
     min-width: 0;
+    transition: background 140ms;
 }
 
 .frow:hover {
-    background: var(--bg-hover);
+    background: var(--hover);
 }
 
 .frow .stat {
@@ -1641,22 +2016,23 @@ button.wrow:hover {
 
 .frow.more {
     font-family: var(--font-ui);
-    color: var(--fg-muted);
+    color: var(--fg-3);
 }
 
 .frow-tag {
     font-family: var(--font-ui);
-    font-size: 0.714rem;
+    font-size: 0.786rem;
+    font-weight: 600;
     color: var(--add-fg);
     flex: none;
 }
 
 .split-path .dir {
-    color: var(--fg-subtle);
+    color: var(--fg-3);
 }
 
 .split-path .name {
-    color: var(--fg-prose);
+    color: var(--fg);
 }
 
 /* ---- Review comments on diff lines (the review pane's diffs only) */
@@ -1688,7 +2064,7 @@ button.wrow:hover {
     display: grid;
     place-items: center;
     background: var(--accent);
-    color: var(--accent-fg);
+    color: var(--accent-ink);
     font-weight: 700;
     line-height: 1;
 }
@@ -1734,8 +2110,8 @@ button.wrow:hover {
     display: flex;
     flex-direction: column;
     gap: 6px;
-    background: var(--bg-subtle);
-    border-block: 1px solid var(--border);
+    background: color-mix(in srgb, var(--hover) 50%, transparent);
+    border-block: 1px solid var(--line);
     font-family: var(--font-ui);
     line-height: 1.45;
     white-space: normal;
@@ -1751,13 +2127,13 @@ button.wrow:hover {
     gap: 8px;
     padding: 8px 8px 8px 10px;
     border-radius: var(--radius-md);
-    background: var(--bg-card);
-    box-shadow: inset 0 0 0 1px var(--border), inset 3px 0 0 var(--accent);
+    background: var(--sheet);
+    box-shadow: inset 0 0 0 1px var(--line), inset 3px 0 0 var(--accent);
     font-size: 0.88rem;
 }
 
 .dc-card.outdated {
-    box-shadow: inset 0 0 0 1px var(--border), inset 3px 0 0 var(--fg-subtle);
+    box-shadow: inset 0 0 0 1px var(--line), inset 3px 0 0 var(--fg-3);
 }
 
 .dc-icon {
@@ -1767,7 +2143,7 @@ button.wrow:hover {
 }
 
 .dc-card.outdated .dc-icon {
-    color: var(--fg-muted);
+    color: var(--fg-2);
 }
 
 .dc-body {
@@ -1783,7 +2159,7 @@ button.wrow:hover {
     align-items: center;
     gap: 8px;
     font-size: 0.8rem;
-    color: var(--fg-muted);
+    color: var(--fg-2);
 }
 
 .dc-label {
@@ -1812,8 +2188,8 @@ button.wrow:hover {
     max-height: 9em;
     overflow: auto;
     border-radius: 6px;
-    background: var(--bg-code);
-    color: var(--fg-muted);
+    background: var(--sheet-2);
+    color: var(--fg-2);
     font-size: 0.8rem;
     white-space: pre;
 }
@@ -1842,7 +2218,7 @@ button.wrow:hover {
     gap: 6px;
     padding: 8px;
     border-radius: var(--radius-md);
-    background: var(--bg-card);
+    background: var(--sheet);
     box-shadow: inset 0 0 0 1px var(--accent-border);
 }
 
@@ -1852,9 +2228,9 @@ button.wrow:hover {
     min-height: 3.2em;
     resize: none;
     padding: 6px 8px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--line);
     border-radius: 6px;
-    background: var(--bg);
+    background: var(--sheet);
     color: var(--fg);
     font: inherit;
     font-size: 0.9rem;
@@ -1875,7 +2251,7 @@ button.wrow:hover {
 .dc-hint {
     margin-right: auto;
     font-size: 0.75rem;
-    color: var(--fg-muted);
+    color: var(--fg-2);
 }
 
 .dc-outdated {
@@ -1883,14 +2259,14 @@ button.wrow:hover {
     flex-direction: column;
     gap: 6px;
     padding: 8px 10px;
-    background: var(--bg-subtle);
-    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--hover) 50%, transparent);
+    border-bottom: 1px solid var(--line);
     font-family: var(--font-ui);
 }
 
 .dc-outdated-head {
     font-size: 0.8rem;
-    color: var(--fg-muted);
+    color: var(--fg-2);
 }
 
 /* Sent with a prompt: under its text, in the bubble. */
@@ -1907,7 +2283,7 @@ button.wrow:hover {
     gap: 2px;
     padding: 6px 10px;
     border-radius: 10px;
-    background: color-mix(in srgb, var(--bg-card) 60%, transparent);
+    background: color-mix(in srgb, var(--sheet) 60%, transparent);
     box-shadow: inset 2px 0 0 var(--accent);
     font-size: 0.9rem;
 }
@@ -1921,7 +2297,7 @@ button.wrow:hover {
     padding: 0;
     border: 0;
     background: none;
-    color: var(--fg-muted);
+    color: var(--fg-2);
     font-size: 0.78rem;
     cursor: pointer;
 }

@@ -1,9 +1,10 @@
-/* Model replies. Sized for reading: a little larger and airier than the UI. */
+/* Model replies, in the mockup's prose rules: the reading size (--fs, 14.5px
+   at the default text size), full-strength text, airy lines. */
 
 .md {
-    font-size: 1rem;
-    line-height: 1.625;
-    color: var(--fg-prose);
+    font-size: 1.036rem;
+    line-height: 1.65;
+    color: var(--fg);
     overflow-wrap: anywhere;
     display: flex;
     flex-direction: column;
@@ -13,6 +14,7 @@
 
 .md.small {
     font-size: 0.929rem;
+    line-height: 1.6;
     gap: 8px;
 }
 
@@ -32,27 +34,28 @@
 .md h2,
 .md h3,
 .md h4 {
-    margin: 8px 0 -2px;
+    margin: 10px 0 -2px;
     line-height: 1.3;
-    font-weight: 600;
+    font-weight: 650;
+    letter-spacing: -0.01em;
     color: var(--fg);
 }
 
 .md h1 {
-    font-size: 1.214rem;
+    font-size: 1.2em;
 }
 
 .md h2 {
-    font-size: 1.143rem;
+    font-size: 1.1em;
 }
 
 .md h3 {
-    font-size: 1.071rem;
+    font-size: 1em;
 }
 
 .md h4 {
-    font-size: 1em;
-    color: var(--fg-muted);
+    font-size: 0.93em;
+    color: var(--fg-2);
 }
 
 .md ul,
@@ -66,7 +69,7 @@
 }
 
 .md li::marker {
-    color: var(--fg-subtle);
+    color: var(--fg-3);
 }
 
 .md li > p {
@@ -79,38 +82,38 @@
 }
 
 .md :not(pre) > code {
-    font-size: 0.857em;
+    font-family: var(--font-mono);
+    font-size: 0.86em;
     padding: 1px 5px;
-    border-radius: 6px;
+    border-radius: 5px;
     color: var(--fg);
-    background: var(--bg-inline-code);
-    box-shadow: inset 0 0 0 1px var(--border);
+    background: var(--sheet-2);
     overflow-wrap: anywhere;
 }
 
 .md blockquote {
     margin: 0;
     padding: 0.1em 0 0.1em 1em;
-    border-left: 3px solid var(--border-strong);
-    color: var(--fg-muted);
+    border-left: 2px solid var(--line);
+    color: var(--fg-2);
 }
 
 .md hr {
     border: 0;
     height: 1px;
-    background: var(--border);
+    background: var(--line);
     margin: 0.6em 0;
 }
 
 .md a {
-    color: var(--link);
+    color: var(--accent);
     text-decoration: underline;
-    text-decoration-color: color-mix(in srgb, var(--link) 35%, transparent);
+    text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent);
     text-underline-offset: 2px;
 }
 
 .md a:hover {
-    text-decoration-color: var(--link);
+    text-decoration-color: var(--accent);
 }
 
 /* A file the session has: opens in the editor. */
@@ -127,9 +130,9 @@
     align-items: center;
     gap: 4px;
     padding: 1px 8px;
-    border-radius: 999px;
-    background: var(--bg-hover);
-    color: var(--fg-muted);
+    border-radius: var(--pill);
+    background: var(--sheet-2);
+    color: var(--fg-2);
     font-size: 0.86em;
     text-decoration: none;
 }
@@ -145,15 +148,15 @@
     max-width: 100%;
     max-height: 480px;
     margin: 4px 0;
-    border-radius: var(--radius-md);
-    box-shadow: inset 0 0 0 1px var(--hairline);
+    border-radius: var(--r-card);
+    box-shadow: 0 0 0 0.5px var(--line);
     cursor: zoom-in;
 }
 
 .md img.md-img:not([src]) {
     width: 240px;
     height: 135px;
-    background: var(--bg-hover);
+    background: var(--sheet-2);
 }
 
 .md img.md-img:focus-visible {
@@ -161,24 +164,26 @@
     outline-offset: 2px;
 }
 
+/* Tables: a card on the sheet, a quiet header row, hairlines between rows. */
 .md-table {
     overflow-x: auto;
-    background: var(--bg-subtle);
-    box-shadow: inset 0 0 0 1px var(--hairline);
-    border-radius: var(--radius-md);
+    background: var(--sheet);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+    border-radius: var(--r-card);
 }
 
 .md table {
     border-collapse: collapse;
     width: 100%;
     font-size: 0.93em;
+    line-height: 1.5;
 }
 
 .md th,
 .md td {
-    padding: 7px 12px;
+    padding: 8px 12px;
     text-align: left;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 0.5px solid var(--line);
     vertical-align: top;
     overflow-wrap: break-word;
 }
@@ -191,8 +196,9 @@
 }
 
 .md th {
-    background: var(--bg-subtle);
-    font-weight: 500;
+    background: var(--sheet-2);
+    font-weight: 600;
+    color: var(--fg-2);
 }
 
 .md tr:last-child td {
@@ -201,13 +207,11 @@
 
 .md .md-pre {
     margin: 0;
-    padding: 10px 12px;
-    background: var(--bg-code);
-    box-shadow: 0 0 0 1px var(--border);
-    border-radius: var(--radius-md);
+    padding: 10px 14px;
+    background: var(--sheet-2);
+    border-radius: var(--r-card);
     overflow-x: auto;
-    font-size: 0.82rem;
-    line-height: 1.6;
+    font: 0.857rem/1.7 var(--font-mono);
 }
 
 .md-check {
@@ -215,17 +219,44 @@
     width: 13px;
     height: 13px;
     border-radius: 4px;
-    border: 1.5px solid var(--border-strong);
+    border: 1.5px solid var(--fg-4);
     vertical-align: -1px;
     margin-right: 6px;
 }
 
 .md-check.on {
-    background: var(--success);
-    border-color: var(--success);
+    background: var(--ok);
+    border-color: var(--ok);
 }
 
 .md li:has(> .md-check) {
     list-style: none;
     margin-left: -1.2em;
+}
+
+/* While the reply streams, a caret at the end of its last line. */
+.md.streaming > .md-block:last-child > :is(p, h1, h2, h3, h4):last-child::after,
+.md.streaming > .md-block:last-child > :is(ul, ol):last-child > li:last-child::after {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 15px;
+    margin-left: 2px;
+    vertical-align: -2px;
+    border-radius: 2px;
+    background: var(--accent);
+    animation: md-caret 1s steps(2) infinite;
+}
+
+@keyframes md-caret {
+    50% {
+        opacity: 0;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .md.streaming > .md-block:last-child > :is(p, h1, h2, h3, h4):last-child::after,
+    .md.streaming > .md-block:last-child > :is(ul, ol):last-child > li:last-child::after {
+        animation: none;
+    }
 }

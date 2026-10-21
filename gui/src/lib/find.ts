@@ -3,7 +3,7 @@
 // is then looked up in the page, once the rows around it are open.
 
 import { foldCase, type Block, type Turn } from "@shared/protocol";
-import { toolLabel } from "../components/blocks/Activity";
+import { cardOf, toolLabel } from "../components/blocks/Activity";
 import { stripAnsi } from "./format";
 import { renderMarkdown } from "./markdown";
 import { splitComments } from "./review-comments";
@@ -46,8 +46,9 @@ function blockText(b: Block): string | undefined {
             if (b.status === "running" || b.status === "queued" || b.status === "awaiting") return l.arg;
             if (b.status === "streaming") return undefined;
             // As the row reads, a space between each part (ToolRow puts one there): verb, argument, summary.
+            // A card (an edit, a command) doesn't show its verb: it's there for the screen reader only.
             const meta = b.status === "denied" ? "Declined" : b.diff && b.status === "ok" ? undefined : b.summary;
-            return [l.verb, l.arg, meta].filter(Boolean).join(" ");
+            return [cardOf(b) ? undefined : l.verb, l.arg, meta].filter(Boolean).join(" ");
         }
         case "notice":
             return b.text;

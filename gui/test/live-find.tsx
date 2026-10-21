@@ -16,16 +16,25 @@ import "../src/styles/transcript.css";
 const root = document.getElementById("root")!;
 const result = document.getElementById("result")!;
 const frame = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+/** After the next paint, when scroll events have been delivered. */
+const paint = () => new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+/** Drawn where the reader can see it: not clipped to a pixel, as screen-reader-only text is. */
+const visible = (r: Range) => {
+    const el = r.startContainer.parentElement!;
+    const box = el.getBoundingClientRect();
+    return el.checkVisibility() && box.width > 1 && box.height > 1;
+};
 function check(ok: unknown, message: string): asserts ok {
     if (!ok) throw new Error(message);
 }
-const tool = (id: string, command: string): ToolBlock => ({
-    t: "tool", id, name: "Bash", title: command, input: { command }, status: "running",
-    summary: "Run summary", progress: "Run output", startedAt: Date.now(),
+// A call that stays a row in its group (commands and edits get cards of their own, checked below).
+const tool = (id: string, description: string): ToolBlock => ({
+    t: "tool", id, name: "Monitor", title: description, input: { description }, status: "running",
+    summary: "Monitor summary", progress: "Monitor output", startedAt: Date.now(),
 });
 const [tools, setTools] = createStore([
     tool("first", `echo ${"long-argument-".repeat(45)}quokka-end`),
-    tool("second", "sleep 60; echo Run"),
+    tool("second", "sleep 60; echo Monitor"),
 ]);
 const turn = (): Turn => ({ id: "turn", blocks: tools, status: "running" });
 const row = (id: string) => root.querySelector<HTMLElement>(`[data-find="${id}"]`)!;
@@ -61,30 +70,102 @@ async function run() {
         for (const status of ["running", "queued", "awaiting"] as const) {
             setTools(1, "status", status);
             await frame();
-            const matches = findMatches([turn()], "Run");
-            const ranges = textRanges(row("second"), "Run");
+            const matches = findMatches([turn()], "Monitor");
+            const ranges = textRanges(row("second"), "Monitor");
             check(matches.length === 1 && matches[0]!.part === "second", `${status}: count only the argument`);
             check(ranges.length === matches.length, `${status}: drawn matches equal counted matches`);
             check(ranges[0]!.startContainer.parentElement?.classList.contains("tool-arg"), `${status}: highlight argument, not verb`);
             const button = row("second").querySelector<HTMLButtonElement>(".tool-line")!;
             button.click();
             await frame();
-            check(textRanges(row("second"), "Run").length === 1, `${status}: expanded details must not add live matches`);
+            check(textRanges(row("second"), "Monitor").length === 1, `${status}: expanded details must not add live matches`);
             button.click();
         }
         setTools(1, "status", "streaming");
         await frame();
-        check(findMatches([turn()], "Run").length === 0 && textRanges(row("second"), "Run").length === 0, "input still arriving is not searched in either rendering path");
+        check(findMatches([turn()], "Monitor").length === 0 && textRanges(row("second"), "Monitor").length === 0, "input still arriving is not searched in either rendering path");
         setTools(1, "status", "ok");
         await frame();
-        check(findMatches([turn()], "Run").length === 3 && textRanges(row("second"), "Run").length === 3, "finished call restores verb and summary matching");
-        check(findMatches([turn()], "Run sleep").length === 1 && textRanges(row("second"), "Run sleep").length === 1, "finished row retains spaces between title parts");
+        check(findMatches([turn()], "Monitor").length === 3 && textRanges(row("second"), "Monitor").length === 3, "finished call restores verb and summary matching");
+        check(findMatches([turn()], "Monitor sleep").length === 1 && textRanges(row("second"), "Monitor sleep").length === 1, "finished row retains spaces between title parts");
     } finally {
         dispose();
     }
+    await checkCards();
 }
-run().then(() => checkEditorFind(root)).then(() => checkPaletteDelete(root)).then(() => checkTranscriptScroll(root)).then(() => checkDiffComments(root)).then(() => {
-    result.textContent = "PASS: live tool find; deferred file links and ranges; editor actions and find keys; deleted palette hits; transcript scroll; diff comments";
+
+/** Command and edit cards: what find counts is what it can highlight, in every state. */
+async function checkCards() {
+    const box = root.appendChild(document.createElement("div"));
+    const command: ToolBlock = { t: "tool", id: "cmd", name: "Bash", title: "echo kiwi", input: { command: "echo kiwi" }, status: "running", summary: "kiwi summary", output: "kiwi output", progress: "kiwi progress", startedAt: Date.now() };
+    const edit: ToolBlock = {
+        t: "tool", id: "edit", name: "Edit", title: "Edit(src/kiwi.ts)", input: { file_path: "src/kiwi.ts" }, status: "running", summary: "kiwi summary", startedAt: Date.now(),
+        diff: { path: "src/kiwi.ts", status: "modified", added: 1, removed: 0, hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 1, lines: [{ t: "add", text: "kiwi line" }] }] },
+    };
+    const [cards, setCards] = createStore([command, edit]);
+    const dispose = render(() => <>
+        <ActivityGroup tools={[cards[0]!]} steps={[cards[0]!]} card="command" turnRunning />
+        <ActivityGroup tools={[cards[1]!]} steps={[cards[1]!]} card="edit" turnRunning />
+    </>, box);
+    try {
+        for (const status of ["streaming", "queued", "awaiting", "running", "ok", "error", "denied"] as const) {
+            for (const i of [0, 1] as const) {
+                setCards(i, "status", status);
+                await frame();
+                const id = cards[i]!.id;
+                const card = box.querySelector<HTMLElement>(`[data-find="${id}"]`)!;
+                check(card.classList.contains("tcard"), `${id} ${status}: drawn as a card`);
+                // The argument and summary, and the verb ("Run", "Edit") the screen reader hears but the card doesn't show.
+                for (const query of ["kiwi", i === 0 ? "Run" : "Edit"]) {
+                    const counted = findMatches([{ id: "cards", blocks: [cards[i]!], status: "running" }], query).length;
+                    const drawn = textRanges(card, query);
+                    check(drawn.length === counted, `${id} ${status}: drawn matches of "${query}" (${drawn.length}) equal counted matches (${counted})`);
+                    for (const r of drawn) check(visible(r), `${id} ${status}: a match of "${query}" is in "${r.startContainer.parentElement?.className}", which isn't visible`);
+                }
+            }
+        }
+    } finally {
+        dispose();
+        box.remove();
+    }
+}
+/** A command's live output stays at its end as it grows, a burst of lines included, unless the reader scrolled up in it. */
+async function checkCommandFollow() {
+    const box = root.appendChild(document.createElement("div"));
+    const lines = (from: number, n: number) => Array.from({ length: n }, (_, i) => `line ${from + i}\n`).join("");
+    const [cmd, setCmd] = createStore<ToolBlock>({ t: "tool", id: "follow", name: "Bash", title: "make", input: { command: "make" }, status: "running", progress: lines(0, 9), startedAt: Date.now() });
+    const dispose = render(() => <ActivityGroup tools={[cmd]} steps={[cmd]} card="command" turnRunning />, box);
+    try {
+        await paint();
+        const out = box.querySelector<HTMLElement>(".tcard-out")!;
+        const gap = () => out.scrollHeight - out.scrollTop - out.clientHeight;
+        check(out.scrollHeight > out.clientHeight, "follow fixture: output must start scrolling");
+        check(gap() < 2, `follow: starts at the end (${gap()}px from it)`);
+        for (let n = 9; n < 30; n += 4) {
+            setCmd("progress", (p) => p + lines(n, 4));
+            await paint();
+            check(gap() < 2, `follow: four more lines keep it at the end (${gap()}px from it, scrollHeight ${out.scrollHeight})`);
+        }
+        out.scrollTop = 0;
+        out.dispatchEvent(new Event("scroll"));
+        await paint();
+        setCmd("progress", (p) => p + lines(40, 4));
+        await paint();
+        check(out.scrollTop === 0, `follow: a reader who scrolled up stays there (scrollTop ${out.scrollTop})`);
+        out.scrollTop = out.scrollHeight;
+        out.dispatchEvent(new Event("scroll"));
+        await paint();
+        setCmd("progress", (p) => p + lines(44, 4));
+        await paint();
+        check(gap() < 2, `follow: back at the end, it follows again (${gap()}px from it)`);
+    } finally {
+        dispose();
+        box.remove();
+    }
+}
+
+run().then(() => checkCommandFollow()).then(() => checkEditorFind(root)).then(() => checkPaletteDelete(root)).then(() => checkTranscriptScroll(root)).then(() => checkDiffComments(root)).then(() => {
+    result.textContent = "PASS: live tool find; command output follows; deferred file links and ranges; editor actions and find keys; deleted palette hits; transcript scroll; diff comments";
     result.dataset.status = "passed";
 }).catch((error) => {
     result.textContent = String(error.stack ?? error);

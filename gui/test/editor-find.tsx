@@ -169,7 +169,7 @@ export async function checkEditorFind(root: HTMLElement) {
 
         setFindQuery("exit");
         await settle(350);
-        const output = scope("shell-exit").querySelector(".term")!;
+        const output = scope("shell-exit").querySelector(".tcard-out")!;
         check(findMatches([turn], "exit").length === 1 && textRanges(col, "exit").length === 1, "shell status badges do not add output matches");
         check(count() === "1 of 1" && current().toString() === "exit" && current().startContainer.parentElement === output, "find selects shell output instead of its exit-status badge");
         key(input, "Enter");
@@ -178,7 +178,7 @@ export async function checkEditorFind(root: HTMLElement) {
 
         setFindQuery("foobar");
         await settle(350);
-        const ansiOutput = scope("shell-ansi").querySelector(".term")!;
+        const ansiOutput = scope("shell-ansi").querySelector(".tcard-out")!;
         const ansiMatches = findMatches([turn], "foobar");
         const ansiRanges = textRanges(scope("shell-ansi"), "foobar");
         check(ansiMatches.length === 2 && ansiMatches.every((m, i) => m.part === "shell-ansi" && m.n === i), "ANSI escapes do not split displayed matches");

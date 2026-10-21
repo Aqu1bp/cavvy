@@ -55,7 +55,7 @@ test("shell find searches displayed text without ANSI escapes", () => {
     // Isolate the unused tool renderer so shell matching can run without a browser.
     const result = Bun.spawnSync([process.execPath, "--no-env-file", "-e", String.raw`
         import { expect, mock } from "bun:test";
-        mock.module("./src/components/blocks/Activity", () => ({ toolLabel: () => { throw new Error("unexpected tool"); } }));
+        mock.module("./src/components/blocks/Activity", () => ({ toolLabel: () => { throw new Error("unexpected tool"); }, cardOf: () => { throw new Error("unexpected tool"); } }));
         const { findParts, findMatches } = await import("./src/lib/find");
         const turn = { id: "turn", status: "done", blocks: [
             { t: "shell", id: "shell", command: "printf colors", output: "foo\x1b[31mbar\x1b[0m foobar", running: false, exitCode: 0 },

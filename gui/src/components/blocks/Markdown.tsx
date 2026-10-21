@@ -101,7 +101,7 @@ function MarkdownContent(p: { text: string; streaming?: boolean; class?: string;
     });
     onCleanup(() => clearTimeout(timer));
     return (
-        <div ref={root} class={`md ${p.class ?? ""}`} data-find={p.find} onClick={onLinkClick} onKeyDown={onLinkKey}>
+        <div ref={root} class={`md ${p.streaming ? "streaming" : ""} ${p.class ?? ""}`} data-find={p.find} onClick={onLinkClick} onKeyDown={onLinkKey}>
             <Index each={segments()}>
                 {(s) => {
                     const code = createMemo(() => { const part = s(); return part.kind === "code" ? part : undefined; });

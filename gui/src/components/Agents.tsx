@@ -59,7 +59,7 @@ function Log(p: { agent: AgentRun; agents: AgentRun[]; items: Item[]; lastText?:
         <Index each={p.items}>
             {(it) => (
                 <Switch>
-                    <Match when={it().kind === "activity" && (it() as Extract<Item, { kind: "activity" }>)}>{(g) => <ActivityGroup tools={g().tools} steps={g().steps} turnRunning={running()} agents={own()} />}</Match>
+                    <Match when={it().kind === "activity" && (it() as Extract<Item, { kind: "activity" }>)}>{(g) => <ActivityGroup tools={g().tools} steps={g().steps} card={g().card} turnRunning={running()} agents={own()} />}</Match>
                     <Match when={it().kind === "block" && (it() as { block: Block }).block}>
                         {(b) => (
                             <Switch>
@@ -166,11 +166,12 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                                     when={live(a())}
                                     fallback={
                                         <Show when={items().length}>
-                                            <button class="fold" aria-expanded={unfolded()} onClick={() => setUnfolded(!unfolded())}>
-                                                Worked for <span class="num">{elapsed(a())}</span>
+                                            <button class="fold acts-h" aria-expanded={unfolded()} onClick={() => setUnfolded(!unfolded())}>
                                                 <ChevronRight size={14} class="chev" />
+                                                <span>
+                                                    Worked for <span class="num">{elapsed(a())}</span>
+                                                </span>
                                             </button>
-                                            <div class="rule" />
                                         </Show>
                                     }
                                 >
@@ -179,7 +180,6 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                                             <span class="tone-warn live-label">{asks().length ? "Waiting for you" : "Waiting for you. Answer in the parent session."}</span>
                                         </Show>
                                     </div>
-                                    <div class="rule" />
                                 </Show>
                                 <Show when={a().dropped && showWork()}>
                                     <div class="agent-dropped">{plural(a().dropped!, "earlier step")} not shown</div>
@@ -208,7 +208,7 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                         <Show when={asks().length}>
                             <InteractionTab sessionId={p.handle.id} items={asks()} />
                         </Show>
-                        <div class="agent-bar" role="status">
+                        <div class="agent-bar glass" role="status">
                             <span class="av">
                                 <Bot size={14} />
                                 <span class={`nd st-${a().status}`} />
@@ -221,9 +221,9 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                             <span class="agent-bar-model truncate" title={a().model ?? st().model?.ref}>
                                 <Show when={provider()}>{(id) => <ProviderIcon id={id()} size={14} />}</Show> {model()}<Show when={a().effort}>{(effort) => ` · ${effort()} effort`}</Show>
                             </span>
-                            <span class="vs" aria-hidden="true" />
-                            <button class="ctl back" onClick={back} title={parent() ? `Back to ${parentName()} (Esc)` : "Back to session (Esc)"}>
-                                <ArrowLeft size={16} /> {parent() ? "Back" : "Back to session"}
+                            <span class="agent-sep" aria-hidden="true" />
+                            <button class="agent-back" onClick={back} title={parent() ? `Back to ${parentName()} (Esc)` : "Back to session (Esc)"}>
+                                <ArrowLeft size={15} /> {parent() ? "Back" : "Back to session"}
                             </button>
                             <Show when={live(a()) && a().taskId}>
                                 <button class="stop-btn" title="Stop this agent" aria-label="Stop this agent" onClick={() => void stopAgent(p.handle.id, a().id)}>
