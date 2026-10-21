@@ -76,6 +76,12 @@ function lastPromptSent(): string {
     return typeof user?.content === "string" ? user.content : (user?.content ?? []).map((c: { text?: string }) => c.text ?? "").join("\n\n");
 }
 
+/** The runtime's queue drains, as the agent calls them. */
+type Waiting = {
+    drainQueued(): string[];
+    drainWaiting(steps: { record(): void; admit(parts: unknown[]): Promise<boolean> }): Promise<{ parts: unknown[]; display: string } | undefined>;
+};
+
 const userPrompts = (messages: Message[]) => messages.filter((m): m is UserMessage => m.role === "user" && m.meta?.kind === "prompt");
 
 describe("session.send with files", () => {
@@ -536,14 +542,14 @@ describe("nothing gets lost", () => {
             await engine.handle(c, "session.send", { id, text: "steer text", mode: "steer" });
             await engine.handle(c, "session.send", { id, text: "!ls", mode: "steer" });
             (rt as unknown as { queued: { text: string; held?: boolean }[] }).queued.find((q) => q.text === "held one")!.held = true;
-            const inner = rt as unknown as { drainQueued(): string[]; drainWaiting(record: () => void): { text: string; attachments?: unknown[] } | undefined };
+            const inner = rt as unknown as Waiting;
             // Mid-step, as before: only steer-mode text.
             expect(inner.drainQueued()).toEqual(["steer text"]);
             let recorded = 0;
-            const record = () => void recorded++;
-            const first = inner.drainWaiting(record);
-            expect(first?.text).toBe("look at this");
-            expect(first?.attachments).toEqual([{ type: "image", ...image }]);
+            const record = { record: () => void recorded++, admit: async () => true };
+            const first = await inner.drainWaiting(record);
+            expect(first?.display).toBe("look at this");
+            expect(first?.parts).toEqual([{ type: "text", text: "look at this" }, { type: "image", ...image }]);
             expect(recorded).toBe(1);
             // The turn it starts shows the image on its prompt, where the prompt will be.
             const turn = rt.snapshot().turns.at(-1)!;
@@ -551,11 +557,37 @@ describe("nothing gets lost", () => {
             expect(turn.prompt!.imagesKey).toBe(attachedPrompt([{ type: "image", ...image }]).imagesKey!);
             expect(turn.pos).toEqual({ seg: 0, index: rt.session.messages.length });
             expect(rt.snapshot().state.queued).toEqual(["/review", "held one", "later", "!ls"]);
-            expect(inner.drainWaiting(record)).toEqual({ text: "later" });
-            expect(inner.drainWaiting(record)).toBeUndefined();
+            expect(await inner.drainWaiting(record)).toEqual({ parts: [{ type: "text", text: "later" }], display: "later" });
+            expect(await inner.drainWaiting(record)).toBeUndefined();
             expect(recorded).toBe(2);
             expect(rt.snapshot().state.queued).toEqual(["/review", "held one", "!ls"]);
             expect(rt.snapshot().state.queuedModes).toEqual(["turn", "held", "turn"]);
+        } finally {
+            await engine.handle(c, "session.interrupt", { id }).catch(() => undefined);
+            await engine.stop();
+        }
+    });
+
+    test("one delivered while the agent CLI only waits is prepared as a sent one: its @mentions attach; one its hooks block isn't sent or rewound to", async () => {
+        const { engine, c, id, rt } = await busySession();
+        try {
+            await engine.handle(c, "session.send", { id, text: "what does @README.md say?", mode: "queue" });
+            await engine.handle(c, "session.send", { id, text: "blocked one", mode: "queue" });
+            const inner = rt as unknown as Waiting;
+            const seen: string[] = [];
+            const steps = { record: () => {}, admit: async (parts: unknown[]) => (seen.push(JSON.stringify(parts)), !JSON.stringify(parts).includes("blocked one")) };
+            const first = await inner.drainWaiting(steps);
+            expect(first?.display).toBe("what does @README.md say?");
+            // The file's contents, as startTurn attaches them; its hooks saw them too.
+            expect(JSON.stringify(first?.parts)).toContain("Accounts, organizations and billing.");
+            expect(seen[0]).toContain("Accounts, organizations and billing.");
+            // Said in its own turn, as for a sent one.
+            expect(JSON.stringify(rt.snapshot().turns.at(-1)!.blocks)).toContain("Attached README.md");
+            expect(await inner.drainWaiting(steps)).toBeUndefined();
+            const blocked = rt.snapshot().turns.at(-1)!;
+            expect(blocked.prompt?.text).toBe("blocked one");
+            expect(blocked.prompt?.index).toBeUndefined();
+            expect(rt.snapshot().state.queued).toEqual([]);
         } finally {
             await engine.handle(c, "session.interrupt", { id }).catch(() => undefined);
             await engine.stop();

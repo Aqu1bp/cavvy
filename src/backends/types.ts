@@ -83,6 +83,9 @@ export interface BackendPrompt {
     text: string;
     images: ImagePart[];
     documents: PdfPart[];
+    /** As BackendTurn's: the user's message as typed, which its $names are read from, and what follows it in `text`. */
+    request?: string;
+    requestAfter?: string;
 }
 
 export interface BackendHost {

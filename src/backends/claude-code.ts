@@ -336,6 +336,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         const prompt = claudePrompt(t.prompt, t.request, t.skills ?? [], names, formatSkill, t.requestAfter);
         const turn = new ClaudeTurn(this.def, bin, { ...t, prompt }, t.resumeId ? this.spent.get(key(t.resumeId)) : undefined, this.limitSeen);
         turn.pluginDir = pluginDir;
+        turn.skillNames = names;
         this.turns.add(turn);
         try {
             // The text goes last: Claude Code reads a /command only from the last block (what's before it goes along with it),
@@ -451,6 +452,8 @@ class ClaudeTurn {
     private hookCallbacks = new Map<string, { event: HookEvent; hook: HookConfig }>();
     /** The harness's skills, as a plugin folder (src/backends/native-skills.ts). */
     pluginDir?: string;
+    /** The name Claude Code runs each of the harness's skills by (claudeNames), for the prompts sent during the run. */
+    skillNames: ReadonlyMap<string, string> = new Map();
     /** Each sub-agent's type, by the id it asks permission with. */
     private agentTypes = new Map<string, string>();
     /** Where --agents reads from, removed when the process exits. */
@@ -712,8 +715,9 @@ class ClaudeTurn {
         const p = await this.host.drainWaiting(() => this.progress());
         if (!p || this.aborted || this.finishing) return false;
         this.reason = undefined;
-        // As a prompt of the user's own is sent: its text, then its images and PDFs.
-        this.sendUser([...(p.text ? [{ type: "text", text: p.text }] : []), ...mediaBlocks(p.images, p.documents)]);
+        // As a prompt of the user's own is sent: its $names as runTurn reads them, then its images and PDFs.
+        const text = claudePrompt(p.text, p.request, this.t.skills ?? [], this.skillNames, formatSkill, p.requestAfter);
+        this.sendUser([...(text ? [{ type: "text", text }] : []), ...mediaBlocks(p.images, p.documents)]);
         return true;
     }
 

@@ -42,7 +42,7 @@ import { isAgentBackend } from "../backends/types";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { account } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
-import { modelRef, parseModelRef, textOf, toolCallsOf, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart } from "../providers/types";
+import { modelRef, parseModelRef, textOf, toolCallsOf, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
 import { expandMentions } from "../ui/mentions";
 import { expandMcpMentions } from "../mcp/mentions";
 import type { McpAsker } from "../mcp/elicitation";
@@ -2086,22 +2086,29 @@ export class Runtime {
      * attached. Commands and `!commands` wait: the server runs them (a custom command expands, /compact
      * compacts), and only once the run is over. Held ones wait for the user.
      */
-    private drainWaiting(record: () => void): { text: string; attachments?: AttachedPart[] } | undefined {
+    private async drainWaiting(steps: { record(): void; admit(parts: UserContent[]): Promise<boolean> }): Promise<{ parts: UserContent[]; display: string } | undefined> {
         const q = this.queued.find((x) => !x.held && !isCommand(x));
         if (!q) return undefined;
         this.queued = this.queued.filter((x) => x !== q);
         this.queueUpdated();
         // What the CLI said before it goes first, so the prompt's place in the session is where it lands.
-        record();
-        this.drainedTurn(q.text, q.attachments, true);
-        return { text: q.text, ...(q.attachments?.length ? { attachments: q.attachments } : {}) };
+        steps.record();
+        const turn = this.drainedTurn(q.text, q.attachments, true);
+        // Prepared as a sent prompt is (startTurn), in its own turn: what it uses and attaches is said there.
+        const parts = await this.preparePrompt(q.text, { attachments: q.attachments }, this.abort?.signal ?? new AbortController().signal);
+        const images = parts.filter((p): p is AttachedPart => p.type === "image");
+        if (images.length) this.op({ op: "turn.patch", turnId: turn.id, patch: { prompt: { ...turn.prompt!, ...attachedPrompt(images) } } });
+        if (await steps.admit(parts)) return { parts, display: q.text };
+        // A hook blocked it (the turn says so): it isn't in the conversation, so there's nothing to rewind to.
+        this.op({ op: "turn.patch", turnId: turn.id, patch: { prompt: { ...turn.prompt!, ...attachedPrompt(images), index: undefined } } });
+        return undefined;
     }
 
     /**
      * Drained messages start a turn in the UI: the open one ends, and this one shows `text` as its prompt,
      * with what's attached. `own`: a prompt of its own whatever came before it (never with tool results).
      */
-    private drainedTurn(text: string, attachments?: AttachedPart[], own = false) {
+    private drainedTurn(text: string, attachments?: AttachedPart[], own = false): Turn {
         // After tool calls they ride along with the results; otherwise they're a prompt of their own.
         const last = this.session.messages[this.session.messages.length - 1];
         const steering = !own && last?.role === "assistant" && toolCallsOf(last).length > 0;
@@ -2127,6 +2134,7 @@ export class Runtime {
         this.ui.write({ t: "turn", ...this.uiTurn });
         this.lastActive = turn.startedAt!;
         this.engine.sessionChanged(this);
+        return turn;
     }
 
     /**
@@ -2340,27 +2348,7 @@ export class Runtime {
                 reason = "aborted";
                 this.endTurn("aborted");
             } else {
-                const roots = [this.ws.cwd, ...(this.settings().permissions?.additionalDirectories ?? [])];
-                // $name brings that skill's instructions along; the transcript keeps what was typed.
-                const skills = opts.kind === "command" || opts.kind === "wake" ? [] : skillMentions(text, this.ws.skills);
-                // A wake quotes outside text (PR comments): its @words are not files or MCP resources to attach.
-                const scan = opts.kind === "wake" ? "" : (opts.mentionsIn ?? text);
-                const { parts, attached, notices } = opts.kind === "wake" ? { parts: [{ type: "text" as const, text }], attached: [], notices: [] } : await expandMentions(scan, this.toolState, roots, this.checker);
-                // Claude Code and Codex are sent the $name, and load the skill themselves.
-                parts[0] = { type: "text", text: skills.length && !cliRunsSkills(this.agent?.model.provider) ? withSkills(text, skills) : text };
-                if (skills.length) this.notice(`Using ${skills.length === 1 ? "skill" : "skills"} ${skills.map((s) => s.name).join(", ")}`);
-                const res = await expandMcpMentions(scan, this.ws.mcp, this.mcpAsker(), ac.signal);
-                parts.push(...res.parts);
-                attached.push(...res.attached);
-                notices.push(...res.notices);
-                for (const n of notices) this.notice(n, "warn");
-                if (attached.length) this.notice(`Attached ${attached.join(", ")}`);
-                if (opts.attachments?.length) {
-                    if (this.model?.supportsImages === false && opts.attachments.some((a) => a.type === "image")) this.notice(`${this.model.name ?? this.model.id} may not accept images.`, "warn");
-                    // Checked when it was sent; the model may have changed while it waited in the queue.
-                    if (this.model && !readsPdf(this.model) && opts.attachments.some((a) => a.type === "file" && a.kind === "pdf")) this.notice(`${this.model.name ?? this.model.id} can't read PDFs: it's told one was attached, not what's in it.`, "warn");
-                    parts.push(...opts.attachments);
-                }
+                const parts = await this.preparePrompt(text, opts, ac.signal);
                 // The images as they'll be kept, mentioned ones too: what promptImages returns, so what the key is of.
                 const images = parts.filter((p): p is AttachedPart => p.type === "image");
                 this.pendingPrompt = { seg: this.segment, index, attachments: images };
@@ -2408,6 +2396,35 @@ export class Runtime {
         this.schedules.poke();
         // Nothing followed it: from here the conversation is idle.
         if (!this.busy && !this.closed) this.idleCompact.arm();
+    }
+
+    /**
+     * A prompt as it's sent: $names bring their skills, @mentions attach files and MCP resources (not a wake's:
+     * it quotes outside text), then what was attached to it. The user is told what was used and attached.
+     */
+    private async preparePrompt(text: string, opts: { kind?: "prompt" | "command" | "wake"; attachments?: AttachedPart[]; mentionsIn?: string }, signal: AbortSignal): Promise<UserContent[]> {
+        const roots = [this.ws.cwd, ...(this.settings().permissions?.additionalDirectories ?? [])];
+        // $name brings that skill's instructions along; the transcript keeps what was typed.
+        const skills = opts.kind === "command" || opts.kind === "wake" ? [] : skillMentions(text, this.ws.skills);
+        // A wake quotes outside text (PR comments): its @words are not files or MCP resources to attach.
+        const scan = opts.kind === "wake" ? "" : (opts.mentionsIn ?? text);
+        const { parts, attached, notices } = opts.kind === "wake" ? { parts: [{ type: "text" as const, text }], attached: [], notices: [] } : await expandMentions(scan, this.toolState, roots, this.checker);
+        // Claude Code and Codex are sent the $name, and load the skill themselves.
+        parts[0] = { type: "text", text: skills.length && !cliRunsSkills(this.agent?.model.provider) ? withSkills(text, skills) : text };
+        if (skills.length) this.notice(`Using ${skills.length === 1 ? "skill" : "skills"} ${skills.map((s) => s.name).join(", ")}`);
+        const res = await expandMcpMentions(scan, this.ws.mcp, this.mcpAsker(), signal);
+        parts.push(...res.parts);
+        attached.push(...res.attached);
+        notices.push(...res.notices);
+        for (const n of notices) this.notice(n, "warn");
+        if (attached.length) this.notice(`Attached ${attached.join(", ")}`);
+        if (opts.attachments?.length) {
+            if (this.model?.supportsImages === false && opts.attachments.some((a) => a.type === "image")) this.notice(`${this.model.name ?? this.model.id} may not accept images.`, "warn");
+            // Checked when it was sent; the model may have changed while it waited in the queue.
+            if (this.model && !readsPdf(this.model) && opts.attachments.some((a) => a.type === "file" && a.kind === "pdf")) this.notice(`${this.model.name ?? this.model.id} can't read PDFs: it's told one was attached, not what's in it.`, "warn");
+            parts.push(...opts.attachments);
+        }
+        return parts;
     }
 
     /** The queue ran dry without starting a turn: the goal goes on from the turn that ended before it (or pauses, if it was stopped). */

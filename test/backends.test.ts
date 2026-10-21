@@ -102,6 +102,7 @@ interface Opts {
     drainWaiting?: import("../src/agent/agent").AgentHost["drainWaiting"];
     /** A wake queue, as the TUI and the app give a session. */
     wakes?: InstanceType<typeof WakeQueue>;
+    skills?: () => import("../src/agent/skills").Skill[];
 }
 
 async function makeAgent(o: Opts) {
@@ -122,6 +123,7 @@ async function makeAgent(o: Opts) {
         settings: () => settings,
         approvedMcpServers: o.approvedMcpServers,
         readOnly: o.readOnly,
+        ...(o.skills ? { skills: o.skills } : {}),
         checker,
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
@@ -721,13 +723,15 @@ describe("Claude Code's background work (live test findings)", () => {
                 items,
                 waits,
                 drainQueued: () => take((q) => q.mode === "steer" && !q.held && !q.images?.length && !command(q.text)).map((q) => q.text),
-                drainWaiting: (record: () => void) => {
+                drainWaiting: async (steps: { record(): void; admit(parts: import("../src/providers/types").UserContent[]): Promise<boolean> }) => {
                     const q = items.find((x) => !x.held && !command(x.text));
                     if (!q) return undefined;
                     take((x) => x === q);
-                    record();
+                    steps.record();
+                    const parts = [{ type: "text" as const, text: q.text }, ...(q.images ?? [])];
+                    if (!(await steps.admit(parts))) return undefined;
                     waits.push(q.text);
-                    return { text: q.text, ...(q.images ? { attachments: q.images } : {}) };
+                    return { parts, display: q.text };
                 },
             };
         }
@@ -739,12 +743,12 @@ describe("Claude Code's background work (live test findings)", () => {
             while (!ok() && !over) await Bun.sleep(10);
             return ok();
         }
-        async function waiting(o: { items?: Item[] } = {}) {
+        async function waiting(o: { items?: Item[]; settings?: any; skills?: () => import("../src/agent/skills").Skill[] } = {}) {
             process.env.FAKE_SCENARIO = "agent-background";
             process.env.FAKE_SECOND_SCENARIO = "none";
             process.env.FAKE_BACKGROUND_MS = "2000";
             const q = queue(o.items);
-            const a = await makeAgent({ provider: "claude-code", drainQueued: q.drainQueued, drainWaiting: q.drainWaiting });
+            const a = await makeAgent({ provider: "claude-code", settings: o.settings, skills: o.skills, drainQueued: q.drainQueued, drainWaiting: q.drainWaiting });
             const done = a.run("map the auth module");
             while (!notices(a.events).some((n) => n.includes("Waiting for"))) await Bun.sleep(10);
             return { a, q, done };
@@ -793,6 +797,39 @@ describe("Claude Code's background work (live test findings)", () => {
             expect(userTexts()).not.toContain("held since a restart");
             expect(userTexts()).not.toContain("/compact");
             expect(subEnds(a.events)).toEqual(["done"]);
+        }, 20_000);
+
+        test("its UserPromptSubmit hooks run as for a prompt sent on its own: one that blocks keeps it from Claude Code, and the user is told", async () => {
+            const settings = { hooks: { UserPromptSubmit: [{ command: `grep -q forbidden && { echo "no forbidden words" >&2; exit 2; }; exit 0` }] } };
+            const { a, q, done } = await waiting({ settings });
+            q.items.push({ text: "say forbidden things", mode: "queue" }, { text: "a fine one", mode: "queue" });
+            expect(await before(() => Boolean(userSent("a fine one")), done)).toBe(true);
+            expect(await done).toBe("done");
+            expect(userSent("say forbidden things")).toBeUndefined();
+            expect(notices(a.events)).toContainEqual(expect.stringMatching(/^warn: Prompt blocked by hook: .*no forbidden words/));
+            // Not in the conversation either, as a blocked prompt isn't.
+            expect(JSON.stringify(a.session.messages)).not.toContain("say forbidden things");
+            expect(q.waits).toEqual(["a fine one"]);
+        }, 20_000);
+
+        test("what a UserPromptSubmit hook adds goes with it", async () => {
+            const { q, done } = await waiting({ settings: { hooks: { UserPromptSubmit: [{ command: "echo branch is main" }] } } });
+            q.items.push({ text: "and the tests?", mode: "queue" });
+            expect(await before(() => Boolean(userSent("and the tests?")), done)).toBe(true);
+            await done;
+            expect(JSON.stringify(userSent("and the tests?").message.content)).toContain("Context from a UserPromptSubmit hook:\\nbranch is main");
+        }, 20_000);
+
+        test("a $skill it names is loaded as in a prompt sent on its own", async () => {
+            const dir = join(tempDir("skills-"), "deploy");
+            mkdirSync(dir, { recursive: true });
+            writeFileSync(join(dir, "SKILL.md"), "---\nname: deploy\ndescription: Ship it\n---\nDeploy steps.\n");
+            const deploy = { name: "deploy", description: "Ship it", modelInvocable: true, userInvocable: true, source: "user" as const, file: join(dir, "SKILL.md"), dir };
+            const { q, done } = await waiting({ skills: () => [deploy] });
+            q.items.push({ text: "then ship it with $deploy", mode: "queue" });
+            expect(await before(() => Boolean(userSent("then ship it with $deploy")), done)).toBe(true);
+            await done;
+            expect(userSent("then ship it with $deploy").message.content[0].text).toBe('then ship it with $deploy\n\nLoad the "harness:deploy" skill with the Skill tool and follow it.');
         }, 20_000);
 
         test("during a step, a queue-mode message still waits for the run's end and a steer message joins at the tool result", async () => {
