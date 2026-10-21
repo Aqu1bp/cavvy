@@ -15,11 +15,46 @@
      .main     the conversation column: container `main` (size)
      .insp     the inspector column (RightPanel, or ReviewPane)
      .terminal-panel  the bottom row
-   Variables: --rail-w, --bar-h, --insp-w, --insp-col, --term-h.
+   Variables: --rail-w, --bar-h, --insp-w, --insp-col, --insp-bottom, --term-h.
    The title bar (Header) clears the traffic lights itself. */
 
+/* The sizes App.tsx keeps (lib/layout.ts) change on every frame of dragging
+   an edge, so they're not inherited: each is set on the element that uses it
+   (--rail-w on .win, --insp-col and --term-h on .sheet, --insp-w and
+   --insp-bottom on .insp), and the few children that need one inherit it
+   explicitly. An inherited custom property changing restyles every element
+   under the one it's on. */
+@property --rail-w {
+    syntax: "<length>";
+    inherits: false;
+    initial-value: 260px;
+}
+
+@property --insp-w {
+    syntax: "<length>";
+    inherits: false;
+    initial-value: 360px;
+}
+
+@property --insp-col {
+    syntax: "<length>";
+    inherits: false;
+    initial-value: 0px;
+}
+
+@property --insp-bottom {
+    syntax: "<length>";
+    inherits: false;
+    initial-value: 8px;
+}
+
+@property --term-h {
+    syntax: "<length>";
+    inherits: false;
+    initial-value: 0px;
+}
+
 .app {
-    --rail-w: var(--sidebar-w);
     --win-pad: 8px;
     position: relative;
     display: flex;
@@ -29,6 +64,7 @@
 }
 
 .win {
+    --rail-w: var(--sidebar-w);
     position: relative;
     flex: 1;
     min-width: 0;
@@ -56,6 +92,7 @@
 /* ---- Rail ------------------------------------------------------------ */
 
 .win-rail {
+    --rail-w: inherit;
     grid-column: 1;
     grid-row: 1;
     position: relative;
@@ -124,8 +161,8 @@
     min-width: 0;
     min-height: 0;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--insp-col, 0px);
-    grid-template-rows: minmax(0, 1fr) var(--term-h, 0px);
+    grid-template-columns: minmax(0, 1fr) var(--insp-col);
+    grid-template-rows: minmax(0, 1fr) var(--term-h);
     background: var(--sheet);
     border-radius: var(--r-sheet);
     box-shadow: var(--sheet-shadow);
@@ -184,6 +221,7 @@
 
 /* Its content keeps its width (less the hairline) while the column opens and closes. */
 .insp > :not(.insp-resizer) {
+    --insp-w: inherit;
     flex: 1 1 auto;
     width: calc(var(--insp-w) - 0.5px);
     min-width: calc(var(--insp-w) - 0.5px);
@@ -197,7 +235,7 @@
     z-index: 9;
     top: 54px;
     right: 8px;
-    bottom: var(--insp-bottom, 8px);
+    bottom: var(--insp-bottom);
     width: min(var(--insp-w), calc(100% - 16px));
     border-left: 0;
     border-radius: 12px;

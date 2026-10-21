@@ -5,7 +5,9 @@
    one is a raised translucent pill. */
 
 .sidebar {
-    width: var(--sidebar-w);
+    /* The rail's width (shell.css: set on .win, live while its edge is dragged). */
+    --rail-w: inherit;
+    width: var(--rail-w);
     flex: none;
     display: flex;
     flex-direction: column;

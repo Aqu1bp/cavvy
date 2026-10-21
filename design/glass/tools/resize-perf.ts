@@ -7,7 +7,7 @@
 // handles: a comma list of sidebar, inspector, review, terminal (default: all). The page opens the
 // first session in the sidebar, so start the demo (`bun run gui:demo`) and send it a few prompts first.
 // Env: W, H (viewport, default 1512x982), MOVES (default 120), STEP_MS (default 8: a 120Hz pointer),
-// RUNS (default 3: the median run is reported), CHROME (the binary), TRACE_DIR (keeps each handle's
+// RUNS (default 3: the median run is reported), CHROME (the binary), INJECT_CSS (extra CSS to try), TRACE_DIR (keeps each handle's
 // last trace there, for DevTools' Performance panel).
 import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
@@ -59,6 +59,8 @@ await cdp("Performance.enable");
 await cdp("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: 2, mobile: false });
 await cdp("Page.navigate", { url });
 await Bun.sleep(2500);
+// INJECT_CSS: a style sheet to try (say, no blur while resizing) without rebuilding.
+if (process.env.INJECT_CSS) await js(`document.head.appendChild(Object.assign(document.createElement("style"), { textContent: ${JSON.stringify(process.env.INJECT_CSS)} })) && true`);
 // The first session in the rail, scrolled to its end.
 await js(`document.querySelector(".win-rail .card-hit")?.click()`);
 await Bun.sleep(1500);

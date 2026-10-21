@@ -9,7 +9,8 @@ import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread, refreshSessions, reportError } from "../state/app";
 import { archive, archiveSessions, askToDelete, chooseProject, newSession, openProject, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
-import { setDeleteRequest, setPaletteOpen, setSettingsTab } from "../state/ui";
+import { setDeleteRequest, setPaletteOpen, setRailDrag, setSettingsTab } from "../state/ui";
+import { frameDrag } from "../lib/drag";
 import { ago, monogram, projectColor, since } from "../lib/format";
 import { holdSidebar, projectOf, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type SidebarEntry } from "../lib/session-order";
 import { sessionStatus } from "../lib/session-status";
@@ -414,20 +415,29 @@ export function SidebarTop() {
 }
 
 export function SidebarFrame(p: { children: any; class?: string }) {
-    let dragStart = 0;
-    let widthStart = 0;
     const onResize = (e: PointerEvent) => {
-        dragStart = e.clientX;
-        widthStart = prefs.sidebarWidth;
-        const move = (ev: PointerEvent) => setPrefs("sidebarWidth", Math.max(220, Math.min(420, widthStart + ev.clientX - dragStart)));
+        const dragStart = e.clientX;
+        const widthStart = prefs.sidebarWidth;
+        // Shown once a frame (the window's --rail-w), saved to the preferences on release.
+        const drag = frameDrag({
+            show: setRailDrag,
+            commit: (w) => batch(() => {
+                if (w !== undefined) setPrefs("sidebarWidth", w);
+                setRailDrag(undefined);
+            }),
+        });
+        const move = (ev: PointerEvent) => drag.move(Math.max(220, Math.min(420, widthStart + ev.clientX - dragStart)));
         const up = () => {
+            drag.end();
             window.removeEventListener("pointermove", move);
             window.removeEventListener("pointerup", up);
+            window.removeEventListener("pointercancel", up);
             document.body.classList.remove("resizing");
         };
         document.body.classList.add("resizing");
         window.addEventListener("pointermove", move);
         window.addEventListener("pointerup", up);
+        window.addEventListener("pointercancel", up);
     };
     return (
         <aside class={`sidebar ${isTauri && os === "macos" ? "traffic" : ""} ${p.class ?? ""}`} aria-label="Sessions">

@@ -118,8 +118,10 @@ import solidPreset from "../gui/node_modules/babel-preset-solid/index.js";
 import * as solid from "../gui/node_modules/solid-js/dist/solid.js";
 import { EarlyInput, terminalInputChunks } from "../gui/src/lib/terminal";
 import { RpcError } from "../gui/src/lib/rpc";
+import { frameDrag } from "../gui/src/lib/drag";
+import { fakeFrames } from "./helpers/frames";
 
-function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string; saved?: SavedTabs; script?: SavedTabs["tabs"][number]["script"]; fresh?: boolean; login?: { provider: string; accountId: string; name: string }; cwd?: string; terminalKey?: (e: KeyboardEvent) => string } = {}) {
+function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string; saved?: SavedTabs; script?: SavedTabs["tabs"][number]["script"]; fresh?: boolean; login?: { provider: string; accountId: string; name: string }; cwd?: string; terminalKey?: (e: KeyboardEvent) => string; setPrefs?: (key: string, value: unknown) => void; setTerminalDrag?: (h: number | undefined) => void; frames?: ReturnType<typeof fakeFrames> } = {}) {
     const [conn, setConn] = solid.createSignal(opts.conn ?? "open");
     const [panelOpen, setPanelOpen] = solid.createSignal(false);
     const calls: { method: string; params: any; resolve: (v: any) => void; reject: (e: any) => void }[] = [];
@@ -167,7 +169,8 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
     const deps = {
         renderer, ...solid, rpc, app: { get conn() { return conn(); } }, RpcError, EarlyInput, TerminalClosures, terminalInputChunks, isTerminalReply,
         loadTabs: () => opts.saved ?? { tabs: [], next: 1, open: false }, restoreTabs, saveTabs: (value: SavedTabs) => saved.push(value),
-        terminalOpen: panelOpen, setTerminalOpen: setPanelOpen, terminalActions: {}, prefs: { terminalHeight: 200 }, setPrefs() {},
+        terminalOpen: panelOpen, setTerminalOpen: setPanelOpen, terminalActions: {}, prefs: { terminalHeight: 200 }, setPrefs: opts.setPrefs ?? (() => {}),
+        setTerminalDrag: opts.setTerminalDrag ?? (() => {}), frameDrag: (o: Parameters<typeof frameDrag>[0]) => frameDrag({ ...o, frames: opts.frames ?? fakeFrames() }),
         basename: (v: string) => v, tildify: (v: string) => v, withShortcut: (label: string) => label, terminalKey: opts.terminalKey ?? (() => "shell"), toast() {}, reportError() {}, refreshProviders() {}, setSettingsTab() {}, setupObscured: () => false, trustRequest: () => undefined,
         Play: noop, Plus: noop, RotateCw: noop, TerminalIcon: noop, X: noop, ChevronDown: noop, Maximize2: noop, Minimize2: noop,
         terminalMax: () => false, setTerminalMax() {}, setTerminalShown() {}, shellLayout: () => ({ terminal: { most: 560 } }), Terminal: Emulator, FitAddon: class { fit() {} },
@@ -191,6 +194,37 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
     };
 }
 const tick = () => Bun.sleep(0);
+
+test("dragging the terminal's edge shows its height once a frame, within its bounds, and saves it on release", () => {
+    const frames = fakeFrames();
+    const saved: [string, unknown][] = [];
+    const shown: (number | undefined)[] = [];
+    const m = mounted("TerminalPanel", { setPrefs: (key, value) => saved.push([key, value]), setTerminalDrag: (h) => shown.push(h), frames });
+    try {
+        const handle = m.nodes.find((n) => n.props.class === "terminal-resize")!;
+        const listeners: Record<string, ((e: any) => void) | undefined> = {};
+        const target = { setPointerCapture() {}, addEventListener: (type: string, fn: any) => (listeners[type] = fn), removeEventListener: (type: string, fn: any) => listeners[type] === fn && delete listeners[type] };
+        // From 260 (the panel's height when it has none to measure).
+        handle.props.onPointerDown({ button: 0, clientY: 500, pointerId: 1, preventDefault() {}, currentTarget: target });
+        listeners.pointermove!({ clientY: 480 });
+        listeners.pointermove!({ clientY: 470 });
+        expect(shown).toEqual([]);
+        frames.run();
+        expect(shown).toEqual([290]);
+        // No higher than the layout lets it (560 here), and nothing saved yet.
+        listeners.pointermove!({ clientY: 0 });
+        frames.run();
+        expect(shown).toEqual([290, 560]);
+        expect(saved).toEqual([]);
+        // No lower than 120; the release saves the last height at once.
+        listeners.pointermove!({ clientY: 900 });
+        listeners.lostpointercapture!({});
+        expect(saved).toEqual([["terminalHeight", 120]]);
+        expect(shown).toEqual([290, 560, undefined]);
+        expect(frames.pending()).toBe(0);
+        expect(listeners.pointermove).toBeUndefined();
+    } finally { m.dispose(); }
+});
 
 test("real panel waits for a connection and retries interrupted reconciliation", async () => {
     const m = mounted("TerminalPanel", { conn: "connecting", saved: { tabs: [], next: 1, open: false } });

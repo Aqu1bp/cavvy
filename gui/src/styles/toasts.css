@@ -26,7 +26,9 @@
    They drop into the title bar's row, over the session title for a moment,
    rather than over the content: centred between where the title starts and
    where the tool capsule begins (--bar-start, --bar-end and --bar-top, which
-   the title bar keeps up to date), never narrower than 240px. */
+   the title bar keeps up to date), never narrower than 240px. They're set on
+   .toasts itself, not the root: a custom property changing on the root
+   restyles every element under it. */
 
 .toasts {
     position: fixed;
