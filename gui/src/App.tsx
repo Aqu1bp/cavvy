@@ -1,13 +1,14 @@
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
-import { createEffect, For, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
-import { AlertCircle, CheckCircle2, Info, PlugZap, X } from "lucide-solid";
+import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
+import { AlertCircle, CheckCircle2, Info, PanelLeft, PlugZap, SquarePen, X } from "lucide-solid";
 import { activate, app, attentionCount, dismissToast, handleFor, pauseToast, restoreActiveSession, rpc, runToastChoice, toast, toasts, type Toast, type SessionHandle } from "./state/app";
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
-import { prefs } from "./state/prefs";
-import { agentFocus, paletteOpen, requestComposerFocus, review, setAgentFocus, setModelPickerOpen, setPaletteOpen, setReview, setSettingsTab, settingsTab } from "./state/ui";
+import { prefs, setPrefs } from "./state/prefs";
+import { agentFocus, dockHeight, inspectorWidth, paletteOpen, railOpen, requestComposerFocus, review, reviewSplit, setAgentFocus, setDockHeight, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalMax, terminalShown } from "./state/ui";
 import { copyText, isTauri, os } from "./lib/platform";
 import { canStop } from "./lib/session-status";
-import { actionOf, setEnterSends } from "./state/keybindings";
+import { actionOf, setEnterSends, withShortcut } from "./state/keybindings";
+import { clampInspectorWidth, closesOnShrink, requestCloses, INSPECTOR_DEFAULT, windowLayout } from "./lib/layout";
 import { warmUp } from "./lib/highlight";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
@@ -138,34 +139,175 @@ function Disconnected() {
     );
 }
 
-/** A session: the conversation, the composer floating over its end, and the panel card. */
+/** A session: the conversation, and the composer floating over its end. (Its inspector is the sheet's other column.) */
 function SessionView(p: { handle: SessionHandle }) {
     let stage: HTMLDivElement | undefined;
-    // The card steps aside while the review pane is open.
-    const panel = () => prefs.panel && !review();
     let dock: HTMLDivElement | undefined;
     onMount(() => {
-        // The transcript scrolls under the composer; it keeps that much room at its end.
-        const ro = new ResizeObserver(() => stage?.style.setProperty("--dock-h", `${dock?.offsetHeight ?? 0}px`));
+        // The transcript scrolls under the composer and keeps that much room at its end;
+        // a floating inspector ends above it.
+        const ro = new ResizeObserver(() => {
+            const h = dock?.offsetHeight ?? 0;
+            stage?.style.setProperty("--dock-h", `${h}px`);
+            setDockHeight(h);
+        });
         if (dock) ro.observe(dock);
-        onCleanup(() => ro.disconnect());
+        onCleanup(() => {
+            ro.disconnect();
+            setDockHeight(0);
+        });
     });
     return (
         <>
             <Header handle={p.handle} />
-            <div ref={stage} class={`stage ${panel() ? "with-panel" : ""}`}>
+            <div ref={stage} class="stage">
                 <Transcript handle={p.handle} />
                 <div class="composer-dock" ref={dock}>
                     <div class="composer-col">
                         <Composer sessionId={p.handle.id} />
                     </div>
                 </div>
-                <Show when={panel()}>
-                    <RightPanel handle={p.handle} />
-                </Show>
             </div>
         </>
     );
+}
+
+/** The rail's own buttons, right of the traffic lights: they stay when the rail is hidden. */
+function RailTop() {
+    const shown = () => shellLayout().railShown;
+    return (
+        <div class="rail-top">
+            <button
+                class="hb"
+                title={withShortcut(shown() ? "Hide sidebar" : "Show sidebar", "app:toggleSidebar")}
+                aria-label={shown() ? "Hide sidebar" : "Show sidebar"}
+                aria-expanded={shown()}
+                onClick={toggleSidebar}
+            >
+                <PanelLeft size={17} />
+            </button>
+            <button
+                class="hb"
+                title={withShortcut("New session", "app:newSession")}
+                aria-label="New session"
+                onClick={() => {
+                    setSettingsTab(undefined);
+                    void newSession(app.homeCwd);
+                }}
+            >
+                <SquarePen size={16} />
+            </button>
+        </div>
+    );
+}
+
+/** The docked inspector's left edge: drag (or arrow keys) to resize; double-click for the default. */
+function InspectorResizer() {
+    const [dragging, setDragging] = createSignal(false);
+    const set = (w: number) => setInspectorWidth(clampInspectorWidth(w, shellLayout().sheet.w));
+    const start = (e: PointerEvent) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        const target = e.currentTarget as HTMLElement;
+        target.setPointerCapture(e.pointerId);
+        const x = e.clientX;
+        const from = shellLayout().inspector.width;
+        setDragging(true);
+        document.body.classList.add("resizing");
+        const move = (ev: PointerEvent) => set(from - (ev.clientX - x));
+        const end = () => {
+            setDragging(false);
+            document.body.classList.remove("resizing");
+            target.removeEventListener("pointermove", move);
+            target.removeEventListener("lostpointercapture", end);
+        };
+        target.addEventListener("pointermove", move);
+        target.addEventListener("lostpointercapture", end);
+    };
+    return (
+        <div
+            class={`insp-resizer ${dragging() ? "drag" : ""}`}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize side panel"
+            aria-valuenow={shellLayout().inspector.width}
+            tabIndex={0}
+            onPointerDown={start}
+            onDblClick={() => set(INSPECTOR_DEFAULT)}
+            onKeyDown={(e) => {
+                if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+                e.preventDefault();
+                set(shellLayout().inspector.width + (e.key === "ArrowLeft" ? 24 : -24));
+            }}
+        />
+    );
+}
+
+const INSPECTOR_KEY = "harness.inspectorWidth";
+
+/**
+ * Keeps the window's layout (lib/layout.ts) for the window's size and what's open: the rail docked
+ * or a drawer, the inspector docked or floating, the terminal's row. Draws nothing.
+ * `panel`/`review`: the inspector's two contents are showing.
+ */
+function LayoutKeeper(p: { panel: boolean; review: boolean }) {
+    const size = () => ({ w: window.innerWidth, h: window.innerHeight });
+    const [win, setWin] = createSignal(size());
+    try {
+        const saved = Number(localStorage.getItem(INSPECTOR_KEY));
+        if (saved) setInspectorWidth(saved);
+    } catch { /* private mode: the default width */ }
+    onMount(() => {
+        const resized = () => setWin(size());
+        window.addEventListener("resize", resized);
+        onCleanup(() => window.removeEventListener("resize", resized));
+    });
+    createEffect(on(inspectorWidth, (w) => {
+        try { localStorage.setItem(INSPECTOR_KEY, String(w)); } catch { /* private mode */ }
+    }, { defer: true }));
+
+    const layout = createMemo(() => windowLayout({
+        win: win(),
+        rail: prefs.sidebar,
+        railOpen: railOpen(),
+        railWidth: prefs.sidebarWidth,
+        panel: p.panel,
+        review: p.review,
+        split: reviewSplit(),
+        reviewBase: prefs.reviewWidth,
+        inspectorWidth: inspectorWidth(),
+        terminalShown: terminalShown(),
+        terminalPreferred: prefs.terminalHeight,
+        terminalMax: terminalMax(),
+        dock: dockHeight(),
+    }));
+    createEffect(() => setShellLayout(layout()));
+
+    // Shrinking the window past the docking point closes a docked inspector (the diff reader floats instead).
+    createEffect(on(() => layout().inspector.mode, (mode, from) => {
+        if (closesOnShrink(from, mode, prefs.panel, p.review)) setPrefs("panel", false);
+    }));
+    // A request arriving closes a floating inspector too short to sit above it.
+    let cleared: string | undefined;
+    let wasOpen = false;
+    createEffect(() => {
+        const asks = handleFor(app.activeId)?.view.state.interactions ?? [];
+        const request = asks.length ? `${app.activeId}:${asks.map((a) => a.id).join(",")}` : undefined;
+        const { mode, short } = layout().inspector;
+        const open = p.panel || p.review;
+        const next = requestCloses(cleared, wasOpen, { request, mode, short, open });
+        cleared = next.cleared;
+        wasOpen = open && !next.close;
+        if (!next.close) return;
+        setPrefs("panel", false);
+        setReview(undefined);
+    });
+    // The rail's drawer closes when the rail docks, and on going somewhere else.
+    createEffect(() => {
+        if (layout().railMode === "dock") setRailOpen(false);
+    });
+    createEffect(on([() => app.activeId, settingsTab], () => setRailOpen(false), { defer: true }));
+    return null;
 }
 
 function Reconnecting() {
@@ -247,6 +389,8 @@ export function App() {
             if (e.defaultPrevented || blocked()) return;
             const typing = (document.activeElement as HTMLElement | null)?.matches?.("input, textarea, select, [contenteditable]");
             if (e.key === "Escape" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                // Esc closes the rail's drawer first.
+                if (railOpen()) return e.preventDefault(), setRailOpen(false);
                 // Esc leaves Settings, a sub-agent's view and the review.
                 if (settingsTab()) return typing ? undefined : (e.preventDefault(), setSettingsTab(undefined));
                 // A sub-agent's own goes back to the one it's under.
@@ -272,61 +416,107 @@ export function App() {
         document.title = `${n ? `(${n}) ` : ""}${title ? `${title} · ` : ""}Harness`;
     });
 
+    // The inspector column shows the diff reader while a review is open, else the session's panel.
+    const reviewing = () => Boolean(review() && active() && !settingsTab());
+    const panelShown = () => Boolean(prefs.panel && active() && !agent() && !settingsTab() && app.opening?.id !== app.activeId);
+    const layout = () => shellLayout();
+    const inspOpen = () => reviewing() || panelShown();
+
     return (
-        <div class={`app ${prefs.sidebar ? "" : "no-sidebar"} ${isTauri ? `tauri os-${os}` : "browser"}`}>
+        <div
+            class={`app ${isTauri ? `tauri os-${os}` : "browser"}`}
+            data-rail={prefs.sidebar ? "on" : "off"}
+            data-railmode={layout().railMode}
+            data-railopen={layout().railMode === "overlay" && layout().railShown ? "on" : "off"}
+            data-insp={inspOpen() ? "on" : "off"}
+            data-inspmode={layout().inspector.mode}
+            data-inspshort={layout().inspector.short ? "on" : "off"}
+            data-term={layout().terminal.shown ? "on" : "off"}
+            data-tmax={layout().terminal.maximized ? "on" : "off"}
+            data-settings={settingsTab() ? "on" : "off"}
+            style={{
+                "--insp-w": `${layout().inspector.width}px`,
+                "--insp-col": inspOpen() && layout().inspector.mode === "dock" ? `${layout().inspector.width}px` : "0px",
+                "--insp-bottom": `${layout().inspector.bottom}px`,
+                "--term-h": `${layout().terminal.height}px`,
+            }}
+        >
             <Show when={app.conn === "open" || app.hello} fallback={<Disconnected />}>
-                <Show when={prefs.sidebar}>
-                    <Show when={settingsTab()} fallback={<Sidebar />}>
-                        <SettingsNav />
-                    </Show>
-                </Show>
-                <main class="main">
-                    <Reconnecting />
-                    <RenderBoundary resetKey={() => `${app.activeId}:${settingsTab()}:${agentFocus()}`}>
-                        <Switch
-                            fallback={
-                                <>
-                                    <Header />
-                                    <Home />
-                                </>
-                            }
-                        >
-                            <Match when={settingsTab()}>
-                                <SettingsPage />
-                            </Match>
-                            <Match when={app.opening?.id === app.activeId && app.opening}>
-                                {(opening) => <>
-                                    <Header />
-                                    <div class="session-opening" aria-busy={!opening().error}>
-                                        <Show when={opening().error} fallback={<Show when={opening().visible}><div role="status"><Spinner size={16} /> Opening session…</div><div class="session-skeleton" aria-hidden="true"><i /><i /><i /></div></Show>}>
-                                            <p role="alert">Couldn't open this session: {opening().error}</p>
-                                            <button class="ghost-btn" disabled={app.conn !== "open"} onClick={() => void activate(opening().id)}>Retry opening session</button>
-                                        </Show>
-                                    </div>
-                                </>}
-                            </Match>
-                            <Match when={active() && agent()}>
-                                <AgentView handle={active()!} agent={agent()!} />
-                            </Match>
-                            <Match when={active()} keyed>
-                                {(h) => <SessionView handle={h} />}
-                            </Match>
-                            <Match when={app.activeId}>
-                                <Header />
-                                <div class="home">
-                                    <div class="home-inner">
-                                        <p class="muted" role="status">Waiting to reopen your session…</p>
-                                        <button class="ghost-btn" disabled={app.conn !== "open"} onClick={() => void restoreActiveSession()}>Retry opening session</button>
-                                    </div>
-                                </div>
-                            </Match>
-                        </Switch>
-                    </RenderBoundary>
-                    <RenderBoundary><TerminalPanel cwd={active()?.view.state.cwd ?? app.homeCwd} hidden={!!settingsTab()} /></RenderBoundary>
-                </main>
-                <Show when={review() && active() && !settingsTab()}>
-                    <RenderBoundary resetKey={() => app.activeId}><ReviewPane handle={active()!} /></RenderBoundary>
-                </Show>
+                <div class="win">
+                    {/* The window's top edge drags it (the title bar does too). */}
+                    <div class="win-drag" data-tauri-drag-region />
+                    <RailTop />
+                    <div class="rail-scrim" aria-hidden="true" onClick={() => setRailOpen(false)} />
+                    {/* The rail sits straight on the window glass; in narrow windows it's a drawer over the sheet. */}
+                    <div class="win-rail" inert={!layout().railShown}>
+                        <Show when={prefs.sidebar || layout().railMode === "overlay"}>
+                            <Show when={settingsTab()} fallback={<Sidebar />}>
+                                <SettingsNav />
+                            </Show>
+                        </Show>
+                    </div>
+                    {/* One opaque sheet: the conversation | the inspector, and the terminal under both. */}
+                    <div class="sheet">
+                        <main class="main">
+                            <Reconnecting />
+                            <RenderBoundary resetKey={() => `${app.activeId}:${settingsTab()}:${agentFocus()}`}>
+                                <Switch
+                                    fallback={
+                                        <>
+                                            <Header />
+                                            <Home />
+                                        </>
+                                    }
+                                >
+                                    <Match when={settingsTab()}>
+                                        <SettingsPage />
+                                    </Match>
+                                    <Match when={app.opening?.id === app.activeId && app.opening}>
+                                        {(opening) => <>
+                                            <Header />
+                                            <div class="session-opening" aria-busy={!opening().error}>
+                                                <Show when={opening().error} fallback={<Show when={opening().visible}><div role="status"><Spinner size={16} /> Opening session…</div><div class="session-skeleton" aria-hidden="true"><i /><i /><i /></div></Show>}>
+                                                    <p role="alert">Couldn't open this session: {opening().error}</p>
+                                                    <button class="ghost-btn" disabled={app.conn !== "open"} onClick={() => void activate(opening().id)}>Retry opening session</button>
+                                                </Show>
+                                            </div>
+                                        </>}
+                                    </Match>
+                                    <Match when={active() && agent()}>
+                                        <AgentView handle={active()!} agent={agent()!} />
+                                    </Match>
+                                    <Match when={active()} keyed>
+                                        {(h) => <SessionView handle={h} />}
+                                    </Match>
+                                    <Match when={app.activeId}>
+                                        <Header />
+                                        <div class="home-wait">
+                                            <p class="muted" role="status">Waiting to reopen your session…</p>
+                                            <button class="ghost-btn" disabled={app.conn !== "open"} onClick={() => void restoreActiveSession()}>Retry opening session</button>
+                                        </div>
+                                    </Match>
+                                </Switch>
+                            </RenderBoundary>
+                        </main>
+                        <div class="insp">
+                            <Show when={panelShown() && !reviewing() && layout().inspector.mode === "dock"}>
+                                <InspectorResizer />
+                            </Show>
+                            <Show
+                                when={reviewing()}
+                                fallback={
+                                    <Show when={panelShown() && active()} keyed>
+                                        {(h) => <RenderBoundary resetKey={() => app.activeId}><RightPanel handle={h} /></RenderBoundary>}
+                                    </Show>
+                                }
+                            >
+                                <RenderBoundary resetKey={() => app.activeId}><ReviewPane handle={active()!} /></RenderBoundary>
+                            </Show>
+                        </div>
+                        <RenderBoundary><TerminalPanel cwd={active()?.view.state.cwd ?? app.homeCwd} hidden={!!settingsTab()} /></RenderBoundary>
+                    </div>
+                </div>
+                <LayoutKeeper panel={panelShown()} review={reviewing()} />
             </Show>
             <CommandPalette />
             <RewindDialog />
