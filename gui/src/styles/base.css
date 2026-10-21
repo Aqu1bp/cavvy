@@ -196,7 +196,7 @@ pre,
 }
 
 a {
-    color: var(--link);
+    color: var(--accent-text);
     text-decoration: none;
 }
 
@@ -250,7 +250,7 @@ h3 {
 }
 
 .muted {
-    color: var(--fg-muted);
+    color: var(--fg-2);
 }
 
 .small {
@@ -258,7 +258,7 @@ h3 {
 }
 
 .tone-ok {
-    color: var(--success);
+    color: var(--ok);
 }
 
 .tone-err {
@@ -266,7 +266,7 @@ h3 {
 }
 
 .tone-warn {
-    color: var(--warning);
+    color: var(--warn);
 }
 
 .tone-accent {
@@ -312,7 +312,7 @@ h3 {
 }
 
 .shimmer {
-    color: var(--fg-muted);
+    color: var(--fg-2);
     animation: shimmer 2.2s ease-in-out infinite;
 }
 
@@ -324,7 +324,7 @@ h3 {
 }
 
 .shimmer svg {
-    color: var(--fg-muted);
+    color: var(--fg-2);
 }
 
 @keyframes rise {
@@ -391,7 +391,7 @@ h3 {
 
 .btn.primary {
     background: var(--accent);
-    color: var(--accent-fg);
+    color: var(--accent-ink);
     box-shadow: inset 0 1px rgba(255, 255, 255, 0.14), 0 1px 2px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
@@ -401,25 +401,25 @@ h3 {
 
 .btn.secondary {
     background: transparent;
-    box-shadow: inset 0 0 0 1px var(--border-strong);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 
 .btn.secondary:hover:not(:disabled) {
-    background: var(--bg-hover);
+    background: var(--hover);
 }
 
 .btn.ghost {
-    color: var(--fg-muted);
+    color: var(--fg-2);
 }
 
 .btn.ghost:hover:not(:disabled) {
-    background: var(--bg-hover);
+    background: var(--hover);
     color: var(--fg);
 }
 
 .btn.danger {
     background: var(--danger);
-    color: var(--fg-inverse);
+    color: var(--sheet);
 }
 
 .btn:disabled {
@@ -445,14 +445,14 @@ h3 {
     width: 28px;
     height: 28px;
     border-radius: var(--radius-sm);
-    color: var(--fg-muted);
+    color: var(--fg-2);
     flex: none;
     transition: background var(--dur-fast), color var(--dur-fast);
 }
 
 .icon-btn:hover:not(:disabled),
 .icon-btn.active {
-    background: var(--bg-hover);
+    background: var(--hover);
     color: var(--fg);
 }
 
@@ -483,8 +483,8 @@ h3 {
     height: 22px;
     padding: 0 8px;
     border-radius: 999px;
-    background: var(--bg-hover);
-    color: var(--fg-muted);
+    background: var(--hover);
+    color: var(--fg-2);
     font-size: 0.8rem;
     font-weight: 500;
     white-space: nowrap;
@@ -501,8 +501,8 @@ h3 {
 }
 
 .chip.warn {
-    background: var(--warning-soft);
-    color: var(--warning);
+    background: var(--warn-soft);
+    color: var(--warn);
 }
 
 .chip.err {
@@ -511,8 +511,8 @@ h3 {
 }
 
 .chip.ok {
-    background: var(--success-soft);
-    color: var(--success);
+    background: var(--ok-soft);
+    color: var(--ok);
 }
 
 kbd {
@@ -523,8 +523,8 @@ kbd {
     height: 20px;
     padding: 0 5px;
     border-radius: 5px;
-    background: var(--bg-hover);
-    color: var(--fg-muted);
+    background: var(--hover);
+    color: var(--fg-2);
     font-size: 0.786rem;
     font-family: var(--font-ui);
     font-weight: 500;
@@ -540,7 +540,7 @@ kbd {
     width: 28px;
     height: 28px;
     border-radius: 8px;
-    color: var(--fg-muted);
+    color: var(--fg-2);
     flex: none;
     transition: background var(--dur-fast), color var(--dur-fast);
 }
@@ -548,12 +548,12 @@ kbd {
 .hb:hover:not(:disabled),
 .hb.on,
 .hb[aria-expanded="true"] {
-    background: var(--bg-hover);
+    background: var(--hover);
     color: var(--fg);
 }
 
 .hb[aria-pressed="true"] {
-    background: var(--bg-active);
+    background: var(--sheet-2);
     color: var(--fg);
 }
 
@@ -597,14 +597,14 @@ kbd {
     font-weight: 500;
     white-space: nowrap;
     flex: none;
-    color: var(--fg-muted);
-    box-shadow: inset 0 0 0 1px var(--border-strong);
+    color: var(--fg-2);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 
 .pill.warn {
-    color: var(--warning);
-    background: color-mix(in srgb, var(--warning) 10%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warning) 26%, transparent);
+    color: var(--warn);
+    background: color-mix(in srgb, var(--warn) 10%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 26%, transparent);
 }
 
 /* +12 −3 */
@@ -641,8 +641,8 @@ kbd {
 .select {
     height: 34px;
     border-radius: var(--radius-md);
-    border: 1px solid var(--border-strong);
-    background: var(--bg-input);
+    border: 1px solid var(--line-strong);
+    background: var(--sheet);
     padding: 0 11px;
     min-width: 0;
     transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
@@ -657,7 +657,7 @@ kbd {
 .select {
     padding-right: 28px;
     appearance: none;
-    background-image: linear-gradient(45deg, transparent 50%, var(--fg-muted) 50%), linear-gradient(135deg, var(--fg-muted) 50%, transparent 50%);
+    background-image: linear-gradient(45deg, transparent 50%, var(--fg-2) 50%), linear-gradient(135deg, var(--fg-2) 50%, transparent 50%);
     background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%;
     background-size: 5px 5px;
     background-repeat: no-repeat;
@@ -673,7 +673,7 @@ input[type="range"] {
     width: 36px;
     height: 21px;
     border-radius: 999px;
-    background: var(--border-strong);
+    background: var(--line-strong);
     position: relative;
     transition: background 200ms;
     flex: none;
@@ -701,7 +701,7 @@ input[type="range"] {
 
 .segmented {
     display: inline-flex;
-    background: var(--bg-hover);
+    background: var(--hover);
     border-radius: var(--radius-md);
     padding: 2px;
     gap: 2px;
@@ -713,7 +713,7 @@ input[type="range"] {
     border-radius: 8px;
     font-size: 0.857rem;
     font-weight: 540;
-    color: var(--fg-muted);
+    color: var(--fg-2);
     display: inline-flex;
     align-items: center;
     gap: 6px;
@@ -728,9 +728,9 @@ input[type="range"] {
 }
 
 .segmented button.on {
-    background: var(--bg-elev);
+    background: var(--raised);
     color: var(--fg);
-    box-shadow: var(--shadow-sm), 0 0 0 1px var(--border);
+    box-shadow: var(--shadow-sm), 0 0 0 1px var(--line);
 }
 
 .segmented button:hover:not(.on) {
@@ -743,13 +743,13 @@ input[type="range"] {
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background: var(--fg-faint);
+    background: var(--fg-4);
     flex: none;
     display: inline-block;
 }
 
 .dot.ok {
-    background: var(--success);
+    background: var(--ok);
 }
 
 .dot.err {
@@ -757,7 +757,7 @@ input[type="range"] {
 }
 
 .dot.warn {
-    background: var(--warning);
+    background: var(--warn);
 }
 
 .dot.accent {
@@ -773,11 +773,11 @@ input[type="range"] {
 .popover {
     position: fixed;
     z-index: 60;
-    background: var(--pop);
+    background: var(--ctl-strong);
     -webkit-backdrop-filter: blur(16px) saturate(1.08);
     backdrop-filter: blur(16px) saturate(1.08);
     border-radius: 10px;
-    box-shadow: var(--shadow-pop);
+    box-shadow: var(--pop-shadow);
     padding: 4px;
     overflow: auto;
     color: var(--fg);
@@ -797,7 +797,7 @@ input[type="range"] {
     padding: 6px 8px 4px;
     font-size: 0.857rem;
     font-weight: 500;
-    color: var(--fg-muted);
+    color: var(--fg-2);
 }
 
 .menu-item {
@@ -829,7 +829,7 @@ input[type="range"] {
 
 .menu-item svg {
     flex: none;
-    color: var(--fg-muted);
+    color: var(--fg-2);
 }
 
 .menu-item.danger,
@@ -840,12 +840,12 @@ input[type="range"] {
 .menu-item:hover:not(:disabled),
 .menu-item:focus-visible:not(:disabled),
 .menu-item.sel {
-    background: var(--bg-hover);
+    background: var(--hover);
 }
 
 .menu-item.current,
 .menu-item.on {
-    background: var(--bg-active);
+    background: var(--sheet-2);
 }
 
 .menu-item:disabled {
@@ -865,7 +865,7 @@ input[type="range"] {
 
 .menu-desc {
     font-size: 0.857rem;
-    color: var(--fg-muted);
+    color: var(--fg-2);
     line-height: 16px;
     font-weight: 400;
     margin-top: 2px;
@@ -878,14 +878,14 @@ input[type="range"] {
 
 .menu-sep {
     height: 1px;
-    background: var(--hairline);
+    background: var(--line);
     margin: 4px -4px;
 }
 
 .menu-note {
     padding: 6px 10px;
     font-size: 0.8rem;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
     overflow: hidden;
     text-overflow: ellipsis;
 }
@@ -991,7 +991,7 @@ svg.lucide {
 }
 
 /* Text-only recovery stays within its owning block, even for a long stack or tool output. */
-.render-error { margin: 12px 0; padding: 14px; border: 1px solid var(--border); border-radius: 8px; min-width: 0; }
+.render-error { margin: 12px 0; padding: 14px; border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
 .render-error p { margin: 0 0 8px; }
 .render-error pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; }
 .render-error-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -999,5 +999,5 @@ svg.lucide {
 .session-opening { padding: 32px; max-width: 850px; width: 100%; margin: 0 auto; }
 .session-opening [role="status"] { display: flex; align-items: center; gap: 8px; }
 .session-skeleton { margin-top: 24px; display: grid; gap: 12px; }
-.session-skeleton i { display: block; height: 14px; border-radius: 4px; background: var(--border); }
+.session-skeleton i { display: block; height: 14px; border-radius: 4px; background: var(--line); }
 .session-skeleton i:last-child { width: 65%; }

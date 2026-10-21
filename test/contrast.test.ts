@@ -43,15 +43,15 @@ describe("WCAG contrast of GUI text tokens", () => {
     }
 
     test("a text token lowered back toward the background fails", () => {
-        // The pre-fix light --fg-subtle, appended so it wins the cascade.
-        const lowered = `${CSS}\n[data-theme="light"] { --fg-subtle: #a1a1a6; }`;
-        const result = measure(lowered, { theme: "light", scheme: "light" }).find((m) => m.token === "--fg-subtle" && m.surface === "--bg");
+        // The pre-fix light --fg-3, appended so it wins the cascade.
+        const lowered = `${CSS}\n[data-theme="light"] { --fg-3: #a1a1a6; }`;
+        const result = measure(lowered, { theme: "light", scheme: "light" }).find((m) => m.token === "--fg-3" && m.surface === "--sheet");
         expect(result?.ratio).toBeCloseTo(2.51, 2);
-        expect(failures(lowered, { theme: "light", scheme: "light" }).some((f) => f.startsWith("--fg-subtle on "))).toBe(true);
+        expect(failures(lowered, { theme: "light", scheme: "light" }).some((f) => f.startsWith("--fg-3 on "))).toBe(true);
     });
 
     test("a color syntax it can't read fails instead of passing", () => {
-        const lowered = `${CSS}\n[data-theme="light"] { --fg-subtle: rgb(161 161 166); }`;
+        const lowered = `${CSS}\n[data-theme="light"] { --fg-3: rgb(161 161 166); }`;
         expect(() => failures(lowered, { theme: "light", scheme: "light" })).toThrow("unsupported");
     });
 
@@ -68,8 +68,8 @@ describe("WCAG contrast of GUI text tokens", () => {
 // A passing token is not enough if an entire card/turn is faded afterwards.
 // Reintroducing the old .75/.55 opacity must fail even with the new tokens.
 for (const [file, selector, surface] of [
-    ["sidebar.css", ".card.rec", "--bg-sidebar"],
-    ["transcript.css", ".turn.archived", "--bg"],
+    ["sidebar.css", ".card.rec", "--insp-bg"],
+    ["transcript.css", ".turn.archived", "--sheet"],
 ] as const) {
     test(`${selector}: group opacity preserves secondary-text contrast`, () => {
         const rules = parseRules(readFileSync(resolve(import.meta.dir, `../gui/src/styles/${file}`), "utf8"));
@@ -77,7 +77,7 @@ for (const [file, selector, surface] of [
         for (const root of themes(CSS)) {
             const vars = cascade(parseRules(CSS), root);
             const bg = resolveColor(`var(${surface})`, vars);
-            for (const token of ["--fg-muted", "--fg-subtle"]) {
+            for (const token of ["--fg-2", "--fg-3"]) {
                 const text = over(resolveColor(`var(${token})`, vars), bg);
                 expect(contrast({ ...text, a: opacity }, bg)).toBeGreaterThanOrEqual(AA);
             }

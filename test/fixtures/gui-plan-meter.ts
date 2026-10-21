@@ -82,7 +82,7 @@ test("API context-only control, compaction, spend, busy state, and usage navigat
 });
 
 test("plan usage keeps its own thresholds: 85% is a warning, 90% is danger", () => {
-    for (const [plan, stroke] of [[85, "var(--warning)"], [90, "var(--danger)"]] as const) {
+    for (const [plan, stroke] of [[85, "var(--warn)"], [90, "var(--danger)"]] as const) {
         const m = mount({ plan });
         try { expect(m.stroke().stroke).toBe(stroke); } finally { m.dispose(); }
     }
@@ -92,7 +92,7 @@ test("one ring uses the higher share; card orders context, plan windows/account,
     const m = mount({ plan: 80 });
     try {
         expect(all(m.root).filter(n => n.tag === "button")).toHaveLength(1);
-        expect(m.stroke().stroke).toBe("var(--warning)");
+        expect(m.stroke().stroke).toBe("var(--warn)");
         expect(m.trigger().props["aria-label"]).toContain("Pro · Default usage: 5-hour 80%");
         m.show();
         expect(all(m.root).filter(n => n.tag === "h3").map(text)).toEqual(["Context window", "Plan limits", "Spend"]);
@@ -109,7 +109,7 @@ for (const plan of [undefined, 100]) test(`unknown size ${plan ? "still shows th
     const m = mount({ unknown: true, plan });
     try {
         if (plan === undefined) {
-            expect(m.stroke().stroke).toBe("var(--fg-muted)");
+            expect(m.stroke().stroke).toBe("var(--fg-2)");
             expect(m.stroke()["stroke-dasharray"]).toStartWith("0 ");
             expect(text(m.trigger())).toBe("");
         } else {

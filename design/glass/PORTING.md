@@ -70,6 +70,21 @@ The existing names (`--bg`, `--bg-card`, `--fg-muted`, `--border`, `--accent`,
 `--shiki-*`, `--radius-*`, `--dur-panel`, …) stay defined, pointed at the new
 palette, so areas not yet ported keep working. The last PR removes the aliases.
 
+Removed in that PR (old → new): `--bg --bg-card --bg-input` → `--sheet`;
+`--bg-sidebar --bg-panel` → `--insp-bg`; `--bg-code --bg-user --bg-inline-code
+--bg-active` → `--sheet-2`; `--bg-hover` → `--hover`; `--bg-elev` → `--raised`
+(new: `--seg-on` light, `--sheet-2` dark); `--glass --pop` → `--ctl-strong`;
+`--border --hairline` → `--line`; `--border-strong` → `--line-strong` (new, the
+same values); `--fg-prose` → `--fg`; `--fg-muted --fg-subtle --fg-faint` →
+`--fg-2 --fg-3 --fg-4`; `--fg-inverse` → `--sheet`; `--bg-inverse` → `--fg`;
+`--accent-fg` → `--accent-ink`; `--success --success-soft` → `--ok --ok-soft`;
+`--warning --warning-soft` → `--warn --warn-soft`; `--info --link` →
+`--accent-text`; `--find-bg` → `--find`; `--find-current-bg` → `--accent`;
+`--shadow-md` → `--ctl-shadow`; `--shadow-card` → `--sheet-shadow`;
+`--shadow-lg --shadow-float --shadow-pop` → `--pop-shadow`. `--bg-subtle` and
+`--bg-overlay` had no uses left. Kept, with their old values: `--plan --auto
+--shell --stop --shadow-sm --scrollbar`.
+
 Appearance prefs (foundation): scheme System/Light/Dark, accent (the app's nine
 accents), **Window** Glass/Tinted/Solid (`data-glass`), **Contrast**
 Standard/High, text size, density, chat width, animations. The six named themes go;
