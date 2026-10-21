@@ -115,7 +115,7 @@ export interface Settings {
     webSearch?: "auto" | "anthropic" | "brave" | "tavily" | "duckduckgo" | "off";
     /** Bash tool default timeout in ms. */
     bashTimeout?: number;
-    /** Claude Code's shell/Monitor grace after an answer; agents keep their own limit. */
+    /** Claude Code's grace after an answer for shells without a timeout of their own, and monitors; agents keep their own limit. */
     claudeCode?: { backgroundWaitSec?: number };
     /**
      * Servers from the project's .mcp.json the user approved: name -> a keyed
