@@ -158,7 +158,7 @@ function RowEnd(p: { s: SessionSummary; unread: boolean }) {
 
 /** A plan's usage ring: empty until the plan has reported. */
 function PlanRing(p: { plan: RailPlan; small?: boolean }) {
-    return <span class={`meter tone-${p.plan.tone} ${p.small ? "sm" : ""} ${p.plan.pct === undefined ? "unknown" : ""}`} style={{ "--v": p.plan.pct ?? 0 }} role="img" aria-label={p.plan.pct === undefined ? `${p.plan.name}: usage not known yet` : `${p.plan.name}: ${p.plan.pct}% used`} />;
+    return <span class={`meter tone-${p.plan.tone} ${p.small ? "sm" : ""} ${p.plan.pct === undefined ? "unknown" : ""} ${p.plan.stale ? "stale" : ""}`} style={{ "--v": p.plan.pct ?? 0 }} role="img" aria-label={`${p.plan.name}: ${p.plan.pct === undefined ? "usage not known yet" : `${p.plan.pct}% used`}${p.plan.stale ? " when last reported" : ""}`} />;
 }
 
 function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) => void; grouped: boolean }) {
@@ -530,9 +530,8 @@ export function Sidebar() {
                         <For each={plans()}>{(plan) => (
                             <span class="plan" title={plan.detail}>
                                 <PlanRing plan={plan} small />
-                                <ProviderIcon id={plan.provider} size={12} />
-                                <b>{plan.short}</b>
-                                <span class="truncate">{plan.line}</span>
+                                <ProviderIcon id={plan.provider} name={plan.name} size={12} />
+                                <span class="truncate">{plan.brief}</span>
                             </span>
                         )}</For>
                     </span>

@@ -632,14 +632,14 @@
     flex: none;
 }
 
-.side-foot .plan b {
-    flex: none;
-    font-weight: 600;
-}
-
 .side-foot .plan > span:last-child {
     font-size: 0.821rem;
     color: var(--rail-fg-2);
+}
+
+/* Figures from a while ago (a row has no room to say "as of"; its tooltip does). */
+.side-foot .plan .meter.stale {
+    opacity: 0.55;
 }
 
 /* The Settings rail's footer (Settings.tsx): where the server runs, its dot where the ring would be. */
