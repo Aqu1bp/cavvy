@@ -126,6 +126,13 @@ function steerable(q: Queued): boolean {
     return !t.startsWith("!") && (!t.startsWith("/") || t.startsWith("//"));
 }
 
+/** A slash command or `!command`, as dispatch reads it: the server runs it, so it isn't sent as a prompt. */
+function isCommand(q: Queued): boolean {
+    if (q.literal) return false;
+    const t = q.text.trim();
+    return (t.startsWith("!") && !q.attachments?.length) || (t.startsWith("/") && !t.startsWith("//"));
+}
+
 /** The slash commands the server runs itself (the GUI runs the others). */
 const SERVER_COMMANDS = new Set(["compact", "init", "review", "loop", "schedules", "goal", "trust"]);
 
@@ -1184,6 +1191,7 @@ export class Runtime {
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
                 },
                 drainQueued: () => this.drainQueued(),
+                drainWaiting: (record) => this.drainWaiting(record),
             },
             helpers: {
                 complete: (s, p, sig) => this.complete(s, p, sig),
@@ -2068,6 +2076,29 @@ export class Runtime {
         this.queued = this.queued.filter((q) => !take.includes(q));
         this.queueUpdated();
         const texts = take.map((q) => q.text);
+        this.drainedTurn(texts.join("\n\n"));
+        return texts;
+    }
+
+    /**
+     * The agent CLI is between its turns, waiting only on its background work (Claude Code's): nothing is
+     * mid-step, so the first queued message goes now as a prompt of its own, whatever its mode, with what's
+     * attached. Commands and `!commands` wait: the server runs them (a custom command expands, /compact
+     * compacts), and only once the run is over. Held ones wait for the user.
+     */
+    private drainWaiting(record: () => void): { text: string; attachments?: AttachedPart[] } | undefined {
+        const q = this.queued.find((x) => !x.held && !isCommand(x));
+        if (!q) return undefined;
+        this.queued = this.queued.filter((x) => x !== q);
+        this.queueUpdated();
+        // What the CLI said before it goes first, so the prompt's place in the session is where it lands.
+        record();
+        this.drainedTurn(q.text, q.attachments);
+        return { text: q.text, ...(q.attachments?.length ? { attachments: q.attachments } : {}) };
+    }
+
+    /** Drained messages start a turn in the UI: the open one ends, and this one shows `text` as its prompt, with what's attached. */
+    private drainedTurn(text: string, attachments?: AttachedPart[]) {
         // After tool calls they ride along with the results; otherwise they're a prompt of their own.
         const last = this.session.messages[this.session.messages.length - 1];
         const steering = last?.role === "assistant" && toolCallsOf(last).length > 0;
@@ -2081,7 +2112,7 @@ export class Runtime {
             this.stepsLogged.delete(prev);
         }
         this.turnSnapshotFloor = this.latestCheckpoint();
-        const turn: Turn = { id: this.newId(), prompt: { text: texts.join("\n\n"), ...(steering ? {} : { index: this.session.messages.length }) }, blocks: [], status: "running", startedAt: Date.now(), pos: { seg: this.segment, index: this.session.messages.length } };
+        const turn: Turn = { id: this.newId(), prompt: { text, ...attachedPrompt(attachments), ...(steering ? {} : { index: this.session.messages.length }) }, blocks: [], status: "running", startedAt: Date.now(), pos: { seg: this.segment, index: this.session.messages.length } };
         this.op({ op: "turn", turn });
         if (prev && this.backendTurns.has(prev)) this.backendTurns.set(turn.id, this.segment);
         this.turnId = turn.id;
@@ -2093,7 +2124,6 @@ export class Runtime {
         this.ui.write({ t: "turn", ...this.uiTurn });
         this.lastActive = turn.startedAt!;
         this.engine.sessionChanged(this);
-        return texts;
     }
 
     /**

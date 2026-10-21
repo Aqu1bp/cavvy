@@ -29,7 +29,7 @@
 import type { HookConfig } from "../config/settings";
 import { backendMatcher, claudeCodeHookOutput, type HookEvent } from "../agent/hooks";
 import { homedir } from "os";
-import type { AssistantMessage, ChatRequest, ModelInfo, Usage } from "../providers/types";
+import type { AssistantMessage, ChatRequest, ImagePart, ModelInfo, PdfPart, Usage } from "../providers/types";
 import { ONE_OFF_TIMEOUT_MS, oneOffAnswer, oneOffPrompt, oneOffRefusal } from "./one-off";
 import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
@@ -338,11 +338,9 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         turn.pluginDir = pluginDir;
         this.turns.add(turn);
         try {
-            const documents = (t.documents ?? []).map((d) => ({ type: "document", source: { type: "base64", media_type: "application/pdf", data: d.data } }));
-            const images = t.images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.mediaType, data: i.data } }));
             // The text goes last: Claude Code reads a /command only from the last block (what's before it goes along with it),
             // so with images or PDFs first, /skill and its own commands run with them attached instead of reaching the model as words.
-            return await turn.run([...images, ...documents, { type: "text", text: prompt }]);
+            return await turn.run([...mediaBlocks(t.images, t.documents ?? []), { type: "text", text: prompt }]);
         } finally {
             this.turns.delete(turn);
             const s = turn.spending();
@@ -604,7 +602,9 @@ class ClaudeTurn {
 
     private async checkIdle(): Promise<boolean> {
         if (this.busy || this.unanswered.size || !this.answered || this.aborted || this.finishing) return false;
-        if (await this.deliverQueued()) return false;
+        // Waiting only on background work, Claude Code is between its turns: nothing is mid-step, so what the
+        // user queued goes now, whatever its mode, with its attachments. Otherwise only messages to steer with.
+        if (await this.deliverQueued(this.inBackground().length > 0)) return false;
         if (this.aborted || this.finishing) return false;
         // A timer may have awaited a snapshot while the message loop received fresh work.
         if (this.busy || this.unanswered.size || !this.answered) return false;
@@ -691,15 +691,35 @@ class ClaudeTurn {
     /** Serialized with idle checks: snapshot/record the preceding output before the new user row. */
     private deliveryPending?: Promise<boolean>;
 
-    private deliverQueued(): Promise<boolean> {
-        return (this.deliveryPending ??= this.forwardQueued().finally(() => { this.deliveryPending = undefined; }));
+    /** `waiting`: Claude Code is between its turns, waiting only on background work (see BackendHost.drainWaiting). */
+    private deliverQueued(waiting = false): Promise<boolean> {
+        return (this.deliveryPending ??= this.forward(waiting).finally(() => { this.deliveryPending = undefined; }));
+    }
+
+    private async forward(waiting: boolean): Promise<boolean> {
+        // One at a time, in the order they were sent: the next goes once Claude Code has answered this one.
+        if (waiting && (await this.forwardWaiting())) return true;
+        return this.forwardQueued();
+    }
+
+    /** What the run has said and done since the last of it was recorded, taken out. */
+    private progress(): BackendResult {
+        return { reason: "done", text: this.texts.splice(0).join("\n\n"), actions: this.actions.splice(0) };
+    }
+
+    private async forwardWaiting(): Promise<boolean> {
+        if (this.aborted || this.finishing || !this.host.drainWaiting) return false;
+        const p = await this.host.drainWaiting(() => this.progress());
+        if (!p || this.aborted || this.finishing) return false;
+        this.reason = undefined;
+        // As a prompt of the user's own is sent: its text, then its images and PDFs.
+        this.sendUser([...(p.text ? [{ type: "text", text: p.text }] : []), ...mediaBlocks(p.images, p.documents)]);
+        return true;
     }
 
     private async forwardQueued(): Promise<boolean> {
         if (this.aborted || this.finishing) return false;
-        const queued = await this.host.drainQueued(() => ({
-            reason: "done", text: this.texts.splice(0).join("\n\n"), actions: this.actions.splice(0),
-        }));
+        const queued = await this.host.drainQueued(() => this.progress());
         if (!queued.length || this.aborted || this.finishing) return false;
         this.reason = undefined;
         // The user's messages as they typed them; a watch's events (others' words) apart, read as written.
@@ -1454,6 +1474,14 @@ class ClaudeTurn {
         if (a.allow) return { behavior: "allow", updatedInput: a.updatedInput ?? raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
         return { behavior: "deny", message: a.message, interrupt: a.stop };
     }
+}
+
+/** A prompt's images and PDFs as Claude Code takes them, after its text. */
+function mediaBlocks(images: readonly ImagePart[], documents: readonly PdfPart[]): Record<string, unknown>[] {
+    return [
+        ...images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.mediaType, data: i.data } })),
+        ...documents.map((d) => ({ type: "document", source: { type: "base64", media_type: "application/pdf", data: d.data } })),
+    ];
 }
 
 /** When a background command with a timeout of its own is up: its timeout (at most Claude Code's maximum) from its start. */

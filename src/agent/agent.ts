@@ -10,6 +10,7 @@
 
 import type {
     AssistantMessage,
+    AttachedPart,
     ChatRequest,
     ImagePart,
     Message,
@@ -167,6 +168,13 @@ export interface AgentHost {
     ui: UiBridge;
     /** Messages the user typed while the agent was busy, to steer the running turn with. */
     drainQueued?(): string[];
+    /**
+     * For a backend's CLI that's between its turns, waiting only on its background work: the first queued
+     * message that can go now, as a prompt of its own, whatever its mode, with its attachments. Not commands
+     * or `!commands`, nor held ones. `record` runs once one is taken, before its turn starts, so the output
+     * before it is recorded first.
+     */
+    drainWaiting?(record: () => void): { text: string; attachments?: AttachedPart[] } | undefined;
 }
 
 export interface Helpers {
@@ -1590,6 +1598,20 @@ export class Agent {
                 }
                 if (this.cutOff) return [];
                 return out;
+            },
+            drainWaiting: async (progress) => {
+                if (this.cutOff || !this.o.host.drainWaiting) return undefined;
+                const taken = this.o.host.drainWaiting(() => {
+                    if (progress) this.recordBackendTurn(provider, name, progress());
+                });
+                if (!taken) return undefined;
+                // Stored as a prompt sent then would be: its text, then what's attached.
+                let content: UserContent[] = [];
+                await this.checkpoint(taken.text, false, (checkpoint) => {
+                    content = this.session.push({ role: "user", content: [{ type: "text", text: taken.text }, ...(taken.attachments ?? [])], meta: { kind: "prompt", display: taken.text, checkpoint } }).content;
+                });
+                if (this.cutOff) return undefined;
+                return forBackend(content, readsPdf(this.model));
             },
         };
         // A stop from Harness's checks of a tool it serves the backend (a hook, a PermissionRequest interrupt) ends the backend's turn, as a stop on its own call does.

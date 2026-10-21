@@ -40,9 +40,9 @@ export function queueRow(mode: QueuedMode | undefined, busy: boolean): QueueRowI
         case "steer":
             return { hint: busy ? "Joins at the next step" : "Next step", detail: JOINS, joining: busy };
         case "queue":
-            return { hint: "After this turn", detail: "Runs as a turn of its own once this one ends", action: busy ? STEER : SEND_NOW };
+            return { hint: "After this turn", detail: "Runs as a turn of its own once this one ends, or at once while the turn only waits on background work", action: busy ? STEER : SEND_NOW };
         case "turn":
-            return { hint: "After this turn", detail: "Images, files and commands can't join a running turn: this runs once it ends", ...(busy ? {} : { action: SEND_NOW }) };
+            return { hint: "After this turn", detail: "Images, files and commands can't join a running turn: this runs once it ends. While the turn only waits on background work, images and files go at once; commands run after the background work ends", ...(busy ? {} : { action: SEND_NOW }) };
         case "held":
             return {
                 hint: "Held",
