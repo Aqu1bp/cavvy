@@ -476,9 +476,18 @@ function TurnViewContent(p: TurnViewProps) {
     // Inspect the last rendered item: a grouped tool can still be live even
     // when a later call in that same group has finished.
     const streamingTail = () => {
-        const item = items().at(-1);
+        const all = items();
+        const item = all.at(-1);
         if (!item) return false;
-        if (item.kind === "activity") return item.tools.some((t) => t.status === "running" || t.status === "streaming" || t.status === "queued" || t.status === "awaiting");
+        if (item.kind === "activity") {
+            // Commands and edits are cards of their own: a call still running in the run of calls at the end is live.
+            for (let i = all.length - 1; i >= 0; i--) {
+                const it = all[i]!;
+                if (it.kind !== "activity") break;
+                if (it.tools.some((t) => t.status === "running" || t.status === "streaming" || t.status === "queued" || t.status === "awaiting")) return true;
+            }
+            return false;
+        }
         const b = item.block;
         if (b.t === "text") return writing();
         if (b.t === "thinking") return thinking(b);
