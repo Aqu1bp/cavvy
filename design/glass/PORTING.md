@@ -81,11 +81,11 @@ contrast → dark + high contrast).
 | Area | Owns | Mockup reference |
 |---|---|---|
 | **F. Foundation** | `styles/tokens.css`, `styles/base.css`, `public/theme-boot.js`, `state/prefs.ts`, `lib/platform.ts` (native theme), Settings → Appearance section, `desktop/src-tauri/tauri.conf.json`, `design/glass/` (this folder, committed) | Tokens, Base, Glass, Settings → Appearance |
-| **S. Shell** | `App.tsx` (window structure, SessionView), `styles/shell.css`, `styles/stage.css`, `styles/panel.css` (the inspector container only), `styles/home.css` layout, `TerminalPanel.tsx` placement + `styles/terminal.css`, `state/ui.ts` | Desktop and window, Sheet, Terminal, `layout()` in app.js |
+| **S. Shell** | `App.tsx` (window structure, SessionView), `styles/shell.css`, `styles/stage.css`, `styles/panel.css` (the inspector container only), `Home.tsx` + `styles/home.css`, `TerminalPanel.tsx` + `styles/terminal.css`, `state/ui.ts`, a new `lib/layout.ts` for the responsive rules | Desktop and window, Sheet, Home, Terminal, `layout()` in app.js |
 | **C. Composer** | `Composer.tsx`, `ModelPicker.tsx`, `ModePicker.tsx`, `ComposerMeter.tsx`, `InteractionDock.tsx`, `QueueTab.tsx`, `GoalTab.tsx`, `ScheduleTab.tsx`, `AttachmentChips.tsx`, `styles/composer.css` | Dock: prompts + composer, effort bars, context card |
 | **T. Transcript** | `Transcript.tsx`, `TurnView.tsx`, `blocks/*`, `Agents.tsx`, `styles/transcript.css`, `styles/markdown.css`, `styles/agent-view.css` | Transcript |
 | **R. Rail + title bar** | `Sidebar.tsx` (+ SettingsNav), `Header.tsx`, `ProjectScripts.tsx`, `RunSwitcher.tsx`, `lib/toasts.ts` + toasts component, `styles/sidebar.css`, `styles/header.css`, `styles/project-scripts.css`, `styles/toasts.css`, `styles/runs.css` | Rail, `.bar`/`.cap`, toasts |
-| **O. Overlays + Settings pages** | `CommandPalette.tsx`, `FindBar.tsx`, `ui/*` (Dialog, Popover, Menu, ConfirmDialog, bits), every `*Dialog.tsx`, `Settings.tsx` (all sections but Appearance), `UsageView.tsx`, `Accounts.tsx`, `Home.tsx` content, `styles/overlays.css`, `styles/settings.css`, `styles/usage.css`, `styles/accounts.css` | Popovers, Settings, Home |
+| **O. Overlays + Settings pages** | `CommandPalette.tsx`, `FindBar.tsx`, `ui/*` (Dialog, Popover, Menu, ConfirmDialog, bits), every `*Dialog.tsx`, `Settings.tsx` (all sections but Appearance), `UsageView.tsx`, `Accounts.tsx`, `styles/overlays.css`, `styles/settings.css`, `styles/usage.css`, `styles/accounts.css` | Popovers, Settings |
 | **I. Inspector + diff reader** (after PR #178 merges) | `RightPanel.tsx`, `ReviewPane.tsx`, `blocks/DiffView.tsx` look, panel content CSS | Inspector, diff reader |
 
 ## Behaviour the mockup settled (port these, they're decisions)
