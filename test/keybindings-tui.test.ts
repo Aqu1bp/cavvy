@@ -84,6 +84,21 @@ describe("defaults (no file)", () => {
 });
 
 describe("a keybindings file", () => {
+    test("mid-turn Tab respects a custom action or explicit unbinding", () => {
+        for (const action of [null, "chat:externalEditor"]) {
+            write([{ context: "Chat", bindings: { tab: action } }]);
+            const { app, a, press, calls } = testApp();
+            const sent: boolean[] = [];
+            a.busy = true;
+            a.submit = async (opposite: boolean) => void sent.push(opposite);
+            app.editor.set("follow-up");
+            press("\t");
+            expect(sent).toEqual([]);
+            expect(calls).toEqual(action ? ["editor"] : []);
+            expect(app.editor.text).toBe("follow-up");
+        }
+    });
+
     test("rebinding moves the action and frees the old key", () => {
         write([{ context: "Chat", bindings: { "ctrl+g": null, "ctrl+e": "chat:externalEditor" } }]);
         const { app, press, calls } = testApp();

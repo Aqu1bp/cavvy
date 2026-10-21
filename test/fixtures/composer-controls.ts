@@ -11,7 +11,7 @@ import { matchSkills, skillToken } from "../../gui/src/lib/commands";
 import { createRunSheet, type RunRequest } from "../../gui/src/lib/run-sheet";
 import { firstSendable, followUpFor, otherFollowUp } from "../../gui/src/lib/queue";
 import type { RunResult } from "../../src/server/protocol";
-import { keymap, matchKey, withShortcut } from "../../gui/src/state/keybindings";
+import { applyKeybindingsFile, keymap, matchKey, withShortcut } from "../../gui/src/state/keybindings";
 import { eventStrokes } from "../../gui/src/lib/keystrokes";
 
 const saved = new Map<string, string>();
@@ -204,6 +204,21 @@ const sendsBefore = sends;
 key("Enter", { metaKey: true, shiftKey: true });
 assert.equal(sends, sendsBefore);
 assert.deepEqual(calls.at(-1), { method: "session.sendQueuedNow", params: { id: "f", queueId: 2 } });
+// Custom bindings, explicit unbinding and a pending chord take precedence over the queue shortcut.
+input("keep this draft");
+for (const binding of [null, "app:interrupt"]) {
+    applyKeybindingsFile({ path: "/test/keybindings.json", text: JSON.stringify({ bindings: [{ context: "Global", bindings: { "mod+shift+enter": binding } }] }) });
+    key("Enter", { metaKey: true, shiftKey: true });
+    assert.equal(sends, sendsBefore);
+    assert.equal(ta.props.value, "keep this draft");
+}
+applyKeybindingsFile({ path: "/test/keybindings.json", text: JSON.stringify({ bindings: [{ context: "Global", bindings: { "mod+shift+enter t": "app:interrupt" } }] }) });
+assert.equal(key("Enter", { metaKey: true, shiftKey: true }).prevented, true);
+assert.equal(sends, sendsBefore);
+key("t");
+assert.equal(sends, sendsBefore);
+applyKeybindingsFile({ path: "/test/keybindings.json" });
+input("");
 appState.settings.followUpBehavior = undefined;
 setWorking(false);
 // Exercise the actual Home submit handler through the run-sheet controller.

@@ -1,4 +1,5 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, Show, type JSX } from "solid-js";
+import { isMod, mod } from "../lib/platform";
 import { ArrowUp, CornerDownRight, FileText, Folder, ListEnd, Paperclip, Slash, Sparkles, SquareTerminal } from "lucide-solid";
 import type { CommandInfo, FollowUpMode, PermissionModeId } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
