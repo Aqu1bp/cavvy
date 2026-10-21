@@ -196,8 +196,9 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
         let held: string[] | undefined;
         let tally: TurnTally | undefined;
         // Warnings from before the init message wait for it: init comes first.
-        let early: string[] | undefined = [];
-        const warn = (message: string) => (early ? early.push(message) : sink.push({ type: "system", subtype: "notice", level: "warn", message }));
+        let early: { message: string; level: "info" | "warn" }[] | undefined = [];
+        // Hooks also tell (level info) what they did.
+        const warn = (message: string, level: "info" | "warn" = "warn") => (early ? early.push({ message, level }) : sink.push({ type: "system", subtype: "notice", level, message }));
         try {
             checkOptions(o);
             const cwd = resolve(o.cwd ?? process.cwd());
@@ -309,7 +310,7 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
             });
             const notes = early;
             early = undefined;
-            for (const message of notes) warn(message);
+            for (const n of notes) warn(n.message, n.level);
             started = startRun(s, warn);
 
             while (!closed.signal.aborted) {
@@ -341,7 +342,7 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
             if (inputFailure) throw inputFailure.error;
         } catch (e) {
             // What was said before it failed (an MCP server that didn't start, say) still helps.
-            for (const message of early ?? []) sink.push({ type: "system", subtype: "notice", level: "warn", message });
+            for (const n of early ?? []) sink.push({ type: "system", subtype: "notice", level: n.level, message: n.message });
             early = undefined;
             rejectId(e);
             throw e;

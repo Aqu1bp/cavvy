@@ -850,8 +850,21 @@ describe("found in the Codex review", () => {
         const cli = await fakeCli("claude-code", { FAKE_SCENARIO: "bash" });
         try {
             const cwd = project();
-            const q = query({ prompt: "run the tests", options: { cwd, model: "claude-code:default", persistSession: false, permissionMode: "bypassPermissions", canUseTool: () => ({ behavior: "allow" }) } });
-            for await (const m of q) if (m.type === "system" && m.subtype === "init") await q.setPermissionMode("plan");
+            // Changed while Claude Code waits on a prompt: its turn is running then.
+            let q!: ReturnType<typeof query>;
+            q = query({
+                prompt: "run the tests",
+                options: {
+                    cwd,
+                    model: "claude-code:default",
+                    persistSession: false,
+                    canUseTool: async () => {
+                        await q.setPermissionMode("plan");
+                        return { behavior: "allow" };
+                    },
+                },
+            });
+            await collect(q);
             const sent = cli.lines().filter((l) => l.received?.request?.subtype === "set_permission_mode").map((l) => l.received.request.mode);
             expect(sent).toContain("plan");
         } finally {
