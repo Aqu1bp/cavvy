@@ -5,7 +5,7 @@ import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } fro
 import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
 import { interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
-import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview } from "../state/ui";
+import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, settingsTab } from "../state/ui";
 import { keymap, matchKey, shortcut, shortcutHint, withShortcut } from "../state/keybindings";
 import { eventStrokes } from "../lib/keystrokes";
 import type { MatchResult } from "../../../src/keybindings/core";
@@ -108,13 +108,11 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             ta?.focus();
         });
     });
-    createEffect(on(focusComposer, () => requestAnimationFrame(() => ta?.focus()), { defer: true }));
+    // Not while Settings covers it (App.tsx keeps it mounted there).
+    createEffect(on(focusComposer, () => requestAnimationFrame(() => !settingsTab() && ta?.focus()), { defer: true }));
 
-    createEffect(on(draftKey, () => {
-        histIdx = -1;
-        historyDraft = "";
-        dismissMenu();
-        setMenuDismissedFor(undefined);
+    /** Takes focus on the next frame, as on opening, unless something else is being typed in or a dialog is open. */
+    const focusSoon = () => {
         const frame = requestAnimationFrame(() => {
             if (window.matchMedia("(max-width: 760px)").matches) return;
             const active = document.activeElement;
@@ -123,7 +121,16 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             ta?.focus();
         });
         onCleanup(() => cancelAnimationFrame(frame));
+    };
+    createEffect(on(draftKey, () => {
+        histIdx = -1;
+        historyDraft = "";
+        dismissMenu();
+        setMenuDismissedFor(undefined);
+        focusSoon();
     }));
+    // Back from Settings, which keeps this mounted under it: focused as when it opened.
+    createEffect(on(settingsTab, (tab, was) => { if (was && !tab) focusSoon(); }, { defer: true }));
     createEffect(() => {
         const selected = menuSel();
         const items = menu();

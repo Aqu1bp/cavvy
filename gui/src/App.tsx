@@ -12,6 +12,7 @@ import { actionOf, setEnterSends } from "./state/keybindings";
 import { clampInspectorWidth, closesOnShrink, requestCloses, INSPECTOR_DEFAULT, windowLayout } from "./lib/layout";
 import { warmUp } from "./lib/highlight";
 import { frameDrag } from "./lib/drag";
+import { skipCovered } from "./lib/cover";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
 import { Transcript } from "./components/Transcript";
@@ -360,6 +361,9 @@ export function App() {
         if (open) queueMicrotask(() => document.querySelector<HTMLElement>(".win-rail button:not([disabled])")?.focus());
     }, { defer: true }));
     const inspOpen = () => reviewing() || panelShown();
+    // Under Settings the inspector's column closes, but what was in it stays mounted (covered), as the session does.
+    const reviewKept = () => Boolean(review() && active());
+    const panelKept = () => Boolean(prefs.panel && active() && !agent() && app.opening?.id !== app.activeId);
     // The sizes go on the elements that use them, not on .app: a custom property changing on an
     // element restyles everything under it, so on .app each frame of a drag restyled the window.
     // (shell.css registers them as not inherited; the few children that need one inherit it explicitly.)
@@ -385,9 +389,15 @@ export function App() {
                     {/* The rail sits straight on the window glass; in narrow windows it's a drawer over the sheet. */}
                     <div class="win-rail" inert={!layout().railShown}>
                         <Show when={prefs.sidebar || layout().railMode === "overlay"}>
-                            <Show when={settingsTab()} fallback={<Sidebar />}>
-                                <SettingsNav />
-                            </Show>
+                            <div class="settings-host">
+                                <Show when={settingsTab()}>
+                                    <SettingsNav />
+                                </Show>
+                            </div>
+                            {/* Kept under Settings, hidden, so coming back doesn't build the rail again. */}
+                            <div class="keep" classList={{ covered: !!settingsTab() }}>
+                                <Sidebar />
+                            </div>
                         </Show>
                     </div>
                     {/* One opaque sheet: the conversation | the inspector, and the terminal under both. */}
@@ -402,53 +412,62 @@ export function App() {
                     >
                         <main class="main">
                             <Reconnecting />
-                            <RenderBoundary resetKey={() => `${app.activeId}:${settingsTab()}:${agentFocus()}`}>
-                                <Switch
-                                    fallback={
-                                        <>
-                                            <Header />
-                                            <Home />
-                                        </>
-                                    }
-                                >
-                                    <Match when={settingsTab()}>
+                            {/* In a box of its own: adding or removing it beside the session would restyle all of it. */}
+                            <div class="settings-host">
+                                <Show when={settingsTab()}>
+                                    <RenderBoundary>
                                         <SettingsPage />
-                                    </Match>
-                                    <Match when={app.opening?.id === app.activeId && app.opening}>
-                                        {(opening) => <>
+                                    </RenderBoundary>
+                                </Show>
+                            </div>
+                            {/* What the settings page covers stays mounted and laid out under it: coming back shows it
+                                as it was (scrolled where it was, nothing to build, lay out or fetch again). See lib/cover.ts. */}
+                            <div class="keep" data-covered={settingsTab() ? "" : undefined} aria-hidden={settingsTab() ? "true" : undefined} onFocusIn={skipCovered}>
+                                <RenderBoundary resetKey={() => `${app.activeId}:${agentFocus()}`}>
+                                    <Switch
+                                        fallback={
+                                            <>
+                                                <Header />
+                                                <Home />
+                                            </>
+                                        }
+                                    >
+                                        <Match when={app.opening?.id === app.activeId && app.opening}>
+                                            {(opening) => <>
+                                                <Header />
+                                                <div class="session-opening" aria-busy={!opening().error}>
+                                                    <Show when={opening().error} fallback={<Show when={opening().visible}><div role="status"><Spinner size={16} /> Opening session…</div><div class="session-skeleton" aria-hidden="true"><i /><i /><i /></div></Show>}>
+                                                        <p role="alert" class="selectable">Couldn't open this session: {opening().error}</p>
+                                                        <button class="ghost-btn" disabled={app.conn !== "open"} onClick={() => void activate(opening().id)}>Retry opening session</button>
+                                                    </Show>
+                                                </div>
+                                            </>}
+                                        </Match>
+                                        <Match when={active() && agent()}>
+                                            <AgentView handle={active()!} agent={agent()!} />
+                                        </Match>
+                                        <Match when={active()} keyed>
+                                            {(h) => <SessionView handle={h} />}
+                                        </Match>
+                                        <Match when={app.activeId}>
                                             <Header />
-                                            <div class="session-opening" aria-busy={!opening().error}>
-                                                <Show when={opening().error} fallback={<Show when={opening().visible}><div role="status"><Spinner size={16} /> Opening session…</div><div class="session-skeleton" aria-hidden="true"><i /><i /><i /></div></Show>}>
-                                                    <p role="alert" class="selectable">Couldn't open this session: {opening().error}</p>
-                                                    <button class="ghost-btn" disabled={app.conn !== "open"} onClick={() => void activate(opening().id)}>Retry opening session</button>
-                                                </Show>
+                                            <div class="home-wait">
+                                                <p class="muted" role="status">Waiting to reopen your session…</p>
+                                                <button class="ghost-btn" disabled={app.conn !== "open"} onClick={() => void restoreActiveSession()}>Retry opening session</button>
                                             </div>
-                                        </>}
-                                    </Match>
-                                    <Match when={active() && agent()}>
-                                        <AgentView handle={active()!} agent={agent()!} />
-                                    </Match>
-                                    <Match when={active()} keyed>
-                                        {(h) => <SessionView handle={h} />}
-                                    </Match>
-                                    <Match when={app.activeId}>
-                                        <Header />
-                                        <div class="home-wait">
-                                            <p class="muted" role="status">Waiting to reopen your session…</p>
-                                            <button class="ghost-btn" disabled={app.conn !== "open"} onClick={() => void restoreActiveSession()}>Retry opening session</button>
-                                        </div>
-                                    </Match>
-                                </Switch>
-                            </RenderBoundary>
+                                        </Match>
+                                    </Switch>
+                                </RenderBoundary>
+                            </div>
                         </main>
-                        <div class="insp" style={{ "--insp-w": `${layout().inspector.width}px`, "--insp-bottom": `${layout().inspector.bottom}px` }}>
+                        <div class="insp" data-covered={settingsTab() ? "" : undefined} aria-hidden={settingsTab() ? "true" : undefined} onFocusIn={skipCovered} style={{ "--insp-w": `${layout().inspector.width}px`, "--insp-bottom": `${layout().inspector.bottom}px` }}>
                             <Show when={panelShown() && !reviewing() && layout().inspector.mode === "dock"}>
                                 <InspectorResizer />
                             </Show>
                             <Show
-                                when={reviewing()}
+                                when={reviewKept()}
                                 fallback={
-                                    <Show when={panelShown() && active()} keyed>
+                                    <Show when={panelKept() && active()} keyed>
                                         {(h) => <RenderBoundary resetKey={() => app.activeId}><RightPanel handle={h} /></RenderBoundary>}
                                     </Show>
                                 }

@@ -77,10 +77,14 @@
     min-height: 0;
     overflow-y: auto;
     background: var(--sheet);
-    /* Opening Settings: the page fades and rises in, the mockup's 280ms
-       whatever Settings → Panel animations says. It mounts once per opening,
-       so switching sections doesn't replay it; closing is instant, as in the
-       mockup. */
+}
+
+/* Opening Settings: the page fades and rises in, the mockup's 280ms
+   whatever Settings → Panel animations says. It mounts once per opening,
+   so switching sections doesn't replay it; closing is instant, as in the
+   mockup. (Its content, over the page's own opaque sheet, which hides
+   the session kept under it from the first frame.) */
+.settings-page > .set-in {
     animation: settings-in 280ms var(--ease);
 }
 
@@ -92,7 +96,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .settings-page {
+    .settings-page > .set-in {
         animation: none;
     }
 }

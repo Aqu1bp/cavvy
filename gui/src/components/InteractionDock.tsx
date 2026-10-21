@@ -30,9 +30,10 @@ function useKeys(handler: (key: string) => boolean) {
         const onKey = (e: KeyboardEvent) => {
             if (e.metaKey || e.ctrlKey || e.altKey || typing() || document.querySelector(".dialog-backdrop, .popover")) return;
             if (performance.now() - shown < SETTLE_MS) return;
-            // Not while the card is out of sight (the terminal maximized over the conversation).
+            // Not while the card is out of sight: Settings over it (lib/cover.ts), or the terminal maximized
+            // over the conversation (which hides it with visibility, seen by checkVisibility only when asked).
             const card = document.querySelector<HTMLElement>(".itab");
-            if (card?.checkVisibility?.() === false) return;
+            if (card?.closest("[data-covered]") || card?.checkVisibility?.({ checkVisibilityCSS: true, visibilityProperty: true }) === false) return;
             if (handler(e.key)) {
                 e.preventDefault();
                 e.stopPropagation();
