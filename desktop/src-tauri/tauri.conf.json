@@ -23,6 +23,11 @@
                 "titleBarStyle": "Overlay",
                 "hiddenTitle": true,
                 "dragDropEnabled": false,
+                "transparent": true,
+                "windowEffects": {
+                    "effects": ["liquidGlassRegular", "sidebar"],
+                    "state": "followsWindowActiveState"
+                },
                 "trafficLightPosition": {
                     "x": 18,
                     "y": 26
