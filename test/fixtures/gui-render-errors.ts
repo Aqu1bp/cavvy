@@ -6,6 +6,7 @@ import { boundary } from "../helpers/render-boundary";
 import { rawRenderText, renderDetails } from "../../gui/src/lib/render-error";
 import * as format from "../../gui/src/lib/format";
 import { createReveal } from "../../gui/src/lib/reveal";
+import * as diffWindow from "../../gui/src/lib/diff-window";
 import { registerSecret, unregisterSecret } from "../../src/util/redact";
 
 const source = (file: string) => readFileSync(new URL(`../../gui/src/components/${file}.tsx`, import.meta.url), "utf8").replace(/^import [\s\S]*?;\n/gm, "");
@@ -106,7 +107,8 @@ for (const kind of ["CodeBlock", "DiffView"]) {
         const highlight = async () => { if (fail) throw Error(secret); return undefined; };
         const Widget = component(source(`blocks/${kind}`), kind, {
             RenderBoundary: boundary(undefined, (error) => errors.push(error)),
-            highlight, highlightLines: highlight, langOf: () => "ts", escapeHtml: (s: string) => s,
+            highlight, highlightLines: highlight, highlightLineStream: streamOf(highlight), langOf: () => "ts", escapeHtml: (s: string) => s,
+            ...diffWindow, plural: format.plural,
             CopyButton: () => node("copy"),
             IntersectionObserver: class {
                 constructor(private callback: Function) {}
@@ -181,6 +183,17 @@ test("root failure offers Reload and safe Copy details", async () => {
 });
 
 /** Execute the actual highlighting module, replacing only dynamic module loading. */
+/** DiffView's streamed highlighting (highlight.ts) over a whole-file highlightLines, as the worker's first part. */
+function streamOf(highlightLines: (code: string, lang?: string) => Promise<string[] | undefined>) {
+    return (code: string, lang: string | undefined, part: (from: number, lines: string[]) => void) => {
+        let over = false;
+        const done = highlightLines(code, lang).then((lines) => {
+            if (!over && lines) part(0, lines);
+        });
+        return { done, cancel: () => void (over = true) };
+    };
+}
+
 function retryingHighlighter(failure: "import" | "initialize" = "import") {
     const original = readFileSync(new URL("../../gui/src/lib/highlight-core.ts", import.meta.url), "utf8");
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(original)
@@ -206,8 +219,10 @@ function retryingHighlighter(failure: "import" | "initialize" = "import") {
             },
         };
     };
+    const core = new Function("loadModule", `${js}; return { highlight, highlightLines, warmUp };`)(loadModule);
     return {
-        ...new Function("loadModule", `${js}; return { highlight, highlightLines, warmUp };`)(loadModule),
+        ...core,
+        highlightLineStream: streamOf(core.highlightLines),
         loads: () => loads,
     };
 }
@@ -219,6 +234,7 @@ for (const kind of ["CodeBlock", "DiffView"]) {
         const Widget = component(source(`blocks/${kind}`), kind, {
             RenderBoundary: boundary(undefined, (error) => errors.push(error)),
             ...highlighting, langOf: () => "typescript", escapeHtml: (s: string) => s,
+            ...diffWindow, plural: format.plural,
             CopyButton: () => node("copy"),
             IntersectionObserver: class {
                 constructor(private callback: Function) {}
