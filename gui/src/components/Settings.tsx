@@ -3,7 +3,7 @@
 // when it's been changed.
 
 import { createEffect, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
-import { AlertTriangle, ArrowLeft, ChartColumn, Copy, ExternalLink, FolderOpen, Info, Keyboard, Minus, Palette, Plug, Plus, Puzzle, RotateCcw, Settings as Gear, SlidersHorizontal, X } from "lucide-solid";
+import { AlertTriangle, ArrowLeft, ChartColumn, ChevronDown, Copy, ExternalLink, FolderOpen, Info, Keyboard, Minus, Palette, Plug, Plus, Puzzle, RotateCcw, Settings as Gear, SlidersHorizontal, X } from "lucide-solid";
 import { MODE_LABELS, type EffortLevel, type FollowUpMode, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
 import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
 import { connectCli, editors, refreshEditors } from "../state/actions";
@@ -17,7 +17,7 @@ import { ProviderIcon } from "./ui/ProviderIcon";
 import { Accounts } from "./Accounts";
 import { ModeIcon, MODES } from "./ModePicker";
 import { SidebarFrame } from "./Sidebar";
-import { Kbd, Segmented, Spinner, Toggle } from "./ui/bits";
+import { Segmented, Spinner, Toggle } from "./ui/bits";
 import { UsageView } from "./UsageView";
 import { Plugins } from "./Plugins";
 
@@ -129,6 +129,7 @@ function SelectButton(p: { icon?: JSX.Element; children: JSX.Element }) {
                 <span class="selbtn-ic" aria-hidden="true">{p.icon}</span>
             </Show>
             {p.children}
+            <ChevronDown size={13} class="selbtn-chev" aria-hidden="true" />
         </span>
     );
 }
@@ -674,11 +675,16 @@ const BUILT_IN: [string, string][] = [
 
 const CONTEXT_TITLES: Record<string, string> = { Global: "Anywhere", Chat: "In the input box", Autocomplete: "In the / and @ menu" };
 
+/** One keystroke as one key cap: "⌘ K". */
+function Cap(p: { keys: string }) {
+    return <kbd>{p.keys.split("+").join(" ")}</kbd>;
+}
+
 /** One key sequence as key caps: a chord's strokes one after another. */
 function KeySeq(p: { keys: string }) {
     return (
         <span class="sc-seq">
-            <For each={p.keys.split(" ")}>{(stroke, i) => <>{i() > 0 && <span class="sc-then">then</span>}<Kbd keys={stroke} /></>}</For>
+            <For each={p.keys.split(" ")}>{(stroke, i) => <>{i() > 0 && <span class="sc-then">then</span>}<Cap keys={stroke} /></>}</For>
         </span>
     );
 }
@@ -766,7 +772,7 @@ function Shortcuts() {
                     {([k, d]) => (
                         <Row title={d}>
                             <span class="sc-keys">
-                                <For each={k.split("  ")}>{(part) => <Kbd keys={part} />}</For>
+                                <For each={k.split("  ")}>{(part) => <Cap keys={part} />}</For>
                             </span>
                         </Row>
                     )}

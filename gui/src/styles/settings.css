@@ -320,6 +320,19 @@
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
+.selbtn .select {
+    background-image: none;
+}
+
+.selbtn-chev {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--fg-3);
+    pointer-events: none;
+}
+
 .selbtn-ic {
     position: absolute;
     left: 10px;
@@ -450,18 +463,13 @@
 
 /* ---- Settings → Shortcuts ------------------------------------------- */
 
+/* Several bindings for one action sit apart; a sequence's strokes closer. */
 .sc-keys {
     display: inline-flex;
     flex-wrap: wrap;
     justify-content: flex-end;
     align-items: center;
-    gap: 6px;
-}
-
-.sc-keys .kbd-row {
-    display: inline-flex;
-    gap: 4px;
-    margin: 0;
+    gap: 6px 12px;
 }
 
 /* Key caps: 12.5px, raised a little off the group. */
