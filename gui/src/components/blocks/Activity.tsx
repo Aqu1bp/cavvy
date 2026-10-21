@@ -859,9 +859,14 @@ function CommandCardContent(p: { tool: ToolBlock }) {
     const progress = () => (t().status === "running" && t().progress ? stripAnsi(t().progress!).trimEnd().split("\n").slice(-LIVE_LINES).join("\n") : "");
     const hasBody = () => multiline() || Boolean(progress() || (!live() && t().output?.trim()));
     let out: HTMLPreElement | undefined;
-    // Follow the output while it runs, unless the reader has scrolled up in it.
+    // Follow the output while it runs, unless the reader has scrolled up in it. Whether they're at
+    // the end is taken as they scroll: measured after new lines arrive, a burst would look like a scroll away.
+    let atEnd = true;
+    const onScroll = () => {
+        if (out) atEnd = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
+    };
     createEffect(on(progress, () => {
-        if (out && out.scrollHeight - out.scrollTop - out.clientHeight < 40) out.scrollTop = out.scrollHeight;
+        if (out && atEnd) out.scrollTop = out.scrollHeight;
     }));
     return (
         <div class={`tcard cmd-card st-${t().status} ${findReveal()?.part === t().id ? "found" : ""}`} data-find={t().id}>
@@ -901,7 +906,7 @@ function CommandCardContent(p: { tool: ToolBlock }) {
                     </Show>
                     <Show when={live()} fallback={<Output tool={t()} bare />}>
                         <Show when={progress()}>
-                            <pre ref={out} class="tcard-out">{progress()}</pre>
+                            <pre ref={(el) => ((out = el), (atEnd = true))} class="tcard-out" onScroll={onScroll}>{progress()}</pre>
                         </Show>
                     </Show>
                 </div>

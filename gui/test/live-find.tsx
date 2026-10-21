@@ -16,6 +16,8 @@ import "../src/styles/transcript.css";
 const root = document.getElementById("root")!;
 const result = document.getElementById("result")!;
 const frame = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+/** After the next paint, when scroll events have been delivered. */
+const paint = () => new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
 /** Drawn where the reader can see it: not clipped to a pixel, as screen-reader-only text is. */
 const visible = (r: Range) => {
     const el = r.startContainer.parentElement!;
@@ -127,8 +129,43 @@ async function checkCards() {
         box.remove();
     }
 }
-run().then(() => checkEditorFind(root)).then(() => checkPaletteDelete(root)).then(() => checkTranscriptScroll(root)).then(() => checkDiffComments(root)).then(() => {
-    result.textContent = "PASS: live tool find; deferred file links and ranges; editor actions and find keys; deleted palette hits; transcript scroll; diff comments";
+/** A command's live output stays at its end as it grows, a burst of lines included, unless the reader scrolled up in it. */
+async function checkCommandFollow() {
+    const box = root.appendChild(document.createElement("div"));
+    const lines = (from: number, n: number) => Array.from({ length: n }, (_, i) => `line ${from + i}\n`).join("");
+    const [cmd, setCmd] = createStore<ToolBlock>({ t: "tool", id: "follow", name: "Bash", title: "make", input: { command: "make" }, status: "running", progress: lines(0, 9), startedAt: Date.now() });
+    const dispose = render(() => <ActivityGroup tools={[cmd]} steps={[cmd]} card="command" turnRunning />, box);
+    try {
+        await paint();
+        const out = box.querySelector<HTMLElement>(".tcard-out")!;
+        const gap = () => out.scrollHeight - out.scrollTop - out.clientHeight;
+        check(out.scrollHeight > out.clientHeight, "follow fixture: output must start scrolling");
+        check(gap() < 2, `follow: starts at the end (${gap()}px from it)`);
+        for (let n = 9; n < 30; n += 4) {
+            setCmd("progress", (p) => p + lines(n, 4));
+            await paint();
+            check(gap() < 2, `follow: four more lines keep it at the end (${gap()}px from it, scrollHeight ${out.scrollHeight})`);
+        }
+        out.scrollTop = 0;
+        out.dispatchEvent(new Event("scroll"));
+        await paint();
+        setCmd("progress", (p) => p + lines(40, 4));
+        await paint();
+        check(out.scrollTop === 0, `follow: a reader who scrolled up stays there (scrollTop ${out.scrollTop})`);
+        out.scrollTop = out.scrollHeight;
+        out.dispatchEvent(new Event("scroll"));
+        await paint();
+        setCmd("progress", (p) => p + lines(44, 4));
+        await paint();
+        check(gap() < 2, `follow: back at the end, it follows again (${gap()}px from it)`);
+    } finally {
+        dispose();
+        box.remove();
+    }
+}
+
+run().then(() => checkCommandFollow()).then(() => checkEditorFind(root)).then(() => checkPaletteDelete(root)).then(() => checkTranscriptScroll(root)).then(() => checkDiffComments(root)).then(() => {
+    result.textContent = "PASS: live tool find; command output follows; deferred file links and ranges; editor actions and find keys; deleted palette hits; transcript scroll; diff comments";
     result.dataset.status = "passed";
 }).catch((error) => {
     result.textContent = String(error.stack ?? error);
