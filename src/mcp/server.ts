@@ -21,6 +21,8 @@ export interface ServerTool {
     description: string;
     inputSchema: Record<string, unknown>;
     annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean; openWorldHint?: boolean };
+    /** Listed as the tool's _meta (`{ ui: { visibility: ["app"] } }` keeps it from the model). */
+    meta?: Record<string, unknown>;
     /** The signal ends when the client goes away or cancels the call. `meta` is the request's _meta. */
     call(args: Record<string, unknown>, ctx: { signal: AbortSignal; meta: Record<string, unknown> }): Promise<ServerToolResult>;
 }
@@ -140,7 +142,7 @@ async function handle(req: Request, srv: Server<undefined>): Promise<Response> {
             return json({
                 jsonrpc: "2.0",
                 id,
-                result: { tools: entry.tools().map((t) => ({ name: t.name, ...(t.title ? { title: t.title } : {}), description: t.description, inputSchema: t.inputSchema, ...(t.annotations ? { annotations: t.annotations } : {}) })) },
+                result: { tools: entry.tools().map((t) => ({ name: t.name, ...(t.title ? { title: t.title } : {}), description: t.description, inputSchema: t.inputSchema, ...(t.annotations ? { annotations: t.annotations } : {}), ...(t.meta ? { _meta: t.meta } : {}) })) },
             });
         case "tools/call":
             return callTool(req, srv, entry, id, params);

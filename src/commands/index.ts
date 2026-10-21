@@ -12,7 +12,7 @@ import { formatDuration, type SelectItem } from "../ui/components";
 import { renderMarkdown } from "../ui/markdown";
 import { notificationMode, notifyAfterMs } from "../ui/notify";
 import { APP_TITLE, APP_VERSION, paths } from "../config/paths";
-import { EFFORT_LEVELS, JsonFileError, loadScope, removePermissionRule, addPermissionRule, settingsPath, updateSettings, readJson, readJsonForUpdate, sandboxSwitch, type Effort, type SettingsScope, type Settings } from "../config/settings";
+import { EFFORT_LEVELS, JsonFileError, loadScope, removePermissionRule, addPermissionRule, settingsPath, updateSettings, readJson, readJsonForUpdate, sandboxSwitch, hookConfigWarnings, type Effort, type SettingsScope, type Settings } from "../config/settings";
 import { agentProjectConfig, isTrusted, trustedByUser, trustFolder } from "../config/trust";
 import { MODE_INFO, PERMISSION_MODES, parseMode, type PermissionMode } from "../permissions/modes";
 import { parseRule } from "../permissions/rules";
@@ -1717,12 +1717,17 @@ function hooksCommand(app: App) {
         const list = h[event] ?? [];
         if (!list.length) continue;
         any = true;
-        lines.push(`  ${bold(event)}${BLOCKING_EVENTS.has(event) ? "" : theme.subtle(" (informational)")}`);
-        for (const x of list) lines.push(`    ${theme.muted(x.matcher ? `[${x.matcher}]` : "[*]")} ${x.command}${x.timeout ? theme.subtle(` (timeout ${x.timeout}s)`) : ""}`);
+        lines.push(`  ${bold(event)}${BLOCKING_EVENTS.has(event) || event === "PermissionRequest" ? "" : theme.subtle(" (informational)")}`);
+        for (const x of list) {
+            const what = x.type === "http" ? `POST ${x.url}` : x.type === "prompt" ? `prompt: ${truncate(x.prompt ?? "", 60)}` : x.type === "mcp_tool" ? `mcp__${x.server}__${x.tool}` : [x.command, ...(x.args ?? [])].join(" ");
+            const notes = [x.if ? `if ${x.if}` : "", x.async ? "async" : "", x.timeout ? `timeout ${x.timeout}s` : ""].filter(Boolean).join(", ");
+            lines.push(`    ${theme.muted(x.matcher ? `[${x.matcher}]` : "[*]")} ${what}${notes ? theme.subtle(` (${notes})`) : ""}`);
+        }
     }
     if (!any) lines.push(theme.muted("  None configured."));
+    for (const w of hookConfigWarnings(app.settings)) lines.push(theme.warning(`  Skipped: ${w.replace(/^hooks: /, "")}`));
     lines.push(
-        theme.muted(`  Configure under "hooks" in settings. A hook gets JSON on stdin; exit code 2 blocks the action and shows stderr to the model (informational events can't block).`),
+        theme.muted(`  Configure under "hooks" in settings (Claude Code's format works too). A command hook gets JSON on stdin; exit code 2 blocks the action and shows stderr to the model (informational events can't block). Hooks can also be http, prompt or mcp_tool.`),
         ...(app.init.trusted ? [] : [theme.warning("  This folder isn't trusted, so project hooks are ignored.")]),
     );
     app.print(lines);
@@ -1868,6 +1873,7 @@ async function addDirCommand(app: App, args: string) {
     if (remember) updateSettings("local", app.cwd, (s) => ((s.permissions ??= {}).additionalDirectories = [...new Set([...(s.permissions?.additionalDirectories ?? []), dir])]));
     app.agent?.addReminder(`The user added ${dir} as an additional working directory; you may read and edit files there.`);
     app.notice(`${APP_TITLE} can now read and edit files in ${dir}`);
+    void app.agent?.hooks("DirectoryAdded", { directory: dir, source: "slash_command" });
 }
 
 // ---------------------------------------------------------------------------

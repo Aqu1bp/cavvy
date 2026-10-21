@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { ensureDir, paths } from "./paths";
 import type { PermissionMode } from "../permissions/modes";
+import { normalizeHooks, type HookEvent, type HookType } from "./hook-config";
 import type { FollowUp } from "../agent/queue-store";
 import type { LspServerConfig } from "../lsp/config";
 
@@ -22,11 +23,39 @@ export interface McpServerConfig {
     disabled?: boolean;
 }
 
+/**
+ * One hook handler, flat. Settings may also use Claude Code's nested form
+ * ({ matcher, hooks: [...] }); src/config/hook-config.ts flattens it.
+ */
 export interface HookConfig {
-    /** Tool-name matcher: exact name, "*" or a regex like "Edit|Write". */
+    /** What the event is filtered on (a tool name, a source, …): exact, a list like "Edit|Write", "*" or a regex. */
     matcher?: string;
-    command: string;
+    /** Left out: "command". */
+    type?: HookType;
+    /** One permission rule, like "Bash(git *)": tool events run the hook only for calls it matches. */
+    if?: string;
+    /** Seconds (default 60; prompt hooks 30). */
     timeout?: number;
+    statusMessage?: string;
+    /** command: a shell command, or with `args` an executable run without a shell. */
+    command?: string;
+    args?: string[];
+    /** command: run in the background; it can't block, and its context comes with the next request. */
+    async?: boolean;
+    /** http: POSTed the input as JSON. */
+    url?: string;
+    headers?: Record<string, string>;
+    /** http: the environment variables header values may use ($VAR, ${VAR}). */
+    allowedEnvVars?: string[];
+    /** prompt: asked of a small model, with $ARGUMENTS as the input. */
+    prompt?: string;
+    model?: string;
+    /** mcp_tool: a tool on a connected MCP server; string values in input take ${field.path} from the hook input. */
+    server?: string;
+    tool?: string;
+    input?: Record<string, unknown>;
+    /** Set for a plugin's hooks: HARNESS_PLUGIN_ROOT and CLAUDE_PLUGIN_ROOT. */
+    pluginRoot?: string;
 }
 
 export interface Settings {
@@ -54,17 +83,7 @@ export interface Settings {
     /** Extra environment variables for Bash tool commands. */
     env?: Record<string, string>;
     mcpServers?: Record<string, McpServerConfig>;
-    hooks?: {
-        PreToolUse?: HookConfig[];
-        PostToolUse?: HookConfig[];
-        UserPromptSubmit?: HookConfig[];
-        Stop?: HookConfig[];
-        SubagentStop?: HookConfig[];
-        Notification?: HookConfig[];
-        SessionStart?: HookConfig[];
-        SessionEnd?: HookConfig[];
-        PreCompact?: HookConfig[];
-    };
+    hooks?: Partial<Record<HookEvent, HookConfig[]>>;
     /** Show model reasoning/thinking text when the provider returns it. */
     showThinking?: boolean;
     /** Upper bound for max output tokens per response. */
@@ -288,12 +307,20 @@ export function loadScope(scope: SettingsScope, cwd: string): Settings {
  * enableAllProjectMcpServers is a plain flag, so it counts from user
  * settings alone: a repo could ship a settings.local.json.)
  */
+/** Hook entries a load's settings files had that can't run, kept with the settings they came from (/hooks shows them, rather than every load). */
+const hookWarnings = new WeakMap<Settings, string[]>();
+
+export function hookConfigWarnings(s: Settings): readonly string[] {
+    return hookWarnings.get(s) ?? [];
+}
+
 export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Settings {
     const trusted = opts.trusted ?? true;
     const user = loadScope("user", cwd);
     const local = loadScope("local", cwd);
     const layers = trusted ? [user, loadScope("project", cwd), local] : [user, restrictiveOnly(loadScope("project", cwd)), restrictiveOnly(local)];
     const merged: Settings = {};
+    const warnings = new Set<string>();
     for (const s of layers) {
         const { permissions, env, mcpServers, hooks, worktree, lsp, ...rest } = s;
         // JSON.parse keeps a "__proto__" key as data; assigning it would set merged's prototype (and settings it seems to have).
@@ -311,17 +338,17 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
         if (worktree && typeof worktree === "object") merged.worktree = { ...merged.worktree, ...worktree };
         if (mcpServers) merged.mcpServers = { ...merged.mcpServers, ...mcpServers };
         if (lsp !== undefined) merged.lsp = mergeLsp(merged.lsp, lsp);
-        if (hooks) {
+        const flat = normalizeHooks(hooks, (msg) => warnings.add(msg));
+        if (flat) {
             const h = (merged.hooks ??= {});
-            for (const [k, v] of Object.entries(hooks) as [keyof NonNullable<Settings["hooks"]>, HookConfig[]][]) {
-                h[k] = [...(h[k] ?? []), ...v];
-            }
+            for (const [k, v] of Object.entries(flat) as [HookEvent, HookConfig[]][]) h[k] = [...(h[k] ?? []), ...v];
         }
     }
     if (user.reviewModel) merged.reviewModel = user.reviewModel;
     else delete merged.reviewModel;
     mergeSandbox(merged, layers, user);
     mergeMcpApprovals(merged, trusted ? [user, local] : [user]);
+    if (warnings.size) hookWarnings.set(merged, [...warnings]);
     return merged;
 }
 

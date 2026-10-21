@@ -102,11 +102,19 @@ hooks:
       hooks:
         - type: command
           command: ./guard.sh
-          timeout: 5`);
+          timeout: 5
+  PostToolUse:
+    - hooks:
+        - type: http
+          url: http://127.0.0.1:9/log
+        - type: prompt
+          prompt: Was it fine?
+          model: openai:gpt-mini`);
         expect(def.hooks?.SubagentStop).toBeDefined();
         expect(claudeAgents([def], opts).h!.hooks).toEqual({
             Stop: [{ hooks: [{ type: "command", command: "./done.sh" }] }],
             PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "./guard.sh", timeout: 5 }] }],
+            PostToolUse: [{ hooks: [{ type: "http", url: "http://127.0.0.1:9/log" }] }, { hooks: [{ type: "prompt", prompt: "Was it fine?" }] }],
         });
     });
 

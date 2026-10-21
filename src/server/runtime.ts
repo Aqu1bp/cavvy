@@ -16,6 +16,7 @@ import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, rewind
 import { beforeFork, forkCut, forkTargets } from "../agent/fork";
 import { fireHooks, type HookEvent } from "../agent/hooks";
 import { backgroundWork, canAnswerOneOff, GoalController, goalClearedNotice, limitedCodexGoal, loopGoalDropped, nativeGoalEnd, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, queuedGoalSet, sessionTokens, type NativeGoal } from "../agent/goal";
+import { sessionHookServices, sessionStartHooks } from "../agent/session-hooks";
 import { Session } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { INIT_PROMPT, reviewPrompt } from "../commands/index";
@@ -356,7 +357,8 @@ export class Runtime {
         this.ready = this.track(this.initModel());
         // Saved schedules come back once there's a model to run them with.
         void this.ready.then(() => !this.closed && this.schedules.restore(), () => undefined);
-        void this.hook("SessionStart", { source: opts.resumed ? "resume" : "startup" });
+        const warn = (msg: string, level: "info" | "warn" = "warn") => this.notice(msg, level);
+        void sessionStartHooks(this.settings(), session, opts.resumed ? "resume" : "startup", this.toolState.cwd, warn, sessionHookServices({ session: () => this.session, warn, complete: (s, p, sig) => this.complete(s, p, sig), mcpTools: () => this.ws.mcp.tools() }));
     }
 
     get id(): string {
@@ -2479,7 +2481,11 @@ export class Runtime {
             });
             const out = redact(res.output.replace(/\s+$/, ""));
             this.op({ op: "block.patch", turnId: turn.id, blockId, patch: { output: out.slice(-24_000) || "(no output)", exitCode: res.exitCode, running: false } });
-            if (res.newCwd) this.toolState.cwd = res.newCwd;
+            if (res.newCwd && res.newCwd !== this.toolState.cwd) {
+                const from = this.toolState.cwd;
+                this.toolState.cwd = res.newCwd;
+                void this.agent?.cwdChanged(from);
+            }
             if (res.aborted) status = "aborted";
             const text = `<bash-input>${command}</bash-input>\n<bash-stdout>${out.slice(0, 20_000)}</bash-stdout>${res.exitCode ? `\n<bash-exit-code>${res.exitCode}</bash-exit-code>` : ""}`;
             this.agent?.addReminder(`The user ran a shell command themselves (output shown to them):\n${text}`);
@@ -2875,8 +2881,8 @@ export class Runtime {
 
     // -----------------------------------------------------------------------
 
-    private hook(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
-        return fireHooks(this.settings(), event, { session_id: this.id, ...payload }, this.toolState.cwd, (msg) => this.notice(msg, "warn"), signal);
+    private async hook(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
+        await fireHooks(this.settings(), event, { session_id: this.id, ...payload }, this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level), signal);
     }
 
     /** Nothing running, waiting for the user, or still to be delivered to the model: closing it loses nothing. */

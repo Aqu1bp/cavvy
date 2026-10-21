@@ -59,11 +59,19 @@
 //                     active loses to a turn Codex starts itself (refused); the usage-limit scenario stops it (usageLimited)
 // FAKE_USER_MCP       config/read's mcp_servers: the user's own servers (JSON); FAKE_NO_CONFIG_READ=1 fails config/read
 // FAKE_CONFIG_LAYERS  overrides config/read provenance (JSON)
+// Hooks: like Codex 0.163, hooks given with -c hooks=… run only when hooks.state trusts them by the hash Codex
+//                     computes (sha256 of the normalized handler as sorted JSON). A trusted PreToolUse mcp_tool hook
+//                     calls its server's tool before the command, with its input's ${…} placeholders filled in; a
+//                     deny stops the command (no item), an allow with updatedInput runs the rewrite (and asks about
+//                     it, under the policy). hooks/list reports them. FAKE_NO_HOOKS=1: hooks/list is unknown and no
+//                     hook runs (a Codex before 0.160); FAKE_HOOK_SERVER_DOWN=1: the hook's call fails (Codex goes on,
+//                     and reports the run failed)
 //
 // Token usage is each thread's running total, kept beside the log as Codex keeps it with the thread. Like
 // Codex 0.163 (checked against it with a stand-in model server), it reports the last usage again on
 // thread/resume (with the earlier turn's id) and when a compaction starts.
 
+import { createHash } from "crypto";
 import { appendFileSync, existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { join } from "path";
 import { callTool, connect, type McpServerRef } from "./mcp-call";
@@ -91,6 +99,84 @@ function projectModel(): string | undefined {
 }
 
 const scenario = process.env.FAKE_CODEX_SCENARIO ?? process.env.FAKE_SCENARIO ?? "cmd";
+
+/** Hooks given with -c hooks={…} (inline TOML, the subset JSON with = can write). */
+const hookConfig: any = (() => {
+    const arg = argv.find((a, i) => argv[i - 1] === "-c" && a.startsWith("hooks="));
+    return arg ? JSON.parse(arg.slice("hooks=".length).replace(/"=(?=[[{"\d-]|true|false)/g, '":')) : undefined;
+})();
+const sortedJson = (v: any): any => (Array.isArray(v) ? v.map(sortedJson) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sortedJson(v[k])])) : v);
+/** Codex's hooks from them (PreToolUse, SubagentStart, SubagentStop), each with its key, hash and whether its state trusts it. */
+const HOOK_LABELS: Record<string, string> = { PreToolUse: "pre_tool_use", SubagentStart: "subagent_start", SubagentStop: "subagent_stop" };
+const nativeHooks = Object.entries(HOOK_LABELS).flatMap(([event, label]) =>
+    (hookConfig?.[event] ?? []).flatMap((g: any, gi: number) =>
+        (g.hooks ?? []).map((h: any, hi: number) => {
+            const normalized = { ...h, timeout: h.timeout ?? 600, ...(h.type === "command" ? { async: Boolean(h.async) } : {}) };
+            const hash = `sha256:${createHash("sha256").update(JSON.stringify(sortedJson({ event_name: label, ...(g.matcher ? { matcher: g.matcher } : {}), hooks: [normalized] }))).digest("hex")}`;
+            const key = `/<session-flags>/config.toml:${label}:${gi}:${hi}`;
+            return { event, key, handler: h, hash, trusted: hookConfig.state?.[key]?.trusted_hash === hash };
+        }),
+    ),
+);
+const preToolUseHooks = nativeHooks.filter((h) => h.event === "PreToolUse");
+const camel = (label: string) => label.replace(/_(\w)/g, (_, c) => c.toUpperCase());
+
+/** A sub-agent event's trusted mcp_tool hooks, as Codex runs them: their answers, parsed. A missing placeholder fails the hook. */
+async function subagentHooks(event: "SubagentStart" | "SubagentStop", threadId: string, turnId: string, input: Record<string, unknown>): Promise<any[]> {
+    if (process.env.FAKE_NO_HOOKS === "1") return [];
+    const answers: any[] = [];
+    for (const h of nativeHooks.filter((x) => x.event === event && x.trusted && x.handler.type === "mcp_tool")) {
+        const ev: Record<string, unknown> = { ...input, turn_id: turnId, session_id: threadId, cwd, hook_event_name: event };
+        let missing = "";
+        const fill = (v: any): any => (typeof v === "string" && /^\$\{(\w+)\}$/.test(v) ? (v.slice(2, -1) in ev ? ev[v.slice(2, -1)] : ((missing = v), undefined)) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fill(x)])) : v);
+        const args = fill(h.handler.input ?? {});
+        const run = { id: `${HOOK_LABELS[event]}:${h.key}`, eventName: camel(HOOK_LABELS[event]!), handlerType: "mcpTool", source: "sessionFlags", sourcePath: "/<session-flags>/config.toml" };
+        const server = mcpServers.get(h.handler.server);
+        if (missing || !server) {
+            notify("hook/completed", { threadId, turnId, run: { ...run, status: "failed", entries: [{ kind: "error", text: missing ? `hook input placeholder ${missing} is missing` : "not connected" }] } });
+            continue;
+        }
+        const r = await callTool(server, h.handler.tool, args, { threadId });
+        log({ hookCalled: { tool: h.handler.tool, input: args, answer: r.text } });
+        answers.push(r.text.trim() ? JSON.parse(r.text) : {});
+        notify("hook/completed", { threadId, turnId, run: { ...run, status: "completed", entries: [] } });
+    }
+    return answers;
+}
+
+/** Codex's PreToolUse for a call: each trusted mcp_tool hook calls its tool; the last rewrite wins, a deny stops it. */
+async function preToolUse(threadId: string, turnId: string, toolName: string, toolInput: Record<string, unknown>, callId: string): Promise<{ deny?: string; updatedInput?: Record<string, unknown> }> {
+    if (process.env.FAKE_NO_HOOKS === "1") return {};
+    let updatedInput: Record<string, unknown> | undefined;
+    for (const h of preToolUseHooks) {
+        if (!h.trusted || h.handler.type !== "mcp_tool") continue;
+        const event: Record<string, unknown> = { tool_name: toolName, tool_input: toolInput, tool_use_id: callId, turn_id: turnId, session_id: threadId, cwd, hook_event_name: "PreToolUse" };
+        const fill = (v: any): any => (typeof v === "string" && /^\$\{(\w+)\}$/.test(v) ? event[v.slice(2, -1)] : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fill(x)])) : v);
+        const run = { id: `pre-tool-use:${h.key}:${callId}`, eventName: "preToolUse", handlerType: "mcpTool", source: "sessionFlags", sourcePath: "/<session-flags>/config.toml" };
+        notify("hook/started", { threadId, turnId, run: { ...run, status: "running" } });
+        const server = mcpServers.get(h.handler.server);
+        let text = "";
+        try {
+            if (!server || process.env.FAKE_HOOK_SERVER_DOWN === "1") throw new Error(`MCP server ${h.handler.server} isn't connected`);
+            const r = await callTool(server, h.handler.tool, fill(h.handler.input ?? {}), { threadId });
+            if (r.isError) throw new Error(r.text);
+            text = r.text;
+            log({ hookCalled: { tool: h.handler.tool, input: fill(h.handler.input ?? {}), answer: text } });
+        } catch (e) {
+            // Codex goes on with the call when a hook fails.
+            notify("hook/completed", { threadId, turnId, run: { ...run, status: "failed", entries: [{ kind: "error", text: (e as Error).message }] } });
+            continue;
+        }
+        const out = text.trim() ? JSON.parse(text)?.hookSpecificOutput : undefined;
+        if (out?.permissionDecision === "deny") {
+            notify("hook/completed", { threadId, turnId, run: { ...run, status: "blocked", entries: [{ kind: "feedback", text: out.permissionDecisionReason }] } });
+            return { deny: String(out.permissionDecisionReason ?? "") };
+        }
+        if (out?.permissionDecision === "allow" && out.updatedInput) updatedInput = out.updatedInput;
+        notify("hook/completed", { threadId, turnId, run: { ...run, status: "completed", entries: [] } });
+    }
+    return updatedInput ? { updatedInput } : {};
+}
 const out = (o: unknown) => process.stdout.write(JSON.stringify(o) + "\n");
 const pending = new Map<number, (r: any) => void>();
 let serverSeq = 100;
@@ -289,19 +375,23 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             notify("item/started", { threadId, turnId, item: activity(begins) });
             notify("item/completed", { threadId, turnId, item: activity(begins) });
         } else notify("item/started", { threadId, turnId, item: spawn });
-        const childStarts = () => {
+        const childStarts = async () => {
+            // Codex's SubagentStart: what its hooks add goes to the sub-agent, ahead of its prompt.
+            const started = await subagentHooks("SubagentStart", child, childTurn, { agent_id: child, agent_type: "default" });
+            const context = started.map((a) => a?.hookSpecificOutput?.additionalContext).filter(Boolean);
+            if (context.length) log({ subagentContext: context });
             notify("turn/started", { threadId: child, turn: { id: childTurn, rootTurnId: turnId, status: "inProgress" } });
             notify("item/agentMessage/delta", { threadId: child, turnId: childTurn, itemId: "c-msg1", delta: "Looking around." });
             notify("item/completed", { threadId: child, turnId: childTurn, item: { type: "agentMessage", id: "c-msg1", text: "Looking around.", phase: "commentary" } });
         };
         // FAKE_CHILD_EARLY=1: its first events come before the spawn says whose thread it is; =all: all of them.
         const early = process.env.FAKE_CHILD_EARLY;
-        if (early === "1" || early === "all") childStarts();
+        if (early === "1" || early === "all") await childStarts();
         if (early === "all") await childRest();
         if (!v2) notify("item/completed", { threadId, turnId, item: { ...spawn, status: "completed", receiverThreadIds: [child], model: "gpt-test", agentsStates: { [child]: { status: "pendingInit", message: null } } } });
         const wait = { type: "collabAgentToolCall", id: `wait-${turnId}`, tool: "wait", status: "inProgress", senderThreadId: threadId, receiverThreadIds: [child], prompt: null, model: null, reasoningEffort: null, agentsStates: {} };
         if (!v2) notify("item/started", { threadId, turnId, item: wait });
-        if (!early) childStarts();
+        if (!early) await childStarts();
         if (early !== "all") await childRest();
         if (v2) {
             notify("item/started", { threadId, turnId, item: activity("completed") });
@@ -344,6 +434,16 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             notify("item/completed", { threadId: child, turnId: childTurn, item: { ...cmd, status: childDecision === "accept" ? "completed" : "declined", exitCode: childDecision === "accept" ? 0 : null, aggregatedOutput: childDecision === "accept" ? "ok\n" : null } });
             spend(child, childTurn, tokens(5000, 1000, 50));
             notify("item/completed", { threadId: child, turnId: childTurn, item: { type: "agentMessage", id: "c-msg2", text: "CHILD_REPORT: 2 files.", phase: "final_answer" } });
+            // Codex's SubagentStop: a block keeps the sub-agent going, its reason as the next prompt; once.
+            let last = "CHILD_REPORT: 2 files.";
+            for (let active = false; ; active = true) {
+                const stopped = await subagentHooks("SubagentStop", child, childTurn, { agent_id: child, agent_type: "default", stop_hook_active: active, last_assistant_message: last });
+                const block = stopped.find((a) => a?.decision === "block");
+                if (!block || active) break;
+                log({ subagentKeptGoing: block.reason });
+                last = "CHILD_REPORT: checked again.";
+                notify("item/completed", { threadId: child, turnId: childTurn, item: { type: "agentMessage", id: "c-msg2b", text: last, phase: "final_answer" } });
+            }
             notify("turn/completed", { threadId: child, turn: { id: childTurn, rootTurnId: turnId, status: "completed", error: null } });
         }
     } else if (scenario === "elicit") {
@@ -378,8 +478,18 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         const r = await serverRequest("item/permissions/requestApproval", { threadId, turnId, itemId: `p-${turnId}`, cwd, reason: "needs to write there", permissions });
         log({ granted: r });
     } else {
-        const shown = process.env.FAKE_COMMAND ?? "touch x";
-        const cmd = { type: "commandExecution", id: `cmd-${turnId}`, command: process.env.FAKE_COMMAND_RAW ?? `/bin/zsh -lc '${process.env.FAKE_COMMAND_SCRIPT ?? shown}'`, cwd: process.env.FAKE_COMMAND_CWD ?? cwd, status: "inProgress", commandActions: [{ type: "unknown", command: shown }], aggregatedOutput: null, exitCode: null };
+        let shown = process.env.FAKE_COMMAND ?? "touch x";
+        let script = process.env.FAKE_COMMAND_SCRIPT ?? shown;
+        const hooked = await preToolUse(threadId, turnId, "Bash", { command: script }, `cmd-${turnId}`);
+        if (hooked.deny !== undefined) {
+            // Blocked before it starts: no item, the model hears why.
+            log({ ran: false, command: shown, blockedByHook: hooked.deny });
+            spend(threadId, turnId, tokens(120, 20, 30, 5));
+            notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg2-${turnId}`, text: process.env.FAKE_FINAL_TEXT ?? "Finished.", ...phase("final_answer") } });
+            return finish(t.interrupted ? "interrupted" : "completed");
+        }
+        if (hooked.updatedInput) shown = script = String(hooked.updatedInput.command);
+        const cmd = { type: "commandExecution", id: `cmd-${turnId}`, command: process.env.FAKE_COMMAND_RAW && !hooked.updatedInput ? process.env.FAKE_COMMAND_RAW : `/bin/zsh -lc '${script}'`, cwd: process.env.FAKE_COMMAND_CWD ?? cwd, status: "inProgress", commandActions: [{ type: "unknown", command: shown }], aggregatedOutput: null, exitCode: null };
         const approve = () => {
             if (process.env.FAKE_REVIEW_APPROVE !== "1") return;
             const review = { threadId, turnId, reviewId: `rev-${turnId}`, targetItemId: cmd.id, action: { type: "command", command: shown, cwd: cmd.cwd, source: "shell" } };
@@ -476,6 +586,9 @@ async function handle(m: any) {
         case "initialize":
             if (process.env.FAKE_HANG_INIT === "1") return;
             return reply({ userAgent: "fake-codex/0.0.1", codexHome: "/tmp/none", platformFamily: "unix", platformOs: "linux" });
+        case "hooks/list":
+            if (process.env.FAKE_NO_HOOKS === "1") return out({ id: m.id, error: { code: -32601, message: "Method not found: hooks/list" } });
+            return reply({ data: (p.cwds?.length ? p.cwds : [cwd]).map((dir: string) => ({ cwd: dir, warnings: [], errors: [], hooks: nativeHooks.map((h: any, i: number) => ({ key: h.key, eventName: camel(HOOK_LABELS[h.event]!), handlerType: h.handler.type === "mcp_tool" ? "mcpTool" : "command", ...(h.handler.type === "mcp_tool" ? { server: h.handler.server, tool: h.handler.tool } : { command: h.handler.command }), matcher: null, timeoutSec: 600, sourcePath: "/<session-flags>/config.toml", source: "sessionFlags", displayOrder: i, enabled: true, isManaged: false, currentHash: h.hash, trustStatus: h.trusted ? "trusted" : "untrusted" })) })) });
         case "config/read":
             if (process.env.FAKE_NO_CONFIG_READ === "1") return fail("config/read failed: invalid configuration");
             const userMcp = JSON.parse(process.env.FAKE_USER_MCP ?? "{}");
@@ -505,6 +618,11 @@ async function handle(m: any) {
                 nextCursor: null,
             });
         case "thread/start":
+            // A one-off: an ephemeral thread answering one question (FAKE_ONEOFF_ANSWER).
+            if (p.ephemeral) {
+                log({ oneOffThread: { baseInstructions: p.baseInstructions, config: p.config, approvalPolicy: p.approvalPolicy, sandbox: p.sandbox, cwd: p.cwd } });
+                return reply({ thread: { id: "thr-oneoff" }, model: p.model ?? "gpt-test" });
+            }
             threadPolicy(p);
             await startMcp(p.config);
             setTier("thr-new", "serviceTier" in p ? p.serviceTier : (process.env.FAKE_CONFIG_TIER ?? null));
@@ -536,6 +654,14 @@ async function handle(m: any) {
             return reply({ thread: { id }, model: projectModel() ?? p.model ?? "gpt-test", serviceTier: "default" });
         }
         case "turn/start": {
+            if (p.threadId === "thr-oneoff") {
+                log({ oneOffPrompt: p.input?.[0]?.text });
+                reply({ turn: { id: "turn-oneoff", status: "inProgress" } });
+                const fail = process.env.FAKE_ONEOFF_FAIL;
+                if (!fail) notify("item/completed", { threadId: "thr-oneoff", turnId: "turn-oneoff", item: { type: "agentMessage", id: "o-msg", text: process.env.FAKE_ONEOFF_ANSWER ?? '{"ok": true}', phase: "final_answer" } });
+                notify("turn/completed", { threadId: "thr-oneoff", turn: { id: "turn-oneoff", status: fail ? "failed" : "completed", error: fail ? { message: fail } : null } });
+                break;
+            }
             // FAKE_GOAL_RACE=1: with the goal active, Codex has just started its own next turn, and refuses this one.
             const raced = goals.get(p.threadId);
             // FAKE_REFUSE_TURN_START_AT=n: the nth turn/start is refused that way, the goal active or not (its pause not taken in yet).

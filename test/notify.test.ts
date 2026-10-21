@@ -202,8 +202,8 @@ describe("Notifier", () => {
         expect(written).toEqual([]);
         const lines = (await Bun.file(out).text()).trim().split("\n").map((l) => JSON.parse(l));
         expect(lines).toEqual([
-            { hook_event_name: "Notification", cwd: dir, session_id: "sess-1", message: "Harness: waiting for your approval", kind: "permission" },
-            { hook_event_name: "Notification", cwd: dir, session_id: "sess-1", message: "Harness: done (1m 1s)", kind: "done" },
+            { hook_event_name: "Notification", cwd: dir, session_id: "sess-1", message: "Harness: waiting for your approval", kind: "permission", notification_type: "permission" },
+            { hook_event_name: "Notification", cwd: dir, session_id: "sess-1", message: "Harness: done (1m 1s)", kind: "done", notification_type: "done" },
         ]);
     });
     test("a failing Notification hook is reported, not thrown", async () => {

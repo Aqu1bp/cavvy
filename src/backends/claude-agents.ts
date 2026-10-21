@@ -26,7 +26,7 @@ export interface ClaudeAgentDefinition {
     permissionMode?: string;
     maxTurns?: number;
     skills?: string[];
-    hooks?: Record<string, { matcher?: string; hooks: { type: "command"; command: string; timeout?: number }[] }[]>;
+    hooks?: Record<string, { matcher?: string; hooks: ({ type: string } & Record<string, unknown>)[] }[]>;
     mcpServers?: (string | Record<string, Record<string, unknown>>)[];
     background?: boolean;
     isolation?: "worktree";
@@ -124,7 +124,13 @@ function claudeHooks(def: AgentDef): ClaudeAgentDefinition["hooks"] {
     for (const [event, list] of Object.entries(def.hooks)) {
         if (!list?.length) continue;
         const name = event === "SubagentStop" ? "Stop" : event;
-        for (const h of list) (out[name] ??= []).push({ ...(h.matcher ? { matcher: h.matcher } : {}), hooks: [{ type: "command", command: h.command, ...(h.timeout ? { timeout: h.timeout } : {}) }] });
+        for (const h of list) {
+            // Every handler type as written (http, prompt, mcp_tool too); the matcher is the group's, and a
+            // prompt hook's harness model ref ("provider:model") means nothing to Claude Code, so its own is used.
+            const { matcher, pluginRoot: _, type, ...rest } = h;
+            if (type === "prompt" && typeof rest.model === "string" && rest.model.includes(":")) delete rest.model;
+            (out[name] ??= []).push({ ...(matcher ? { matcher } : {}), hooks: [{ type: type ?? "command", ...rest }] });
+        }
     }
     return Object.keys(out).length ? out : undefined;
 }
