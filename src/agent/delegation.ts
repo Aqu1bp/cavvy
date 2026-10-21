@@ -73,8 +73,21 @@ function modelLine(m: ModelInfo): string {
     return `  ${modelRef(m)}${bits.length ? ` (${bits.join(", ")})` : ""}`;
 }
 
+/** What sets an agent type apart, in a few words each. */
+export function agentTraits(a: AgentDef): string[] {
+    return [
+        a.readOnly ? "read-only" : "",
+        a.model ? `runs on ${a.model}` : "",
+        a.effort ? `${a.effort} effort` : "",
+        a.permissionMode ? `${a.permissionMode} mode` : "",
+        a.isolation === "worktree" ? "in its own git worktree" : "",
+        a.background ? "always in the background" : "",
+        a.memory ? `${a.memory} memory` : "",
+    ].filter(Boolean);
+}
+
 function agentLine(a: AgentDef): string {
-    return `  ${a.name}: ${a.description || "(no description)"}${a.readOnly ? " (read-only)" : ""}${a.model ? ` (runs on ${a.model})` : ""}`;
+    return `  ${a.name}: ${a.description || "(no description)"}${agentTraits(a).map((t) => ` (${t})`).join("")}`;
 }
 
 export interface CatalogOptions {
@@ -134,6 +147,8 @@ export interface ChildRequest {
     effort?: Effort;
     /** The tool call whose result this is, to show the child's work under it. */
     callId?: string;
+    /** The agent type's definition, when the caller has read it already. */
+    def?: AgentDef;
 }
 
 export interface ChildResult {
@@ -193,14 +208,17 @@ export class Delegations {
         private onSettled?: (t: DelegatedTask) => void,
     ) {}
 
-    /** Start a task; an explanation instead when a limit stops it. */
-    start(req: ChildRequest & { model: string; writes: boolean; generation?: number }): DelegatedTask | string {
+    /**
+     * Start a task; an explanation instead when a limit stops it, naming the
+     * tools that wait for and stop one (the MCP tools by default; the Task tool's are others).
+     */
+    start(req: ChildRequest & { model: string; writes: boolean; generation?: number }, tools: { status: string; cancel: string } = { status: "task_status", cancel: "task_cancel" }): DelegatedTask | string {
         if (this.closed) return "The session ended, so the task wasn't started.";
         if (req.generation !== undefined && req.generation !== this.generation) return "The user stopped the delegated tasks while this one was being set up, so it wasn't started.";
         const running = this.running();
-        if (running.length >= DELEGATION_LIMITS.running) return `${running.length} delegated tasks are running, the most at once. Wait for one with task_status, or cancel one with task_cancel.`;
+        if (running.length >= DELEGATION_LIMITS.running) return `${running.length} delegated tasks are running, the most at once. Wait for one with ${tools.status}, or cancel one with ${tools.cancel}.`;
         const writer = req.writes && running.find((t) => t.writes);
-        if (writer) return `Task ${writer.id} "${writer.description}" can change files in this folder, and only one such task runs at a time. Wait for it with task_status, or use agent "explore" for read-only work.`;
+        if (writer) return `Task ${writer.id} "${writer.description}" can change files in this folder, and only one such task runs at a time. Wait for it with ${tools.status}, or use agent "explore" for read-only work (or an agent type with isolation: worktree).`;
         const controller = new AbortController();
         const t: DelegatedTask = { id: `task-${++this.seq}`, description: req.description, agent: req.agent, model: req.model, effort: req.effort, writes: req.writes, status: "running", startedAt: Date.now(), callId: req.callId, delivered: false, controller, settled: Promise.resolve() };
         t.settled = this.run(req, controller.signal)
@@ -282,6 +300,28 @@ export class Delegations {
     }
 }
 
+/**
+ * What task_status (and the Task tool's TaskStatus) answers: one task's
+ * result or state, or all of them, after waiting up to `ms` for it (or one of
+ * the running ones). A result shown is given, unless the caller went away.
+ */
+export async function taskStatusText(tasks: Delegations, id: string | undefined, ms: number, signal: AbortSignal, none = "No tasks were delegated in this session."): Promise<{ text: string; isError?: boolean }> {
+    const give = (t: DelegatedTask) => {
+        if (t.status !== "running" && !signal.aborted) t.delivered = true;
+        return taskReport(t);
+    };
+    if (id) {
+        const t = tasks.get(id);
+        if (!t) return { text: `No task ${id}. ${tasks.list().length ? `Tasks: ${tasks.list().map((x) => x.id).join(", ")}.` : none}`, isError: true };
+        await tasks.wait([t], ms, signal);
+        return { text: give(t) };
+    }
+    const all = tasks.list();
+    if (!all.length) return { text: none };
+    await tasks.wait(tasks.running(), ms, signal);
+    return { text: all.map((t) => (t.status !== "running" && !t.delivered ? give(t) : t.status === "running" ? taskReport(t) : `Task ${t.id} "${t.description}": ${t.status} (result already given).`)).join("\n\n---\n\n") };
+}
+
 // ---------------------------------------------------------------------------
 // The MCP tools for Claude Code and Codex
 
@@ -356,7 +396,7 @@ export function orchestratorTools(h: OrchestratorHost): ServerTool[] {
                     model: { type: "string", description: "provider:model from the models tool (needed unless the agent type has its own model)" },
                     effort: { type: "string", description: "Reasoning effort, one the model supports (default: the session's, where the model has it)" },
                     agent: { type: "string", description: 'Agent type from the models tool: "general-purpose" (default), "explore" (read-only: it can\'t run tests, builds or scripts either), or a custom one' },
-                    wait: { type: "boolean", description: "Wait for the result (default true)" },
+                    wait: { type: "boolean", description: "Wait for the result (default true; agent types that always run in the background don't wait)" },
                     timeout_minutes: { type: "number", description: `How long to wait for the result (default ${DELEGATION_LIMITS.defaultWaitMs / 60_000}, at most ${DELEGATION_LIMITS.maxWaitMs / 60_000})` },
                 },
                 required: ["task", "description"],
@@ -380,12 +420,14 @@ export function orchestratorTools(h: OrchestratorHost): ServerTool[] {
                 if (typeof checked === "string") return { text: checked, isError: true };
                 const levels = checked.effortLevels ?? EFFORT_LEVELS;
                 if (args.effort !== undefined && (typeof args.effort !== "string" || !levels.includes(args.effort as Effort))) return { text: `Unsupported effort "${String(args.effort)}" for ${model}. Valid levels: ${levels.join(", ") || "none"}.`, isError: true };
-                const effort = (args.effort as Effort | undefined) ?? checked.effort;
+                // Asked for, else the agent type's (where the model has it), else the session's.
+                const effort = (args.effort as Effort | undefined) ?? (def.effort && levels.includes(def.effort) ? def.effort : checked.effort);
                 const callId = await h.claimCall(args, ctx.meta);
                 if (ctx.signal.aborted) return { text: "The call was cancelled before the task started.", isError: true };
-                const t = h.tasks.start({ description, prompt, agent: def.name, model, effort, callId, writes: !def.readOnly, generation });
+                // One in a worktree of its own doesn't change this folder's files.
+                const t = h.tasks.start({ description, prompt, agent: def.name, model, effort, callId, writes: !def.readOnly && def.isolation !== "worktree", generation });
                 if (typeof t === "string") return { text: t, isError: true };
-                if (args.wait === false) return { text: `Started task ${t.id} "${t.description}" (${t.agent} on ${t.model}${t.effort ? `, ${t.effort} effort` : ""}). Get its result with task_status; cancel it with task_cancel.` };
+                if (args.wait === false || def.background) return { text: `Started task ${t.id} "${t.description}" (${t.agent} on ${t.model}${t.effort ? `, ${t.effort} effort` : ""}). Get its result with task_status; cancel it with task_cancel.` };
                 const limit = waitMs(args.timeout_minutes, DELEGATION_LIMITS.defaultWaitMs);
                 await h.tasks.wait([t], limit, ctx.signal);
                 if (t.status === "running") return { text: `${taskReport(t)} It keeps running: get its result with task_status (it can wait), or cancel it with task_cancel.` };
@@ -406,17 +448,7 @@ export function orchestratorTools(h: OrchestratorHost): ServerTool[] {
             annotations: { readOnlyHint: true, openWorldHint: false },
             call: async (args, ctx) => {
                 const ms = Math.min(Math.max(0, Number(args.wait_seconds) || 0) * 1000, DELEGATION_LIMITS.maxWaitMs);
-                const id = str(args.task_id);
-                if (id) {
-                    const t = h.tasks.get(id);
-                    if (!t) return { text: `No task ${id}. ${h.tasks.list().length ? `Tasks: ${h.tasks.list().map((x) => x.id).join(", ")}.` : "No tasks were delegated in this session."}`, isError: true };
-                    await h.tasks.wait([t], ms, ctx.signal);
-                    return { text: deliver(t, ctx.signal) };
-                }
-                const all = h.tasks.list();
-                if (!all.length) return { text: "No tasks were delegated in this session." };
-                await h.tasks.wait(h.tasks.running(), ms, ctx.signal);
-                return { text: all.map((t) => (t.status !== "running" && !t.delivered ? deliver(t, ctx.signal) : t.status === "running" ? taskReport(t) : `Task ${t.id} "${t.description}": ${t.status} (result already given).`)).join("\n\n---\n\n") };
+                return taskStatusText(h.tasks, str(args.task_id) || undefined, ms, ctx.signal);
             },
         },
         {

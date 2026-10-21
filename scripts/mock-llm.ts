@@ -9,6 +9,7 @@
 //   "slow"           streams a long answer slowly
 //   "agents"         hands two reviews to sub-agents on other models (Task), then sums up
 //   "note"           a sub-agent that writes a file (asks permission in Manual mode)
+//   "background"     a sub-agent in the background (Task run_in_background), and a turn that goes on meanwhile
 //   "first message"  says what the user's first message was, and how many they've sent
 //   "pause"          a short answer after a moment's wait (time to queue a message meanwhile)
 //   "reject400"      the request is refused (HTTP 400, as for a bad request)
@@ -97,6 +98,15 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
             { text: tests ? TESTS_REPORT : AUTH_REPORT },
         ];
         return steps[toolRounds];
+    }
+    if (/\bbackground\b/.test(p)) {
+        if (toolRounds === 0)
+            return {
+                text: "I'll have a reviewer look at the tests in the background while I check the auth module.",
+                calls: [{ name: "Task", args: { description: "Find gaps in sign-in tests", prompt: "Subtask: check which tests cover sign-in and list what's missing.", subagent_type: "general-purpose", model: "mock:mock-haiku", run_in_background: true } }],
+            };
+        if (toolRounds === 1) return { text: "While it works, the auth module:", calls: [{ name: "Read", args: { file_path: "src/auth/index.ts" } }] };
+        return { text: "Strategies are registered in `src/auth/index.ts`. The test review is still running in the background; its findings come with your next message." };
     }
     if (/\bnote\b/.test(p)) {
         if (toolRounds === 0)
@@ -216,6 +226,7 @@ function titleFor(prompt: string): string {
     if (/\btodo\b/.test(p)) return "Track SSO tasks";
     if (/\bagents?\b/.test(p)) return "Review auth with agents";
     if (/\bnote\b/.test(p)) return "Write a release note";
+    if (/\bbackground\b/.test(p)) return "Review tests in the background";
     return prompt.split(/\s+/).slice(0, 4).join(" ").replace(/^\w/, (c) => c.toUpperCase());
 }
 

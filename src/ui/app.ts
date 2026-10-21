@@ -923,11 +923,13 @@ export class App {
         let a = this.active.get(parentId) ?? this.detached.get(parentId);
         // One working after its call returned (Codex's spawn does at once): shown on its own while it works.
         if (!a && (e.type === "request_start" || e.type === "tool_start")) {
-            a = { call: { type: "tool_call", id: parentId, name: "Task", input: { description: label } }, title: `Task(${label})`, startedAt: Date.now(), progress: "" };
+            // A background task's time counts from its start, not from when its call returned.
+            const startedAt = this.agent?.delegatedTasks.find((t) => t.callId === parentId)?.startedAt ?? Date.now();
+            a = { call: { type: "tool_call", id: parentId, name: "Task", input: { description: label } }, title: `Task(${label})`, startedAt, progress: "" };
             this.detached.set(parentId, a);
         }
         if (!a) return;
-        a.sub ??= { label, tools: [], count: 0, tokens: 0, startedAt: Date.now() };
+        a.sub ??= { label, tools: [], count: 0, tokens: 0, startedAt: a.startedAt };
         if (e.type === "tool_start") {
             a.sub.count++;
             a.sub.tools.push(e.title);
@@ -961,7 +963,10 @@ export class App {
             const out: string[] = ["", toolLine(displayTitle(title, tool), state)];
             if (sandboxed && autoReason === "sandboxed") out.push(theme.subtle("  ⎿  ran in the sandbox"));
             else if (autoReason && autoReason !== "hook") out.push(theme.subtle(`  ⎿  auto-approved${sandboxed ? " (sandboxed)" : ""}: ${truncate(autoReason, cols - 34)}`));
-            if ((call.name === "Task" || call.name === DELEGATE_TOOL) && sub) {
+            if (call.name === "Task" && d?.summary === "Started in the background") {
+                const id = /background task (task-\d+)/.exec(result.content)?.[1];
+                out.push(theme.muted(`  ⎿  Running in the background${id ? ` as ${id}` : ""} · /tasks shows it`));
+            } else if ((call.name === "Task" || call.name === DELEGATE_TOOL) && sub) {
                 out.push(theme.muted(`  ⎿  ${result.isError ? "Failed" : "Done"} (${sub.count} tool use${sub.count === 1 ? "" : "s"} · ${formatTokens(sub.tokens)} tokens · ${formatDuration(durationMs)})`));
                 if (verbose) out.push(...resultLines(result.content, cols, 40));
             } else if (denied) {

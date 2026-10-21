@@ -51,6 +51,7 @@ import { forkSession, forkTargets } from "../agent/fork";
 import { forkUiLog } from "../server/history";
 import { loadMemory } from "../agent/memory";
 import { BUILTIN_AGENTS, loadAgents } from "../agent/agents";
+import { agentTraits } from "../agent/delegation";
 import { estimateTokens } from "../agent/compact";
 import { BLOCKING_EVENTS, HOOK_EVENTS } from "../agent/hooks";
 import { toSchema } from "../tools/index";
@@ -1072,11 +1073,11 @@ function tasksCommand(app: App, args: string) {
     const [verb, id] = args.trim().split(/\s+/);
     if (verb === "stop") {
         const n = agent?.stopDelegated(id) ?? 0;
-        return app.notice(n ? `Stopping ${n} delegated task${n === 1 ? "" : "s"}.` : id ? `No running task ${id}.` : "No delegated tasks are running.");
+        return app.notice(n ? `Stopping ${n} task${n === 1 ? "" : "s"}.` : id ? `No running task ${id}.` : "No background or delegated tasks are running.");
     }
     if (verb) return app.notice("Usage: /tasks, or /tasks stop [task-id]", "error");
-    if (!tasks.length) return app.notice("No tasks were delegated in this session. Claude Code and Codex can hand tasks to other providers' models; ask them to.");
-    const lines = ["", heading("Delegated tasks")];
+    if (!tasks.length) return app.notice("No background or delegated tasks in this session. Sub-agents run in the background when the model asks (Task with run_in_background) or their definition says background: true; Claude Code and Codex can hand tasks to other providers' models.");
+    const lines = ["", heading("Background and delegated tasks")];
     for (const t of tasks) {
         const r = t.result;
         const state = t.status === "running" ? theme.warning(`running ${formatDuration(Date.now() - t.startedAt)}`) : t.status === "done" ? theme.success("done") : t.status === "failed" ? theme.error("failed") : theme.muted("stopped");
@@ -1511,11 +1512,20 @@ function agentsCommand(app: App) {
     const agents = loadAgents(app.cwd);
     const lines = ["", heading("Sub-agents"), theme.muted("  The model starts these with the Task tool.")];
     for (const a of agents) {
-        lines.push(`  ${bold(a.name)} ${theme.muted(`(${a.source}${a.readOnly ? ", read-only" : ""}${a.model ? `, ${a.model}` : ""})`)}`);
+        lines.push(`  ${bold(a.name)} ${theme.muted(`(${[a.source, ...agentTraits(a)].join(", ")})`)}`);
         lines.push(theme.muted(`    ${truncate(a.description, termCols() - 8)}`));
-        if (a.tools?.length) lines.push(theme.subtle(`    tools: ${a.tools.join(", ")}`));
+        const more = [
+            a.tools?.length ? `tools: ${a.tools.join(", ")}` : "",
+            a.disallowedTools?.length ? `disallowed tools: ${a.disallowedTools.join(", ")}` : "",
+            a.maxTurns ? `max turns: ${a.maxTurns}` : "",
+            a.skills?.length ? `skills: ${a.skills.join(", ")}` : "",
+            a.mcpServers?.length ? `MCP: ${a.mcpServers.map((s) => s.name + (s.config ? " (own)" : "")).join(", ")}` : "",
+            a.hooks ? `hooks: ${Object.entries(a.hooks).map(([e, l]) => `${e}${(l?.length ?? 0) > 1 ? ` ×${l!.length}` : ""}`).join(", ")}` : "",
+        ].filter(Boolean);
+        for (const m of more) lines.push(theme.subtle(`    ${truncate(m, termCols() - 6)}`));
+        for (const w of a.warnings ?? []) lines.push(theme.warning(`    ⚠ ${truncate(w, termCols() - 8)}`));
     }
-    if (agents.length === BUILTIN_AGENTS.length) lines.push("", theme.muted(`  Add your own as markdown files in ${displayPath(paths.userAgents(), app.cwd)}/ or .harness/agents/ (frontmatter: name, description, tools, model).`));
+    if (agents.length === BUILTIN_AGENTS.length) lines.push("", theme.muted(`  Add your own as markdown files in ${displayPath(paths.userAgents(), app.cwd)}/ or .harness/agents/ (frontmatter: name, description, tools, disallowedTools, model, permissionMode, effort, maxTurns, isolation, background, memory, skills, mcpServers, hooks).`));
     app.print(lines);
 }
 
@@ -1735,7 +1745,7 @@ const BUILTIN: Command[] = [
         },
     },
     { name: "cost", description: "Token usage and cost for this session", whileBusy: true, run: (app) => costCommand(app) },
-    { name: "tasks", description: "Tasks Claude Code or Codex delegated to other models (stop them with /tasks stop)", args: "[stop [task-id]]", whileBusy: true, run: (app, args) => tasksCommand(app, args) },
+    { name: "tasks", description: "Background sub-agents, and tasks Claude Code or Codex delegated to other models (stop them with /tasks stop)", args: "[stop [task-id]]", whileBusy: true, run: (app, args) => tasksCommand(app, args) },
     { name: "context", description: "How much of the context window is used", whileBusy: true, run: (app) => contextCommand(app) },
     { name: "status", description: "Version, model, key source, mode, MCP, memory", whileBusy: true, run: (app) => statusCommand(app) },
     { name: "resume", aliases: ["continue"], description: "Resume an earlier conversation", args: "[session-id]", run: resumeCommand },

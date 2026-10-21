@@ -1344,13 +1344,14 @@ describe("harness models", () => {
         expect(childRequests.map((r) => [r.model.id, r.fastMode])).toEqual([["gemini-fast", true], ["gemini-test", false]]);
     });
 
-    test("a Claude Code or Codex sub-agent kept going (a Stop hook) takes up a speed change made meanwhile", async () => {
+    test("a Claude Code or Codex sub-agent kept going (a SubagentStop hook) takes up a speed change made meanwhile", async () => {
         const flag = join(cwd, "stopped-once");
         const main = (content: unknown[], stopReason = "end_turn") => ({ role: "assistant", provider: "anthropic", model: "claude-main", stopReason, content, usage: { inputTokens: 10, outputTokens: 5 } });
         const steps = [main([{ type: "tool_call", id: "t1", name: "Task", input: { description: "On Codex", prompt: "a", model: "codex:gpt-fast" } }], "tool_use"), main([{ type: "text", text: "ok" }])];
         let n = 0;
         const client = { stream: async () => steps[n++], listModels: async () => [] };
-        const settings = { hooks: { Stop: [{ command: `[ -f '${flag}' ] || { touch '${flag}'; sleep 1; echo "keep going" >&2; exit 2; }` }] } };
+        // A sub-agent's turn ends with SubagentStop, on a backend as on the harness's own loop.
+        const settings = { hooks: { SubagentStop: [{ command: `[ -f '${flag}' ] || { touch '${flag}'; sleep 1; echo "keep going" >&2; exit 2; }` }] } };
         const { run, session } = await makeAgent({ provider: "anthropic", model: { id: "claude-main", supportsFastMode: true }, client, settings });
         session.setFastMode(true);
         const done = run("go");
