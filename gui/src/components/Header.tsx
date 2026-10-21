@@ -3,7 +3,7 @@
 // the right one glass capsule of tools: the changes, the project's scripts,
 // the terminal, the side panel and the session's menu.
 
-import { createEffect, createResource, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { createEffect, createMemo, createResource, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { Archive, Copy, Ellipsis, FileDiff, FolderOpen, GitBranch, History, PanelBottom, PanelLeft, PanelRight, Pencil, Search, Share, ShieldAlert, Shrink, SquareArrowOutUpRight, SquarePen, SquareTerminal, Trash2 } from "lucide-solid";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc, toast } from "../state/app";
@@ -110,8 +110,10 @@ export const CrumbSep = () => (
 function ChangesChip(p: { handle: SessionHandle }) {
     const [git] = useGitChanges(() => p.handle);
     // Only asked for outside a repository, where git has nothing to say.
+    // On a yes or no, not on git's reply itself: each new reply would otherwise ask again for the same change.
+    const notRepo = createMemo(() => git()?.repo === false);
     const [edits] = createResource(
-        () => git()?.repo === false && sessionReadReady(p.handle) && { id: p.handle.id, n: p.handle.view.state.filesChanged, busy: p.handle.view.state.busy },
+        () => notRepo() && sessionReadReady(p.handle) && { id: p.handle.id, n: p.handle.view.state.filesChanged, busy: p.handle.view.state.busy },
         ({ id }) => rpc.call("session.changes", { id }).catch(() => undefined),
     );
     const changes = () => {
