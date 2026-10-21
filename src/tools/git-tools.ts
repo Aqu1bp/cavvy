@@ -203,7 +203,10 @@ async function publishPreview(input: object, ctx: ToolContext, extra?: string): 
 function pushApproved(input: object, info: { branch: string; fingerprint: string }, cwd: string): { refused: string } | { fingerprint: string } {
     const moved = branchMoved(input, cwd, info.branch);
     if (moved) return { refused: moved };
-    const push = shown.get(input)?.push;
+    const asked = shown.get(input);
+    const push = asked?.push;
+    // A prompt that couldn't say where the push goes approved no destination.
+    if (asked && !push) return { refused: "The user was asked without seeing the commit and destination (they couldn't be read then). Nothing was pushed; try again so the prompt shows them." };
     if (push && push.fingerprint !== info.fingerprint) return { refused: `The commit or destination changed since the user was asked: they approved pushing ${push.what}. Nothing was pushed; check with the user before trying again.` };
     return { fingerprint: push?.fingerprint ?? info.fingerprint };
 }

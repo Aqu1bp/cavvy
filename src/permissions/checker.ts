@@ -209,7 +209,9 @@ export class PermissionChecker {
     approve(tool: Tool<any>, input: any, cwd: string, opts: { sandbox?: boolean; grant?: SessionGrant } = {}) {
         // The git tools act on whatever the repo holds when they run, so the same input can mean another
         // branch, commit or set of files: a yes covers the call it answered. "Don't ask again" is the rule.
-        if (!ONE_CALL_APPROVAL.has(tool.name)) this.approved.add(this.actionKey(tool, input, cwd, opts.sandbox));
+        // Nor does the reviewer hear of it: it would read close variations (a push from Bash) as approved too.
+        if (ONE_CALL_APPROVAL.has(tool.name)) return;
+        this.approved.add(this.actionKey(tool, input, cwd, opts.sandbox));
         const a = approvedAction(tool, input, canonical(cwd), this.target(tool, input, cwd).path, opts.grant);
         const key = stableStringify(a);
         this.approvals = [...this.approvals.filter((x) => stableStringify(x) !== key), a].slice(-10);

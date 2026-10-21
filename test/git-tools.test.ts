@@ -264,6 +264,20 @@ describe("GitPush", () => {
         expect(git(other, "branch", "--list")).toBe("");
     });
 
+    test("a prompt that couldn't read the destination approves no push, even once it can be read", async () => {
+        const { cwd, remote, state } = repo();
+        const ctx = ctxFor(cwd);
+        const input = {};
+        git(cwd, "remote", "remove", "origin");
+        const p = await GitPushTool.preview!(input, ctx);
+        expect(p?.body ?? "").not.toContain(remote);
+        git(cwd, "remote", "add", "origin", remote);
+        const r = await run(GitPushTool, input, ctx);
+        expect(r).toMatchObject({ isError: true, content: expect.stringContaining("without seeing the commit and destination") });
+        expect(calls(state, ".git-calls").some((a) => a.includes("push"))).toBe(false);
+        expect(git(remote, "branch", "--list", "feature")).toBe("");
+    });
+
     test("won't push a commit made after the prompt showed the branch", async () => {
         const { cwd, remote, state } = repo();
         const ctx = ctxFor(cwd);
@@ -462,6 +476,8 @@ describe("permissions", () => {
                 expect(checker.check(tool(name), input, mode, cwd).remembered).toBeUndefined();
             }
         }
+        // The reviewer isn't told of them either: it would take a push from Bash as approved too.
+        expect(checker.recentApprovals()).toEqual([]);
         // Other tools still remember an exact yes.
         checker.approve(tool("Bash"), { command: "make" }, cwd);
         expect(checker.check(tool("Bash"), { command: "make" }, "default", cwd)).toMatchObject({ behavior: "allow", remembered: true });
