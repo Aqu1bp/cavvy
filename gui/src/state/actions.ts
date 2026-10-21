@@ -2,7 +2,8 @@
 
 import { createSignal } from "solid-js";
 import { adjacentSession, sidebarEntries, sidebarIds, SESSION_PAGE } from "../lib/session-order";
-import { sidebarOrder } from "./sidebar";
+import { sidebarOrder, unselect } from "./sidebar";
+import { sessionCount, sessionNames } from "../lib/rail-select";
 import type { ArchiveResult, CliSessionInfo, EditorInfo, EffortLevel, FollowUpMode, GitCommitHead, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
@@ -12,7 +13,7 @@ import { activate, app, createSession, dropHandle, forkSession, handleFor, impor
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { prefs, setPrefs } from "./prefs";
-import { railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, setReview, setRewindOpen, setSettingsTab, shellLayout } from "./ui";
+import { railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setDeleteRequest, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, setReview, setRewindOpen, setSettingsTab, shellLayout } from "./ui";
 import { clientAction, slashName } from "../lib/commands";
 import { forkAnchor } from "../lib/fork";
 export { forkAnchor } from "../lib/fork";
@@ -335,12 +336,13 @@ export async function pin(id: string, pinned: boolean) {
     await rpc.call("session.pin", { id, pinned }).catch(reportError);
 }
 
-/** Set aside (or back in play). Sending to it puts it back too. */
-export async function settle(id: string, settled: boolean) {
+/** Set aside (or back in play). Sending to it puts it back too. Whether it was done. */
+export async function settle(id: string, settled: boolean): Promise<boolean> {
     try {
         await rpc.call("session.settle", { id, settled });
     } catch (e) {
-        return reportError(e);
+        reportError(e);
+        return false;
     }
     if (settled) {
         toast("Session settled", "info", {
@@ -350,14 +352,16 @@ export async function settle(id: string, settled: boolean) {
             },
         });
     }
+    return true;
 }
 
-/** After the confirm dialog. The server moves its files to the trash; Undo puts them back. */
-export async function deleteSession(id: string) {
+/** After the confirm dialog. The server moves its files to the trash; Undo puts them back. Whether it was done. */
+export async function deleteSession(id: string): Promise<boolean> {
     try {
         await rpc.call("session.delete", { id });
     } catch (e) {
-        return reportError(e);
+        reportError(e);
+        return false;
     }
     toast(
         "Session deleted",
@@ -370,6 +374,126 @@ export async function deleteSession(id: string) {
         },
         UNDO_DELETE_MS,
     );
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Several sessions at once (picked in the rail): each goes the way a single one
+// does, with one toast and one Undo for all of them. Those that fail are named
+// in a second toast and stay selected.
+
+const summaryOf = (id: string) => app.sessions.find((s) => s.id === id) ?? app.archived.find((s) => s.id === id);
+const titleOf = (id: string) => summaryOf(id)?.title ?? handleFor(id)?.view.state.title ?? "Untitled";
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** Each id through `one`, a few at a time: those done and those that failed (both in the order given), and the first failure. */
+async function eachSession(ids: readonly string[], one: (id: string) => Promise<unknown>) {
+    const done = new Set<string>();
+    const failed = new Set<string>();
+    let error: unknown;
+    let next = 0;
+    const worker = async () => {
+        while (next < ids.length) {
+            const id = ids[next++]!;
+            try {
+                await one(id);
+                done.add(id);
+            } catch (e) {
+                failed.add(id);
+                error ??= e;
+            }
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, ids.length) }, worker));
+    return { done: ids.filter((id) => done.has(id)), failed: ids.filter((id) => failed.has(id)), error };
+}
+
+async function bulk(ids: readonly string[], o: {
+    /** "Couldn't <verb> “A” and “B”: …" */
+    verb: string;
+    /** "5 sessions <did>"; none: no toast when it worked. */
+    did?: string;
+    one: (id: string) => Promise<unknown>;
+    undo?: (id: string) => Promise<unknown>;
+    ms?: number;
+    /** With the ones done, before the toast. */
+    after?: (done: readonly string[]) => void;
+}): Promise<string[]> {
+    // Taken now: a deleted session's summary is gone by the time its Undo runs.
+    const titles = new Map(ids.map((id) => [id, titleOf(id)]));
+    const names = (list: readonly string[]) => sessionNames(list.map((id) => titles.get(id)!));
+    const r = await eachSession(ids, o.one);
+    unselect(r.done);
+    if (r.done.length) {
+        o.after?.(r.done);
+        let left = r.done;
+        const undo = o.undo;
+        if (o.did)
+            toast(`${sessionCount(r.done.length)} ${o.did}`, "info", undo ? {
+                label: "Undo",
+                // A retry brings back only those still missing.
+                run: async () => {
+                    const back = await eachSession(left, undo);
+                    left = back.failed;
+                    if (left.length) throw new Error(`${names(left)} couldn't be brought back: ${errorText(back.error)}`);
+                },
+            } : undefined, o.ms);
+    }
+    if (r.failed.length) toast(`Couldn't ${o.verb} ${names(r.failed)}: ${errorText(r.error)}`, "error");
+    return r.failed;
+}
+
+/** Settle several (or bring them back into play). The ids that failed. */
+export async function settleSessions(ids: readonly string[], settled: boolean): Promise<string[]> {
+    if (ids.length === 1) return (await settle(ids[0]!, settled)) ? (unselect(ids), []) : [...ids];
+    return bulk(ids, {
+        verb: settled ? "settle" : "bring back",
+        did: settled ? "settled" : undefined,
+        one: (id) => rpc.call("session.settle", { id, settled }),
+        undo: settled ? (id) => rpc.call("session.settle", { id, settled: false }) : undefined,
+    });
+}
+
+/**
+ * Archive several (or restore them). One alone goes the usual way (asking about
+ * its worktree); several are archived only, keeping their worktrees, as that
+ * question's default does. The ids that failed.
+ */
+export async function archiveSessions(ids: readonly string[], archived: boolean): Promise<string[]> {
+    if (ids.length === 1) {
+        if ((await archive(ids[0]!, archived)) === false) return [...ids];
+        unselect(ids);
+        return [];
+    }
+    return bulk(ids, {
+        verb: archived ? "archive" : "restore",
+        did: archived ? "archived" : "restored",
+        one: (id) => rpc.call("session.archive", { id, archived }),
+        undo: archived ? (id) => rpc.call("session.archive", { id, archived: false }) : undefined,
+        // As for one: the open session, archived, leaves the screen for Home.
+        after: (done) => {
+            if (archived && app.activeId && done.includes(app.activeId)) newSession(app.homeCwd);
+        },
+    });
+}
+
+/** After the confirm dialog: several to the trash, one Undo for all. The ids that failed. */
+export async function deleteSessions(ids: readonly string[]): Promise<string[]> {
+    if (ids.length === 1) return (await deleteSession(ids[0]!)) ? (unselect(ids), []) : [...ids];
+    return bulk(ids, {
+        verb: "delete",
+        did: "deleted",
+        one: (id) => rpc.call("session.delete", { id }),
+        undo: (id) => rpc.call("session.restore", { id }),
+        ms: UNDO_DELETE_MS,
+    });
+}
+
+/** The delete dialog, for one session or several. */
+export function askToDelete(ids: readonly string[]) {
+    const list = ids.map(summaryOf).filter((s) => s !== undefined);
+    if (list.length === 1) setDeleteRequest({ id: list[0]!.id, title: list[0]!.title, projectName: list[0]!.projectName });
+    else if (list.length > 1) setDeleteRequest({ ids: list.map((s) => s.id), titles: list.map((s) => s.title) });
 }
 
 /** Only the commit dialog's explicit Commit click calls this. Errors stay in the dialog. */

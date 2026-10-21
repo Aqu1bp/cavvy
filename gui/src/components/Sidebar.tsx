@@ -4,23 +4,24 @@
 // into a one-line list at the bottom; sending to one brings it back.
 
 import { batch, createEffect, createMemo, createSignal, For, Match, onCleanup, Show, Switch, untrack } from "solid-js";
-import { Archive, ArchiveRestore, Check, CheckCheck, ChevronUp, CircleAlert, Folder, FolderPlus, Hand, Layers, ListFilter, MessageSquareText, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2 } from "lucide-solid";
+import { Archive, ArchiveRestore, Check, CheckCheck, ChevronUp, CircleAlert, Folder, FolderPlus, Hand, Layers, ListFilter, MessageSquareText, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread, refreshSessions, reportError } from "../state/app";
-import { archive, chooseProject, newSession, openProject, pin, rename, settle, toggleSidebar } from "../state/actions";
+import { archive, archiveSessions, askToDelete, chooseProject, newSession, openProject, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { setDeleteRequest, setPaletteOpen, setSettingsTab } from "../state/ui";
 import { ago, monogram, projectColor, since } from "../lib/format";
 import { holdSidebar, sidebarEntries, sidebarIds, SESSION_PAGE, type SidebarEntry } from "../lib/session-order";
 import { sessionStatus } from "../lib/session-status";
 import { groupCounts, railFoot, railGlyph, type RailGlyph, type RailPlan } from "../lib/rail";
-import { setSidebarOrder } from "../state/sidebar";
+import { railSelection, setRailSelection, setSidebarOrder } from "../state/sidebar";
+import { bulkPlan, clickKind, clickSelect, extendSelect, pruneSelection, railTargets, selectAll, sessionCount, type BulkPlan, type RailList } from "../lib/rail-select";
 import { now } from "../lib/clock";
 import { isTauri, os } from "../lib/platform";
 import { Menu } from "./ui/Menu";
 import { rowMenuKey } from "../lib/menu";
 import { ProviderIcon } from "./ui/ProviderIcon";
-import { shortcut, withShortcut } from "../state/keybindings";
+import { actionOf, shortcut, withShortcut } from "../state/keybindings";
 
 /** Cards shown before "Show more". */
 const PAGE = SESSION_PAGE;
@@ -69,10 +70,70 @@ function useRename(s: () => SessionSummary) {
     return { editing, setEditing, input };
 }
 
-function RowMenu(p: { s: SessionSummary; open: boolean; setOpen: (v: boolean) => void; anchor: () => HTMLElement | undefined; returnFocus: () => HTMLElement | undefined; point?: { x: number; y: number }; onRename: () => void }) {
-    const close = () => p.setOpen(false);
+/** How a row takes part in the rail's selection (the Sidebar keeps it). */
+interface RailPick {
+    picked: (id: string) => boolean;
+    click: (e: MouseEvent, id: string) => void;
+    /** The selection, when this row is in one of two or more: its menu acts on all of them. */
+    group: (id: string) => readonly string[] | undefined;
+    plan: (ids: readonly string[]) => BulkPlan;
+    clear: () => void;
+}
+
+/** The actions on several selected sessions, as menu items (a selected row's context menu). */
+function BulkItems(p: { plan: BulkPlan; close: () => void; clear: () => void }) {
+    const n = (ids: readonly string[]) => sessionCount(ids.length);
     return (
-        <Menu label="Session actions" returnFocus={p.returnFocus} point={p.point} open={p.open} anchor={p.anchor} onClose={close} align="end" width={220}>
+        <>
+            <div class="menu-head">{n(p.plan.delete)} selected</div>
+            <Show when={p.plan.settle.length}>
+                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void settleSessions(p.plan.settle, true))}>
+                    <CheckCheck size={14} /> Settle {n(p.plan.settle)}
+                </button>
+            </Show>
+            <Show when={p.plan.unsettle.length}>
+                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void settleSessions(p.plan.unsettle, false))}>
+                    <Undo2 size={14} /> Back in play
+                </button>
+            </Show>
+            <Show when={p.plan.archive.length}>
+                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void archiveSessions(p.plan.archive, true))}>
+                    <Archive size={14} /> Archive {n(p.plan.archive)}
+                </button>
+            </Show>
+            <Show when={p.plan.restore.length}>
+                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void archiveSessions(p.plan.restore, false))}>
+                    <ArchiveRestore size={14} /> Restore {n(p.plan.restore)}
+                </button>
+            </Show>
+            <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), p.clear())}>
+                <X size={14} /> Clear selection
+            </button>
+            <div class="menu-sep" />
+            <button role="menuitem" class="menu-item compact danger" onClick={() => (p.close(), askToDelete(p.plan.delete))}>
+                <Trash2 size={14} /> Delete {n(p.plan.delete)}…
+            </button>
+        </>
+    );
+}
+
+function RowMenu(p: { s: SessionSummary; pick: RailPick; open: boolean; setOpen: (v: boolean) => void; anchor: () => HTMLElement | undefined; returnFocus: () => HTMLElement | undefined; point?: { x: number; y: number }; onRename: () => void }) {
+    const close = () => p.setOpen(false);
+    // Taken as the menu opens, so it doesn't change under the pointer.
+    const group = createMemo(() => (p.open ? untrack(() => p.pick.group(p.s.id)) : undefined));
+    return (
+        <Menu label={group() ? "Selected sessions actions" : "Session actions"} returnFocus={p.returnFocus} point={p.point} open={p.open} anchor={p.anchor} onClose={close} align="end" width={220}>
+            <Show when={group()} fallback={<SingleItems s={p.s} close={close} onRename={p.onRename} />}>
+                {(ids) => <BulkItems plan={p.pick.plan(ids())} close={close} clear={p.pick.clear} />}
+            </Show>
+        </Menu>
+    );
+}
+
+function SingleItems(p: { s: SessionSummary; close: () => void; onRename: () => void }) {
+    const close = p.close;
+    return (
+        <>
             <button role="menuitem" class="menu-item compact" onClick={() => batch(() => { p.onRename(); close(); })}>
                 <Pencil size={14} /> Rename
             </button>
@@ -94,7 +155,7 @@ function RowMenu(p: { s: SessionSummary; open: boolean; setOpen: (v: boolean) =>
             <button role="menuitem" class="menu-item compact danger" onClick={() => (close(), setDeleteRequest({ id: p.s.id, title: p.s.title, projectName: p.s.projectName }))}>
                 <Trash2 size={14} /> Delete…
             </button>
-        </Menu>
+        </>
     );
 }
 
@@ -123,8 +184,16 @@ function useRowMenu(more: () => HTMLElement | undefined) {
     return { menu, setMenu, point, contextMenu, contextKey, toggleMenu, returnFocus: () => returnTo };
 }
 
-/** How a session is doing, at the start of its row. */
-function Glyph(p: { kind: RailGlyph }) {
+/** How a session is doing, at the start of its row; a check in an accent disc while it's selected. */
+function Glyph(p: { kind: RailGlyph; picked?: boolean }) {
+    return (
+        <Show when={!p.picked} fallback={<span class="st pick" aria-hidden="true"><Check size={11} stroke-width={3} /></span>}>
+            <StatusGlyph kind={p.kind} />
+        </Show>
+    );
+}
+
+function StatusGlyph(p: { kind: RailGlyph }) {
     return (
         <span class={`st ${p.kind}`} aria-hidden="true">
             <Switch fallback={<MessageSquareText size={15} />}>
@@ -138,10 +207,10 @@ function Glyph(p: { kind: RailGlyph }) {
     );
 }
 
-/** What a screen reader hears for a row: its title, then how it's doing. */
-function rowLabel(s: SessionSummary, unread: boolean): string {
+/** What a screen reader hears for a row: its title, then how it's doing, and whether it's selected. */
+function rowLabel(s: SessionSummary, unread: boolean, picked = false): string {
     const word = sessionStatus(s, now())?.text;
-    return [s.run ? `${s.run.modelName} · ${s.title}` : s.title, s.status === "idle" ? (unread ? "unread" : undefined) : word, s.pinned ? "pinned" : undefined].filter(Boolean).join(", ");
+    return [s.run ? `${s.run.modelName} · ${s.title}` : s.title, s.status === "idle" ? (unread ? "unread" : undefined) : word, s.pinned ? "pinned" : undefined, picked ? "selected" : undefined].filter(Boolean).join(", ");
 }
 
 /** The right end of a row: an amber dot while it needs you, else when it last moved (with a dot when unread). */
@@ -161,7 +230,7 @@ function PlanRing(p: { plan: RailPlan; small?: boolean }) {
     return <span class={`meter tone-${p.plan.tone} ${p.small ? "sm" : ""} ${p.plan.pct === undefined ? "unknown" : ""} ${p.plan.stale ? "stale" : ""}`} style={{ "--v": p.plan.pct ?? 0 }} role="img" aria-label={`${p.plan.name}: ${p.plan.pct === undefined ? "usage not known yet" : `${p.plan.pct}% used`}${p.plan.stale ? " when last reported" : ""}`} />;
 }
 
-function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) => void; grouped: boolean }) {
+function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) => void; grouped: boolean; pick: RailPick }) {
     const r = useRename(() => p.s);
     const { menu, setMenu, point, contextMenu, contextKey, toggleMenu, returnFocus } = useRowMenu(() => more);
     const id = p.s.id;
@@ -177,14 +246,16 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
     const recede = () => p.s.status === "running" && !current();
     // Grouped by project, the heading names it; listed by date, the row does.
     const where = () => [p.grouped ? undefined : p.s.projectName, branchOf(p.s)].filter(Boolean).join(" · ") || p.s.projectName;
+    const picked = () => p.pick.picked(p.s.id);
     return (
         <div
             ref={el}
-            class={`card ${current() ? "cur" : ""} ${recede() ? "rec" : ""} ${unread() ? "unread" : ""} ${waiting() ? "waiting" : ""} ${menu() ? "menu-open" : ""}`}
+            data-session-id={p.s.id}
+            class={`card ${current() ? "cur" : ""} ${picked() ? "picked" : ""} ${recede() ? "rec" : ""} ${unread() ? "unread" : ""} ${waiting() ? "waiting" : ""} ${menu() ? "menu-open" : ""}`}
             onContextMenu={contextMenu} onKeyDown={contextKey}
         >
-            <button class="card-hit" onClick={() => void activate(p.s.id)} onDblClick={() => r.setEditing(true)} aria-current={current() ? "page" : undefined} aria-label={rowLabel(p.s, unread())} title={`${p.s.title}\n${p.s.cwd}`}>
-                <Glyph kind={railGlyph(p.s, unread())} />
+            <button class="card-hit" onClick={(e) => p.pick.click(e, p.s.id)} onDblClick={(e) => !e.shiftKey && !e.metaKey && !e.ctrlKey && r.setEditing(true)} aria-current={current() ? "page" : undefined} aria-label={rowLabel(p.s, unread(), picked())} title={`${p.s.title}\n${p.s.cwd}`}>
+                <Glyph kind={railGlyph(p.s, unread())} picked={picked()} />
                 <span class="t">
                     {/* A run's sessions all start from one prompt (the group's label): each says which model it is. */}
                     <Show when={!r.editing()}>{p.s.run ? p.s.run.modelName : p.s.title}</Show>
@@ -220,12 +291,12 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
             <Show when={r.editing()}>
                 <div class="card-rename">{r.input()}</div>
             </Show>
-            <RowMenu returnFocus={returnFocus} point={point()} s={p.s} open={menu()} setOpen={setMenu} anchor={() => more ?? el} onRename={() => r.setEditing(true)} />
+            <RowMenu returnFocus={returnFocus} point={point()} s={p.s} pick={p.pick} open={menu()} setOpen={setMenu} anchor={() => more ?? el} onRename={() => r.setEditing(true)} />
         </div>
     );
 }
 
-function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) => void }) {
+function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) => void; pick: RailPick }) {
     const r = useRename(() => p.s);
     const { menu, setMenu, point, contextMenu, contextKey, toggleMenu, returnFocus } = useRowMenu(() => more);
     const id = p.s.id;
@@ -234,8 +305,9 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
     let more: HTMLButtonElement | undefined;
     const current = () => app.activeId === p.s.id;
     const unread = () => isUnread(p.s) && !current();
+    const picked = () => p.pick.picked(p.s.id);
     return (
-        <div class={`slim ${current() ? "cur" : ""} ${menu() ? "menu-open" : ""}`} onContextMenu={contextMenu} onKeyDown={contextKey}>
+        <div data-session-id={p.s.id} class={`slim ${current() ? "cur" : ""} ${picked() ? "picked" : ""} ${menu() ? "menu-open" : ""}`} onContextMenu={contextMenu} onKeyDown={contextKey}>
             <Show
                 when={!r.editing()}
                 fallback={
@@ -247,13 +319,13 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
             >
                 <button
                     class="slim-hit"
-                    onClick={() => void activate(p.s.id)}
-                    onDblClick={() => r.setEditing(true)}
+                    onClick={(e) => p.pick.click(e, p.s.id)}
+                    onDblClick={(e) => !e.shiftKey && !e.metaKey && !e.ctrlKey && r.setEditing(true)}
                     aria-current={current() ? "page" : undefined}
-                    aria-label={rowLabel(p.s, unread())}
+                    aria-label={rowLabel(p.s, unread(), picked())}
                     title={`${p.s.title}\n${p.s.cwd}\nUpdated ${(now(), ago(p.s.updatedAt))}`}
                 >
-                    <Glyph kind={railGlyph(p.s, unread())} />
+                    <Glyph kind={railGlyph(p.s, unread())} picked={picked()} />
                     <span class="truncate">{p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title}</span>
                     <Show when={p.s.pinned}>
                         <Pin size={11} class="slim-pin" />
@@ -275,7 +347,48 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
                     </span>
                 </span>
             </Show>
-            <RowMenu returnFocus={returnFocus} point={point()} s={p.s} open={menu()} setOpen={setMenu} anchor={() => more} onRename={() => r.setEditing(true)} />
+            <RowMenu returnFocus={returnFocus} point={point()} s={p.s} pick={p.pick} open={menu()} setOpen={setMenu} anchor={() => more} onRename={() => r.setEditing(true)} />
+        </div>
+    );
+}
+
+/**
+ * Two or more rows picked: a glass bar under the list with what can be done to
+ * all of them (only what applies: Restore for archived ones, Back in play when
+ * every one is settled) and a way out.
+ */
+function SelectionBar(p: { count: number; plan: BulkPlan; act: (what: "settle" | "archive" | "delete") => void; clear: () => void; onKeyDown: (e: KeyboardEvent) => void }) {
+    const n = () => sessionCount(p.count);
+    return (
+        <div class="rail-sel glass" role="toolbar" aria-label={`${n()} selected`} onKeyDown={p.onKeyDown}>
+            <span class="rail-sel-n">{p.count} selected</span>
+            <Show when={p.plan.settle.length}>
+                <button class="hb" title={withShortcut(`Settle ${sessionCount(p.plan.settle.length)}`, "sidebar:settleSelected")} aria-label={`Settle ${sessionCount(p.plan.settle.length)}`} onClick={() => p.act("settle")}>
+                    <CheckCheck size={15} />
+                </button>
+            </Show>
+            <Show when={p.plan.unsettle.length}>
+                <button class="hb" title={withShortcut("Back in play", "sidebar:settleSelected")} aria-label={`Back in play: ${n()}`} onClick={() => p.act("settle")}>
+                    <Undo2 size={15} />
+                </button>
+            </Show>
+            <Show when={p.plan.archive.length}>
+                <button class="hb" title={withShortcut(`Archive ${sessionCount(p.plan.archive.length)}`, "sidebar:archiveSelected")} aria-label={`Archive ${sessionCount(p.plan.archive.length)}`} onClick={() => p.act("archive")}>
+                    <Archive size={15} />
+                </button>
+            </Show>
+            <Show when={p.plan.restore.length}>
+                <button class="hb" title={withShortcut(`Restore ${n()}`, "sidebar:archiveSelected")} aria-label={`Restore ${n()}`} onClick={() => p.act("archive")}>
+                    <ArchiveRestore size={15} />
+                </button>
+            </Show>
+            <button class="hb rail-sel-del" title={withShortcut(`Delete ${n()}…`, "sidebar:deleteSelected")} aria-label={`Delete ${n()}…`} onClick={() => p.act("delete")}>
+                <Trash2 size={15} />
+            </button>
+            <span class="rail-sel-sep" aria-hidden="true" />
+            <button class="hb" title="Clear selection (Esc)" aria-label="Clear selection" onClick={p.clear}>
+                <X size={15} />
+            </button>
         </div>
     );
 }
@@ -410,6 +523,98 @@ export function Sidebar() {
         allowLayout();
     };
 
+    // ---- Picking several (lib/rail-select.ts has the rules) ----
+    const order = createMemo(() => sidebarIds(layout()));
+    const listOf = (id: string): RailList | undefined => {
+        const s = sessions().get(id);
+        return s ? (s.archived ? "archived" : "active") : undefined;
+    };
+    const picked = createMemo(() => new Set(railSelection().ids));
+    // Rows that leave the rail (deleted, paged out, folded away) leave the selection.
+    createEffect(() => {
+        const shown = order();
+        setRailSelection((sel) => pruneSelection(sel, shown));
+    });
+    // The archived list and the active one are separate selections.
+    createEffect((was?: boolean) => {
+        const now = showArchived();
+        if (was !== undefined && was !== now) setRailSelection({ ids: [] });
+        return now;
+    });
+    const summaries = (ids: readonly string[]) => ids.map((id) => sessions().get(id)).filter((s) => s !== undefined);
+    const plan = (ids: readonly string[]) => bulkPlan(summaries(ids));
+    const selected = createMemo(() => railSelection().ids);
+    const selectedPlan = createMemo(() => plan(selected()));
+    const rowHit = (id: string) =>
+        [...(listEl?.querySelectorAll<HTMLElement>("[data-session-id]") ?? [])].find((el) => el.dataset.sessionId === id)?.querySelector<HTMLElement>(".card-hit, .slim-hit") ?? undefined;
+    const focusRow = (id: string | undefined) => {
+        const hit = id ? rowHit(id) : undefined;
+        hit?.focus({ preventScroll: true });
+        hit?.scrollIntoView({ block: "nearest" });
+    };
+    const clear = (refocus = false) => {
+        const sel = railSelection();
+        setRailSelection({ ids: [], anchor: sel.anchor });
+        // The bar goes with the selection: its focus goes back to the list.
+        if (refocus) focusRow(sel.anchor && order().includes(sel.anchor) ? sel.anchor : sel.ids[0]);
+    };
+    const pick: RailPick = {
+        picked: (id) => picked().has(id),
+        click: (e, id) => {
+            const kind = clickKind(e, os === "macos");
+            setRailSelection(clickSelect(railSelection(), id, kind, order(), listOf));
+            if (kind === "plain") return void activate(id);
+            // The keys that act on the selection need the focus in the list (WebKit doesn't focus a clicked button).
+            (e.currentTarget as HTMLElement | null)?.focus?.({ preventScroll: true });
+        },
+        group: (id) => (selected().length > 1 && picked().has(id) ? selected() : undefined),
+        plan,
+        clear: () => clear(),
+    };
+    /** Settle, archive or delete what's selected (else the focused or open row), as a key or the bar asks. */
+    const act = (what: "settle" | "archive" | "delete", ids: readonly string[]) => {
+        const p = plan(ids);
+        if (what === "delete") return askToDelete(p.delete);
+        if (what === "settle") {
+            if (p.settle.length) void settleSessions(p.settle, true);
+            else if (p.unsettle.length) void settleSessions(p.unsettle, false);
+            return;
+        }
+        if (p.archive.length) void archiveSessions(p.archive, true);
+        else if (p.restore.length) void archiveSessions(p.restore, false);
+    };
+    /** Keys in the list and its selection bar. Typing in a rename box keeps its keys. */
+    const onRailKey = (e: KeyboardEvent) => {
+        const target = e.target as HTMLElement | null;
+        if (e.defaultPrevented || target?.closest?.("input, textarea, select, [contenteditable]")) return;
+        const focused = target?.closest?.<HTMLElement>("[data-session-id]")?.dataset.sessionId;
+        const bare = !e.metaKey && !e.ctrlKey && !e.altKey;
+        if ((e.key === "ArrowDown" || e.key === "ArrowUp") && bare && focused) {
+            e.preventDefault();
+            const dir = e.key === "ArrowDown" ? 1 : -1;
+            if (!e.shiftKey) return focusRow(order()[order().indexOf(focused) + dir]);
+            const next = extendSelect(railSelection(), focused, dir, order(), listOf);
+            if (next) {
+                setRailSelection(next.sel);
+                focusRow(next.focus);
+            }
+            return;
+        }
+        if (e.key === "Escape" && bare && !e.shiftKey && railSelection().ids.length) {
+            // Before the window's Esc (which would interrupt a working session).
+            e.preventDefault();
+            return clear(!focused);
+        }
+        const action = actionOf(e, ["Sidebar", "Global"]);
+        if (!action?.startsWith("sidebar:")) return;
+        e.preventDefault();
+        if (action === "sidebar:selectAll") return void setRailSelection(selectAll(order(), (focused && listOf(focused)) || (showArchived() ? "archived" : "active"), listOf));
+        const ids = railTargets(railSelection(), focused, app.activeId, order());
+        if (action === "sidebar:deleteSelected") act("delete", ids);
+        else if (action === "sidebar:settleSelected") act("settle", ids);
+        else if (action === "sidebar:archiveSelected") act("archive", ids);
+    };
+
     return (
         <SidebarFrame>
             <div class="side-tools">
@@ -453,7 +658,7 @@ export function Sidebar() {
                 </Menu>
             </div>
 
-            <nav ref={listEl} class="side-list" aria-label="Session list"
+            <nav ref={listEl} class="side-list" aria-label="Session list" onKeyDown={onRailKey}
                 onPointerEnter={() => setHovered(true)}
                 onPointerLeave={() => setHovered(false)}>
                 <For each={keys()}>{(key) => {
@@ -471,8 +676,8 @@ export function Sidebar() {
                             <For each={members()}>{(id) => {
                                 const s = () => sessions().get(id)!;
                                 return <Show when={s()}>
-                                    <Show when={!group().row} fallback={<SessionRow s={s()} hold={hold} />}>
-                                        <SessionCard s={s()} hold={hold} grouped={grouped()} />
+                                    <Show when={!group().row} fallback={<SessionRow s={s()} hold={hold} pick={pick} />}>
+                                        <SessionCard s={s()} hold={hold} grouped={grouped()} pick={pick} />
                                     </Show>
                                 </Show>;
                             }}</For>
@@ -482,8 +687,8 @@ export function Sidebar() {
                         const s = () => sessions().get(key)!;
                         return <div data-session-row={key}>
                             <Show when={s()}>
-                                <Show when={entry().kind === "card"} fallback={<SessionRow s={s()} hold={hold} />}>
-                                    <SessionCard s={s()} hold={hold} grouped={grouped()} />
+                                <Show when={entry().kind === "card"} fallback={<SessionRow s={s()} hold={hold} pick={pick} />}>
+                                    <SessionCard s={s()} hold={hold} grouped={grouped()} pick={pick} />
                                 </Show>
                             </Show>
                         </div>;
@@ -510,6 +715,9 @@ export function Sidebar() {
                     </div>
                 </Show>
             </nav>
+            <Show when={selected().length > 1}>
+                <SelectionBar count={selected().length} plan={selectedPlan()} act={(what) => act(what, selected())} clear={() => clear(true)} onKeyDown={onRailKey} />
+            </Show>
 
             <div class={`side-foot ${plans().length > 1 ? "two" : ""}`}>
                 <Show when={plans().length > 1} fallback={

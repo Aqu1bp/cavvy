@@ -10,9 +10,10 @@ import * as format from "../gui/src/lib/format";
 import { rowMenuKey } from "../gui/src/lib/menu";
 import { sessionStatus } from "../gui/src/lib/session-status";
 import * as rail from "../gui/src/lib/rail";
+import * as railSelect from "../gui/src/lib/rail-select";
 import type { SessionSummary } from "../src/server/protocol";
 
-function fixture(count = 60) {
+function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readonly string[]) => string | undefined } = {}) {
     const nodes: any[] = [];
     const menus: any[] = [];
     const frames = new Map<number, () => void>();
@@ -34,11 +35,14 @@ function fixture(count = 60) {
     const [groupBy, setGroupBy] = solid.createSignal("date");
     const [settledOpen, setSettledOpen] = solid.createSignal(true);
     const [motion, setMotion] = solid.createSignal("instant");
+    const [railSelection, setRailSelection] = solid.createSignal<railSelect.RailSelection>(railSelect.NO_SELECTION);
+    const bulk = { settle: mock((_ids: readonly string[], _on: boolean) => Promise.resolve([] as string[])), archive: mock((_ids: readonly string[], _on: boolean) => Promise.resolve([] as string[])), askToDelete: mock((_ids: readonly string[]) => {}) };
     let reduced = false;
     const app = { get sessions() { return sessions(); }, get archived() { return archived(); }, get activeId() { return activeId(); }, projects: [], models: [], limits: {}, providers: [], get conn() { return conn(); }, get sessionsLoaded() { return sessionsLoaded(); }, get sessionsError() { return sessionsError(); } };
     const prefs = { get groupBy() { return groupBy(); }, get settledOpen() { return settledOpen(); }, get motion() { return motion(); } };
     const resolve = (value: any): any => typeof value === "function" ? resolve(value()) : Array.isArray(value) ? value.map(resolve) : value;
-    const descendants = (node: any): any[] => [node, ...[...(node.children ?? []), node.content].flat(Infinity).filter((child) => child && typeof child === "object" && child !== node).flatMap(descendants)];
+    // A menu's children may be a Show's accessor: read through it.
+    const descendants = (node: any): any[] => [node, ...[...(node.children ?? []), node.content].map(resolve).flat(Infinity).filter((child) => child && typeof child === "object" && child !== node).flatMap(descendants)];
     const renderer = {
         ...solid, effect: solid.createRenderEffect, memo: solid.createMemo, use: (fn: (el: any) => void, el: any) => fn(el),
         createElement: (tag: string) => {
@@ -64,8 +68,10 @@ function fixture(count = 60) {
         presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled)
         .replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
-    const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronUp", "CircleAlert", "Folder", "FolderPlus", "Hand", "Layers", "ListFilter", "MessageSquareText", "MoreHorizontal", "PanelLeft", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "ProviderIcon"].map((name) => [name, () => null]));
-    const scope = { renderer, ...solid, ...order, ...format, ...rail, ...icons, sessionStatus, rowMenuKey, app, prefs,
+    const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronUp", "CircleAlert", "Folder", "FolderPlus", "Hand", "Layers", "ListFilter", "MessageSquareText", "MoreHorizontal", "PanelLeft", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "X", "ProviderIcon"].map((name) => [name, () => null]));
+    const scope = { renderer, ...solid, ...order, ...format, ...rail, ...railSelect, ...icons, sessionStatus, rowMenuKey, app, prefs,
+        railSelection, setRailSelection, actionOf: o.actionOf ?? (() => undefined),
+        settleSessions: bulk.settle, archiveSessions: bulk.archive, askToDelete: bulk.askToDelete,
         // Count work against layout keys, rather than timing a machine-dependent render.
         holdSidebar: (...args: Parameters<typeof order.holdSidebar>) => order.holdSidebar(...args).map((entry) => ({
             ...entry, get key() { entryKeyReads++; return entry.key; },
@@ -87,7 +93,7 @@ function fixture(count = 60) {
     const update = (id: string, patch: Partial<SessionSummary>) => setSessions((list) => list.map((s) => s.id === id ? { ...s, ...patch } : s));
     const flushFrames = () => { for (const [id, fn] of [...frames]) { frames.delete(id); fn(); } };
     const contextMenu = (row: any) => row.props.onContextMenu({ target: row.querySelector(), currentTarget: row, button: 2, clientX: 40, clientY: 60, preventDefault() {} });
-    return { setSessionsError, refreshSessions, reportError, setSessionsLoaded, setConn, nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
+    return { railSelection, setRailSelection, bulk, setSessionsError, refreshSessions, reportError, setSessionsLoaded, setConn, nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
         resetEntryKeyReads: () => { entryKeyReads = 0; }, get entryKeyReads() { return entryKeyReads; },
         setReduced: (value: boolean) => { reduced = value; }, flushFrames, dispose, get ids() { return [...ids]; } };
 }
