@@ -2216,7 +2216,7 @@ export class Agent {
         // Whichever step wrote it (the summary model, the full review, a repeated block), none for an action it couldn't see whole.
         if (summary && !summaryFits(input)) summary = undefined;
         decision = this.o.checker.withGrant(tool, asked, decision, this.state.cwd);
-        const answer = await this.o.host.askPermission({ tool, input, title, decision, preview, classifierReason, summary, agentLabel: this.o.isSubagent ? "sub-agent" : undefined, callId: call.id });
+        const answer = await this.o.host.askPermission({ tool, input, title, decision, preview, classifierReason, summary, agentLabel: this.o.isSubagent ? "sub-agent" : undefined, callId: call.id, ...(quiet ? { signal } : {}) });
         if (signal.aborted) return { result: this.errorResult(call, "Interrupted by user", undefined, quiet) };
         // The reviewer sent it to the user, who has now decided: its blocks count afresh.
         if (classifierReason !== undefined) this.o.classifier?.userDecided();

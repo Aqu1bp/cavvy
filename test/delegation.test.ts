@@ -1413,6 +1413,17 @@ describe("Monitor for Codex (it has none of its own)", () => {
         stopWatchers(agent.state);
     });
 
+    test("a call cancelled while the user is asked withdraws the prompt", async () => {
+        let prompt: PermissionRequest | undefined;
+        const { agent } = await makeAgent({ provider: "codex", wakes: true, ask: (req) => ((prompt = req), new Promise(() => {})) });
+        const ac = new AbortController();
+        const r = (agent as any).runServed(MonitorTool, { command: "touch started; tail -f /dev/null", description: "quiet" }, ac.signal);
+        await until(() => prompt !== undefined);
+        ac.abort();
+        expect(prompt!.signal?.aborted).toBe(true);
+        void r;
+    });
+
     test("context a PostToolUse hook adds reaches Codex with the result", async () => {
         process.env.FAKE_SCENARIO = "mcp";
         calls([{ tool: "monitor", args: { command: "tail -f /dev/null", description: "quiet" } }]);

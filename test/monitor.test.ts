@@ -275,6 +275,28 @@ describe("how it ends", () => {
         expect(m.shell.exitCode).toBe(3);
     });
 
+    test("an exit just before expiry is reported as the exit, and a last line without a newline isn't lost", async () => {
+        const { ctx, woken } = setup();
+        const m = await start(ctx, `sleep 60 & sleep 0.85; printf done; printf fatal >&2; exit 7`, "late exit", 1000);
+        await until(() => m.shell.exitCode !== null, 5000);
+        await Bun.sleep(100);
+        const all = woken.map((w) => w.text).join("\n");
+        expect(all).toContain("exited with code 7");
+        expect(all).not.toContain("expired");
+        expect(all).toContain("done");
+        expect(all).toContain("fatal");
+        expect((await BashOutputTool.run({ bash_id: m.id }, ctx)).content).toContain("fatal");
+    });
+
+    test("cancelled before it starts (while its environment was prepared), it starts nothing", async () => {
+        const { ctx, state } = setup();
+        const ac = new AbortController();
+        ac.abort();
+        const r = await MonitorTool.run({ command: "tail -f /dev/null", description: "quiet" }, { ...ctx, signal: ac.signal });
+        expect(r.isError).toBe(true);
+        expect([...state.shells.values()].filter((s) => s.monitor)).toHaveLength(0);
+    });
+
     test("a monitor that ended is no longer a watcher", async () => {
         const { ctx, woken, state } = setup();
         const a = await start(ctx, `echo hi`);

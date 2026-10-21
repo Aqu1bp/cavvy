@@ -95,6 +95,10 @@ Examples:
 
 async function runMonitor(input: MonitorInput, ctx: ToolContext, say: (text: string) => string = (t) => t) {
     const { env, proxy } = await commandEnv(ctx, input.allowedHosts);
+    if (ctx.signal.aborted) {
+        proxy?.close();
+        return { content: "Interrupted by user before this tool ran.", isError: true };
+    }
     // Checked again where it starts: calls checked at the same time (prompts, hooks in between) can't both take the last place.
     const full = runningCap(ctx.state);
     if (full) {
@@ -326,15 +330,21 @@ export function startMonitor(o: StartOpts): { id: string; pid?: number; shell: B
     const ended = (code: number | null, signal: NodeJS.Signals | null) => (code === null && signal ? finish(128 + (constants.signals[signal] ?? 0), `was killed by ${signal}`) : finish(code ?? -1));
     child.on("close", ended);
     // Its streams close when the last process holding them does: a child it left in the background keeps them
-    // open. The command's exit ends the watch once what it printed has been read (finish stops that child).
+    // open. The command's exit ends the watch: once what it printed has been read, that child is stopped, which
+    // closes them (with a last line that has no newline). Only if something still holds them are they cut.
     child.on("exit", (code, signal) => {
-        const t = setTimeout(() => {
-            if (finished) return;
-            child.stdout?.destroy();
-            child.stderr?.destroy();
-            ended(code, signal);
-        }, EXIT_DRAIN_MS);
-        t.unref?.();
+        // It ended by itself: that's what it reports, not an expiry during the wait.
+        if (!ending) clearTimeout(expiry);
+        const later = (ms: number, fn: () => void) => setTimeout(() => !finished && fn(), ms).unref?.();
+        later(EXIT_DRAIN_MS, () => {
+            void stopGroup(child.pid, KILL_GRACE_MS).then(() =>
+                later(EXIT_DRAIN_MS, () => {
+                    child.stdout?.destroy();
+                    child.stderr?.destroy();
+                    ended(code, signal);
+                }),
+            );
+        });
     });
     child.on("error", (e) => {
         appendOutput(shell, `\n${e.message}\n`);
