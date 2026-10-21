@@ -618,8 +618,9 @@ async function handle(m: any) {
                 config: { model: null, mcp_servers: { ...userMcp, ...projectMcp }, ...plugins },
                 origins: {},
                 ...(process.env.FAKE_NO_CONFIG_LAYERS === "1" ? {} : { layers: process.env.FAKE_CONFIG_LAYERS ? JSON.parse(process.env.FAKE_CONFIG_LAYERS) : [
-                    { name: { type: "user", file: "/tmp/fake/config.toml" }, config: { mcp_servers: userMcp, ...(userPlugins ? { plugins: userPlugins } : {}) } },
+                    // Highest precedence first, as Codex 0.163 lists them.
                     { name: { type: "project", dotCodexFolder: `${cwd}/.codex` }, config: { mcp_servers: projectMcp, ...(projectPlugins ? { plugins: projectPlugins } : {}) } },
+                    { name: { type: "user", file: "/tmp/fake/config.toml" }, config: { mcp_servers: userMcp, ...(userPlugins ? { plugins: userPlugins } : {}) } },
                 ] }),
             });
         case "initialized":

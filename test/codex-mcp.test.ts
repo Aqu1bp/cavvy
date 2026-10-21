@@ -78,9 +78,10 @@ test("read-only turns and missing provenance also turn off Codex's own plugins, 
 test("a plugin a project layer turns on is turned off, like the project's own servers", () => {
     const config = { plugins: { "mine@local": { enabled: true }, "theirs@local": { enabled: true } } };
     const result = codexMcpOverrides({ config, layers: [
-        { name: { type: "user" }, config: { plugins: { "mine@local": { enabled: true }, "theirs@local": { enabled: false } } } },
+        // Highest precedence first, as Codex lists them.
         { name: { type: "project" }, config: { plugins: { "theirs@local": { enabled: true } } } },
         { name: { type: "project" }, config: { plugins: { "mine@local": { enabled: true } } }, disabledReason: "untrusted" },
+        { name: { type: "user" }, config: { plugins: { "mine@local": { enabled: true }, "theirs@local": { enabled: false } } } },
     ] }, false);
     expect(result.missingProvenance).toBe(false);
     expect(result.config).toEqual({ plugins: { "theirs@local": { enabled: false } } });
@@ -102,4 +103,18 @@ test("an enabled plugin needs provenance like a server: missing, partial, unknow
     const explained = codexMcpOverrides({ config, layers: [{ name: { type: "user" }, config }] }, false);
     expect(explained.missingProvenance).toBe(false);
     expect(explained.config).toBeUndefined();
+});
+
+test("a plugin that the listed layers, applied in order, leave off isn't explained by an earlier layer turning it on", () => {
+    const config = { plugins: { "fmt@local": { enabled: true } } };
+    const on = { plugins: { "fmt@local": { enabled: true } } };
+    const off = { plugins: { "fmt@local": { enabled: false } } };
+    // Highest precedence first, as Codex 0.163 lists them: the user's file turns off what the system's turned on.
+    const hidden = codexMcpOverrides({ config, layers: [{ name: { type: "user" }, config: off }, { name: { type: "system" }, config: on }] }, false);
+    expect(hidden.missingProvenance).toBe(true);
+    expect(hidden.config).toEqual({ plugins: { "fmt@local": { enabled: false } } });
+    // The other way round, the user's file turns it back on: explained.
+    const shown = codexMcpOverrides({ config, layers: [{ name: { type: "user" }, config: on }, { name: { type: "system" }, config: off }] }, false);
+    expect(shown.missingProvenance).toBe(false);
+    expect(shown.config).toBeUndefined();
 });

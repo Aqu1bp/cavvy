@@ -45,17 +45,19 @@ export function codexMcpOverrides(response: unknown, readOnly: boolean, reserved
         try {
             if (!Array.isArray(response.layers)) throw new Error("Missing config layers");
             const explained = new Set<string>();
-            const explainedPlugins = new Set<string>();
+            // Each active layer's plugins table, highest precedence first (as Codex 0.163 lists layers: project, user, system).
+            const pluginLayers: Record<string, unknown>[] = [];
             for (const layer of response.layers) {
                 if (!record(layer) || !record(layer.name) || typeof layer.name.type !== "string" || !record(layer.config)) throw new Error("Invalid config layer");
                 if (layer.disabledReason != null && typeof layer.disabledReason !== "string") throw new Error("Invalid disabled reason");
                 const names = serverNames(layer.config);
                 // An enabled plugin starts servers too, so it needs the same provenance as one.
                 const turnedOn = enabledPlugins(layer.config);
-                if ((names.length || turnedOn.length) && !knownLayers.has(layer.name.type)) throw new Error("Unknown config layer source");
+                const pluginTable = record(layer.config.plugins) ? layer.config.plugins : {};
+                if ((names.length || Object.keys(pluginTable).length) && !knownLayers.has(layer.name.type)) throw new Error("Unknown config layer source");
                 if (typeof layer.disabledReason === "string" && layer.disabledReason.length > 0) continue;
                 names.forEach((n) => explained.add(n));
-                turnedOn.forEach((id) => explainedPlugins.add(id));
+                pluginLayers.push(pluginTable);
                 if (layer.name.type === "project") {
                     names.forEach((n) => disabled.add(n));
                     // A project can turn on a plugin someone installed and left off; its servers are the project's too.
@@ -64,7 +66,12 @@ export function codexMcpOverrides(response: unknown, readOnly: boolean, reserved
             }
             // An empty or partial layer list is not evidence that effective servers came from safe sources.
             if (effective.some((n) => !explained.has(n))) throw new Error("Unexplained MCP servers");
-            if (plugins.some((id) => !explainedPlugins.has(id))) throw new Error("Unexplained plugins");
+            // A plugin is explained only if the layers, applied lowest precedence first, leave it on.
+            const pluginOn = new Map<string, boolean>();
+            for (const table of [...pluginLayers].reverse()) {
+                for (const [id, v] of Object.entries(table)) if (record(v) && typeof v.enabled === "boolean") pluginOn.set(id, v.enabled);
+            }
+            if (plugins.some((id) => pluginOn.get(id) !== true)) throw new Error("Unexplained plugins");
         } catch {
             // Missing or malformed provenance must not leave any configured servers running.
             missingProvenance = true;
