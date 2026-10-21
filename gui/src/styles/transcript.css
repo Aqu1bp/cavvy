@@ -1058,9 +1058,13 @@
     border-radius: var(--r-card);
 }
 
-/* Beside a glimpse of the output, the command keeps most of the line. */
+/* Beside a glimpse of the output, the command keeps at most half the line; the glimpse takes the rest. */
 .cmd-h.has-tail .tcard-p {
-    max-width: 60%;
+    max-width: 50%;
+}
+
+.cmd-h.has-tail .grow {
+    display: none;
 }
 
 /* Folded: the last line a running command printed, or a failed one's last line of output. */

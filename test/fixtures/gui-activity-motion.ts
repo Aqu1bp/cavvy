@@ -327,7 +327,7 @@ test("a running command shows its last line folded; a failed one stays folded on
         expect(tail()!.props["data-find-skip"]).toBe(true);
         expect(text(card)).not.toContain("line 3");
         expect(text(card)).toContain("Running");
-        h.op({ op: "block.patch", blockId: "cmd", patch: { status: "error", durationMs: 2000, output: "Compiling\nerror: kiwi is undefined\n\n" } });
+        h.op({ op: "block.patch", blockId: "cmd", patch: { status: "error", durationMs: 2000, output: "Compiling\nerror: kiwi is undefined\n\nExit code: 1" } });
         expect(row(h.root, "cmd")).toBe(card);
         expect(body(card)).toBeUndefined();
         expect(text(tail()!)).toBe("error: kiwi is undefined");

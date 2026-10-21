@@ -891,14 +891,17 @@ export function CardFoldsProvider(p: { sessionId: string; children: JSX.Element 
     return <CardFoldsContext.Provider value={folds}>{p.children}</CardFoldsContext.Provider>;
 }
 
-/** The last line a command printed: the latest of its live output, or of its output once it failed. */
+/**
+ * The last line a command printed: the latest of its live output, or of its output once it failed,
+ * passing over the exit code the tool adds at the end ("Exit code: 1"), which the pill already says.
+ */
 function lastLine(text: string | undefined): string | undefined {
     if (!text) return undefined;
     // Only the end is wanted: don't clean a long output to read one line of it.
     const lines = stripAnsi(text.slice(-4096)).split(/\r\n|\r|\n/);
     for (let i = lines.length - 1; i >= 0; i--) {
         const line = lines[i]!.trim();
-        if (line) return line;
+        if (line && !/^Exit code:? -?\d+\b/.test(line)) return line;
     }
     return undefined;
 }
