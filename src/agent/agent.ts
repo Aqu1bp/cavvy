@@ -52,7 +52,7 @@ import { agentMemoryDir, agentMemoryPrompt, DEFAULT_MAX_TURNS, findSkill, loadAg
 import { childMode, createAgentWorktree, finishAgentWorktree, fromServers, keepLocal, startAgentServers, withAgentHooks, worktreeNote, type AgentServers, type AgentWorktree, type WorktreeOutcome } from "./subagent-setup";
 import { buildSystemPrompt, EXPLORE_APPEND, SUBAGENT_CORE } from "./system-prompt";
 import { FileHistory, promptNotes, resetToolState } from "./checkpoints";
-import { TurnSnapshots } from "./turn-snapshots";
+import { TurnSnapshots, type TurnCapture } from "./turn-snapshots";
 import { redact } from "../util/redact";
 import type { Skill } from "./skills";
 import { claudeAgents } from "../backends/claude-agents";
@@ -165,9 +165,25 @@ export interface AgentHost {
     /** Persist "don't ask again" rules. */
     saveRules?(rules: string[], scope: "local" | "project" | "user"): void;
     ui: UiBridge;
-    /** Messages the user typed while the agent was busy, to steer the running turn with. */
-    drainQueued?(): string[];
+    /**
+     * Messages the user typed while the agent was busy, to steer the running turn with. `record`, when
+     * given, is run once some are taken and before their turn starts, so the output before them is recorded first.
+     */
+    drainQueued?(record?: () => void): string[];
+    /**
+     * For a backend's CLI that's between its turns, waiting only on its background work: the first queued
+     * message that can go now, as a prompt of its own, whatever its mode, prepared as a sent one is (its
+     * attachments, @mentions and $skills). Not commands or `!commands`, nor held ones. `record` runs once one
+     * is taken, before its turn starts, so the output before it is recorded first; `admit` runs the prompt's
+     * hooks: "blocked" (a hook blocked it) means it's dropped, "stopped" (the turn was interrupted, or the
+     * backend can't send any more) that it stays queued, "go" that it goes, with nothing awaited from then
+     * until it's stored and sent.
+     */
+    drainWaiting?(steps: { record(): void; admit(parts: UserContent[], display: string): Promise<Admission> }): Promise<{ parts: UserContent[]; display: string } | undefined>;
 }
+
+/** What a queued message's hooks, and whether it can still go, decided (AgentHost.drainWaiting). */
+export type Admission = "go" | "blocked" | "stopped";
 
 export interface Helpers {
     /** One-shot completion on a cheap model (classifier, summaries). */
@@ -315,6 +331,11 @@ const BACKEND_CUT_OFF = "Your last turn in this session was cut off: Harness sto
 
 /** A /goal command, which a CLI backend runs as its own. */
 const GOAL_COMMAND = /^\s*\/goal(\s|$)/i;
+
+/** A prompt's words as hooks and checkpoints read them: its text parts, then pasted texts. */
+function promptTextOf(content: readonly UserContent[]): string {
+    return [...content.filter((p): p is TextPart => p.type === "text").map((p) => p.text), ...pastedTexts(content)].join("\n");
+}
 
 function reminder(text: string): TextPart {
     return { type: "text", text: `<system-reminder>\n${text}\n</system-reminder>` };
@@ -575,21 +596,18 @@ export class Agent {
     private async runInner(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" | "wake" }): Promise<TurnEndReason> {
         const { signal } = opts;
         const settings = this.hookSettings();
-        const promptText = [...content.filter((p): p is TextPart => p.type === "text").map((p) => p.text), ...pastedTexts(content)].join("\n");
+        const promptText = promptTextOf(content);
         const checkpoint = await this.checkpoint(opts.display ?? promptText);
         if (this.cutOff) return "aborted";
 
         // A wake isn't something the user typed.
-        if (!this.o.isSubagent && opts.kind !== "wake" && settings.hooks?.UserPromptSubmit?.length) {
-            const h = await this.hooks("UserPromptSubmit", { prompt: promptText }, signal);
-            const blocked = h?.blocked ?? h?.stop;
-            if (blocked) {
-                this.hookStop = undefined;
-                this.emit({ type: "notice", level: "warn", message: `Prompt blocked by hook: ${blocked}` });
+        if (opts.kind !== "wake") {
+            const h = await this.promptHooks(promptText, signal);
+            if (h.blocked) {
                 this.emit({ type: "turn_end", reason: "blocked" });
                 return "blocked";
             }
-            if (h?.additionalContext) this.addReminder(`Context from a UserPromptSubmit hook:\n${h.additionalContext}`);
+            if (h.context) this.addReminder(h.context);
         }
         // SessionStart hooks' context goes with the first prompt after them.
         for (const c of this.o.isSubagent ? [] : this.session.hookContext.splice(0)) this.addReminder(c);
@@ -818,6 +836,22 @@ export class Agent {
     }
 
     /** A new file checkpoint for a user prompt; a sub-agent's edits belong to its parent's. */
+    /**
+     * The UserPromptSubmit hooks, for a prompt the user sent: whether one blocked it (the user is told), or
+     * the context they add, as a note for the model.
+     */
+    private async promptHooks(promptText: string, signal: AbortSignal): Promise<{ blocked?: boolean; context?: string }> {
+        if (this.o.isSubagent || !this.hookSettings().hooks?.UserPromptSubmit?.length) return {};
+        const h = await this.hooks("UserPromptSubmit", { prompt: promptText }, signal);
+        const blocked = h?.blocked ?? h?.stop;
+        if (blocked) {
+            this.hookStop = undefined;
+            this.emit({ type: "notice", level: "warn", message: `Prompt blocked by hook: ${blocked}` });
+            return { blocked: true };
+        }
+        return h?.additionalContext ? { context: `Context from a UserPromptSubmit hook:\n${h.additionalContext}` } : {};
+    }
+
     private async checkpoint(prompt: string, snapshotOnly = false, record?: (checkpoint: number | undefined) => void): Promise<number | undefined> {
         // Steering inside tool results isn't a /rewind target: keep its edit copies with the original prompt.
         const history = this.o.isSubagent ? undefined : this.state.fileHistory;
@@ -1569,11 +1603,18 @@ export class Agent {
             fromWake: (text) => wakeTexts.has(text),
             drainQueued: async (progress) => {
                 if (this.cutOff) return [];
-                const queued = this.o.host.drainQueued?.() ?? [];
+                // What the backend said before them goes first: the host places their turn after it.
+                let recorded = false;
+                const record = () => {
+                    if (recorded || !progress) return;
+                    recorded = true;
+                    this.recordBackendTurn(provider, name, progress());
+                };
+                const queued = this.o.host.drainQueued?.(record) ?? [];
                 // Events a watch raised join the running turn as the user's messages do (Codex steers with them at once).
                 const woke = this.takeWakes();
                 if (!queued.length && !woke) return [];
-                if (progress) this.recordBackendTurn(provider, name, progress());
+                record();
                 const out: string[] = [];
                 if (queued.length) {
                     await this.checkpoint(queued.join("\n"), false, (checkpoint) => {
@@ -1590,6 +1631,50 @@ export class Agent {
                 }
                 if (this.cutOff) return [];
                 return out;
+            },
+            drainWaiting: async (progress, live) => {
+                if (this.cutOff || !this.o.host.drainWaiting) return undefined;
+                let context: string | undefined;
+                let start: TurnCapture | undefined;
+                let taken: { parts: UserContent[]; display: string } | undefined;
+                // One its hooks block doesn't go; the next does, in order and through its own hooks.
+                for (let blocked = true; blocked && !taken; ) {
+                    blocked = false;
+                    taken = await this.o.host.drainWaiting({
+                        record: () => {
+                            if (progress) this.recordBackendTurn(provider, name, progress());
+                        },
+                        // Its hooks, as for a prompt sent on its own (runInner): one can block it. Then what its
+                        // start snapshot will be, taken before it goes but used only once it does: a stop
+                        // meanwhile leaves the open turn's snapshot as it was.
+                        admit: async (parts) => {
+                            const h = await this.promptHooks(promptTextOf(parts), signal);
+                            context = h.context;
+                            if (h.blocked) {
+                                blocked = true;
+                                return "blocked";
+                            }
+                            const stopped = () => this.cutOff || signal.aborted || live?.() === false;
+                            if (stopped()) return "stopped";
+                            start = !this.o.isSubagent && this.o.trusted?.() ? await this.turnSnapshots?.prepare() : undefined;
+                            return stopped() ? "stopped" : "go";
+                        },
+                    });
+                    if (this.cutOff || signal.aborted) blocked = false;
+                }
+                if (!taken) return undefined;
+                // Stored as a prompt sent then would be, with what a hook adds after it. Nothing is awaited from
+                // "go" to here, nor from here to the backend sending it: an interrupt can't fall in between.
+                const history = this.o.isSubagent ? undefined : this.state.fileHistory;
+                const checkpoint = history?.begin();
+                const content = this.session.push({ role: "user", content: [...taken.parts, ...(context ? [reminder(context)] : [])], meta: { kind: "prompt", display: taken.display, checkpoint } }).content;
+                // Its turn's snapshot starts from what was captured before it went (above); snapshots run in
+                // order, so the turn's end waits for it.
+                if (checkpoint !== undefined && start) void this.turnSnapshots?.beginWith(checkpoint, redact(taken.display), start).catch(() => undefined);
+                const prompt = forBackend(content, readsPdf(this.model));
+                // The user's own words, for the skills they name ($name), as for a turn's prompt (runBackendTurn).
+                const first = content[0]?.type === "text" && prompt.text.startsWith(content[0].text) ? content[0].text : undefined;
+                return { ...prompt, ...(first !== undefined ? { request: first, requestAfter: prompt.text.slice(first.length) } : {}) };
             },
         };
         // A stop from Harness's checks of a tool it serves the backend (a hook, a PermissionRequest interrupt) ends the backend's turn, as a stop on its own call does.

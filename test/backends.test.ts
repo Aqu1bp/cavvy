@@ -98,8 +98,11 @@ interface Opts {
     queued?: string[][];
     /** In place of queued: the messages waiting when the turn ends. */
     drainQueued?: () => string[];
+    /** What the runtime hands over while a CLI only waits on background work (AgentHost.drainWaiting). */
+    drainWaiting?: import("../src/agent/agent").AgentHost["drainWaiting"];
     /** A wake queue, as the TUI and the app give a session. */
     wakes?: InstanceType<typeof WakeQueue>;
+    skills?: () => import("../src/agent/skills").Skill[];
 }
 
 async function makeAgent(o: Opts) {
@@ -120,12 +123,14 @@ async function makeAgent(o: Opts) {
         settings: () => settings,
         approvedMcpServers: o.approvedMcpServers,
         readOnly: o.readOnly,
+        ...(o.skills ? { skills: o.skills } : {}),
         checker,
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
         toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map(), ...(o.wakes ? { wakes: o.wakes, watchers: new Map() } : {}) },
         host: {
             drainQueued: o.drainQueued ?? (() => queued.shift() ?? []),
+            drainWaiting: o.drainWaiting,
             emit: (e) => events.push(e),
             ui: o.ui ?? {},
             askPermission: o.ask
@@ -700,6 +705,245 @@ describe("Claude Code's background work (live test findings)", () => {
         expect(subEnds(a.events)).toEqual(["done"]);
         expect(texts(a.events)).toContain("The explorer reported back");
     }, 20_000);
+
+    // #202: between Claude Code's turns, waiting only on background work, nothing is mid-step to protect.
+    describe("messages queued while it only waits on background work", () => {
+        const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+        type Item = { text: string; mode: "steer" | "queue"; images?: import("../src/providers/types").ImagePart[]; held?: boolean };
+        /** The runtime's queue, by its rules: steer-mode text joins a running step; while Claude Code only waits, any message but a command or a held one goes, one at a time. */
+        function queue(items: Item[] = []) {
+            const command = (t: string) => /^\s*(!|\/(?!\/))/.test(t);
+            const take = (pick: (q: Item) => boolean) => {
+                const taken = items.filter(pick);
+                for (const q of taken) items.splice(items.indexOf(q), 1);
+                return taken;
+            };
+            const waits: string[] = [];
+            return {
+                items,
+                waits,
+                drainQueued: () => take((q) => q.mode === "steer" && !q.held && !q.images?.length && !command(q.text)).map((q) => q.text),
+                drainWaiting: async (steps: any) => {
+                    const q = items.find((x) => !x.held && !command(x.text));
+                    if (!q) return undefined;
+                    const at = items.indexOf(q);
+                    take((x) => x === q);
+                    const parts = [{ type: "text" as const, text: q.text }, ...(q.images ?? [])];
+                    const admitted: unknown = await steps.admit(parts, q.text);
+                    // Stopped before it went: back where it was, as the runtime puts it.
+                    if (admitted === "stopped") items.splice(at, 0, q);
+                    if (admitted !== "go" && admitted !== true) return undefined;
+                    steps.record();
+                    waits.push(q.text);
+                    return { parts, display: q.text };
+                },
+            };
+        }
+        const userSent = (text: string) => received().find((m) => m.type === "user" && JSON.stringify(m.message.content).includes(text));
+        /** Until `ok`, or the run is over (`done` settles): whether `ok` came first. */
+        async function before(ok: () => boolean, done: Promise<unknown>): Promise<boolean> {
+            let over = false;
+            void done.finally(() => (over = true));
+            while (!ok() && !over) await Bun.sleep(10);
+            return ok();
+        }
+        async function waiting(o: { items?: Item[]; settings?: any; skills?: () => import("../src/agent/skills").Skill[]; session?: InstanceType<typeof Session>; signal?: AbortSignal; prepare?: (a: Awaited<ReturnType<typeof makeAgent>>) => void } = {}) {
+            process.env.FAKE_SCENARIO = "agent-background";
+            process.env.FAKE_SECOND_SCENARIO = "none";
+            process.env.FAKE_BACKGROUND_MS = "2000";
+            const q = queue(o.items);
+            const a = await makeAgent({ provider: "claude-code", settings: o.settings, skills: o.skills, session: o.session, drainQueued: q.drainQueued, drainWaiting: q.drainWaiting });
+            o.prepare?.(a);
+            const done = a.run("map the auth module", o.signal);
+            while (!notices(a.events).some((n) => n.includes("Waiting for"))) await Bun.sleep(10);
+            return { a, q, done };
+        }
+
+        test("an image goes to Claude Code at once, with its image, before the background work ends", async () => {
+            const { a, q, done } = await waiting();
+            const image = { type: "image" as const, mediaType: "image/png", data: PNG };
+            q.items.push({ text: "what's wrong in this screenshot?", mode: "steer", images: [image] });
+            expect(await before(() => Boolean(userSent("what's wrong in this screenshot?")), done)).toBe(true);
+            // The sub-agent is still at work: it didn't wait for it.
+            expect(subEnds(a.events)).toEqual([]);
+            expect(await done).toBe("done");
+            expect(starts()).toHaveLength(1);
+            // Its image first and its text last, as runTurn sends a prompt: Claude Code reads a /command only from the last block.
+            expect(userSent("what's wrong in this screenshot?").message.content).toEqual([
+                { type: "image", source: { type: "base64", media_type: "image/png", data: PNG } },
+                { type: "text", text: "what's wrong in this screenshot?" },
+            ]);
+            // Recorded as a prompt of its own, after the answer before it, with its image.
+            const i = a.session.messages.findIndex((m) => m.role === "user" && m.content.some((p) => (p as any).text === "what's wrong in this screenshot?"));
+            expect(a.session.messages[i]!.meta?.kind).toBe("prompt");
+            expect(a.session.messages[i]!.content).toContainEqual(image);
+            expect(a.session.messages[i - 1]!.role).toBe("assistant");
+            expect(q.items).toEqual([]);
+            expect(subEnds(a.events)).toEqual(["done"]);
+        }, 20_000);
+
+        test("a message in queue mode goes at once too; then the next, once Claude Code has answered it", async () => {
+            const { a, q, done } = await waiting();
+            q.items.push({ text: "and the tests?", mode: "queue" }, { text: "and the docs?", mode: "queue" });
+            expect(await before(() => Boolean(userSent("and the docs?")), done)).toBe(true);
+            expect(subEnds(a.events)).toEqual([]);
+            expect(await done).toBe("done");
+            // In the order sent, each a prompt of its own.
+            expect(userTexts().slice(-2)).toEqual(["and the tests?", "and the docs?"]);
+            expect(q.waits).toEqual(["and the tests?", "and the docs?"]);
+            expect(starts()).toHaveLength(1);
+        }, 20_000);
+
+        test("held messages stay held, and commands wait for the run's end", async () => {
+            const { a, q, done } = await waiting({ items: [{ text: "held since a restart", mode: "queue", held: true }, { text: "/compact", mode: "queue" }, { text: "!ls", mode: "steer" }] });
+            q.items.push({ text: "but this goes", mode: "queue" });
+            expect(await before(() => Boolean(userSent("but this goes")), done)).toBe(true);
+            expect(await done).toBe("done");
+            expect(q.items.map((x) => x.text)).toEqual(["held since a restart", "/compact", "!ls"]);
+            expect(userTexts()).not.toContain("held since a restart");
+            expect(userTexts()).not.toContain("/compact");
+            expect(subEnds(a.events)).toEqual(["done"]);
+        }, 20_000);
+
+        test("its UserPromptSubmit hooks run as for a prompt sent on its own: one that blocks keeps it from Claude Code, and the user is told", async () => {
+            const settings = { hooks: { UserPromptSubmit: [{ command: `grep -q forbidden && { echo "no forbidden words" >&2; exit 2; }; exit 0` }] } };
+            const { a, q, done } = await waiting({ settings });
+            q.items.push({ text: "say forbidden things", mode: "queue" }, { text: "a fine one", mode: "queue" });
+            expect(await before(() => Boolean(userSent("a fine one")), done)).toBe(true);
+            expect(await done).toBe("done");
+            expect(userSent("say forbidden things")).toBeUndefined();
+            expect(notices(a.events)).toContainEqual(expect.stringMatching(/^warn: Prompt blocked by hook: .*no forbidden words/));
+            // Not in the conversation either, as a blocked prompt isn't.
+            expect(JSON.stringify(a.session.messages)).not.toContain("say forbidden things");
+            expect(q.waits).toEqual(["a fine one"]);
+        }, 20_000);
+
+        test("after one its hook blocks, the next goes in order, through its own hooks: a steer one doesn't skip ahead unchecked", async () => {
+            const settings = { hooks: { UserPromptSubmit: [{ command: `grep -q forbidden && { echo "no forbidden words" >&2; exit 2; }; exit 0` }] } };
+            const { q, done } = await waiting({ settings });
+            q.items.push({ text: "A forbidden", mode: "queue" }, { text: "B fine", mode: "queue" }, { text: "C forbidden too", mode: "steer" });
+            expect(await before(() => Boolean(userSent("B fine")), done)).toBe(true);
+            expect(await done).toBe("done");
+            expect(userSent("A forbidden")).toBeUndefined();
+            expect(userSent("C forbidden too")).toBeUndefined();
+            expect(userTexts().slice(-1)).toEqual(["B fine"]);
+            expect(q.waits).toEqual(["B fine"]);
+            expect(q.items).toEqual([]);
+        }, 20_000);
+
+        test("one interrupted while its start snapshot is captured stays queued, image and all: nothing stored or sent, and the open turn's snapshot isn't cut", async () => {
+            const session = Session.create(cwd, { system: "test" });
+            const ac = new AbortController();
+            let capturing = false;
+            const opened: string[] = [];
+            let release!: () => void;
+            const capture = new Promise<void>((r) => (release = r));
+            const { a, q, done } = await waiting({
+                session,
+                signal: ac.signal,
+                prepare: (a) => {
+                    a.agent.options.trusted = () => true;
+                    const snaps = a.agent.turnSnapshots!;
+                    snaps.prepare = async () => {
+                        capturing = true;
+                        await capture;
+                        return { files: {} } as never;
+                    };
+                    snaps.beginWith = async (_id, prompt) => void opened.push(prompt);
+                },
+            });
+            try {
+                const image = { type: "image" as const, mediaType: "image/png", data: PNG };
+                q.items.push({ text: "look at this", mode: "queue", images: [image] });
+                while (!capturing) await Bun.sleep(10);
+                ac.abort();
+                await Bun.sleep(50);
+                release();
+                expect(await done).toBe("aborted");
+                expect(q.items).toEqual([{ text: "look at this", mode: "queue", images: [image] }]);
+                expect(JSON.stringify(a.session.messages)).not.toContain("look at this");
+                expect(userSent("look at this")).toBeUndefined();
+                expect(opened).toEqual([]);
+            } finally {
+                release();
+                ac.abort();
+                await done;
+                session.release();
+            }
+        }, 20_000);
+
+        test("one that goes opens its turn's snapshot from what was captured before it went, once it's stored", async () => {
+            const session = Session.create(cwd, { system: "test" });
+            const opened: { prompt: string; stored: boolean; captured: unknown }[] = [];
+            const captured = { files: { marker: true } };
+            const { a, q, done } = await waiting({
+                session,
+                prepare: (a) => {
+                    a.agent.options.trusted = () => true;
+                    const snaps = a.agent.turnSnapshots!;
+                    snaps.prepare = async () => captured as never;
+                    snaps.beginWith = async (_id, prompt, c) => void opened.push({ prompt, stored: JSON.stringify(a.session.messages).includes("look at this"), captured: c });
+                },
+            });
+            try {
+                q.items.push({ text: "look at this", mode: "queue" });
+                expect(await before(() => Boolean(userSent("look at this")), done)).toBe(true);
+                expect(opened).toEqual([{ prompt: "look at this", stored: true, captured }]);
+                await done;
+            } finally {
+                session.release();
+            }
+        }, 20_000);
+
+        test("one whose hooks are still running when Claude Code goes away stays queued, image and all, and isn't recorded or sent", async () => {
+            // The CLI exits while the hook runs: the message can't go, so it waits for the next run.
+            process.env.FAKE_EXIT_AFTER_MS = "1500";
+            try {
+                const settings = { hooks: { UserPromptSubmit: [{ command: "sleep 3; exit 0" }] } };
+                const { a, q, done } = await waiting({ settings });
+                const image = { type: "image" as const, mediaType: "image/png", data: PNG };
+                q.items.push({ text: "late one", mode: "queue", images: [image] });
+                await done;
+                expect(q.items).toEqual([{ text: "late one", mode: "queue", images: [image] }]);
+                expect(userSent("late one")).toBeUndefined();
+                expect(JSON.stringify(a.session.messages)).not.toContain("late one");
+            } finally {
+                delete process.env.FAKE_EXIT_AFTER_MS;
+            }
+        }, 30_000);
+
+        test("what a UserPromptSubmit hook adds goes with it", async () => {
+            const { q, done } = await waiting({ settings: { hooks: { UserPromptSubmit: [{ command: "echo branch is main" }] } } });
+            q.items.push({ text: "and the tests?", mode: "queue" });
+            expect(await before(() => Boolean(userSent("and the tests?")), done)).toBe(true);
+            await done;
+            expect(JSON.stringify(userSent("and the tests?").message.content)).toContain("Context from a UserPromptSubmit hook:\\nbranch is main");
+        }, 20_000);
+
+        test("a $skill it names is loaded as in a prompt sent on its own", async () => {
+            const dir = join(tempDir("skills-"), "deploy");
+            mkdirSync(dir, { recursive: true });
+            writeFileSync(join(dir, "SKILL.md"), "---\nname: deploy\ndescription: Ship it\n---\nDeploy steps.\n");
+            const deploy = { name: "deploy", description: "Ship it", modelInvocable: true, userInvocable: true, source: "user" as const, file: join(dir, "SKILL.md"), dir };
+            const { q, done } = await waiting({ skills: () => [deploy] });
+            q.items.push({ text: "then ship it with $deploy", mode: "queue" });
+            expect(await before(() => Boolean(userSent("then ship it with $deploy")), done)).toBe(true);
+            await done;
+            expect(userSent("then ship it with $deploy").message.content[0].text).toBe('then ship it with $deploy\n\nLoad the "harness:deploy" skill with the Skill tool and follow it.');
+        }, 20_000);
+
+        test("during a step, a queue-mode message still waits for the run's end and a steer message joins at the tool result", async () => {
+            process.env.FAKE_SCENARIO = "steering";
+            const q = queue([{ text: "after the turn", mode: "queue" }, { text: "with a picture", mode: "steer", images: [{ type: "image", mediaType: "image/png", data: PNG }] }, { text: "steer now", mode: "steer" }]);
+            const a = await makeAgent({ provider: "claude-code", drainQueued: q.drainQueued, drainWaiting: q.drainWaiting });
+            expect(await a.run("start")).toBe("done");
+            expect(logLines().find((l) => l.foldedBeforeResult)?.foldedBeforeResult).toEqual(["steer now"]);
+            expect(userTexts()).toEqual(["start", "steer now"]);
+            // No background work: nothing went as a prompt of its own; the runtime runs them after the run.
+            expect(q.waits).toEqual([]);
+            expect(q.items.map((x) => x.text)).toEqual(["after the turn", "with a picture"]);
+        });
+    });
 
     test("with an API key, Claude Code's own turn with the report doesn't count the run's spend twice", async () => {
         process.env.FAKE_SCENARIO = "agent-background";

@@ -85,6 +85,8 @@ if (argv[0] === "auth" && argv[1] === "status") {
     process.exit(on ? 0 : 1);
 }
 if (argv[0] === "auth" && argv[1] === "login") process.exit(0);
+// FAKE_EXIT_AFTER_MS: the CLI goes away that long after it starts, whatever it's doing (a crash).
+if (process.env.FAKE_EXIT_AFTER_MS) setTimeout(() => process.exit(3), Number(process.env.FAKE_EXIT_AFTER_MS));
 // A one-off (--tools "" with a system prompt): the question's answer is FAKE_ONEOFF_ANSWER, as one result.
 if (argv.includes("--tools") && argv[argv.indexOf("--tools") + 1] === "" && argv.includes("--system-prompt")) {
     let buf = "";

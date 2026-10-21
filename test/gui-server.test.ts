@@ -1064,6 +1064,109 @@ describe("connecting", () => {
         }
     }, 30_000);
 
+    test("a message Claude Code takes at a tool result has its turn at its own place in the session (rewind and fork go by it)", async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        process.env.FAKE_SCENARIO = "steering";
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            await engine.handle(c, "models.list", { refresh: true });
+            await engine.handle(c, "session.setModel", { id, ref: "claude-code:default", persist: false });
+            await engine.handle(c, "session.send", { id, text: "start" });
+            expect(await engine.handle(c, "session.send", { id, text: "a correction", mode: "steer" })).toEqual({ queued: true });
+            for (let k = 0; k < 500 && (rt.busy || rt.snapshot().state.queued.length); k++) await Bun.sleep(20);
+            const at = rt.session.messages.findIndex((m) => m.role === "user" && m.content.some((p) => (p as { text?: string }).text === "a correction"));
+            expect(at).toBeGreaterThan(0);
+            // What Claude Code said before it is recorded first, so the prompt sits after it.
+            expect(rt.session.messages[at - 1]!.role).toBe("assistant");
+            const turn = rt.snapshot().turns.find((t) => t.prompt?.text === "a correction")!;
+            expect(turn.prompt!.index).toBe(at);
+            expect(turn.pos).toEqual({ seg: 0, index: at });
+        } finally {
+            await engine.stop();
+            delete process.env.FAKE_SCENARIO;
+            removeAgentConfig("claude-code");
+        }
+    }, 30_000);
+
+    /** A Claude Code session that answered and waits on a background sub-agent, with `hook` as its UserPromptSubmit hook. */
+    async function waitingOnBackground(hook: string, backgroundMs = 1500) {
+        const { saveAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        process.env.FAKE_SCENARIO = "agent-background";
+        process.env.FAKE_SECOND_SCENARIO = "none";
+        process.env.FAKE_BACKGROUND_MS = String(backgroundMs);
+        process.env.FAKE_LOG = join(tempDir("cli-log-"), "log.jsonl");
+        const s = await engineWithSession();
+        const events: any[] = [];
+        (s.c as { send: (e: unknown) => void }).send = (e) => void events.push(e);
+        await s.engine.handle(s.c, "models.list", { refresh: true });
+        await s.engine.handle(s.c, "session.setModel", { id: s.id, ref: "claude-code:default", persist: false });
+        s.rt.ws.settings = { ...s.rt.ws.settings, hooks: { UserPromptSubmit: [{ command: hook }] } };
+        await s.engine.handle(s.c, "session.send", { id: s.id, text: "map the auth module" });
+        for (let k = 0; k < 500 && !s.rt.snapshot().state.activity?.label?.includes("Waiting for"); k++) await Bun.sleep(10);
+        expect(s.rt.snapshot().state.activity?.label).toContain("Waiting for");
+        return { ...s, events };
+    }
+    const cliLog = () => (process.env.FAKE_LOG && existsSync(process.env.FAKE_LOG) ? readFileSync(process.env.FAKE_LOG, "utf-8") : "");
+    async function settled(rt: { busy: boolean }) {
+        for (let k = 0; k < 1000 && rt.busy; k++) await Bun.sleep(10);
+    }
+
+    test("a message the user interrupts while its hooks run goes back to the composer, with its image", async () => {
+        const { removeAgentConfig } = await import("../src/providers/registry");
+        const marker = join(tempDir("hook-"), "running");
+        const { engine, c, id, rt, events } = await waitingOnBackground(`grep -q 'look at' && { touch '${marker}'; sleep 3; }; exit 0`);
+        try {
+            const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+            await engine.handle(c, "session.send", { id, text: "look at this", images: [{ mediaType: "image/png", data: png }], mode: "queue" });
+            for (let k = 0; k < 500 && !existsSync(marker); k++) await Bun.sleep(10);
+            expect(existsSync(marker)).toBe(true);
+            await engine.handle(c, "session.interrupt", { id });
+            await settled(rt);
+            const draft = events.find((e) => e.type === "draft");
+            expect(draft).toMatchObject({ text: "look at this", images: [{ mediaType: "image/png", data: png }] });
+            expect(rt.session.messages.some((m) => m.role === "user" && JSON.stringify(m.content).includes("look at this"))).toBe(false);
+        } finally {
+            await engine.stop();
+            for (const k of ["FAKE_SCENARIO", "FAKE_SECOND_SCENARIO", "FAKE_BACKGROUND_MS", "FAKE_LOG"]) delete process.env[k];
+            removeAgentConfig("claude-code");
+        }
+    }, 30_000);
+
+    test("a message its hook blocks while Claude Code waits leaves the turn as it was: the report lands there and is kept", async () => {
+        const { removeAgentConfig } = await import("../src/providers/registry");
+        const { engine, c, id, rt } = await waitingOnBackground(`grep -q forbidden && { echo "no forbidden words" >&2; exit 2; }; exit 0`);
+        try {
+            await engine.handle(c, "session.send", { id, text: "say forbidden things", mode: "queue" });
+            await settled(rt);
+            const turns = rt.snapshot().turns;
+            const text = (t: (typeof turns)[number]) => JSON.stringify(t.blocks);
+            const first = turns.find((t) => t.prompt?.text === "map the auth module")!;
+            // The warning shows, and the report comes in the turn that waited for it.
+            expect(turns.some((t) => text(t).includes("Prompt blocked by hook"))).toBe(true);
+            expect(text(first)).toContain("The explorer reported back");
+            expect(turns.filter((t) => text(t).includes("The explorer reported back"))).toHaveLength(1);
+            expect(cliLog()).not.toContain("say forbidden things");
+            await engine.stop();
+            // Kept: reopened, the report is still there.
+            const { Engine } = await import("../src/server/engine");
+            const reopened = new Engine();
+            const next = { subs: new Set<string>(), send() {} };
+            reopened.clients.add(next);
+            try {
+                const view = (await reopened.handle(next, "session.open", { id })) as SessionSnapshot;
+                expect(JSON.stringify(view.turns)).toContain("The explorer reported back");
+            } finally {
+                await reopened.stop();
+            }
+        } finally {
+            await engine.stop();
+            removeAgentConfig("claude-code");
+            for (const k of ["FAKE_SCENARIO", "FAKE_SECOND_SCENARIO", "FAKE_BACKGROUND_MS", "FAKE_LOG"]) delete process.env[k];
+        }
+    }, 30_000);
+
     test("a turn still waiting on the model when the server stops is saved as interrupted", async () => {
         const { findSessionAnywhere } = await import("../src/agent/session");
         const { engine, c, id } = await engineWithSession();

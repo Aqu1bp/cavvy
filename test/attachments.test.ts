@@ -76,6 +76,12 @@ function lastPromptSent(): string {
     return typeof user?.content === "string" ? user.content : (user?.content ?? []).map((c: { text?: string }) => c.text ?? "").join("\n\n");
 }
 
+/** The runtime's queue drains, as the agent calls them. */
+type Waiting = {
+    drainQueued(): string[];
+    drainWaiting(steps: { record(): void; admit(parts: unknown[], display: string): Promise<"go" | "blocked" | "stopped"> }): Promise<{ parts: unknown[]; display: string } | undefined>;
+};
+
 const userPrompts = (messages: Message[]) => messages.filter((m): m is UserMessage => m.role === "user" && m.meta?.kind === "prompt");
 
 describe("session.send with files", () => {
@@ -518,6 +524,128 @@ describe("nothing gets lost", () => {
             const drained = (rt as unknown as { drainQueued(): string[] }).drainQueued();
             expect(drained).toEqual(["plain"]);
             expect(rt.snapshot().state.queued).toEqual(["with a file"]);
+        } finally {
+            await engine.handle(c, "session.interrupt", { id }).catch(() => undefined);
+            await engine.stop();
+        }
+    });
+
+    // #202: Claude Code between its turns, waiting only on background work, takes any of them as a prompt of its own.
+    test("while the agent CLI only waits on background work, queued messages go one at a time, in order, with their attachments; commands and held ones stay", async () => {
+        const { engine, c, id, rt } = await busySession();
+        try {
+            const image = { mediaType: "image/png", data: PNG };
+            await engine.handle(c, "session.send", { id, text: "/review", mode: "queue" });
+            await engine.handle(c, "session.send", { id, text: "held one", mode: "queue" });
+            await engine.handle(c, "session.send", { id, text: "look at this", images: [image], mode: "steer" });
+            await engine.handle(c, "session.send", { id, text: "later", mode: "queue" });
+            await engine.handle(c, "session.send", { id, text: "steer text", mode: "steer" });
+            await engine.handle(c, "session.send", { id, text: "!ls", mode: "steer" });
+            (rt as unknown as { queued: { text: string; held?: boolean }[] }).queued.find((q) => q.text === "held one")!.held = true;
+            const inner = rt as unknown as Waiting;
+            // Mid-step, as before: only steer-mode text.
+            expect(inner.drainQueued()).toEqual(["steer text"]);
+            let recorded = 0;
+            const record = { record: () => void recorded++, admit: async () => "go" as const };
+            const first = await inner.drainWaiting(record);
+            expect(first?.display).toBe("look at this");
+            expect(first?.parts).toEqual([{ type: "text", text: "look at this" }, { type: "image", ...image }]);
+            expect(recorded).toBe(1);
+            // The turn it starts shows the image on its prompt, where the prompt will be.
+            const turn = rt.snapshot().turns.at(-1)!;
+            expect(turn.prompt).toMatchObject({ text: "look at this", images: 1, index: rt.session.messages.length });
+            expect(turn.prompt!.imagesKey).toBe(attachedPrompt([{ type: "image", ...image }]).imagesKey!);
+            expect(turn.pos).toEqual({ seg: 0, index: rt.session.messages.length });
+            expect(rt.snapshot().state.queued).toEqual(["/review", "held one", "later", "!ls"]);
+            expect(await inner.drainWaiting(record)).toEqual({ parts: [{ type: "text", text: "later" }], display: "later" });
+            expect(await inner.drainWaiting(record)).toBeUndefined();
+            expect(recorded).toBe(2);
+            expect(rt.snapshot().state.queued).toEqual(["/review", "held one", "!ls"]);
+            expect(rt.snapshot().state.queuedModes).toEqual(["turn", "held", "turn"]);
+        } finally {
+            await engine.handle(c, "session.interrupt", { id }).catch(() => undefined);
+            await engine.stop();
+        }
+    });
+
+    test("one delivered while the agent CLI only waits is prepared as a sent one: its @mentions attach; one its hooks block isn't sent and starts no turn", async () => {
+        const { engine, c, id, rt } = await busySession();
+        try {
+            await engine.handle(c, "session.send", { id, text: "what does @README.md say?", mode: "queue" });
+            await engine.handle(c, "session.send", { id, text: "blocked one", mode: "queue" });
+            const inner = rt as unknown as Waiting;
+            const seen: string[] = [];
+            const steps = { record: () => {}, admit: async (parts: unknown[]) => (seen.push(JSON.stringify(parts)), JSON.stringify(parts).includes("blocked one") ? ("blocked" as const) : ("go" as const)) };
+            const first = await inner.drainWaiting(steps);
+            expect(first?.display).toBe("what does @README.md say?");
+            // The file's contents, as startTurn attaches them; its hooks saw them too.
+            expect(JSON.stringify(first?.parts)).toContain("Accounts, organizations and billing.");
+            expect(seen[0]).toContain("Accounts, organizations and billing.");
+            // Said in its own turn, as for a sent one.
+            expect(JSON.stringify(rt.snapshot().turns.at(-1)!.blocks)).toContain("Attached README.md");
+            const before = rt.snapshot().turns.length;
+            expect(await inner.drainWaiting(steps)).toBeUndefined();
+            // No turn of its own: what comes next goes on in the turn that was running.
+            expect(rt.snapshot().turns).toHaveLength(before);
+            expect(rt.snapshot().turns.some((t) => t.prompt?.text === "blocked one")).toBe(false);
+            expect(rt.snapshot().state.queued).toEqual([]);
+        } finally {
+            await engine.handle(c, "session.interrupt", { id }).catch(() => undefined);
+            await engine.stop();
+        }
+    });
+
+    test("one stopped while it's prepared stays in the queue where it was, whatever else the user took out meanwhile", async () => {
+        const { engine, c, id, rt } = await busySession();
+        try {
+            for (const text of ["A", "B", "C"]) await engine.handle(c, "session.send", { id, text, mode: "queue" });
+            const inner = rt as unknown as Waiting & { queued: { text: string; held?: boolean }[]; abort?: AbortController };
+            inner.queued[0]!.held = true;
+            const [a] = rt.snapshot().state.queueIds;
+            // The drain's own stop, apart from the running demo turn's.
+            const turnAbort = inner.abort;
+            const stop = (inner.abort = new AbortController());
+            try {
+                const taken = await inner.drainWaiting({
+                    record: () => {},
+                    admit: async () => {
+                        // While B's hooks run, the user removes A and then stops the turn.
+                        await engine.handle(c, "session.dequeue", { id, queueId: a });
+                        stop.abort();
+                        return "go" as const;
+                    },
+                });
+                expect(taken).toBeUndefined();
+                expect(rt.snapshot().state.queued).toEqual(["B", "C"]);
+            } finally {
+                inner.abort = turnAbort;
+            }
+        } finally {
+            await engine.handle(c, "session.interrupt", { id }).catch(() => undefined);
+            await engine.stop();
+        }
+    });
+
+    test("one the user takes out while it's prepared doesn't go, and the next goes in its place, through its own hooks", async () => {
+        const { engine, c, id, rt } = await busySession();
+        try {
+            for (const text of ["A", "B", "C"]) await engine.handle(c, "session.send", { id, text, mode: text === "C" ? "steer" : "queue" });
+            const inner = rt as unknown as Waiting;
+            const [a] = rt.snapshot().state.queueIds;
+            const admitted: string[] = [];
+            const taken = await inner.drainWaiting({
+                record: () => {},
+                admit: async (parts) => {
+                    const text = JSON.stringify(parts);
+                    admitted.push(text.includes('"A"') ? "A" : text.includes('"B"') ? "B" : "C");
+                    // While A's hooks run, the user takes it out of the queue.
+                    if (admitted.length === 1) await engine.handle(c, "session.dequeue", { id, queueId: a });
+                    return "go";
+                },
+            });
+            expect(taken?.display).toBe("B");
+            expect(admitted).toEqual(["A", "B"]);
+            expect(rt.snapshot().state.queued).toEqual(["C"]);
         } finally {
             await engine.handle(c, "session.interrupt", { id }).catch(() => undefined);
             await engine.stop();

@@ -78,6 +78,16 @@ export interface BackendQuestion {
     multiSelect?: boolean;
 }
 
+/** A queued message as a prompt of its own: its text (attached text files framed in), its images, and PDFs for a backend that reads them. */
+export interface BackendPrompt {
+    text: string;
+    images: ImagePart[];
+    documents: PdfPart[];
+    /** As BackendTurn's: the user's message as typed, which its $names are read from, and what follows it in `text`. */
+    request?: string;
+    requestAfter?: string;
+}
+
 export interface BackendHost {
     emit(e: AgentEvent): void;
     /** The harness's permission mode now (it can change during a turn). */
@@ -99,6 +109,15 @@ export interface BackendHost {
     /** Messages the user typed while the backend was working. If any are drained,
      * consume and record preceding output before recording the queued prompt. */
     drainQueued(progress?: () => BackendResult): string[] | Promise<string[]>;
+    /**
+     * For when the CLI is between its turns, waiting only on background work: nothing is mid-step, so
+     * the next message the user queued goes now as a prompt of its own, whatever its mode, with what's
+     * attached (drainQueued's rules are for a running step). Undefined when none can: held ones, and
+     * commands and `!commands` (Harness runs those itself, after the run). Records the output before
+     * it, as drainQueued does. `live`: whether the backend can still send it (not stopped, its CLI not gone),
+     * checked last before it's taken; from then to the send nothing is awaited.
+     */
+    drainWaiting?(progress?: () => BackendResult, live?: () => boolean): Promise<BackendPrompt | undefined>;
     /** Run the harness's hooks for something the backend did (Codex's items). */
     hooks?(event: HookEvent, payload: Record<string, unknown>): Promise<HookOutcome | undefined>;
     /** Run one hook handler the backend called back for (Claude Code's hook_callback), with the backend's input. */
