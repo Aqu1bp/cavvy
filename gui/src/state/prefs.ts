@@ -7,7 +7,7 @@ import { createStore } from "solid-js/store";
 import { setNativeTheme } from "../lib/platform";
 import { applyAppearance, migratePrefs, PREF_DEFAULTS, type Prefs } from "./prefs-core";
 
-export { ACCENTS, CHAT_WIDTHS, PREF_DEFAULTS, type AccentId, type ContrastId, type GlassId, type Prefs, type Scheme } from "./prefs-core";
+export { ACCENTS, CHAT_WIDTHS, PREF_DEFAULTS, type AccentId, type ContrastId, type GlassId, type Prefs, type Scheme, type TintId } from "./prefs-core";
 
 const KEY = "harness.prefs";
 

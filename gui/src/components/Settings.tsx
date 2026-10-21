@@ -344,6 +344,26 @@ function SchemeTile(p: { id: Scheme; label: string }) {
     );
 }
 
+/**
+ * A small picture of the window with that tint: the rail on the tinted glass,
+ * the sheet beside it. The face carries only its own data-tint, so it's drawn
+ * in the scheme, accent and Window showing (tokens.css matches it under <html>).
+ */
+function TintTile(p: { id: typeof prefs.tint; label: string }) {
+    const on = () => prefs.tint === p.id;
+    return (
+        <button class={`ap-tile ${on() ? "on" : ""}`} aria-pressed={on()} onClick={() => setPrefs("tint", p.id)}>
+            <span class="ap-pv" aria-hidden="true">
+                <span class="ap-face ap-tint" data-tint={p.id}>
+                    <i />
+                    <u />
+                </span>
+            </span>
+            {p.label}
+        </button>
+    );
+}
+
 /** Settings → Appearance, as the mockup draws it: scheme tiles, then the look, then text and layout. */
 function Appearance() {
     const size = (n: number) => setPrefs("fontSize", Math.max(12, Math.min(18, n)));
@@ -382,6 +402,13 @@ function Appearance() {
                             { value: "solid", label: "Solid" },
                         ]}
                     />
+                </Row>
+                <Row title="Window tint" desc="The colour of the glass behind the sidebar." changed={prefs.tint !== PREF_DEFAULTS.tint} reset={() => setPrefs("tint", PREF_DEFAULTS.tint)} class="ap-tint-row">
+                    <div class="ap-tiles ap-tint-tiles" role="group" aria-label="Window tint">
+                        <TintTile id="clear" label="Clear" />
+                        <TintTile id="ocean" label="Ocean" />
+                        <TintTile id="accent" label="Accent" />
+                    </div>
                 </Row>
                 <Row title="Contrast" desc="Stronger text and edges." changed={prefs.contrast !== PREF_DEFAULTS.contrast} reset={() => setPrefs("contrast", PREF_DEFAULTS.contrast)}>
                     <Segmented

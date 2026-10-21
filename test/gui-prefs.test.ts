@@ -105,18 +105,20 @@ describe("migrating saved appearance", () => {
         });
     }
 
-    test("no saved theme: the defaults (system, glass, standard)", () => {
-        expect({ ...PREF_DEFAULTS, ...migratePrefs({ fontSize: 15 }) }).toMatchObject({ scheme: "system", glass: "glass", contrast: "standard", fontSize: 15 });
+    test("no saved theme: the defaults (system, glass, clear tint, standard)", () => {
+        expect({ ...PREF_DEFAULTS, ...migratePrefs({ fontSize: 15 }) }).toMatchObject({ scheme: "system", glass: "glass", tint: "clear", contrast: "standard", fontSize: 15 });
     });
 
     test("today's settings are kept as they are, and migrating twice changes nothing", () => {
-        const saved = { scheme: "light", glass: "solid", contrast: "high", accent: "graphite", density: "compact" };
+        const saved = { scheme: "light", glass: "solid", tint: "ocean", contrast: "high", accent: "graphite", density: "compact" };
         expect(migratePrefs(saved)).toEqual(saved as Partial<Prefs>);
         expect(migratePrefs(migratePrefs({ theme: "contrast", darkTheme: "dusk" }))).toEqual({ scheme: "dark", contrast: "high" });
     });
 
     test("unknown appearance values are dropped so the defaults apply", () => {
-        expect(migratePrefs({ scheme: "dusk", glass: "frosted", contrast: "max", accent: "chartreuse", theme: "neon" })).toEqual({});
+        expect(migratePrefs({ scheme: "dusk", glass: "frosted", tint: "sunset", contrast: "max", accent: "chartreuse", theme: "neon" })).toEqual({});
+        for (const tint of ["", "Ocean", null, 1, {}]) expect(migratePrefs({ tint })).toEqual({});
+        for (const tint of ["clear", "ocean", "accent"] as const) expect(migratePrefs({ tint })).toEqual({ tint });
         expect(migratePrefs({ accent: undefined })).toEqual({});
     });
 
@@ -129,9 +131,10 @@ describe("first paint and the app agree", () => {
     const cases: [string, unknown][] = [
         ...LEGACY.map(([theme]): [string, unknown] => [`legacy ${theme}`, { theme, lightTheme: "paper", darkTheme: "contrast", fontSize: 16, sidebarWidth: 300, reviewWidth: 800, chatWidth: "narrow", motion: "smooth", density: "compact" }]),
         ["empty", {}],
-        ["unknown values", { scheme: "bad", glass: "bad", contrast: "bad", accent: "bad", chatWidth: "bad" }],
+        ["unknown values", { scheme: "bad", glass: "bad", tint: "bad", contrast: "bad", accent: "bad", chatWidth: "bad" }],
         ...ACCENTS.map((a): [string, unknown] => [`accent ${a.id}`, { scheme: "dark", accent: a.id }]),
         ...(["glass", "tinted", "solid"] as const).flatMap((glass) => (["standard", "high"] as const).map((contrast): [string, unknown] => [`${glass}/${contrast}`, { scheme: "light", glass, contrast }])),
+        ...(["clear", "ocean", "accent"] as const).flatMap((tint) => (["glass", "solid"] as const).map((glass): [string, unknown] => [`tint ${tint}/${glass}`, { scheme: "dark", tint, glass, accent: "teal" }])),
     ];
     for (const [name, saved] of cases) {
         for (const dark of [false, true]) {
@@ -154,7 +157,7 @@ describe("first paint and the app agree", () => {
                 const later = app(stored, dark, storageThrows);
                 expect(early.dataset).toEqual(later.dataset);
                 expect(early.style).toEqual(later.style);
-                expect(later.dataset).toEqual({ theme: dark ? "dark" : "light", scheme: dark ? "dark" : "light", glass: "glass", contrast: "standard", density: "comfortable", motion: "instant" });
+                expect(later.dataset).toEqual({ theme: dark ? "dark" : "light", scheme: dark ? "dark" : "light", glass: "glass", tint: "clear", contrast: "standard", density: "comfortable", motion: "instant" });
             }
         });
     }
@@ -189,9 +192,12 @@ describe("the app's preferences", () => {
         later.setPrefs("glass", "tinted");
         later.setPrefs("contrast", "high");
         later.setPrefs("accent", "pink");
-        expect(later.dataset).toMatchObject({ glass: "tinted", contrast: "high", accent: "pink" });
+        later.setPrefs("tint", "ocean");
+        expect(later.dataset).toMatchObject({ glass: "tinted", tint: "ocean", contrast: "high", accent: "pink" });
+        later.setPrefs("tint", "accent");
+        expect(later.dataset.tint).toBe("accent");
         later.setPrefs("accent", undefined);
         expect(later.dataset).not.toHaveProperty("accent");
-        expect(later.saved()).toMatchObject({ scheme: "light", glass: "tinted", contrast: "high" });
+        expect(later.saved()).toMatchObject({ scheme: "light", glass: "tinted", tint: "accent", contrast: "high" });
     });
 });

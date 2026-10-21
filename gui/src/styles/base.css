@@ -82,15 +82,16 @@ textarea,
 /* The window: its tint over the native material in the macOS app (Liquid
    Glass, or the sidebar material before macOS 26). A browser has no desktop
    behind the page, and the app elsewhere gets a transparent window with no
-   material, so those get the tint over a calm gradient. The shell lays the
-   rail on this and the sheet over it. */
+   material, so those get the tint over a calm gradient. The Window tint
+   (--win-wash, none with Clear) goes over the tint. The shell lays the rail
+   on this and the sheet over it. */
 .app.tauri.os-macos {
-    background: var(--win-tint);
+    background: var(--win-wash), var(--win-tint);
 }
 
 .app.browser,
 .app.tauri:not(.os-macos) {
-    background: linear-gradient(var(--win-tint), var(--win-tint)), var(--backdrop);
+    background: var(--win-wash), linear-gradient(var(--win-tint), var(--win-tint)), var(--tint-backdrop);
 }
 
 /* ---- Glass ----

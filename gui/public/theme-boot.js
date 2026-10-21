@@ -5,7 +5,7 @@
 // that both give <html> the same attributes and properties.
 (function () {
     var ACCENTS = ["blue", "indigo", "violet", "pink", "red", "orange", "green", "teal", "graphite"];
-    var DEFAULTS = { scheme: "system", glass: "glass", contrast: "standard", density: "comfortable", motion: "instant", fontSize: 14, sidebarWidth: 260, reviewWidth: 720, chatWidth: "default" };
+    var DEFAULTS = { scheme: "system", glass: "glass", tint: "clear", contrast: "standard", density: "comfortable", motion: "instant", fontSize: 14, sidebarWidth: 260, reviewWidth: 720, chatWidth: "default" };
     var COLUMNS = { narrow: 640, default: 736, wide: 880 };
 
     function migrate(saved) {
@@ -24,6 +24,7 @@
             if (theme === "contrast") out.contrast = "high";
         }
         if (["glass", "tinted", "solid"].indexOf(out.glass) < 0) delete out.glass;
+        if (["clear", "ocean", "accent"].indexOf(out.tint) < 0) delete out.tint;
         if (ACCENTS.indexOf(out.accent) < 0) delete out.accent;
         return out;
     }
@@ -44,6 +45,7 @@
     d.dataset.theme = theme;
     d.dataset.scheme = theme;
     d.dataset.glass = p.glass;
+    d.dataset.tint = p.tint;
     d.dataset.contrast = p.contrast;
     if (p.accent) d.dataset.accent = p.accent;
     else delete d.dataset.accent;
