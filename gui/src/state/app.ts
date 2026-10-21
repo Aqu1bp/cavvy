@@ -71,7 +71,7 @@ export function toast(message: string, level: Toast["level"] = "info", actionOrA
     if (existing) {
         const index = toasts.findIndex((t) => t.id === existing.id);
         setToasts(index, "count", existing.count + 1);
-        toastTimers.get(existing.id)?.life.restart(toastMs(level, ms), performance.now());
+        toastTimers.get(existing.id)?.life.restart(toastMs(level, ms, action), performance.now());
         scheduleToast(existing.id);
         return;
     }
@@ -80,7 +80,7 @@ export function toast(message: string, level: Toast["level"] = "info", actionOrA
         waiting.count++;
         return;
     }
-    toastQueue.push({ id: ++toastId, level, message, count: 1, action, additionalActions: additionalActions.length ? additionalActions : undefined, duration: toastMs(level, ms) });
+    toastQueue.push({ id: ++toastId, level, message, count: 1, action, additionalActions: additionalActions.length ? additionalActions : undefined, duration: toastMs(level, ms, action) });
     if (toasts.length >= MAX_TOASTS) {
         const idle = toasts.find((t) => !t.action && !t.running && !toastTimers.get(t.id)?.life.interacting);
         if (idle) dismissToast(idle.id);

@@ -22,18 +22,22 @@
     line-height: 1.6;
 }
 
+/* ---- Toasts ------------------------------------------------------------
+   They drop into the title bar's row, over the session title for a moment,
+   rather than over the content: centred between where the title starts and
+   where the tool capsule begins (--bar-start, --bar-end and --bar-top, which
+   the title bar keeps up to date), never narrower than 240px. */
+
 .toasts {
     position: fixed;
-    right: 20px;
-    top: 60px;
-    /* The two-toast limit fits two 52px rows and an 8px gap without scrolling. */
-    max-height: 112px;
-    width: min(440px, calc(100vw - 40px));
     z-index: 80;
+    top: calc(var(--bar-top, 8px) + (var(--header-h) - 36px) / 2);
+    left: var(--bar-start, calc(var(--sidebar-w) + 8px));
+    right: max(8px, min(calc(var(--bar-end, 190px) + 8px), calc(100vw - var(--bar-start, calc(var(--sidebar-w) + 8px)) - 240px)));
     display: flex;
     flex-direction: column;
     gap: 8px;
-    align-items: flex-end;
+    align-items: center;
     pointer-events: none;
 }
 
@@ -41,7 +45,7 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    align-items: flex-end;
+    align-items: center;
     max-width: 100%;
 }
 
@@ -49,65 +53,153 @@
     display: none;
 }
 
+/* A glass pill (the class is .glass too; this also covers a toast without it). */
 .toast {
+    position: relative;
     flex: none;
     pointer-events: auto;
     display: flex;
     align-items: center;
     gap: 10px;
-    max-width: 100%;
-    min-height: 44px;
-    padding: 8px 10px;
-    border-radius: 14px;
-    background: var(--bg-elev);
-    box-shadow: var(--shadow-float);
-    font-size: 0.93rem;
-    animation: rise 240ms var(--ease-out);
+    min-height: 36px;
+    max-width: min(460px, 100%);
+    padding: 4px 6px 4px 14px;
+    border-radius: 18px;
+    background: var(--ctl-strong);
+    -webkit-backdrop-filter: blur(20px) saturate(1.9);
+    backdrop-filter: blur(20px) saturate(1.9);
+    box-shadow: 0 0 0 0.5px var(--ctl-stroke), inset 0 1px 0 var(--ctl-hi), inset 0 -1px 0 var(--ctl-lo), var(--ctl-shadow);
+    color: var(--fg);
+    font-size: 0.929rem;
+    animation: toast-in 420ms var(--spring);
+}
+
+.toast::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: var(--sheen);
+    pointer-events: none;
+}
+
+.toast > * {
+    position: relative;
+}
+
+@keyframes toast-in {
+    from {
+        opacity: 0;
+        transform: translateY(-12px) scale(0.96);
+    }
+}
+
+[data-motion="instant"] .toast {
+    animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .toast {
+        animation: none;
+    }
 }
 
 .toast > svg {
     flex: none;
-    color: var(--fg-muted);
+    color: var(--fg-2);
+}
+
+.toast.success > svg {
+    color: var(--ok);
+}
+
+.toast.warn > svg {
+    color: var(--warn);
 }
 
 .toast.error > svg {
     color: var(--danger);
 }
 
-.toast.warn > svg {
-    color: var(--warning);
-}
-
-.toast.success > svg {
-    color: var(--success);
-}
-
+/* One line; an error may take two (Copy has the whole of it). */
 .toast-msg {
-    display: -webkit-box;
     flex: 1;
     min-width: 0;
     overflow: hidden;
-    overflow-wrap: anywhere;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     line-height: 18px;
+}
+
+.toast.error .toast-msg {
+    display: -webkit-box;
+    white-space: normal;
+    overflow-wrap: anywhere;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
 }
 
-.toast-count,
-.toast .link-btn,
-.toast .icon-btn {
+.toast-count {
     flex: none;
+    color: var(--fg-3);
+    font-variant-numeric: tabular-nums;
     white-space: nowrap;
 }
 
+/* Undo, Copy, the saved file's choices: small ghost pills. */
+.toast .link-btn {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    height: 28px;
+    padding: 0 12px;
+    border-radius: var(--pill);
+    background: var(--ctl-strong);
+    box-shadow: inset 0 0 0 0.5px var(--ctl-stroke);
+    color: var(--fg-2);
+    font-size: 0.857rem;
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: color 140ms, transform 160ms var(--ease);
+}
 
+.toast .link-btn:hover:not(:disabled) {
+    color: var(--fg);
+    text-decoration: none;
+}
+
+.toast .link-btn:active:not(:disabled) {
+    transform: scale(0.96);
+}
+
+.toast .link-btn:disabled {
+    opacity: 0.45;
+}
+
+.toast .icon-btn {
+    flex: none;
+    display: inline-grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    color: var(--fg-3);
+}
+
+.toast .icon-btn:hover {
+    background: var(--hover);
+    color: var(--fg);
+}
+
+/* The current shell's narrow windows (until the shell sets data-rail): the rail floats over the main view. */
 @media (max-width: 760px) {
-    .sidebar {
+    .app:not([data-rail]) .sidebar {
         position: absolute;
         z-index: 40;
         top: 0;
         bottom: 0;
-        box-shadow: var(--shadow-float);
+        background: var(--rail-float);
+        box-shadow: var(--pop-shadow);
     }
 }
-

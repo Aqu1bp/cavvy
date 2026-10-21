@@ -1,62 +1,63 @@
 /* ---- Runs: one prompt's sessions, together ------------------------------- */
 
+/* In the rail: the prompt as a heading, its models' rows under it on a quiet accent rule. */
 .run-group {
     display: flex;
     flex-direction: column;
-    margin: 4px 0;
-    padding: 2px 0 2px 6px;
-    border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    margin: 4px 0 8px;
+    padding-left: 6px;
+    box-shadow: inset 1.5px 0 0 color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
 .run-head {
     display: flex;
     align-items: center;
-    gap: 6px;
-    height: 22px;
-    padding: 0 10px 0 4px;
-    font-size: 0.786rem;
-    font-weight: 500;
-    color: var(--fg-muted);
+    gap: 7px;
     min-width: 0;
+    padding: 4px 8px 6px 4px;
+    font-size: 0.857rem;
+    font-weight: 600;
+    color: var(--rail-fg-2);
 }
 
 .run-head svg {
     flex: none;
-    color: var(--fg-subtle);
 }
 
 .run-count {
     margin-left: auto;
     flex: none;
+    font-weight: 500;
+    opacity: 0.8;
     font-variant-numeric: tabular-nums;
-    color: var(--fg-subtle);
 }
 
-/* The header's switcher between a run's sessions. */
+/* In the title bar: the run's models as a capsule of their own, beside the tools. */
 .run-switch {
     display: flex;
     align-items: center;
-    gap: 2px;
+    gap: 1px;
     min-width: 0;
-    margin-right: 6px;
-    padding: 2px;
-    border-radius: 8px;
-    box-shadow: inset 0 0 0 1px var(--border-strong);
+    max-width: 420px;
+    height: 34px;
+    padding: 0 3px;
+    border-radius: var(--pill);
     overflow: hidden;
 }
 
 .run-switch .rs {
     display: flex;
     align-items: center;
-    gap: 5px;
-    height: 24px;
+    gap: 6px;
+    height: 28px;
     min-width: 0;
     max-width: 180px;
-    padding: 0 8px;
-    border-radius: 6px;
-    font-size: 0.786rem;
+    padding: 0 10px;
+    border-radius: var(--pill);
+    font-size: 0.857rem;
     font-weight: 500;
-    color: var(--fg-muted);
+    color: var(--fg-2);
+    transition: background 140ms, color 140ms;
 }
 
 .run-switch .rs svg {
@@ -64,27 +65,27 @@
 }
 
 .run-switch .rs:hover {
-    background: var(--bg-hover);
+    background: var(--hover);
     color: var(--fg);
 }
 
 .run-switch .rs.on {
-    background: var(--bg-active);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
     color: var(--fg);
 }
 
 .rs-st {
     flex: none;
     font-weight: 400;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
 }
 
 .rs-st.st-running {
-    color: var(--link);
+    color: var(--accent);
 }
 
 .rs-st.st-waiting {
-    color: var(--warning);
+    color: var(--warn);
 }
 
 .rs-st.st-stopped {
