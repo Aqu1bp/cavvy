@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "bun";
 import { createHash } from "crypto";
 import { appendFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
-import { gitArgv, gitEnv } from "../util/git";
+import { cwdGitEnv, gitArgv } from "../util/git";
 import { isInside } from "../util/files";
 import { isTrusted, trustedByUser } from "../config/trust";
 import { loadSettings, type Settings } from "../config/settings";
@@ -37,9 +37,10 @@ export function parseWorktrees(output: string): WorktreeRecord[] {
 /**
  * In a partial clone, a missing object makes Git fetch it through the
  * promisor remote, which can run that remote's configured commands. None of
- * the checks and reads here need one.
+ * the checks and reads here need one. And the repository is cwd's: a GIT_DIR or
+ * GIT_WORK_TREE the server inherited would list (or add to) another one.
  */
-const noLazyFetch = () => ({ ...gitEnv(), GIT_NO_LAZY_FETCH: "1" });
+const noLazyFetch = () => ({ ...cwdGitEnv(), GIT_NO_LAZY_FETCH: "1" });
 
 function runGit(cwd: string, args: string[]): string | undefined {
     const result = spawnSync(gitArgv(args), { cwd, env: noLazyFetch(), stdout: "pipe", stderr: "pipe", timeout: 3000 });
@@ -240,7 +241,7 @@ interface GitRun {
 
 /** Waits for Git itself (killed at the timeout), not for its pipes to close. `lazyFetch` only for the checkout itself. Exported for tests. */
 export async function runGitAsync(cwd: string, args: string[], timeoutMs: number, o: { lazyFetch?: boolean } = {}): Promise<GitRun> {
-    const proc = spawn(gitArgv(args), { cwd, env: o.lazyFetch ? gitEnv() : noLazyFetch(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const proc = spawn(gitArgv(args), { cwd, env: o.lazyFetch ? cwdGitEnv() : noLazyFetch(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     let timedOut = false;
     const timer = setTimeout(() => {
         timedOut = true;

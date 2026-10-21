@@ -178,6 +178,36 @@ describe("session.gitChanges with a worktree", () => {
         }
     });
 
+    test("the main worktree, seen from a linked one, is refused where its own config moves its work tree; inherited GIT_DIR and GIT_WORK_TREE move nothing", async () => {
+        const { main, linked, engine } = await setup("main moved");
+        const other = repo("main moved other repo");
+        writeFileSync(join(other, "secret.txt"), "not this repository's\n");
+        const client = { subs: new Set<string>(), send: () => {} };
+        const saved = { dir: process.env.GIT_DIR, tree: process.env.GIT_WORK_TREE };
+        try {
+            const snap = (await engine.handle(client, "session.create", { cwd: linked })) as SessionSnapshot;
+            const call = <T>(method: string, params: Record<string, unknown>) => engine.handle(client, method as any, { id: snap.state.id, ...params }) as Promise<T>;
+            const read = async () => (await call<GitChangesInfo>("session.gitChanges", { scope: "uncommitted", worktree: main })).files.map((f) => f.path);
+            expect(await read()).toEqual(["scratch.txt"]);
+            // The server's own environment naming another repository changes neither the check nor the read.
+            process.env.GIT_DIR = join(other, ".git");
+            process.env.GIT_WORK_TREE = other;
+            expect(await read()).toEqual(["scratch.txt"]);
+            delete process.env.GIT_DIR;
+            delete process.env.GIT_WORK_TREE;
+            // The main worktree's own config.worktree.
+            git(main, "config", "extensions.worktreeConfig", "true");
+            git(main, "config", "--worktree", "core.worktree", other);
+            await expect(read()).rejects.toMatchObject({ code: "not_found" });
+        } finally {
+            if (saved.dir === undefined) delete process.env.GIT_DIR;
+            else process.env.GIT_DIR = saved.dir;
+            if (saved.tree === undefined) delete process.env.GIT_WORK_TREE;
+            else process.env.GIT_WORK_TREE = saved.tree;
+            await engine.stop();
+        }
+    });
+
     test("a pinned read stays in the worktree checked, whatever its config says later", async () => {
         const { main, linked, engine } = await setup("pinned");
         const other = repo("pinned other repo");

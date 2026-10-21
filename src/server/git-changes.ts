@@ -18,7 +18,7 @@ import { lstat, open, readlink } from "fs/promises";
 import { basename, dirname, isAbsolute, join, relative } from "path";
 import type { TurnSnapshots } from "../agent/turn-snapshots";
 import { canonical } from "../agent/checkpoints";
-import { gitArgv, gitEnv } from "../util/git";
+import { gitArgv, gitEnv, REPO_VARS } from "../util/git";
 import { redact } from "../util/redact";
 import { coalesce, type Slot } from "./coalesce";
 import { fileDiff, MAX_DIFF_INPUT, textOf } from "./diffs";
@@ -47,8 +47,6 @@ const SYMLINK = "120000";
 
 // ---------------------------------------------------------------------------
 // Running git
-
-const REPO_VARS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE"];
 
 export interface GitOut {
     code: number;
