@@ -21,7 +21,8 @@ export function railGlyph(s: Pick<SessionSummary, "status" | "messages">, unread
 /**
  * Sessions under each project heading, keyed by the heading's entry key. A run
  * counts each of its sessions; the count stops at the next heading, so Settled
- * and "Show more" don't add to the last project.
+ * and "Show more" don't add to the last project. A folded project counts its
+ * folded sessions.
  */
 export function groupCounts(entries: readonly SidebarEntry[]): Map<string, number> {
     const counts = new Map<string, number>();
@@ -29,7 +30,8 @@ export function groupCounts(entries: readonly SidebarEntry[]): Map<string, numbe
     for (const e of entries) {
         if (e.kind === "project") {
             group = e.key;
-            counts.set(group, 0);
+            // A folded project counts the sessions folded under it.
+            counts.set(group, e.collapsed ? e.ids?.length ?? 0 : 0);
         } else if (e.kind === "settled" || e.kind === "archived") group = undefined;
         else if (group && (e.kind === "card" || e.kind === "row")) counts.set(group, counts.get(group)! + 1);
         else if (group && e.kind === "run") counts.set(group, counts.get(group)! + e.ids.length);

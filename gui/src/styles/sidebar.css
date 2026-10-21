@@ -222,6 +222,45 @@
     transform: rotate(180deg);
 }
 
+/* Grouped by project, a heading folds its sessions under it (and unfolds
+   them), like Settled. Its New session takes the count's place on hover,
+   beside the chevron. */
+.shelf-toggle {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: -4px -8px -6px;
+    padding: 4px 8px 6px;
+    border-radius: 10px;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    transition: color 140ms;
+}
+
+.shelf-toggle:hover {
+    color: var(--rail-fg);
+}
+
+.shelf-toggle:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: -2px;
+}
+
+.shelf-toggle > svg {
+    flex: none;
+}
+
+.project-head .shelf-btn.add {
+    right: 25px;
+}
+
+.project-head .wait-dot {
+    margin-left: 2px;
+}
+
 /* ---- A session in play: glyph | title, when | branch ------------------- */
 
 .card {

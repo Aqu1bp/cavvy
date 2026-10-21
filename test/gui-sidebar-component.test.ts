@@ -34,12 +34,13 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
     const [activeId, setActiveId] = solid.createSignal<string>();
     const [groupBy, setGroupBy] = solid.createSignal("date");
     const [settledOpen, setSettledOpen] = solid.createSignal(true);
+    const [collapsedProjects, setCollapsedProjects] = solid.createSignal<string[]>([]);
     const [motion, setMotion] = solid.createSignal("instant");
     const [railSelection, setRailSelection] = solid.createSignal<railSelect.RailSelection>(railSelect.NO_SELECTION);
     const bulk = { settle: mock((_ids: readonly string[], _on: boolean) => Promise.resolve([] as string[])), archive: mock((_ids: readonly string[], _on: boolean) => Promise.resolve([] as string[])), askToDelete: mock((_ids: readonly string[]) => {}) };
     let reduced = false;
     const app = { get sessions() { return sessions(); }, get archived() { return archived(); }, get activeId() { return activeId(); }, projects: [], models: [], limits: {}, providers: [], get conn() { return conn(); }, get sessionsLoaded() { return sessionsLoaded(); }, get sessionsError() { return sessionsError(); } };
-    const prefs = { get groupBy() { return groupBy(); }, get settledOpen() { return settledOpen(); }, get motion() { return motion(); } };
+    const prefs = { get groupBy() { return groupBy(); }, get settledOpen() { return settledOpen(); }, get motion() { return motion(); }, get collapsedProjects() { return collapsedProjects(); } };
     const resolve = (value: any): any => typeof value === "function" ? resolve(value()) : Array.isArray(value) ? value.map(resolve) : value;
     // A menu's children may be a Show's accessor: read through it.
     const descendants = (node: any): any[] => [node, ...[...(node.children ?? []), node.content].map(resolve).flat(Infinity).filter((child) => child && typeof child === "object" && child !== node).flatMap(descendants)];
@@ -68,7 +69,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
         presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled)
         .replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
-    const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronUp", "CircleAlert", "Folder", "FolderPlus", "Hand", "Layers", "ListFilter", "MessageSquareText", "MoreHorizontal", "PanelLeft", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "X", "ProviderIcon"].map((name) => [name, () => null]));
+    const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronsDownUp", "ChevronsUpDown", "ChevronUp", "CircleAlert", "Folder", "FolderPlus", "Hand", "Layers", "ListFilter", "MessageSquareText", "MoreHorizontal", "PanelLeft", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "X", "ProviderIcon"].map((name) => [name, () => null]));
     const scope = { renderer, ...solid, ...order, ...format, ...rail, ...railSelect, ...icons, sessionStatus, rowMenuKey, app, prefs,
         railSelection, setRailSelection, actionOf: o.actionOf ?? (() => undefined),
         settleSessions: bulk.settle, archiveSessions: bulk.archive, askToDelete: bulk.askToDelete,
@@ -76,7 +77,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
         holdSidebar: (...args: Parameters<typeof order.holdSidebar>) => order.holdSidebar(...args).map((entry) => ({
             ...entry, get key() { entryKeyReads++; return entry.key; },
         })),
-        setPrefs: (key: string, value: any) => key === "groupBy" ? setGroupBy(value) : setSettledOpen(value),
+        setPrefs: (key: string, value: any) => key === "groupBy" ? setGroupBy(value) : key === "collapsedProjects" ? setCollapsedProjects(value) : setSettledOpen(value),
         setSidebarOrder: (value: string[] | undefined) => { ids = value ?? []; }, now: () => 100000,
         handleFor: () => undefined, isUnread: () => true, activate: setActiveId, refreshSessions, reportError,
         Menu: (p: any) => { menus.push(p); return solid.createMemo(() => p.open ? p.children : null); },
@@ -93,7 +94,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
     const update = (id: string, patch: Partial<SessionSummary>) => setSessions((list) => list.map((s) => s.id === id ? { ...s, ...patch } : s));
     const flushFrames = () => { for (const [id, fn] of [...frames]) { frames.delete(id); fn(); } };
     const contextMenu = (row: any) => row.props.onContextMenu({ target: row.querySelector(), currentTarget: row, button: 2, clientX: 40, clientY: 60, preventDefault() {} });
-    return { railSelection, setRailSelection, bulk, setSessionsError, refreshSessions, reportError, setSessionsLoaded, setConn, nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
+    return { railSelection, setRailSelection, bulk, collapsedProjects, setCollapsedProjects, setSessionsError, refreshSessions, reportError, setSessionsLoaded, setConn, nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
         resetEntryKeyReads: () => { entryKeyReads = 0; }, get entryKeyReads() { return entryKeyReads; },
         setReduced: (value: boolean) => { reduced = value; }, flushFrames, dispose, get ids() { return [...ids]; } };
 }
@@ -545,5 +546,101 @@ test("rail keys: select all, act on the selection (else the open row), Esc clear
         next = "sidebar:selectAll";
         key(f, "a", { target: { closest: () => ({}) } });
         expect(f.railSelection().ids).toEqual([]);
+    } finally { f.dispose(); }
+});
+
+// ---- Folding a project under its heading ----------------------------------
+
+const heading = (f: ReturnType<typeof fixture>, cwd: string) => f.nodes.findLast((n) => n.props.class === "shelf-toggle" && n.props.title === cwd);
+const headRow = (f: ReturnType<typeof fixture>, cwd: string) => f.nodes.findLast((n) => String(n.props.class).startsWith("shelf project-head") && f.descendants(n).includes(heading(f, cwd)));
+
+test("grouped by project, a heading folds and unfolds its sessions; its New session doesn't", () => {
+    const f = fixture(9);
+    try {
+        f.setGroupBy("project");
+        const inP0 = f.ids.filter((id) => Number(id) % 3 === 0);
+        expect(heading(f, "/p/0").props["aria-expanded"]).toBe(true);
+        heading(f, "/p/0").props.onClick();
+        expect(f.collapsedProjects()).toEqual(["/p/0"]);
+        expect(heading(f, "/p/0").props["aria-expanded"]).toBe(false);
+        expect(String(headRow(f, "/p/0").props.class)).toContain("folded");
+        for (const id of inP0) expect(f.ids).not.toContain(id);
+        // Folded, it still shows how many.
+        expect(f.descendants(heading(f, "/p/0")).find((n) => n.props?.class === "n").content).toBe(3);
+        // The + starts a session there and leaves the fold alone.
+        const add = f.descendants(headRow(f, "/p/0")).find((n) => n.props?.class === "shelf-btn add");
+        add.props.onClick();
+        expect(f.collapsedProjects()).toEqual(["/p/0"]);
+        heading(f, "/p/0").props.onClick();
+        expect(f.collapsedProjects()).toEqual([]);
+        expect(f.ids).toEqual(expect.arrayContaining(inP0));
+        // Listed by date nothing is folded, whatever was.
+        heading(f, "/p/0").props.onClick();
+        f.setGroupBy("date");
+        expect(f.ids).toEqual(expect.arrayContaining(inP0));
+    } finally { f.dispose(); }
+});
+
+test("a folded project with a session that needs you shows the amber dot on its heading", () => {
+    const f = fixture(6);
+    try {
+        f.setGroupBy("project");
+        f.setCollapsedProjects(["/p/1"]);
+        const dot = () => f.descendants(heading(f, "/p/1")).some((n) => n.props?.class === "wait-dot");
+        expect(dot()).toBe(false);
+        f.update("4", { status: "waiting", waitingKind: "permission" });
+        expect(dot()).toBe(true);
+        expect(f.ids).not.toContain("4");
+    } finally { f.dispose(); }
+});
+
+test("opening a session in a folded project (⌘K, a notification) unfolds it", () => {
+    const f = fixture(6);
+    try {
+        f.setGroupBy("project");
+        f.setCollapsedProjects(["/p/1", "/p/2"]);
+        f.setActiveId("4");
+        expect(f.collapsedProjects()).toEqual(["/p/2"]);
+        expect(f.ids).toContain("4");
+        // Folding the open session's own project afterwards is allowed.
+        heading(f, "/p/1").props.onClick();
+        expect(f.collapsedProjects()).toEqual(["/p/2", "/p/1"]);
+        expect(f.ids).not.toContain("4");
+    } finally { f.dispose(); }
+});
+
+test("Collapse all and Expand all are in the view menu while grouped by project", () => {
+    const f = fixture(6);
+    const item = (label: string) => f.nodes.findLast((n) => n.props.role === "menuitem" && f.descendants(n).some((c) => c.text === ` ${label}` || c.text === label));
+    const openMenu = () => f.nodes.find((n) => n.props.title === "View options").props.onClick();
+    try {
+        openMenu();
+        expect(item("Collapse all projects")).toBeUndefined();
+        f.nodes.find((n) => n.props.title === "View options").props.onClick();
+        f.setGroupBy("project");
+        openMenu();
+        item("Collapse all projects").props.onClick();
+        expect([...f.collapsedProjects()].sort()).toEqual(["/p/0", "/p/1", "/p/2"]);
+        expect(f.ids).toEqual([]);
+        openMenu();
+        item("Expand all projects").props.onClick();
+        expect(f.collapsedProjects()).toEqual([]);
+        expect(f.ids).toHaveLength(6);
+    } finally { f.dispose(); }
+});
+
+test("selection and folds: a Shift-click range skips a folded project's rows; folding drops its rows from the selection", () => {
+    const f = fixture(9);
+    try {
+        f.setGroupBy("project");
+        const order = f.ids;
+        const first = order[0]!;
+        const last = order.at(-1)!;
+        f.setCollapsedProjects(["/p/1"]);
+        click(hitOf(f, first));
+        click(hitOf(f, last), { shiftKey: true });
+        expect(f.railSelection().ids).toEqual(order.filter((id) => Number(id) % 3 !== 1));
+        heading(f, "/p/2").props.onClick();
+        expect(f.railSelection().ids).toEqual(order.filter((id) => Number(id) % 3 === 0));
     } finally { f.dispose(); }
 });

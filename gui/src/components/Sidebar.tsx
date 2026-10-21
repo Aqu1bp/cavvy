@@ -3,15 +3,15 @@
 // project, when the list isn't grouped by project). Ones you've settled fold
 // into a one-line list at the bottom; sending to one brings it back.
 
-import { batch, createEffect, createMemo, createSignal, For, Match, onCleanup, Show, Switch, untrack } from "solid-js";
-import { Archive, ArchiveRestore, Check, CheckCheck, ChevronUp, CircleAlert, Folder, FolderPlus, Hand, Layers, ListFilter, MessageSquareText, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
+import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, Show, Switch, untrack } from "solid-js";
+import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronsUpDown, ChevronUp, CircleAlert, Folder, FolderPlus, Hand, Layers, ListFilter, MessageSquareText, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread, refreshSessions, reportError } from "../state/app";
 import { archive, archiveSessions, askToDelete, chooseProject, newSession, openProject, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { setDeleteRequest, setPaletteOpen, setSettingsTab } from "../state/ui";
 import { ago, monogram, projectColor, since } from "../lib/format";
-import { holdSidebar, sidebarEntries, sidebarIds, SESSION_PAGE, type SidebarEntry } from "../lib/session-order";
+import { holdSidebar, projectOf, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type SidebarEntry } from "../lib/session-order";
 import { sessionStatus } from "../lib/session-status";
 import { groupCounts, railFoot, railGlyph, type RailGlyph, type RailPlan } from "../lib/rail";
 import { railSelection, setRailSelection, setSidebarOrder } from "../state/sidebar";
@@ -472,11 +472,12 @@ export function Sidebar() {
         return railFoot({ limits: app.limits, providers: app.providers, provider, account: provider ? st?.accounts?.[provider] : undefined, recent: recent(), now: now() });
     });
     // While rows are picked they stay put too, so a range never jumps under the pointer or the keys.
-    const held = () => (hovered() && !manualLayout()) || locked().size > 0 || railSelection().ids.length > 0;
+    const held = () => ((hovered() || railSelection().ids.length > 0) && !manualLayout()) || locked().size > 0;
     const layout = createMemo<SidebarEntry[]>((previous) => {
         const next = sidebarEntries(app.sessions, app.archived, {
             activeId: app.activeId, groupBy: prefs.groupBy, archived: showArchived(),
             settledOpen: prefs.settledOpen, cards: shown(), settled: settledShown(), archive: archiveShown(),
+            collapsed: prefs.collapsedProjects,
         });
         return holdSidebar(previous ?? [], next, held(), all(), app.activeId);
     });
@@ -525,6 +526,58 @@ export function Sidebar() {
         // Explicit paging is intentional movement, even with the pointer on its button.
         allowLayout();
     };
+
+    // ---- Folding a project's sessions under its heading (grouped by project) ----
+    const EASE = "cubic-bezier(0.22, 1, 0.36, 1)"; // --ease
+    const foldMs = () => (prefs.motion === "instant" || matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : prefs.motion === "smooth" ? 260 : 180);
+    /** The row elements under a project heading, in the layout as it is. */
+    const projectRows = (cwd: string) => {
+        const entries = layout();
+        const start = entries.findIndex((e) => e.kind === "project" && e.cwd === cwd);
+        const keys = new Set<string>();
+        for (let i = start + 1; start >= 0 && i < entries.length; i++) {
+            const e = entries[i]!;
+            if (e.kind !== "card" && e.kind !== "row" && e.kind !== "run") break;
+            keys.add(e.key);
+        }
+        return [...(listEl?.querySelectorAll<HTMLElement>("[data-session-row]") ?? [])].filter((el) => keys.has(el.dataset.sessionRow!));
+    };
+    const setFolded = (next: string[]) => {
+        // An explicit change: it shows at once, under the pointer or with rows picked.
+        allowLayout();
+        setPrefs("collapsedProjects", next);
+    };
+    /** Rows shrink away before they fold; unfolded, they grow back in. */
+    const toggleFold = (cwd: string) => {
+        const folding = !prefs.collapsedProjects.includes(cwd);
+        const ms = foldMs();
+        const commit = () => setFolded(toggleProject(prefs.collapsedProjects, cwd));
+        if (!ms) return commit();
+        const grow = (el: HTMLElement, from: number, to: number, opacity: [number, number]) => {
+            el.style.overflow = "hidden";
+            const animation = el.animate([{ height: `${from}px`, opacity: opacity[0] }, { height: `${to}px`, opacity: opacity[1] }], { duration: ms, easing: EASE, fill: folding ? "forwards" : "none" });
+            return { animation, done: animation.finished.catch(() => undefined).finally(() => { el.style.overflow = ""; }) };
+        };
+        if (folding) {
+            const rows = projectRows(cwd);
+            if (!rows.length) return commit();
+            const shrinking = rows.map((el) => grow(el, el.offsetHeight, 0, [1, 0]));
+            void Promise.all(shrinking.map((a) => a.done)).then(() => {
+                if (!prefs.collapsedProjects.includes(cwd)) commit();
+                // Rows still shown (held by an open menu, say) get their height back.
+                for (const a of shrinking) a.animation.cancel();
+            });
+            return;
+        }
+        commit();
+        for (const el of projectRows(cwd)) grow(el, 0, el.offsetHeight, [0, 1]);
+    };
+    const projectsInPlay = createMemo(() => [...new Set(app.sessions.filter((s) => !s.settled).map(projectOf))]);
+    // Opening a session in a folded project (⌘K, a notification) unfolds it, so the open row shows.
+    createEffect(on(() => [app.activeId, Boolean(app.activeId && sessions().has(app.activeId))] as const, ([id]) => {
+        const next = revealProject(prefs.collapsedProjects, id ? sessions().get(id) : undefined, prefs.groupBy);
+        if (next !== prefs.collapsedProjects) setFolded([...next]);
+    }));
 
     // ---- Picking several (lib/rail-select.ts has the rules) ----
     const order = createMemo(() => sidebarIds(layout()));
@@ -654,6 +707,19 @@ export function Sidebar() {
                             <Check size={14} class="menu-check" />
                         </Show>
                     </button>
+                    <Show when={prefs.groupBy === "project" && !showArchived()}>
+                        <div class="menu-sep" />
+                        <Show when={projectsInPlay().some((c) => !prefs.collapsedProjects.includes(c))}>
+                            <button role="menuitem" class="menu-item compact" onClick={() => (setViewOpen(false), setFolded([...new Set([...prefs.collapsedProjects, ...projectsInPlay()])]))}>
+                                <ChevronsDownUp size={14} /> Collapse all projects
+                            </button>
+                        </Show>
+                        <Show when={prefs.collapsedProjects.length}>
+                            <button role="menuitem" class="menu-item compact" onClick={() => (setViewOpen(false), setFolded([]))}>
+                                <ChevronsUpDown size={14} /> Expand all projects
+                            </button>
+                        </Show>
+                    </Show>
                     <div class="menu-sep" />
                     <button role="menuitem" class="menu-item compact" onClick={() => (setShowArchived(!showArchived()), setViewOpen(false))}>
                         <Archive size={14} /> {showArchived() ? "Show active sessions" : `Show archived (${app.archived.length})`}
@@ -698,7 +764,16 @@ export function Sidebar() {
                     }
                     if (kind === "project") {
                         const group = () => entry() as Extract<SidebarEntry, { kind: "project" }>;
-                        return <div class="shelf"><Folder size={14} /><span class="truncate" title={group().cwd}>{group().name}</span><span class="n">{counts().get(key)}</span>
+                        const open = () => !group().collapsed;
+                        // Folded, a session in it that needs you still shows: the amber dot, on the heading.
+                        const needsYou = () => !open() && (group().ids ?? []).some((id) => sessions().get(id)?.status === "waiting");
+                        return <div class={`shelf project-head ${open() ? "" : "folded"}`}>
+                            <button class="shelf-toggle" aria-expanded={open()} title={group().cwd} onClick={() => toggleFold(group().cwd)}>
+                                <Folder size={14} /><span class="truncate">{group().name}</span>
+                                <Show when={needsYou()}><span class="wait-dot" title="A session here needs you" /></Show>
+                                <span class="n">{counts().get(key)}</span>
+                                <ChevronUp size={14} class={`settled-chev ${open() ? "" : "closed"}`} />
+                            </button>
                             <button class="shelf-btn add" title={`New session in ${group().name}`} aria-label={`New session in ${group().name}`} onClick={() => newSession(group().cwd)}><Plus size={13} /></button>
                         </div>;
                     }
