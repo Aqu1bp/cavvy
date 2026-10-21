@@ -445,6 +445,8 @@ class CodexTurn {
     private completedTurns = new Map<string, { status: string; error?: unknown }>();
     /** Wakes the wait for the goal's next turn (one started, the goal changed, Codex gone). */
     private goalWake?: () => void;
+    /** The turn being waited on was started by Codex itself (adopted), under the thread's policy. */
+    private adopted = false;
 
     constructor(
         private def: ProviderDef,
@@ -453,6 +455,19 @@ class CodexTurn {
         private labels = new Map<string, string>(),
         private limitUpdates: LimitOrdering = { revision: 0, reads: 0, acceptedRead: 0 },
     ) {}
+
+    /**
+     * A turn Codex started itself runs under the thread's last policy: a mode other than that one now, looser
+     * or out of plan mode too, restarts it under the mode (a turn started here for a looser mode just goes on).
+     */
+    private adoptedModeChanged(m: PermissionMode) {
+        if (this.turnMode === undefined || this.aborted || (this.turnId && this.completedTurns.has(this.turnId))) return;
+        const ro = Boolean(this.t.readOnly);
+        if (codexPolicyKey(m, ro) === codexPolicyKey(this.turnMode, ro) && (m === "plan") === (this.turnMode === "plan")) return;
+        this.restartFor = m;
+        this.goalOnRestart = this.goal?.status === "active";
+        this.interrupt();
+    }
 
     modeChanged(m: PermissionMode) {
         if (!this.turnId || this.turnMode === undefined || this.aborted) return;
@@ -578,7 +593,8 @@ class CodexTurn {
                 await this.waitFor(() => this.rpc.request("thread/compact/start", { threadId: this.threadId }));
             } else {
                 let text = goalTurn ? [t.goalContext, goalTurn.text].filter(Boolean).join("\n\n") : t.prompt;
-                let images = goalTurn ? [] : t.images;
+                // A new goal's images go with its first turn (/goal resume takes none).
+                let images = t.images;
                 /** Make the goal active once its first turn has started (so Codex doesn't start one of its own first). */
                 let activate = Boolean(goalTurn);
                 /** A turn Codex started itself for the goal: waited on instead of starting one. */
@@ -602,6 +618,7 @@ class CodexTurn {
                         if (adopt) {
                             // Codex's own turn runs under the thread's policy: a mode changed since restarts it (waitFor checks).
                             this.turnMode = this.threadMode;
+                            this.adopted = true;
                             await this.adoptTurn(adopt, pending);
                             adopt = pending = undefined;
                             return;
@@ -613,6 +630,9 @@ class CodexTurn {
                             // Codex started the goal's next turn first (and so refused this one): the user's messages go into that one.
                             const id = this.goal?.status === "active" && !activate ? await this.nextGoalTurn(GOAL_TURN_GRACE_MS, false) : undefined;
                             if (!id) throw e;
+                            // Under the thread's policy, as any turn Codex starts itself, not this one's mode.
+                            this.turnMode = this.threadMode;
+                            this.adopted = true;
                             return this.adoptTurn(id, text);
                         }
                         this.turnId = r?.turn?.id;
@@ -829,7 +849,9 @@ class CodexTurn {
         // Interrupted while the turn was being started.
         if (this.aborted && this.turnId) this.interrupt();
         // The mode changed while it was being started (modeChanged had no turn to stop yet).
+        else if (this.turnId && this.adopted) this.adoptedModeChanged(this.host.mode());
         else if (this.turnId) this.modeChanged(this.host.mode());
+        this.adopted = false;
         await Promise.race([done, this.rpc.done]);
         this.turnDone = undefined;
         if (!this.status && !this.aborted && !this.failure) this.failure = `Codex stopped before the turn finished${cliMessage(this.rpc.proc.stderr()) ? `: ${cliMessage(this.rpc.proc.stderr())}` : ""}`;

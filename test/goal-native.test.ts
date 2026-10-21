@@ -354,6 +354,58 @@ describe("Codex", () => {
         expect(a.goals().at(-1)).toMatchObject({ status: "complete" });
     });
 
+    test("one Codex starts first when refusing a turn/start runs under the mode now: switched to plan, it's restarted", async () => {
+        process.env.FAKE_GOAL_TURNS = "3";
+        process.env.FAKE_GOAL_RACE = "1";
+        process.env.FAKE_TURN_MS = "80";
+        // Codex doesn't go on by itself before the turn/start (which it then refuses, starting its own).
+        process.env.FAKE_GOAL_CONTINUE_MS = "3000";
+        const queue: string[] = [];
+        const a = await makeAgent("codex", undefined, queue);
+        const done = a.run("/goal the docs build");
+        const until = Date.now() + 5000;
+        while (!a.goals().some((g) => g?.status === "active") && Date.now() < until) await Bun.sleep(2);
+        // Switched while the first turn runs (it's past starting): the next turn is the one it applies to.
+        await Bun.sleep(30);
+        queue.push("also fix the links");
+        a.setMode("plan");
+        expect(await done).toBe("done");
+        const starts = received().filter((m) => m.method === "turn/start").map((m) => m.params);
+        // The refused one, then the restart of Codex's own turn (begun under bypass) under plan mode.
+        expect(starts.slice(1).map((p) => p.sandboxPolicy.type)).toEqual(["readOnly", "readOnly"]);
+        // It's the turn Codex started on refusing that was stopped (the message went into it), not a later one.
+        const steered = received().find((m) => m.method === "turn/steer")!.params.expectedTurnId;
+        expect(received().find((m) => m.method === "turn/interrupt")!.params.turnId).toBe(steered);
+        expect(starts.at(-1)!.input[0].text).toContain("plan mode");
+        expect(a.goals().at(-1)).toMatchObject({ status: "complete" });
+    });
+
+    test("leaving plan mode between the goal's turns applies to the next one Codex starts too", async () => {
+        process.env.FAKE_GOAL_TURNS = "3";
+        process.env.FAKE_TURN_MS = "80";
+        const a = await makeAgent("codex");
+        a.setMode("plan");
+        const done = a.run("/goal the docs build");
+        const until = Date.now() + 5000;
+        while (!a.goals().some((g) => g?.status === "active") && Date.now() < until) await Bun.sleep(2);
+        await Bun.sleep(30);
+        a.setMode("bypassPermissions");
+        expect(await done).toBe("done");
+        const starts = received().filter((m) => m.method === "turn/start").map((m) => m.params);
+        expect(starts[0].sandboxPolicy.type).toBe("readOnly");
+        expect(starts.at(-1)!.sandboxPolicy.type).toBe("dangerFullAccess");
+        expect(a.goals().at(-1)).toMatchObject({ status: "complete" });
+    });
+
+    test("/goal <condition> takes its images into the goal's first turn", async () => {
+        process.env.FAKE_GOAL_TURNS = "1";
+        const a = await makeAgent("codex");
+        expect(await a.agent.run([{ type: "text", text: "/goal match this mockup" }, { type: "image", mediaType: "image/png", data: "iVBORw0KGgo=" }], { signal: new AbortController().signal })).toBe("done");
+        expect(received().find((m) => m.method === "thread/goal/set")!.params.objective).toBe("match this mockup");
+        const input = received().find((m) => m.method === "turn/start")!.params.input;
+        expect(input).toContainEqual({ type: "image", url: "data:image/png;base64,iVBORw0KGgo=" });
+    });
+
     test("an older Codex without goals says so", async () => {
         process.env.FAKE_NO_GOALS = "1";
         const { run, notices } = await makeAgent("codex");

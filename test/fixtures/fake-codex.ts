@@ -53,7 +53,7 @@
 // FAKE_GOAL_TURNS     thread goals (thread/goal/get, set, clear): while one is active, each turn that ends (and
 //                     making it active while idle) starts another of Codex's own, until this many have run
 //                     (default 2) and it's complete;
-//                     FAKE_NO_GOALS=1: an older Codex without them; FAKE_GOAL_RACE=1: a turn/start while the goal is
+//                     FAKE_NO_GOALS=1: an older Codex without them; FAKE_GOAL_RACE=1: the first turn/start while the goal is
 //                     active loses to a turn Codex starts itself (refused); the usage-limit scenario stops it (usageLimited)
 // FAKE_USER_MCP       config/read's mcp_servers: the user's own servers (JSON); FAKE_NO_CONFIG_READ=1 fails config/read
 // FAKE_CONFIG_LAYERS  overrides config/read provenance (JSON)
@@ -154,6 +154,8 @@ const goals = new Map<string, Goal>(goalFile && existsSync(goalFile) ? Object.en
 const saveGoals = () => goalFile && writeFileSync(goalFile, JSON.stringify(Object.fromEntries(goals)));
 const goalOut = ({ turns: _turns, ...g }: Goal) => g;
 let lastPolicy: any = {};
+/** FAKE_GOAL_RACE refuses one turn/start, the first it can. */
+let racedOnce = false;
 /** A thread started or resumed with a policy: the goal's turns Codex starts itself run under it, until a turn/start gives another. */
 function threadPolicy(p: any) {
     const sandbox: Record<string, string> = { "danger-full-access": "dangerFullAccess", "workspace-write": "workspaceWrite", "read-only": "readOnly" };
@@ -503,7 +505,8 @@ async function handle(m: any) {
         case "turn/start": {
             // FAKE_GOAL_RACE=1: with the goal active, Codex has just started its own next turn, and refuses this one.
             const raced = goals.get(p.threadId);
-            if (process.env.FAKE_GOAL_RACE === "1" && raced?.status === "active" && (!current || current.done)) {
+            if (process.env.FAKE_GOAL_RACE === "1" && !racedOnce && raced?.status === "active" && (!current || current.done)) {
+                racedOnce = true;
                 void runTurn(p.threadId, `turn-${++turnSeq}`, lastPolicy);
                 return fail("a turn is already running");
             }
