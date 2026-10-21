@@ -101,6 +101,7 @@ export class TurnSnapshots {
     private saved = false;
     private stopped = false;
     private pending = new Set<Promise<void>>();
+    private last: Promise<unknown> = Promise.resolve();
     private failure?: string;
     private readonly storage: string;
     private readonly journal: string;
@@ -227,8 +228,10 @@ export class TurnSnapshots {
         await Promise.allSettled([...this.pending]);
     }
 
+    /** One after another, in the order they're asked for: a start not awaited still lands before the next end. */
     private record(work: () => Promise<void>): Promise<void> {
-        const pending = work();
+        const pending = this.last.then(work);
+        this.last = pending.catch(() => undefined);
         this.pending.add(pending);
         return pending.finally(() => { this.pending.delete(pending); });
     }

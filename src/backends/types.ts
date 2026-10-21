@@ -114,9 +114,10 @@ export interface BackendHost {
      * the next message the user queued goes now as a prompt of its own, whatever its mode, with what's
      * attached (drainQueued's rules are for a running step). Undefined when none can: held ones, and
      * commands and `!commands` (Harness runs those itself, after the run). Records the output before
-     * it, as drainQueued does.
+     * it, as drainQueued does. `live`: whether the backend can still send it (not stopped, its CLI not gone),
+     * checked last before it's taken; from then to the send nothing is awaited.
      */
-    drainWaiting?(progress?: () => BackendResult): Promise<BackendPrompt | undefined>;
+    drainWaiting?(progress?: () => BackendResult, live?: () => boolean): Promise<BackendPrompt | undefined>;
     /** Run the harness's hooks for something the backend did (Codex's items). */
     hooks?(event: HookEvent, payload: Record<string, unknown>): Promise<HookOutcome | undefined>;
     /** Run one hook handler the backend called back for (Claude Code's hook_callback), with the backend's input. */

@@ -2091,15 +2091,16 @@ export class Runtime {
     private async drainWaiting(steps: { record(): void; admit(parts: UserContent[], display: string): Promise<Admission> }): Promise<{ parts: UserContent[]; display: string } | undefined> {
         const q = this.queued.find((x) => !x.held && !isCommand(x));
         if (!q) return undefined;
-        // It stays in the queue (on disk too) while it's prepared, its hooks run and its start snapshot is
-        // taken: an interrupt meanwhile hands it back to the composer as it is, attachments and place included.
+        // It stays in the queue (on disk too) while it's prepared and its hooks run: an interrupt meanwhile
+        // hands it back to the composer as it is, attachments and place included.
         const signal = this.abort?.signal ?? new AbortController().signal;
         // Prepared as a sent prompt is (startTurn); what it uses and attaches is said in its turn, once it has one.
         const said: [string, "info" | "warn"][] = [];
         const parts = await this.preparePrompt(q.text, { attachments: q.attachments }, signal, (text, level) => void said.push([text, level]));
         const admitted = signal.aborted ? "stopped" : await steps.admit(parts, q.text);
-        // Stopped, or the user took it out or held it meanwhile: it doesn't go, and the queue is as they left it.
-        if (admitted === "stopped" || signal.aborted || q.held || !this.queued.includes(q)) return undefined;
+        if (admitted === "stopped" || signal.aborted) return undefined;
+        // The user took it out or held it meanwhile: it doesn't go, and the next one is tried, through its own hooks.
+        if (q.held || !this.queued.includes(q)) return this.drainWaiting(steps);
         this.queued = this.queued.filter((x) => x !== q);
         this.queueUpdated();
         // A hook blocked it (the hook's warning says so): the turn that's waiting stays the one its output goes to.

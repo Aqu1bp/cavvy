@@ -830,10 +830,11 @@ describe("Claude Code's background work (live test findings)", () => {
             expect(q.items).toEqual([]);
         }, 20_000);
 
-        test("one interrupted while its start snapshot is taken goes back whole, image included, and isn't recorded or sent", async () => {
+        test("its start snapshot is taken once it's on its way: an interrupt during it loses nothing, and the snapshot starts after the prompt is stored", async () => {
             const session = Session.create(cwd, { system: "test" });
             const ac = new AbortController();
             let capturing = false;
+            let storedFirst: boolean | undefined;
             let release!: () => void;
             const capture = new Promise<void>((r) => (release = r));
             const { a, q, done } = await waiting({
@@ -843,6 +844,7 @@ describe("Claude Code's background work (live test findings)", () => {
                     a.agent.options.trusted = () => true;
                     a.agent.turnSnapshots!.begin = async (_id, prompt) => {
                         if (!prompt.includes("look at this")) return;
+                        storedFirst = JSON.stringify(a.session.messages).includes("look at this");
                         capturing = true;
                         await capture;
                     };
@@ -852,14 +854,14 @@ describe("Claude Code's background work (live test findings)", () => {
                 const image = { type: "image" as const, mediaType: "image/png", data: PNG };
                 q.items.push({ text: "look at this", mode: "queue", images: [image] });
                 while (!capturing) await Bun.sleep(10);
+                expect(storedFirst).toBe(true);
+                // On its way to Claude Code, image and all, while the snapshot is still being taken.
+                expect(await before(() => Boolean(userSent("look at this")), done)).toBe(true);
+                expect(JSON.stringify(userSent("look at this")!.message.content)).toContain('"type":"image"');
                 ac.abort();
-                await Bun.sleep(100);
                 release();
                 expect(await done).toBe("aborted");
-                // Back in the queue as it was, its image too: the interrupt hands it to the composer.
-                expect(q.items).toEqual([{ text: "look at this", mode: "queue", images: [image] }]);
-                expect(JSON.stringify(a.session.messages)).not.toContain("look at this");
-                expect(userSent("look at this")).toBeUndefined();
+                expect(q.items).toEqual([]);
             } finally {
                 release();
                 ac.abort();
@@ -867,6 +869,23 @@ describe("Claude Code's background work (live test findings)", () => {
                 session.release();
             }
         }, 20_000);
+
+        test("one whose hooks are still running when Claude Code goes away stays queued, image and all, and isn't recorded or sent", async () => {
+            // The CLI exits while the hook runs: the message can't go, so it waits for the next run.
+            process.env.FAKE_EXIT_AFTER_MS = "1500";
+            try {
+                const settings = { hooks: { UserPromptSubmit: [{ command: "sleep 3; exit 0" }] } };
+                const { a, q, done } = await waiting({ settings });
+                const image = { type: "image" as const, mediaType: "image/png", data: PNG };
+                q.items.push({ text: "late one", mode: "queue", images: [image] });
+                await done;
+                expect(q.items).toEqual([{ text: "late one", mode: "queue", images: [image] }]);
+                expect(userSent("late one")).toBeUndefined();
+                expect(JSON.stringify(a.session.messages)).not.toContain("late one");
+            } finally {
+                delete process.env.FAKE_EXIT_AFTER_MS;
+            }
+        }, 30_000);
 
         test("what a UserPromptSubmit hook adds goes with it", async () => {
             const { q, done } = await waiting({ settings: { hooks: { UserPromptSubmit: [{ command: "echo branch is main" }] } } });

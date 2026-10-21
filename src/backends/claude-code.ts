@@ -712,7 +712,7 @@ class ClaudeTurn {
 
     private async forwardWaiting(): Promise<boolean> {
         if (this.aborted || this.finishing || !this.host.drainWaiting) return false;
-        const p = await this.host.drainWaiting(() => this.progress());
+        const p = await this.host.drainWaiting(() => this.progress(), () => !this.aborted && !this.finishing);
         if (!p) return false;
         if (this.aborted || this.finishing) {
             // Not expected: nothing is awaited between its "go" (see AgentHost.drainWaiting) and here. Should

@@ -175,13 +175,14 @@ export interface AgentHost {
      * message that can go now, as a prompt of its own, whatever its mode, prepared as a sent one is (its
      * attachments, @mentions and $skills). Not commands or `!commands`, nor held ones. `record` runs once one
      * is taken, before its turn starts, so the output before it is recorded first; `admit` runs the prompt's
-     * hooks and takes its start snapshot: "blocked" (a hook blocked it) means it's dropped, "stopped" (the
-     * turn was interrupted) that it stays queued, "go" that it goes, with nothing awaited before it's stored.
+     * hooks: "blocked" (a hook blocked it) means it's dropped, "stopped" (the turn was interrupted, or the
+     * backend can't send any more) that it stays queued, "go" that it goes, with nothing awaited from then
+     * until it's stored and sent.
      */
     drainWaiting?(steps: { record(): void; admit(parts: UserContent[], display: string): Promise<Admission> }): Promise<{ parts: UserContent[]; display: string } | undefined>;
 }
 
-/** What a queued message's hooks and start snapshot decided (AgentHost.drainWaiting). */
+/** What a queued message's hooks, and whether it can still go, decided (AgentHost.drainWaiting). */
 export type Admission = "go" | "blocked" | "stopped";
 
 export interface Helpers {
@@ -1631,10 +1632,9 @@ export class Agent {
                 if (this.cutOff) return [];
                 return out;
             },
-            drainWaiting: async (progress) => {
+            drainWaiting: async (progress, live) => {
                 if (this.cutOff || !this.o.host.drainWaiting) return undefined;
                 let context: string | undefined;
-                let checkpoint: number | undefined;
                 let taken: { parts: UserContent[]; display: string } | undefined;
                 // One its hooks block doesn't go; the next does, in order and through its own hooks.
                 for (let blocked = true; blocked && !taken; ) {
@@ -1643,18 +1643,15 @@ export class Agent {
                         record: () => {
                             if (progress) this.recordBackendTurn(provider, name, progress());
                         },
-                        // Its hooks, as for a prompt sent on its own (runInner): one can block it. Then its start
-                        // snapshot, before it's stored: stopped while that's taken, it's still in the queue.
-                        admit: async (parts, display) => {
+                        // Its hooks, as for a prompt sent on its own (runInner): one can block it.
+                        admit: async (parts) => {
                             const h = await this.promptHooks(promptTextOf(parts), signal);
                             context = h.context;
                             if (h.blocked) {
                                 blocked = true;
                                 return "blocked";
                             }
-                            if (this.cutOff || signal.aborted) return "stopped";
-                            checkpoint = await this.checkpoint(display);
-                            return this.cutOff || signal.aborted ? "stopped" : "go";
+                            return this.cutOff || signal.aborted || live?.() === false ? "stopped" : "go";
                         },
                     });
                     if (this.cutOff || signal.aborted) blocked = false;
@@ -1662,7 +1659,12 @@ export class Agent {
                 if (!taken) return undefined;
                 // Stored as a prompt sent then would be, with what a hook adds after it. Nothing is awaited from
                 // "go" to here, nor from here to the backend sending it: an interrupt can't fall in between.
+                const history = this.o.isSubagent ? undefined : this.state.fileHistory;
+                const checkpoint = history?.begin();
                 const content = this.session.push({ role: "user", content: [...taken.parts, ...(context ? [reminder(context)] : [])], meta: { kind: "prompt", display: taken.display, checkpoint } }).content;
+                // Its start snapshot once it's on its way, not before: one taken first could be cut off by a
+                // stop, leaving a turn boundary with no prompt. Snapshots run in order, so the turn's end waits for it.
+                if (checkpoint !== undefined && this.o.trusted?.()) void this.turnSnapshots?.begin(checkpoint, redact(taken.display));
                 const prompt = forBackend(content, readsPdf(this.model));
                 // The user's own words, for the skills they name ($name), as for a turn's prompt (runBackendTurn).
                 const first = content[0]?.type === "text" && prompt.text.startsWith(content[0].text) ? content[0].text : undefined;

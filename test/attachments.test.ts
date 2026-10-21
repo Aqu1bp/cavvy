@@ -626,6 +626,32 @@ describe("nothing gets lost", () => {
         }
     });
 
+    test("one the user takes out while it's prepared doesn't go, and the next goes in its place, through its own hooks", async () => {
+        const { engine, c, id, rt } = await busySession();
+        try {
+            for (const text of ["A", "B", "C"]) await engine.handle(c, "session.send", { id, text, mode: text === "C" ? "steer" : "queue" });
+            const inner = rt as unknown as Waiting;
+            const [a] = rt.snapshot().state.queueIds;
+            const admitted: string[] = [];
+            const taken = await inner.drainWaiting({
+                record: () => {},
+                admit: async (parts) => {
+                    const text = JSON.stringify(parts);
+                    admitted.push(text.includes('"A"') ? "A" : text.includes('"B"') ? "B" : "C");
+                    // While A's hooks run, the user takes it out of the queue.
+                    if (admitted.length === 1) await engine.handle(c, "session.dequeue", { id, queueId: a });
+                    return "go";
+                },
+            });
+            expect(taken?.display).toBe("B");
+            expect(admitted).toEqual(["A", "B"]);
+            expect(rt.snapshot().state.queued).toEqual(["C"]);
+        } finally {
+            await engine.handle(c, "session.interrupt", { id }).catch(() => undefined);
+            await engine.stop();
+        }
+    });
+
     test("a rewind hands the prompt's files back to the box with its text, a pasted text included", async () => {
         const { engine, c, id, rt } = await engineWithSession();
         try {
