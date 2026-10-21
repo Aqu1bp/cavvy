@@ -7,7 +7,7 @@ import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { loadSkills, parseSkillFrontmatter, formatSkill, skillMentions, withSkills, skillBody, findSkill } = await import("../src/agent/skills");
+const { loadSkills, parseSkillFrontmatter, formatSkill, skillMentions, withSkills, skillBody, findSkill, mentionNames } = await import("../src/agent/skills");
 const { skillTool, skillListing } = await import("../src/tools/skill-tool");
 const { App } = await import("../src/ui/app");
 const { Session } = await import("../src/agent/session");
@@ -218,6 +218,7 @@ describe("$name mentions", () => {
         const { buildComment, withComments } = await import("../gui/src/lib/review-comments");
         const quoted = (text: string, code: string) => buildComment({ id: "c", path: "deploy.sh", lines: [{ t: "add", text: code, b: 2 }], text, now: 1 });
         expect(skillMentions(withComments("Look at this", [quoted("Why here?", "run $pdf now")]), s)).toEqual([]);
+        expect(mentionNames(withComments("Look at this", [quoted("Why here?", "run $pdf now")]))).toEqual([]); // what the CLIs are handed too
         expect(skillMentions(withComments("Use $home", [quoted("And $pdf", "echo $hidden $home")]), s).map((x) => x.name)).toEqual(["home", "pdf"]);
     });
 
