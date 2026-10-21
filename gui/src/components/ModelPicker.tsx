@@ -357,6 +357,8 @@ export function EffortBars(p: { levels: Effort[]; value?: EffortLevel; onChange:
             aria-valuenow={at() >= 0 ? at() + 1 : undefined}
             aria-valuetext={p.levels[at()]?.label ?? "Default"}
             onPointerDown={(e) => {
+                // Only the primary button picks; a right- or middle-click leaves the level alone.
+                if (e.button !== 0) return;
                 e.preventDefault();
                 el!.focus({ preventScroll: true });
                 try {

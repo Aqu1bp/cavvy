@@ -6,10 +6,10 @@ import { all, component, node, renderer, type Node } from "../helpers/gui-render
 import { effortAt, effortKey, effortLevels } from "../../gui/src/lib/effort";
 
 const key = (k: string) => ({ key: k, metaKey: false, ctrlKey: false, altKey: false });
+const source = () => readFileSync(new URL("../../gui/src/components/ModelPicker.tsx", import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "");
 
 test("EffortBars: fills to the value, previews on hover, applies on click, drag and keys", () => {
-    const source = readFileSync(new URL("../../gui/src/components/ModelPicker.tsx", import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "");
-    const Bars = component(source, "EffortBars", { effortAt, effortKey });
+    const Bars = component(source(), "EffortBars", { effortAt, effortKey });
     const levels = effortLevels({ effortLevels: ["low", "medium", "high", "xhigh"] });
     const [value, setValue] = solid.createSignal<string | undefined>("medium");
     const picked: string[] = [];
@@ -26,7 +26,7 @@ test("EffortBars: fills to the value, previews on hover, applies on click, drag 
             slider.props.onKeyDown(e);
             return e.prevented;
         };
-        const pointer = (type: string, x: number) => slider.props[type]({ clientX: x, pointerId: 1, preventDefault() {} });
+        const pointer = (type: string, x: number) => slider.props[type]({ clientX: x, button: 0, pointerId: 1, preventDefault() {} });
 
         expect(bars()).toHaveLength(4);
         expect(slider.props["aria-valuenow"]).toBe(2);
@@ -70,6 +70,30 @@ test("EffortBars: fills to the value, previews on hover, applies on click, drag 
         expect(on()).toBe(0);
         expect(slider.props["aria-valuenow"]).toBeUndefined();
         expect(slider.props["aria-valuetext"]).toBe("Default");
+    } finally {
+        dispose();
+    }
+});
+
+test("EffortBars: a secondary or middle press changes nothing and starts no drag", () => {
+    const Bars = component(source(), "EffortBars", { effortAt, effortKey });
+    const levels = effortLevels({ effortLevels: ["low", "medium", "high", "xhigh"] });
+    const picked: string[] = [];
+    const root = node("root");
+    const dispose = renderer.render(() => Bars({ levels, value: "medium", onChange: (id: string) => picked.push(id) }), root);
+    try {
+        const slider = all(root).find((n) => n.props.role === "slider")!;
+        Object.assign(slider, { getBoundingClientRect: () => ({ left: 0, width: 100 }), focus() {}, setPointerCapture() {} });
+        const pointer = (type: string, x: number, button = 0) => slider.props[type]({ clientX: x, button, pointerId: 1, preventDefault() {} });
+        for (const button of [2, 1]) {
+            pointer("onPointerDown", 90, button);
+            pointer("onPointerMove", 10);
+            pointer("onPointerUp", 10, button);
+        }
+        expect(picked).toEqual([]);
+        // The primary button still picks.
+        pointer("onPointerDown", 90);
+        expect(picked).toEqual(["xhigh"]);
     } finally {
         dispose();
     }

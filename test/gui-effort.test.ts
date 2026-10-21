@@ -54,8 +54,16 @@ test("the pointer: the bar under it, clamped to the row", () => {
     expect(effortAt(10, 0, 0, 4)).toBe(0);
 });
 
-test("EffortBars: fills to the value, previews on hover, applies on click, drag and keys", () => {
-    // In a browser-conditions process, so Solid's renderer and signals are the same copy.
-    const result = Bun.spawnSync([process.execPath, "--no-env-file", "--conditions=browser", "test", new URL("./fixtures/gui-effort-bars.ts", import.meta.url).pathname], { timeout: 15000 });
-    expect({ code: result.exitCode, output: result.stderr.toString() }).toMatchObject({ code: 0 });
-});
+// Each runs its namesake in fixtures/gui-effort-bars.ts, in a browser-conditions
+// process, so Solid's renderer and signals are the same copy.
+const fixture = (name: string) =>
+    test(name, () => {
+        const pattern = `^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`;
+        const result = Bun.spawnSync([process.execPath, "--no-env-file", "--conditions=browser", "test", new URL("./fixtures/gui-effort-bars.ts", import.meta.url).pathname, "-t", pattern], { timeout: 15000 });
+        const output = result.stderr.toString();
+        expect({ code: result.exitCode, output }).toMatchObject({ code: 0 });
+        expect(output).toContain(" 1 pass");
+    });
+
+fixture("EffortBars: fills to the value, previews on hover, applies on click, drag and keys");
+fixture("EffortBars: a secondary or middle press changes nothing and starts no drag");
