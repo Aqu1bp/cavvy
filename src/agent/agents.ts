@@ -35,6 +35,7 @@ import { isTrusted } from "../config/trust";
 import { EFFORT_LEVELS, type Effort, type HookConfig, type McpServerConfig, type Settings } from "../config/settings";
 import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { HOOK_EVENTS, type HookEvent } from "./hooks";
+import { normalizeHooks } from "../config/hook-config";
 import { parseModelRef } from "../providers/types";
 import { gitRoot } from "../util/git";
 
@@ -152,43 +153,20 @@ function bool(v: unknown): boolean | undefined {
     return s === "true" || s === "yes" ? true : s === "false" || s === "no" ? false : undefined;
 }
 
-/** Hooks as settings.json has them, or Claude Code's nested form ({matcher, hooks: [{type: "command", command}]}). */
+/** Hooks as settings.json has them, or Claude Code's nested form: every handler type, read as settings' are (normalizeHooks). */
 function parseHooks(v: unknown, warn: (m: string) => void): AgentHooks | undefined {
     if (!v || typeof v !== "object" || Array.isArray(v)) {
         warn("hooks: expected a map of events to lists of hooks");
         return undefined;
     }
-    const out: AgentHooks = {};
-    for (const [rawEvent, list] of Object.entries(v)) {
-        // A sub-agent's turn ends with SubagentStop, as in Claude Code.
-        const event = (rawEvent === "Stop" ? "SubagentStop" : rawEvent) as HookEvent;
-        if (!HOOK_EVENTS.includes(event)) {
-            warn(`hooks: unknown event "${rawEvent}"`);
-            continue;
-        }
-        const add = (h: HookConfig) => (out[event] ??= []).push(h);
-        for (const entry of Array.isArray(list) ? list : [list]) {
-            if (!entry || typeof entry !== "object") {
-                warn(`hooks.${rawEvent}: expected a hook, got ${JSON.stringify(entry)}`);
-                continue;
-            }
-            const e = entry as Record<string, unknown>;
-            const matcher = str(e.matcher);
-            const handlers = Array.isArray(e.hooks) ? (e.hooks as unknown[]) : [e];
-            for (const raw of handlers) {
-                const h = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-                const type = str(h.type) ?? "command";
-                const command = str(h.command);
-                if (type !== "command" || !command) {
-                    warn(`hooks.${rawEvent}: ${type !== "command" ? `"${type}" hooks aren't supported` : "a hook without a command"}`);
-                    continue;
-                }
-                const timeout = Number(h.timeout);
-                add({ ...(matcher ? { matcher } : {}), command, ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {}) });
-            }
-        }
+    // A sub-agent's turn ends with SubagentStop, as in Claude Code (its Stop hooks and SubagentStop ones together).
+    const raw: Record<string, unknown[]> = {};
+    for (const [event, list] of Object.entries(v)) {
+        const name = event === "Stop" ? "SubagentStop" : event;
+        raw[name] = [...(raw[name] ?? []), ...(Array.isArray(list) ? list : [list])];
     }
-    return Object.keys(out).length ? out : undefined;
+    const out = normalizeHooks(raw, warn);
+    return out && Object.keys(out).length ? (out as AgentHooks) : undefined;
 }
 
 function serverConfig(name: string, v: unknown, warn: (m: string) => void): AgentMcpServer | undefined {

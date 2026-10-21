@@ -39,9 +39,12 @@ import { isReadOnly } from "../tools/types";
 import { coerceInput, validateInput, EXPLORE_TOOLS, toSchema } from "../tools/index";
 import { isReadOnlyCommand, notReadOnly } from "../permissions/bash-safety";
 import { mcpToolMatches } from "../permissions/rules";
+import { toolNameFor } from "../mcp/manager";
 import { costOf, promptTokens, type CostEstimate } from "../providers/pricing";
 import { Session } from "./session";
-import { fireHooks, runHooks } from "./hooks";
+import { hookApplies, isAsync, matcherFn, runHandler, runHooks, runInBackground, type HookEvent, type HookOutcome, type HookServices } from "./hooks";
+import { FileWatchHooks, type FileEvent } from "./file-watch-hooks";
+import { instructionsLoadedHooks, sessionStartHooks } from "./session-hooks";
 import { compactRequestMessage, estimateTokens, summaryMessage, transcriptCompactRequest, compactTranscriptText, handoffTranscript } from "./compact";
 import { agentMemoryDir, agentMemoryPrompt, DEFAULT_MAX_TURNS, findSkill, loadAgents, readAgentMemory, type AgentDef } from "./agents";
 import { childMode, createAgentWorktree, finishAgentWorktree, fromServers, keepLocal, startAgentServers, withAgentHooks, worktreeNote, type AgentServers, type AgentWorktree, type WorktreeOutcome } from "./subagent-setup";
@@ -349,6 +352,13 @@ export class Agent {
     private retrying?: string;
     /** additionalContext from PostToolUse hooks, sent along with the tool results. */
     private toolHookContext: string[] = [];
+    /** A hook said continue: false during this turn: the turn ends, with this reason. */
+    private hookStop?: string;
+    /** A PreCompact hook refused automatic compaction this turn. */
+    private autoCompactBlocked = false;
+    /** The error the turn ended on, for StopFailure hooks. */
+    private turnError?: string;
+    private fileWatch?: FileWatchHooks;
     /** A backend turn that takes steering at once (Codex), told when a message to steer with arrives. */
     private queueListeners = new Set<() => void>();
     private running = false;
@@ -507,8 +517,25 @@ export class Agent {
         // (delegated on an earlier turn, maybe before a switch to another model).
         const onAbort = () => this.cancelTasks();
         opts.signal.addEventListener("abort", onAbort, { once: true });
+        this.hookStop = undefined;
+        this.turnError = undefined;
+        this.autoCompactBlocked = false;
         try {
-            return await this.runInner(content, opts);
+            if (!this.o.isSubagent) {
+                // SessionStart hooks still running (a first prompt sent at once): their context and watch paths come first.
+                if (this.session.hooksStarting) await Promise.race([this.session.hooksStarting, new Promise((r) => opts.signal.addEventListener("abort", r, { once: true }))]);
+                this.watchFiles();
+                // Taken once: later turns leave the watch list as hooks have changed it since.
+                const paths = this.session.hookWatchPaths;
+                this.session.hookWatchPaths = undefined;
+                if (paths) this.watchFiles()?.setDynamic(paths);
+            }
+            const reason = await this.runInner(content, opts);
+            if (reason === "error" && !this.o.isSubagent) {
+                const message = this.turnError ?? "The turn ended on an error";
+                void this.hooks("StopFailure", { error: errorType(message), error_details: message, last_assistant_message: this.lastAssistantText() });
+            }
+            return reason;
         } finally {
             await this.turnSnapshots?.end();
             opts.signal.removeEventListener("abort", onAbort);
@@ -526,15 +553,18 @@ export class Agent {
 
         // A wake isn't something the user typed.
         if (!this.o.isSubagent && opts.kind !== "wake" && settings.hooks?.UserPromptSubmit?.length) {
-            const h = await runHooks(settings, "UserPromptSubmit", { prompt: promptText, session_id: this.session.meta.id }, this.state.cwd, signal).catch(() => undefined);
-            for (const err of h?.errors ?? []) this.emit({ type: "notice", level: "warn", message: err });
-            if (h?.blocked) {
-                this.emit({ type: "notice", level: "warn", message: `Prompt blocked by hook: ${h.blocked}` });
+            const h = await this.hooks("UserPromptSubmit", { prompt: promptText }, signal);
+            const blocked = h?.blocked ?? h?.stop;
+            if (blocked) {
+                this.hookStop = undefined;
+                this.emit({ type: "notice", level: "warn", message: `Prompt blocked by hook: ${blocked}` });
                 this.emit({ type: "turn_end", reason: "blocked" });
                 return "blocked";
             }
             if (h?.additionalContext) this.addReminder(`Context from a UserPromptSubmit hook:\n${h.additionalContext}`);
         }
+        // SessionStart hooks' context goes with the first prompt after them.
+        for (const c of this.o.isSubagent ? [] : this.session.hookContext.splice(0)) this.addReminder(c);
 
         // Delegated tasks that ended during a turn on another model (not a backend's) go with this prompt.
         this.deliverTasks(false);
@@ -566,7 +596,8 @@ export class Agent {
                 return "max_turns";
             }
 
-            if (this.shouldAutoCompact()) {
+            // A PreCompact hook that refused once this turn isn't asked again on every request.
+            if (!this.autoCompactBlocked && this.shouldAutoCompact()) {
                 let ok = false;
                 try {
                     ok = await this.compact({ auto: true, signal, continuing: true });
@@ -661,9 +692,9 @@ export class Agent {
                 const stopEvent = this.o.isSubagent ? "SubagentStop" : "Stop";
                 if (settings.hooks?.[stopEvent]?.length && stopHookRounds < 3) {
                     const sub = this.o.subagent;
-                    const payload = sub ? { session_id: sub.parentSessionId, agent_type: sub.type, description: sub.description } : { session_id: this.session.meta.id };
-                    const h = await runHooks(this.o.settings(), stopEvent, { ...payload, last_message: textOf(msg) }, this.state.cwd, signal).catch(() => undefined);
-                    for (const err of h?.errors ?? []) this.emit({ type: "notice", level: "warn", message: err });
+                    const last = textOf(msg);
+                    const h = await this.hooks(stopEvent, { ...(sub ? { description: sub.description } : {}), stop_hook_active: stopHookRounds > 0, last_assistant_message: last, last_message: last }, signal);
+                    if (this.hookStop) return this.stoppedByHook();
                     if (h?.blocked) {
                         stopHookRounds++;
                         this.session.push({ role: "user", content: [reminder(`A ${stopEvent} hook asked you to keep going:\n${h.blocked}`)], meta: { kind: "reminder" } });
@@ -677,6 +708,16 @@ export class Agent {
 
             maxTokenStrikes = 0;
             const { results, denied } = await this.executeTools(calls, signal);
+            let batchBlocked: string | undefined;
+            if (!signal.aborted && settings.hooks?.PostToolBatch?.length) {
+                const tool_calls = calls.map((c) => {
+                    const r = results.find((x) => x.toolCallId === c.id);
+                    return { tool_name: c.name, tool_input: c.input, tool_use_id: c.id, tool_response: r ? { content: r.content.slice(0, 20_000), is_error: Boolean(r.isError) } : undefined };
+                });
+                const h = await this.hooks("PostToolBatch", { tool_calls }, signal);
+                if (h?.additionalContext) this.toolHookContext.push(`Context from a PostToolBatch hook:\n${h.additionalContext}`);
+                batchBlocked = h?.blocked;
+            }
             const extra: UserContent[] = [...this.toolHookContext.splice(0).map(reminder), ...this.takeTaskResults()];
             const late = this.lateDiagnostics();
             if (late) extra.push(late);
@@ -703,11 +744,35 @@ export class Agent {
                 this.emit({ type: "turn_end", reason: "aborted" });
                 return "aborted";
             }
+            if (this.hookStop) return this.stoppedByHook();
+            if (batchBlocked) {
+                this.endNotice("warn", `Stopped by a PostToolBatch hook: ${batchBlocked}`);
+                this.emit({ type: "turn_end", reason: "blocked" });
+                return "blocked";
+            }
             if (denied) {
                 this.emit({ type: "turn_end", reason: "denied" });
                 return "denied";
             }
         }
+    }
+
+    /** A hook said continue: false: the turn ends here, with its reason. */
+    private stoppedByHook(): TurnEndReason {
+        this.endNotice("warn", `Stopped by a hook: ${this.hookStop}`);
+        this.hookStop = undefined;
+        this.emit({ type: "turn_end", reason: "blocked" });
+        return "blocked";
+    }
+
+    /** What the model said last, for Stop and StopFailure hooks. */
+    private lastAssistantText(): string {
+        for (let i = this.session.messages.length - 1; i >= 0; i--) {
+            const m = this.session.messages[i]!;
+            if (m.role === "assistant") return textOf(m);
+            if (m.role === "user" && m.meta?.kind === "prompt") break;
+        }
+        return "";
     }
 
     /** Wakes that may join the running turn, as one reminder; noted in the transcript. */
@@ -803,6 +868,7 @@ export class Agent {
      * never sent to a model).
      */
     private endNotice(level: "warn" | "error", message: string) {
+        if (level === "error") this.turnError = message;
         this.session.recordNotice(level, message);
         this.emit({ type: "notice", level, message });
     }
@@ -813,6 +879,81 @@ export class Agent {
         } catch {
             // UI errors must not break the loop
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Hooks (src/agent/hooks.ts)
+
+    /**
+     * Run this agent's hooks for an event, with the input fields every event
+     * has. Problems and systemMessages show as notices. A sub-agent's hooks
+     * get its parent's session id, and its own as agent_id.
+     */
+    async hooks(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal): Promise<HookOutcome | undefined> {
+        const settings = this.o.settings();
+        if (!settings.hooks?.[event]?.length) return undefined;
+        const sub = this.o.subagent;
+        const common: Record<string, unknown> = { session_id: sub?.parentSessionId ?? this.session.meta.id, permission_mode: this.o.mode.get(), ...(sub ? { agent_id: this.session.meta.id, agent_type: sub.type } : {}) };
+        if (settings.effort) common.effort = { level: settings.effort };
+        const h = await runHooks(settings, event, { ...common, ...payload }, this.state.cwd, this.hookServices(signal)).catch((e): HookOutcome => ({ errors: [`${event} hook failed: ${(e as Error).message}`], messages: [] }));
+        for (const message of h.errors) this.emit({ type: "notice", level: "warn", message });
+        // A hook's systemMessage is for you to read, not a problem.
+        for (const message of h.messages) this.emit({ type: "notice", level: "info", message });
+        if (h.stop && this.running) this.hookStop ??= h.stop;
+        if (h.watchPaths) this.watchFiles()?.setDynamic(h.watchPaths);
+        return h;
+    }
+
+    /** What prompt and mcp_tool hooks run on: the small model, and this agent's MCP tools. */
+    private hookServices(signal?: AbortSignal): HookServices {
+        const helpers = this.o.helpers;
+        return {
+            signal,
+            complete: helpers?.complete
+                ? async (system, prompt, sig, model) => {
+                      const r = model ? await helpers.resolveModel?.(model) : undefined;
+                      if (model && !r) throw new Error(`${model} isn't set up here`);
+                      if (!r) return helpers.complete!(system, prompt, sig);
+                      const res = await r.client.stream({ model: r.model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: 1024, lightweight: true, signal: sig }, () => {});
+                      if (res.usage) {
+                          const cost = costOf(res.usage, r.model);
+                          this.session.recordUsage(modelRef(r.model), res.usage, cost.usd, cost.unknown);
+                      }
+                      return textOf(res);
+                  }
+                : undefined,
+            callTool: async (server, name, input, sig) => {
+                const tool = this.tools.find((t) => t.category === "mcp" && t.name === toolNameFor(server, name));
+                if (!tool) throw new Error(`no tool ${name} on a connected MCP server "${server}"`);
+                const r = await tool.run(input, this.toolContext("", sig));
+                return { text: r.content, isError: Boolean(r.isError) };
+            },
+            onAsync: (o) => {
+                for (const message of o.errors) this.emit({ type: "notice", level: "warn", message });
+                for (const message of o.messages) this.emit({ type: "notice", level: "info", message });
+                if (o.additionalContext) this.addReminder(`Context from a background hook:\n${o.additionalContext}`);
+            },
+        };
+    }
+
+    /** The FileChanged watcher, once there are FileChanged hooks or paths to watch. Main agent only. */
+    private watchFiles(): FileWatchHooks | undefined {
+        if (this.o.isSubagent || this.disposed) return undefined;
+        const list = this.o.settings().hooks?.FileChanged ?? [];
+        if (!this.fileWatch && !list.length) return undefined;
+        this.fileWatch ??= new FileWatchHooks(this.state.projectRoot, (path, event) => void this.fileChanged(path, event));
+        this.fileWatch.setConfigured(list.map((h) => h.matcher));
+        return this.fileWatch;
+    }
+
+    private async fileChanged(path: string, event: FileEvent) {
+        await this.hooks("FileChanged", { file_path: path, event });
+    }
+
+    /** The session's working directory moved (Bash cd, or the user's own shell command). */
+    async cwdChanged(from: string) {
+        if (from === this.state.cwd) return;
+        await this.hooks("CwdChanged", { old_cwd: from, new_cwd: this.state.cwd });
     }
 
     private recordUsage(usage: Usage) {
@@ -899,11 +1040,8 @@ export class Agent {
         if (isAgentBackend(this.client)) return this.compactBackend(this.client, opts);
         const history = this.session.messages;
         if (history.length < 2) return false;
+        if (!(await this.preCompact(opts))) return false;
         this.emit({ type: "compact_start", auto: opts.auto });
-        if (!this.o.isSubagent) {
-            const warn = (message: string) => this.emit({ type: "notice", level: "warn", message });
-            await fireHooks(this.o.settings(), "PreCompact", { session_id: this.session.meta.id, trigger: opts.auto ? "auto" : "manual", custom_instructions: opts.instructions ?? "" }, this.state.cwd, warn, opts.signal);
-        }
         const req = [...history, compactRequestMessage(opts.instructions)];
         let summary = "";
         try {
@@ -943,7 +1081,18 @@ export class Agent {
         this.lastUsageTotal = 0;
         this.state.fileState.clear();
         this.emit({ type: "compact_end", summary });
+        if (!this.o.isSubagent) void this.hooks("PostCompact", { trigger: opts.auto ? "auto" : "manual", compact_summary: summary }).then(() => this.compacted());
         return true;
+    }
+
+    /** PreCompact hooks: false when one blocked the compaction (it's then skipped, saying why). */
+    private async preCompact(opts: { auto: boolean; signal: AbortSignal; instructions?: string }): Promise<boolean> {
+        if (this.o.isSubagent) return true;
+        const h = await this.hooks("PreCompact", { trigger: opts.auto ? "auto" : "manual", custom_instructions: opts.instructions ?? null }, opts.signal);
+        if (!h?.blocked) return true;
+        if (opts.auto) this.autoCompactBlocked = true;
+        this.emit({ type: "notice", level: "warn", message: `Compaction skipped: a PreCompact hook blocked it: ${h.blocked}` });
+        return false;
     }
 
     // -----------------------------------------------------------------------
@@ -987,6 +1136,8 @@ export class Agent {
             approvedMcpServers,
             rules: { deny: s.permissions?.deny ?? [], ask: s.permissions?.ask ?? [], root: this.state.projectRoot },
             maxTurns: this.o.maxTurns,
+            // Claude Code runs some of them itself; Codex only says what it does, so it hears of all of them.
+            hooks: this.model.provider === "claude-code" ? backendOwnedHooks(s) : s.hooks,
             orchestrator: this.orchestrator(),
             readOnly: this.o.readOnly,
             agents: this.nativeAgents(trusted),
@@ -1160,6 +1311,8 @@ export class Agent {
     /** The session is done with this agent: stop its delegated tasks (waiting a moment for them) and revoke its MCP token. */
     async dispose(graceMs = 3000): Promise<void> {
         this.disposed = true;
+        this.fileWatch?.close();
+        this.fileWatch = undefined;
         this.registration?.close();
         this.registration = undefined;
         const running = this.delegations?.close() ?? [];
@@ -1240,6 +1393,29 @@ export class Agent {
 
     private backendStopReminders: string[] = [];
 
+    /** How a backend runs the harness's hooks: whole events (Codex's items), or one handler Claude Code calls back for. */
+    private backendHooks(signal: AbortSignal): Pick<BackendHost, "hooks" | "hookHandler"> {
+        return {
+            hooks: (event, payload) => this.hooks(event, payload, signal),
+            hookHandler: async (event, h, input, sig) => {
+                // As the harness's own hooks: its session (Claude Code's own id beside it), and `if` applied here.
+                const sub = this.o.subagent;
+                const full: Record<string, unknown> = { ...input, hook_event_name: event, backend_session_id: input.session_id, session_id: sub?.parentSessionId ?? this.session.meta.id, ...(sub && input.agent_id === undefined ? { agent_id: this.session.meta.id, agent_type: sub.type } : {}) };
+                const cwd = typeof input.cwd === "string" ? input.cwd : this.state.cwd;
+                if (!hookApplies(h, event, full, cwd)) return { kind: "none" };
+                // Claude Code waits for its callback: an async hook answers at once and goes on in the background.
+                if (isAsync(h)) {
+                    runInBackground(h, event, full, cwd, this.hookServices(signal));
+                    return { kind: "none" };
+                }
+                const r = await runHandler(h, event, full, cwd, this.hookServices(AbortSignal.any([signal, sig])));
+                if (r.kind === "error") this.emit({ type: "notice", level: "warn", message: r.message });
+                if (r.kind === "output" && typeof r.json?.systemMessage === "string") this.emit({ type: "notice", level: "info", message: r.json.systemMessage });
+                return r;
+            },
+        };
+    }
+
     private async runBackendTurn(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal, woken: boolean): Promise<TurnEndReason> {
         const provider = this.model.provider;
         const name = getProvider(provider)?.name ?? provider;
@@ -1250,6 +1426,7 @@ export class Agent {
         /** What drainQueued handed over that came from wakes, not the user. */
         const wakeTexts = new Set<string>();
         const host: BackendHost = {
+            ...this.backendHooks(signal),
             emit: (e) => this.emitFromBackend(e),
             mode: () => this.o.mode.get(),
             fastMode: () => this.fastMode(),
@@ -1369,11 +1546,14 @@ export class Agent {
             const settings = this.o.settings();
             // A sub-agent's turn ends with SubagentStop, as one the harness runs does.
             const stopEvent = this.o.isSubagent ? "SubagentStop" : "Stop";
-            const sub = this.o.subagent;
             if (settings.hooks?.[stopEvent]?.length && stopRounds < 3) {
-                const payload = sub ? { session_id: sub.parentSessionId, agent_type: sub.type, description: sub.description } : { session_id: this.session.meta.id };
-                const h = await runHooks(settings, stopEvent, { ...payload, last_message: result.text }, this.state.cwd, signal).catch(() => undefined);
-                for (const err of h?.errors ?? []) this.emit({ type: "notice", level: "warn", message: err });
+                const sub = this.o.subagent;
+                const h = await this.hooks(stopEvent, { ...(sub ? { description: sub.description } : {}), stop_hook_active: stopRounds > 0, last_assistant_message: result.text, last_message: result.text }, signal);
+                if (this.hookStop) {
+                    this.endNotice("warn", `Stopped by a hook: ${this.hookStop}`);
+                    this.hookStop = undefined;
+                    return this.endBackendTurn(provider, "blocked");
+                }
                 if (h?.blocked) {
                     stopRounds++;
                     prompt = reminder([`A ${stopEvent} hook asked you to keep going:\n${redact(h.blocked)}`, ...this.backendStopReminders.splice(0)].join("\n\n")).text;
@@ -1453,8 +1633,12 @@ export class Agent {
         const folder = this.backendFolder(provider);
         const resume = this.backendResume(provider, folder);
         if (!resume) return false;
+        // Claude Code runs PreCompact and PostCompact hooks itself (they're registered with it); Codex can't.
+        const ownHooks = provider === "codex";
+        if (ownHooks && !(await this.preCompact(opts))) return false;
         this.emit({ type: "compact_start", auto: opts.auto });
         const host: BackendHost = {
+            ...this.backendHooks(opts.signal),
             emit: (e) => {
                 if (e.type === "notice" || e.type === "retry" || e.type === "limits") this.emit(e);
             },
@@ -1472,7 +1656,15 @@ export class Agent {
         if (r.reason === "error") throw new Error(r.error ?? "Compaction failed");
         this.contextTokens = 0;
         this.emit({ type: "compact_end", summary: `${getProvider(provider)?.name ?? provider} compacted its own context.` });
+        if (ownHooks && !this.o.isSubagent) void this.hooks("PostCompact", { trigger: opts.auto ? "auto" : "manual", compact_summary: "" });
+        // Claude Code runs SessionStart (compact) itself (backendOwnedHooks); the harness runs it for Codex, and the memory files' InstructionsLoaded on both.
+        if (!this.o.isSubagent) void (provider === "claude-code" ? instructionsLoadedHooks(this.o.settings(), this.session, "compact", this.state.cwd, (msg, level = "warn") => this.emit({ type: "notice", level, message: msg }), this.hookServices()) : this.compacted());
         return true;
+    }
+
+    /** After compaction, as in Claude Code: SessionStart (source compact) and the memory files' InstructionsLoaded; their context goes with the next prompt. */
+    private compacted(): Promise<void> {
+        return sessionStartHooks(this.o.settings(), this.session, "compact", this.state.cwd, (msg, level = "warn") => this.emit({ type: "notice", level, message: msg }), this.hookServices());
     }
 
     /**
@@ -1603,6 +1795,24 @@ export class Agent {
      * or a read-only agent asking because of the harness's own rule. There a
      * read-only command the harness would run for its own models runs.
      */
+    /**
+     * A PermissionRequest hook approved other input than the backend asked about: it goes back to the
+     * backend to run (Claude Code takes it; Codex refuses it), once it passes what the original had to.
+     */
+    private rewrittenByHook(tool: Tool<any>, raw: Record<string, unknown>, mode: PermissionMode, cwd: string): PermissionAnswer {
+        const own = this.findTool(tool.name);
+        const input = own ? coerceInput(own, raw) : raw;
+        const invalid = own ? validateInput(own, input) : undefined;
+        if (invalid) return { allow: false, message: `A PermissionRequest hook changed the input to something invalid: ${invalid}`, stop: false };
+        if (this.o.readOnly) {
+            const reads = tool.category === "read" || tool.category === "network" || (tool.name === "Bash" && isReadOnlyCommand(String(input.command ?? "")));
+            if (!reads) return { allow: false, message: readOnlyRefusal(tool.name, String(input.command ?? "")), stop: false };
+        }
+        const d = this.o.checker.check(tool, input, mode, cwd);
+        if (d.behavior === "deny") return { allow: false, message: d.reason ?? "Denied by a permission rule.", stop: false };
+        return { allow: true, updatedInput: input };
+    }
+
     private async backendPermission(req: BackendPermission, signal: AbortSignal): Promise<PermissionAnswer> {
         const tool = this.findTool(req.toolName) ?? backendTool(req.toolName, req.title);
         const input = req.input;
@@ -1654,7 +1864,20 @@ export class Agent {
         } catch {
             // keep the backend's title
         }
+        // Codex was told to ask only so PreToolUse hooks would see the call (bypass mode): the mode decides, as it would have.
+        if (req.hooksOnly && decision.behavior === "allow") ruled = true;
+        // A PreToolUse hook that asks wants the user, whatever the rules say.
+        if (req.hookDecision === "ask") ruled = false;
         if (ruled) return { allow: true };
+        // A PreToolUse hook approved it: as for the harness's own tools, past everything but deny rules and dangerous commands.
+        if (req.hookDecision === "allow" && !decision.dangerous) return { allow: true };
+        if (this.o.settings().hooks?.PermissionRequest?.length) {
+            const h = await this.hooks("PermissionRequest", { tool_name: tool.name, tool_input: input, ...(tool.category === "mcp" ? { mcp_server: mcpServerOf(tool.name) } : {}) }, signal);
+            // continue: false ends the turn whatever the hook decided, as on every event.
+            if (h?.stop) return { allow: false, message: `Stopped by PermissionRequest hook: ${h.stop}`, stop: true };
+            if (h?.permission?.behavior === "allow") return h.updatedInput ? this.rewrittenByHook(tool, h.updatedInput, mode, cwd) : { allow: true };
+            if (h?.permission?.behavior === "deny") return { allow: false, message: h.permission.message || "Denied by a PermissionRequest hook.", stop: Boolean(h.permission.interrupt) };
+        }
         if (!this.o.host.askPermission) {
             return { allow: false, message: `Permission to use ${tool.name} was not granted (non-interactive session). ${req.reason ?? ""} Allow it with --allowedTools, a permission rule, or --permission-mode.`.replace(/\s+/g, " ").trim(), stop: false };
         }
@@ -1757,7 +1980,8 @@ export class Agent {
 
             const approved: { call: ToolCallPart; tool: Tool<any>; input: any; auto?: string; sandbox?: boolean }[] = [];
             for (const call of batch) {
-                if (denied || signal.aborted) break;
+                // A hook's continue:false ends the turn here, so later calls in the reply don't run.
+                if (denied || signal.aborted || this.hookStop) break;
                 const prep = await this.prepare(call, signal);
                 if ("result" in prep) {
                     results.set(call.id, prep.result);
@@ -1766,7 +1990,7 @@ export class Agent {
             }
             if (signal.aborted) break;
             await Promise.all(approved.map(async (a) => results.set(a.call.id, await this.runTool(a.call, a.tool, a.input, signal, a.auto, a.sandbox))));
-            if (denied || signal.aborted) break;
+            if (denied || signal.aborted || this.hookStop) break;
         }
         const out: ToolResultPart[] = calls.map(
             (c) =>
@@ -1774,7 +1998,11 @@ export class Agent {
                     type: "tool_result",
                     toolCallId: c.id,
                     toolName: c.name,
-                    content: signal.aborted ? "Interrupted by user before this tool ran." : "Not run: the user rejected an earlier tool call in this batch.",
+                    content: signal.aborted
+                        ? "Interrupted by user before this tool ran."
+                        : this.hookStop
+                          ? `Not run: a hook stopped the turn (${this.hookStop}).`
+                          : "Not run: the user rejected an earlier tool call in this batch.",
                     isError: true,
                 },
         );
@@ -1816,20 +2044,25 @@ export class Agent {
             return { result: this.errorResult(call, `Validation failed: ${(e as Error).message}`) };
         }
 
-        // Read-only agents (explore) never change anything.
-        if (this.o.readOnly) {
-            const writes = tool.category === "edit" || (tool.name === "Bash" && !isReadOnlyCommand(String(input.command ?? ""))) || tool.category === "mcp" && !isReadOnly(tool, input);
-            if (writes) return { result: this.errorResult(call, readOnlyRefusal(tool.name, String(input.command ?? ""))) };
-        }
+        // Read-only agents (explore) never change anything, whatever a hook later rewrites the call into.
+        const writes = (input: any) => this.o.readOnly && (tool.category === "edit" || (tool.name === "Bash" && !isReadOnlyCommand(String(input.command ?? ""))) || (tool.category === "mcp" && !isReadOnly(tool, input)));
+        if (writes(input)) return { result: this.errorResult(call, readOnlyRefusal(tool.name, String(input.command ?? ""))) };
 
         const settings = this.o.settings();
         let hookDecision: "allow" | "deny" | "ask" | undefined;
         if (settings.hooks?.PreToolUse?.length) {
-            const h = await runHooks(settings, "PreToolUse", { tool_name: tool.name, tool_input: input, session_id: this.session.meta.id }, this.state.cwd, signal).catch(() => undefined);
-            for (const err of h?.errors ?? []) this.emit({ type: "notice", level: "warn", message: err });
+            const h = await this.hooks("PreToolUse", { tool_name: tool.name, tool_input: input, tool_use_id: call.id }, signal);
+            if (this.hookStop) return { result: this.errorResult(call, `Stopped by PreToolUse hook: ${this.hookStop}`) };
             if (h?.blocked) return { result: this.errorResult(call, `Blocked by PreToolUse hook: ${h.blocked}`) };
             hookDecision = h?.decision;
             if (hookDecision === "deny") return { result: this.errorResult(call, `Denied by PreToolUse hook${h?.reason ? `: ${h.reason}` : ""}`) };
+            if (h?.updatedInput) {
+                // The hook's input replaces the model's, and is checked like it.
+                input = coerceInput(tool, h.updatedInput);
+                const err = validateInput(tool, input);
+                if (err) return { result: this.errorResult(call, `A PreToolUse hook changed the input to something invalid: ${err}`) };
+                if (writes(input)) return { result: this.errorResult(call, readOnlyRefusal(tool.name, String(input.command ?? ""))) };
+            }
         }
 
         const mode = this.o.mode.get();
@@ -1853,12 +2086,34 @@ export class Agent {
                 if (v.warning) this.emit({ type: "notice", level: "warn", message: v.warning });
                 if (v.decision === "allow") return { tool, input, sandbox, auto: v.ms === undefined ? v.reason : `${v.reason} (reviewed in ${(v.ms / 1000).toFixed(1)}s)` };
                 // Told why, the agent can take a safer way (the user decides once blocks pile up).
-                if (v.decision === "block") return { result: this.errorResult(call, blockedByReviewer(v.reason)) };
+                if (v.decision === "block") {
+                    void this.hooks("PermissionDenied", { tool_name: tool.name, tool_input: input, tool_use_id: call.id, reason: v.reason });
+                    return { result: this.errorResult(call, blockedByReviewer(v.reason)) };
+                }
                 classifierReason = v.reason;
                 summary = v.summary;
             } catch (e) {
                 if (isAbort(e, signal)) return { result: this.errorResult(call, "Interrupted") };
             }
+        }
+
+        if (settings.hooks?.PermissionRequest?.length) {
+            const h = await this.hooks("PermissionRequest", { tool_name: tool.name, tool_input: input, ...(tool.category === "mcp" ? { mcp_server: mcpServerOf(tool.name) } : {}) }, signal);
+            // continue: false ends the turn whatever the hook decided, as on every event.
+            if (this.hookStop) return { result: this.errorResult(call, `Stopped by PermissionRequest hook: ${this.hookStop}`) };
+            if (h?.permission?.behavior === "allow") {
+                const approvedInput = h.updatedInput ? coerceInput(tool, h.updatedInput) : input;
+                const err = h.updatedInput ? validateInput(tool, approvedInput) : undefined;
+                if (err) return { result: this.errorResult(call, `A PermissionRequest hook changed the input to something invalid: ${err}`) };
+                if (!h.updatedInput) return { tool, input, sandbox, auto: "hook" };
+                if (writes(approvedInput)) return { result: this.errorResult(call, readOnlyRefusal(tool.name, String(approvedInput.command ?? ""))) };
+                // The hook answers for you, but not past a deny rule, and the new command gets its own sandbox.
+                const again = this.o.checker.check(tool, approvedInput, mode, this.state.cwd);
+                if (again.behavior === "deny") return { result: this.errorResult(call, again.reason ?? "Permission denied") };
+                const hosts = tool.name === "Bash" && again.sandbox && again.hosts?.length ? { allowedHosts: again.hosts } : {};
+                return { tool, input: { ...approvedInput, ...hosts }, sandbox: again.sandbox, auto: "hook" };
+            }
+            if (h?.permission?.behavior === "deny") return { result: this.errorResult(call, h.permission.message || "Denied by a PermissionRequest hook"), stop: h.permission.interrupt };
         }
 
         if (!this.o.host.askPermission) {
@@ -1928,20 +2183,27 @@ export class Agent {
             sandbox = { kind, policy: sandboxPolicy(this.o.checker.workspaceRoots(), { harnessHome: harnessHome() }) };
         }
         let result: ToolResult;
+        const cwdBefore = this.state.cwd;
         try {
             result = await tool.run(input, this.toolContext(call.id, signal, sandbox));
         } catch (e) {
             result = signal.aborted ? { content: "Interrupted by user", isError: true } : { content: `Tool error: ${redact((e as Error).message ?? String(e))}`, isError: true };
         }
+        const durationMs = Date.now() - started;
         // Tools redact their own output; this catches any that print a secret (RequestSecret's) without doing so, before hooks, windows or the model.
         result = redactResult(result);
+        if (!this.o.isSubagent && this.state.cwd !== cwdBefore) void this.cwdChanged(cwdBefore);
         if (!result.isError && DIAGNOSED_TOOLS.has(tool.name) && this.state.lsp && !signal.aborted) result = await this.withDiagnostics(result, input, signal);
-        const settings = this.o.settings();
-        if (settings.hooks?.PostToolUse?.length && !signal.aborted) {
-            const h = await runHooks(settings, "PostToolUse", { tool_name: tool.name, tool_input: input, tool_response: { content: result.content.slice(0, 20_000), is_error: Boolean(result.isError) }, session_id: this.session.meta.id }, this.state.cwd, signal).catch(() => undefined);
-            for (const err of h?.errors ?? []) this.emit({ type: "notice", level: "warn", message: err });
-            if (h?.blocked) result = { ...result, content: `${result.content}\n\nPostToolUse hook feedback:\n${h.blocked}` };
-            if (h?.additionalContext) this.toolHookContext.push(`Context from a PostToolUse hook (${tool.name}):\n${h.additionalContext}`);
+        // Succeeded: PostToolUse. Failed: PostToolUseFailure (a stopped tool runs neither, as in Claude Code).
+        const event = result.isError ? "PostToolUseFailure" : "PostToolUse";
+        if (this.o.settings().hooks?.[event]?.length && !signal.aborted) {
+            const payload = result.isError
+                ? { tool_name: tool.name, tool_input: input, tool_use_id: call.id, error: result.content.slice(0, 20_000), is_interrupt: false, duration_ms: durationMs }
+                : { tool_name: tool.name, tool_input: input, tool_use_id: call.id, tool_response: { content: result.content.slice(0, 20_000), is_error: false }, duration_ms: durationMs };
+            const h = await this.hooks(event, { ...payload, ...(tool.category === "mcp" ? { mcp_server: mcpServerOf(tool.name) } : {}) }, signal);
+            if (h?.updatedToolOutput !== undefined) result = { ...result, content: redact(h.updatedToolOutput) };
+            if (h?.blocked) result = { ...result, content: `${result.content}\n\n${event} hook feedback:\n${h.blocked}` };
+            if (h?.additionalContext) this.toolHookContext.push(`Context from a ${event} hook (${tool.name}):\n${h.additionalContext}`);
         }
         this.emit({ type: "tool_end", call, result, durationMs: Date.now() - started });
         return {
@@ -2255,7 +2517,13 @@ export class Agent {
         this.children.add(child);
         for (const n of notes) parentHost.emit({ type: "subagent", parentId: callId, label, event: { type: "notice", level: "warn", message: n } });
         try {
-            reason = await child.run([{ type: "text", text: req.prompt }], { signal });
+            const starting = await this.hooks("SubagentStart", { agent_id: session.meta.id, agent_type: type, description: req.description }, signal);
+            if (starting?.additionalContext) child.addReminder(`Context from a SubagentStart hook:\n${starting.additionalContext}`);
+            // continue: false: it doesn't start at all (and the parent's turn ends too).
+            if (starting?.stop) {
+                lastError = `Stopped by SubagentStart hook: ${starting.stop}`;
+                reason = "blocked";
+            } else reason = await child.run([{ type: "text", text: req.prompt }], { signal });
         } catch (e) {
             reason = signal.aborted ? "aborted" : "error";
             lastError ??= redact((e as Error).message ?? String(e));
@@ -2376,6 +2644,40 @@ function nestedAgentLabel(parent: string, label: string): string {
 export function readOnlyBackendMode(mode: PermissionMode, provider: string): PermissionMode {
     if (mode === "plan") return "plan";
     return mode === "auto" && provider === "codex" ? "auto" : "default";
+}
+
+/** The server of an MCP tool's name (mcp__server__tool). */
+function mcpServerOf(name: string): string | undefined {
+    return name.match(/^mcp__(.+?)__/)?.[1];
+}
+
+/** A StopFailure hook's matcher value: what kind of error ended the turn. */
+export function errorType(message: string): string {
+    const m = message.toLowerCase();
+    if (/rate.?limit|\b429\b|usage limit|too many requests/.test(m)) return "rate_limit";
+    if (/overloaded|\b529\b/.test(m)) return "overloaded";
+    if (/\b401\b|\b403\b|unauthori[sz]ed|authentication|invalid (api )?key|not (signed|logged) in/.test(m)) return "authentication_failed";
+    if (/billing|credit|\b402\b|payment|quota/.test(m)) return "billing_error";
+    if (/\b5\d\d\b|server error|internal error|bad gateway|unavailable/.test(m)) return "server_error";
+    if (/output token limit|max.?tokens/.test(m)) return "max_output_tokens";
+    return "unknown";
+}
+
+/**
+ * The events Claude Code runs the harness's hooks for itself, over its control
+ * protocol: its tool calls, sub-agents, compactions, worktrees and cd. The
+ * harness keeps the rest (prompts, Stop, the session's start and end,
+ * permission prompts, notifications, the files it watches), so none runs twice.
+ */
+export const CLAUDE_CODE_HOOK_EVENTS: HookEvent[] = ["PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch", "PermissionDenied", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "CwdChanged", "WorktreeCreate", "WorktreeRemove"];
+
+export function backendOwnedHooks(s: Settings): BackendTurn["hooks"] {
+    const out: NonNullable<BackendTurn["hooks"]> = {};
+    for (const e of CLAUDE_CODE_HOOK_EVENTS) if (s.hooks?.[e]?.length) out[e] = s.hooks[e];
+    // SessionStart after Claude Code compacts (its own auto-compaction too): Claude Code runs it, so its context reaches its model.
+    const compact = (s.hooks?.SessionStart ?? []).filter((h) => matcherFn(h.matcher)("compact")).map((h) => ({ ...h, matcher: "compact" }));
+    if (compact.length) out.SessionStart = compact;
+    return Object.keys(out).length ? out : undefined;
 }
 
 /** Whether the user trusted the folder themselves (not for the session only); no when that can't be read. */

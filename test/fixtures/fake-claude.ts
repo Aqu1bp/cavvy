@@ -77,6 +77,20 @@ if (argv[0] === "auth" && argv[1] === "status") {
     process.exit(on ? 0 : 1);
 }
 if (argv[0] === "auth" && argv[1] === "login") process.exit(0);
+// A one-off (--tools "" with a system prompt): the question's answer is FAKE_ONEOFF_ANSWER, as one result.
+if (argv.includes("--tools") && argv[argv.indexOf("--tools") + 1] === "" && argv.includes("--system-prompt")) {
+    let buf = "";
+    for await (const chunk of Bun.stdin.stream()) {
+        buf += new TextDecoder().decode(chunk);
+        if (!buf.includes("\n")) continue;
+        const m = JSON.parse(buf.split("\n")[0]!);
+        log({ oneOff: { system: argv[argv.indexOf("--system-prompt") + 1], prompt: m.message?.content?.[0]?.text, model: argv.includes("--model") ? argv[argv.indexOf("--model") + 1] : undefined } });
+        const fail = process.env.FAKE_ONEOFF_FAIL;
+        process.stdout.write(JSON.stringify({ type: "result", subtype: fail ? "error_during_execution" : "success", is_error: Boolean(fail), result: fail ?? process.env.FAKE_ONEOFF_ANSWER ?? '{"ok": true}' }) + "\n");
+        process.exit(0);
+    }
+    process.exit(1);
+}
 if (process.env.FAKE_IGNORE_STOP === "1") process.on("SIGTERM", () => log({ ignored: "SIGTERM" }));
 // Something it starts that holds its output open after it exits (a command left running with its stdout).
 if (process.env.FAKE_HOLD_STDOUT === "1") Bun.spawn(["sleep", "8"], { stdin: "ignore", stdout: "inherit", stderr: "ignore" }).unref();
@@ -406,9 +420,38 @@ function execute(tool: string, input: any): { content: string; structured?: unkn
     return { content: "ok" };
 }
 
+/** Hooks the host registered in initialize (SDK callbacks): run like Claude Code's, by sending hook_callback. */
+let sdkHooks: Record<string, { matcher?: string; hookCallbackIds: string[] }[]> = {};
+function sdkHook(event: string, input: Record<string, unknown>): Promise<any[]> {
+    const ids = (sdkHooks[event] ?? []).filter((g) => !g.matcher || g.matcher === "*" || g.matcher.split("|").includes(String(input.tool_name ?? input.source))).flatMap((g) => g.hookCallbackIds);
+    return Promise.all(
+        ids.map((callback_id) => {
+            const request_id = `req-${++seq}`;
+            out({ type: "control_request", request_id, request: { subtype: "hook_callback", callback_id, input: { session_id: sessionId, cwd, hook_event_name: event, permission_mode: mode, ...input }, tool_use_id: input.tool_use_id } });
+            return new Promise((resolve) => pending.set(request_id, resolve));
+        }),
+    ).then((answers) => (log({ hookAnswers: { event, answers } }), answers));
+}
+
 /** One tool call, decided like the real CLI. False when the turn was stopped. */
 async function use(id: string, tool: string, input: any): Promise<boolean> {
     toolUse(id, tool, input);
+    const pre = await sdkHook("PreToolUse", { tool_name: tool, tool_input: input, tool_use_id: id });
+    const refused = pre.find((r) => r?.hookSpecificOutput?.permissionDecision === "deny");
+    if (refused) {
+        toolResult(id, String(refused.hookSpecificOutput.permissionDecisionReason ?? "Denied by a hook"), true);
+        return true;
+    }
+    if (sdkHooks.PostToolUse) {
+        const run = execute;
+        const done = (r: { content: string }) => sdkHook("PostToolUse", { tool_name: tool, tool_input: input, tool_use_id: id, tool_response: r.content });
+        if (!deny.some((r) => ruleHits(r, tool, input)) && !askRules.some((r) => ruleHits(r, tool, input)) && selfApproved(tool, input)) {
+            const r = run(tool, input);
+            toolResult(id, r.content, false, r.structured);
+            await done(r);
+            return true;
+        }
+    }
     if (deny.some((r) => ruleHits(r, tool, input))) {
         toolResult(id, `Permission to use ${tool} has been denied by your permission settings.`, true);
         return true;
@@ -453,6 +496,8 @@ async function turn(content: any[], uuid?: string) {
     // Slash commands are Claude Code's own: /compact compacts the session.
     if (String(content.find((c) => c?.type === "text")?.text ?? "").startsWith("/compact")) {
         out({ type: "system", subtype: "compact_boundary", session_id: sessionId });
+        // As Claude Code does after compacting: SessionStart with source compact.
+        await sdkHook("SessionStart", { source: "compact" });
         return result("success", { result: "" });
     }
     if (process.env.FAKE_CLAUDE_LIMIT_INFO) out({ type: "rate_limit_event", rate_limit_info: JSON.parse(process.env.FAKE_CLAUDE_LIMIT_INFO) });
@@ -686,6 +731,7 @@ for await (const chunk of Bun.stdin.stream()) {
         if (m.type === "control_request") {
             const sub = m.request?.subtype;
             if (sub === "initialize") {
+                sdkHooks = m.request.hooks ?? {};
                 out({
                     type: "control_response",
                     response: {

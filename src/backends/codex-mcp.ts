@@ -3,6 +3,8 @@ export interface CodexMcpOverrides {
     config?: { mcp_servers: Record<string, { enabled: false }> };
     missingProvenance: boolean;
     reservedCollision: boolean;
+    /** Every reserved name Codex already has a server under (each is disabled). */
+    collisions: string[];
 }
 
 const record = (v: unknown): v is Record<string, any> => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -20,7 +22,7 @@ function serverNames(config: Record<string, any>): string[] {
 }
 
 /** Disable whole names: a project can modify only one field of a user server through config merging. */
-export function codexMcpOverrides(response: unknown, readOnly: boolean, reservedName?: string): CodexMcpOverrides {
+export function codexMcpOverrides(response: unknown, readOnly: boolean, reservedName?: string | string[]): CodexMcpOverrides {
     if (!record(response) || !record(response.config)) throw new Error("Missing Codex configuration");
     const effective = serverNames(response.config);
     let missingProvenance = false;
@@ -48,11 +50,14 @@ export function codexMcpOverrides(response: unknown, readOnly: boolean, reserved
         }
     }
     // Nested thread config merges with existing servers. Never merge delegation credentials into an existing transport.
-    const reservedCollision = reservedName !== undefined && effective.includes(reservedName);
-    if (reservedCollision) disabled.add(reservedName!);
+    const reserved = reservedName === undefined ? [] : Array.isArray(reservedName) ? reservedName : [reservedName];
+    const collisions = reserved.filter((n) => effective.includes(n));
+    collisions.forEach((n) => disabled.add(n));
+    const reservedCollision = reserved[0] !== undefined && collisions.includes(reserved[0]);
     return {
         config: disabled.size ? { mcp_servers: Object.fromEntries([...disabled].map((n) => [n, { enabled: false as const }])) } : undefined,
         missingProvenance,
         reservedCollision,
+        collisions,
     };
 }

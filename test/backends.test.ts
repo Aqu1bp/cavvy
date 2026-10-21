@@ -152,14 +152,14 @@ const userTexts = () => received().flatMap((m) => (m.type === "user" ? m.message
 const permissionReplies = () => received().filter((m) => m.type === "control_response").map((m) => m.response.response);
 
 describe("agent providers", () => {
-    test("are off until turned on, and can't answer one-off requests", async () => {
+    test("are off until turned on, and can't answer a request that offers the harness's tools", async () => {
         registry.removeAgentConfig("claude-code");
         forgetClient("claude-code");
         await expect(clientFor("claude-code")).rejects.toThrow(/isn't turned on. Run \/login claude-code/);
         registry.saveAgentConfig("claude-code", { path: claudeBin });
         const c = await clientFor("claude-code");
         expect(isAgentBackend(c)).toBe(true);
-        await expect(c.stream({} as any, () => {})).rejects.toThrow(/can't answer one-off requests/);
+        await expect(c.stream({ tools: [{ name: "Read", description: "", parameters: {} }] } as any, () => {})).rejects.toThrow(/can't answer a request that offers tools/);
     });
 
     test("a missing CLI says how to install and sign in", async () => {

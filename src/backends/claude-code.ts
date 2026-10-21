@@ -25,8 +25,11 @@
 // through those credentials. The harness's own provider keys are removed from
 // the CLI's environment (childEnv), so it can't be pointed at one of those.
 
+import type { HookConfig } from "../config/settings";
+import { claudeCodeHookOutput, type HookEvent } from "../agent/hooks";
 import { homedir } from "os";
-import type { AssistantMessage, ModelInfo, Usage } from "../providers/types";
+import type { AssistantMessage, ChatRequest, ModelInfo, Usage } from "../providers/types";
+import { ONE_OFF_TIMEOUT_MS, oneOffAnswer, oneOffPrompt, oneOffRefusal } from "./one-off";
 import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
 import type { PlanLimits } from "../server/protocol";
@@ -187,6 +190,26 @@ function claudeVersionAtLeast(version: unknown, minPatch: number): boolean {
     return major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= minPatch)));
 }
 
+/**
+ * The harness's prompt hooks for the events Claude Code runs, in Claude Code's
+ * own settings format: it asks its own small model, as it would for one of
+ * its own prompt hooks. A model named as a harness model (provider:model) is
+ * left to Claude Code's default.
+ */
+export function claudePromptHooks(hooks: BackendTurn["hooks"]): { hooks?: Record<string, { matcher?: string; hooks: Record<string, unknown>[] }[]> } {
+    const out: Record<string, { matcher?: string; hooks: Record<string, unknown>[] }[]> = {};
+    for (const [event, list] of Object.entries(hooks ?? {}) as [string, HookConfig[]][]) {
+        const groups = list
+            .filter((h) => h.type === "prompt" && h.prompt)
+            .map((h) => ({
+                ...(h.matcher ? { matcher: h.matcher } : {}),
+                hooks: [{ type: "prompt", prompt: h.prompt, timeout: h.timeout ?? 30, ...(h.model && !h.model.includes(":") ? { model: h.model } : {}), ...(h.if ? { if: h.if } : {}), ...(h.statusMessage ? { statusMessage: h.statusMessage } : {}) }],
+            }));
+        if (groups.length) out[event] = groups;
+    }
+    return Object.keys(out).length ? { hooks: out } : {};
+}
+
 let requestSeq = 0;
 const requestId = () => `harness-${Date.now().toString(36)}-${(++requestSeq).toString(36)}`;
 
@@ -205,8 +228,36 @@ export class ClaudeCodeBackend implements AgentBackendClient {
 
     constructor(readonly def: ProviderDef) {}
 
-    async stream(): Promise<AssistantMessage> {
-        throw new ProviderError(`${this.def.name} runs whole turns with its own tools, so it can't answer one-off requests. Set smallModel to another provider's model for those.`);
+    /**
+     * A one-off request (a prompt hook, MCP sampling, a title): Claude Code
+     * answers it with its own model and sign-in, in a session of its own with
+     * no tools, settings, MCP servers or session file. Its token limit isn't
+     * one Claude Code takes, so maxTokens is left to the model.
+     */
+    async stream(req: ChatRequest): Promise<AssistantMessage> {
+        const refused = oneOffRefusal(this.def.name, req);
+        if (refused) throw refused;
+        const bin = requireCli(this.def.id, CLAUDE_CLI);
+        const model = req.model.id === "default" ? [] : ["--model", req.model.id];
+        const args = [...extraArgs(this.def.id), ...STREAM_ARGS, "--tools", "", "--disable-slash-commands", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence", "--system-prompt", req.system, ...model];
+        const proc = new JsonLinesProcess(bin, args, { cwd: homedir(), env: accountEnv(this.def.id, defaultAccount(this.def.id)) });
+        const kill = () => void proc.kill();
+        req.signal?.addEventListener("abort", kill, { once: true });
+        const timer = setTimeout(kill, ONE_OFF_TIMEOUT_MS);
+        try {
+            proc.send({ type: "user", message: { role: "user", content: [{ type: "text", text: oneOffPrompt(req) }] }, parent_tool_use_id: null, session_id: "" });
+            for await (const m of proc.messages()) {
+                if (m.type !== "result") continue;
+                if (m.is_error || m.subtype !== "success") throw new ProviderError(`${this.def.name}: ${cliMessage(String(m.result ?? m.subtype ?? "the request failed"))}`);
+                return oneOffAnswer(this.def.id, req.model.id, typeof m.result === "string" ? m.result : "");
+            }
+            if (req.signal?.aborted) throw new ProviderError("Interrupted");
+            throw new ProviderError(`${this.def.name} exited without answering${proc.stderr() ? `: ${cliMessage(proc.stderr())}` : ""}`);
+        } finally {
+            clearTimeout(timer);
+            req.signal?.removeEventListener("abort", kill);
+            void proc.kill();
+        }
     }
 
     /**
@@ -363,6 +414,8 @@ class ClaudeTurn {
     private finishing = false;
     /** The user was told the background sub-agents were stopped. */
     private toldStopped = false;
+    /** The harness's hooks registered with Claude Code, by the callback id it sends back. */
+    private hookCallbacks = new Map<string, { event: HookEvent; hook: HookConfig }>();
     /** The harness's skills, as a plugin folder (src/backends/native-skills.ts). */
     pluginDir?: string;
     /** Each sub-agent's type, by the id it asks permission with. */
@@ -426,12 +479,12 @@ class ClaudeTurn {
         if (mcp.strict) a.push("--strict-mcp-config");
         if (mcp.warning) this.host.emit({ type: "notice", level: "warn", message: mcp.warning });
         if (!t.readOnly) {
-            a.push("--settings", JSON.stringify({ permissions, fastMode, ...(sandbox ? { sandbox } : {}), ...mcp.settings }));
+            a.push("--settings", JSON.stringify({ permissions, fastMode, ...(sandbox ? { sandbox } : {}), ...mcp.settings, ...claudePromptHooks(this.t.hooks) }));
             return a;
         }
         // A read-only sub-agent: no edit tools, no MCP servers of its own, and every command asks (the harness lets read-only ones run).
         a.push("--disallowedTools", READ_ONLY_DENY.join(","));
-        const settings = { fastMode, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { ...sandbox, autoAllowBashIfSandboxed: false } };
+        const settings = { fastMode, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { ...sandbox, autoAllowBashIfSandboxed: false }, ...claudePromptHooks(this.t.hooks) };
         a.push("--settings", JSON.stringify(settings));
         return a;
     }
@@ -724,7 +777,7 @@ class ClaudeTurn {
             killTimer = setTimeout(() => void this.proc.kill(), stopTiming.interruptMs);
         };
         signal.addEventListener("abort", onAbort, { once: true });
-        this.proc.send({ type: "control_request", request_id: requestId(), request: { subtype: "initialize" } });
+        this.proc.send({ type: "control_request", request_id: requestId(), request: { subtype: "initialize", ...this.hookRegistration() } });
         // The prompt waits for the MCP server, so its first request has the harness's tools.
         void this.attach().then(() => this.aborted || this.sendUser(content, this.t.synthetic));
         try {
@@ -1244,9 +1297,44 @@ class ClaudeTurn {
         } else this.reason = "done";
     }
 
+    /**
+     * The harness's hooks for the events Claude Code runs itself, one matcher
+     * group per handler: Claude Code matches, runs them at once and merges
+     * their answers, calling back (hook_callback) for each.
+     */
+    private hookRegistration(): { hooks?: Record<string, { matcher?: string; hookCallbackIds: string[]; timeout?: number }[]> } {
+        if (!this.t.hooks || !this.host.hookHandler) return {};
+        const hooks: Record<string, { matcher?: string; hookCallbackIds: string[]; timeout?: number }[]> = {};
+        let n = 0;
+        for (const [event, list] of Object.entries(this.t.hooks) as [HookEvent, HookConfig[]][]) {
+            // Prompt hooks Claude Code runs itself, with its own model (claudePromptHooks).
+            const called = list.filter((hook) => hook.type !== "prompt");
+            if (!called.length) continue;
+            hooks[event] = called.map((hook) => {
+                const id = `harness_${n++}`;
+                this.hookCallbacks.set(id, { event, hook });
+                return { ...(hook.matcher ? { matcher: hook.matcher } : {}), hookCallbackIds: [id], timeout: hook.timeout ?? 60 };
+            });
+        }
+        return n ? { hooks } : {};
+    }
+
+    private async hookCallback(req: Record<string, any>): Promise<Record<string, unknown>> {
+        const cb = this.hookCallbacks.get(String(req.callback_id ?? ""));
+        if (!cb || !this.host.hookHandler) return {};
+        const input: Record<string, unknown> = req.input && typeof req.input === "object" ? req.input : {};
+        const r = await this.host.hookHandler(cb.event, cb.hook, input, this.t.signal);
+        return claudeCodeHookOutput(cb.event, r);
+    }
+
     private async onControlRequest(m: Record<string, any>) {
         const req = m.request ?? {};
         const reply = (response: Record<string, unknown>) => this.proc.send({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response } });
+        if (req.subtype === "hook_callback") {
+            // A hook that fails says nothing (the harness has shown why): Claude Code goes on as if it weren't there.
+            reply(await this.hookCallback(req).catch(() => ({})));
+            return;
+        }
         if (req.subtype !== "can_use_tool") {
             this.proc.send({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: `${String(req.subtype)} isn't supported by this host` } });
             return;
@@ -1291,7 +1379,7 @@ class ClaudeTurn {
         const reason = typeof req.decision_reason === "string" && req.decision_reason.trim() ? req.decision_reason : undefined;
         const agentType = typeof req.agent_id === "string" ? this.agentTypes.get(req.agent_id) : undefined;
         const a = await this.host.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ...(agentType ? { agentType } : {}) });
-        if (a.allow) return { behavior: "allow", updatedInput: raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
+        if (a.allow) return { behavior: "allow", updatedInput: a.updatedInput ?? raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
         return { behavior: "deny", message: a.message, interrupt: a.stop };
     }
 }

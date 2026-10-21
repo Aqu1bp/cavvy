@@ -24,6 +24,7 @@ import { loadImageFile, planPaste, prepareImage, readClipboardImage, type NamedI
 import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
 import { DELEGATE_TOOL } from "../agent/delegation";
 import { fireHooks, type HookEvent } from "../agent/hooks";
+import { sessionHookServices, sessionStartHooks } from "../agent/session-hooks";
 import { Notifier } from "./notify";
 import { Session } from "../agent/session";
 import { SessionSchedules } from "../agent/schedule-host";
@@ -116,6 +117,8 @@ export class App {
     checker: PermissionChecker;
     classifier: AutoClassifier;
     mcp: McpManager;
+    /** The servers' first start, which a SessionStart mcp_tool hook waits for (up to MCP_START_WAIT_MS). */
+    private mcpStarting: Promise<unknown> = Promise.resolve();
     files: FileIndex;
     listings: ProviderListing[] = [];
     model?: ModelInfo;
@@ -307,7 +310,7 @@ export class App {
         this.mcp.load();
         const approvals = this.mcp.needsApproval();
         if (approvals.length) this.notice(`This project's .mcp.json defines ${approvals.length} MCP server${approvals.length === 1 ? "" : "s"} (${approvals.map((s) => s.name).join(", ")}). Run /mcp to review and enable them.`, "info");
-        void this.mcp.startAll();
+        this.mcpStarting = this.mcp.startAll().catch(() => undefined);
 
         if (this.init.resumeFile) this.resume(this.init.resumeFile);
         else this.session = Session.create(this.cwd);
@@ -757,12 +760,20 @@ export class App {
     /** /clear or /resume: SessionEnd for the old session, then SessionStart for the new one. */
     private sessionSwitched(prev: Session, how: "clear" | "resume") {
         const id = this.session.meta.id;
-        void this.sessionHook("SessionEnd", { session_id: prev.meta.id, reason: how }).then(() => this.sessionHook("SessionStart", { session_id: id, source: how }));
+        const session = this.session;
+        const switched = this.sessionHook("SessionEnd", { session_id: prev.meta.id, reason: how }).then(() => (this.session === session ? this.sessionHook("SessionStart", { session_id: id, source: how }) : undefined));
+        // A prompt sent while SessionEnd still runs waits for SessionStart's context too.
+        session.hooksStarting = switched.catch(() => undefined);
     }
 
     /** SessionStart and SessionEnd hooks only inform: they run in the background, and problems show as notices. */
-    private sessionHook(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
-        return fireHooks(this.settings, event, { session_id: this.session?.meta.id, ...payload }, this.toolState.cwd, (msg) => this.notice(msg, "warn"), signal);
+    private async sessionHook(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
+        // SessionStart also loads memory files (InstructionsLoaded) and keeps its context for the first prompt.
+        if (event === "SessionStart") {
+            const warn = (msg: string, level: "info" | "warn" = "warn") => this.notice(msg, level);
+            return sessionStartHooks(this.settings, this.session, String(payload.source), this.toolState.cwd, warn, sessionHookServices({ session: () => this.session, warn, complete: this.client ? (s, p, sig) => this.complete(s, p, sig) : undefined, mcpTools: () => this.mcp.tools(), mcpReady: () => Promise.race([this.mcpStarting, Bun.sleep(MCP_START_WAIT_MS)]) }));
+        }
+        await fireHooks(this.settings, event, { session_id: this.session?.meta.id, ...payload }, this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level), signal);
     }
 
     private replayTranscript() {
@@ -2200,7 +2211,11 @@ export class App {
         const note = res.aborted ? "\n(interrupted)" : res.timedOut ? "\n(stopped after 2 minutes)" : "";
         const maxLines = this.verbose ? 200 : 20;
         this.screen.print((cols) => resultLines((out || "(no output)") + note, cols, maxLines, (s) => s));
-        if (res.newCwd) this.toolState.cwd = res.newCwd;
+        if (res.newCwd && res.newCwd !== this.toolState.cwd) {
+            const from = this.toolState.cwd;
+            this.toolState.cwd = res.newCwd;
+            void this.agent?.cwdChanged(from);
+        }
         // Let the model see it next turn.
         const text = `<bash-input>${cmd}</bash-input>\n<bash-stdout>${out.slice(0, 20_000)}</bash-stdout>${res.exitCode ? `\n<bash-exit-code>${res.exitCode}</bash-exit-code>` : ""}`;
         this.agent?.addReminder(`The user ran a shell command themselves (output shown to them):\n${text}`);
@@ -2482,6 +2497,8 @@ export interface QueuedDraft extends Draft {
     mode: FollowUp;
 }
 
+/** How long a startup hook waits for MCP servers to connect, as headless mode does. */
+const MCP_START_WAIT_MS = 15_000;
 const otherFollowUp = (m: FollowUp): FollowUp => (m === "steer" ? "queue" : "steer");
 
 /** One the running turn can take: not a command (it runs after), and without images (they get a turn of their own). */

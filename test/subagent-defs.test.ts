@@ -112,8 +112,8 @@ model: sonnet
 hooks:
   Nope: [{ command: x }]
   PreToolUse:
-    - type: http
-      url: https://example.com
+    - type: agent
+      prompt: x
     - matcher: Bash
 mcpServers:
   - broken: { args: [x] }`),
@@ -122,8 +122,39 @@ mcpServers:
         );
         for (const k of ["permissionMode", "effort", "maxTurns", "isolation", "background", "memory", "model", "hooks", "mcpServers"]) expect((d as any)[k]).toBeUndefined();
         const w = d.warnings!.join("\n");
-        for (const s of ['permissionMode "dontAsk"', 'effort "extreme"', 'maxTurns "-3"', 'isolation "container"', 'background "maybe"', 'memory "team"', 'model "sonnet"', 'unknown event "Nope"', '"http" hooks', "without a command", "mcpServers.broken"]) expect(w).toContain(s);
+        for (const s of ['permissionMode "dontAsk"', 'effort "extreme"', 'maxTurns "-3"', 'isolation "container"', 'background "maybe"', 'memory "team"', 'model "sonnet"', "Nope isn't a hook event", 'type "agent" isn\'t supported', "needs a command", "mcpServers.broken"]) expect(w).toContain(s);
         expect(d.name).toBe("bad");
+    });
+
+    test("hooks take every handler type settings do, read by the same rules (review of #173)", () => {
+        const d = parseAgentFile(
+            file(`name: h
+hooks:
+  PreToolUse:
+    - matcher: Bash
+      hooks:
+        - type: http
+          url: https://example.com/hook
+        - type: prompt
+          prompt: Refuse rm.
+        - type: mcp_tool
+          server: notes
+          tool: log
+        - type: command
+          command: ./guard.sh
+          args: [--strict]
+          if: Bash(rm *)
+          async: true
+  Stop:
+    - type: prompt
+      prompt: Is it done?`),
+            "h",
+            "user",
+        );
+        expect(d.warnings).toBeUndefined();
+        expect(d.hooks?.PreToolUse?.map((h) => h.type ?? "command")).toEqual(["http", "prompt", "mcp_tool", "command"]);
+        expect(d.hooks?.PreToolUse?.[3]).toMatchObject({ matcher: "Bash", command: "./guard.sh", args: ["--strict"], if: "Bash(rm *)", async: true });
+        expect(d.hooks?.SubagentStop).toEqual([expect.objectContaining({ type: "prompt", prompt: "Is it done?" })]);
     });
 
     test("line by line, YAML-style lists still work", () => {

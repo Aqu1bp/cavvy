@@ -4,6 +4,7 @@
 
 import { Agent, type AgentEvent } from "./agent/agent";
 import { fireHooks } from "./agent/hooks";
+import { sessionHookServices, sessionStartHooks } from "./agent/session-hooks";
 import { Session } from "./agent/session";
 import { buildSystemPrompt } from "./agent/system-prompt";
 import { loadSettings, type Effort, type Settings } from "./config/settings";
@@ -280,14 +281,16 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
         });
     }
 
-    const hookWarning = (m: string) => stderr(`warning: ${m}`);
-    const sessionStarted = fireHooks(settings, "SessionStart", { session_id: session.meta.id, source: resumed ? "resume" : "startup" }, o.cwd, hookWarning);
+    const hookWarning = (m: string, level: "info" | "warn" = "warn") => stderr(level === "info" ? m : `warning: ${m}`);
+    const sessionStarted = sessionStartHooks(settings, session, resumed ? "resume" : "startup", o.cwd, hookWarning, sessionHookServices({ session: () => session, warn: hookWarning, complete, mcpTools: () => mcp.tools() }));
     const ac = new AbortController();
     const onSig = () => ac.abort();
     process.on("SIGINT", onSig);
     process.on("SIGTERM", onSig);
     let reason: string;
     try {
+        // What SessionStart hooks add goes with this one prompt, so it waits for them.
+        if (settings.hooks?.SessionStart?.length) await sessionStarted;
         // `-p "/name args"` runs a skill, and $name brings one along, as in the TUI; a skill's own text has no @mentions to attach.
         const slash = slashCommand(o.prompt);
         // Claude Code and Codex are sent the prompt as it is, and run the skills it names themselves.
