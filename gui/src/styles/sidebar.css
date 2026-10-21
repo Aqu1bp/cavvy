@@ -602,11 +602,14 @@
     color: var(--rail-fg-2);
 }
 
-/* The Settings rail's footer (Settings.tsx): where the server runs. */
+/* The Settings rail's footer (Settings.tsx): where the server runs, its dot where the ring would be. */
 .side-foot-text {
-    flex: 1;
     min-width: 0;
     color: var(--rail-fg-2);
+}
+
+.side-foot > .conn {
+    margin: 0 9.5px;
 }
 
 .sidebar .conn {

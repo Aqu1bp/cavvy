@@ -116,7 +116,7 @@
     color: var(--fg);
 }
 
-.proj .sl {
+.proj .proj-sep {
     margin: 0 6px;
     color: var(--fg-4);
 }

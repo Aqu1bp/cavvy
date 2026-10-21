@@ -192,7 +192,7 @@ export function Header(p: { handle?: SessionHandle }) {
                         {/* With the rail hidden, the project goes before the title (and starts a session in it). */}
                         <button class="proj" title={`New session in ${s().projectName}`} onClick={() => newSession(s().cwd)}>
                             <span class="truncate">{s().projectName}</span>
-                            <span class="sl" aria-hidden="true">/</span>
+                            <span class="proj-sep" aria-hidden="true">/</span>
                         </button>
                         <Show
                             when={!editing()}
