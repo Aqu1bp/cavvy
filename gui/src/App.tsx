@@ -374,8 +374,24 @@ export function App() {
                 interrupt();
             }
         };
+        // The rail's drawer is over the session: Esc closes it, and a request card behind it
+        // (which listens first, in the capture phase) doesn't take Esc or its number keys meanwhile.
+        // Registered before any card's, so it runs first.
+        const drawerKeys = (e: KeyboardEvent) => {
+            if (!railOpen() || e.metaKey || e.ctrlKey || e.altKey || blocked()) return;
+            if ((e.target as HTMLElement | null)?.matches?.("input, textarea, select, [contenteditable]")) return;
+            if (e.key === "Escape") {
+                e.preventDefault();
+                setRailOpen(false);
+            } else if (!/^[0-9]$/.test(e.key)) return;
+            e.stopImmediatePropagation();
+        };
+        window.addEventListener("keydown", drawerKeys, true);
         window.addEventListener("keydown", onKey);
-        onCleanup(() => window.removeEventListener("keydown", onKey));
+        onCleanup(() => {
+            window.removeEventListener("keydown", drawerKeys, true);
+            window.removeEventListener("keydown", onKey);
+        });
         // Highlighting is ready by the time the first reply arrives.
         setTimeout(warmUp, 1500);
     });
