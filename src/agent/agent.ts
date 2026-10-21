@@ -1564,7 +1564,7 @@ export class Agent {
 
     /** After compaction, as in Claude Code: SessionStart (source compact) and the memory files' InstructionsLoaded; their context goes with the next prompt. */
     private compacted(): Promise<void> {
-        return sessionStartHooks(this.o.settings(), this.session, "compact", this.state.cwd, (msg, level = "warn") => this.emit({ type: "notice", level, message: msg }));
+        return sessionStartHooks(this.o.settings(), this.session, "compact", this.state.cwd, (msg, level = "warn") => this.emit({ type: "notice", level, message: msg }), this.hookServices());
     }
 
     /**

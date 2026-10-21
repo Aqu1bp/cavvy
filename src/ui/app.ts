@@ -21,7 +21,7 @@ import { loadImageFile, planPaste, prepareImage, readClipboardImage, type NamedI
 import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
 import { DELEGATE_TOOL } from "../agent/delegation";
 import { fireHooks, type HookEvent } from "../agent/hooks";
-import { sessionStartHooks } from "../agent/session-hooks";
+import { sessionHookServices, sessionStartHooks } from "../agent/session-hooks";
 import { Notifier } from "./notify";
 import { Session } from "../agent/session";
 import { SessionSchedules } from "../agent/schedule-host";
@@ -703,7 +703,10 @@ export class App {
     /** SessionStart and SessionEnd hooks only inform: they run in the background, and problems show as notices. */
     private async sessionHook(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
         // SessionStart also loads memory files (InstructionsLoaded) and keeps its context for the first prompt.
-        if (event === "SessionStart") return sessionStartHooks(this.settings, this.session, String(payload.source), this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level));
+        if (event === "SessionStart") {
+            const warn = (msg: string, level: "info" | "warn" = "warn") => this.notice(msg, level);
+            return sessionStartHooks(this.settings, this.session, String(payload.source), this.toolState.cwd, warn, sessionHookServices({ session: () => this.session, warn, complete: this.client ? (s, p, sig) => this.complete(s, p, sig) : undefined, mcpTools: () => this.mcp.tools() }));
+        }
         await fireHooks(this.settings, event, { session_id: this.session?.meta.id, ...payload }, this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level), signal);
     }
 

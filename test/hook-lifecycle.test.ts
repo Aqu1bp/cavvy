@@ -14,7 +14,7 @@ const { Session } = await import("../src/agent/session");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { TaskTool } = await import("../src/tools/meta-tools");
 const { BashTool } = await import("../src/tools/bash");
-const { sessionStartHooks } = await import("../src/agent/session-hooks");
+const { sessionHookServices, sessionStartHooks } = await import("../src/agent/session-hooks");
 const trust = await import("../src/config/trust");
 import type { ChatRequest } from "../src/providers/types";
 
@@ -378,6 +378,33 @@ describe("SessionStart and the first turn (review of #173)", () => {
         await until(() => lines(out).length >= 2);
         expect(lines(out).map((l) => l.file_path)).toEqual([watched, added]);
         await agent.dispose();
+    });
+});
+
+describe("SessionStart and InstructionsLoaded hooks get what other events' do (review of #173)", () => {
+    test("an mcp_tool handler reaches the session's MCP tools, and an async one's context goes with the next prompt", async () => {
+        const proj = tempDir();
+        mkdirSync(join(proj, ".git"));
+        writeFileSync(join(proj, "AGENTS.md"), "Use tabs.\n");
+        trust.trustFolder(proj);
+        const calls: any[] = [];
+        const mcpTool = { name: "mcp__notes__log", category: "mcp", run: async (input: any) => (calls.push(input), { content: "logged" }) };
+        const settings = {
+            autoCompact: false,
+            hooks: {
+                SessionStart: [{ type: "mcp_tool", server: "notes", tool: "log", input: { source: "${source}" } }, { command: "sleep 0.1; echo '{\"additionalContext\":\"from the background\"}'", async: true }],
+                InstructionsLoaded: [{ type: "mcp_tool", server: "notes", tool: "log", input: { file: "${file_path}" } }],
+            },
+        };
+        const { agent, session, requests } = agentFor(proj, settings, () => text("ok"));
+        const warnings: string[] = [];
+        const warn = (m: string) => void warnings.push(m);
+        await sessionStartHooks(settings as any, session, "startup", proj, warn, sessionHookServices({ session: () => session, warn, mcpTools: () => [mcpTool as any] }));
+        expect(warnings).toEqual([]);
+        expect(calls).toEqual(expect.arrayContaining([{ source: "startup" }, { file: join(proj, "AGENTS.md") }]));
+        await until(() => session.hookContext.some((c) => c.includes("from the background")));
+        await run(agent, "hi");
+        expect(JSON.stringify(requests[0]!.messages.at(-1).content)).toContain("from the background");
     });
 });
 

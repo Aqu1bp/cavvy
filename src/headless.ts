@@ -4,7 +4,7 @@
 
 import { Agent, type AgentEvent } from "./agent/agent";
 import { fireHooks } from "./agent/hooks";
-import { sessionStartHooks } from "./agent/session-hooks";
+import { sessionHookServices, sessionStartHooks } from "./agent/session-hooks";
 import { Session } from "./agent/session";
 import { buildSystemPrompt } from "./agent/system-prompt";
 import { loadSettings, type Effort, type Settings } from "./config/settings";
@@ -280,7 +280,7 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
     }
 
     const hookWarning = (m: string, level: "info" | "warn" = "warn") => stderr(level === "info" ? m : `warning: ${m}`);
-    const sessionStarted = sessionStartHooks(settings, session, resumed ? "resume" : "startup", o.cwd, hookWarning);
+    const sessionStarted = sessionStartHooks(settings, session, resumed ? "resume" : "startup", o.cwd, hookWarning, sessionHookServices({ session: () => session, warn: hookWarning, complete, mcpTools: () => mcp.tools() }));
     const ac = new AbortController();
     const onSig = () => ac.abort();
     process.on("SIGINT", onSig);

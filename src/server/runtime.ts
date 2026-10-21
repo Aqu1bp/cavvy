@@ -12,7 +12,7 @@ import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse
 import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, rewindTargets, untrackedChangesNote, type RestoreItem } from "../agent/checkpoints";
 import { beforeFork, forkCut, forkTargets } from "../agent/fork";
 import { fireHooks, type HookEvent } from "../agent/hooks";
-import { sessionStartHooks } from "../agent/session-hooks";
+import { sessionHookServices, sessionStartHooks } from "../agent/session-hooks";
 import { Session } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { INIT_PROMPT, reviewPrompt } from "../commands/index";
@@ -321,7 +321,8 @@ export class Runtime {
         this.ready = this.track(this.initModel());
         // Saved schedules come back once there's a model to run them with.
         void this.ready.then(() => !this.closed && this.schedules.restore(), () => undefined);
-        void sessionStartHooks(this.settings(), session, opts.resumed ? "resume" : "startup", this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level));
+        const warn = (msg: string, level: "info" | "warn" = "warn") => this.notice(msg, level);
+        void sessionStartHooks(this.settings(), session, opts.resumed ? "resume" : "startup", this.toolState.cwd, warn, sessionHookServices({ session: () => this.session, warn, complete: (s, p, sig) => this.complete(s, p, sig), mcpTools: () => this.ws.mcp.tools() }));
     }
 
     get id(): string {
