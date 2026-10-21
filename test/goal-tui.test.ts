@@ -228,3 +228,29 @@ test("a CLI's goal ending is said once, as it ends, not when a later run reports
     expect(text().match(/✓ Goal achieved: ship it/g)).toHaveLength(1);
     expect(app.nativeGoal).toBeUndefined();
 });
+
+test("a CLI's goal doesn't follow /clear or /resume into another session", async () => {
+    const { app } = testApp([]);
+    const first = app.session;
+    (app as any).nativeGoalReported({ provider: "codex", condition: "ship it", status: "active", since: Date.now() });
+    expect(app.nativeGoal).toMatchObject({ condition: "ship it" });
+    app.newSession();
+    expect(app.nativeGoal).toBeUndefined();
+    (app as any).nativeGoalReported({ provider: "codex", condition: "ship it", status: "active", since: Date.now() });
+    app.resume(first);
+    expect(app.nativeGoal).toBeUndefined();
+});
+
+test("/goal clear mid-turn also takes out a /goal still waiting in the queue", async () => {
+    const { app, text } = testApp([]);
+    (app as any).busy = true;
+    await app.submitText("/goal the docs build");
+    await app.submitText("and then this");
+    expect((app as any).queued.map((d: any) => d.text)).toEqual(["/goal the docs build", "and then this"]);
+    app.goal!.set("ship it");
+    await app.submitText("/goal clear");
+    expect(text()).toContain("Goal cleared: ship it. The queued /goal the docs build was taken out too.");
+    expect((app as any).queued.map((d: any) => d.text)).toEqual(["and then this"]);
+    expect(app.goal!.active).toBe(false);
+    (app as any).busy = false;
+});

@@ -289,6 +289,9 @@ function readOnlyRefusal(toolName: string, command?: string, why?: string): stri
 /** For a backend whose last turn was stopped without its knowing (Harness was closed or died while it worked). */
 const BACKEND_CUT_OFF = "Your last turn in this session was cut off: Harness stopped while you were working (it was closed, or it crashed), so that turn may not have finished what it set out to do.";
 
+/** A /goal command, which a CLI backend runs as its own. */
+const GOAL_COMMAND = /^\s*\/goal(\s|$)/i;
+
 function reminder(text: string): TextPart {
     return { type: "text", text: `<system-reminder>\n${text}\n</system-reminder>` };
 }
@@ -524,7 +527,9 @@ export class Agent {
         // Delegated tasks that ended during a turn on another model (not a backend's) go with this prompt.
         this.deliverTasks(false);
         const parts: UserContent[] = [...content];
-        for (const r of this.pendingReminders.splice(0)) parts.push(reminder(r.text));
+        // A /goal to Claude Code or Codex is their own command, sent as typed: Harness's notes wait for the next prompt.
+        const goalCommand = isAgentBackend(this.client) && GOAL_COMMAND.test(promptText);
+        for (const r of goalCommand ? [] : this.pendingReminders.splice(0)) parts.push(reminder(r.text));
         const prompt = this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint } });
         this.prompted = true;
 
@@ -1232,6 +1237,10 @@ export class Agent {
         const base = this.backendTurn(signal, host);
         let stopRounds = 0;
         let prompt = text;
+        // The conversation so far goes beside a /goal (goalContext), so the command stays the whole prompt.
+        const goalCommand = GOAL_COMMAND.test(text);
+        const toSend = (r?: { synced: number }) =>
+            goalCommand && prompt === text ? { prompt, goalContext: this.backendPrompt("", promptIndex, r).trim() || undefined } : { prompt: this.backendPrompt(prompt, promptIndex, r) };
         let promptImages = images;
         let promptDocuments = documents;
         while (true) {
@@ -1240,12 +1249,12 @@ export class Agent {
             let result: BackendResult;
             try {
                 // A sub-agent kept going (a Stop hook) takes up a speed change since.
-                result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex, resume), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork });
+                result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...toSend(resume), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork });
                 if (result.resumeFailed) {
                     // Gone, or made in another folder: start a new one with this conversation as context.
                     this.session.forgetBackendSession(provider);
                     this.emit({ type: "notice", level: "warn", message: `${redact(result.error ?? `Couldn't continue the earlier ${name} session`)}. Starting a new one with this conversation as context.` });
-                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex), images: promptImages, documents: promptDocuments, resumeId: undefined });
+                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...toSend(), images: promptImages, documents: promptDocuments, resumeId: undefined });
                 }
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);

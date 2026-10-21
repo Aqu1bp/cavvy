@@ -74,7 +74,7 @@ async function makeAgent(provider: "claude-code" | "codex", session = Session.cr
     const run = (text: string, signal = new AbortController().signal) => agent.run([{ type: "text", text }], { signal });
     const goals = () => events.flatMap((e) => (e.type === "goal" ? [e.goal] : []));
     const notices = () => events.flatMap((e) => (e.type === "notice" ? [e.message] : []));
-    return { agent, events, run, goals, notices, session };
+    return { agent, events, run, goals, notices, session, setMode: (m: typeof mode) => (mode = m) };
 }
 
 describe("parsing what the CLIs report", () => {
@@ -119,6 +119,26 @@ describe("Claude Code", () => {
         expect(g[1]).toMatchObject({ status: "active", turns: 1, lastReason: "The tests haven't run yet." });
         expect(g.at(-1)).toMatchObject({ status: "complete", turns: 2, lastReason: "The tests pass." });
         expect(g).toHaveLength(3);
+    });
+
+    test("/goal stays the whole prompt: Harness's notes wait, and an earlier conversation goes beside it", async () => {
+        const session = Session.create(cwd, { persist: false });
+        session.push({ role: "user", content: [{ type: "text", text: "the API is in src/api" }] });
+        session.push({ role: "assistant", content: [{ type: "text", text: "Noted." }] });
+        const a = await makeAgent("claude-code", session);
+        a.agent.addReminder("The permission mode is now Plan.");
+        expect(await a.run("/goal the tests pass")).toBe("done");
+        const sent = received().filter((m) => m.type === "user").map((m) => m.message.content.find((c: any) => c.type === "text")?.text);
+        expect(sent[0]).toBe("/goal the tests pass");
+        expect(a.goals()[0]).toMatchObject({ condition: "the tests pass" });
+        const argv = received().length ? (readFileSync(LOG, "utf-8").trim().split("\n").map((l) => JSON.parse(l)).find((l: any) => l.argv)?.argv as string[]) : [];
+        const system = argv[argv.indexOf("--append-system-prompt") + 1];
+        expect(system).toContain("<conversation-so-far>");
+        expect(system).toContain("the API is in src/api");
+        // The note goes with the next prompt.
+        expect(await a.run("go on")).toBe("done");
+        const next = received().filter((m) => m.type === "user").map((m) => m.message.content.map((c: any) => c.text ?? "").join("\n")).at(-1);
+        expect(next).toContain("The permission mode is now Plan.");
     });
 
     test("judged impossible is said; its remote sessions' own reports aren't doubled", async () => {
@@ -226,6 +246,8 @@ describe("Codex", () => {
         expect(goalsFile["thr-new"].status).toBe("paused");
         expect(await a.run("/goal")).toBe("done");
         expect(a.notices().at(-1)).toBe("◎ Goal (Codex, paused): migrate the API");
+        // Status keeps showing it.
+        expect(a.goals().at(-1)).toMatchObject({ status: "paused", condition: "migrate the API" });
         // Resume: a turn of its own here, under the mode as it is now (as T3 Code's), made active once it has
         // started; then Codex carries it on to the end.
         process.env.FAKE_GOAL_TURNS = "2";
@@ -241,6 +263,27 @@ describe("Codex", () => {
         expect(a.notices().at(-1)).toBe("Goal cleared: migrate the API");
         expect(await a.run("/goal pause")).toBe("done");
         expect(a.notices().at(-1)).toBe("No goal set. /goal <condition> sets one.");
+    });
+
+    test("/goal resume with a note waiting stays a resume, and /goal after another model sets just the condition", async () => {
+        process.env.FAKE_GOAL_TURNS = "1";
+        const session = Session.create(cwd, { persist: false });
+        session.push({ role: "user", content: [{ type: "text", text: "the API is in src/api" }] });
+        session.push({ role: "assistant", content: [{ type: "text", text: "Noted." }] });
+        const a = await makeAgent("codex", session);
+        a.agent.addReminder("The permission mode is now Plan.");
+        expect(await a.run("/goal the docs build")).toBe("done");
+        const sets = received().filter((m) => m.method === "thread/goal/set").map((m) => m.params);
+        expect(sets[0]).toMatchObject({ objective: "the docs build", status: "paused" });
+        const turnText = received().find((m) => m.method === "turn/start")!.params.input[0].text as string;
+        expect(turnText).toContain("the API is in src/api");
+        expect(turnText).toEndWith("the docs build");
+        expect(await a.run("/goal pause")).toBe("done");
+        a.agent.addReminder("The permission mode is now Plan.");
+        expect(await a.run("/goal resume")).toBe("done");
+        // Still the docs goal: the note didn't turn the resume into a new goal.
+        const objectives = received().filter((m) => m.method === "thread/goal/set" && m.params.objective).map((m) => m.params.objective);
+        expect(objectives).toEqual(["the docs build"]);
     });
 
     test("a message sent as Codex starts the goal's next turn goes into that turn, not a turn of its own", async () => {
@@ -262,6 +305,22 @@ describe("Codex", () => {
         expect(a.goals().at(-1)).toMatchObject({ status: "complete" });
     });
 
+    test("a message sent while waiting for Codex's next goal turn goes into that turn, not the one after", async () => {
+        process.env.FAKE_GOAL_TURNS = "3";
+        process.env.FAKE_TURN_MS = "80";
+        process.env.FAKE_GOAL_CONTINUE_MS = "100";
+        const queue: string[] = [];
+        const a = await makeAgent("codex", undefined, queue);
+        const done = a.run("/goal the docs build");
+        const until = Date.now() + 5000;
+        while (!a.goals().some((g) => g?.status === "active" && g.tokens === 150) && Date.now() < until) await Bun.sleep(2);
+        queue.push("also fix the links");
+        a.agent.queueChanged();
+        expect(await done).toBe("done");
+        const steer = received().find((m) => m.method === "turn/steer");
+        expect(steer?.params).toMatchObject({ expectedTurnId: "turn-2", input: [{ text: "also fix the links" }] });
+    });
+
     test("one Codex refuses because it started the goal's turn first: the message goes into that turn", async () => {
         process.env.FAKE_GOAL_TURNS = "3";
         process.env.FAKE_GOAL_RACE = "1";
@@ -275,6 +334,23 @@ describe("Codex", () => {
         expect(await done).toBe("done");
         expect(a.notices().filter((n) => /a turn is already running/.test(n))).toEqual([]);
         expect(received().find((m) => m.method === "turn/steer")?.params.input[0].text).toBe("also fix the links");
+        expect(a.goals().at(-1)).toMatchObject({ status: "complete" });
+    });
+
+    test("a mode changed between the goal's turns applies to the next one Codex starts (it's restarted under it)", async () => {
+        process.env.FAKE_GOAL_TURNS = "4";
+        process.env.FAKE_GOAL_CONTINUE_MS = "150";
+        const a = await makeAgent("codex");
+        const done = a.run("/goal the docs build");
+        const until = Date.now() + 5000;
+        // The first turn has ended (one counted), and Codex hasn't started its next yet.
+        while (!a.goals().some((g) => g?.status === "active" && g.tokens === 150) && Date.now() < until) await Bun.sleep(2);
+        a.setMode("plan");
+        expect(await done).toBe("done");
+        const starts = received().filter((m) => m.method === "turn/start");
+        expect(starts.at(-1)!.params.sandboxPolicy).toMatchObject({ type: "readOnly" });
+        expect(starts.at(-1)!.params.input[0].text).toContain("plan mode");
+        // The goal went on after the restart.
         expect(a.goals().at(-1)).toMatchObject({ status: "complete" });
     });
 

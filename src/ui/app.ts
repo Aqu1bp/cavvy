@@ -21,7 +21,7 @@ import { loadImageFile, planPaste, prepareImage, readClipboardImage, type NamedI
 import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
 import { DELEGATE_TOOL } from "../agent/delegation";
 import { fireHooks, type HookEvent } from "../agent/hooks";
-import { backgroundWork, canAnswerOneOff, GoalController, limitedCodexGoal, loopGoalDropped, nativeGoalEnd, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, sessionTokens, type NativeGoal } from "../agent/goal";
+import { backgroundWork, canAnswerOneOff, GoalController, limitedCodexGoal, loopGoalDropped, nativeGoalEnd, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, queuedGoalSet, sessionTokens, type NativeGoal } from "../agent/goal";
 import { Notifier } from "./notify";
 import { Session } from "../agent/session";
 import { SessionSchedules } from "../agent/schedule-host";
@@ -711,6 +711,8 @@ export class App {
         if (this.goalSession === this.session) return;
         this.goal?.dispose();
         this.goalSession = this.session;
+        // A CLI's own goal was the last session's: this one's comes with its next turn.
+        this.nativeGoal = undefined;
         const session = this.session;
         this.goal = new GoalController({
             session,
@@ -755,6 +757,18 @@ export class App {
     /** A goal check or retry is coming: the session isn't free for other automatic prompts (scheduled ones). */
     goalPending(): boolean {
         return this.goal?.pending() ?? false;
+    }
+
+    /** /goal clear: a /goal <condition> sent mid-turn, still waiting in the queue, goes too. Their conditions. */
+    dropQueuedGoals(): string[] {
+        const dropped = this.queued.flatMap((d) => {
+            const c = queuedGoalSet(plainText(d.text));
+            return c === undefined ? [] : [{ d, c }];
+        });
+        if (!dropped.length) return [];
+        this.queued = this.queued.filter((d) => !dropped.some((x) => x.d === d));
+        this.queueUpdated();
+        return dropped.map((x) => x.c);
     }
 
     /** Claude Code's or Codex's own goal, as it last reported it (src/agent/goal.ts NativeGoal). */

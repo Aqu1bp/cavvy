@@ -98,6 +98,8 @@ export interface BackendTurn {
     /** The CLI config folder selection; omitted means its Default account. */
     accountId?: string;
     prompt: string;
+    /** With a /goal command as the prompt: what Harness would have put before it (the conversation so far), kept apart. */
+    goalContext?: string;
     images: ImagePart[];
     /** PDFs, for a backend that reads them (Claude Code); others get a note in the prompt instead. */
     documents?: PdfPart[];

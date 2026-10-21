@@ -117,6 +117,27 @@ test("/goal status, pause, resume and clear answer at once, even mid-turn, and a
     }
 });
 
+test("/goal clear mid-turn also takes out a /goal still waiting in the queue", async () => {
+    const engine = new Engine({ listModels: async () => [] });
+    try {
+        const rt = await engine.createSession(realpathSync(tempDir("goal-cmd-")), { mode: "bypassPermissions" });
+        await rt.ready;
+        void rt.send("pause for a moment");
+        await until(() => rt.busy);
+        expect((await rt.send("/goal goaldemo: tests pass")).queued).toBe(true);
+        expect((await rt.send("and then this")).queued).toBe(true);
+        expect((await rt.send("/goal clear")).queued).toBe(false);
+        expect(notices(rt).at(-1)).toBe("Took the queued /goal goaldemo: tests pass out of the queue.");
+        expect(rt.snapshot().state.queued).toEqual(["and then this"]);
+        await until(() => !rt.busy && !rt.snapshot().state.queued.length);
+        await Bun.sleep(50);
+        expect(rt.snapshot().state.goal).toBeUndefined();
+        expect(rt.snapshot().turns.filter((t) => t.prompt).map((t) => t.prompt!.text)).toEqual(["pause for a moment", "and then this"]);
+    } finally {
+        await engine.stop();
+    }
+});
+
 test("an interrupt pauses the goal; the user's next message picks it up", async () => {
     const engine = new Engine({ listModels: async () => [] });
     try {

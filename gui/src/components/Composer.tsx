@@ -25,6 +25,7 @@ import { composerStorage } from "../lib/drafts";
 import { composingKey, revealMenuOption } from "../lib/composer-menu";
 import { matchSkills, skillToken } from "../lib/commands";
 import { firstSendable, followUpFor, otherFollowUp } from "../lib/queue";
+import { canStop } from "../lib/session-status";
 import { QueueTab } from "./QueueTab";
 
 /** `mention`: a skill picked from the $ menu, which goes in where the $ is. */
@@ -336,7 +337,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 else sendFirstQueued();
                 return;
             case "app:interrupt":
-                if (!busy()) return;
+                if (!canStop(st())) return;
                 e.preventDefault();
                 interrupt(p.sessionId);
                 return;
@@ -591,7 +592,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     </button>
                     <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} />
                     <Show
-                        when={busy() && !hasContent()}
+                        when={canStop(st()) && !hasContent()}
                         fallback={
                             <button
                                 class={`send ${(runPicks()?.length ?? 0) >= 2 ? "wide" : ""} ${busy() ? `mid-${shown()}` : ""}`}
@@ -608,7 +609,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                             </button>
                         }
                     >
-                        <button class="send stop" onClick={() => interrupt(p.sessionId)} title="Stop (Esc)" aria-label="Stop">
+                        <button class="send stop" onClick={() => interrupt(p.sessionId)} title={busy() ? "Stop (Esc)" : "Pause the goal (Esc)"} aria-label={busy() ? "Stop" : "Pause the goal"}>
                             <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
                                 <rect x="1" y="1" width="10" height="10" rx="2.5" fill="currentColor" />
                             </svg>

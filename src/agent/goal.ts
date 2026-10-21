@@ -522,6 +522,20 @@ export function nativeGoalView(g: NativeGoal, running: boolean): GoalState {
     };
 }
 
+/** A message waiting in the queue that sets a goal: its condition. */
+export function queuedGoalSet(text: string): string | undefined {
+    const m = text.trim().match(/^\/goal(?:\s+([\s\S]*))?$/i);
+    const c = m ? parseGoalCommand(m[1] ?? "") : undefined;
+    return c?.kind === "set" ? c.condition : undefined;
+}
+
+/** /goal clear: what's said, a /goal <condition> still waiting in the queue (taken out with it) included. */
+export function goalClearedNotice(was: string | undefined, dropped: string[]): string {
+    const queued = dropped.map((c) => `/goal ${clip(c, 200)}`).join(", ");
+    if (!dropped.length) return was ? `Goal cleared: ${was}` : "No goal set";
+    return was ? `Goal cleared: ${was}. The queued ${queued} was taken out too.` : `Took the queued ${queued} out of the queue.`;
+}
+
 /** The loop's goal, cleared on a switch to Claude Code or Codex (or a session reopened on one). */
 export function loopGoalDropped(condition: string, provider: string): string {
     const by = NATIVE_NAMES[provider as NativeGoal["provider"]] ?? provider;

@@ -61,7 +61,7 @@ import { childEnv } from "../util/env";
 import { expandCommand, type CustomCommand } from "./custom";
 import { claudeCodeRuns, formatSkill, loadSkills, sameSkills, skillRoots, type Skill } from "../agent/skills";
 import { rewindCommand } from "./rewind";
-import { GoalController, goalSummary, parseGoalCommand } from "../agent/goal";
+import { GoalController, goalClearedNotice, goalSummary, parseGoalCommand } from "../agent/goal";
 import { checkAgentCli, vendorOf, type AgentCliStatus } from "../backends/index";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { account, addAccount, listAccounts } from "../providers/accounts";
@@ -2111,7 +2111,8 @@ async function goalCommand(app: App, args: string, draft?: Draft) {
             return app.print(() => goalStatusLines(goal));
         case "clear": {
             const was = goal.clear();
-            return app.notice(was ? `Goal cleared: ${was}` : "No goal set");
+            // A new goal sent mid-turn waits in the queue: cleared with it, not set after.
+            return app.notice(goalClearedNotice(was, app.dropQueuedGoals()));
         }
         case "pause":
             if (!goal.active) return app.notice("No goal set");

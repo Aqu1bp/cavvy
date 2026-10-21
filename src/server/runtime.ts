@@ -13,7 +13,7 @@ import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse
 import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, rewindTargets, untrackedChangesNote, type RestoreItem } from "../agent/checkpoints";
 import { beforeFork, forkCut, forkTargets } from "../agent/fork";
 import { fireHooks, type HookEvent } from "../agent/hooks";
-import { backgroundWork, canAnswerOneOff, GoalController, limitedCodexGoal, loopGoalDropped, nativeGoalEnd, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, sessionTokens, type NativeGoal } from "../agent/goal";
+import { backgroundWork, canAnswerOneOff, GoalController, goalClearedNotice, limitedCodexGoal, loopGoalDropped, nativeGoalEnd, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, queuedGoalSet, sessionTokens, type NativeGoal } from "../agent/goal";
 import { Session } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { INIT_PROMPT, reviewPrompt } from "../commands/index";
@@ -995,7 +995,13 @@ export class Runtime {
             }
             case "clear": {
                 const was = this.goal.clear();
-                return this.notice(was ? `Goal cleared: ${was}` : "No goal set");
+                // A new goal sent mid-turn waits in the queue: cleared with it, not set after.
+                const dropped = this.queued.filter((q) => !q.literal && queuedGoalSet(q.text) !== undefined);
+                if (dropped.length) {
+                    this.queued = this.queued.filter((q) => !dropped.includes(q));
+                    this.queueUpdated();
+                }
+                return this.notice(goalClearedNotice(was, dropped.map((q) => queuedGoalSet(q.text)!)));
             }
             case "pause":
                 if (!this.goal.active) return this.notice("No goal set");

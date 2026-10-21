@@ -10,6 +10,7 @@ import { composingKey, revealMenuOption } from "../../gui/src/lib/composer-menu"
 import { matchSkills, skillToken } from "../../gui/src/lib/commands";
 import { createRunSheet, type RunRequest } from "../../gui/src/lib/run-sheet";
 import { firstSendable, followUpFor, otherFollowUp } from "../../gui/src/lib/queue";
+import { canStop } from "../../gui/src/lib/session-status";
 import type { RunResult } from "../../src/server/protocol";
 import { applyKeybindingsFile, keymap, matchKey, shortcut, withShortcut } from "../../gui/src/state/keybindings";
 import { eventStrokes } from "../../gui/src/lib/keystrokes";
@@ -57,13 +58,15 @@ const replies: ReturnType<typeof Promise.withResolvers<string[]>>[] = [];
 let sends = 0;
 let commandLists = 0;
 const noop = () => undefined;
-const components = Object.fromEntries(["ArrowUp", "CornerDownRight", "QueueTab", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "Sparkles", "SquareTerminal", "X", "ModelPicker", "FastModeToggle", "EffortMenu", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring"].map((key) => [key, noop]));
+const components = Object.fromEntries(["ArrowUp", "CornerDownRight", "QueueTab", "GoalTab", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "Sparkles", "SquareTerminal", "X", "ModelPicker", "FastModeToggle", "EffortMenu", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring"].map((key) => [key, noop]));
 const [working, setWorking] = solid.createSignal(false);
-const sessionState = { cwd: "/workspace", queued: ["joins", "waits"], queueIds: [1, 2], queuedModes: ["steer", "queue"], interactions: [], model: {}, get busy() { return working(); } };
+const [goal, setGoal] = solid.createSignal<any>();
+const sessionState = { cwd: "/workspace", queued: ["joins", "waits"], queueIds: [1, 2], queuedModes: ["steer", "queue"], interactions: [], model: {}, get busy() { return working(); }, get goal() { return goal(); } };
+let interrupts = 0;
 const sent: { text: string; followUp?: string }[] = [];
 const calls: { method: string; params: any }[] = [];
 const appState = { conn: "open", homeCwd: "/workspace", settings: {} as { followUpBehavior?: string }, models: [] };
-const deps = { ...solid, ...components, renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, firstSendable, followUpFor, otherFollowUp, keymap, matchKey, withShortcut, shortcut, eventStrokes,
+const deps = { ...solid, ...components, renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, firstSendable, followUpFor, otherFollowUp, canStop, keymap, matchKey, withShortcut, shortcut, eventStrokes,
     comparePicks, setComparePicks, startRun: runSheet.startRun,
     createLifetimeGuard: () => (fn: any) => fn, wasDeleted: () => false,
     app: appState,
@@ -71,7 +74,7 @@ const deps = { ...solid, ...components, renderer, createComposerDraft, composerS
     contextCardOpen: () => false, setContextCardOpen: noop, contextView: () => ({ ring: false }),
     focusComposer: () => 0, modelPickerOpen: () => false, modePickerOpen: () => false,
     setModelPickerOpen: noop, setModePickerOpen: noop, blockedBy: () => false,
-    prefs: { enterSends: true }, mod: "⌘", isMod: (e: any) => e.metaKey, interrupt: noop,
+    prefs: { enterSends: true }, mod: "⌘", isMod: (e: any) => e.metaKey, interrupt: () => void interrupts++,
     send: async (text: string, _attachments: unknown[], opts: { accepted: (id: string) => void; followUp?: string }) => { sends++; sent.push({ text, followUp: opts.followUp }); opts.accepted(session()); return true; }, toast: noop, reportError: noop,
     rpc: { call: async (method: string, params: any) => { calls.push({ method, params }); if (method === "commands.list") { commandLists++; return [{ name: "help", description: "Help" }, { name: "pdf", description: "Read PDFs", skill: true }]; } const reply = Promise.withResolvers<string[]>(); replies.push(reply); return reply.promise; } },
     window: { innerHeight: 800, matchMedia: () => ({ matches: narrow }) },
@@ -253,6 +256,23 @@ applyKeybindingsFile({ path: "/test/keybindings.json" });
 input("");
 appState.settings.followUpBehavior = undefined;
 setWorking(false);
+// Esc stops a goal of the loop here between its turns (a check or a retry coming): it pauses it. Not a paused one, or a CLI's.
+const stopsBefore = interrupts;
+key("Escape");
+assert.equal(interrupts, stopsBefore);
+for (const state of ["checking", "waiting", "active"]) {
+    setGoal({ condition: "the tests pass", state, judge: "model" });
+    assert.equal(key("Escape").prevented, true);
+}
+assert.equal(interrupts, stopsBefore + 3);
+const stop = nodes.findLast((n) => n.props.class === "send stop");
+assert.equal(stop?.props.title, "Pause the goal (Esc)");
+for (const g of [{ state: "paused", judge: "model" }, { state: "active", judge: "native" }]) {
+    setGoal({ condition: "the tests pass", ...g });
+    key("Escape");
+}
+assert.equal(interrupts, stopsBefore + 3);
+setGoal(undefined);
 // Exercise the actual Home submit handler through the run-sheet controller.
 const sessionSends = sends;
 setSession(undefined);
