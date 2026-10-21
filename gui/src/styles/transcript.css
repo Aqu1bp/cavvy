@@ -241,7 +241,7 @@
 .turn {
     display: flex;
     flex-direction: column;
-    padding-bottom: 34px;
+    padding-bottom: 26px;
 }
 
 /* De-emphasize archived prompts without fading all their text below AA. */
@@ -531,7 +531,7 @@
     align-items: center;
     gap: 4px;
     min-height: 24px;
-    margin-top: -2px;
+    margin-top: -4px;
     font-size: 0.857rem;
     color: var(--fg-3);
     white-space: nowrap;
@@ -1201,7 +1201,7 @@
 
 /* In a timeline, the card spans it rather than sitting on its line. */
 .activity-steps > .subagents {
-    margin-left: -18px;
+    margin-left: -28px;
 }
 
 .ag-head {
@@ -1783,14 +1783,18 @@
     color: var(--fg-4);
 }
 
-.diff.inline .dl.add,
-.diff.inline .dl.add .txt {
+/* The row carries the tint; the code cell doesn't add a second layer of it. */
+.diff.inline .dl.add {
     background: var(--add-bg);
 }
 
-.diff.inline .dl.del,
-.diff.inline .dl.del .txt {
+.diff.inline .dl.del {
     background: var(--del-bg);
+}
+
+.diff.inline .dl.add .txt,
+.diff.inline .dl.del .txt {
+    background: none;
 }
 
 .diff.inline .dl.add .ln,
