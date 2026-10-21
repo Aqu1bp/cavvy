@@ -768,9 +768,10 @@ describe("Claude Code's background work (live test findings)", () => {
             expect(subEnds(a.events)).toEqual([]);
             expect(await done).toBe("done");
             expect(starts()).toHaveLength(1);
+            // Its image first and its text last, as runTurn sends a prompt: Claude Code reads a /command only from the last block.
             expect(userSent("what's wrong in this screenshot?").message.content).toEqual([
-                { type: "text", text: "what's wrong in this screenshot?" },
                 { type: "image", source: { type: "base64", media_type: "image/png", data: PNG } },
+                { type: "text", text: "what's wrong in this screenshot?" },
             ]);
             // Recorded as a prompt of its own, after the answer before it, with its image.
             const i = a.session.messages.findIndex((m) => m.role === "user" && m.content.some((p) => (p as any).text === "what's wrong in this screenshot?"));

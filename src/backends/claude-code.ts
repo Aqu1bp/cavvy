@@ -721,9 +721,9 @@ class ClaudeTurn {
             return false;
         }
         this.reason = undefined;
-        // As a prompt of the user's own is sent: its $names as runTurn reads them, then its images and PDFs.
+        // As a prompt of the user's own is sent (runTurn): its $names read the same way, its images and PDFs first.
         const text = claudePrompt(p.text, p.request, this.t.skills ?? [], this.skillNames, formatSkill, p.requestAfter);
-        this.sendUser([...(text ? [{ type: "text", text }] : []), ...mediaBlocks(p.images, p.documents)]);
+        this.sendUser([...mediaBlocks(p.images, p.documents), ...(text ? [{ type: "text", text }] : [])]);
         return true;
     }
 
