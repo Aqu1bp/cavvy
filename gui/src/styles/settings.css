@@ -265,6 +265,12 @@
     margin-left: -8px;
 }
 
+/* With nothing to reset, the control keeps the row's edge like its neighbours.
+   (Appearance keeps the column on every row, so its controls line up.) */
+.set-group:not(.ap-group) .set-reset:empty {
+    display: none;
+}
+
 .set-val {
     color: var(--fg-3);
     font: 0.857rem var(--font-mono);
