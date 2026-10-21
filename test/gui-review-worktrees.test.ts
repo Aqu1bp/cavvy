@@ -55,6 +55,23 @@ describe("paths", () => {
         expect(commandPaths("cat /tmp/a/file")).toEqual([]);
     });
 
+    test("a relative cd counts only from where the shell really is: subshells, pushd and popd, and places it can't follow", () => {
+        // A subshell's cd doesn't move the shell after it.
+        expect(commandPaths("cd /repo && (cd /other); cd src && make")).toEqual(["/repo", "/other", "/repo/src"]);
+        expect(commandPaths("cd /repo && echo $(cd /other && pwd) && cd src")).toEqual(["/repo", "/other", "/repo/src"]);
+        // popd goes back to where pushd left.
+        expect(commandPaths("cd /repo; pushd /other; popd; cd src")).toEqual(["/repo", "/other", "/repo/src"]);
+        expect(commandPaths("pushd /a && pushd /b && popd && cd x")).toEqual(["/a", "/b", "/a/x"]);
+        // Where it can't follow (a variable, cd -, cd home without one known, an unmatched popd or parenthesis,
+        // a pipeline's or background job's own shell), a relative cd after isn't resolved, rather than resolved wrong.
+        for (const cmd of ["cd /repo && cd $X && cd src", "cd /repo && cd - && cd src", "cd /repo && cd && cd src", "cd /repo; popd; cd src", "cd /repo; ) cd src", "cd /repo | cd src", "cd /repo & cd src"]) {
+            expect(commandPaths(cmd)).toEqual(["/repo"]);
+        }
+        expect(commandPaths("cd /repo && cd && cd src", "/Users/me")).toEqual(["/repo", "/Users/me", "/Users/me/src"]);
+        // cd's own options aren't its folder.
+        expect(commandPaths("cd -P /repo && cd -- src")).toEqual(["/repo", "/repo/src"]);
+    });
+
     test("a tool call's folder, command and file, by its input", () => {
         expect(toolPaths({ name: "Read", input: { file_path: "/tmp/a/x.ts" } })).toEqual(["/tmp/a/x.ts"]);
         expect(toolPaths({ name: "Grep", input: { pattern: "x", path: "/tmp/a/src" } })).toEqual(["/tmp/a/src"]);

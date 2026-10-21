@@ -89,20 +89,34 @@ const WORKTREE_ADD_VALUES = new Set(["-b", "-B", "--reason"]);
 /** git's own options that take a value (besides -C). */
 const GIT_VALUES = new Set(["-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"]);
 
+/** `cd`'s and `pushd`'s options, which come before the folder. */
+const CD_OPTIONS = /^-[LPe@]+$/;
+
 /**
  * The folders a shell command points at, in order: where `cd` (or `pushd`) goes, `git -C`'s folder,
- * and the path `git worktree add` makes. A relative one counts from the last absolute folder the
- * command went to, if any; `home` expands `~`.
+ * and the path `git worktree add` makes. A relative one counts from the folder the shell is in
+ * there, when that's known: a subshell's `cd` (in parentheses, `$( )`, a pipeline's or background
+ * job's own shell) doesn't move what follows, `popd` goes back to where `pushd` left, and after a
+ * `cd` the words don't say the end of (a variable, `cd -`), the folder is unknown. `home` expands `~`.
  */
 export function commandPaths(cmd: string, home?: string): string[] {
     const words = shellWords(cmd);
     const out: string[] = [];
+    /** The folder the shell is in, when the command says; undefined once it can't be told. */
     let dir: string | undefined;
+    /** The folder each open subshell started in, and pushd's stack. */
+    const subshells: (string | undefined)[] = [];
+    const pushed: (string | undefined)[] = [];
     // Not a variable, a substitution, a glob or `cd -`: where those go isn't in the words.
     const at = (p: string, from = dir) => (/[$`*?]/.test(p) || p === "-" ? undefined : (normalPath(p, home) ?? (from && !p.startsWith("~") ? normalPath(`${from}/${p}`) : undefined)));
     let start = true;
     for (let i = 0; i < words.length; i++) {
         const w = words[i]!;
+        if (w === "(") subshells.push(dir);
+        // An unmatched ")" leaves the shell somewhere the command doesn't say.
+        else if (w === ")") dir = subshells.length ? subshells.pop() : undefined;
+        // A pipeline's commands and a background job run in shells of their own: where they went isn't where the next one is.
+        else if (w === "|" || w === "&") dir = undefined;
         if (OPERATORS.has(w)) {
             start = true;
             continue;
@@ -111,11 +125,18 @@ export function commandPaths(cmd: string, home?: string): string[] {
         // Assignments before the command (FOO=1 git …) aren't it.
         if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) continue;
         start = false;
-        if ((w === "cd" || w === "pushd") && i + 1 < words.length && !OPERATORS.has(words[i + 1]!)) {
-            const next = words[i + 1]!;
-            const target = next === "--" && i + 2 < words.length ? words[i + 2]! : next;
-            const p = at(target);
-            if (p) out.push((dir = p));
+        if (w === "cd" || w === "pushd") {
+            let k = i + 1;
+            while (k < words.length && CD_OPTIONS.test(words[k]!)) k++;
+            if (words[k] === "--") k++;
+            const target = k < words.length && !OPERATORS.has(words[k]!) ? words[k]! : undefined;
+            if (w === "pushd") pushed.push(dir);
+            // A bare cd goes home; a bare pushd swaps the top two, which isn't followed.
+            const p = target !== undefined ? at(target) : w === "cd" && home ? normalPath(home) : undefined;
+            dir = p;
+            if (p) out.push(p);
+        } else if (w === "popd") {
+            dir = pushed.length ? pushed.pop() : undefined;
         } else if (w === "git") {
             let gitDir = dir;
             let j = i + 1;
@@ -123,7 +144,8 @@ export function commandPaths(cmd: string, home?: string): string[] {
                 const opt = words[j]!;
                 if (opt === "-C" && j + 1 < words.length) {
                     const p = at(words[++j]!, gitDir);
-                    if (p) out.push((gitDir = p));
+                    gitDir = p;
+                    if (p) out.push(p);
                 } else if (GIT_VALUES.has(opt)) j++;
             }
             if (words[j] === "worktree" && words[j + 1] === "add") {
