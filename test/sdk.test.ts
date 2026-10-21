@@ -1029,6 +1029,13 @@ describe("found in the Codex review", () => {
         }
     });
 
+    test("@server:resource mentions attach an MCP resource, as in harness -p", async () => {
+        const cwd = project();
+        const docs = { command: process.execPath, args: ["--no-env-file", join(import.meta.dir, "fixtures", "mcp-stdio-server.ts")], env: { MCP_FIXTURE_ERA: "legacy" }, cwd };
+        await collect(query({ prompt: "summarize @docs:fixture://readme", options: { cwd, model: MODEL, persistSession: false, settings: { mcpServers: { docs } } } }));
+        expect(JSON.stringify(requests[0]!.messages)).toContain("Hello from a resource.");
+    });
+
     test("a tool can't be named Skill, even where no skills are loaded", async () => {
         const skill = tool("Skill", "mine", { type: "object", properties: {} }, () => "mine");
         await expect(collect(query({ prompt: "x", options: { cwd: project(), model: MODEL, tools: [skill] } }))).rejects.toThrow(/built-in tool/);

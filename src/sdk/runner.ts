@@ -14,6 +14,7 @@ import { BUILTIN_TOOLS } from "../tools/index";
 import type { Tool } from "../tools/types";
 import { isAgentBackend } from "../backends/types";
 import { expandMentions } from "../ui/mentions";
+import { expandMcpMentions } from "../mcp/mentions";
 import { createRunAgent, endRun, setupRun, startRun, SetupError, type RunSetup } from "../run-setup";
 import { messageOf, TurnTally, type MapOptions, type SDKMessage } from "./messages";
 import { HarnessSdkError } from "./errors";
@@ -325,7 +326,10 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
                 let reason: TurnEndReason;
                 try {
                     const { parts, notices } = await expandMentions(prompt, s.toolState, [cwd, ...(s.settings.permissions?.additionalDirectories ?? [])], s.checker);
-                    for (const n of notices) warn(n);
+                    // @server:resource mentions, as in `harness -p`; nobody answers a server's form here, so those are declined.
+                    const mcp = await expandMcpMentions(prompt, s.mcp, {}, turn.signal);
+                    parts.push(...mcp.parts);
+                    for (const n of [...notices, ...mcp.notices]) warn(n);
                     reason = await agent.run(parts, { signal: turn.signal, display: prompt });
                 } catch (e) {
                     reason = turn.signal.aborted ? "aborted" : "error";
