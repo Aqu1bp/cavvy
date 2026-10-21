@@ -48,7 +48,7 @@ function setup(diff: () => FileDiff, split: () => boolean) {
         get list() {
             return list();
         },
-        add: (lines, text) => setList((l) => [...l, buildComment({ id: `c${n++}`, path: diff().path, lines, text })!]),
+        add: (lines, text, around) => setList((l) => [...l, buildComment({ id: `c${n++}`, path: diff().path, lines, text, ...around })!]),
         edit: (id, text) => setList((l) => l.map((c) => (c.id === id ? { ...c, text } : c))),
         remove: (id) => setList((l) => l.filter((c) => c.id !== id)),
     };
@@ -101,6 +101,7 @@ export async function checkDiffComments(root: HTMLElement) {
         key(ta, "Enter", { ctrlKey: true, metaKey: true });
         await settle();
         check(s.list().length === 1 && s.list()[0]!.text === "Rename b" && s.list()[0]!.start.line === 3, "the comment is added, trimmed, on new line 3");
+        check(JSON.stringify([s.list()[0]!.before, s.list()[0]!.after]) === JSON.stringify([["-const b = 1;", "+const a = 2;"], ["+const c = 2;", " }"]]), `it keeps two lines either side, from its hunk (${JSON.stringify([s.list()[0]!.before, s.list()[0]!.after])})`);
         check(root.querySelectorAll(".dc-card").length === 1 && !root.querySelector(".dc-box"), "it shows as a card and the box closes");
         check(document.activeElement === rows, "focus goes back to the diff");
 
@@ -112,6 +113,16 @@ export async function checkDiffComments(root: HTMLElement) {
         pointer("pointermove", root.querySelector<HTMLElement>(`[data-i="8"]`)!);
         await settle();
         check(root.querySelectorAll(".csel").length === 5 && !root.querySelector(`[data-i="8"].csel`), "a pick can't cross into the next hunk");
+        pointer("pointerup", gutter(root, 6));
+        await settle();
+        ta = await type(root, "Both changed");
+        // Esc on the box's buttons closes the box too, not the pane.
+        const cancel = root.querySelector<HTMLButtonElement>(".dc-box .btn.ghost")!;
+        cancel.focus();
+        const escButton = key(cancel, "Escape");
+        await settle();
+        check(escButton.defaultPrevented && !root.querySelector(".dc-box"), "Esc with focus on Cancel closes only the box");
+        pointer("pointerdown", gutter(root, 2));
         pointer("pointerup", gutter(root, 6));
         await settle();
         ta = await type(root, "Both changed");
@@ -197,6 +208,26 @@ export async function checkDiffComments(root: HTMLElement) {
         await settle();
         setDiff(small);
         await settle();
+
+        // Changing a saved comment survives a refresh, and another window's write: its text and its focus.
+        root.querySelector<HTMLElement>(".dc-slot .dc-card")!.querySelector<HTMLButtonElement>('[aria-label^="Edit comment"]')!.click();
+        await settle();
+        const editBox = () => root.querySelector<HTMLTextAreaElement>(".dc-box[data-edit] .dc-input");
+        check(editBox() && document.activeElement === editBox(), "Edit opens a focused box");
+        editBox()!.value = "Changed, not saved";
+        editBox()!.dispatchEvent(new InputEvent("input", { bubbles: true }));
+        const savedTexts = JSON.stringify(s.list().map((c) => c.text));
+        setDiff(structuredClone(small));
+        await settle();
+        check(editBox()?.value === "Changed, not saved" && document.activeElement === editBox(), `an edit under way survives a refresh, focus and all (${editBox()?.value}, ${document.activeElement?.className})`);
+        s.setList((l) => l.map((c) => ({ ...c })));
+        await settle();
+        check(editBox()?.value === "Changed, not saved" && document.activeElement === editBox(), "and another window's write to the comments");
+        const save = root.querySelector<HTMLButtonElement>(".dc-box[data-edit] .btn.primary")!;
+        save.focus();
+        const escSave = key(save, "Escape");
+        await settle();
+        check(escSave.defaultPrevented && !editBox() && JSON.stringify(s.list().map((c) => c.text)) === savedTexts, "Esc on Save drops the edit and keeps the pane");
 
         // The file changes under the comments: moved lines follow, edited ones are outdated.
         const moved = structuredClone(small);

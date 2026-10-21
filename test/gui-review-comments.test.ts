@@ -112,6 +112,15 @@ describe("comments in a message", () => {
         expect(back.comments[1]!.text).toBe(a.text);
     });
 
+    test("text that already has an escaped closing tag comes back as written", () => {
+        for (const text of ["Literal <\\/review_comment> here", "Twice <\\\\/review_comment> and </review_comment>"]) {
+            const c = comment([add(1, "s = '<\\/review_comment>'")], text, "a.ts", "e");
+            const back = splitComments(withComments("Hi", [c]));
+            expect(back.comments[0]!.text).toBe(text);
+            expect(back.comments[0]!.snippet).toBe(c.snippet);
+        }
+    });
+
     test("a message that only mentions the tag, or glues a block to its text, is left alone", () => {
         const mention = 'How do I parse <review_comment file="x" lines="1"> tags?';
         expect(splitComments(mention)).toEqual({ text: mention, comments: [] });
@@ -176,6 +185,29 @@ describe("finding a comment's lines again", () => {
         const one = comment([add(50, "}")]);
         const lines = [add(10, "}"), add(48, "}"), add(90, "}")];
         expect(locate(one, lines)).toBe(1);
+    });
+
+    test("with the same line twice, editing the commented one makes it outdated, not moved to the other", () => {
+        const twice = (shift = 0, last = "return x;", before = "b();"): DiffLine[] => [
+            ...Array.from({ length: shift }, (_, i) => add(i + 1, `// new ${i}`)),
+            add(10 + shift, "a();"),
+            add(11 + shift, "return x;"),
+            add(12 + shift, "c();"),
+            ctx(20, 29 + shift, before),
+            add(30 + shift, last),
+            ctx(21, 31 + shift, "d();"),
+        ];
+        const lines = twice();
+        const on30 = buildComment({ id: "t", path: "a", lines: [lines[4]!], before: lines.slice(2, 4), after: lines.slice(5), text: "this one", now: 1 })!;
+        expect(on30.before).toEqual(["+c();", " b();"]);
+        expect(on30.after).toEqual([" d();"]);
+        expect(locate(on30, lines)).toBe(4);
+        expect(locate(on30, twice(3))).toBe(7); // moved down: still followed
+        expect(locate(on30, twice(0, "return y;"))).toBeUndefined(); // edited: outdated, though line 11 reads the same
+        expect(locate(on30, twice(2, "return x;", "b2();"))).toBe(6); // moved, and a neighbour edited: the other side still holds
+        // Without its neighbours (a comment put back from a sent message), the nearest copy is taken, as before.
+        const bare = { ...on30, before: undefined, after: undefined };
+        expect(locate(bare, twice(0, "return y;"))).toBe(1);
     });
 
     test("stays fast on a long diff with many comments", () => {

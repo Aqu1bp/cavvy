@@ -5,7 +5,7 @@
 
 import { createRoot, createSignal } from "solid-js";
 import { matchesSecretPattern } from "../../../src/util/secret-patterns";
-import type { ReviewComment } from "../lib/review-comments";
+import { AROUND, type ReviewComment } from "../lib/review-comments";
 
 export const REVIEW_COMMENTS_KEY = "harness.reviewComments.v1";
 export const MAX_AGE = 30 * 24 * 60 * 60 * 1000;
@@ -20,13 +20,17 @@ const secrets = new WeakMap<ReviewComment, boolean>();
 /** Checked once per comment (each edit is a new object), not on every write. */
 const secret = (c: ReviewComment) => {
     let v = secrets.get(c);
-    if (v === undefined) secrets.set(c, (v = /\bsk-[A-Za-z0-9_-]{20,}/.test(c.text + c.snippet) || matchesSecretPattern(c.text) || matchesSecretPattern(c.snippet)));
+    if (v === undefined) {
+        const all = [c.text, c.snippet, ...(c.before ?? []), ...(c.after ?? [])].join("\n");
+        secrets.set(c, (v = /\bsk-[A-Za-z0-9_-]{20,}/.test(all) || matchesSecretPattern(all)));
+    }
     return v;
 };
 const ref = (r: unknown) => !!r && typeof r === "object" && ((r as { side?: unknown }).side === "old" || (r as { side?: unknown }).side === "new") && Number.isInteger((r as { line?: unknown }).line);
 const valid = (c: unknown): c is ReviewComment => {
     const x = c as Partial<ReviewComment> | null;
-    return !!x && typeof x.id === "string" && typeof x.path === "string" && typeof x.text === "string" && typeof x.snippet === "string" && Number.isFinite(x.created) && ref(x.start) && ref(x.end);
+    const lines = (l: unknown) => l === undefined || (Array.isArray(l) && l.length <= AROUND && l.every((s) => typeof s === "string"));
+    return !!x && typeof x.id === "string" && typeof x.path === "string" && typeof x.text === "string" && typeof x.snippet === "string" && Number.isFinite(x.created) && ref(x.start) && ref(x.end) && lines(x.before) && lines(x.after);
 };
 
 export function createReviewCommentStore(storage: () => Storage | undefined, now = Date.now) {

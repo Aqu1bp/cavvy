@@ -23,6 +23,12 @@ export interface ReviewComment {
     text: string;
     /** The lines it was written on, as unified diff lines (" ", "-", "+" then the text), under a @@ header. */
     snippet: string;
+    /**
+     * Up to two lines either side of it, as snippet lines: kept here, never sent. They tell its own
+     * lines from a copy elsewhere in the diff once the file moves on.
+     */
+    before?: string[];
+    after?: string[];
     created: number;
 }
 
@@ -30,8 +36,11 @@ export const lineRef = (l: DiffLine): LineRef | undefined => (l.t === "del" ? (l
 
 const marker = (t: DiffLine["t"]) => (t === "add" ? "+" : t === "del" ? "-" : " ");
 
+/** How many lines either side of a comment it keeps, to know its own lines again. */
+export const AROUND = 2;
+
 /** A comment on these consecutive lines of one hunk, or undefined when there's nothing to anchor to. */
-export function buildComment(input: { id: string; path: string; lines: readonly DiffLine[]; text: string; now?: number }): ReviewComment | undefined {
+export function buildComment(input: { id: string; path: string; lines: readonly DiffLine[]; before?: readonly DiffLine[]; after?: readonly DiffLine[]; text: string; now?: number }): ReviewComment | undefined {
     const lines = input.lines;
     const first = lines[0];
     const last = lines.at(-1);
@@ -42,7 +51,10 @@ export function buildComment(input: { id: string; path: string; lines: readonly 
     const olds = lines.filter((l) => l.t !== "add");
     const news = lines.filter((l) => l.t !== "del");
     const header = `@@ -${olds[0]?.a ?? 0},${olds.length} +${news[0]?.b ?? 0},${news.length} @@`;
-    return { id: input.id, path: input.path, start, end, text, snippet: [header, ...lines.map((l) => marker(l.t) + l.text)].join("\n"), created: input.now ?? Date.now() };
+    const around = (ls: readonly DiffLine[] | undefined) => (ls?.length ? ls.map((l) => marker(l.t) + l.text) : undefined);
+    const before = around(input.before?.slice(-AROUND));
+    const after = around(input.after?.slice(0, AROUND));
+    return { id: input.id, path: input.path, start, end, text, snippet: [header, ...lines.map((l) => marker(l.t) + l.text)].join("\n"), ...(before ? { before } : {}), ...(after ? { after } : {}), created: input.now ?? Date.now() };
 }
 
 const num = (r: LineRef) => `${r.side === "old" ? "−" : ""}${r.line}`;
@@ -78,9 +90,10 @@ export function snippetLines(snippet: string): DiffLine[] {
 }
 
 const CLOSE = "</review_comment>";
-const ESCAPED_CLOSE = "<\\/review_comment>";
-const escapeBody = (s: string) => s.replaceAll(CLOSE, ESCAPED_CLOSE);
-const unescapeBody = (s: string) => s.replaceAll(ESCAPED_CLOSE, CLOSE);
+// The closing tag inside a comment gets one more backslash after its "<", and loses one coming back,
+// so text that already has `<\/review_comment>` comes back as written.
+const escapeBody = (s: string) => s.replace(/<(\\*)\/review_comment>/g, "<\\$1/review_comment>");
+const unescapeBody = (s: string) => s.replace(/<\\(\\*)\/review_comment>/g, "<$1/review_comment>");
 const escapeAttr = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const unescapeAttr = (s: string) => s.replace(/&quot;/g, '"').replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&");
 
@@ -171,7 +184,18 @@ export function promptPreview(message: string): string {
  * its quoted text nearest its old place, so it follows lines that moved. Undefined when those
  * lines aren't here any more (edited, reverted, another view): it's outdated here.
  */
-export function locate(c: Pick<ReviewComment, "snippet" | "end">, lines: readonly DiffLine[]): number | undefined {
+/** Whether the lines from `from`, going `step`, read as `want` does (nearest first when going back). */
+function nextTo(lines: readonly DiffLine[], from: number, step: 1 | -1, want: readonly string[] | undefined): boolean {
+    if (!want?.length) return false;
+    for (let k = 0; k < want.length; k++) {
+        const l = lines[from + k * step];
+        const w = want[step === 1 ? k : want.length - 1 - k]!;
+        if (!l || marker(l.t) + l.text !== w) return false;
+    }
+    return true;
+}
+
+export function locate(c: Pick<ReviewComment, "snippet" | "end" | "before" | "after">, lines: readonly DiffLine[]): number | undefined {
     const want = snippetLines(c.snippet);
     if (!want.length) return undefined;
     const lastText = want.at(-1)!.text;
@@ -182,6 +206,8 @@ export function locate(c: Pick<ReviewComment, "snippet" | "end">, lines: readonl
         let match = true;
         for (let k = 1; k < want.length && match; k++) match = lines[i - k]!.text === want[want.length - 1 - k]!.text && (lines[i - k]!.t === "del") === (want[want.length - 1 - k]!.t === "del");
         if (!match || (lines[i]!.t === "del") !== (c.end.side === "old")) continue;
+        // Its neighbours on one side at least, if it knows them: an identical line elsewhere isn't this one.
+        if ((c.before || c.after) && !nextTo(lines, i - want.length, -1, c.before) && !nextTo(lines, i + 1, 1, c.after)) continue;
         const ref = lineRef(lines[i]!);
         const distance = ref ? Math.abs(ref.line - c.end.line) : Infinity;
         if (distance < bestDistance) {

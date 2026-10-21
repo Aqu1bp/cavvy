@@ -5,8 +5,8 @@ import type { DiffLine, FileDiff } from "@shared/protocol";
 import { highlightLines } from "../../lib/highlight";
 import { langOf, plural } from "../../lib/format";
 import { escapeHtml } from "../../lib/markdown";
-import { buildComment, linesPhrase, lineRef, locate, type ReviewComment } from "../../lib/review-comments";
-import { CommentBox, CommentCard } from "./DiffComments";
+import { AROUND, buildComment, linesPhrase, lineRef, locate, type ReviewComment } from "../../lib/review-comments";
+import { CommentBox, CommentCard, type CommentEdits } from "./DiffComments";
 
 /** `h`: which hunk the line is in. A comment's lines stay inside one, where the numbers run on. */
 type Row = { kind: "line"; line: DiffLine; old?: number; new?: number; idx: number; h: number } | { kind: "sep"; text: string };
@@ -65,7 +65,8 @@ export function FileIcon(p: { status: FileDiff["status"]; size?: number }) {
 /** Commenting on lines (the review pane): this file's comments, and what to do with new and changed ones. */
 export interface DiffComments {
     list: readonly ReviewComment[];
-    add: (lines: DiffLine[], text: string) => void;
+    /** `around`: the lines either side in the hunk, so the comment knows its own lines from copies elsewhere. */
+    add: (lines: DiffLine[], text: string, around?: { before: DiffLine[]; after: DiffLine[] }) => void;
     edit: (id: string, text: string) => void;
     remove: (id: string) => void;
 }
@@ -169,9 +170,48 @@ function DiffViewContent(p: DiffProps) {
     };
     const span = (s: { anchor: number; head: number }) => ({ lo: Math.min(s.anchor, s.head), hi: Math.max(s.anchor, s.head) });
     const linesIn = (lo: number, hi: number) => rows().slice(lo, hi + 1).flatMap((r) => (r.kind === "line" ? [r.line] : []));
+    /** Up to AROUND lines of the same hunk past `from`, in file order. */
+    const near = (from: number, step: 1 | -1) => {
+        const h = lineAt(from)?.h;
+        const out: DiffLine[] = [];
+        for (let i = from + step; out.length < AROUND && lineAt(i)?.h === h; i += step) out.push(lineAt(i)!.line);
+        return step === 1 ? out : out.reverse();
+    };
     const lineRows = createMemo(() => (p.comments ? rows().filter((r): r is Line => r.kind === "line") : []));
+    // Saved comments being changed: what's typed, by comment id, so a redrawn card (a refresh, another
+    // window's write) opens its box again with the text, and the focus if it had it.
+    const editText = new Map<string, string>();
+    const [editing, setEditing] = createSignal<ReadonlySet<string>>(new Set());
+    let editFocus: string | undefined;
+    const edits: CommentEdits = {
+        text: (id) => (editing().has(id) ? (editText.get(id) ?? "") : undefined),
+        set(id, text) {
+            if (text === undefined) {
+                editText.delete(id);
+                if (editing().has(id)) setEditing((s) => new Set([...s].filter((x) => x !== id)));
+                return;
+            }
+            editText.set(id, text);
+            if (!editing().has(id)) {
+                editFocus = id;
+                setEditing((s) => new Set(s).add(id));
+            }
+        },
+        takeFocus(id) {
+            if (editFocus !== id) return false;
+            editFocus = undefined;
+            return true;
+        },
+    };
+    /** Before the cards are drawn again: the edit box with the focus gets it back. */
+    const keepEditFocus = () => {
+        const id = (document.activeElement?.closest?.(".dc-box") as HTMLElement | null | undefined)?.dataset.edit;
+        if (id && el?.contains(document.activeElement)) editFocus = id;
+    };
+
     /** Each comment under the last line it covers, if its lines are still here; the rest are outdated. */
     const placed = createMemo(() => {
+        keepEditFocus();
         const at = new Map<number, { c: ReviewComment; lo: number }[]>();
         const outdated: ReviewComment[] = [];
         const list = p.comments?.list ?? [];
@@ -271,7 +311,7 @@ function DiffViewContent(p: DiffProps) {
     const submit = (text: string) => {
         const d = draft();
         if (!d || !p.comments) return;
-        p.comments.add(linesIn(d.lo, d.hi), text);
+        p.comments.add(linesIn(d.lo, d.hi), text, { before: near(d.lo, -1), after: near(d.hi, 1) });
         closeDraft(true);
     };
     const rangeLabel = (lo: number, hi: number) => {
@@ -354,7 +394,7 @@ function DiffViewContent(p: DiffProps) {
     const Slot = (s: { idx: number }) => (
         <div class="dc-slot" data-slot>
             <For each={placed().at.get(s.idx) ?? []}>
-                {(x) => <CommentCard label={rangeLabel(x.lo, s.idx)} text={x.c.text} onEdit={(t) => p.comments!.edit(x.c.id, t)} onRemove={() => {
+                {(x) => <CommentCard id={x.c.id} edits={edits} label={rangeLabel(x.lo, s.idx)} text={x.c.text} onEdit={(t) => p.comments!.edit(x.c.id, t)} onRemove={() => {
                     setHovered(undefined);
                     p.comments!.remove(x.c.id);
                 }} onHover={(on) => setHovered(on ? { lo: x.lo, hi: s.idx } : undefined)} />}
@@ -383,7 +423,7 @@ function DiffViewContent(p: DiffProps) {
                 <div class="dc-outdated" data-find-skip>
                     <div class="dc-outdated-head">{plural(placed().outdated.length, "comment")} on lines that have changed since</div>
                     <For each={placed().outdated}>
-                        {(c) => <CommentCard label={linesPhrase(c)} text={c.text} outdated snippet={c.snippet} onEdit={(t) => p.comments!.edit(c.id, t)} onRemove={() => p.comments!.remove(c.id)} />}
+                        {(c) => <CommentCard id={c.id} edits={edits} label={linesPhrase(c)} text={c.text} outdated snippet={c.snippet} onEdit={(t) => p.comments!.edit(c.id, t)} onRemove={() => p.comments!.remove(c.id)} />}
                     </For>
                 </div>
             </Show>

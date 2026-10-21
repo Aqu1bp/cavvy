@@ -4,7 +4,7 @@ import { isMod, mod } from "../../lib/platform";
 import { composingKey } from "../../lib/composer-menu";
 
 /** Writing a comment (or changing one): Cmd/Ctrl+Enter keeps it, Esc lets it go without closing the pane. */
-export function CommentBox(p: { label: string; initial?: string; submitLabel?: string; /** False when it's redrawn while you're typing elsewhere. */ autofocus?: boolean; onSubmit: (text: string) => void; onCancel: () => void; onText?: (text: string) => void }) {
+export function CommentBox(p: { label: string; initial?: string; submitLabel?: string; /** False when it's redrawn while you're typing elsewhere. */ autofocus?: boolean; /** The saved comment it changes, if any. */ editing?: string; onSubmit: (text: string) => void; onCancel: () => void; onText?: (text: string) => void }) {
     const [text, setText] = createSignal(p.initial ?? "");
     let ta: HTMLTextAreaElement | undefined;
     const fit = () => {
@@ -26,7 +26,17 @@ export function CommentBox(p: { label: string; initial?: string; submitLabel?: s
         if (text().trim()) p.onSubmit(text().trim());
     };
     return (
-        <div class="dc-box" onPointerDown={(e) => e.stopPropagation()}>
+        <div
+            class="dc-box"
+            data-edit={p.editing}
+            onPointerDown={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+                // From the text or either button: the box closes, the review pane stays.
+                if (e.key !== "Escape" || composingKey(e)) return;
+                e.preventDefault();
+                p.onCancel();
+            }}
+        >
             <textarea
                 ref={ta}
                 class="dc-input"
@@ -41,10 +51,7 @@ export function CommentBox(p: { label: string; initial?: string; submitLabel?: s
                 }}
                 onKeyDown={(e) => {
                     if (composingKey(e)) return;
-                    if (e.key === "Escape") {
-                        e.preventDefault();
-                        p.onCancel();
-                    } else if (e.key === "Enter" && isMod(e)) {
+                    if (e.key === "Enter" && isMod(e)) {
                         e.preventDefault();
                         submit();
                     }
@@ -63,22 +70,33 @@ export function CommentBox(p: { label: string; initial?: string; submitLabel?: s
     );
 }
 
+/** Changing saved comments: kept by the diff, not the card, since a refresh draws the cards again. */
+export interface CommentEdits {
+    /** What's written so far, for a comment being changed. */
+    text(id: string): string | undefined;
+    set(id: string, text: string | undefined): void;
+    /** Whether its box takes the focus when drawn: on Edit, or again after a refresh if it had it. */
+    takeFocus(id: string): boolean;
+}
+
 /** A comment waiting to be sent, under the line it's about. */
-export function CommentCard(p: { label: string; text: string; outdated?: boolean; snippet?: string; onEdit: (text: string) => void; onRemove: () => void; onHover?: (on: boolean) => void }) {
-    const [editing, setEditing] = createSignal(false);
+export function CommentCard(p: { id: string; label: string; text: string; edits: CommentEdits; outdated?: boolean; snippet?: string; onEdit: (text: string) => void; onRemove: () => void; onHover?: (on: boolean) => void }) {
     return (
         <Show
-            when={!editing()}
+            when={p.edits.text(p.id) === undefined}
             fallback={
                 <CommentBox
                     label={p.label}
-                    initial={p.text}
+                    initial={p.edits.text(p.id)}
                     submitLabel="Save"
+                    autofocus={p.edits.takeFocus(p.id)}
+                    editing={p.id}
+                    onText={(t) => p.edits.set(p.id, t)}
                     onSubmit={(t) => {
                         p.onEdit(t);
-                        setEditing(false);
+                        p.edits.set(p.id, undefined);
                     }}
-                    onCancel={() => setEditing(false)}
+                    onCancel={() => p.edits.set(p.id, undefined)}
                 />
             }
         >
@@ -97,7 +115,7 @@ export function CommentCard(p: { label: string; text: string; outdated?: boolean
                     </Show>
                 </div>
                 <span class="dc-tools">
-                    <button class="hb sm" title="Edit comment" aria-label={`Edit comment on ${p.label}`} onClick={() => setEditing(true)}>
+                    <button class="hb sm" title="Edit comment" aria-label={`Edit comment on ${p.label}`} onClick={() => p.edits.set(p.id, p.text)}>
                         <Pencil size={13} />
                     </button>
                     <button class="hb sm" title="Delete comment" aria-label={`Delete comment on ${p.label}`} onClick={() => p.onRemove()}>

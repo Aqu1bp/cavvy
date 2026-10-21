@@ -242,8 +242,8 @@ export function ReviewPane(p: { handle: SessionHandle }) {
         get list() {
             return reviewComments.list(id()).filter((c) => same(c.path, path));
         },
-        add: (lines, text) => {
-            const c = buildComment({ id: newCommentId(), path, lines, text });
+        add: (lines, text, around) => {
+            const c = buildComment({ id: newCommentId(), path, lines, text, ...around });
             if (c) reviewComments.add(id(), c);
         },
         edit: (commentId, text) => reviewComments.edit(id(), commentId, text),
