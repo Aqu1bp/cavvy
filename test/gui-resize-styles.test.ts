@@ -37,3 +37,22 @@ test("nothing in the app writes to <html>'s style but the preferences", () => {
     expect(read("components/Header.tsx")).not.toContain("--bar-start");
     expect(read("components/Toasts.tsx")).toContain('"--bar-start"');
 });
+
+test("the composer dock's height doesn't inherit: only the transcript's boxes that use it take it", () => {
+    // Set on .stage as the composer grows; inherited, each new line restyled every turn under it.
+    const stage = parseRules(read("styles/stage.css"));
+    const at = (selector: string, property: string) => stage.findLast((r) => r.selectors.includes(selector) && r.decls.has(property))?.decls.get(property);
+    expect(at("@property --dock-h", "inherits")).toBe("false");
+    expect(at("@property --dock-h", "syntax")).toBe('"<length>"');
+    // The chain from .stage down to the two boxes that read it (.transcript-end, .jump), and .transcript, which FindBar reads.
+    for (const box of [".transcript-wrap", ".transcript", ".transcript-col", ".transcript-end", ".jump"]) expect({ box, value: at(`.stage ${box}`, "--dock-h") }).toEqual({ box, value: "inherit" });
+    const users = readdirSync(join(gui, "styles")).flatMap((f) => parseRules(read(`styles/${f}`)).filter((r) => [...r.decls.values()].some((v) => v.includes("var(--dock-h)"))).flatMap((r) => r.selectors));
+    expect(new Set(users)).toEqual(new Set([".transcript-end", ".jump"]));
+});
+
+test("the title bar doesn't read its box as it mounts: its ResizeObserver's first report places the toasts", () => {
+    const bar = read("components/Header.tsx");
+    const mount = bar.slice(bar.indexOf("export function TitleBar"), bar.indexOf("return (", bar.indexOf("export function TitleBar")));
+    expect(mount).toContain("new ResizeObserver(place)");
+    expect(mount).not.toMatch(/^\s*place\(\);/m);
+});
