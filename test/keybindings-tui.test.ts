@@ -135,6 +135,27 @@ describe("a keybindings file", () => {
         expect(shown).not.toContain("tab to");
     });
 
+    test("a chord whose first key Chat takes isn't shown, as it can't run", () => {
+        write([{ context: "Global", bindings: { "ctrl+x ctrl+s": "chat:submitOtherWay" } }, { context: "Chat", bindings: { "ctrl+x": null } }]);
+        const { app, a, press } = testApp();
+        const sent: boolean[] = [];
+        a.busy = true;
+        a.submit = async (opposite: boolean) => void sent.push(opposite);
+        app.editor.set("follow-up");
+        press("\x18", "\x13");
+        expect(sent).toEqual([]);
+        expect(a.keys.all("chat:submitOtherWay")).toEqual(["tab"]);
+        // Without the Chat null the chord runs, and shows.
+        write([{ context: "Global", bindings: { "ctrl+x ctrl+s": "chat:submitOtherWay" } }]);
+        const b = testApp();
+        b.a.busy = true;
+        b.a.submit = async (opposite: boolean) => void sent.push(opposite);
+        b.app.editor.set("follow-up");
+        b.press("\x18", "\x13");
+        expect(sent).toEqual([true]);
+        expect(b.a.keys.all("chat:submitOtherWay")).toEqual(["ctrl+x ctrl+s", "tab"]);
+    });
+
     test("a Tab chord that goes nowhere still sends the other way, as Tab did before it was bindable", async () => {
         write([{ context: "Chat", bindings: { "tab t": "chat:externalEditor" } }]);
         const { app, a, press } = testApp();

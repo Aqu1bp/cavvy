@@ -320,8 +320,10 @@ export function buildKeymap(user: UserBinding[], app: KeyApp, platform: KeyPlatf
         // Where a Global key is pressed with Chat in force (always in the terminal app, in the GUI's
         // input box), a Chat binding or null of the same key, or a Chat chord starting with it, comes first.
         const over = (c: Context): Context[] => (c === "Global" && (app === "tui" || a.inInput) ? ["Chat"] : []);
+        // The keys so far, as the matcher sees them stroke by stroke: "ctrl+x", then "ctrl+x ctrl+s".
+        const steps = (k: string) => k.split(" ").map((_, i, parts) => parts.slice(0, i + 1).join(" "));
         const live = (k: string) =>
-            CONTEXTS.some((c) => table.get(c)!.get(k) === a.id && ![c, ...over(c)].some((o) => prefixes.get(o)!.has(k)) && !over(c).some((o) => table.get(o)!.has(k)));
+            CONTEXTS.some((c) => table.get(c)!.get(k) === a.id && ![c, ...over(c)].some((o) => prefixes.get(o)!.has(k)) && !over(c).some((o) => steps(k).some((s) => table.get(o)!.has(s))));
         const keys = [...(userKeys.get(a.id) ?? []), ...(defaultKeys.get(a.id) ?? [])].filter((k, i, arr) => arr.indexOf(k) === i && live(k));
         keysOf.set(a.id, keys);
         const defaults = defaultKeys.get(a.id) ?? [];
