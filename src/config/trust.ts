@@ -75,6 +75,11 @@ export function forgetTrustInside(dir: string) {
     if (dirs.length !== (cur.dirs ?? []).length) writeJson(file(), { dirs }, 0o600);
 }
 
+/** The user's own trust in this folder (and the ones inside it), for this session only: not saved. */
+export function trustUntilExit(dir: string) {
+    userTrusted.add(resolve(dir));
+}
+
 /** Trust this folder (not the ones inside it) for this session because there's nothing to protect yet (not the user's say-so). */
 export function trustForSession(dir: string) {
     emptyTrusted.add(resolve(dir));

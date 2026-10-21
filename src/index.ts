@@ -15,7 +15,7 @@ import { APP_NAME, APP_TITLE, APP_VERSION, harnessHome, paths } from "./config/p
 import { loadHarnessEnv, preloadKeys, getKey, setKey, removeKey, storageDescription } from "./auth/credentials";
 import { detectKeyProvider, validateKey } from "./auth/detect";
 import { EFFORT_LEVELS, loadScope, loadSettings, worktreeSettings, readJson, readJsonForUpdate, settingsPath, updateSettings, writeJson, type Effort, type McpServerConfig, type SettingsScope } from "./config/settings";
-import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "./config/trust";
+import { isTrusted, projectConfigSummary, trustFolder, trustForSession } from "./config/trust";
 import { MODE_INFO, parseMode, type PermissionMode } from "./permissions/modes";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, removeVertexConfig, saveAgentConfig, saveVertexConfig, SEARCH_PROVIDERS, validGoogleAccount, validVertexLocation, validVertexProject } from "./providers/registry";
 import { checkAgentCli, vendorOf } from "./backends/index";
@@ -710,7 +710,7 @@ async function main() {
     // From where it was started (local settings aren't in the new checkout), for both ends of its life.
     let cleanup: import("./server/worktrees").CleanupMode = "auto";
     if (f.worktree) {
-        const { startWorktree, worktreeLine } = await import("./ui/worktree");
+        const { carryTrust, startWorktree, worktreeLine } = await import("./ui/worktree");
         const ws = worktreeSettings(loadSettings(cwd, { trusted }));
         cleanup = ws.cleanup;
         try {
@@ -718,9 +718,7 @@ async function main() {
         } catch (e) {
             die(redact((e as Error).message));
         }
-        // Trusting the main checkout covers its worktrees (they're inside it, as in the GUI). A trusted
-        // subfolder carries over only to a new checkout of its own HEAD: the same files.
-        if (trustedByUser(cwd) && worktree.created && !worktree.fromBranch && ws.baseRef === "head") trustForSession(worktree.cwd);
+        carryTrust(cwd, worktree, ws.baseRef);
         cwd = worktree.cwd;
         process.chdir(cwd);
         trusted = await decideTrust(cwd);

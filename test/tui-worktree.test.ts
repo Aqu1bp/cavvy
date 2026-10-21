@@ -144,6 +144,19 @@ describe("making the worktree", () => {
         expect(worktreePaths(main)).toEqual([main]);
     });
 
+    test("a link in .claude/worktrees to the main checkout isn't reopened as a worktree", async () => {
+        const main = repo();
+        mkdirSync(join(main, ".claude", "worktrees"), { recursive: true });
+        symlinkSync(main, join(main, ".claude", "worktrees", "x"));
+        const e = await failure(W.enterSessionWorktree({ cwd: main, name: "x" }));
+        expect(e.code).toBe("path_exists");
+        expect(e.message).toContain("isn't one of this repository's worktrees");
+        // Nor a linked worktree reached through a link of another name.
+        await W.enterSessionWorktree({ cwd: main, name: "real" });
+        symlinkSync(join(main, ".claude", "worktrees", "real"), join(main, ".claude", "worktrees", "alias"));
+        expect((await failure(W.enterSessionWorktree({ cwd: main, name: "alias" }))).code).toBe("path_exists");
+    });
+
     test("feat/login and feat-login share a folder name, not a worktree", async () => {
         const main = repo();
         await W.enterSessionWorktree({ cwd: main, name: "feat/login" });
@@ -311,6 +324,17 @@ describe("on exit", () => {
         expect(worktreePaths(main)).toContain(wt.path);
     });
 
+    test("a file added inside an ignored folder after the question keeps it too", async () => {
+        const { main, wt } = await fresh();
+        mkdirSync(join(wt.path, "node_modules", "x"), { recursive: true });
+        writeFileSync(join(wt.path, "node_modules", "x", "i.js"), "");
+        const finish = await decideWorktree(wt, { cleanup: "auto", ask: answer("remove") });
+        writeFileSync(join(wt.path, "node_modules", "x", "late.js"), "");
+        expect(await finish()).toEqual({ kind: "kept", why: "its ignored files changed meanwhile" });
+        expect(existsSync(join(wt.path, "node_modules", "x", "late.js"))).toBe(true);
+        expect(worktreePaths(main)).toContain(wt.path);
+    });
+
     test("a change made after the question keeps it: Git refuses", async () => {
         const { main, wt } = await fresh();
         git(wt.path, "commit", "--allow-empty", "-m", "work");
@@ -348,6 +372,28 @@ describe("on exit", () => {
         expect(end.kind).toBe("kept");
         expect(worktreePaths(main)).toContain(wt.path);
         expect(branches(main)).toContain("harness/w");
+    });
+
+    test("a trusted launch subfolder carries over to a new worktree as the user's trust, which the agent CLIs need too", async () => {
+        const { trustFolder, trustedByUser, isTrusted, forgetTrustInside } = await import("../src/config/trust");
+        const { carryTrust } = await import("../src/ui/worktree");
+        const main = repo();
+        const sub = join(main, "src");
+        trustFolder(sub);
+        try {
+            const wt = await W.enterSessionWorktree({ cwd: sub, name: "carried" });
+            carryTrust(sub, wt, "head");
+            expect(isTrusted(wt.cwd)).toBe(true);
+            // Claude Code and Codex load project configuration only for this.
+            expect(trustedByUser(wt.cwd)).toBe(true);
+            expect(trustedByUser(wt.path)).toBe(false);
+            // Not for a reopened worktree, a kept branch, or a fresh base: other files.
+            const again = await W.enterSessionWorktree({ cwd: sub, name: "other", baseRef: "fresh" });
+            carryTrust(sub, again, "fresh");
+            expect(isTrusted(again.cwd)).toBe(false);
+        } finally {
+            forgetTrustInside(main);
+        }
     });
 
     test("removing a worktree forgets trust saved for it, and only for it", async () => {
@@ -419,6 +465,29 @@ describe("on exit", () => {
                 rmSync(other.path, { force: true });
             }
         }
+    });
+
+    test("another session open in it that hasn't sent anything yet keeps it", async () => {
+        const { main, wt } = await fresh();
+        const finish = await decideWorktree(wt, { cleanup: "auto" });
+        // A second `harness -w w`, idle: no session lock yet, only its mark.
+        const script = `const { markPresent } = await import(${JSON.stringify(join(ROOT, "src/server/worktrees.ts"))}); if (!markPresent(process.argv[1])) process.exit(2); console.log("ready"); await Bun.sleep(30000);`;
+        const other = Bun.spawn([process.execPath, "-e", script, wt.path], { stdout: "pipe" });
+        try {
+            const reader = other.stdout.getReader();
+            expect(new TextDecoder().decode((await reader.read()).value)).toContain("ready");
+            for (const end of [await finish(), await (await decideWorktree(wt, { cleanup: "auto" }))()]) {
+                expect(end.kind).toBe("kept");
+                expect((end as { why?: string }).why).toContain("A Harness session is open");
+            }
+            expect(existsSync(wt.path)).toBe(true);
+            expect(branches(main)).toContain("harness/w");
+        } finally {
+            other.kill();
+            await other.exited;
+        }
+        // Once it's gone, its mark doesn't count.
+        expect(await (await decideWorktree(wt, { cleanup: "auto" }))()).toEqual({ kind: "removed", branchDeleted: true });
     });
 
     test("HEAD moved to another commit without new ones: asks, and the branch stays", async () => {

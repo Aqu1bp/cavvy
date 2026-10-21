@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "bun";
 import { createHash } from "crypto";
-import { appendFileSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "fs";
+import { appendFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "path";
 import { gitArgv, gitEnv } from "../util/git";
 import { isInside } from "../util/files";
@@ -540,24 +540,29 @@ export function planRemoval(o: { path: string; worktree: string; inUse: (path: s
 /** At most this many ignored entries are named; the token covers them all. */
 const IGNORED_SHOWN = 12;
 
-/** Ignored files and folders (collapsed to the folder) in the worktree, read without reading any contents. */
-async function ignoredEntries(path: string, log?: Log): Promise<string[]> {
-    const r = await runGitAsync(path, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], REMOVE_TIMEOUT_MS);
-    if (r.code !== 0 || r.timedOut) {
-        logFailure(log, "git ls-files for ignored files failed", r.stderr);
-        throw new RpcError("Git couldn't list the worktree's ignored files, so nothing was removed.", "git_failed");
+/** Ignored files and folders in the worktree, read without reading any contents: `shown` collapsed to the folder, `all` every file. */
+async function ignoredEntries(path: string, log?: Log): Promise<{ shown: string[]; all: string[] }> {
+    const list = (more: string[]) => runGitAsync(path, ["ls-files", "--others", "--ignored", "--exclude-standard", ...more, "-z"], REMOVE_TIMEOUT_MS);
+    const [shown, all] = await Promise.all([list(["--directory"]), list([])]);
+    for (const r of [shown, all]) {
+        if (r.code !== 0 || r.timedOut) {
+            logFailure(log, "git ls-files for ignored files failed", r.stderr);
+            throw new RpcError("Git couldn't list the worktree's ignored files, so nothing was removed.", "git_failed");
+        }
     }
-    return r.stdout.split("\0").filter(Boolean).sort();
+    const split = (out: string) => out.split("\0").filter(Boolean).sort();
+    return { shown: split(shown.stdout), all: split(all.stdout) };
 }
 
+/** Covers every ignored file, so one added inside a folder the user saw listed (node_modules/late.js) changes it. */
 const ignoredToken = (path: string, entries: string[]) => createHash("sha256").update([path, ...entries].join("\0")).digest("hex");
 
 /** The ignored files removal would delete, unless `deleteIgnored` is the token for exactly them (or there are none). */
 export async function ignoredWaiting(plan: Removal, deleteIgnored: string | undefined, log?: Log): Promise<Extract<RemoveWorktreeResult, { removed: false }> | undefined> {
     if (!plan.exists) return undefined;
-    const entries = await ignoredEntries(plan.path, log);
-    const confirm = ignoredToken(plan.path, entries);
-    if (entries.length && deleteIgnored !== confirm) return { removed: false, ignored: entries.slice(0, IGNORED_SHOWN), total: entries.length, confirm };
+    const { shown, all } = await ignoredEntries(plan.path, log);
+    const confirm = ignoredToken(plan.path, [...shown, "", ...all]);
+    if (shown.length && deleteIgnored !== confirm) return { removed: false, ignored: shown.slice(0, IGNORED_SHOWN), total: shown.length, confirm };
     return undefined;
 }
 
@@ -646,6 +651,56 @@ export interface WorktreeMarker {
 
 function gitDirOf(worktree: string): string | undefined {
     return runGit(worktree, ["rev-parse", "--absolute-git-dir"])?.replace(/\n$/, "") || undefined;
+}
+
+/** One empty file per process working in a session worktree, named by its pid, in the worktree's Git dir. */
+const PRESENT = "harness-present";
+
+/**
+ * Marks this process as working in the worktree until it exits, so another
+ * session's cleanup leaves it alone, also before this session takes its lock
+ * (with its first message). Best effort: returns whether it was marked.
+ */
+export function markPresent(worktree: string): boolean {
+    const dir = gitDirOf(worktree);
+    if (!dir) return false;
+    const file = join(dir, PRESENT, String(process.pid));
+    try {
+        mkdirSync(join(dir, PRESENT), { recursive: true });
+        writeFileSync(file, "");
+    } catch {
+        return false;
+    }
+    process.once("exit", () => {
+        try {
+            rmSync(file, { force: true });
+        } catch {
+            // the worktree went first
+        }
+    });
+    return true;
+}
+
+/** Whether another running process marked itself present in the worktree. A stale mark (its process gone) doesn't count. */
+export function othersPresent(worktree: string): boolean {
+    const dir = gitDirOf(worktree);
+    if (!dir) return false;
+    let names: string[];
+    try {
+        names = readdirSync(join(dir, PRESENT));
+    } catch {
+        return false;
+    }
+    return names.some((n) => {
+        const pid = Number(n);
+        if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+        try {
+            process.kill(pid, 0);
+            return true;
+        } catch (e) {
+            return (e as NodeJS.ErrnoException).code === "EPERM";
+        }
+    });
 }
 
 export function writeMarker(worktree: string, marker: WorktreeMarker) {
@@ -746,7 +801,9 @@ export async function enterSessionWorktree(o: { cwd: string; name?: string; bran
         if (!looksLikeWorktreeName(name)) throw new RpcError(`“${name}” can't be a worktree name: use letters, digits, “.”, “_”, “-” and “/”, starting with a letter or digit.`, "bad_folder");
         const folder = checkFolder(defaultFolder(name));
         const path = join(main, WORKTREES_DIR, folder);
-        const record = repo.records.find((r) => !r.bare && (resolve(r.path) === path || canonical(r.path) === canonical(path)));
+        // Only a real folder under .claude/worktrees: a link there (it can be committed) could point at the main checkout.
+        const linked = lexists(path) && lstatSync(path).isSymbolicLink();
+        const record = linked ? undefined : repo.records.find((r) => !r.bare && (resolve(r.path) === path || canonical(r.path) === canonical(path)) && isManaged(main, r.path, isDir(r.path)));
         if (record) {
             const existing = { ...record, exists: isDir(record.path) };
             if (!existing.exists) throw new RpcError(`Git still lists the worktree ${existing.path}, but its folder is gone. Run git worktree prune, then try again.`, "path_missing");

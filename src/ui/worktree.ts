@@ -7,10 +7,10 @@ import { realpathSync } from "fs";
 import { homedir } from "os";
 import { relative, sep } from "path";
 import { APP_NAME } from "../config/paths";
-import { forgetTrustInside, projectConfigSummary, trustFolder } from "../config/trust";
+import { forgetTrustInside, projectConfigSummary, trustedByUser, trustFolder, trustUntilExit } from "../config/trust";
 import { askOnce } from "./ask";
 import type { CleanupMode, SessionWorktree, WorktreeMarker, WorktreeWork } from "../server/worktrees";
-import { enterSessionWorktree, isPristine, readMarker, removeSessionWorktree, worktreeWork, type BaseRef } from "../server/worktrees";
+import { enterSessionWorktree, isPristine, markPresent, othersPresent, readMarker, removeSessionWorktree, worktreeWork, type BaseRef } from "../server/worktrees";
 import { RpcError } from "../server/rpc-error";
 import { heldSessionFolders } from "../agent/session";
 import { isInside } from "../util/files";
@@ -59,7 +59,12 @@ export function resumeCommand(name: string): string {
  * Error whose message is for the user.
  */
 export async function startWorktree(o: { cwd: string; name?: string; branchPrefix: string; baseRef: BaseRef; interactive: boolean }): Promise<SessionWorktree> {
-    const enter = () => enterSessionWorktree({ cwd: o.cwd, name: o.name, branchPrefix: o.branchPrefix, baseRef: o.baseRef });
+    // Marked as working there from the start: another session's cleanup leaves it alone.
+    const enter = async () => {
+        const wt = await enterSessionWorktree({ cwd: o.cwd, name: o.name, branchPrefix: o.branchPrefix, baseRef: o.baseRef });
+        markPresent(wt.path);
+        return wt;
+    };
     try {
         return await enter();
     } catch (e) {
@@ -84,6 +89,16 @@ export async function startWorktree(o: { cwd: string; name?: string; branchPrefi
         trustFolder(e.folder);
         return await enter();
     }
+}
+
+/**
+ * Trust in the launch folder carries over to the same subfolder of a new
+ * checkout of its own HEAD (the same files), for this session, as the user's
+ * own trust: the agent CLIs load project configuration only for that.
+ * Trusting the main checkout already covers its worktrees.
+ */
+export function carryTrust(launchCwd: string, wt: SessionWorktree, baseRef: BaseRef) {
+    if (trustedByUser(launchCwd) && wt.created && !wt.fromBranch && baseRef === "head") trustUntilExit(wt.cwd);
 }
 
 /** What else trusting a folder turns on, when it has project configuration. */
@@ -172,9 +187,9 @@ export async function decideWorktree(wt: SessionWorktree, o: { cleanup: CleanupM
     return v === "remove" ? remove : kept();
 }
 
-/** Another process's session in the folder; this one's own lock doesn't count. */
+/** Another process's session in the folder, or another process working there that has no session lock yet; this one doesn't count. */
 function inUse(dir: string): boolean {
-    return heldSessionFolders().some((h) => isInside(h, dir));
+    return othersPresent(dir) || heldSessionFolders().some((h) => isInside(h, dir));
 }
 
 const clean = (e: unknown) => redact((e as Error).message).replace(/\.$/, "");
