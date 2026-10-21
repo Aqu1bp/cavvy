@@ -884,6 +884,17 @@
     font: 0.929rem/1.5 var(--font-mono);
 }
 
+/* Short windows: the message box gives up height first, so the footer stays in reach. */
+@media (max-height: 560px) {
+    .dialog .commit-dialog textarea.input {
+        min-height: 72px;
+    }
+
+    .commit-files {
+        max-height: 120px;
+    }
+}
+
 .commit-generate {
     display: flex;
     align-items: center;

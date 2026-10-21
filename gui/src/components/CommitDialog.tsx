@@ -4,6 +4,8 @@ import { app, handleFor, rpc } from "../state/app";
 import { gitCommit, gitCommitMessage } from "../state/actions";
 import { commitUnavailable } from "../state/changes";
 import { commitRequest, setCommitRequest } from "../state/ui";
+import { mod, os } from "../lib/platform";
+import { plural } from "../lib/format";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
 
@@ -110,14 +112,24 @@ export function CommitDialog() {
         }
     };
 
+    // ⌘↵ (Ctrl+Enter elsewhere) in the message commits, as the button's key cap says.
+    const onMessageKey = (e: KeyboardEvent) => {
+        if (e.key !== "Enter" || e.isComposing || !(os === "macos" ? e.metaKey : e.ctrlKey)) return;
+        e.preventDefault();
+        void commit();
+    };
+
     return (
-        <Dialog open={Boolean(commitRequest())} onClose={close} title="Commit changes" width={620}>
+        <Dialog
+            open={Boolean(commitRequest())}
+            onClose={close}
+            title={paths().length ? `Commit ${plural(paths().length, "file")}` : "Commit changes"}
+            subtitle={view()?.repo ? <>On <span class="mono">{view()?.head?.branch ?? `detached HEAD ${view()?.head?.sha?.slice(0, 7) ?? ""}`}</span></> : undefined}
+            width={560}
+        >
             <div class="commit-dialog">
                 <Show when={!loading()} fallback={<Spinner />}>
                     <Show when={view()?.repo}>
-                        <div>
-                            Branch: <strong class="mono">{view()?.head?.branch ?? `Detached HEAD ${view()?.head?.sha?.slice(0, 7) ?? ""}`}</strong>
-                        </div>
                         <Show when={warning()}>
                             <p class="commit-warning" role="status">{warning()}</p>
                         </Show>
@@ -142,7 +154,7 @@ export function CommitDialog() {
                                 <p class="muted">The selected files no longer have changes. Refresh the Review pane.</p>
                             </Show>
                         </div>
-                        <label class="commit-message-label" for="commit-message">
+                        <label class="sr-only" for="commit-message">
                             Commit message
                         </label>
                         <textarea
@@ -153,6 +165,7 @@ export function CommitDialog() {
                             placeholder={"Subject (about 72 characters)\n\nOptional body"}
                             value={message()}
                             disabled={committing()}
+                            onKeyDown={onMessageKey}
                             onInput={(e) => {
                                 revision++;
                                 setMessage(e.currentTarget.value);
@@ -183,6 +196,7 @@ export function CommitDialog() {
                     <span title={blocked()}>
                         <button class="btn primary" disabled={!ready() || !message().trim() || committing() || generating()} onClick={() => void commit()}>
                             {committing() ? "Committing…" : "Commit"}
+                            <kbd aria-hidden="true">{os === "macos" ? "⌘↵" : `${mod}+↵`}</kbd>
                         </button>
                     </span>
                 </div>
