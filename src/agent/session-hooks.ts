@@ -9,7 +9,14 @@ import { loadMemory } from "./memory";
 
 const MEMORY_TYPE = { user: "User", project: "Project", local: "Local" } as const;
 
-export async function sessionStartHooks(settings: Settings, session: Session, source: string, cwd: string, warn: HookNotice, extra: Record<string, unknown> = {}): Promise<void> {
+export function sessionStartHooks(settings: Settings, session: Session, source: string, cwd: string, warn: HookNotice, extra: Record<string, unknown> = {}): Promise<void> {
+    const started = run(settings, session, source, cwd, warn, extra);
+    // The session's next turn waits for them, so the first prompt gets their context however soon it's sent.
+    session.hooksStarting = started.catch(() => {});
+    return started;
+}
+
+async function run(settings: Settings, session: Session, source: string, cwd: string, warn: HookNotice, extra: Record<string, unknown>): Promise<void> {
     const common = { session_id: session.meta.id, ...extra };
     const h = await fireHooks(settings, "SessionStart", { ...common, source, ...(session.model ? { model: session.model } : {}) }, cwd, warn);
     if (h?.additionalContext) session.hookContext.push(`Context from a SessionStart hook:\n${h.additionalContext}`);

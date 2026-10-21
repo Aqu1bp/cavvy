@@ -350,6 +350,37 @@ describe("SessionStart context and InstructionsLoaded", () => {
     });
 });
 
+describe("SessionStart and the first turn (review of #173)", () => {
+    test("a prompt sent while SessionStart hooks run waits for them and gets their context", async () => {
+        const proj = tempDir();
+        const settings = { autoCompact: false, hooks: { SessionStart: [{ command: "sleep 0.4; echo on branch main" }] } };
+        const { agent, session, requests } = agentFor(proj, settings, () => text("ok"));
+        // Not awaited, as the terminal and the app's server start them.
+        void sessionStartHooks(settings as any, session, "startup", proj, () => {});
+        await run(agent, "hi");
+        expect(JSON.stringify(requests[0]!.messages.at(-1).content)).toContain("Context from a SessionStart hook:\\non branch main");
+    });
+    test("watch paths from SessionStart, and from FileChanged later, stay watched over the next turns", async () => {
+        const proj = tempDir();
+        const watched = join(proj, "watched.txt");
+        const added = join(proj, "added.txt");
+        const out = join(proj, "changed.jsonl");
+        // A hook's watchPaths replace the last list a hook gave, so FileChanged's keeps the first file too.
+        const settings = { autoCompact: false, hooks: { SessionStart: [{ command: `echo '{"hookSpecificOutput":{"hookEventName":"SessionStart","watchPaths":["${watched}"]}}'` }], FileChanged: [record(out, `; echo '{"hookSpecificOutput":{"hookEventName":"FileChanged","watchPaths":["${watched}","${added}"]}}'`)] } };
+        const { agent, session } = agentFor(proj, settings, () => text("ok"));
+        await sessionStartHooks(settings as any, session, "startup", proj, () => {});
+        await run(agent, "one");
+        await run(agent, "two");
+        writeFileSync(watched, "1");
+        await until(() => lines(out).length >= 1);
+        await run(agent, "three");
+        writeFileSync(added, "x");
+        await until(() => lines(out).length >= 2);
+        expect(lines(out).map((l) => l.file_path)).toEqual([watched, added]);
+        await agent.dispose();
+    });
+});
+
 describe("hook input", () => {
     test("every event gets the session, the mode and the effort", async () => {
         const proj = tempDir();

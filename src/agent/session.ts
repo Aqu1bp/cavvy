@@ -216,6 +216,8 @@ export class Session {
     hookContext: string[] = [];
     /** Files SessionStart hooks asked FileChanged to watch (never saved). */
     hookWatchPaths?: string[];
+    /** SessionStart hooks still running: a turn waits for them, for their context and watch paths. */
+    hooksStarting?: Promise<void>;
     private subagentRuns = new Set<string>();
     private file: string;
     private persist: boolean;

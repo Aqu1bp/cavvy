@@ -503,11 +503,16 @@ export class Agent {
         this.hookStop = undefined;
         this.turnError = undefined;
         this.autoCompactBlocked = false;
-        if (!this.o.isSubagent) {
-            this.watchFiles();
-            if (this.session.hookWatchPaths) this.watchFiles()?.setDynamic(this.session.hookWatchPaths.splice(0));
-        }
         try {
+            if (!this.o.isSubagent) {
+                // SessionStart hooks still running (a first prompt sent at once): their context and watch paths come first.
+                if (this.session.hooksStarting) await Promise.race([this.session.hooksStarting, new Promise((r) => opts.signal.addEventListener("abort", r, { once: true }))]);
+                this.watchFiles();
+                // Taken once: later turns leave the watch list as hooks have changed it since.
+                const paths = this.session.hookWatchPaths;
+                this.session.hookWatchPaths = undefined;
+                if (paths) this.watchFiles()?.setDynamic(paths);
+            }
             const reason = await this.runInner(content, opts);
             if (reason === "error" && !this.o.isSubagent) {
                 const message = this.turnError ?? "The turn ended on an error";
