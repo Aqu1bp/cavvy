@@ -142,7 +142,7 @@ export interface BackendTurn {
     effort?: Effort;
     fastMode?: boolean;
     appendSystemPrompt?: string;
-    /** Grace for Claude Code background shells/monitors (seconds, default 600). */
+    /** Grace for Claude Code background shells without a timeout of their own, and monitors (seconds, default 1800). */
     backgroundWaitSec?: number;
     additionalDirectories: string[];
     /** The user trusts this folder's configuration. */

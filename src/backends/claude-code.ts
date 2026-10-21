@@ -15,7 +15,8 @@
 // task-notification). So a run lasts until the prompts it sent are answered
 // (each result names the prompt it answers, by the uuid it was sent with) and
 // nothing it waits for is left in the background, at most
-// backgroundTiming.maxWaitMs past the answer.
+// backgroundTiming.maxWaitMs past the answer; longer only for a background
+// command still within its own timeout, which Claude Code would let run.
 //
 // What this never does: read, copy or forward Claude Code's credentials (its
 // keychain entry, ~/.claude/.credentials.json, CLAUDE_CODE_OAUTH_TOKEN), call
@@ -61,10 +62,12 @@ export const attachTiming = { timeoutMs: 30_000 };
 
 /** Waiting on Claude Code's background work once the prompt is answered (changeable for tests). */
 export const backgroundTiming = {
-    /** Overall background wait cap, including across automatic report turns. */
+    /** Overall background wait cap, including across automatic report turns. It doesn't stop a command still within its own timeout. */
     maxWaitMs: 60 * 60_000,
-    /** Shells and monitors get a shorter grace; dev servers should not hold a turn open. */
-    commandWaitMs: 10 * 60_000,
+    /** The grace for a background command that passes no timeout, and for monitors: Claude Code's default background timeout. */
+    commandWaitMs: 30 * 60_000,
+    /** The most a background command's own timeout can give it: Claude Code's maximum background timeout. */
+    commandMaxTimeoutMs: 2 * 60 * 60_000,
     /** A selective stop must answer promptly, or shutdown is the only safe fallback. */
     stopTimeoutMs: 5000,
     /** After one ends, how long Claude Code has to start its turn with the report before the run ends without it. */
@@ -73,9 +76,24 @@ export const backgroundTiming = {
     pollMs: 300,
 };
 
+/** The grace for a background command without a timeout of its own, and for monitors: the setting (seconds), else the default. */
 export function claudeBackgroundWaitMs(seconds: unknown): number {
     return typeof seconds === "number" && seconds >= 0 && Number.isFinite(seconds * 1000) ? seconds * 1000 : backgroundTiming.commandWaitMs;
 }
+
+/**
+ * A background Bash command's own timeout (ms), as Claude Code applies it:
+ * how long the command may run in the background, at most its maximum.
+ * Undefined when the call passed none (then the grace above applies).
+ */
+export function claudeCommandTimeoutMs(input: Record<string, unknown>): number | undefined {
+    const t = input.timeout;
+    if (input.run_in_background !== true || typeof t !== "number" || !(t > 0) || !Number.isFinite(t)) return undefined;
+    return t;
+}
+
+/** A duration for a notice or the prompt: minutes from one up, else seconds. */
+const span = (ms: number) => (ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.ceil(ms / 1000)}s`);
 
 /** Deliberately conservative command heuristic, never run on an agent's prose. */
 export function longLivedClaudeCommand(command: string): boolean {
@@ -110,6 +128,11 @@ interface BackgroundWork {
     commandTask?: boolean;
     monitor?: boolean;
     command?: string;
+    /** A background Bash command's own timeout (ms), and when it started: it may run until then. */
+    timeoutMs?: number;
+    started?: number;
+    /** A sub-agent's Agent call. */
+    toolUseId?: string;
     label: string;
 }
 
@@ -409,8 +432,9 @@ class ClaudeTurn {
     /** Each command's grace starts after an answer, or when it joins the wait. */
     private commandWaitingSince = new Map<string, number>();
     private waitingLabel?: string;
-    private taskCommands = new Map<string, string>();
-    private shellCommands = new Map<string, string>();
+    /** Each Bash call's command and own background timeout, by its tool_use id; then by the task it started (task_started), from when. */
+    private shellCommands = new Map<string, { command: string; timeoutMs?: number }>();
+    private taskCommands = new Map<string, { command: string; timeoutMs?: number; started: number }>();
     private stoppedTaskIds = new Set<string>();
     private stoppedBackground = new Set<string>();
     private pendingStops = new Map<string, { task: BackgroundWork; since: number }>();
@@ -462,7 +486,7 @@ class ClaudeTurn {
         if (t.resumeId) a.push("--resume", t.resumeId, ...(t.forkSession ? ["--fork-session"] : []));
         if (t.maxTurns && Number.isFinite(t.maxTurns)) a.push("--max-turns", String(t.maxTurns));
         a.push("--append-system-prompt", [t.appendSystemPrompt, t.goalContext,
-            `Harness waits up to ${claudeBackgroundWaitMs(t.backgroundWaitSec) / 1000} seconds after an answer for reported background commands and monitors; sub-agents retain their 60-minute limit. Background commands and monitors do not survive process shutdown, a user interrupt, or their grace timeout. Recognized dev servers/watchers are stopped without waiting after the answer. Consume finite-work results before declaring success; do not expect a background server to outlive the turn. Work not reported by the CLI cannot be waited for.`,
+            `After an answer, Harness waits for a reported background Bash command until its own \`timeout\` runs out, counted from its start (at most ${span(backgroundTiming.commandMaxTimeoutMs)}); for one without a timeout, and for each monitor, it waits up to ${claudeBackgroundWaitMs(t.backgroundWaitSec) / 1000} seconds after the answer. Sub-agents and other background work have a ${span(backgroundTiming.maxWaitMs)} limit, which doesn't cut short a command still within its own timeout. For a long finite job in the background (a test suite, a build, a benchmark), pass \`timeout\` with \`run_in_background\`, set to how long it may take. Background commands and monitors do not survive process shutdown, a user interrupt, or the end of their wait. Recognized dev servers/watchers are stopped without waiting after the answer, timeout or not. Consume finite-work results before declaring success; do not expect a background server to outlive the turn. Work not reported by the CLI cannot be waited for.`,
         ].filter(Boolean).join("\n\n"));
         for (const d of t.additionalDirectories) a.push("--add-dir", d);
         if (this.pluginDir) a.push("--plugin-dir", this.pluginDir);
@@ -547,12 +571,16 @@ class ClaudeTurn {
         const labels = new Set(agents.filter((id) => !this.agentTasks.has(id)).map((id) => this.agentLabels.get(id) ?? "sub-agent"));
         // And what else it lists (a sub-agent there that's one of those once only).
         const listed = (this.background ?? []).filter((t) => !this.stoppedTaskIds.has(t.id) && !tasks.has(t.id) && !(t.type === "local_agent" && labels.has(t.description)));
-        return [...agents.map((id) => ({ agent: true, label: this.agentLabels.get(id) ?? "sub-agent" })), ...listed.map((t) => ({ id: t.id, agent: t.type === "local_agent", commandTask: t.type === "local_bash" || t.type.startsWith("monitor"), monitor: t.type.startsWith("monitor"), command: t.type === "local_bash" ? this.taskCommands.get(t.id) ?? t.description : undefined, label: t.description || "background task" }))];
+        return [...agents.map((id) => ({ id: this.agentTasks.get(id), toolUseId: id, agent: true, label: this.agentLabels.get(id) ?? "sub-agent" })), ...listed.map((t) => {
+            const shell = t.type === "local_bash" ? this.taskCommands.get(t.id) : undefined;
+            return { id: t.id, agent: t.type === "local_agent", commandTask: t.type === "local_bash" || t.type.startsWith("monitor"), monitor: t.type.startsWith("monitor"), command: t.type === "local_bash" ? shell?.command ?? t.description : undefined, timeoutMs: shell?.timeoutMs, started: shell?.started, label: t.description || "background task" };
+        })];
     }
 
     /** Background sub-agents Claude Code hasn't said are over. */
     private unreported(): string[] {
-        return [...this.backgroundAgents].filter((id) => this.liveAgents.has(id));
+        // One Harness stopped (at the overall cap) is over too, whatever Claude Code says of it later.
+        return [...this.backgroundAgents].filter((id) => this.liveAgents.has(id) && !this.stoppedTaskIds.has(this.agentTasks.get(id) ?? ""));
     }
 
     /**
@@ -594,8 +622,12 @@ class ClaudeTurn {
             // Command tasks come from the CLI's list and have task IDs.
             const id = task.id!;
             if (!this.commandWaitingSince.has(id)) this.commandWaitingSince.set(id, now);
+            const until = ownDeadline(task);
             if (task.command && longLivedClaudeCommand(task.command)) stopping.push({ task, why: "recognized long-lived server/watcher" });
-            else if (now - this.commandWaitingSince.get(id)! >= grace) stopping.push({ task, why: `background grace expired after ${grace / 1000}s` });
+            // One with a timeout of its own runs until it's up, as in Claude Code; the setting changes only the default.
+            else if (until !== undefined) {
+                if (now >= until) stopping.push({ task, why: `its background timeout of ${span(until - task.started!)} ran out` });
+            } else if (now - this.commandWaitingSince.get(id)! >= grace) stopping.push({ task, why: `background grace expired after ${grace / 1000}s` });
         }
         if (stopping.length) {
             if (stopping.length === left.length) {
@@ -614,11 +646,17 @@ class ClaudeTurn {
             this.settleTimer = undefined;
             this.waitFor(left);
             if (Date.now() - this.waitingSince! < backgroundTiming.maxWaitMs) return false;
-            // Waited long enough (only between Claude Code's turns, so none is cut short): what's left stops with it.
+            // Waited long enough (only between Claude Code's turns, so none is cut short). A command still
+            // within its own timeout goes on (until it's up, above); what else is left stops.
             const ms = backgroundTiming.maxWaitMs;
+            const over = left.filter((t) => ownDeadline(t) === undefined);
+            if (over.length < left.length) {
+                for (const task of over) this.stopTask(task, `waited ${span(ms)}, the limit for background work`);
+                return false;
+            }
             this.toldStopped = true;
             this.rememberStopped(left);
-            this.host.emit({ type: "notice", level: "warn", message: `Stopped waiting for ${describeBackground(left)} after ${ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.ceil(ms / 1000)}s`}. ${left.length === 1 ? "It was" : "They were"} stopped with Claude Code, so ${left.length === 1 ? "its report" : "their reports"} won't come.` });
+            this.host.emit({ type: "notice", level: "warn", message: `Stopped waiting for ${describeBackground(left)} after ${span(ms)}. ${left.length === 1 ? "It was" : "They were"} stopped with Claude Code, so ${left.length === 1 ? "its report" : "their reports"} won't come.` });
             return true;
         }
         this.stopWaiting();
@@ -684,6 +722,8 @@ class ClaudeTurn {
             this.pendingStops.delete(id);
             if (response.subtype !== "success") { this.stopFailed = true; return; }
             this.stoppedTaskIds.add(id);
+            // A sub-agent stopped at the overall cap: over, without a report.
+            if (task.toolUseId) this.endAgent(task.toolUseId, "aborted");
             this.noteStopped([task], why);
         });
         this.proc.send({ type: "control_request", request_id: request, request: { subtype: "stop_task", task_id: id } });
@@ -966,7 +1006,7 @@ class ClaudeTurn {
                 break;
             case "task_started": {
                 const id = String(m.tool_use_id ?? "");
-                if (this.shellCommands.has(id) && typeof m.task_id === "string") this.taskCommands.set(m.task_id, this.shellCommands.get(id)!);
+                if (this.shellCommands.has(id) && typeof m.task_id === "string") this.taskCommands.set(m.task_id, { ...this.shellCommands.get(id)!, started: Date.now() });
                 if (this.agentLabels.has(id) && typeof m.task_id === "string") this.agentTasks.set(id, m.task_id);
                 // Its permission requests carry this id (agent_id): which agent asks.
                 if (typeof m.task_id === "string" && typeof m.subagent_type === "string") this.agentTypes.set(m.task_id, m.subagent_type);
@@ -1059,7 +1099,7 @@ class ClaudeTurn {
                 if (over) continue;
                 const { name, input } = toHarness(b.name, b.input ?? {});
                 const title = titleFor(name, input);
-                if (b.name === "Bash" && typeof input.command === "string") this.shellCommands.set(b.id, input.command);
+                if (b.name === "Bash" && typeof input.command === "string") this.shellCommands.set(b.id, { command: input.command, timeoutMs: claudeCommandTimeoutMs(input) });
                 this.subTools.set(b.id, { name, input, title, started: Date.now(), parent });
                 this.host.emit({ type: "subagent", parentId: parent, label, event: { type: "tool_start", call: { type: "tool_call", id: b.id, name, input }, title } });
             }
@@ -1088,7 +1128,7 @@ class ClaudeTurn {
                 const { name, input } = toHarness(b.name, b.input ?? {});
                 const title = titleFor(name, input);
                 this.tools.set(b.id, { name, input, title, started: Date.now() });
-                if (b.name === "Bash" && typeof input.command === "string") this.shellCommands.set(b.id, input.command);
+                if (b.name === "Bash" && typeof input.command === "string") this.shellCommands.set(b.id, { command: input.command, timeoutMs: claudeCommandTimeoutMs(input) });
                 if (b.name === "Agent" || b.name === "Task") this.agentLabels.set(b.id, String(input.description ?? input.subagent_type ?? "sub-agent"));
                 this.host.emit({ type: "tool_start", call: { type: "tool_call", id: b.id, name, input }, title });
             }
@@ -1409,6 +1449,11 @@ class ClaudeTurn {
 }
 
 /** "2 background sub-agents (Map auth, Check tests)". */
+/** When a background command with a timeout of its own is up: its timeout (at most Claude Code's maximum) from its start. */
+function ownDeadline(t: BackgroundWork): number | undefined {
+    return t.timeoutMs !== undefined && t.started !== undefined ? t.started + Math.min(t.timeoutMs, backgroundTiming.commandMaxTimeoutMs) : undefined;
+}
+
 function describeBackground(list: { agent: boolean; label: string }[]): string {
     const kind = list.length && list.every((x) => x.agent) ? "background sub-agent" : "background task";
     const shown = list.slice(0, 3).map((x) => x.label);

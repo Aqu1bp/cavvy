@@ -2395,10 +2395,10 @@ describe("Claude Code turn reliability (#60, #61, #64)", () => {
 
 
 describe("Claude Code background grace (#60 follow-up)", () => {
-    test("default grace is ten minutes, invalid settings fall back, and zero disables waiting", async () => {
+    test("default grace is thirty minutes (Claude Code's default background timeout), invalid settings fall back, and zero disables waiting", async () => {
         const { claudeBackgroundWaitMs } = await import("../src/backends/claude-code");
-        expect(claudeBackgroundWaitMs(undefined)).toBe(600_000);
-        for (const value of [-1, Infinity, NaN, "10"]) expect(claudeBackgroundWaitMs(value)).toBe(600_000);
+        expect(claudeBackgroundWaitMs(undefined)).toBe(1_800_000);
+        for (const value of [-1, Infinity, NaN, "10"]) expect(claudeBackgroundWaitMs(value)).toBe(1_800_000);
         expect(claudeBackgroundWaitMs(0)).toBe(0);
         expect(claudeBackgroundWaitMs(12)).toBe(12_000);
     });
