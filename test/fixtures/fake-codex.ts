@@ -39,6 +39,7 @@
 // FAKE_THREAD_TIER     the service tier a resumed thread is already on (e.g. priority from an earlier turn);
 // FAKE_CONFIG_TIER     the tier Codex's own config gives a new thread
 // FAKE_SLOW_RESUME, FAKE_SLOW_TURN_START  milliseconds before answering thread/resume, turn/start
+// FAKE_TURN_MS        how long every turn works before it answers
 // FAKE_STEER_WAKES=1  turn/steer is refused unless its expectedTurnId is the turn running now; in the "slow"
 //                     scenario a steer ends the first turn's wait, and its answer repeats what was steered
 // FAKE_MCP_CALLS      the "mcp" scenario's calls to servers from the thread's config: [{ server?, tool, args }]
@@ -52,7 +53,8 @@
 // FAKE_GOAL_TURNS     thread goals (thread/goal/get, set, clear): while one is active, each turn that ends (and
 //                     making it active while idle) starts another of Codex's own, until this many have run
 //                     (default 2) and it's complete;
-//                     FAKE_NO_GOALS=1: an older Codex without them
+//                     FAKE_NO_GOALS=1: an older Codex without them; FAKE_GOAL_RACE=1: a turn/start while the goal is
+//                     active loses to a turn Codex starts itself (refused); the usage-limit scenario stops it (usageLimited)
 // FAKE_USER_MCP       config/read's mcp_servers: the user's own servers (JSON); FAKE_NO_CONFIG_READ=1 fails config/read
 // FAKE_CONFIG_LAYERS  overrides config/read provenance (JSON)
 //
@@ -175,8 +177,10 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             notify("thread/goal/updated", { threadId, turnId, goal: goalOut(g) });
         }
         notify("turn/completed", { threadId, turn: { id: turnId, status, error: null } });
-        // Still active: Codex goes on with it by itself.
-        if (going && g.status === "active") setTimeout(() => void runTurn(threadId, `turn-${++turnSeq}`, lastPolicy), 5);
+        // Still active: Codex goes on with it by itself, unless a turn has started since.
+        const goOn = () => void ((!current || current.done) && runTurn(threadId, `turn-${++turnSeq}`, lastPolicy));
+        // FAKE_GOAL_CONTINUE_MS: how soon (default 5; 0: at once, before anything else is read).
+        if (going && g.status === "active") process.env.FAKE_GOAL_CONTINUE_MS === "0" ? goOn() : setTimeout(goOn, Number(process.env.FAKE_GOAL_CONTINUE_MS ?? 5));
     };
     notify("turn/started", { threadId, turn: { id: turnId, status: "inProgress" } });
     for (let i = 0; process.env.FAKE_LIMIT_UPDATE && i < Number(process.env.FAKE_LIMIT_REPEAT ?? 1); i++) notify("account/rateLimits/updated", JSON.parse(readFileSync(process.env.FAKE_LIMIT_UPDATE, "utf-8")));
@@ -184,9 +188,18 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     delayedLimits?.();
     delayedLimits = undefined;
     await releasedLimits;
+    if (process.env.FAKE_TURN_MS) await Bun.sleep(Number(process.env.FAKE_TURN_MS));
     if (scenario === "usage-limit") {
         const error = { message: "You've hit your usage limit. Upgrade to Pro or try again later.", codexErrorInfo: "usageLimitExceeded", additionalDetails: null };
         notify("error", { error, willRetry: false, threadId, turnId });
+        t.done = true;
+        // Its goal stops there too.
+        const g = goals.get(threadId);
+        if (g?.status === "active") {
+            g.status = "usageLimited";
+            saveGoals();
+            notify("thread/goal/updated", { threadId, turnId, goal: goalOut(g) });
+        }
         return notify("turn/completed", { threadId, turn: { id: turnId, status: "failed", error } });
     }
     notify("item/started", { threadId, turnId, item: { type: "agentMessage", id: `msg-${turnId}`, text: "", ...phase("commentary") } });
@@ -488,6 +501,12 @@ async function handle(m: any) {
             return reply({ thread: { id }, model: projectModel() ?? p.model ?? "gpt-test", serviceTier: "default" });
         }
         case "turn/start": {
+            // FAKE_GOAL_RACE=1: with the goal active, Codex has just started its own next turn, and refuses this one.
+            const raced = goals.get(p.threadId);
+            if (process.env.FAKE_GOAL_RACE === "1" && raced?.status === "active" && (!current || current.done)) {
+                void runTurn(p.threadId, `turn-${++turnSeq}`, lastPolicy);
+                return fail("a turn is already running");
+            }
             // Like Codex's: a value (or null) changes the thread's tier from this turn on; leaving it out keeps it.
             if ("serviceTier" in p) setTier(p.threadId, p.serviceTier);
             const turnId = `turn-${++turnSeq}`;

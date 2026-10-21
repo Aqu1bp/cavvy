@@ -486,8 +486,8 @@ export function nativeGoals(provider: string | undefined): boolean {
 export interface NativeGoal {
     provider: "claude-code" | "codex";
     condition: string;
-    /** "limited": a usage or token budget stopped it; "complete": met. */
-    status: "active" | "paused" | "blocked" | "limited" | "complete";
+    /** "limited": a usage or token budget stopped it; "complete": met; "failed": judged impossible (Claude Code). */
+    status: "active" | "paused" | "blocked" | "limited" | "complete" | "failed";
     /** When it was set, ms. */
     since: number;
     /** Turns it has checked (Claude Code), when known. */
@@ -520,6 +520,24 @@ export function nativeGoalView(g: NativeGoal, running: boolean): GoalState {
         ...(g.lastReason ? { lastReason: g.lastReason } : {}),
         ...(note ? { note } : {}),
     };
+}
+
+/** The loop's goal, cleared on a switch to Claude Code or Codex (or a session reopened on one). */
+export function loopGoalDropped(condition: string, provider: string): string {
+    const by = NATIVE_NAMES[provider as NativeGoal["provider"]] ?? provider;
+    return `Goal cleared: ${clip(condition, 200)}. ${by} keeps goals of its own: /goal <condition> sets one there.`;
+}
+
+/** What's said when a CLI's goal ends (met, or judged impossible); undefined while it goes on. */
+export function nativeGoalEnd(g: NativeGoal): string | undefined {
+    if (g.status === "complete") return `✓ Goal achieved: ${g.condition}${g.lastReason ? `\n${g.lastReason}` : ""}`;
+    if (g.status === "failed") return `✗ Goal stopped, judged impossible: ${g.condition}${g.lastReason ? `\n${g.lastReason}` : ""}`;
+    return undefined;
+}
+
+/** Codex stopped its goal at a usage limit: the automatic resume after it goes on with the goal. */
+export function limitedCodexGoal(g: NativeGoal | undefined): boolean {
+    return g?.provider === "codex" && g.status === "limited";
 }
 
 /** "Goal (Codex, paused): …" and its details, for /goal while a turn runs (the CLI answers it otherwise). */

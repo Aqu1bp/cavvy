@@ -45,6 +45,10 @@ import { claudeMcpPolicy } from "./claude-mcp-policy";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn } from "./types";
 import type { TurnEndReason } from "../agent/agent";
 import type { NativeGoal } from "../agent/goal";
+import { ClaudeGoalWatch, claudeTranscriptFile } from "./claude-goal";
+
+/** How often the transcript is looked at for the goal's progress while Claude Code runs. */
+const GOAL_POLL_MS = 400;
 
 /** How long each turn waits for approved MCP servers and delegation before sending the prompt (changeable for tests). */
 export const attachTiming = { timeoutMs: 30_000 };
@@ -294,6 +298,8 @@ class ClaudeTurn {
     private texts: string[] = [];
     private actions: string[] = [];
     private sessionId?: string;
+    /** Its /goal, followed in its transcript. */
+    private goals?: ClaudeGoalWatch;
     private billedToPlan = false;
     private resolvedModel?: string;
     private contextTokens?: number;
@@ -676,7 +682,11 @@ class ClaudeTurn {
     async run(content: unknown[]): Promise<BackendResult> {
         const { signal } = this.t;
         if (signal.aborted) return { reason: "aborted", text: "", actions: [] };
-        this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd, env: accountEnv(this.def.id, this.t.accountId, this.t.cwd) });
+        const env = accountEnv(this.def.id, this.t.accountId, this.t.cwd);
+        this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd, env });
+        // Its /goal, as it goes: read from its transcript (src/backends/claude-goal.ts).
+        this.goals = new ClaudeGoalWatch(() => (this.sessionId ? claudeTranscriptFile(env.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR, this.t.cwd, this.sessionId) : undefined), Date.now(), (goal) => this.host.emit({ type: "goal", goal }));
+        const goalTimer = setInterval(() => this.goals?.poll(), GOAL_POLL_MS);
         const stopAccountWatch = watchAccountFolders(() => {
             this.failure = "Account folders changed while Claude Code was running. Send again to apply their updated protections.";
             this.reason = "error";
@@ -698,6 +708,7 @@ class ClaudeTurn {
         try {
             for await (const m of this.proc.messages()) {
                 if (m.type === "result") {
+                    this.goals?.poll();
                     this.commandWaitingSince.clear();
                     this.busy = false;
                     const ours = this.answers(m);
@@ -717,6 +728,8 @@ class ClaudeTurn {
                 if (!this.busy && (await this.idle())) break;
             }
         } finally {
+            clearInterval(goalTimer);
+            this.goals?.poll();
             stopAccountWatch();
             signal.removeEventListener("abort", onAbort);
             this.stopWaiting();
@@ -807,7 +820,9 @@ class ClaudeTurn {
                 this.onRateLimit(m.rate_limit_info ?? {});
                 break;
             case "active_goal":
-                this.host.emit({ type: "goal", goal: claudeGoal(m.value) });
+                // Its remote sessions report the goal themselves; the transcript says the same, and more (met, impossible).
+                this.goals?.poll();
+                if (!this.goals?.found) this.host.emit({ type: "goal", goal: claudeGoal(m.value) });
                 break;
         }
     }

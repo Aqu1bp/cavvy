@@ -16,7 +16,7 @@ const MODEL = { provider: "test", id: "m1", name: "Test model" } as any;
 const msg = (content: AssistantMessage["content"], stopReason: AssistantMessage["stopReason"] = "end_turn"): AssistantMessage => ({ role: "assistant", content, provider: "test", model: "m1", stopReason });
 
 /** An app on a fake model: each turn globs once, then answers; the goal check answers from `verdicts` in order. */
-function testApp(verdicts: string[], session?: InstanceType<typeof Session>) {
+function testApp(verdicts: string[], session?: InstanceType<typeof Session>, model = MODEL) {
     const cwd = realpathSync(tempDir("goal-tui-"));
     const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
     const printed: string[] = [];
@@ -25,7 +25,7 @@ function testApp(verdicts: string[], session?: InstanceType<typeof Session>) {
     (app as any).renderLive = () => {};
     app.session = session ?? Session.create(cwd, { persist: false });
     const checks: string[] = [];
-    app.model = MODEL;
+    app.model = model;
     app.client = {
         stream: async (req: ChatRequest) => {
             if (/check whether a coding agent has reached a goal/.test(req.system)) {
@@ -203,4 +203,28 @@ test("scheduled prompts wait while a goal is between turns, and leave a paused g
     release('{"verdict":"met","reason":"built"}');
     await until(() => !app.goal!.active && !app.busy);
     expect((app as any).schedulable()).toBe(true);
+});
+
+test("on Claude Code or Codex, a reopened session's goal of the loop here is cleared, and that's said", async () => {
+    const cwd = realpathSync(tempDir("goal-tui-"));
+    const session = Session.create(cwd, { persist: false });
+    session.setGoal({ condition: "the docs build", setAt: Date.now() });
+    const { app, text } = testApp([], session, { provider: "codex", id: "default", name: "Codex" });
+    expect(app.goal!.active).toBe(false);
+    expect(session.goal).toBeUndefined();
+    expect(text()).toContain("Goal cleared: the docs build. Codex keeps goals of its own: /goal <condition> sets one there.");
+    expect(text()).not.toContain("Goal restored");
+});
+
+test("a CLI's goal ending is said once, as it ends, not when a later run reports it again", async () => {
+    const { app, text } = testApp([]);
+    const report = (status: string) => (app as any).nativeGoalReported({ provider: "codex", condition: "ship it", status, since: Date.now() });
+    // A met goal from before: not news.
+    report("complete");
+    expect(text()).not.toContain("Goal achieved");
+    report("active");
+    report("complete");
+    report("complete");
+    expect(text().match(/✓ Goal achieved: ship it/g)).toHaveLength(1);
+    expect(app.nativeGoal).toBeUndefined();
 });

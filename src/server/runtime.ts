@@ -13,7 +13,7 @@ import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse
 import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, rewindTargets, untrackedChangesNote, type RestoreItem } from "../agent/checkpoints";
 import { beforeFork, forkCut, forkTargets } from "../agent/fork";
 import { fireHooks, type HookEvent } from "../agent/hooks";
-import { backgroundWork, canAnswerOneOff, GoalController, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, sessionTokens, type NativeGoal } from "../agent/goal";
+import { backgroundWork, canAnswerOneOff, GoalController, limitedCodexGoal, loopGoalDropped, nativeGoalEnd, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, sessionTokens, type NativeGoal } from "../agent/goal";
 import { Session } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { INIT_PROMPT, reviewPrompt } from "../commands/index";
@@ -449,7 +449,8 @@ export class Runtime {
     private runScheduled(prompt: string, job: ScheduledJob, label: string): Promise<unknown> {
         this.scheduledLabel = label;
         this.scheduledResume = job.kind === "resume";
-        return this.dispatch(prompt)
+        // Codex stopped its goal at the limit: the resume makes it active again, for Codex to go on with.
+        return this.dispatch(job.kind === "resume" && limitedCodexGoal(this.nativeGoal) ? "/goal resume" : prompt)
             .catch((e) => this.notice(redact((e as Error).message), "error"))
             .finally(() => {
                 this.scheduledLabel = undefined;
@@ -795,6 +796,11 @@ export class Runtime {
         this.client = client;
         // A CLI's own goal stays with that CLI: another provider doesn't carry it on.
         if (this.nativeGoal && this.nativeGoal.provider !== info.provider) this.nativeGoalReported(null);
+        // Nor does the loop's go on with a CLI, which keeps goals of its own (and gets /goal and the tab's buttons).
+        if (nativeGoals(info.provider)) {
+            const dropped = this.goal.clear();
+            if (dropped) this.notice(loopGoalDropped(dropped, info.provider), "info");
+        }
         this.classifier.setComplete((system, prompt, signal, o) => this.complete(system, prompt, signal, o));
         if (!this.agent) this.makeAgent();
         else {
@@ -909,9 +915,14 @@ export class Runtime {
 
     /** The CLI's goal changed: shown, and its end said (Codex says when it's met; Claude Code says so itself). */
     private nativeGoalReported(g: NativeGoal | null) {
-        if (g?.status === "complete") {
-            this.session.recordNotice("info", `✓ Goal achieved: ${g.condition}`);
-            this.notice(`✓ Goal achieved: ${g.condition}`);
+        const end = g && nativeGoalEnd(g);
+        if (end) {
+            // Said once, as it ends: Codex still reports a met goal at the start of later runs.
+            if (this.nativeGoal?.condition === g!.condition) {
+                const level = g!.status === "failed" ? "warn" : "info";
+                this.session.recordNotice(level, end);
+                this.notice(end, level);
+            }
             g = null;
         }
         this.nativeGoal = g ?? undefined;

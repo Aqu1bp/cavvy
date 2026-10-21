@@ -21,7 +21,7 @@ import { loadImageFile, planPaste, prepareImage, readClipboardImage, type NamedI
 import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
 import { DELEGATE_TOOL } from "../agent/delegation";
 import { fireHooks, type HookEvent } from "../agent/hooks";
-import { backgroundWork, canAnswerOneOff, GoalController, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, sessionTokens, type NativeGoal } from "../agent/goal";
+import { backgroundWork, canAnswerOneOff, GoalController, limitedCodexGoal, loopGoalDropped, nativeGoalEnd, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, sessionTokens, type NativeGoal } from "../agent/goal";
 import { Notifier } from "./notify";
 import { Session } from "../agent/session";
 import { SessionSchedules } from "../agent/schedule-host";
@@ -238,7 +238,8 @@ export class App {
         // A line of its own, so it doesn't read as part of the answer before it.
         this.print(["", theme.muted(`⏱ ${label}`)]);
         this.scheduledTurn = resume ? "resume" : true;
-        return this.submitText(prompt).finally(() => (this.scheduledTurn = false));
+        // Codex stopped its goal at the limit: the resume makes it active again, for Codex to go on with.
+        return this.submitText(resume && limitedCodexGoal(this.nativeGoal) ? "/goal resume" : prompt).finally(() => (this.scheduledTurn = false));
     }
 
     get cwd(): string {
@@ -484,6 +485,7 @@ export class App {
         this.client = client;
         // A CLI's own goal stays with that CLI: another provider doesn't carry it on.
         if (this.nativeGoal && this.nativeGoal.provider !== info.provider) this.nativeGoal = undefined;
+        this.dropLoopGoal();
         this.updateHelpers();
         if (!this.agent) this.makeAgent();
         else {
@@ -728,8 +730,17 @@ export class App {
         });
         if (session.goal) {
             this.goal.restore(session.goal);
-            this.notice(`◎ Goal restored: ${truncate(session.goal.condition.replace(/\s+/g, " "), 200)}. It continues after your next message, or /goal resume.`);
+            if (!this.dropLoopGoal()) this.notice(`◎ Goal restored: ${truncate(session.goal.condition.replace(/\s+/g, " "), 200)}. It continues after your next message, or /goal resume.`);
         }
+    }
+
+    /** Claude Code and Codex keep goals of their own (and get /goal): the loop's goal doesn't go on with them. True if one was dropped. */
+    private dropLoopGoal(): boolean {
+        const provider = this.model?.provider;
+        if (!nativeGoals(provider)) return false;
+        const dropped = this.goal?.clear();
+        if (dropped) this.notice(loopGoalDropped(dropped, provider!));
+        return Boolean(dropped);
     }
 
     /** Whether one-off requests (titles, the /goal check) have a model that answers them: not Claude Code or Codex, which run whole turns only. */
@@ -780,9 +791,15 @@ export class App {
     }
 
     private nativeGoalReported(g: NativeGoal | null) {
-        if (g?.status === "complete") {
-            this.session.recordNotice("info", `✓ Goal achieved: ${g.condition}`);
-            this.screen.print(["", `  ⎿  ${theme.success(`✓ Goal achieved: ${g.condition}`)}`]);
+        const end = g && nativeGoalEnd(g);
+        if (end) {
+            // Said once, as it ends: Codex still reports a met goal at the start of later runs.
+            if (this.nativeGoal?.condition === g!.condition) {
+                const failed = g!.status === "failed";
+                this.session.recordNotice(failed ? "warn" : "info", end);
+                const [head, ...rest] = end.split("\n");
+                this.screen.print((cols) => ["", ...[head!, ...rest].flatMap((line, i) => wrapLine(line, cols - 6).map((l, j) => (i === 0 && j === 0 ? `  ⎿  ${failed ? theme.warning(l) : theme.success(l)}` : `     ${theme.muted(l)}`)))]);
+            }
             g = null;
         }
         this.nativeGoal = g ?? undefined;
