@@ -3,6 +3,8 @@
 // sent to every GUI window that has the session open. The terminal app does
 // the same work in ui/app.ts; this is its counterpart without a terminal.
 
+import { NO_SCHEDULES, SessionSchedules, type ScheduleAction } from "../agent/schedule-host";
+import { CRON_TOOLS, jobLine } from "../agent/schedule-tools";
 import { turnDuration } from "./duration";
 import { existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
@@ -111,7 +113,7 @@ function steerable(q: Queued): boolean {
 }
 
 /** The slash commands the server runs itself (the GUI runs the others). */
-const SERVER_COMMANDS = new Set(["compact", "init", "review"]);
+const SERVER_COMMANDS = new Set(["compact", "init", "review", "loop", "schedules"]);
 
 /** A session title as it's stored: one line, 120 characters at most ("" if there's nothing left). */
 export function cleanTitle(title: string): string {
@@ -221,6 +223,10 @@ export class Runtime {
     private commitAbort?: AbortController;
     /** Being closed: it starts nothing more and sends nothing more (the session may be open again by then). */
     private closed = false;
+    /** /loop, cron jobs and the resume after a usage limit (src/agent/schedule.ts). */
+    readonly schedules: SessionSchedules;
+    /** The next turn is a schedule's ("every 10m"), not the user's. */
+    private scheduledLabel?: string;
     /** The rewind last shown: restoring does what it showed, or nothing if the conversation moved on. */
     private rewindShown?: { id: string; index: number; message: Message; count: number; plan?: RestoreItem[] };
 
@@ -283,6 +289,18 @@ export class Runtime {
         // Secrets live as long as the session is loaded: unloading it (closed, or idle with no window on it) drops them.
         this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore() };
         this.toolState.secrets!.onChange(() => this.setState({ secrets: this.toolState.secrets!.names() }));
+        this.schedules = new SessionSchedules({
+            session: () => this.session,
+            settings: () => this.settings(),
+            idle: () => this.schedulable(),
+            run: (prompt, _job, label) => this.runScheduled(prompt, label),
+            notice: (text, level) => this.notice(text, level),
+            changed: () => {
+                if (this.view) this.setState({ schedules: this.schedules.scheduler.info() });
+                this.engine.sessionChanged(this);
+            },
+        });
+        this.toolState.scheduler = this.schedules.scheduler;
         this.checker = new PermissionChecker(() => this.settings(), ws.cwd);
         this.classifier = new AutoClassifier(undefined);
         this.reviewer = ws.settings.reviewModel;
@@ -300,6 +318,8 @@ export class Runtime {
             if (this.queued.length) Object.assign(this.view.state, this.queueState());
         }
         this.ready = this.track(this.initModel());
+        // Saved schedules come back once there's a model to run them with.
+        void this.ready.then(() => !this.closed && this.schedules.restore(), () => undefined);
         void this.hook("SessionStart", { source: opts.resumed ? "resume" : "startup" });
     }
 
@@ -388,7 +408,25 @@ export class Runtime {
             planLinks: [...this.session.planLinks],
             ...(this.session.meta.forkOf ? { forkOf: { id: this.session.meta.forkOf.id, title: this.session.meta.forkOf.title } } : {}),
             secrets: this.toolState.secrets?.names() ?? [],
+            schedules: [],
         };
+    }
+
+    /** A scheduled prompt may start now: nothing running, waiting on the user, or being set up. */
+    private schedulable(): boolean {
+        return !this.closed && !this.busy && !this.pending.size && !this.switching && !this.committing && !this.queued.length && Boolean(this.agent);
+    }
+
+    private runScheduled(prompt: string, label: string): Promise<unknown> {
+        this.scheduledLabel = label;
+        return this.dispatch(prompt)
+            .catch((e) => this.notice(redact((e as Error).message), "error"))
+            .finally(() => (this.scheduledLabel = undefined));
+    }
+
+    /** session.schedule: one of the composer's schedule buttons. */
+    scheduleAction(scheduleId: string, action: ScheduleAction): boolean {
+        return Boolean(this.schedules.act(scheduleId, action));
     }
 
     /** Claude Code or Codex: an agent backend runs this session's turns. */
@@ -830,11 +868,11 @@ export class Runtime {
         const native = this.nativeSearch();
         const off = this.settings().webSearch === "off";
         const skill = skillTool(this.ws.skills);
-        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off))), ...(skill ? [skill] : []), ...this.ws.mcp.tools()];
+        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off))), ...(skill ? [skill] : []), ...CRON_TOOLS, ...this.ws.mcp.tools()];
     }
 
     private toolMeta(call: ToolCallPart): ToolMeta {
-        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? (call.name === "Skill" ? (skillTool(this.ws.skills) as Tool<any> | undefined) : undefined) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
+        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? CRON_TOOLS.find((t) => t.name === call.name) ?? (call.name === "Skill" ? (skillTool(this.ws.skills) as Tool<any> | undefined) : undefined) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
         let title = call.name;
         try {
             if (tool) title = tool.title(call.input ?? {});
@@ -1510,6 +1548,8 @@ export class Runtime {
         if (!this.pending.size) this.setStatus(this.busy ? "running" : "idle");
         else this.engine.sessionChanged(this);
         p.resolve(r);
+        // A question answered between turns (a plan handed off, say) may leave it idle.
+        if (!this.pending.size) queueMicrotask(() => this.schedules.poke());
     }
 
     /** The sub-agent itself, or for a sub-agent's own, the one at the top it runs under (a delegated task, say). */
@@ -1823,6 +1863,14 @@ export class Runtime {
             const [, name = "", args = ""] = trimmed.match(/^\/(\S+)\s*([\s\S]*)$/) ?? [];
             const cmd = name.toLowerCase();
             if (cmd === "compact") return void (await this.compact(args.trim() || undefined));
+            if (cmd === "loop") {
+                const r = this.schedules.loop(args);
+                return this.notice(r.text, r.level ?? "info");
+            }
+            if (cmd === "schedules") {
+                const r = this.schedules.manage(args) ?? { text: this.scheduleList() };
+                return this.notice(r.text, r.level ?? "info");
+            }
             if (cmd === "init") return this.startTurn(INIT_PROMPT, { display: "/init", kind: "command", attachments });
             if (cmd === "review") return this.startTurn(reviewPrompt(args.trim()), { display: `/review${args.trim() ? ` ${args.trim()}` : ""}`, kind: "command", attachments });
             const custom = this.ws.commands.find((c) => c.name === cmd);
@@ -1853,6 +1901,10 @@ export class Runtime {
         this.checkCommitting();
         const agent = this.agent;
         this.busy = true;
+        const scheduled = this.scheduledLabel;
+        this.scheduledLabel = undefined;
+        // The user's own turn: a resume waiting for the usage limit isn't needed.
+        if (!scheduled) this.schedules.userSent();
         let settled!: () => void;
         this.turnDone = new Promise<void>((r) => (settled = r));
         const ac = (this.abort = new AbortController());
@@ -1865,7 +1917,7 @@ export class Runtime {
         const { imagesKey: _provisional, ...attached } = attachedPrompt(opts.attachments);
         const turn: Turn = {
             id: this.newId(),
-            prompt: { text: display, ...attached, ...(opts.kind === "command" ? { command: true } : {}), index },
+            prompt: { text: display, ...attached, ...(opts.kind === "command" ? { command: true } : {}), ...(scheduled ? { scheduled } : {}), index },
             blocks: [],
             status: "running",
             startedAt: this.turnStartedAt,
@@ -1939,7 +1991,16 @@ export class Runtime {
         if (reason && reason !== "aborted" && (reason === "error" || elapsed >= notifyAfterMs(this.settings()))) {
             this.engine.notify(this, reason === "error" ? "error" : "done", reason === "error" ? "Stopped with an error" : `Finished in ${turnDuration(elapsed)}`);
         }
+        if (reason && !this.closed) this.schedules.turnEnded(reason, agent.limitStop);
         await this.runQueued(ac.signal.aborted);
+        this.schedules.poke();
+    }
+
+    /** /schedules in the GUI: the composer shows them too, with buttons. */
+    private scheduleList(): string {
+        const jobs = this.schedules.scheduler.list();
+        if (!jobs.length) return NO_SCHEDULES;
+        return ["Schedules (pause, run or delete them above the message box):", ...jobs.map((j) => `• ${jobLine(j)}`)].join("\n");
     }
 
     /** After a turn, a `!command` or a compaction: the next message sent meanwhile, or all of them back to the input box after an interrupt. */
@@ -2519,8 +2580,15 @@ export class Runtime {
         return !(this.agent?.delegatedTasks ?? []).some((t) => t.status === "running" || !t.delivered);
     }
 
+    /** Schedules run only while it's loaded: one that will run keeps it open with no window on it (it isn't busy, though). */
+    get scheduled(): boolean {
+        const s = this.schedules.scheduler;
+        return s.active > 0 || s.list().some((j) => j.due);
+    }
+
     /** SessionEnd hooks and background shells, when the server stops or the session is closed. */
     async close() {
+        this.schedules.dispose();
         this.abort?.abort();
         this.commitAbort?.abort();
         this.cancelInteractions();

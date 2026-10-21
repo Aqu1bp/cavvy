@@ -13,6 +13,7 @@ import { EffortMenu, FastModeToggle, ModelPicker, type CompareOption } from "./M
 import { startRun } from "./RunSheet";
 import { ModePicker, nextMode } from "./ModePicker";
 import { InteractionTab } from "./InteractionDock";
+import { ScheduleTab } from "./ScheduleTab";
 import { ComposerMeter } from "./ComposerMeter";
 import { AttachmentChips } from "./AttachmentChips";
 import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
@@ -457,6 +458,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         >
             <Show when={p.sessionId && st()?.queued.length}>
                 <QueueTab sessionId={p.sessionId!} state={st()!} dequeue={(i, edit) => void dequeue(i, edit)} />
+            </Show>
+            <Show when={p.sessionId && st()?.schedules?.length}>
+                <ScheduleTab sessionId={p.sessionId!} items={st()!.schedules} />
             </Show>
             <Show when={p.sessionId && interactions().length}>
                 <InteractionTab sessionId={p.sessionId!} items={interactions()} />

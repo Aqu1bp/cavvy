@@ -3,6 +3,7 @@
 // once, in different projects; each project gets its own settings, trust
 // decision, MCP servers and file index, shared by its sessions.
 
+import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
 import { ACCOUNT_PROVIDERS, account, accountProvider, addAccount, defaultAccount, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots } from "../providers/accounts";
 import { loginCommand } from "../backends/account-login";
 import { planLimitKey, type AccountInfo } from "./protocol";
@@ -351,9 +352,31 @@ export class Engine {
         void this.firstListings();
         // Every window applies a save of the keybindings file at once.
         this.stopKeybindings = watchKeybindings((r) => this.broadcast({ type: "keybindings.changed", keybindings: { path: keybindingsPath(), ...r } }));
+        this.reopenScheduled();
         purgeTrash();
         this.purgeTimer = setInterval(() => purgeTrash(), PURGE_EVERY_MS);
         this.purgeTimer.unref?.();
+    }
+
+    /**
+     * Sessions with saved schedules are opened when the server starts, so
+     * they run without a window on them. One that can't be (open in a
+     * terminal, its folder gone, not trusted) waits until it's opened.
+     */
+    private reopenScheduled() {
+        for (const [id, e] of Object.entries(readScheduleIndex())) {
+            if (this.runtimes.has(id)) continue;
+            try {
+                if (!isDir(e.cwd) || !isTrusted(e.cwd)) continue;
+                const rt = this.openSession(id);
+                // Nothing to run after all (deleted since): let it go again.
+                void rt.ready.then(() => this.unloadIfUnused(id), () => undefined);
+            } catch (err) {
+                const gone = err instanceof RpcError && err.code === "not_found";
+                if (gone) noteScheduleIndex(id, e.cwd, false);
+                this.log(`Schedules: couldn't reopen session ${id}: ${(err as Error).message}`);
+            }
+        }
     }
 
     async stop() {
@@ -908,7 +931,7 @@ export class Engine {
     private unloadIfUnused(id: string) {
         const rt = this.runtimes.get(id);
         if (!rt || this.stopping || [...this.clients].some((c) => c.subs.has(id))) return;
-        if (!rt.idle) return this.unloadLater(id);
+        if (!rt.idle || rt.scheduled) return this.unloadLater(id);
         void this.unload(rt);
     }
 
@@ -1637,6 +1660,8 @@ export class Engine {
             { name: "settings", description: "Open settings" },
             { name: "cost", description: "Tokens and cost by model, and your plan's limits" },
             { name: "context", description: "How full the context window is, and your plan's limits" },
+            { name: "loop", description: "Run a prompt now and then every interval (default 10m); /loop stop stops it", args: "[interval] <prompt>" },
+            { name: "schedules", description: "This session's schedules (pause, run or delete them above the message box)", args: "[pause|resume|delete|run <id>]" },
         ];
         const ws = this.workspaces.get(resolve(cwd));
         // Before a session opens the project, its commands are read from disk (the home screen checks a /word against them).
@@ -1930,6 +1955,11 @@ export class Engine {
                 return { output: this.runtime(p.id).toolOutput(str(p.toolId, "toolId")) };
             case "session.promptImages":
                 return { images: this.runtime(p.id).promptImages(num(p.seg, -1), num(p.index, -1)) };
+            case "session.schedule": {
+                const action = p.action;
+                if (action !== "pause" && action !== "resume" && action !== "run" && action !== "delete") throw new RpcError("action must be pause, resume, run or delete", "invalid");
+                return { found: this.runtime(p.id).scheduleAction(text(p.scheduleId, "scheduleId", 40), action) };
+            }
             case "session.dequeue": {
                 const q = this.runtime(p.id).dequeue(num(p.queueId, -1));
                 if (!q) return { removed: false };

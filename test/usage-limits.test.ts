@@ -354,7 +354,7 @@ async function runTurn(provider: "claude-code" | "codex") {
     const reason = await agent.run([{ type: "text", text: "hello" }], { signal: new AbortController().signal });
     const notices = events.flatMap((e) => (e.type === "notice" ? [`${e.level}: ${e.message}`] : []));
     const limits = events.flatMap((e) => (e.type === "limits" ? [e.limits] : []));
-    return { reason, notices, limits };
+    return { reason, notices, limits, limitStop: agent.limitStop };
 }
 
 const received = () =>
@@ -868,5 +868,36 @@ describe("Claude Code's listed commands", () => {
     test("names only, bounded and checked", () => {
         expect(cliCommandNames(["code-review", "/Simplify", "design:ux-copy", "__remote-workflow", "bad name", "x".repeat(101), 3, "../etc"])).toEqual(["code-review", "simplify", "design:ux-copy", "__remote-workflow"]);
         expect(cliCommandNames(undefined)).toBeUndefined();
+    });
+});
+
+describe("a turn stopped by the limit tells the host, so it can resume after the reset", () => {
+    test("Claude Code: with the reset time", async () => {
+        const at = soon();
+        process.env.FAKE_SCENARIO = "rate-limit";
+        process.env.FAKE_RATE_LIMIT = shifted("claude-rejected.json", at);
+        const r = await runTurn("claude-code");
+        expect(r.limitStop?.resetsAt).toBe(Math.round(at / 1000) * 1000);
+    });
+
+    test("Claude Code: without one", async () => {
+        process.env.FAKE_SCENARIO = "rate-limit";
+        process.env.FAKE_RATE_LIMIT = join(FIX, "claude-missing.json");
+        const r = await runTurn("claude-code");
+        expect(r.limitStop).toEqual({ resetsAt: undefined });
+    });
+
+    test("Codex: with the reset time", async () => {
+        process.env.FAKE_SCENARIO = "usage-limit";
+        process.env.FAKE_LIMIT_UPDATE = shifted("codex-update-reached.json", soon());
+        const r = await runTurn("codex");
+        expect(r.limitStop?.resetsAt).toBeGreaterThan(Date.now() + 2 * 3_600_000);
+    });
+
+    test("a normal turn: nothing", async () => {
+        process.env.FAKE_RATE_LIMIT = join(FIX, "claude-normal.json");
+        const r = await runTurn("claude-code");
+        expect(r.reason).toBe("done");
+        expect(r.limitStop).toBeUndefined();
     });
 });

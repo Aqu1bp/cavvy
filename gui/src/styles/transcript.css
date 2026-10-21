@@ -235,6 +235,15 @@
     opacity: 1;
 }
 
+.prompt-scheduled {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: 4px;
+    font-size: 0.786rem;
+    color: var(--fg-muted);
+}
+
 .user-bubble {
     max-width: 80%;
     min-width: 0;

@@ -116,6 +116,8 @@ const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
 /** Claude Code's tools that change files, off for a read-only sub-agent. */
 const READ_ONLY_DENY = ["Write", "Edit", "MultiEdit", "NotebookEdit"];
+/** Claude Code's own scheduling, which needs its process to stay up between turns. */
+export const CLAUDE_SCHEDULE_TOOLS = ["CronCreate", "CronDelete", "CronList", "ScheduleWakeup"];
 
 const STREAM_ARGS = ["-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"];
 
@@ -393,6 +395,8 @@ class ClaudeTurn {
         const sandbox = claudeAccountSandbox();
         // Also check excluded commands, which the CLI may run outside its sandbox.
         if (sandbox && !permissions.ask.includes("Bash")) permissions.ask.push("Bash");
+        // This process ends with the turn, so its own schedules would never fire: Harness's schedule tools keep them instead.
+        if (t.orchestrator?.tools.includes("schedule_create")) permissions.deny.push(...CLAUDE_SCHEDULE_TOOLS);
         // Always override external preferences: an unsupported model must not silently switch to Opus.
         const fastMode = Boolean(t.fastMode && t.model.supportsFastMode);
         const mcp = t.trusted && !t.readOnly ? claudeMcpPolicy(t.cwd, t.approvedMcpServers) : { strict: true };
@@ -743,12 +747,17 @@ class ClaudeTurn {
         if (!this.answered || this.unanswered.size || resumeFailed) {
             const code = await this.proc.exited;
             const why = [error, cliMessage(err)].filter(Boolean).join(": ") || `claude exited with code ${code}`;
-            return { reason: "error", text, actions: this.actions, backgroundStopped, error: resumeFailed ? `Couldn't resume the Claude Code session: ${why}` : `Claude Code stopped: ${why}`, resumeFailed };
+            return { reason: "error", text, actions: this.actions, backgroundStopped, error: resumeFailed ? `Couldn't resume the Claude Code session: ${why}` : `Claude Code stopped: ${why}`, resumeFailed, ...this.limitStop() };
         }
         const reason = this.reason ?? "done";
         // An answer with nothing in it (not a command of Claude Code's own, like /compact): said, so the turn isn't just blank.
         if (reason === "done" && !text.trim() && !this.actions.length && !this.t.prompt.trimStart().startsWith("/")) this.host.emit({ type: "notice", level: "warn", message: "Claude Code ended the turn without a reply." });
-        return { reason, text, actions: this.actions, error, backgroundStopped };
+        return { reason, text, actions: this.actions, error, backgroundStopped, ...(reason === "error" ? this.limitStop() : {}) };
+    }
+
+    /** The turn stopped on the plan's usage limit: when it resets, for an automatic resume. */
+    private limitStop(): Pick<BackendResult, "limit"> {
+        return this.limitHit ? { limit: { resetsAt: this.limits?.reached ? this.limits.resetsAt : undefined } } : {};
     }
 
     private fastModeNotice?: string;

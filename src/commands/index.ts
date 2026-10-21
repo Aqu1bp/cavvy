@@ -66,6 +66,8 @@ import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { account, addAccount, listAccounts } from "../providers/accounts";
 import { loginCommand as accountLoginCommand } from "../backends/account-login";
 import { clockTime, limitAccountLabel, limitLines } from "../backends/limits";
+import { describeJob, shortTime } from "../agent/schedule";
+import { NO_SCHEDULES } from "../agent/schedule-host";
 import { approvalMeaning, maskConfigValues, McpApprovalError, visible } from "../mcp/approval";
 import type { McpServerInfo } from "../mcp/info";
 import { mayStart } from "../mcp/manager";
@@ -1771,6 +1773,61 @@ async function bashesCommand(app: App) {
     }
 }
 
+/** /loop [interval] <prompt>, /loop stop, /loop (what's looping). */
+function loopCommand(app: App, args: string) {
+    const r = app.schedules.loop(args);
+    app.notice(r.text, r.level ?? "info");
+}
+
+type ScheduleAction = { do: "pause" | "run" | "delete"; id: string; index: number };
+
+/** /schedules: this session's schedules, to pause, resume, run now or delete. With arguments, does one of those. */
+async function schedulesCommand(app: App, args: string) {
+    const direct = app.schedules.manage(args);
+    if (direct) return app.notice(direct.text, direct.level ?? "info");
+    let index = 0;
+    while (true) {
+        const jobs = app.schedules.scheduler.list();
+        if (!jobs.length) {
+            app.notice(NO_SCHEDULES);
+            return;
+        }
+        const now = Date.now();
+        const dialog = new SelectDialog<ScheduleAction>({
+            title: "Schedules",
+            header: [theme.muted("They run in this session while it's idle. Recurring ones stop after 7 days.")],
+            items: jobs.map((j, i) => ({
+                label: truncate(j.prompt.replace(/\s+/g, " "), 48),
+                value: { do: "pause", id: j.id, index: i },
+                description: describeJob(j) + (j.durable ? theme.subtle(" · saved") : ""),
+                detail: j.paused ? theme.warning("paused") : j.due ? theme.accent("due") : j.nextAt ? `next ${shortTime(j.nextAt, now)}` : "",
+            })),
+            initial: Math.min(index, jobs.length - 1),
+            numbers: false,
+            hint: "enter pause or resume · r run now · d delete · esc close",
+            onExtraKey: (k, d) => {
+                const cur = d.list.current();
+                if (!cur) return false;
+                const i = jobs.findIndex((j) => j.id === cur.value.id);
+                if (k.name === "text" && k.text === " ") return (d.choose({ do: "pause", id: cur.value.id, index: i }), true);
+                if (k.name === "text" && (k.text === "r" || k.text === "R")) return (d.choose({ do: "run", id: cur.value.id, index: i }), true);
+                if ((k.name === "text" && (k.text === "d" || k.text === "D")) || k.name === "delete") return (d.choose({ do: "delete", id: cur.value.id, index: i }), true);
+                return false;
+            },
+        });
+        const pick = (await app.showDialog(dialog)) as ScheduleAction | undefined;
+        if (!pick) return;
+        index = pick.index;
+        const job = jobs.find((j) => j.id === pick.id);
+        if (!job) continue;
+        const verb = pick.do === "pause" ? (job.paused ? "resume" : "pause") : pick.do;
+        const r = app.schedules.manage(`${verb} ${job.id}`);
+        if (r) app.notice(r.text, r.level ?? "info");
+        // Running one closes the list: its turn starts.
+        if (pick.do === "run") return;
+    }
+}
+
 async function addDirCommand(app: App, args: string) {
     if (!args) {
         app.notice("Usage: /add-dir <path>", "error");
@@ -1909,6 +1966,8 @@ const BUILTIN: Command[] = [
             app.print((cols) => ["", heading("Todos"), ...renderTodos(todos, cols)]);
         } },
     { name: "bashes", description: "List and stop background shells", run: bashesCommand },
+    { name: "loop", description: "Run a prompt now and then every interval (default 10m); /loop stop stops it", args: "[interval] <prompt>", whileBusy: true, run: (app, args) => loopCommand(app, args) },
+    { name: "schedules", description: "This session's schedules: pause, resume, run now or delete", args: "[pause|resume|delete|run <id>]", run: schedulesCommand },
     { name: "secrets", description: "List the secrets this session holds (names only), or forget one", args: "[forget NAME]", whileBusy: true, run: secretsCommand },
     { name: "add-dir", description: "Allow working in another directory", args: "<path>", run: addDirCommand },
     { name: "doctor", description: "Check the installation and providers", run: doctorCommand },

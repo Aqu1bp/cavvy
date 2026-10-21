@@ -43,6 +43,8 @@ const COPIED: Record<Line["t"], boolean> = {
     // Plans shown before the cut can still be saved or implemented from the fork; links say where the original's went.
     plan: true,
     planLink: false,
+    // A fork doesn't take the original's schedules: they'd run twice.
+    schedules: false,
 };
 
 const REMINDERS = /<system-reminder>[\s\S]*?<\/system-reminder>/g;

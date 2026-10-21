@@ -580,6 +580,7 @@ describe("approvals are per session", () => {
             session: Session.create(W, { persist: false, system: "S" }),
             toolState: { fileState: new Map(), todos: [], secrets: undefined },
             makeAgent() {},
+            schedules: { switchSession() {} },
             replayTranscript() {},
             sessionHook: async () => {},
         });

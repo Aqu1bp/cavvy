@@ -4,6 +4,7 @@ import type { Settings } from "../config/settings";
 import type { PermissionMode } from "../permissions/modes";
 import type { Sandbox } from "../permissions/sandbox";
 import type { FileHistory } from "../agent/checkpoints";
+import type { Scheduler } from "../agent/schedule";
 
 export type JsonSchema = Record<string, unknown>;
 
@@ -67,6 +68,8 @@ export interface ToolState {
     fileHistory?: FileHistory;
     /** Secrets the user gave this session (RequestSecret), for its Bash processes. */
     secrets?: SecretStore;
+    /** The session's schedules (CronCreate, /loop); interactive sessions only. */
+    scheduler?: Scheduler;
 }
 
 export interface UiBridge {

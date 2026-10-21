@@ -54,6 +54,7 @@ import { ACCOUNT_PROVIDERS, account, accountRealPath } from "../providers/accoun
 import { forBackend, pastedTexts, readsPdf } from "../providers/files";
 import { cachedListings, type ProviderListing } from "../providers/models";
 import { registerTools, type Registration, type ServerTool, type ServerToolResult } from "../mcp/server";
+import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
 import { SECRET_INSTRUCTIONS, secretTools, secretToolTitle } from "./secret-tools";
 import { BashTool } from "../tools/bash";
 import {
@@ -355,6 +356,8 @@ export class Agent {
     private registration?: Registration;
     /** What the harness MCP server offers this turn, and its instructions (read by the server on each request). */
     private serverTools: ServerTool[] = [];
+    /** The last run stopped on the plan's usage limit (an agent CLI said so), and when that resets if known. */
+    limitStop?: { resetsAt?: number };
     private serverInstructions = "";
     /** The backend's open delegate calls: a delegated agent's work shows under the call that started it. */
     private delegateCalls: { id: string; input: Record<string, unknown>; claimed: boolean }[] = [];
@@ -482,6 +485,7 @@ export class Agent {
         if (this.running) throw new Error("Agent is already running");
         this.running = true;
         this.prompted = false;
+        this.limitStop = undefined;
         // Interrupting a turn stops the delegated tasks still running, those in the background too
         // (delegated on an earlier turn, maybe before a switch to another model).
         const onAbort = () => this.cancelTasks();
@@ -962,7 +966,8 @@ export class Agent {
         const delegating = this.o.settings().delegation !== false && delegationAvailable(caller, this.listings());
         const store = this.state.secrets;
         const ask = this.o.host.ui.requestSecret?.bind(this.o.host.ui);
-        if (!delegating && !(store && ask)) return undefined;
+        const scheduling = Boolean(this.state.scheduler);
+        if (!delegating && !(store && ask) && !scheduling) return undefined;
         const tools: ServerTool[] = [];
         const instructions: string[] = [];
         if (delegating) {
@@ -981,6 +986,10 @@ export class Agent {
         if (store && ask) {
             tools.push(...secretTools({ store, ask, authorize: (name, input, signal) => this.authorizeSecretTool(name, input, signal), run: (o, signal) => this.runWithSecrets(o, signal) }));
             instructions.push(SECRET_INSTRUCTIONS);
+        }
+        if (scheduling) {
+            tools.push(...scheduleServerTools(() => this.state.scheduler));
+            instructions.push(SCHEDULE_INSTRUCTIONS);
         }
         this.serverTools = tools;
         this.serverInstructions = instructions.join("\n\n");
@@ -1249,6 +1258,7 @@ export class Agent {
             }
             if (declined) return this.endBackendTurn(provider, "denied");
             if (result.reason === "error") {
+                this.limitStop = result.limit;
                 this.endNotice("error", redact(result.error || `${name} stopped with an error.`));
                 return this.endBackendTurn(provider, "error");
             }
@@ -1973,7 +1983,7 @@ export class Agent {
             notes.push(...(servers?.notes ?? []));
         }
 
-        const exclude = new Set(["Task", "TaskStatus", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "ExitPlanMode"]);
+        const exclude = new Set(["Task", "TaskStatus", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "ExitPlanMode", ...CRON_TOOL_NAMES]);
         let tools = this.tools.filter((t) => !exclude.has(t.name));
         // Its own servers' tools (their names never match a configured server's: startAgentServers refuses those).
         if (servers?.tools.length) tools = [...tools, ...servers.tools];
