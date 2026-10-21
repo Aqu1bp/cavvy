@@ -41,9 +41,9 @@ import { mcpToolMatches } from "../permissions/rules";
 import { toolNameFor } from "../mcp/manager";
 import { costOf, promptTokens, type CostEstimate } from "../providers/pricing";
 import { Session } from "./session";
-import { hookApplies, isAsync, runHandler, runHooks, runInBackground, type HookEvent, type HookOutcome, type HookServices } from "./hooks";
+import { hookApplies, isAsync, matcherFn, runHandler, runHooks, runInBackground, type HookEvent, type HookOutcome, type HookServices } from "./hooks";
 import { FileWatchHooks, type FileEvent } from "./file-watch-hooks";
-import { sessionStartHooks } from "./session-hooks";
+import { instructionsLoadedHooks, sessionStartHooks } from "./session-hooks";
 import { compactRequestMessage, estimateTokens, summaryMessage, transcriptCompactRequest, compactTranscriptText, handoffTranscript } from "./compact";
 import { agentMemoryDir, agentMemoryPrompt, DEFAULT_MAX_TURNS, findSkill, loadAgents, readAgentMemory, type AgentDef } from "./agents";
 import { childMode, createAgentWorktree, finishAgentWorktree, fromServers, keepLocal, startAgentServers, withAgentHooks, worktreeNote, type AgentServers, type AgentWorktree, type WorktreeOutcome } from "./subagent-setup";
@@ -1557,8 +1557,8 @@ export class Agent {
         this.contextTokens = 0;
         this.emit({ type: "compact_end", summary: `${getProvider(provider)?.name ?? provider} compacted its own context.` });
         if (ownHooks && !this.o.isSubagent) void this.hooks("PostCompact", { trigger: opts.auto ? "auto" : "manual", compact_summary: "" });
-        // Claude Code doesn't run SessionStart for us: the harness runs it, on both backends.
-        if (!this.o.isSubagent) void this.compacted();
+        // Claude Code runs SessionStart (compact) itself (backendOwnedHooks); the harness runs it for Codex, and the memory files' InstructionsLoaded on both.
+        if (!this.o.isSubagent) void (provider === "claude-code" ? instructionsLoadedHooks(this.o.settings(), this.session, "compact", this.state.cwd, (msg, level = "warn") => this.emit({ type: "notice", level, message: msg }), this.hookServices()) : this.compacted());
         return true;
     }
 
@@ -2511,5 +2511,8 @@ export const CLAUDE_CODE_HOOK_EVENTS: HookEvent[] = ["PreToolUse", "PostToolUse"
 export function backendOwnedHooks(s: Settings): BackendTurn["hooks"] {
     const out: NonNullable<BackendTurn["hooks"]> = {};
     for (const e of CLAUDE_CODE_HOOK_EVENTS) if (s.hooks?.[e]?.length) out[e] = s.hooks[e];
+    // SessionStart after Claude Code compacts (its own auto-compaction too): Claude Code runs it, so its context reaches its model.
+    const compact = (s.hooks?.SessionStart ?? []).filter((h) => matcherFn(h.matcher)("compact")).map((h) => ({ ...h, matcher: "compact" }));
+    if (compact.length) out.SessionStart = compact;
     return Object.keys(out).length ? out : undefined;
 }

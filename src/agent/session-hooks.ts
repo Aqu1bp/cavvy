@@ -23,11 +23,14 @@ async function run(settings: Settings, session: Session, source: string, cwd: st
     const h = await fireHooks(settings, "SessionStart", { ...common, source, ...(session.model ? { model: session.model } : {}) }, cwd, warn, services);
     if (h?.additionalContext) session.hookContext.push(`Context from a SessionStart hook:\n${h.additionalContext}`);
     if (h?.watchPaths) session.hookWatchPaths = h.watchPaths;
-    // The memory files the session's system prompt was built from (it's built once, when the session is made).
-    if (settings.hooks?.InstructionsLoaded?.length) {
-        const loadReason = source === "compact" ? "compact" : "session_start";
-        await Promise.all(loadMemory(cwd).map((f) => fireHooks(settings, "InstructionsLoaded", { ...common, file_path: f.path, memory_type: MEMORY_TYPE[f.scope], load_reason: loadReason }, cwd, warn, services)));
-    }
+    await instructionsLoadedHooks(settings, session, source, cwd, warn, services, extra);
+}
+
+/** InstructionsLoaded for the memory files the session's system prompt was built from (it's built once, when the session is made). */
+export async function instructionsLoadedHooks(settings: Settings, session: Session, source: string, cwd: string, warn: HookNotice, services?: HookServices, extra: Record<string, unknown> = {}): Promise<void> {
+    if (!settings.hooks?.InstructionsLoaded?.length) return;
+    const loadReason = source === "compact" ? "compact" : "session_start";
+    await Promise.all(loadMemory(cwd).map((f) => fireHooks(settings, "InstructionsLoaded", { session_id: session.meta.id, ...extra, file_path: f.path, memory_type: MEMORY_TYPE[f.scope], load_reason: loadReason }, cwd, warn, services)));
 }
 
 /**

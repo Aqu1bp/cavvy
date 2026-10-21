@@ -89,7 +89,10 @@ async function makeAgent(provider: "claude-code" | "codex", settings: any, mode:
 describe("Claude Code runs the harness's tool hooks itself", () => {
     test("only the events it owns are registered, one callback per handler, with Claude Code's timeouts", () => {
         const hooks = { UserPromptSubmit: [{ command: "a" }], Stop: [{ command: "b" }], PreToolUse: [{ matcher: "Bash", command: "c" }], PostToolUse: [{ command: "d" }], SessionStart: [{ command: "e" }], CwdChanged: [{ command: "f" }] };
-        expect(Object.keys(backendOwnedHooks({ hooks } as any) ?? {})).toEqual(["PreToolUse", "PostToolUse", "CwdChanged"]);
+        expect(Object.keys(backendOwnedHooks({ hooks } as any) ?? {})).toEqual(["PreToolUse", "PostToolUse", "CwdChanged", "SessionStart"]);
+        // SessionStart only for compaction (Claude Code's own too), and only handlers that match it.
+        const starts = { SessionStart: [{ command: "a" }, { matcher: "startup", command: "b" }, { matcher: "compact|resume", command: "c" }] };
+        expect(backendOwnedHooks({ hooks: starts } as any)?.SessionStart).toEqual([{ command: "a", matcher: "compact" }, { matcher: "compact", command: "c" }]);
         // The harness keeps the prompt, the turn's end, the session and its own watchers.
         for (const own of ["UserPromptSubmit", "Stop", "SessionStart", "SessionEnd", "Notification", "PermissionRequest", "FileChanged", "InstructionsLoaded"]) expect(CLAUDE_CODE_HOOK_EVENTS).not.toContain(own as any);
         expect(backendOwnedHooks({} as any)).toBeUndefined();
@@ -114,6 +117,21 @@ describe("Claude Code runs the harness's tool hooks itself", () => {
         expect(input).toMatchObject({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "npm test" }, tool_use_id: "toolu_b", session_id: session.meta.id });
         expect(input.backend_session_id).toMatch(/^sess-/);
         expect(logLines().find((l) => l.hookAnswers)?.hookAnswers.answers[0]).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny" } });
+    });
+
+    test("SessionStart after compacting is Claude Code's to run, so its context reaches Claude Code's model, once", async () => {
+        process.env.FAKE_SCENARIO = "bash";
+        const seen = join(cwd, "start.jsonl");
+        const settings = { hooks: { SessionStart: [{ command: `${record(seen)}; echo 'the codeword is PELICAN'` }] } };
+        const { run, agent, session } = await makeAgent("claude-code", settings);
+        expect(await run("go")).toBe("done");
+        expect(await agent.compact({ auto: false, signal: new AbortController().signal })).toBe(true);
+        await Bun.sleep(200);
+        const answers = logLines().find((l) => l.hookAnswers?.event === "SessionStart")?.hookAnswers.answers;
+        expect(answers).toEqual([{ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "the codeword is PELICAN" } }]);
+        expect(jsonl(seen).map((l) => l.source)).toEqual(["compact"]);
+        // Not again with the next prompt: Claude Code has it.
+        expect(session.hookContext).toEqual([]);
     });
 
     test("prompt hooks go to Claude Code in its settings, so it asks its own model; no callback for them", async () => {

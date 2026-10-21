@@ -409,7 +409,7 @@ function execute(tool: string, input: any): { content: string; structured?: unkn
 /** Hooks the host registered in initialize (SDK callbacks): run like Claude Code's, by sending hook_callback. */
 let sdkHooks: Record<string, { matcher?: string; hookCallbackIds: string[] }[]> = {};
 function sdkHook(event: string, input: Record<string, unknown>): Promise<any[]> {
-    const ids = (sdkHooks[event] ?? []).filter((g) => !g.matcher || g.matcher === "*" || g.matcher.split("|").includes(String(input.tool_name))).flatMap((g) => g.hookCallbackIds);
+    const ids = (sdkHooks[event] ?? []).filter((g) => !g.matcher || g.matcher === "*" || g.matcher.split("|").includes(String(input.tool_name ?? input.source))).flatMap((g) => g.hookCallbackIds);
     return Promise.all(
         ids.map((callback_id) => {
             const request_id = `req-${++seq}`;
@@ -482,6 +482,8 @@ async function turn(content: any[], uuid?: string) {
     // Slash commands are Claude Code's own: /compact compacts the session.
     if (String(content.find((c) => c?.type === "text")?.text ?? "").startsWith("/compact")) {
         out({ type: "system", subtype: "compact_boundary", session_id: sessionId });
+        // As Claude Code does after compacting: SessionStart with source compact.
+        await sdkHook("SessionStart", { source: "compact" });
         return result("success", { result: "" });
     }
     if (process.env.FAKE_CLAUDE_LIMIT_INFO) out({ type: "rate_limit_event", rate_limit_info: JSON.parse(process.env.FAKE_CLAUDE_LIMIT_INFO) });
