@@ -2,9 +2,9 @@
 // keymap for one app (the terminal or the GUI) on one platform, and match key
 // presses against it, chords included. No I/O here: the GUI imports it too.
 
-import { ACTIONS, ACTION_BY_ID, CONTEXTS, type ActionDef, type Context, type KeyApp } from "./actions";
+import { ACTIONS, ACTION_BY_ID, CONTEXTS, CONTEXT_CHAIN, contextsFor, type ActionDef, type Context, type KeyApp } from "./actions";
 
-export { ACTIONS, CONTEXTS, type ActionDef, type Context, type KeyApp };
+export { ACTIONS, CONTEXTS, CONTEXT_CHAIN, type ActionDef, type Context, type KeyApp };
 
 export type KeyPlatform = "macos" | "windows" | "linux" | "other";
 
@@ -204,8 +204,9 @@ export function parseKeybindingsText(text: string): { bindings: UserBinding[]; i
                     issues.push({ level: "error", message: `${context} "${keys}": unknown action "${action}"${near ? ` (did you mean "${near}"?)` : ""}.` });
                     continue;
                 }
-                if ((def.context === "Autocomplete") !== (context === "Autocomplete")) {
-                    issues.push({ level: "error", message: `${context} "${keys}": "${action}" only works in the ${def.context === "Autocomplete" ? "Autocomplete" : "Global or Chat"} context.` });
+                const allowed = contextsFor(def);
+                if (!allowed.includes(context as Context)) {
+                    issues.push({ level: "error", message: `${context} "${keys}": "${action}" only works in the ${allowed.join(" or ")} context.` });
                     continue;
                 }
             }
@@ -258,13 +259,18 @@ export interface BuildOptions {
     defaults?: Record<string, string[]>;
 }
 
+/** An action's default keys in this app on this platform; undefined when the app doesn't have it. */
+function defaultsOf(a: ActionDef, app: KeyApp, platform: KeyPlatform, opts: BuildOptions): string[] | undefined {
+    return opts.defaults?.[a.id] ?? (app === "gui" && platform === "macos" && a.defaults.gui ? a.macGui : undefined) ?? a.defaults[app];
+}
+
 /** The keymap for one app: the defaults, then the user's bindings on top. */
 export function buildKeymap(user: UserBinding[], app: KeyApp, platform: KeyPlatform, issues: KeyIssue[] = [], opts: BuildOptions = {}): Keymap {
     const table = new Map<Context, Map<string, string | null>>(CONTEXTS.map((c) => [c, new Map()]));
     const all = [...issues];
     const defaultKeys = new Map<string, string[]>();
     for (const a of ACTIONS) {
-        const keys = opts.defaults?.[a.id] ?? a.defaults[app];
+        const keys = defaultsOf(a, app, platform, opts);
         if (!keys) continue;
         const ids: string[] = [];
         for (const k of keys) {
@@ -281,7 +287,7 @@ export function buildKeymap(user: UserBinding[], app: KeyApp, platform: KeyPlatf
     for (const b of user) {
         const def = b.action ? ACTION_BY_ID.get(b.action) : undefined;
         // The other app's action: this app leaves the key alone.
-        if (def && !(opts.defaults?.[def.id] ?? def.defaults[app])) continue;
+        if (def && !defaultsOf(def, app, platform, opts)) continue;
         const r = parseSequence(b.keys, app, platform);
         if (r.issue) all.push({ ...r.issue, message: `${b.context}: ${r.issue.message}` });
         if (!r.id) continue;
@@ -304,8 +310,8 @@ export function buildKeymap(user: UserBinding[], app: KeyApp, platform: KeyPlatf
         prefixes.set(ctx, set);
     }
     // A chord's first key waits in its own context and in every one it's more specific than.
-    CONTEXTS.forEach((ctx, i) => {
-        const below = CONTEXTS.slice(0, i + 1).reverse(); // Global < Chat < Autocomplete
+    CONTEXTS.forEach((ctx) => {
+        const below = CONTEXT_CHAIN[ctx]; // Global < Chat < Autocomplete; Global < Sidebar
         for (const p of prefixes.get(ctx)!)
             for (const other of below) {
                 const shadowed = table.get(other)!.get(p);
@@ -316,7 +322,7 @@ export function buildKeymap(user: UserBinding[], app: KeyApp, platform: KeyPlatf
     const keysOf = new Map<string, string[]>();
     const customized = new Set<string>();
     for (const a of ACTIONS) {
-        if (!(opts.defaults?.[a.id] ?? a.defaults[app])) continue;
+        if (!defaultsOf(a, app, platform, opts)) continue;
         // Where a Global key is pressed with Chat in force (always in the terminal app, in the GUI's
         // input box), a Chat binding or null of the same key, or a Chat chord starting with it, comes first.
         const over = (c: Context): Context[] => (c === "Global" && (app === "tui" || a.inInput) ? ["Chat"] : []);
@@ -451,7 +457,7 @@ export const KEYBINDINGS_TEMPLATE = `{
   // Same format as Claude Code's keybindings.json: ${KEYBINDINGS_DOCS}
   // Changes apply as soon as you save. Set a key to null to unbind it.
   // Modifiers: ctrl, alt (opt), shift, cmd, and mod (Cmd on macOS, Ctrl elsewhere).
-  // Chords: "ctrl+x ctrl+e". Contexts: Global, Chat, Autocomplete.
+  // Chords: "ctrl+x ctrl+e". Contexts: Global, Chat, Autocomplete, Sidebar (the GUI's session list).
   "bindings": [
     {
       "context": "Chat",

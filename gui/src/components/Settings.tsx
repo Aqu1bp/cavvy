@@ -658,9 +658,13 @@ const BUILT_IN: [string, string][] = [
     ["@", "Mention a file"],
     ["/", "Commands"],
     ["!", "Run a shell command yourself"],
+    // Mouse gestures and arrows in the session list: not bindings.
+    ["Shift+Click", "Select the sessions from the last one clicked to this one"],
+    [`${mod}+Click`, "Add a session to the selection, or take it out"],
+    ["Shift+↑  Shift+↓", "In the session list: extend the selection · Esc clears it"],
 ];
 
-const CONTEXT_TITLES: Record<string, string> = { Global: "Anywhere", Chat: "In the input box", Autocomplete: "In the / and @ menu" };
+const CONTEXT_TITLES: Record<string, string> = { Global: "Anywhere", Chat: "In the input box", Autocomplete: "In the / and @ menu", Sidebar: "In the session list" };
 
 /** One keystroke as one key cap: "⌘ K". */
 function Cap(p: { keys: string }) {

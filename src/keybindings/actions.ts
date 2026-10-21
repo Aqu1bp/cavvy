@@ -2,8 +2,27 @@
 // one. An action belongs to one app or both; the other app ignores it, so a
 // key bound to a GUI-only action keeps its meaning in the terminal.
 
-export const CONTEXTS = ["Global", "Chat", "Autocomplete"] as const;
+export const CONTEXTS = ["Global", "Chat", "Autocomplete", "Sidebar"] as const;
 export type Context = (typeof CONTEXTS)[number];
+
+/**
+ * Where a key is looked up while a context is in force, most specific first:
+ * the / and @ menu over the input box over the whole window; the session list
+ * (the GUI's rail, while it has the focus) over the whole window.
+ */
+export const CONTEXT_CHAIN: Readonly<Record<Context, readonly Context[]>> = {
+    Global: ["Global"],
+    Chat: ["Chat", "Global"],
+    Autocomplete: ["Autocomplete", "Chat", "Global"],
+    Sidebar: ["Sidebar", "Global"],
+};
+
+/** The contexts a binding of an action may be put in (a Global one also works where a more specific context applies). */
+export function contextsFor(def: ActionDef): readonly Context[] {
+    if (def.context === "Global") return ["Global", "Chat", "Sidebar"];
+    if (def.context === "Chat") return ["Global", "Chat"];
+    return [def.context];
+}
 
 export type KeyApp = "tui" | "gui";
 
@@ -15,6 +34,8 @@ export interface ActionDef {
     defaults: Partial<Record<KeyApp, string[]>>;
     /** A Global action that only acts in the input box, where Chat's keys come first. */
     inInput?: boolean;
+    /** The GUI's default keys on macOS, where they differ from `defaults.gui`. */
+    macGui?: string[];
 }
 
 export const ACTIONS: readonly ActionDef[] = [
@@ -51,6 +72,12 @@ export const ACTIONS: readonly ActionDef[] = [
     { id: "autocomplete:dismiss", context: "Autocomplete", description: "Close the suggestions", defaults: { tui: ["escape"], gui: ["escape"] } },
     { id: "autocomplete:previous", context: "Autocomplete", description: "Previous suggestion", defaults: { tui: ["up"], gui: ["up"] } },
     { id: "autocomplete:next", context: "Autocomplete", description: "Next suggestion", defaults: { tui: ["down"], gui: ["down"] } },
+    // Sidebar (the GUI's session list, while it has the focus). With no rows selected they act on the focused or open one.
+    // Delete: Finder's ⌘⌫ on a Mac, Explorer's Delete elsewhere; plain Backspace is left alone (a stray one shouldn't ask to delete).
+    { id: "sidebar:deleteSelected", context: "Sidebar", description: "Delete the selected sessions", defaults: { gui: ["delete"] }, macGui: ["mod+backspace"] },
+    { id: "sidebar:settleSelected", context: "Sidebar", description: "Settle the selected sessions (or bring settled ones back)", defaults: { gui: ["mod+shift+s"] } },
+    { id: "sidebar:archiveSelected", context: "Sidebar", description: "Archive the selected sessions (or restore archived ones)", defaults: { gui: ["mod+shift+a"] } },
+    { id: "sidebar:selectAll", context: "Sidebar", description: "Select every session in the list", defaults: { gui: ["mod+a"] } },
 ];
 
 export const ACTION_BY_ID: ReadonlyMap<string, ActionDef> = new Map(ACTIONS.map((a) => [a.id, a]));
