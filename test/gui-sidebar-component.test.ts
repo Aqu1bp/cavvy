@@ -9,6 +9,7 @@ import * as order from "../gui/src/lib/session-order";
 import * as format from "../gui/src/lib/format";
 import { rowMenuKey } from "../gui/src/lib/menu";
 import { sessionStatus } from "../gui/src/lib/session-status";
+import * as rail from "../gui/src/lib/rail";
 import type { SessionSummary } from "../src/server/protocol";
 
 function fixture(count = 60) {
@@ -34,7 +35,7 @@ function fixture(count = 60) {
     const [settledOpen, setSettledOpen] = solid.createSignal(true);
     const [motion, setMotion] = solid.createSignal("instant");
     let reduced = false;
-    const app = { get sessions() { return sessions(); }, get archived() { return archived(); }, get activeId() { return activeId(); }, projects: [], models: [], get conn() { return conn(); }, get sessionsLoaded() { return sessionsLoaded(); }, get sessionsError() { return sessionsError(); } };
+    const app = { get sessions() { return sessions(); }, get archived() { return archived(); }, get activeId() { return activeId(); }, projects: [], models: [], limits: {}, providers: [], get conn() { return conn(); }, get sessionsLoaded() { return sessionsLoaded(); }, get sessionsError() { return sessionsError(); } };
     const prefs = { get groupBy() { return groupBy(); }, get settledOpen() { return settledOpen(); }, get motion() { return motion(); } };
     const resolve = (value: any): any => typeof value === "function" ? resolve(value()) : Array.isArray(value) ? value.map(resolve) : value;
     const descendants = (node: any): any[] => [node, ...[...(node.children ?? []), node.content].flat(Infinity).filter((child) => child && typeof child === "object" && child !== node).flatMap(descendants)];
@@ -63,8 +64,8 @@ function fixture(count = 60) {
         presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled)
         .replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
-    const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronUp", "FolderPlus", "Layers", "ListFilter", "MoreHorizontal", "PanelLeftClose", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "ProviderIcon"].map((name) => [name, () => null]));
-    const scope = { renderer, ...solid, ...order, ...format, ...icons, sessionStatus, rowMenuKey, app, prefs,
+    const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronUp", "CircleAlert", "Folder", "FolderPlus", "Hand", "Layers", "ListFilter", "MessageSquareText", "MoreHorizontal", "PanelLeft", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "ProviderIcon"].map((name) => [name, () => null]));
+    const scope = { renderer, ...solid, ...order, ...format, ...rail, ...icons, sessionStatus, rowMenuKey, app, prefs,
         // Count work against layout keys, rather than timing a machine-dependent render.
         holdSidebar: (...args: Parameters<typeof order.holdSidebar>) => order.holdSidebar(...args).map((entry) => ({
             ...entry, get key() { entryKeyReads++; return entry.key; },
@@ -103,7 +104,9 @@ test("actual sidebar holds hover/menu/rename; open and waiting rows appear past 
         expect(f.ids.slice(-2)).toEqual(["40", "59"]);
         f.nav.props.onPointerLeave();
         expect(f.ids[0]).toBe("40");
-        expect(f.nodes.some((n) => String(n.props.class).includes("st tone-muted unread"))).toBe(true);
+        // Finished since last looked: a check glyph and the unread dot, not a word.
+        expect(f.nodes.some((n) => n.props.class === "st done")).toBe(true);
+        expect(f.nodes.some((n) => n.props.class === "unread-dot")).toBe(true);
         const card = f.nodes.findLast((n) => String(n.props.class).startsWith("card "));
         f.contextMenu(card);
         const held = f.ids;
@@ -145,6 +148,31 @@ test("actual sidebar pages projects and settled, transitions row type, and keeps
         f.nav.props.onPointerEnter();
         solid.batch(() => { f.setArchived(f.sessions().filter((s) => s.id === "59").map((s) => ({ ...s, archived: true }))); f.setSessions(f.sessions().filter((s) => s.id !== "59")); });
         expect(f.ids).toEqual(before);
+    } finally { f.dispose(); }
+});
+
+test("rail rows: needs-you rows get an amber dot and no archive; others archive on hover; headings count their sessions", () => {
+    const f = fixture(6);
+    const rowOf = (title: string) => f.nodes.findLast((n) => String(n.props.class).startsWith("card ") && n.querySelector()?.props.title?.startsWith(`${title}\n`));
+    const buttons = (row: any) => f.descendants(row).filter((n) => n.tag === "button");
+    try {
+        f.update("1", { status: "waiting", waitingKind: "permission" });
+        f.setActiveId("2");
+        const waiting = rowOf("Session 1");
+        expect(String(waiting.props.class)).toContain("waiting");
+        expect(waiting.querySelector().props["aria-label"]).toBe("Session 1, Needs approval");
+        expect(f.descendants(waiting).some((n) => n.props?.class === "wait-dot")).toBe(true);
+        expect(f.descendants(waiting).some((n) => n.props?.class === "st waiting")).toBe(true);
+        expect(buttons(waiting).some((n) => n.props.title === "Archive")).toBe(false);
+        expect(buttons(waiting).some((n) => n.props.title === "More")).toBe(true);
+        const idle = rowOf("Session 3");
+        expect(buttons(idle).some((n) => n.props.title === "Archive")).toBe(true);
+        // Rows are buttons; the open one says so.
+        expect(rowOf("Session 2").querySelector().props["aria-current"]).toBe("page");
+        expect(idle.querySelector().props["aria-current"]).toBeUndefined();
+        f.setGroupBy("project");
+        const counts = f.nodes.filter((n) => n.props.class === "n").map((n) => n.content);
+        expect(counts.slice(-3)).toEqual([2, 2, 2]);
     } finally { f.dispose(); }
 });
 

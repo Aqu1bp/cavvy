@@ -1,48 +1,72 @@
-/* ---- Sidebar -------------------------------------------------------- */
+/* ---- Rail: the sessions, straight on the window glass ------------------
+   No card of its own: the window's material shows through. Its top line
+   (hide, new session) sits at its far end, level with the traffic lights;
+   then search, the list and the plan footer. Rows are pills; the selected
+   one is a raised translucent pill. */
 
 .sidebar {
     width: var(--sidebar-w);
     flex: none;
     display: flex;
     flex-direction: column;
-    background: var(--bg-sidebar);
-    border-right: 1px solid var(--border);
     position: relative;
+    min-height: 0;
+    min-width: 0;
+    padding: 0 10px 4px 12px;
+    color: var(--rail-fg);
+    background: transparent;
+    font-size: 0.929rem;
+    line-height: 1.4;
     user-select: none;
     -webkit-user-select: none;
-    min-height: 0;
 }
 
+/* Narrow windows: the shell floats the rail over the sheet (data-rail="overlay" on an ancestor). */
+[data-rail="overlay"] .sidebar {
+    border-radius: 14px;
+    background: var(--rail-float);
+    -webkit-backdrop-filter: blur(30px) saturate(1.8);
+    backdrop-filter: blur(30px) saturate(1.8);
+    box-shadow: var(--pop-shadow), inset 0 1px 0 var(--ctl-hi);
+}
+
+.sidebar .hb {
+    border-radius: var(--pill);
+    color: var(--rail-fg-2);
+    transition: background 140ms, color 140ms, transform 160ms var(--ease);
+}
+
+.sidebar .hb:hover:not(:disabled),
+.sidebar .hb.on,
+.sidebar .hb[aria-expanded="true"] {
+    background: var(--rail-hover);
+    color: var(--rail-fg);
+}
+
+.sidebar .hb:active:not(:disabled) {
+    transform: scale(0.94);
+}
+
+/* Level with the traffic lights; the buttons end at the rail's far edge. */
 .side-top {
     display: flex;
     align-items: center;
-    gap: 6px;
-    height: var(--header-h);
-    padding: 0 12px;
+    gap: 2px;
+    height: 38px;
+    margin-bottom: 14px;
+    padding-right: 4px;
     flex: none;
-}
-
-/* macOS: room for the window's traffic lights, whose centres sit on this line's. */
-.sidebar.traffic .side-top {
-    padding-left: 84px;
-}
-
-.brand {
-    font-size: 1rem;
-    font-weight: 600;
-    letter-spacing: -0.015em;
-    white-space: nowrap;
 }
 
 .side-tools {
     display: flex;
     align-items: center;
     gap: 2px;
-    height: 32px;
-    padding: 0 8px;
+    margin-bottom: 14px;
     flex: none;
 }
 
+/* Search everything (the palette): a pill, like a field. */
 .side-search {
     flex: 1;
     min-width: 0;
@@ -50,35 +74,53 @@
     align-items: center;
     gap: 8px;
     height: 32px;
-    padding: 0 8px;
-    border-radius: 8px;
-    font-size: 0.964rem;
-    font-weight: 500;
-    color: var(--fg-muted);
-    transition: background var(--dur-fast), color var(--dur-fast);
+    padding: 0 6px 0 10px;
+    margin-right: 2px;
+    border-radius: var(--pill);
+    color: var(--rail-fg-2);
+    background: var(--rail-hover);
+    box-shadow: inset 0 0 0 0.5px var(--rail-sel-stroke);
+    text-align: left;
+    transition: box-shadow 140ms, color 140ms;
 }
 
 .side-search:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
+    color: var(--rail-fg);
+}
+
+.side-search > svg {
+    flex: none;
+}
+
+.side-search > span:not(.side-kbd) {
+    flex: 1;
+    min-width: 0;
 }
 
 .side-kbd {
-    margin-left: auto;
-    font-size: 0.786rem;
-    color: var(--fg-subtle);
-    font-weight: 500;
+    flex: none;
+    font: 500 0.786rem/1 var(--font-ui);
+    color: var(--fg-3);
+    padding: 3px 5px;
+    border-radius: 5px;
+    background: var(--hover);
+    white-space: nowrap;
 }
 
 .side-list {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 8px 8px 12px;
+    margin: 0 -4px;
+    padding: 0 4px 12px;
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    scrollbar-width: none;
     mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent 100%);
+}
+
+.side-list::-webkit-scrollbar {
+    display: none;
 }
 
 .side-list > [data-session-row] {
@@ -86,76 +128,232 @@
 }
 
 .side-empty {
-    padding: 14px 10px;
-    color: var(--fg-subtle);
-    font-size: 0.857rem;
+    padding: 20px 8px;
+    color: var(--rail-fg-2);
     line-height: 1.5;
 }
 
-/* A session in play: project and when, what it's about, branch and model. */
+/* ---- Group headings: a project, Settled, Archived ---------------------- */
+
+.shelf {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex: none;
+    padding: 4px 8px 6px;
+    margin-top: 14px;
+    font-size: 0.857rem;
+    font-weight: 600;
+    color: var(--rail-fg-2);
+    text-align: left;
+}
+
+.shelf:first-child {
+    margin-top: 0;
+}
+
+.shelf > svg {
+    flex: none;
+}
+
+.shelf .n {
+    margin-left: auto;
+    font-weight: 500;
+    opacity: 0.8;
+    font-variant-numeric: tabular-nums;
+}
+
+.shelf-btn {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    height: 22px;
+    padding: 0 8px;
+    margin: -3px -4px -3px 0;
+    border-radius: var(--pill);
+    color: var(--rail-fg-2);
+    font-size: 0.857rem;
+    font-weight: 500;
+}
+
+.shelf-btn:hover {
+    background: var(--rail-hover);
+    color: var(--rail-fg);
+}
+
+/* A project's New session takes its count's place while you point at the heading. */
+.shelf-btn.add {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    width: 22px;
+    padding: 0;
+    margin: -13px 0 0;
+    justify-content: center;
+    opacity: 0;
+}
+
+.shelf:hover .shelf-btn.add,
+.shelf-btn.add:focus-visible {
+    opacity: 1;
+}
+
+.shelf:hover .n,
+.shelf:has(.shelf-btn.add:focus-visible) .n {
+    visibility: hidden;
+}
+
+.settled-head {
+    width: 100%;
+    border-radius: 10px;
+}
+
+.settled-head:hover {
+    color: var(--rail-fg);
+}
+
+.settled-chev {
+    flex: none;
+    transition: transform var(--dur-fast);
+}
+
+.settled-chev.closed {
+    transform: rotate(180deg);
+}
+
+/* ---- A session in play: glyph | title, when | branch ------------------- */
+
 .card {
     position: relative;
     flex: none;
-    margin: 1px 0;
-    border-radius: 10px;
-    transition: background var(--dur-fast), opacity var(--dur-fast);
+    margin-bottom: 1px;
+    border-radius: 11px;
+    transition: background 140ms;
 }
 
 .card:hover,
 .card.menu-open {
-    background: color-mix(in srgb, var(--fg) 4%, transparent);
+    background: var(--rail-hover);
 }
 
 .card.cur {
-    background: color-mix(in srgb, var(--fg) 7.5%, transparent);
+    background: var(--rail-sel);
+    box-shadow: inset 0 0 0 0.5px var(--rail-sel-stroke), var(--ctl-shadow);
 }
 
 .card-hit {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    width: 100%;
-    padding: 9px 10px 8px;
-    border-radius: 10px;
-    min-width: 0;
-    text-align: left;
-}
-
-.card .l1 {
-    display: flex;
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+    column-gap: 9px;
     align-items: center;
-    gap: 7px;
-    height: 18px;
-    font-size: 0.857rem;
-    font-weight: 500;
-    color: var(--fg-muted);
+    width: 100%;
     min-width: 0;
+    padding: 7px 10px 7px 8px;
+    border-radius: 11px;
+    text-align: left;
+    color: inherit;
 }
 
-.card .l2 {
-    display: block;
-    height: 20px;
-    line-height: 20px;
-    font-size: 0.964rem;
+[data-density="compact"] .card-hit {
+    padding-top: 5px;
+    padding-bottom: 5px;
+}
+
+.card-hit:focus-visible,
+.slim-hit:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: -2px;
+}
+
+/* The status glyph: a working ring, a hand while it needs you, a check when it finished unseen. */
+.sidebar .st {
+    display: grid;
+    place-items: center;
+    height: 18px;
+    color: var(--rail-fg-2);
+}
+
+.card .st {
+    grid-row: 1 / span 2;
+    align-self: start;
+    margin-top: 1px;
+}
+
+.sidebar .st.waiting {
+    color: var(--warn);
+}
+
+.sidebar .st.done {
+    color: var(--ok);
+}
+
+.sidebar .st.error {
+    color: var(--danger);
+}
+
+.sidebar .spin-ring {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 2px solid color-mix(in srgb, var(--accent) 22%, transparent);
+    border-top-color: var(--accent);
+    animation: spin 0.9s linear infinite;
+}
+
+.card .t {
+    min-width: 0;
     font-weight: 500;
-    color: var(--fg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
-.card-pin {
-    color: var(--fg-subtle);
-    margin: 0 5px -1px 0;
-    vertical-align: -1px;
+.card.unread .t {
+    font-weight: 650;
 }
 
-.card .l3 {
+/* Working in the background: it can recede, without fading below AA. */
+.card.rec .t {
+    color: var(--fg-2);
+}
+
+.card.rec:hover .t {
+    color: var(--rail-fg);
+}
+
+.card .end,
+.slim .t {
     display: flex;
     align-items: center;
     gap: 6px;
-    height: 16px;
     font-size: 0.821rem;
-    color: var(--fg-subtle);
-    font-family: var(--font-mono);
+    color: var(--rail-fg-2);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.card .end {
+    grid-row: 1;
+    grid-column: 3;
+}
+
+.card .m {
+    grid-column: 2 / span 2;
+    display: flex;
+    align-items: center;
+    gap: 6px;
     min-width: 0;
+    margin-top: 1px;
+    font-size: 0.821rem;
+    color: var(--rail-fg-2);
+}
+
+.card-pin,
+.slim-pin {
+    flex: none;
+    color: var(--rail-fg-2);
 }
 
 .card-model {
@@ -163,7 +361,7 @@
     place-items: center;
     margin-left: auto;
     flex: none;
-    opacity: 0.8;
+    opacity: 0.7;
 }
 
 .card.cur .card-model,
@@ -171,99 +369,83 @@
     opacity: 1;
 }
 
-.card .st {
-    margin-left: auto;
-    font-size: 0.821rem;
-    font-weight: 500;
-    white-space: nowrap;
-    font-variant-numeric: tabular-nums;
+.sidebar .unread-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
     flex: none;
 }
 
-.card .st.when {
-    font-weight: 400;
-    color: var(--fg-subtle);
-}
-
-/* Finished since you last looked. */
-.card .st.unread {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    color: var(--fg-muted);
-}
-
-.card .st.unread::before {
-    content: "";
-    width: 6px;
-    height: 6px;
+/* Needs you: an amber dot, no words; its row keeps no archive button. */
+.sidebar .wait-dot {
+    width: 8px;
+    height: 8px;
+    margin-right: 2px;
     border-radius: 50%;
-    background: var(--accent);
+    background: var(--warn);
+    box-shadow: 0 0 0 3px var(--warn-bg);
+    flex: none;
 }
 
-/* More sits where the time was. */
-.card-more {
+/* Archive and More take the time's place while you point at the row. */
+.sess-acts {
     position: absolute;
     top: 6px;
     right: 6px;
-    display: none;
-    background: var(--bg-sidebar);
+    display: flex;
+    align-items: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms;
 }
 
-.card:hover .card-more,
-.card:focus-within .card-more,
-.card.menu-open .card-more {
-    display: inline-grid;
+.card:hover .sess-acts,
+.card:focus-within .sess-acts,
+.card.menu-open .sess-acts {
+    opacity: 1;
+    pointer-events: auto;
 }
 
-.card:hover .st,
-.card:focus-within .st,
-.card.menu-open .st {
+.card:hover .end,
+.card:focus-within .end,
+.card.menu-open .end {
     visibility: hidden;
-}
-
-.tone-info {
-    color: var(--link);
-}
-
-/* Keep background sessions quieter without fading their metadata below AA. */
-.card.rec .l2 {
-    color: var(--fg-muted);
-}
-
-.card.rec:hover .l2 {
-    color: var(--fg);
 }
 
 .card-rename {
     position: absolute;
-    left: 8px;
+    left: 32px;
     right: 8px;
-    top: 28px;
+    top: 4px;
 }
 
-/* Everything else: one line. */
+/* ---- Everything else (settled, archived): one line --------------------- */
+
 .slim {
     position: relative;
     display: flex;
     align-items: center;
     flex: none;
-    height: 36px;
-    border-radius: 8px;
-    color: color-mix(in srgb, var(--fg-muted) 92%, var(--fg));
-    font-size: 1rem;
-    transition: background var(--dur-fast), color var(--dur-fast);
+    height: 32px;
+    margin-bottom: 1px;
+    border-radius: 10px;
+    color: var(--rail-fg);
+    transition: background 140ms;
+}
+
+[data-density="compact"] .slim {
+    height: 28px;
 }
 
 .slim:hover,
 .slim.menu-open {
-    background: color-mix(in srgb, var(--fg) 4%, transparent);
-    color: var(--fg);
+    background: var(--rail-hover);
 }
 
 .slim.cur {
-    background: color-mix(in srgb, var(--fg) 7.5%, transparent);
-    color: var(--fg);
+    background: var(--rail-sel);
+    box-shadow: inset 0 0 0 0.5px var(--rail-sel-stroke), var(--ctl-shadow);
 }
 
 .slim-hit {
@@ -272,27 +454,16 @@
     height: 100%;
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 0 6px 0 10px;
-    border-radius: 8px;
+    gap: 9px;
+    padding: 0 6px 0 8px;
+    border-radius: 10px;
+    text-align: left;
+    color: inherit;
 }
 
-.slim .mg {
-    filter: grayscale(1);
-    opacity: 0.45;
-    transition: filter var(--dur-fast), opacity var(--dur-fast);
-}
-
-.slim:hover .mg,
-.slim.cur .mg {
-    filter: none;
-    opacity: 1;
-}
-
-.slim-pin {
-    color: var(--fg-subtle);
+.slim .st {
+    width: 18px;
     flex: none;
-    margin: 0 -4px 0 -2px;
 }
 
 .slim-end {
@@ -305,12 +476,6 @@
     padding-right: 10px;
 }
 
-.slim .t {
-    font-size: 0.857rem;
-    color: var(--fg-subtle);
-    font-variant-numeric: tabular-nums;
-}
-
 .slim-acts {
     position: absolute;
     right: 4px;
@@ -318,7 +483,6 @@
     bottom: 0;
     display: none;
     align-items: center;
-    gap: 0;
 }
 
 .slim:hover .t,
@@ -334,14 +498,27 @@
 }
 
 .slim.more {
-    gap: 10px;
-    padding: 0 10px;
-    color: color-mix(in srgb, var(--fg-muted) 70%, transparent);
-    font-size: 0.929rem;
+    gap: 9px;
+    padding: 0 8px;
+    color: var(--rail-fg-2);
+    font-size: 0.857rem;
+}
+
+.slim.more:hover {
+    color: var(--rail-fg);
+}
+
+.slim.more > svg {
+    width: 18px;
+    flex: none;
+}
+
+.slim > .st {
+    margin-left: 8px;
 }
 
 .slim > .sess-rename {
-    margin: 0 8px 0 10px;
+    margin: 0 8px 0 9px;
 }
 
 .sess-rename {
@@ -349,118 +526,185 @@
     width: 100%;
     min-width: 0;
     height: 26px;
-    padding: 0 8px;
-    border-radius: 6px;
-    border: 0;
-    background: var(--bg-elev);
-    box-shadow: inset 0 0 0 1px var(--accent);
-    font-size: 0.964rem;
-}
-
-.slim > .mg {
-    margin-left: 10px;
-}
-
-.shelf {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 32px;
-    margin-top: 6px;
     padding: 0 10px;
-    font-size: 0.857rem;
-    font-weight: 500;
-    color: color-mix(in srgb, var(--fg-muted) 70%, transparent);
-    flex: none;
-}
-
-.shelf:first-child {
-    margin-top: 0;
-}
-
-.shelf i {
-    flex: 1;
-    min-width: 12px;
-    height: 1px;
-    background: var(--hairline);
-}
-
-.shelf-btn {
-    display: inline-flex;
-    align-items: center;
-    height: 22px;
-    padding: 0 6px;
-    margin-right: -6px;
-    border-radius: 6px;
-    color: var(--fg-muted);
-    font-size: 0.857rem;
-}
-
-.shelf-btn:hover {
-    background: var(--bg-hover);
+    border-radius: var(--pill);
+    border: 0;
+    background: var(--sheet);
     color: var(--fg);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 60%, transparent);
+    font-size: 0.929rem;
 }
 
-/* Pushes Settled to the bottom while the list is short. */
-.side-grow {
-    flex: 1 0 10px;
+.sess-rename:focus {
+    outline: none;
 }
 
-.settled-head {
-    width: 100%;
-    margin-top: 0;
-    border-radius: 8px;
-    text-align: left;
-}
-
-.settled-head:hover {
-    color: var(--fg-muted);
-}
-
-.settled-chev {
-    flex: none;
-    transition: transform var(--dur-fast);
-}
-
-.settled-chev.closed {
-    transform: rotate(180deg);
-}
+/* ---- Footer: the plan's usage, and Settings ---------------------------- */
 
 .side-foot {
     display: flex;
     align-items: center;
-    gap: 8px;
-    height: 48px;
-    padding: 0 8px 0 18px;
+    gap: 10px;
+    padding: 10px 6px 4px;
+    border-top: 0.5px solid var(--line);
     flex: none;
 }
 
-.side-foot-text {
-    font-size: 0.857rem;
-    color: var(--fg-muted);
-}
-
-.conn {
-    width: 6px;
-    height: 6px;
+.sidebar .meter {
+    --tone: var(--accent);
+    width: 26px;
+    height: 26px;
     border-radius: 50%;
-    background: var(--fg-faint);
+    flex: none;
+    background: conic-gradient(var(--tone) calc(var(--v) * 1%), color-mix(in srgb, var(--rail-fg) 12%, transparent) 0);
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 4px));
+    mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 4px));
+}
+
+.sidebar .meter.tone-warn {
+    --tone: var(--warn);
+}
+
+.sidebar .meter.tone-danger {
+    --tone: var(--danger);
+}
+
+.foot-mark {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
     flex: none;
 }
 
-.conn-open {
-    background: var(--success);
+.side-foot .who {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    line-height: 1.25;
 }
 
-.conn-connecting,
-.conn-reconnecting {
-    background: var(--warning);
+.side-foot .who b {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    font-weight: 600;
 }
 
-.conn-unauthorized,
-.conn-unavailable {
+.side-foot .who b svg {
+    flex: none;
+}
+
+.side-foot .who > span {
+    font-size: 0.821rem;
+    color: var(--rail-fg-2);
+}
+
+/* The Settings rail's footer (Settings.tsx): where the server runs. */
+.side-foot-text {
+    flex: 1;
+    min-width: 0;
+    color: var(--rail-fg-2);
+}
+
+.sidebar .conn {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--fg-4);
+    flex: none;
+}
+
+.sidebar .conn-open {
+    background: var(--ok);
+}
+
+.sidebar .conn-connecting,
+.sidebar .conn-reconnecting {
+    background: var(--warn);
+}
+
+.sidebar .conn-unauthorized,
+.sidebar .conn-unavailable {
     background: var(--danger);
 }
+
+/* ---- Settings: its sections take the list's place ---------------------- */
+
+.sidebar.settings-nav .set-back-wrap {
+    padding: 0;
+}
+
+.sidebar.settings-nav .set-back {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    height: auto;
+    padding: 4px 8px 12px;
+    border-radius: 0;
+    background: none;
+    color: var(--rail-fg-2);
+    font-size: 0.929rem;
+    font-weight: 600;
+}
+
+.sidebar.settings-nav .set-back:hover {
+    background: none;
+    color: var(--rail-fg);
+}
+
+.sidebar.settings-nav .set-back kbd {
+    margin-left: auto;
+    font: 500 0.786rem/1 var(--font-ui);
+    color: var(--fg-3);
+    padding: 3px 5px;
+    border-radius: 5px;
+    background: var(--hover);
+}
+
+.sidebar.settings-nav .set-tabs {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 0;
+    overflow: visible;
+    background: none;
+    box-shadow: none;
+}
+
+.sidebar.settings-nav .navi {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    height: auto;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: none;
+    color: var(--rail-fg);
+    font-size: 0.929rem;
+    font-weight: 500;
+    transition: background 140ms;
+}
+
+.sidebar.settings-nav .navi svg {
+    flex: none;
+    color: var(--rail-fg-2);
+}
+
+.sidebar.settings-nav .navi:hover {
+    background: var(--rail-hover);
+}
+
+.sidebar.settings-nav .navi.on {
+    background: var(--rail-sel);
+    box-shadow: inset 0 0 0 0.5px var(--rail-sel-stroke);
+}
+
+/* ---- Width: drag the rail's edge --------------------------------------- */
 
 .resize-handle {
     position: absolute;
@@ -480,4 +724,3 @@
 .resize-handle:hover {
     background: linear-gradient(90deg, transparent 2px, var(--accent-border) 2px, var(--accent-border) 4px, transparent 4px);
 }
-
