@@ -11,7 +11,7 @@ import { newSession, stopAgent } from "../state/actions";
 import { setAgentFocus } from "../state/ui";
 import { clock, duration, plural } from "../lib/format";
 import { now } from "../lib/clock";
-import { ActivityGroup, groupBlocks, shortModelRef, type Item } from "./blocks/Activity";
+import { ActivityGroup, CardFoldsProvider, groupBlocks, shortModelRef, type Item } from "./blocks/Activity";
 import { Markdown } from "./blocks/Markdown";
 import { Crumb, CrumbSep, sessionTitle, TitleBar } from "./Header";
 import { Monogram } from "./Sidebar";
@@ -186,7 +186,9 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                                 </Show>
                                 <Show when={showWork()}>
                                     <div class="worklog">
-                                        <Log agent={a()} agents={p.handle.view.agents} items={items()} lastText={lastText()?.id} />
+                                        <CardFoldsProvider sessionId={p.handle.id}>
+                                            <Log agent={a()} agents={p.handle.view.agents} items={items()} lastText={lastText()?.id} />
+                                        </CardFoldsProvider>
                                     </div>
                                 </Show>
                                 <Show when={a().replayed && !a().blocks.length}>

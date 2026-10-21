@@ -1040,6 +1040,56 @@
     height: 26px;
 }
 
+/* A command's header is the button that opens it: one line, the output only on demand. */
+.cmd-h {
+    width: 100%;
+    padding-right: 8px;
+    text-align: left;
+    transition: background 140ms;
+}
+
+.cmd-h:hover:not(:disabled) {
+    background: var(--hover);
+}
+
+/* Inside the card's rounded clip. */
+.cmd-h:focus-visible {
+    outline-offset: -2px;
+    border-radius: var(--r-card);
+}
+
+/* Beside a glimpse of the output, the command keeps most of the line. */
+.cmd-h.has-tail .tcard-p {
+    max-width: 60%;
+}
+
+/* Folded: the last line a running command printed, or a failed one's last line of output. */
+.tcard-tail {
+    flex: 1 1 0;
+    font: 0.786rem var(--font-mono);
+    color: var(--fg-3);
+}
+
+.tcard-tail.err {
+    color: color-mix(in srgb, var(--danger) 75%, var(--fg-3));
+}
+
+.tcard-chev {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 18px;
+    color: var(--fg-3);
+}
+
+.tcard-chev .chev {
+    transition: transform 220ms var(--ease);
+}
+
+.cmd-h[aria-expanded="true"] .chev {
+    transform: rotate(90deg);
+}
+
 /* "You ran": a command from the composer's "!". */
 .tcard-who {
     flex: none;
