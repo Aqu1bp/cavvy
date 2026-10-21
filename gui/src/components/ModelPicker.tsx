@@ -36,11 +36,10 @@ const FAVORITES = "favorites";
 
 type Row = { m: ModelSummary; sub?: string };
 
-/** A menu by the composer: above it in a session, below it on Home, where the composer sits higher. */
+/** A menu from a button in the composer: just above it in a session, below it on Home, where the composer sits higher. */
 export interface ComposerMenu {
     open: boolean;
     setOpen: (v: boolean) => void;
-    edge?: () => HTMLElement | undefined;
     placement?: "top" | "bottom";
 }
 
@@ -201,7 +200,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                 </Show>
                 <ChevronDown size={13} class="chev" />
             </button>
-            <Menu label="Choose a model" kind="dialog" initialFocus={() => input} onKeyDown={onKey} open={p.open} anchor={() => anchor} edge={p.edge} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={360} maxHeight={340} minHeight={240} class="mp">
+            <Menu label="Choose a model" kind="dialog" initialFocus={() => input} onKeyDown={onKey} open={p.open} anchor={() => anchor} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={360} maxHeight={340} minHeight={240} class="mp">
                 <Show when={showAccounts(rail())}>
                     <label class="small">{providerName(rail())} · Account <select aria-label="Session account" value={selectedAccount(rail())} onChange={(e) => void setAccount(rail(), e.currentTarget.value)}>
                         <Show when={missingAccount(rail())}><option value={selectedAccount(rail())} disabled>Removed account — choose another</option></Show>
@@ -444,7 +443,6 @@ export function EffortPicker(p: ComposerMenu & { current?: ModelSummary; current
                 kind="dialog"
                 open={p.open}
                 anchor={() => anchor}
-                edge={p.edge}
                 onClose={() => p.setOpen(false)}
                 placement={p.placement ?? "top"}
                 width={220}

@@ -475,10 +475,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         return `${now}. ${mod}-click${otherKey ? ` or ${otherKey}` : ""} to ${other} instead.`;
     };
     const canSend = createMemo(() => hasContent() && !blocked());
-    /** Menus open clear of the whole card, tabs included, so they never cover what you're typing. */
-    let root: HTMLDivElement | undefined;
-    const edge = () => root;
-    // Home's composer has the page below it; a session's sits at the bottom of the window.
+    // The pickers open from their own button, left-aligned with it (design/glass placePop): above it in a
+    // session, at the bottom of the window; below it on Home, which has the page below it. Each flips if there's no room.
     const menuSide = () => (p.variant === "home" ? "bottom" : "top");
     const interactions = () => st()?.interactions ?? [];
     /** The status row: while a turn runs, unless a request card already says what's happening. */
@@ -508,7 +506,6 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
 
     return (
         <div
-            ref={root}
             class={`composer v-${p.variant ?? "session"} ${shell() ? "shell" : ""} ${dragging() ? "dragging" : ""} ${working() ? "running" : ""}`}
             onDragOver={(e) => {
                 if (e.dataTransfer?.types.includes("Files")) {
@@ -693,9 +690,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         </button>
                     </Show>
                     <span class="vsep" aria-hidden="true" />
-                    <ModelPicker current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} edge={edge} placement={menuSide()} compare={p.sessionId ? undefined : p.compare} />
-                    <EffortPicker current={st()?.model} currentRef={app.settings.model} effort={st() ? st()!.effort : app.settings.effort} fast={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy && !st()?.activity?.idle} open={effortOpen()} setOpen={setEffortOpen} edge={edge} placement={menuSide()} />
-                    <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} open={modePickerOpen()} setOpen={setModePickerOpen} edge={edge} placement={menuSide()} />
+                    <ModelPicker current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare} />
+                    <EffortPicker current={st()?.model} currentRef={app.settings.model} effort={st() ? st()!.effort : app.settings.effort} fast={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy && !st()?.activity?.idle} open={effortOpen()} setOpen={setEffortOpen} placement={menuSide()} />
+                    <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} open={modePickerOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
                     <span class="grow" />
                     <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} />
                     <Show
