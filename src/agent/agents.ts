@@ -307,13 +307,13 @@ function loadDir(dir: string, source: AgentDef["source"], prefix?: string): Agen
     return out;
 }
 
-/** `projectAgents: false`: none of the repository's, even in a trusted folder (a run told not to trust the project). */
-export function loadAgents(cwd: string, projectAgents = true): AgentDef[] {
+/** `trusted`: the run's decision about the folder, as loadMemory takes it. Left out, the folder's trust decides. */
+export function loadAgents(cwd: string, trusted?: boolean): AgentDef[] {
     const byName = new Map<string, AgentDef>();
     // Project agents only in trusted folders: their prompts and tool lists come from the repository.
-    const trusted = projectAgents && isTrusted(cwd);
-    const project = trusted ? loadDir(paths.projectAgents(cwd), "project") : [];
-    const plugin = loadPlugins(cwd, trusted).flatMap((p) => p.agentPaths.flatMap((d) => loadDir(d, "plugin", p.name)));
+    const projectTrusted = trusted ?? isTrusted(cwd);
+    const project = projectTrusted ? loadDir(paths.projectAgents(cwd), "project") : [];
+    const plugin = loadPlugins(cwd, projectTrusted).flatMap((p) => p.agentPaths.flatMap((d) => loadDir(d, "plugin", p.name)));
     for (const a of [...BUILTIN_AGENTS, ...plugin, ...loadDir(paths.userAgents(), "user"), ...project]) byName.set(a.name, a);
     return [...byName.values()];
 }
@@ -327,10 +327,10 @@ export function loadAgents(cwd: string, projectAgents = true): AgentDef[] {
  * the user's ~/.harness/skills and ~/.claude/skills. The body, without
  * its frontmatter.
  */
-export function findSkill(name: string, cwd: string, projectSkills = true): { path: string; body: string } | undefined {
+export function findSkill(name: string, cwd: string, trusted?: boolean): { path: string; body: string } | undefined {
     if (!/^[A-Za-z0-9][\w.:-]*$/.test(name) || name.includes("..")) return undefined;
     const root = gitRoot(cwd) ?? cwd;
-    const roots = [...(projectSkills && isTrusted(cwd) ? [join(root, ".harness", "skills"), join(root, ".claude", "skills")] : []), join(harnessHome(), "skills"), join(homedir(), ".claude", "skills")];
+    const roots = [...((trusted ?? isTrusted(cwd)) ? [join(root, ".harness", "skills"), join(root, ".claude", "skills")] : []), join(harnessHome(), "skills"), join(homedir(), ".claude", "skills")];
     for (const r of roots) {
         const path = join(r, name, "SKILL.md");
         try {

@@ -1138,7 +1138,7 @@ export class Agent {
         try {
             // Implicit session trust does not authorize CLI project configuration, and a run told not to trust the folder
             // (the SDK's trusted: false) keeps it off even where the user trusted it.
-            trusted = this.projectTrusted() && trustedByUser(this.state.cwd);
+            trusted = this.projectTrusted() !== false && trustedByUser(this.state.cwd);
             approvedMcpServers = this.o.approvedMcpServers?.();
         } catch {
             trusted = false;
@@ -1267,11 +1267,11 @@ export class Agent {
     }
 
     /**
-     * Whether this run may use the project's own configuration (CLI settings and hooks, memory files, agents)
-     * when the folder's trust allows it. False only when the host said the folder isn't trusted.
+     * The host's decision about the folder (whether this run uses the project's memory files, agents and
+     * skills), or undefined when it made none and the folder's own trust decides.
      */
-    private projectTrusted(): boolean {
-        return this.o.trusted?.() !== false;
+    private projectTrusted(): boolean | undefined {
+        return this.o.trusted?.();
     }
 
     /** A non-interactive run (-p): it ends with this turn, and tasks still running end with it. */
@@ -2490,7 +2490,7 @@ export class Agent {
         const started = Date.now();
         const fail = (report: string, model = req.model ?? modelRef(this.model)): ChildResult => ({ status: "failed", report, model, tokens: 0, durationMs: Date.now() - started });
         const type = req.agent || "general-purpose";
-        const defs = req.def?.name === type && (req.def.source !== "project" || this.projectTrusted()) ? [req.def] : loadAgents(this.state.projectRoot, this.projectTrusted());
+        const defs = req.def?.name === type && (req.def.source !== "project" || this.projectTrusted() !== false) ? [req.def] : loadAgents(this.state.projectRoot, this.projectTrusted());
         const def = defs.find((a) => a.name === type);
         if (!def) return fail(`Unknown agent type "${type}". Available: ${defs.map((d) => d.name).join(", ")}`);
 
@@ -2560,7 +2560,7 @@ export class Agent {
         const memoryDir = def.memory ? agentMemoryDir(def.memory, def.name, this.state.projectRoot) : undefined;
         if (def.memory && memoryDir) {
             const dir = memoryDir;
-            const readable = def.memory === "user" || (this.projectTrusted() && isTrusted(this.state.projectRoot));
+            const readable = def.memory === "user" || (this.projectTrusted() ?? isTrusted(this.state.projectRoot));
             if (def.memory === "local") keepLocal(dir);
             extra.push(agentMemoryPrompt(def.memory, dir, readable ? readAgentMemory(dir) : undefined));
         }

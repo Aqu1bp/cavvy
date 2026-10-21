@@ -648,6 +648,30 @@ describe("found in review", () => {
         expect(of(trusted, "tool_result")[0]!.content).toContain("[yes]");
     });
 
+    test("a folder trusted for having no project configuration gets its memory files, without trusting it for the process", async () => {
+        const { isTrusted } = await import("../src/config/trust");
+        const cwd = project();
+        writeFileSync(join(cwd, "AGENTS.md"), "EMPTY-FOLDER-MEMORY-MARKER");
+        const definition = join(HARNESS_HOME, "agents", "sdk-memory-reader.md");
+        mkdirSync(join(HARNESS_HOME, "agents"), { recursive: true });
+        writeFileSync(definition, "---\nname: sdk-memory-reader\ndescription: reader\nmemory: project\n---\nMEMORY-READER-MARKER");
+        mkdirSync(join(cwd, ".harness", "agent-memory", "sdk-memory-reader"), { recursive: true });
+        writeFileSync(join(cwd, ".harness", "agent-memory", "sdk-memory-reader", "MEMORY.md"), "EMPTY-FOLDER-AGENT-MEMORY-MARKER");
+        try {
+            script = (_req, n) => (n === 1 ? { calls: [{ id: "task", name: "Task", args: { description: "read", prompt: "review", subagent_type: "sdk-memory-reader" } }] } : { text: "done" });
+            const ms = await collect(query({ prompt: "hello", options: { cwd, model: MODEL, persistSession: false, permissionMode: "bypassPermissions" } }));
+            expect(results(ms)[0]!.subtype).toBe("success");
+            expect(of(ms, "system").filter((m) => m.subtype === "notice")).toEqual([]);
+            expect(JSON.stringify(requests[0]!.messages)).toContain("EMPTY-FOLDER-MEMORY-MARKER");
+            const child = requests.find((r) => JSON.stringify(r.messages).includes("MEMORY-READER-MARKER"));
+            expect(JSON.stringify(child!.messages)).toContain("EMPTY-FOLDER-AGENT-MEMORY-MARKER");
+            // The decision was this query's: the folder isn't trusted for the rest of the process.
+            expect(isTrusted(cwd)).toBe(false);
+        } finally {
+            rmSync(definition, { force: true });
+        }
+    });
+
     test("persistSession: false with resume leaves the session file as it was", async () => {
         const cwd = project();
         const first = query({ prompt: "keep me", options: { cwd, model: MODEL } });
