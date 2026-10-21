@@ -90,9 +90,10 @@ test("⌘F under Settings does nothing: neither the conversation's find nor the 
     const [settingsTab, setSettingsTab] = solid.createSignal<string | undefined>("general");
     const keys: ((e: any) => void)[] = [];
     let finds = 0;
+    let dialogOpen = false;
     const App = component(appSource.slice(appSource.indexOf("export function App")), "App", {
         RenderBoundary: boundary(), app: { conn: "open", activeId: "session" }, handleFor: () => ({ view: { state: { cwd: "/project" }, agents: [] } }),
-        prefs: { sidebar: true }, isTauri: false, document: { activeElement: null, querySelector: () => null }, setEnterSends() {}, skipCovered() {}, warmUp() {}, setTimeout() {},
+        prefs: { sidebar: true }, isTauri: false, document: { activeElement: null, querySelector: (sel: string) => (dialogOpen && sel === ".dialog-backdrop" ? {} : null) }, setEnterSends() {}, skipCovered() {}, warmUp() {}, setTimeout() {},
         window: { addEventListener: (type: string, fn: (e: any) => void) => type === "keydown" && keys.push(fn), removeEventListener() {} },
         actionOf: (e: any) => (e.key === "f" && e.metaKey ? "app:find" : undefined), openFind: () => { finds++; }, blocked: () => false, railOpen: () => false,
         railDrag: () => undefined, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }),
@@ -110,6 +111,11 @@ test("⌘F under Settings does nothing: neither the conversation's find nor the 
         expect(keys.length).toBeGreaterThan(0);
         // Under Settings: the key is taken (no page find), and the conversation's find doesn't open.
         expect(press()).toBe(true);
+        expect(finds).toBe(0);
+        // With a dialog open in Settings too (it used to fall through to the page's find there).
+        dialogOpen = true;
+        expect(press()).toBe(true);
+        dialogOpen = false;
         expect(finds).toBe(0);
         // Back in the session: the conversation's find.
         setSettingsTab(undefined);

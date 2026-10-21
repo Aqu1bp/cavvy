@@ -294,7 +294,7 @@ export function App() {
             "chat:focusInput": () => void (!settingsTab() && requestComposerFocus()),
             // Find in the conversation in view (pages not drawn yet included), rather than the page's own find.
             // Nothing under Settings: the page's own find would match the conversation it covers (kept mounted).
-            "app:find": () => (settingsTab() ? undefined : active() && !agent() ? void openFind() : false),
+            "app:find": () => (active() && !agent() && !settingsTab() ? void openFind() : false),
             "app:previousSession": () => void cycleSession(-1),
             "app:nextSession": () => void cycleSession(1),
         };
@@ -304,6 +304,9 @@ export function App() {
             const action = actionOf(e, ["Global"]);
             // Most keys are typing: nothing below looks at the page for them.
             if (!action && e.key !== "Escape") return;
+            // ⌘F does nothing under Settings, a dialog open or not: the page's own find would match the
+            // conversation it covers (kept mounted under it).
+            if (action === "app:find" && settingsTab()) return e.preventDefault();
             const dialog = () => document.querySelector(".dialog-backdrop");
             if (action === "app:toggleTerminal") {
                 if (!dialog()) e.preventDefault(), setTerminalOpen(!terminalOpen());
