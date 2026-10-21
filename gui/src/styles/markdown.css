@@ -233,3 +233,30 @@
     list-style: none;
     margin-left: -1.2em;
 }
+
+/* While the reply streams, a caret at the end of its last line. */
+.md.streaming > .md-block:last-child > :is(p, h1, h2, h3, h4):last-child::after,
+.md.streaming > .md-block:last-child > :is(ul, ol):last-child > li:last-child::after {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 15px;
+    margin-left: 2px;
+    vertical-align: -2px;
+    border-radius: 2px;
+    background: var(--accent);
+    animation: md-caret 1s steps(2) infinite;
+}
+
+@keyframes md-caret {
+    50% {
+        opacity: 0;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .md.streaming > .md-block:last-child > :is(p, h1, h2, h3, h4):last-child::after,
+    .md.streaming > .md-block:last-child > :is(ul, ol):last-child > li:last-child::after {
+        animation: none;
+    }
+}
