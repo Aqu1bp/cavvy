@@ -10,6 +10,10 @@ const { Session } = await import("../src/agent/session");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { ProviderError } = await import("../src/providers/types");
 const { TodoWriteTool } = await import("../src/tools/meta-tools");
+const { toAnthropicMessages } = await import("../src/providers/anthropic");
+const { toOpenAIMessages } = await import("../src/providers/openai-compat");
+const { toResponsesInput } = await import("../src/providers/openai-responses");
+const { getProvider } = await import("../src/providers/registry");
 afterAll(() => iso.cleanup());
 
 const user = (text: string): Message => ({ role: "user", content: [{ type: "text", text }] });
@@ -317,6 +321,66 @@ describe("the agent loop's compaction", () => {
         const set = setup(() => say("done"), { settings: { maxOutputTokens: 20_000 } });
         expect(await set.run([{ type: "text", text: "go" }])).toBe("done");
         expect(set.requests[0]!.maxTokens).toBe(20_000);
+    });
+
+    test("auto-compacting at the start of a turn keeps the new prompt, with its image, after the summary", async () => {
+        const { run, requests, session, events } = setup((req, n) => {
+            if (n === 1) return say("first answer", usage(160_000));
+            if (isSummary(req)) return say("SUMMARY: earlier work");
+            return say("final");
+        });
+        await run([{ type: "text", text: "start" }]);
+        session.push({ role: "user", content: [{ type: "text", text: "more" }] });
+        session.push(say("ok"));
+        const img = { type: "image" as const, mediaType: "image/png", data: "iVBORw0KGgo=" };
+        // 160K tokens in context, over (200K - 32K) * 0.92: this turn compacts before its first request.
+        expect(await run([{ type: "text", text: "What is wrong in this screenshot?" }, img])).toBe("done");
+        expect(events.filter((e) => e.type === "compact_start").length).toBe(1);
+        // The summary covers what came before; the prompt isn't in it.
+        const summaryReq = requests.find(isSummary)!;
+        expect(JSON.stringify(summaryReq.messages)).not.toContain("What is wrong in this screenshot?");
+        // The answer's request: the summary, then the prompt as sent.
+        const answer = requests.at(-1)!;
+        expect(answer.messages.length).toBe(2);
+        expect(answer.messages[0]!.meta?.kind).toBe("summary");
+        const summaryText = (answer.messages[0]!.content[0] as { text: string }).text;
+        expect(summaryText).toContain("SUMMARY: earlier work");
+        // Not told to carry on regardless: the prompt says what's next.
+        expect(summaryText).not.toContain("without asking the user any further questions");
+        expect(answer.messages[1]).toMatchObject({ role: "user", meta: { kind: "prompt" }, content: [{ type: "text", text: "What is wrong in this screenshot?" }, img] });
+        expect(session.messages.map((m) => m.meta?.kind ?? m.role)).toEqual(["summary", "prompt", "assistant"]);
+
+        // On the wire: Anthropic gets one user turn (the two merged), then alternation; OpenAI's formats keep the image.
+        const sent = answer.messages;
+        expect(toAnthropicMessages([...sent, say("final")]).map((m) => m.role)).toEqual(["user", "assistant"]);
+        expect(JSON.stringify(toAnthropicMessages(sent))).toContain('"type":"image"');
+        expect(JSON.stringify(toOpenAIMessages("sys", sent, getProvider("openai")!))).toContain("image_url");
+        expect(JSON.stringify(toResponsesInput(sent, getProvider("openai")!, "gpt-x"))).toContain("input_image");
+    });
+
+    test("a mid-turn compaction (after tool results) summarizes everything, and the work carries on", async () => {
+        let i = 0;
+        const { run, requests, session } = setup((req) => {
+            if (isSummary(req)) return say("SUMMARY");
+            return ++i === 1 ? todo("c1", usage(160_000)) : say("done");
+        });
+        session.push({ role: "user", content: [{ type: "text", text: "a" }] });
+        session.push(say("b"));
+        session.push({ role: "user", content: [{ type: "text", text: "c" }] });
+        session.push(say("d"));
+        expect(await run([{ type: "text", text: "go" }])).toBe("done");
+        const answer = requests.at(-1)!;
+        expect(answer.messages.length).toBe(1);
+        expect((answer.messages[0]!.content[0] as { text: string }).text).toContain("without asking the user any further questions");
+    });
+
+    test("/compact summarizes everything, a prompt left unanswered too", async () => {
+        const { agent, session, requests } = setup(() => say("SUMMARY"));
+        twoMessages(session);
+        session.push({ role: "user", content: [{ type: "text", text: "interrupted prompt" }], meta: { kind: "prompt" } });
+        expect(await agent.compact({ auto: false, signal: new AbortController().signal })).toBe(true);
+        expect(JSON.stringify(requests[0]!.messages)).toContain("interrupted prompt");
+        expect(session.messages.length).toBe(1);
     });
 
     test("an error that isn't transient isn't retried", async () => {

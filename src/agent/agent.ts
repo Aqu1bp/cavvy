@@ -648,7 +648,7 @@ export class Agent {
             if (!this.autoCompactBlocked && this.shouldAutoCompact()) {
                 let ok = false;
                 try {
-                    ok = await this.compact({ auto: true, signal, continuing: true });
+                    ok = await this.compact({ auto: true, signal, continuing: true, keepLast: true });
                 } catch (e) {
                     // Stopped while compacting: an interrupt like any other, not an unexpected error.
                     if (isAbort(e, signal)) return this.interrupted(false);
@@ -666,7 +666,7 @@ export class Agent {
                     overflowCompacted = true;
                     this.emit({ type: "notice", level: "warn", message: "The conversation exceeded the model's context window; compacting and retrying." });
                     try {
-                        if (await this.compact({ auto: true, signal, continuing: true })) continue;
+                        if (await this.compact({ auto: true, signal, continuing: true, keepLast: true })) continue;
                     } catch (ce) {
                         if (isAbort(ce, signal)) return this.interrupted(false);
                     }
@@ -1162,12 +1162,19 @@ export class Agent {
     // -----------------------------------------------------------------------
     // Compaction
 
-    /** Summarize the history and replace it. Returns false if there was nothing to do. */
-    async compact(opts: { auto: boolean; signal: AbortSignal; instructions?: string; continuing?: boolean; idle?: boolean }): Promise<boolean> {
+    /**
+     * Summarize the history and replace it. Returns false if there was nothing to do.
+     * `keepLast`: a user message still waiting for its answer (a turn's prompt, with its
+     * attachments) isn't summarized: it stays after the summary as it is.
+     */
+    async compact(opts: { auto: boolean; signal: AbortSignal; instructions?: string; continuing?: boolean; idle?: boolean; keepLast?: boolean }): Promise<boolean> {
         // Until a request of the conversation's own: usage a cancelled backend compaction reports doesn't count.
         if (opts.idle) this.idleTried = true;
         if (isAgentBackend(this.client)) return this.compactBackend(this.client, opts);
-        const history = this.session.messages;
+        let history = this.session.messages;
+        const last = history.at(-1);
+        const kept = opts.keepLast && history.length > 2 && last?.role === "user" && !last.content.some((p) => p.type === "tool_result") ? last : undefined;
+        if (kept) history = history.slice(0, -1);
         if (history.length < 2) return false;
         if (!(await this.preCompact(opts))) return false;
         this.emit({ type: "compact_start", auto: opts.auto, ...(opts.idle ? { idle: true } : {}) });
@@ -1209,7 +1216,8 @@ export class Agent {
             summary = textOf(await send(req));
         }
         if (!summary.trim()) throw new Error("The model returned an empty summary");
-        const keep: Message[] = [summaryMessage(summary, Boolean(opts.continuing))];
+        // The kept message says what comes next.
+        const keep: Message[] = kept ? [summaryMessage(summary, false), kept] : [summaryMessage(summary, Boolean(opts.continuing))];
         this.session.compact(summary, keep, opts.idle);
         this.contextTokens = 0;
         this.lastUsageTotal = 0;
