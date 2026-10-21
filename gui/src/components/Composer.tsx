@@ -1,7 +1,7 @@
-import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, Show, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on, onCleanup, Show, Switch, type JSX } from "solid-js";
 import { isMod, mod } from "../lib/platform";
-import { ArrowUp, CornerDownRight, FileText, Folder, ListEnd, Paperclip, Slash, Sparkles, SquareTerminal } from "lucide-solid";
-import type { CommandInfo, FollowUpMode, PermissionModeId } from "@shared/protocol";
+import { ArrowUp, CornerDownRight, Database, FileText, Folder, ListEnd, Paperclip, Slash, Sparkles, SquareTerminal } from "lucide-solid";
+import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
 import { interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
@@ -29,9 +29,11 @@ import { canStop } from "../lib/session-status";
 import { QueueTab } from "./QueueTab";
 
 /** `mention`: a skill picked from the $ menu, which goes in where the $ is. */
-type MenuItem = { kind: "command"; cmd: CommandInfo; mention?: boolean } | { kind: "file"; path: string };
+type MenuItem = { kind: "command"; cmd: CommandInfo; mention?: boolean } | { kind: "file"; path: string } | { kind: "resource"; res: McpResourceInfo };
 
 export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; /** Tucked under the card, like a drawer (Home's folder and branch). */ strip?: JSX.Element; /** Home: sending to several models at once. */ compare?: CompareOption }) {
+    /** The last @ search asked MCP servers too, so its empty state says so. */
+    const [searchedResources, setSearchedResources] = createSignal(false);
     const whileMounted = createLifetimeGuard();
     let ta: HTMLTextAreaElement | undefined;
     let fileInput: HTMLInputElement | undefined;
@@ -111,7 +113,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     });
     createEffect(
         on(
-            [() => (app.conn === "open" ? st()?.cwd ?? app.homeCwd : undefined), () => st()?.model?.provider],
+            // MCP prompts are commands too: the list is read again when a server's prompts come or go.
+            [() => (app.conn === "open" ? st()?.cwd ?? app.homeCwd : undefined), () => st()?.model?.provider, () => (st()?.mcp ?? []).map((m) => `${m.name}:${m.prompts ?? 0}`).join("\0")],
             ([cwd, provider]) => {
                 let current = true;
                 onCleanup(() => { current = false; });
@@ -181,13 +184,23 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         const cwd = st()?.cwd ?? app.homeCwd;
         if (tok && cwd && p.sessionId) {
             setMenuStatus("loading");
+            const sid = p.sessionId;
+            // Only a session whose servers offer resources is asked for them.
+            const hasResources = (st()?.mcp ?? []).some((m) => m.status === "connected" && m.resources);
             mentionTimer = setTimeout(async () => {
                 try {
-                    const found = await rpc.call("fs.mentions", { cwd, query: tok.query });
+                    const [found, resources] = await Promise.all([
+                        rpc.call("fs.mentions", { cwd, query: tok.query }),
+                        hasResources && tok.query ? rpc.call("session.mcpResources", { id: sid, query: tok.query }).catch(() => [] as McpResourceInfo[]) : Promise.resolve([] as McpResourceInfo[]),
+                    ]);
                     if (version !== mentionVersion) return;
-                    setMenu(found.map((path) => ({ kind: "file" as const, path })));
+                    const files = found.map((path) => ({ kind: "file" as const, path }));
+                    const res = resources.map((r) => ({ kind: "resource" as const, res: r }));
+                    // "server:" asks for that server's resources first; otherwise files lead.
+                    setMenu(tok.query.includes(":") ? [...res, ...files].slice(0, 12) : [...files.slice(0, Math.max(6, 12 - res.length)), ...res].slice(0, 12));
                     setMenuSel(0);
-                    setMenuStatus(found.length ? undefined : "empty");
+                    setMenuStatus(found.length || resources.length ? undefined : "empty");
+                    setSearchedResources(hasResources && Boolean(tok.query));
                 } catch {
                     if (version === mentionVersion) setMenuStatus("error");
                 }
@@ -217,7 +230,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             const tok = token();
             if (!tok || !ta) return;
             const end = ta.selectionStart ?? text().length;
-            const ins = `@${item.path.includes(" ") ? `"${item.path}"` : item.path}${item.path.endsWith("/") ? "" : " "}`;
+            const ins = item.kind === "resource" ? `@${item.res.mention} ` : `@${item.path.includes(" ") ? `"${item.path}"` : item.path}${item.path.endsWith("/") ? "" : " "}`;
             const next = text().slice(0, tok.start) + ins + text().slice(end);
             setText(next);
             const pos = tok.start + ins.length;
@@ -487,39 +500,54 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                 }}
                                 onMouseMove={() => setMenuSel(i())}
                             >
-                                <Show
-                                    when={item.kind === "command" && item}
-                                    fallback={
-                                        <>
-                                            <span class="cm-icon">{(item as { path: string }).path.endsWith("/") ? <Folder size={14} /> : <FileText size={14} />}</span>
-                                            <span class="cm-name mono truncate">{(item as { path: string }).path}</span>
-                                        </>
-                                    }
-                                >
-                                    {(c) => (
-                                        <>
-                                            <span class={`cm-icon ${c().cmd.skill ? "skill" : ""}`}>
-                                                <Show when={c().cmd.skill} fallback={<Slash size={13} />}>
-                                                    <Sparkles size={13} />
-                                                </Show>
-                                            </span>
-                                            <span class="cm-name mono">
-                                                {c().mention ? "$" : ""}
-                                                {c().cmd.name}
-                                                <Show when={c().cmd.args && !c().mention}>
-                                                    <span class="cm-args"> {c().cmd.args}</span>
-                                                </Show>
-                                            </span>
-                                            <span class="cm-desc truncate">{c().cmd.description}</span>
-                                        </>
-                                    )}
-                                </Show>
+                                <Switch>
+                                    <Match when={item.kind === "command" && item}>
+                                        {(c) => (
+                                            <>
+                                                <span class={`cm-icon ${c().cmd.skill ? "skill" : ""}`}>
+                                                    <Show when={c().cmd.skill} fallback={<Slash size={13} />}>
+                                                        <Sparkles size={13} />
+                                                    </Show>
+                                                </span>
+                                                <span class="cm-name mono">
+                                                    {c().mention ? "$" : ""}
+                                                    {c().cmd.name}
+                                                    <Show when={c().cmd.args && !c().mention}>
+                                                        <span class="cm-args"> {c().cmd.args}</span>
+                                                    </Show>
+                                                </span>
+                                                <span class="cm-desc truncate">{c().cmd.description}</span>
+                                            </>
+                                        )}
+                                    </Match>
+                                    <Match when={item.kind === "resource" && item}>
+                                        {(r) => (
+                                            <>
+                                                <span class="cm-icon" title="MCP resource">
+                                                    <Database size={13} />
+                                                </span>
+                                                <span class="cm-name mono truncate">
+                                                    {r().res.server}:{r().res.uri}
+                                                </span>
+                                                <span class="cm-desc truncate">{r().res.title ?? (r().res.name !== r().res.uri ? r().res.name : r().res.description)}</span>
+                                            </>
+                                        )}
+                                    </Match>
+                                    <Match when={item.kind === "file" && item}>
+                                        {(f) => (
+                                            <>
+                                                <span class="cm-icon">{f().path.endsWith("/") ? <Folder size={14} /> : <FileText size={14} />}</span>
+                                                <span class="cm-name mono truncate">{f().path}</span>
+                                            </>
+                                        )}
+                                    </Match>
+                                </Switch>
                             </button>
                         )}
                     </For>
                     <Show when={menuStatus()}>
                         <div class="cm-status" role="status">
-                            {menuStatus() === "loading" ? "Searching…" : menuStatus() === "empty" ? "No matching files" : menuStatus() === "no-skills" ? (
+                            {menuStatus() === "loading" ? "Searching…" : menuStatus() === "empty" ? (searchedResources() ? "No matching files or resources" : "No matching files") : menuStatus() === "no-skills" ? (
                                 <>No skills yet. Add one as <span class="mono">&lt;name&gt;/SKILL.md</span> in <span class="mono">~/.harness/skills</span> or the project's <span class="mono">.harness/skills</span>.</>
                             ) : "Could not search files"}
                         </div>

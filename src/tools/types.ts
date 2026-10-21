@@ -9,6 +9,9 @@ import type { WakeQueue } from "../agent/wakes";
 import type { LspManager } from "../lsp/manager";
 import type { DiagnosticReport } from "../lsp/diagnostics";
 
+
+/** One completion on the session's own model for an MCP server's sampling request: at most `maxTokens`, with why it stopped. */
+export type Sampler = (system: string, prompt: string, signal: AbortSignal, maxTokens?: number) => Promise<{ text: string; model: string; stopReason?: string }>;
 export type JsonSchema = Record<string, unknown>;
 
 export type ToolCategory = "read" | "edit" | "execute" | "network" | "meta" | "mcp";
@@ -129,6 +132,8 @@ export interface ToolContext {
     listModels?: (opts: { provider?: string; query?: string }, signal: AbortSignal) => Promise<string>;
     /** Model-facing web search (WebSearch tool). */
     webSearch?: (query: string, signal: AbortSignal) => Promise<string>;
+    /** One completion on the session's model, for an MCP server's sampling request (after the user allowed it). */
+    sample?: Sampler;
     /** Small-model helper for WebFetch prompts. */
     summarize?: (content: string, prompt: string, signal: AbortSignal) => Promise<string>;
     /**

@@ -32,6 +32,7 @@ import { registerTools, type Registration, type ServerTool } from "../mcp/server
 import { codexInput, codexSkills, pastedPrompt, skillFolder, type CodexSkill } from "./native-skills";
 import { accountEnv, defaultAccount } from "../providers/accounts";
 import { accountPermissionConfig, accountPermissionProfile, watchAccountFolders } from "./account-permissions";
+import { askForm } from "../mcp/elicitation";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendQuestion, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "./types";
 import type { HookEvent } from "../agent/hooks";
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
@@ -215,7 +216,7 @@ function codexPolicyKey(m: PermissionMode, readOnly: boolean): string {
     return `${p.approvalPolicy}|${p.sandbox}|${p.approvalsReviewer}`;
 }
 
-/** A one-off's thread: only the question, so no shell, web search, sub-agents, goals, apps or memories (and no MCP servers: stream()). */
+/** A one-off's thread: only the question, so no shell, web search, sub-agents, goals, apps or memories (and no MCP servers, turned off by name). */
 const ONE_OFF_CONFIG = { web_search: "disabled", "features.multi_agent": false, "features.goals": false, "features.apps": false, "features.memories": false, "features.shell_tool": false, "features.unified_exec": false };
 
 /** Our name to Codex: it records it as the originator of the threads we start. */
@@ -312,9 +313,15 @@ export class CodexBackend implements AgentBackendClient {
         try {
             await withTimeout(handshake(rpc), 30_000, "Codex didn't start (no answer to initialize)");
             const model = req.model.id === "default" ? undefined : req.model.id;
-            // No MCP servers either: every one Codex has is turned off, as for a read-only agent (an unreadable config refuses).
-            const servers = codexMcpOverrides(await rpc.request("config/read", { cwd: homedir(), includeLayers: true }), true).config;
-            const r: any = await rpc.request("thread/start", { cwd: homedir(), model, ephemeral: true, approvalPolicy: "never", sandbox: "read-only", baseInstructions: req.system, config: { ...ONE_OFF_CONFIG, ...servers } });
+            // No MCP servers either: every one Codex is configured with is turned off for this thread (as a read-only turn's are).
+            // Without a list it can be trusted for, it doesn't run: a server could run tools in what offers none.
+            const mcp = await rpc
+                .request("config/read", { cwd: homedir(), includeLayers: true })
+                .then((c) => codexMcpOverrides(c, true).config)
+                .catch(() => {
+                    throw new ProviderError(`${this.def.name} didn't list its MCP servers, so they couldn't be turned off for this request`);
+                });
+            const r: any = await rpc.request("thread/start", { cwd: homedir(), model, ephemeral: true, approvalPolicy: "never", sandbox: "read-only", baseInstructions: req.system, config: { ...ONE_OFF_CONFIG, ...mcp } });
             threadId = r?.thread?.id;
             if (!threadId) throw new ProviderError("Codex didn't start a thread");
             const t: any = await rpc.request("turn/start", { threadId, input: [{ type: "text", text: oneOffPrompt(req), text_elements: [] }] });
@@ -1942,31 +1949,8 @@ export class CodexTurn {
             const answers = await this.host.askQuestions([{ question: `${intro}\n\nOpen this link to continue: ${url}`, options: [{ label: "Done", description: "I opened the link and finished there" }, { label: "Decline" }] }]);
             return answers?.[0]?.[0] === "Done" ? reply("accept") : reply("decline");
         }
-        const form = elicitationForm(p.requestedSchema);
-        if (!form) {
-            this.host.emit({ type: "notice", level: "warn", message: `Declined a request from ${server || "an MCP server"} for input: ${APP_TITLE} can't show its form.` });
-            return reply("decline");
-        }
-        const questions = form.length ? form.map((f) => ({ question: `${intro}\n\n${f.question}`, options: f.options, multiSelect: f.multi })) : [{ question: intro, options: [{ label: "Accept" }, { label: "Decline" }] }];
-        const answers = await this.host.askQuestions(questions);
-        if (!answers) return reply("decline");
-        if (!form.length) return answers[0]?.[0] === "Accept" ? reply("accept", {}) : reply("decline");
-        const content: Record<string, unknown> = {};
-        for (const [i, f] of form.entries()) {
-            const picked = (answers[i] ?? []).filter((x) => f.skip === undefined || x !== f.skip);
-            const value = picked.length ? f.parse(picked) : undefined;
-            if (value === undefined && picked.length) {
-                // Not an answer the form allows (typed outside its choices, out of range): not sent as one.
-                this.host.emit({ type: "notice", level: "warn", message: `Declined ${server ? `the ${server} MCP server's` : "an MCP server's"} form: the answer for "${f.key}" isn't one it allows.` });
-                return reply("decline");
-            }
-            if (value === undefined) {
-                if (f.required) return reply("decline");
-                continue;
-            }
-            content[f.key] = value;
-        }
-        return reply("accept", content);
+        const r = await askForm(intro, p.requestedSchema, (qs) => this.host.askQuestions(qs), (message) => this.host.emit({ type: "notice", level: "warn", message }), server);
+        return r.action === "accept" ? reply("accept", r.content ?? {}) : reply("decline");
     }
 
     /** The changes of a file change announced on a thread not known as a sub-agent's yet. */
@@ -2242,86 +2226,6 @@ function webQuery(item: any): string {
     return str(item?.query) || str(a.query) || queries.join(", ") || (str(a.pattern) && str(a.url) ? `${a.pattern} in ${a.url}` : str(a.url));
 }
 
-/** The option that leaves an optional field of an MCP server's form empty. */
-const LEAVE_EMPTY = "Leave empty";
-
-interface FormField {
-    key: string;
-    question: string;
-    options: BackendQuestion["options"];
-    multi: boolean;
-    required: boolean;
-    /** The option that leaves it empty (an optional field's), named so no answer of its own is taken for it. */
-    skip?: string;
-    /** The value for what was picked or typed; undefined when it isn't one. */
-    parse(answer: string[]): unknown;
-}
-
-/**
- * An MCP elicitation's form (a flat object of strings, numbers, booleans and
- * enums, as MCP has them) as one question per field. Undefined for a schema
- * that isn't one.
- */
-export function elicitationForm(schema: any): FormField[] | undefined {
-    const props = schema?.properties;
-    if (!schema || typeof schema !== "object" || (schema.type !== undefined && schema.type !== "object") || (props !== undefined && (typeof props !== "object" || Array.isArray(props)))) return undefined;
-    const required = new Set<string>(Array.isArray(schema.required) ? schema.required.filter((k: unknown) => typeof k === "string") : []);
-    const out: FormField[] = [];
-    for (const [key, s] of Object.entries<any>(props ?? {})) {
-        if (!s || typeof s !== "object") return undefined;
-        const req = required.has(key);
-        const label = typeof s.title === "string" && s.title.trim() ? s.title.trim() : key;
-        const question = `${label}${typeof s.description === "string" && s.description.trim() ? ` (${s.description.trim()})` : ""}${req ? "" : " (optional)"}`;
-        // Choices: labels shown, values sent; something typed that isn't one of them isn't a value.
-        const choices = (list: { value: string; label: string }[]) => (picked: string) => list.find((c) => c.label === picked)?.value ?? list.find((c) => c.value === picked)?.value;
-        const enumOf = (x: any): { value: string; label: string }[] | undefined => {
-            if (Array.isArray(x?.oneOf)) return x.oneOf.filter((o: any) => typeof o?.const === "string").map((o: any) => ({ value: o.const, label: typeof o.title === "string" ? o.title : o.const }));
-            if (Array.isArray(x?.anyOf)) return x.anyOf.filter((o: any) => typeof o?.const === "string").map((o: any) => ({ value: o.const, label: typeof o.title === "string" ? o.title : o.const }));
-            if (Array.isArray(x?.enum)) return x.enum.filter((v: unknown) => typeof v === "string").map((v: string, i: number) => ({ value: v, label: typeof x.enumNames?.[i] === "string" ? x.enumNames[i] : v }));
-            return undefined;
-        };
-        const field = (options: BackendQuestion["options"], multi: boolean, parse: (a: string[]) => unknown): FormField => {
-            if (req) return { key, question, options, multi, required: req, parse };
-            // Not a label of the field's own (an enum's "Leave empty").
-            let skip = LEAVE_EMPTY;
-            while (options.some((o) => o.label === skip)) skip = `${skip} (skip)`;
-            return { key, question, options: [...options, { label: skip }], multi, required: req, parse, skip };
-        };
-        const defaults = s.default !== undefined && typeof s.default !== "object" ? [{ label: String(s.default), description: "the default" }] : [];
-        if (s.type === "array") {
-            const list = enumOf(s.items);
-            if (!list) return undefined;
-            const value = choices(list);
-            out.push(
-                field(list.map((c) => ({ label: c.label })), true, (a) => {
-                    const v = a.map(value);
-                    const n = v.length;
-                    return v.every((x) => x !== undefined) && !(typeof s.minItems === "number" && n < s.minItems) && !(typeof s.maxItems === "number" && n > s.maxItems) ? v : undefined;
-                }),
-            );
-        } else if (s.type === "string" && enumOf(s)) {
-            const list = enumOf(s)!;
-            const value = choices(list);
-            out.push(field(list.map((c) => ({ label: c.label })), false, (a) => value(a[0]!)));
-        } else if (s.type === "boolean") {
-            out.push(field([{ label: "Yes" }, { label: "No" }], false, (a) => (/^(yes|y|true)$/i.test(a[0]!.trim()) ? true : /^(no|n|false)$/i.test(a[0]!.trim()) ? false : undefined)));
-        } else if (s.type === "number" || s.type === "integer") {
-            const integer = s.type === "integer";
-            out.push(
-                field(defaults, false, (a) => {
-                    const n = Number(a[0]!.trim());
-                    const inRange = !(typeof s.minimum === "number" && n < s.minimum) && !(typeof s.maximum === "number" && n > s.maximum);
-                    return a[0]!.trim() && Number.isFinite(n) && (!integer || Number.isInteger(n)) && inRange ? n : undefined;
-                }),
-            );
-        } else if (s.type === "string") {
-            const fits = (v: string) => !(typeof s.minLength === "number" && v.length < s.minLength) && !(typeof s.maxLength === "number" && v.length > s.maxLength);
-            out.push(field(defaults, false, (a) => (fits(a[0]!) ? a[0] : undefined)));
-        } else return undefined;
-    }
-    return out;
-}
-
 /** The guardianWarning Codex sends with each of its reviewer's verdicts (the reason last), and with a yes. */
 const REVIEW_VERDICT = /^Automatic approval review [\w ]+ \(risk: [^)]*\): ([\s\S]+)$/;
 const APPROVED_VERDICT = /^Automatic approval review approved \(risk: /;
@@ -2491,3 +2395,5 @@ function describeCodexGoal(g: NativeGoal): string {
     const status = g.status === "limited" ? "stopped at a limit" : g.status === "complete" ? "achieved" : g.status;
     return `◎ Goal (Codex, ${status}): ${g.condition}`;
 }
+
+export { elicitationForm } from "../mcp/elicitation";

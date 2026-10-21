@@ -5,6 +5,7 @@
 //   "sso" / "demo"   explore, read, edit (asks permission), run tests, summarize
 //   "diagnostics"    an edit with a type error, then its fix (shows the language server's report)
 //   "question"       asks a multiple-choice question
+//   "mcpform" / "mcpsample" / "mcpresources"   an MCP server named "docs" asks for a form, for sampling; its resources
 //   "plan"           presents a plan for approval
 //   "todo"           keeps a todo list while working
 //   "slow"           streams a long answer slowly
@@ -219,6 +220,20 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
             return { text: "Using it now.", calls: [{ name: "Bash", args: { command: `echo "echo: $DEMO_TOKEN"; printenv | grep '^DEMO_TOKEN='; [ -n "$DEMO_TOKEN" ] && echo SET || echo UNSET${check}`, description: "Use the demo token" } }] };
         }
         return { text: `Done. The command printed:\n${lastResult}` };
+    }
+    // MCP, with a server named "docs" (test/fixtures/mcp-stdio-server.ts): a form it asks for, sampling, and its resources.
+    if (/\bmcpform\b/.test(p)) {
+        if (toolRounds === 0) return { text: "I'll ask the docs server, which needs your name first.", calls: [{ name: "mcp__docs__ask_name", args: {} }] };
+        return { text: `The server got: \`${lastResult}\`` };
+    }
+    if (/\bmcpsample\b/.test(p)) {
+        if (toolRounds === 0) return { text: "The docs server wants to ask a model something.", calls: [{ name: "mcp__docs__sample", args: { q: "In one word: what colour is the sky?" } }] };
+        return { text: `The server got back: \`${lastResult.slice(0, 300)}\`` };
+    }
+    if (/\bmcpresources\b/.test(p)) {
+        if (toolRounds === 0) return { text: "Let me see what the MCP servers offer.", calls: [{ name: "ListMcpResources", args: {} }] };
+        if (toolRounds === 1) return { calls: [{ name: "ReadMcpResource", args: { server: "docs", uri: "fixture://readme" } }] };
+        return { text: `The readme says:\n\n${lastResult}` };
     }
     if (/\bquestion\b/.test(p)) {
         if (toolRounds === 0) return { text: "Before I start, one decision:", calls: [{ name: "AskUserQuestion", args: { question: "Which identity protocol should we support first?", options: [{ label: "SAML 2.0", description: "Most enterprise IdPs (Okta, Azure AD)" }, { label: "OpenID Connect", description: "Simpler, modern, JSON-based" }, { label: "Both", description: "More work up front" }] } }] };

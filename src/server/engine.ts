@@ -25,7 +25,7 @@ import { forkSession } from "../agent/fork";
 import { isFollowUp } from "../agent/queue-store";
 import { loadCustomCommands, pluginCommandFor, type CustomCommand } from "../commands/custom";
 import { loadSkills, sameSkills, type Skill } from "../agent/skills";
-import { McpManager } from "../mcp/manager";
+import { McpManager, SignInReplaced } from "../mcp/manager";
 import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
 import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
@@ -47,6 +47,7 @@ import { expandPath, isInside, sniffImage } from "../util/files";
 /** The largest image file shown inline in a reply. */
 const MAX_SHOWN_IMAGE = 10 * 1024 * 1024;
 import { maskKey, redact } from "../util/redact";
+import { searchResources } from "../mcp/mentions";
 import { cleanTitle, modelSummary, promptTitle, Runtime } from "./runtime";
 import { forkUiLog } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
@@ -233,7 +234,7 @@ export class Workspace {
     }
 
     private startMcp(): McpManager {
-        const mcp = new McpManager(this.cwd, () => this.settings, this.trusted, () => (this.settings = loadSettings(this.cwd, { trusted: this.trusted })));
+        const mcp = new McpManager(this.cwd, () => this.settings, this.trusted, () => (this.settings = loadSettings(this.cwd, { trusted: this.trusted })), true);
         mcp.onChange = () => this.engine.workspaceChanged(this);
         mcp.load();
         void mcp.startAll();
@@ -281,6 +282,9 @@ export class Workspace {
             name: s.name,
             status: s.status,
             tools: s.tools.length,
+            // No empty fields (they'd travel as null).
+            ...((s.resources?.length ?? 0) + (s.templates?.length ?? 0) ? { resources: (s.resources?.length ?? 0) + (s.templates?.length ?? 0) } : {}),
+            ...(s.prompts?.length ? { prompts: s.prompts.length } : {}),
             error: s.error ? visible(redact(s.error.split("\n")[0]!)).text.slice(0, 500) : undefined,
             source: s.source,
             // No fingerprint here; and no empty fields (they'd travel as null).
@@ -1755,12 +1759,15 @@ export class Engine {
         const skills = (ws?.freshSkills() ?? this.homeSkills(resolve(cwd)))
             .filter((s) => s.userInvocable && !taken.has(s.name))
             .map((s) => ({ name: s.name, description: s.description, args: s.argumentHint, skill: true }));
-        const own = new Set([...taken, ...skills.map((s) => s.name)]);
+        // Connected MCP servers' prompts (mcp__server__prompt), once a session has the project open.
+        const named = new Set([...taken, ...skills.map((s) => s.name)]);
+        const prompts = (ws?.mcp.promptCommands() ?? []).filter((p) => !named.has(p.command)).map((p) => ({ name: p.command, description: p.description, ...(p.args ? { args: p.args } : {}) }));
+        const own = new Set([...named, ...prompts.map((p) => p.name)]);
         const name = provider ? (getProvider(provider)?.name ?? provider) : "";
         // All Codex reports are its skills (skills/list), for the $ menu too.
         const skill = provider === "codex";
         const cli = [...(this.cliCommands(provider, cwd) ?? [])].filter((n) => !own.has(n)).map((n) => ({ name: n, description: `${name}'s own ${skill ? "skill" : "command"}`, ...(skill ? { skill } : {}) }));
-        return [...builtin, ...custom, ...skills, ...cli];
+        return [...builtin, ...custom, ...skills, ...prompts, ...cli];
     }
 
     // -----------------------------------------------------------------------
@@ -2305,6 +2312,36 @@ export class Engine {
                 return this.pluginsInfo(optStr(p.cwd));
             case "plugins.action":
                 return this.pluginAction(p as PluginActionParams);
+            case "session.mcpSignIn": {
+                const rt = this.runtime(p.id);
+                const name = str(p.name, "name");
+                await rt.ws.mcp.refresh();
+                if (!rt.ws.mcp.servers.has(name)) throw new RpcError(`There's no MCP server named "${name}" here.`, "unknown");
+                // Answered with the link as soon as there is one; the sign-in itself goes on in the browser.
+                let shown!: (url: string) => void;
+                const link = new Promise<string>((r) => (shown = r));
+                const done = rt.ws.mcp.signIn(name, (url) => shown(url));
+                done.then(
+                    (st) => rt.notice(st.status === "connected" ? `Signed in to ${name}: connected.` : `Signed in to ${name}, but it didn't connect${st.error ? `: ${redact(st.error.split("\n")[0]!)}` : "."}`, st.status === "connected" ? "info" : "warn"),
+                    (e) => e instanceof SignInReplaced || rt.notice(`Sign-in to ${name} didn't finish: ${redact((e as Error).message)}`, "error"),
+                );
+                try {
+                    return { url: await Promise.race([link, done.then(() => { throw new RpcError("The sign-in finished without a link to open.", "mcp"); })]) };
+                } catch (e) {
+                    const m = mcpError(e);
+                    throw m instanceof RpcError ? m : new RpcError(redact((e as Error).message), "mcp");
+                }
+            }
+            case "session.mcpSignOut": {
+                const rt = this.runtime(p.id);
+                const name = str(p.name, "name");
+                await rt.ws.mcp.signOut(name);
+                return rt.ws.mcpList(rt);
+            }
+            case "session.mcpResources": {
+                const rt = this.runtime(p.id);
+                return searchResources(rt.ws.mcp.resourceList(), str(p.query ?? "", "query"), 8).map(({ server, uri, name, title, description, mention }) => ({ server, uri, name, ...(title ? { title } : {}), ...(description ? { description } : {}), mention }));
+            }
             case "settings.get":
                 return this.guiSettings(optStr(p.cwd));
             case "settings.update":

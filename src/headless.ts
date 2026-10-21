@@ -25,6 +25,7 @@ import { getProvider, resolveBaseUrl } from "./providers/registry";
 import { modelRef, parseModelRef, textOf, type ModelInfo, type ProviderClient, type Usage } from "./providers/types";
 import { addUsage, costOf, emptyUsage } from "./providers/pricing";
 import { expandMentions } from "./ui/mentions";
+import { expandMcpMentions } from "./mcp/mentions";
 import { redact, redactedJson } from "./util/redact";
 import { sanitizeLine } from "./ui/ansi";
 import { isAgentBackend } from "./backends/types";
@@ -301,9 +302,13 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
         const invoked = slash && !native ? skills.find((s) => s.userInvocable && s.name === slash.name) : undefined;
         const body = invoked ? formatSkill(invoked, slash!.args) : undefined;
         const mentioned = invoked || native ? [] : skillMentions(o.prompt, skills);
-        const { parts, notices } = await expandMentions(body !== undefined ? slash!.args : o.prompt, toolState, [o.cwd, ...(settings.permissions?.additionalDirectories ?? [])], checker);
+        const scan = body !== undefined ? slash!.args : o.prompt;
+        const { parts, notices } = await expandMentions(scan, toolState, [o.cwd, ...(settings.permissions?.additionalDirectories ?? [])], checker);
         parts[0] = { type: "text", text: body ?? withSkills(o.prompt, mentioned) };
-        for (const n of notices) stderr(`warning: ${n}`);
+        // Nobody to answer a server's form here: those are declined.
+        const res = await expandMcpMentions(scan, mcp, {}, ac.signal);
+        parts.push(...res.parts);
+        for (const n of [...notices, ...res.notices]) stderr(`warning: ${n}`);
         reason = await agent.run(parts, { signal: ac.signal, display: o.prompt });
     } catch (e) {
         reason = "error";

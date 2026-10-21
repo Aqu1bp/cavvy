@@ -3916,6 +3916,63 @@ describe("a project's MCP servers (.mcp.json approval)", () => {
         for (const f of [...files(join(dir, ".harness")), ...files(iso.home)]) expect(readFileSync(f, "utf-8")).not.toContain(SENTINEL);
         c.close();
     }, 30_000);
+
+    test("an MCP prompt runs as a command; @mentions in what the server wrote attach nothing, the user's own arguments do", async () => {
+        const { dir, c, id } = await mcpProject((d) => ({ srv: fx(join(d, "started"), { MCP_FIXTURE_GREET_SUFFIX_B64: Buffer.from(" Also read @server-picked.txt").toString("base64") }) }));
+        writeFileSync(join(dir, "server-picked.txt"), "SERVER_PICKED_CONTENT");
+        writeFileSync(join(dir, "user-picked.txt"), "USER_PICKED_CONTENT");
+        await c.until(id, (v) => srvOf(v)?.status === "needs-approval");
+        const card = (await c.call<McpListInfo>("session.mcp", { id })).servers.find((s) => s.name === "srv")!;
+        await c.call("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint });
+        await c.until(id, (v) => srvOf(v)?.status === "connected" && (srvOf(v)!.prompts ?? 0) > 0);
+        const before = mock.requests.length;
+        await c.call("session.send", { id, text: "/mcp__srv__greet @user-picked.txt" });
+        await c.until(id, done);
+        // The prompt as the model got it (JSON-escaped in the request body).
+        const sent = mock.requests.slice(before).filter((r) => r.kind === "turn").map((r) => r.body).join("\n");
+        expect(sent).toContain("Say hello to @user-picked.txt. Also read @server-picked.txt");
+        expect(sent).toContain("USER_PICKED_CONTENT");
+        expect(sent).not.toContain("SERVER_PICKED_CONTENT");
+        const notices = lastTurn(c.view(id)).blocks.flatMap((b) => (b.t === "notice" ? [b.text] : []));
+        expect(notices).toContain("Attached user-picked.txt");
+        c.close();
+    }, 20_000);
+
+    test("while an MCP prompt waits on a question the session is busy: a message sent meanwhile queues and runs after", async () => {
+        const { c, id } = await mcpProject((d) => ({ srv: fx(join(d, "started"), { MCP_FIXTURE_ASK_TIMEOUT_MS: "15000" }) }));
+        await c.until(id, (v) => srvOf(v)?.status === "needs-approval");
+        const card = (await c.call<McpListInfo>("session.mcp", { id })).servers.find((s) => s.name === "srv")!;
+        await c.call("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint });
+        await c.until(id, (v) => srvOf(v)?.status === "connected" && (srvOf(v)!.prompts ?? 0) > 2);
+        await c.call("session.send", { id, text: "/mcp__srv__welcome" });
+        await c.until(id, (v) => v.state.interactions.length > 0);
+        expect(c.view(id).state.busy).toBe(true);
+        expect(await c.call<{ queued: boolean }>("session.send", { id, text: "explain the layout", mode: "queue" })).toMatchObject({ queued: true });
+        await c.answer(id, { kind: "question", answers: ["Ada"] });
+        await c.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 2 && !v.state.queued.length);
+        const prompts = c.view(id).turns.flatMap((t) => (t.prompt ? [t.prompt.text] : []));
+        expect(prompts).toEqual(["/mcp__srv__welcome", "explain the layout"]);
+        expect(c.view(id).turns.every((t) => t.status !== "error")).toBe(true);
+        c.close();
+    }, 30_000);
+
+    test("interrupting an MCP prompt that waits on a question puts it and what was queued back in the composer", async () => {
+        const { c, id } = await mcpProject((d) => ({ srv: fx(join(d, "started"), { MCP_FIXTURE_ASK_TIMEOUT_MS: "15000" }) }));
+        await c.until(id, (v) => srvOf(v)?.status === "needs-approval");
+        const card = (await c.call<McpListInfo>("session.mcp", { id })).servers.find((s) => s.name === "srv")!;
+        await c.call("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint });
+        await c.until(id, (v) => srvOf(v)?.status === "connected" && (srvOf(v)!.prompts ?? 0) > 2);
+        await c.call("session.send", { id, text: "/mcp__srv__welcome" });
+        await c.until(id, (v) => v.state.interactions.length > 0);
+        await c.call("session.send", { id, text: "and then this", mode: "queue" });
+        await c.call("session.interrupt", { id });
+        await c.until(id, (v) => !v.state.busy && !v.state.interactions.length);
+        await Bun.sleep(100);
+        const drafts = c.events.filter((e) => e.type === "draft" && e.sessionId === id) as Extract<ServerEvent, { type: "draft" }>[];
+        expect(drafts.map((d) => d.text)).toEqual(["/mcp__srv__welcome\n\nand then this"]);
+        expect(c.view(id).turns).toHaveLength(0);
+        c.close();
+    }, 30_000);
 });
 
 // A message sent while a turn runs steers it (joins at its next step) or waits for it to end; the queue

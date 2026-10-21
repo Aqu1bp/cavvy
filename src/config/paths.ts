@@ -16,6 +16,8 @@ export const paths = {
     userSettings: () => join(harnessHome(), "settings.json"),
     providers: () => join(harnessHome(), "providers.json"),
     credentialsFile: () => join(harnessHome(), "credentials.json"),
+    /** OAuth tokens for remote MCP servers (src/mcp/oauth.ts): part of the credential store. */
+    mcpOAuth: () => join(harnessHome(), "mcp-oauth.json"),
     history: () => join(harnessHome(), "history.jsonl"),
     modelCache: () => join(harnessHome(), "cache", "models.json"),
     userCommands: () => join(harnessHome(), "commands"),

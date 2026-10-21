@@ -11,13 +11,17 @@ export function shownName(name: string): string {
 }
 
 export function needsAttention(m: McpStatus): boolean {
-    return m.status === "failed" || m.status === "needs-approval";
+    return m.status === "failed" || m.status === "needs-approval" || m.status === "needs-auth";
 }
 
-export function statusLabel(m: Pick<McpStatus, "status" | "tools" | "approval">): { text: string; tone?: "err" | "warn" | "ok" } {
+const count = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+
+export function statusLabel(m: Pick<McpStatus, "status" | "tools" | "approval" | "resources" | "prompts">): { text: string; tone?: "err" | "warn" | "ok" } {
     switch (m.status) {
         case "connected":
-            return { text: `Connected · ${m.tools} ${m.tools === 1 ? "tool" : "tools"}`, tone: "ok" };
+            return { text: ["Connected", count(m.tools, "tool"), ...(m.resources ? [count(m.resources, "resource")] : []), ...(m.prompts ? [count(m.prompts, "prompt")] : [])].join(" · "), tone: "ok" };
+        case "needs-auth":
+            return { text: "Needs sign-in", tone: "warn" };
         case "failed":
             return { text: "Failed", tone: "err" };
         case "needs-approval":
@@ -35,5 +39,5 @@ export function mergeMcpStatus(server: McpServerInfo, live?: McpStatus): McpServ
     if (!live) return server;
     // Live failures contain only their first line; retain the detail response's full error.
     const error = live.status === "failed" && server.status === "failed" && server.error ? server.error : live.error;
-    return { ...server, status: live.status, tools: live.tools, error };
+    return { ...server, status: live.status, tools: live.tools, resources: live.resources, prompts: live.prompts, error };
 }

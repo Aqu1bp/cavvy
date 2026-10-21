@@ -587,6 +587,8 @@
     font-weight: 600;
     min-width: 0;
     overflow-wrap: anywhere;
+    /* An MCP server's form puts its message and the field on separate lines. */
+    white-space: pre-line;
 }
 
 .itab-aside {

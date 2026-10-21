@@ -3,7 +3,7 @@
 // through src/server/protocol.ts). Nothing here carries an env or header
 // value: only their names.
 
-export type McpServerStatus = "pending" | "connecting" | "connected" | "failed" | "disabled" | "needs-approval";
+export type McpServerStatus = "pending" | "connecting" | "connected" | "failed" | "disabled" | "needs-approval" | "needs-auth";
 
 /**
  * Where a project server stands with the user. `reason` says why one asks:
@@ -24,8 +24,13 @@ export interface McpServerInfo {
     source: "settings" | "project";
     status: McpServerStatus;
     tools: number;
+    /** Resources (and templates) and prompts it offers, when connected and it offers any. */
+    resources?: number;
+    prompts?: number;
+    /** OAuth tokens are stored for it (it can be signed out of). */
+    signedIn?: boolean;
     error?: string;
-    transport: "stdio" | "http";
+    transport: "stdio" | "http" | "sse" | "ws";
     command?: string;
     args?: string[];
     /** The folder it runs in, resolved the way it will be when it starts. */

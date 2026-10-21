@@ -70,7 +70,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE"]) delete process.env[k];
+    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -160,6 +160,49 @@ describe("agent providers", () => {
         const c = await clientFor("claude-code");
         expect(isAgentBackend(c)).toBe(true);
         await expect(c.stream({ tools: [{ name: "Read", description: "", parameters: {} }] } as any, () => {})).rejects.toThrow(/can't answer a request that offers tools/);
+    });
+
+    // One-off requests (MCP sampling, prompt hooks) go to the session's own CLI when it's Claude Code or Codex.
+    const oneOff = (provider: "claude-code" | "codex", tools: any[] = []) =>
+        clientFor(provider).then((c) => c.stream({ model: { provider, id: "default" } as any, system: "Answer briefly.", messages: [{ role: "user", content: [{ type: "text", text: "capital of France?" }] }], tools, maxTokens: 50, lightweight: true }, () => {}));
+
+    test("Claude Code answers a one-off in a session with no tools, settings, MCP servers or session file", async () => {
+        process.env.FAKE_ONEOFF_ANSWER = "Paris";
+        const r = await oneOff("claude-code");
+        expect(r.content).toEqual([{ type: "text", text: "Paris" }]);
+        expect(r.stopReason).toBe("end_turn");
+        expect(logLines().find((l) => l.oneOff)?.oneOff).toEqual({ system: "Answer briefly.", prompt: "capital of France?" });
+        const argv = starts()[0].argv as string[];
+        for (const f of ["--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands"]) expect(argv).toContain(f);
+        expect(argv[argv.indexOf("--setting-sources") + 1]).toBe("");
+    });
+
+    test("Codex answers a one-off in an ephemeral read-only thread with no shell", async () => {
+        process.env.FAKE_ONEOFF_ANSWER = "Paris";
+        const r = await oneOff("codex");
+        expect(r.content).toEqual([{ type: "text", text: "Paris" }]);
+        expect(logLines().find((l) => l.oneOffThread)?.oneOffThread).toMatchObject({ baseInstructions: "Answer briefly.", approvalPolicy: "never", sandbox: "read-only", config: { "features.shell_tool": false, "features.unified_exec": false } });
+    });
+
+    test("a Codex one-off turns off every MCP server Codex is configured with, and won't run when it can't list them", async () => {
+        process.env.FAKE_USER_MCP = JSON.stringify({ github: { command: "gh-mcp", default_tools_approval_mode: "approve" } });
+        await oneOff("codex");
+        expect(logLines().find((l) => l.oneOffThread)?.oneOffThread.config).toMatchObject({ mcp_servers: { github: { enabled: false } }, "features.shell_tool": false });
+        rmSync(LOG, { force: true });
+        process.env.FAKE_NO_CONFIG_READ = "1";
+        await expect(oneOff("codex")).rejects.toThrow(/couldn't be turned off/);
+        expect(logLines().some((l) => l.oneOffThread)).toBe(false);
+        delete process.env.FAKE_NO_CONFIG_READ;
+        delete process.env.FAKE_USER_MCP;
+    });
+
+    test("a one-off that fails is an error, on both CLIs", async () => {
+        for (const provider of ["codex", "claude-code"] as const) {
+            process.env.FAKE_ONEOFF_FAIL = "overloaded";
+            await expect(oneOff(provider)).rejects.toThrow("overloaded");
+            delete process.env.FAKE_ONEOFF_FAIL;
+            await expect(oneOff(provider, [{ name: "t", description: "", parameters: {} }])).rejects.toThrow("offers tools");
+        }
     });
 
     test("a missing CLI says how to install and sign in", async () => {
