@@ -37,6 +37,16 @@ function snap(over: Partial<PrSnapshot> = {}): PrSnapshot {
 }
 
 describe("what counts as news", () => {
+    test("on a PR with more comments than the remembered cap, none the poll still returns comes back as new", () => {
+        const many = Array.from({ length: 3000 }, (_, i) => remark(`c${i}`, `u${i}`));
+        let st = initialState(snap({ remarks: many }));
+        for (let i = 0; i < 3; i++) {
+            const r = evaluate(st, snap({ remarks: [...many, remark(`n${i}`, "bob")] }));
+            expect(r.changes).toEqual([{ kind: "remarks", remarks: [remark(`n${i}`, "bob")] }]);
+            st = r.next;
+        }
+    });
+
     test("nothing that was already there when the watch started", () => {
         const s = snap({ checks: [check("test", "failure")], mergeable: "conflicting" });
         expect(evaluate(initialState(s), s).changes).toEqual([]);

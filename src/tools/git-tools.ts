@@ -99,7 +99,7 @@ export const GitCommitTool: Tool<{ message: string; paths?: string[] }> = {
     description: `Commit changes in the current Git repository.
 
 - message: the commit message (subject line, then an optional body). Follow the style of the repository's recent commits.
-- paths: the files to commit (absolute, or relative to the working directory). Omit to commit every changed file, new ones included.
+- paths: the files to commit (absolute, or relative to the working directory). Omit to commit every changed file, new ones included. A new folder of more than 200 files is left out, and its files can't be named here: commit those with git in Bash.
 
 Only the named files are committed; anything already staged for other files stays staged and out of this commit. Repository hooks run. The user is asked first unless they've allowed it. Don't commit unless the user asked you to, and never commit secrets (.env, keys).`,
     parameters: {
@@ -154,16 +154,19 @@ Only the named files are committed; anything already staged for other files stay
                 paths = paths.filter((p) => approved.includes(p));
                 if (!paths.length && late.length) return fail(`Nothing to commit that the user was shown: the changed files now (${late.join(", ")}) appeared after they were asked. Ask again.`);
             }
-            if (!paths.length) return fail(skipped.length ? `Nothing to commit but new folders of many files (${skipped.join(", ")}). Name the files to commit in paths, or add them with git in Bash.` : "Nothing to commit: the working tree is clean.");
+            if (!paths.length) return fail(skipped.length ? `Nothing to commit but new folders of many files (${skipped.join(", ")}). GitCommit can't take files inside them: commit them with git in Bash.` : "Nothing to commit: the working tree is clean.");
         }
         try {
             const done = await gitCommit(cwd, paths, i.message, { signal: ctx.signal });
-            const left = `${skipped.length ? `\nLeft out (new folders of many files; name their files to commit them): ${skipped.join(", ")}` : ""}${late.length ? `\nLeft out (changed after the user was asked, so they didn't see it): ${late.join(", ")}` : ""}`;
+            const left = `${skipped.length ? `\nLeft out (new folders of many files, which GitCommit can't take; commit them with git in Bash): ${skipped.join(", ")}` : ""}${late.length ? `\nLeft out (changed after the user was asked, so they didn't see it): ${late.join(", ")}` : ""}`;
             return {
                 content: `Committed ${done.hash.slice(0, 7)} on ${done.branch ?? "a detached HEAD"}: ${done.subject} (${paths.length} file${paths.length === 1 ? "" : "s"})${left}`,
                 display: { summary: `${done.hash.slice(0, 7)} ${done.subject}` },
             };
         } catch (e) {
+            // The commit code speaks to the GUI's Review pane; the agent needs what it can do instead.
+            const m = /^Not a changed file: (.*)\. Refresh the Review pane\.$/.exec(message(e));
+            if (m) return fail(`Commit failed: ${m[1]} has no changes git lists one by one. If it's in a new folder of more than 200 files, commit it with git in Bash; otherwise check the path.`);
             return fail(`Commit failed: ${message(e)}`);
         }
     },

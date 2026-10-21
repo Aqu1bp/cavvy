@@ -72,6 +72,8 @@ export type PrChange =
 
 /** Comment-only wakes in a row before the watch stops (T3 Code uses the same number). */
 export const CHATTER_LIMIT = 10;
+/** Comment ids remembered past what the latest poll returned. */
+const SEEN_CAP = 2000;
 /** Read failures in a row before the watch stops (a rate limit only delays it). */
 export const FAILURE_LIMIT = 8;
 const LISTED = 10;
@@ -138,8 +140,13 @@ export function evaluate(prev: WatchState, snap: PrSnapshot): { changes: PrChang
         remarks.push(r);
     }
     if (remarks.length) changes.push({ kind: "remarks", remarks });
-    // Older ids than what a poll returns can't come back: keep the set from growing for ever.
-    if (seen.size > 2000) for (const id of [...seen].slice(0, seen.size - 2000)) seen.delete(id);
+    // Ids this poll returned stay (a busy PR's pages hold more than the cap); older ones can't come back.
+    const current = new Set(snap.remarks.map((r) => r.id));
+    const cap = Math.max(SEEN_CAP, current.size);
+    if (seen.size > cap) for (const id of [...seen]) {
+        if (seen.size <= cap) break;
+        if (!current.has(id)) seen.delete(id);
+    }
 
     // "unknown" is GitHub still working it out after a push: only a clear answer changes it.
     const conflicting = snap.mergeable === "unknown" ? prev.conflicting : snap.mergeable === "conflicting";

@@ -92,6 +92,21 @@ describe("GitCommit", () => {
         expect(git(cwd, "status", "--porcelain")).toBe("");
     });
 
+    test("a file inside a new folder of more than 200 files can't be named: the error says to use git in Bash", async () => {
+        const { cwd } = repo();
+        mkdirSync(join(cwd, "big"));
+        for (let i = 0; i < 210; i++) writeFileSync(join(cwd, "big", `f${i}.txt`), `${i}\n`);
+        writeFileSync(join(cwd, "a.txt"), "a\n");
+        const named = await run(GitCommitTool, { message: "One", paths: ["big/f1.txt"] }, ctxFor(cwd));
+        expect(named.isError).toBe(true);
+        expect(named.content).toContain("big/f1.txt has no changes git lists one by one");
+        expect(named.content).toContain("git in Bash");
+        expect(named.content).not.toContain("Review pane");
+        const all = await run(GitCommitTool, { message: "All" }, ctxFor(cwd));
+        expect(all.content).toContain("(1 file)");
+        expect(all.content).toContain("Left out (new folders of many files, which GitCommit can't take; commit them with git in Bash): big");
+    });
+
     test("commits only the files named (absolute or relative), leaving the rest", async () => {
         const { cwd } = repo();
         writeFileSync(join(cwd, "keep.txt"), "keep\n");
@@ -133,7 +148,7 @@ describe("GitCommit", () => {
         const ctx = ctxFor(cwd);
         expect(await run(GitCommitTool, { message: "x" }, ctx)).toMatchObject({ isError: true, content: expect.stringContaining("Nothing to commit") });
         expect(await run(GitCommitTool, { message: "x", paths: ["/etc/passwd"] }, ctx)).toMatchObject({ isError: true, content: expect.stringContaining("Not inside the repository") });
-        expect(await run(GitCommitTool, { message: "x", paths: ["README-missing.md"] }, ctx)).toMatchObject({ isError: true, content: expect.stringContaining("Not a changed file") });
+        expect(await run(GitCommitTool, { message: "x", paths: ["README-missing.md"] }, ctx)).toMatchObject({ isError: true, content: expect.stringContaining("README-missing.md has no changes git lists one by one") });
         expect(GitCommitTool.validate!({ message: "  " }, ctx)).toContain("commit message");
         gitToolDeps.trusted = () => false;
         try {
