@@ -834,6 +834,8 @@ for await (const chunk of Bun.stdin.stream()) {
                 }
                 bgTasks.delete(m.request.task_id);
                 stoppedTasks.add(m.request.task_id);
+                // As in Claude Code: stopping a sub-agent kills the shells it started (shell-background-nested's).
+                if (m.request.task_id === "agent-1" && process.env.FAKE_SCENARIO === "shell-background-nested" && bgTasks.delete("background-1")) stoppedTasks.add("background-1");
                 backgroundChanged();
                 out({ type: "control_response", response: { subtype: "success", request_id: m.request_id } });
                 out({ type: "system", subtype: "task_notification", task_id: m.request.task_id, status: "stopped", summary: "Stopped by host", session_id: sessionId });

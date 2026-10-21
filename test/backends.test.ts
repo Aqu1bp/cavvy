@@ -2639,6 +2639,24 @@ describe("Claude Code background commands' own timeouts (#193)", () => {
         } finally { restore(); }
     });
 
+    test("at the overall cap a sub-agent whose own command is within its timeout isn't stopped (that would end the command)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-nested";
+        process.env.FAKE_TIMEOUT = "3600000";
+        process.env.FAKE_SHELL_MS = "600";
+        process.env.FAKE_BACKGROUND_MS = "10000";
+        const restore = timing({ commandWaitMs: 50, maxWaitMs: 250 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            const start = Date.now();
+            expect(await a.run("start the agent")).toBe("done");
+            expect(Date.now() - start).toBeLessThan(5000);
+            // The command ran to its end and reported; only then was the sub-agent, now past the cap, stopped.
+            expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
+            expect(notices(a.events).some((n) => /Stopped.*Wait for checks/.test(n))).toBe(false);
+            expect(stops()).toEqual(["agent-1"]);
+        } finally { restore(); }
+    });
+
     test("a recognized server is stopped at the answer even with a timeout", async () => {
         process.env.FAKE_SCENARIO = "shell-background-stuck";
         process.env.FAKE_COMMAND = "bun run dev";
