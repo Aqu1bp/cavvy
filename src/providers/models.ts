@@ -351,7 +351,7 @@ export const DEFAULT_REVIEW_MODEL = "anthropic:claude-sonnet-5-5";
 /**
  * Who reviews auto-mode actions: the reviewModel setting, else Claude Sonnet
  * 5.5 when there's an Anthropic key. Undefined: the session's own model does.
- * Never Claude Code or Codex, which can't answer one-off requests. A reviewer
+ * Never Claude Code or Codex, which review with their own auto modes. A reviewer
  * the user chose that can't be used throws, so its actions go to the user
  * rather than quietly to another model.
  */

@@ -20,6 +20,7 @@ const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const trust = await import("../src/config/trust");
 const { createWorktreeWithHooks, planRemoval, runRemoval, listWorktrees } = await import("../src/server/worktrees");
 const { gitArgv, gitEnv } = await import("../src/util/git");
+const { textOf } = await import("../src/providers/types");
 
 type AgentEvent = import("../src/agent/agent").AgentEvent;
 type PermissionMode = import("../src/permissions/modes").PermissionMode;
@@ -59,9 +60,10 @@ const received = () => logLines().flatMap((l) => (l.received ? [l.received] : []
 const jsonl = (file: string): any[] => (existsSync(file) ? readFileSync(file, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
 const record = (file: string, then = "") => `cat >> '${file}'; echo >> '${file}'${then}`;
 const say = (o: unknown) => `echo '${JSON.stringify(o)}'`;
+const ranLine = () => logLines().find((l) => "ran" in l);
 const toolEnds = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "tool_end" ? [e] : []));
 
-async function makeAgent(provider: "claude-code" | "codex", settings: any, mode: PermissionMode = "bypassPermissions", ask?: () => any, o: { readOnly?: boolean } = {}) {
+async function makeAgent(provider: "claude-code" | "codex", settings: any, mode: PermissionMode = "bypassPermissions", ask?: () => any, o: { readOnly?: boolean; oneOffs?: boolean } = {}) {
     trust.trustForSession(cwd);
     const events: AgentEvent[] = [];
     const asked: unknown[] = [];
@@ -77,6 +79,8 @@ async function makeAgent(provider: "claude-code" | "codex", settings: any, mode:
         toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() },
         host: { drainQueued: () => [], emit: (e) => events.push(e), ui: {}, askPermission: ask ? async (req) => (asked.push(req), ask()) : undefined },
         readOnly: o.readOnly,
+        // As the runtime's complete(): one-off requests go to the session's own backend.
+        helpers: o.oneOffs ? { complete: async (system: string, prompt: string, signal?: AbortSignal) => textOf(await (await clientFor(provider)).stream({ model: { provider, id: "default" } as any, system, messages: [{ role: "user", content: [{ type: "text", text: prompt }] }], tools: [], lightweight: true, signal }, () => {})) } : undefined,
     });
     const run = (text: string) => agent.run([{ type: "text", text }], { signal: new AbortController().signal });
     return { agent, events, asked, session, run };
@@ -110,6 +114,24 @@ describe("Claude Code runs the harness's tool hooks itself", () => {
         expect(input).toMatchObject({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "npm test" }, tool_use_id: "toolu_b", session_id: session.meta.id });
         expect(input.backend_session_id).toMatch(/^sess-/);
         expect(logLines().find((l) => l.hookAnswers)?.hookAnswers.answers[0]).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny" } });
+    });
+
+    test("prompt hooks go to Claude Code in its settings, so it asks its own model; no callback for them", async () => {
+        process.env.FAKE_SCENARIO = "bash";
+        const settings = { hooks: { PreToolUse: [{ matcher: "Bash", type: "prompt", prompt: "Refuse rm. $ARGUMENTS", model: "haiku", if: "Bash(rm *)" }, { matcher: "Bash", type: "prompt", prompt: "p2", model: "anthropic:claude-haiku-4-5", timeout: 9 }, { matcher: "Bash", command: "true" }] } };
+        const { run } = await makeAgent("claude-code", settings);
+        expect(await run("test it")).toBe("done");
+        const init = received().find((m) => m.request?.subtype === "initialize")!.request;
+        expect(init.hooks).toEqual({ PreToolUse: [{ matcher: "Bash", hookCallbackIds: ["harness_0"], timeout: 60 }] });
+        const argv = logLines()[0].argv as string[];
+        const given = JSON.parse(argv[argv.indexOf("--settings") + 1]!);
+        // A harness model reference (provider:model) is left to Claude Code's default.
+        expect(given.hooks).toEqual({
+            PreToolUse: [
+                { matcher: "Bash", hooks: [{ type: "prompt", prompt: "Refuse rm. $ARGUMENTS", timeout: 30, model: "haiku", if: "Bash(rm *)" }] },
+                { matcher: "Bash", hooks: [{ type: "prompt", prompt: "p2", timeout: 9 }] },
+            ],
+        });
     });
 
     test("PostToolUse context goes back as Claude Code's additionalContext; a matcher the tool misses isn't called", async () => {
@@ -161,11 +183,51 @@ describe("Claude Code runs the harness's tool hooks itself", () => {
     });
 });
 
+describe("one-off requests on Claude Code and Codex (prompt hooks, MCP sampling)", () => {
+    const ask = (provider: "claude-code" | "codex", tools: any[] = []) =>
+        clientFor(provider).then((c) => c.stream({ model: { provider, id: "default" } as any, system: "Reply with JSON.", messages: [{ role: "user", content: [{ type: "text", text: "Is it fine?" }] }], tools, maxTokens: 300, lightweight: true }, () => {}));
+
+    test("Codex answers in an ephemeral thread with its system prompt as instructions, and no shell or other tools", async () => {
+        process.env.FAKE_ONEOFF_ANSWER = '{"ok": false, "reason": "no"}';
+        const r = await ask("codex");
+        expect(r.content).toEqual([{ type: "text", text: '{"ok": false, "reason": "no"}' }]);
+        expect(logLines().find((l) => l.oneOffThread)?.oneOffThread).toMatchObject({ baseInstructions: "Reply with JSON.", approvalPolicy: "never", sandbox: "read-only", config: { "features.shell_tool": false, "features.unified_exec": false, "features.multi_agent": false, web_search: "disabled" } });
+        expect(logLines().find((l) => "oneOffPrompt" in l)?.oneOffPrompt).toBe("Is it fine?");
+    });
+
+    test("Claude Code answers in a session with no tools, settings, MCP servers or session file", async () => {
+        process.env.FAKE_ONEOFF_ANSWER = '{"ok": true}';
+        const r = await ask("claude-code");
+        expect(r.content).toEqual([{ type: "text", text: '{"ok": true}' }]);
+        expect(logLines().find((l) => l.oneOff)?.oneOff).toEqual({ system: "Reply with JSON.", prompt: "Is it fine?" });
+        const argv = logLines()[0].argv as string[];
+        for (const f of ["--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands"]) expect(argv).toContain(f);
+        expect(argv[argv.indexOf("--setting-sources") + 1]).toBe("");
+    });
+
+    test("a request that offers tools, or one that fails, is an error", async () => {
+        for (const provider of ["codex", "claude-code"] as const) {
+            await expect(ask(provider, [{ name: "t", description: "", parameters: {} }])).rejects.toThrow("offers tools");
+            process.env.FAKE_ONEOFF_FAIL = "overloaded";
+            await expect(ask(provider)).rejects.toThrow("overloaded");
+            delete process.env.FAKE_ONEOFF_FAIL;
+        }
+    });
+
+    test("a prompt hook on Codex is answered by Codex itself, and its no refuses the command", async () => {
+        process.env.FAKE_ONEOFF_ANSWER = '{"ok": false, "reason": "touching files is not allowed"}';
+        const { run, events } = await makeAgent("codex", { hooks: { PreToolUse: [{ matcher: "Bash", type: "prompt", prompt: "Refuse touch. $ARGUMENTS" }] } }, "bypassPermissions", undefined, { oneOffs: true });
+        expect(await run("make x")).toBe("done");
+        expect(logLines().find((l) => "oneOffPrompt" in l)?.oneOffPrompt).toContain('"command":"touch x"');
+        expect(ranLine()).toMatchObject({ ran: false, blockedByHook: expect.stringContaining("touching files is not allowed") });
+        expect(toolEnds(events)[0]!.result).toMatchObject({ isError: true });
+    });
+});
+
 describe("Codex's items run the harness's hooks", () => {
     const turnStarts = () => received().filter((m) => m.method === "turn/start").map((m) => m.params);
     const decision = () => received().find((m) => m.result?.decision)?.result.decision;
 
-    const ranLine = () => logLines().find((l) => "ran" in l);
     const hookArg = () => (logLines()[0]?.argv as string[]).find((a) => a.startsWith("hooks="));
 
     test("bypass mode with PreToolUse hooks: Codex runs them itself before the command, without being made to ask", async () => {

@@ -63,6 +63,20 @@ if (argv[0] === "auth" && argv[1] === "status") {
     process.exit(on ? 0 : 1);
 }
 if (argv[0] === "auth" && argv[1] === "login") process.exit(0);
+// A one-off (--tools "" with a system prompt): the question's answer is FAKE_ONEOFF_ANSWER, as one result.
+if (argv.includes("--tools") && argv[argv.indexOf("--tools") + 1] === "" && argv.includes("--system-prompt")) {
+    let buf = "";
+    for await (const chunk of Bun.stdin.stream()) {
+        buf += new TextDecoder().decode(chunk);
+        if (!buf.includes("\n")) continue;
+        const m = JSON.parse(buf.split("\n")[0]!);
+        log({ oneOff: { system: argv[argv.indexOf("--system-prompt") + 1], prompt: m.message?.content?.[0]?.text, model: argv.includes("--model") ? argv[argv.indexOf("--model") + 1] : undefined } });
+        const fail = process.env.FAKE_ONEOFF_FAIL;
+        process.stdout.write(JSON.stringify({ type: "result", subtype: fail ? "error_during_execution" : "success", is_error: Boolean(fail), result: fail ?? process.env.FAKE_ONEOFF_ANSWER ?? '{"ok": true}' }) + "\n");
+        process.exit(0);
+    }
+    process.exit(1);
+}
 if (process.env.FAKE_IGNORE_STOP === "1") process.on("SIGTERM", () => log({ ignored: "SIGTERM" }));
 // Something it starts that holds its output open after it exits (a command left running with its stdout).
 if (process.env.FAKE_HOLD_STDOUT === "1") Bun.spawn(["sleep", "8"], { stdin: "ignore", stdout: "inherit", stderr: "ignore" }).unref();

@@ -543,6 +543,11 @@ async function handle(m: any) {
                 nextCursor: null,
             });
         case "thread/start":
+            // A one-off: an ephemeral thread answering one question (FAKE_ONEOFF_ANSWER).
+            if (p.ephemeral) {
+                log({ oneOffThread: { baseInstructions: p.baseInstructions, config: p.config, approvalPolicy: p.approvalPolicy, sandbox: p.sandbox, cwd: p.cwd } });
+                return reply({ thread: { id: "thr-oneoff" }, model: p.model ?? "gpt-test" });
+            }
             await startMcp(p.config);
             setTier("thr-new", "serviceTier" in p ? p.serviceTier : (process.env.FAKE_CONFIG_TIER ?? null));
             // A new thread starts with no usage.
@@ -572,6 +577,14 @@ async function handle(m: any) {
             return reply({ thread: { id }, model: projectModel() ?? p.model ?? "gpt-test", serviceTier: "default" });
         }
         case "turn/start": {
+            if (p.threadId === "thr-oneoff") {
+                log({ oneOffPrompt: p.input?.[0]?.text });
+                reply({ turn: { id: "turn-oneoff", status: "inProgress" } });
+                const fail = process.env.FAKE_ONEOFF_FAIL;
+                if (!fail) notify("item/completed", { threadId: "thr-oneoff", turnId: "turn-oneoff", item: { type: "agentMessage", id: "o-msg", text: process.env.FAKE_ONEOFF_ANSWER ?? '{"ok": true}', phase: "final_answer" } });
+                notify("turn/completed", { threadId: "thr-oneoff", turn: { id: "turn-oneoff", status: fail ? "failed" : "completed", error: fail ? { message: fail } : null } });
+                break;
+            }
             // Like Codex's: a value (or null) changes the thread's tier from this turn on; leaving it out keeps it.
             if ("serviceTier" in p) setTier(p.threadId, p.serviceTier);
             const turnId = `turn-${++turnSeq}`;

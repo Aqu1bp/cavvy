@@ -13,7 +13,8 @@
 import { existsSync, readFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
-import type { AssistantMessage, ModelInfo, Usage } from "../providers/types";
+import type { AssistantMessage, ChatRequest, ModelInfo, Usage } from "../providers/types";
+import { ONE_OFF_TIMEOUT_MS, oneOffAnswer, oneOffPrompt, oneOffRefusal } from "./one-off";
 import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
 import type { PlanLimits } from "../server/protocol";
@@ -212,6 +213,9 @@ function codexPolicyKey(m: PermissionMode, readOnly: boolean): string {
     return `${p.approvalPolicy}|${p.sandbox}|${p.approvalsReviewer}`;
 }
 
+/** A one-off's thread: only the question, so no shell, web search, sub-agents, goals, apps or memories. */
+const ONE_OFF_CONFIG = { web_search: "disabled", "features.multi_agent": false, "features.goals": false, "features.apps": false, "features.memories": false, "features.shell_tool": false, "features.unified_exec": false };
+
 /** Our name to Codex: it records it as the originator of the threads we start. */
 export const CODEX_CLIENT_NAME = `${APP_NAME}_cli`;
 
@@ -263,8 +267,61 @@ export class CodexBackend implements AgentBackendClient {
 
     constructor(readonly def: ProviderDef) {}
 
-    async stream(): Promise<AssistantMessage> {
-        throw new ProviderError(`${this.def.name} runs whole turns with its own tools, so it can't answer one-off requests. Set smallModel to another provider's model for those.`);
+    /**
+     * A one-off request (a prompt hook, MCP sampling, a title): Codex answers
+     * it with its own model and sign-in, in an ephemeral thread whose
+     * instructions are the request's system prompt, read-only and never
+     * asking. Anything it asks for is refused. Codex takes no token limit
+     * for a turn, so maxTokens is left to the model.
+     */
+    async stream(req: ChatRequest): Promise<AssistantMessage> {
+        const refused = oneOffRefusal(this.def.name, req);
+        if (refused) throw refused;
+        let threadId: string | undefined;
+        let turnId: string | undefined;
+        const said: string[] = [];
+        let finish: (e?: Error) => void = () => {};
+        const done = new Promise<void>((resolve, reject) => (finish = (e) => (e ? reject(e) : resolve())));
+        done.catch(() => {}); // awaited below; a failure before then isn't unhandled
+        const rpc = spawnRpc(
+            this.def.id,
+            homedir(),
+            (method, p) => {
+                if (!threadId || p?.threadId !== threadId) return;
+                if (method === "item/completed" && p.item?.type === "agentMessage" && typeof p.item.text === "string") {
+                    // The final answer if it says which it is; otherwise the last message.
+                    if (p.item.phase === "final_answer") said.splice(0, said.length, p.item.text);
+                    else if (!said.length || p.item.phase !== "commentary") said.push(p.item.text);
+                }
+                if (method === "turn/completed" && (!turnId || p.turn?.id === turnId)) {
+                    const status = p.turn?.status;
+                    finish(status === "completed" ? undefined : new ProviderError(`${this.def.name}: ${cliMessage(String(p.turn?.error?.message ?? `the request ended ${status ?? "early"}`))}`));
+                }
+            },
+            async (method) => (method.endsWith("requestApproval") ? { decision: "decline" } : Promise.reject(new Error("not supported"))),
+        );
+        const kill = () => {
+            finish(new ProviderError("Interrupted"));
+            void rpc.proc.kill();
+        };
+        req.signal?.addEventListener("abort", kill, { once: true });
+        const timer = setTimeout(() => (finish(new ProviderError(`${this.def.name} didn't answer in time`)), void rpc.proc.kill()), ONE_OFF_TIMEOUT_MS);
+        void rpc.done.then(() => finish(new ProviderError(`${this.def.name} exited without answering${cliMessage(rpc.proc.stderr()) ? `: ${cliMessage(rpc.proc.stderr())}` : ""}`)));
+        try {
+            await withTimeout(handshake(rpc), 30_000, "Codex didn't start (no answer to initialize)");
+            const model = req.model.id === "default" ? undefined : req.model.id;
+            const r: any = await rpc.request("thread/start", { cwd: homedir(), model, ephemeral: true, approvalPolicy: "never", sandbox: "read-only", baseInstructions: req.system, config: ONE_OFF_CONFIG });
+            threadId = r?.thread?.id;
+            if (!threadId) throw new ProviderError("Codex didn't start a thread");
+            const t: any = await rpc.request("turn/start", { threadId, input: [{ type: "text", text: oneOffPrompt(req), text_elements: [] }] });
+            turnId = typeof t?.turn?.id === "string" ? t.turn.id : undefined;
+            await done;
+            return oneOffAnswer(this.def.id, typeof r?.model === "string" ? r.model : req.model.id, said.join("\n\n"));
+        } finally {
+            clearTimeout(timer);
+            req.signal?.removeEventListener("abort", kill);
+            void rpc.proc.kill();
+        }
     }
 
     /** Codex's model catalog (model/list), the default model first. */
