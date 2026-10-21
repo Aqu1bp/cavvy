@@ -1,0 +1,113 @@
+/* ---- Splash, toasts ------------------------------------------------- */
+
+.splash {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    text-align: center;
+    padding: 24px;
+    animation: fade 400ms;
+}
+
+.splash h2 {
+    font-size: 1.35rem;
+}
+
+.splash p {
+    max-width: 440px;
+    margin: 0;
+    line-height: 1.6;
+}
+
+.toasts {
+    position: fixed;
+    right: 20px;
+    top: 60px;
+    /* The two-toast limit fits two 52px rows and an 8px gap without scrolling. */
+    max-height: 112px;
+    width: min(440px, calc(100vw - 40px));
+    z-index: 80;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-end;
+    pointer-events: none;
+}
+
+.toast-region {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-end;
+    max-width: 100%;
+}
+
+.toast-region:empty {
+    display: none;
+}
+
+.toast {
+    flex: none;
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 100%;
+    min-height: 44px;
+    padding: 8px 10px;
+    border-radius: 14px;
+    background: var(--bg-elev);
+    box-shadow: var(--shadow-float);
+    font-size: 0.93rem;
+    animation: rise 240ms var(--ease-out);
+}
+
+.toast > svg {
+    flex: none;
+    color: var(--fg-muted);
+}
+
+.toast.error > svg {
+    color: var(--danger);
+}
+
+.toast.warn > svg {
+    color: var(--warning);
+}
+
+.toast.success > svg {
+    color: var(--success);
+}
+
+.toast-msg {
+    display: -webkit-box;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    line-height: 18px;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+.toast-count,
+.toast .link-btn,
+.toast .icon-btn {
+    flex: none;
+    white-space: nowrap;
+}
+
+
+@media (max-width: 760px) {
+    .sidebar {
+        position: absolute;
+        z-index: 40;
+        top: 0;
+        bottom: 0;
+        box-shadow: var(--shadow-float);
+    }
+}
+

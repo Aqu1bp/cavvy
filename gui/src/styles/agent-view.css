@@ -1,0 +1,160 @@
+/* ---- A sub-agent's own view ----------------------------------------------- */
+
+.agent-bar {
+    /* Over the tab of what it's asking, as the composer is. */
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 56px;
+    padding: 8px 10px 8px 14px;
+    border-radius: 22px;
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(16px) saturate(1.08);
+    backdrop-filter: blur(16px) saturate(1.08);
+    box-shadow:
+        inset 0 0 0 1px var(--border),
+        inset 0 1px rgba(255, 255, 255, 0.03),
+        var(--shadow-md);
+    min-width: 0;
+}
+
+.agent-bar .av {
+    box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.agent-bar .av .nd {
+    box-shadow: 0 0 0 2px var(--bg-elev);
+}
+
+.agent-bar-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.agent-bar-state {
+    font-size: 0.929rem;
+    font-weight: 500;
+    line-height: 17px;
+    white-space: nowrap;
+    color: var(--fg);
+}
+
+.agent-bar-state.st-running {
+    color: var(--link);
+}
+
+.agent-bar-state.st-waiting {
+    color: var(--warning);
+}
+
+.agent-bar-state.st-done {
+    color: var(--success);
+}
+
+.agent-bar-state.st-failed {
+    color: var(--danger);
+}
+
+.agent-bar-state.st-stopped {
+    color: var(--fg-muted);
+}
+
+.agent-bar-note {
+    font-size: 0.857rem;
+    line-height: 16px;
+    color: var(--fg-muted);
+}
+
+.agent-bar-model {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    max-width: 180px;
+    font-size: 0.857rem;
+    color: var(--fg-muted);
+}
+
+.agent-bar-model svg {
+    flex: none;
+}
+
+.ctl.back {
+    color: var(--fg);
+}
+
+.stop-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    flex: none;
+    background: color-mix(in srgb, var(--danger) 14%, transparent);
+    color: var(--danger);
+}
+
+.stop-btn:hover {
+    background: color-mix(in srgb, var(--danger) 22%, transparent);
+}
+
+@container main (max-width: 640px) {
+    .agent-bar-note,
+    .agent-bar-model,
+    .agent-bar .vs {
+        display: none;
+    }
+}
+
+.from-parent {
+    align-self: flex-end;
+    max-width: 80%;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+}
+
+.from-parent .user-bubble {
+    max-width: 100%;
+}
+
+.from-parent-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.821rem;
+    color: var(--fg-muted);
+    padding-right: 4px;
+}
+
+.agent-reply {
+    margin-top: 28px;
+}
+
+.agent-dropped {
+    margin: 0 0 8px;
+    font-size: 0.857rem;
+    color: var(--fg-muted);
+}
+
+.agent-returned {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 14px;
+    font-size: 0.857rem;
+    color: var(--fg-muted);
+}
+
+.agent-returned .link {
+    color: var(--link);
+}
+
+.agent-returned:hover .link {
+    text-decoration: underline;
+}
+

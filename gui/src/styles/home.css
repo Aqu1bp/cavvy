@@ -1,0 +1,228 @@
+/* ---- Home ----------------------------------------------------------- */
+
+.home {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    justify-content: center;
+}
+
+/* Centred a little above the middle, so menus have room to open below the composer. */
+.home-inner {
+    width: 100%;
+    max-width: 740px;
+    margin: auto 0;
+    padding: 24px 28px 22vh;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    animation: rise 420ms var(--ease-out);
+}
+
+.home-q {
+    margin: 0 0 6px;
+    text-align: center;
+    font-size: 2rem;
+    font-weight: 440;
+    letter-spacing: -0.025em;
+    line-height: 1.25;
+    color: var(--fg);
+}
+
+/* A choice inside a sentence: the dotted underline says it opens a menu. */
+.inline-pick {
+    display: inline-flex;
+    max-width: 14em;
+    vertical-align: bottom;
+    font: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+    text-decoration: underline dotted color-mix(in srgb, var(--fg) 32%, transparent);
+    text-decoration-thickness: from-font;
+    text-underline-offset: 6px;
+    transition: text-decoration-color var(--dur-fast);
+}
+
+.inline-pick:hover,
+.inline-pick[aria-expanded="true"] {
+    text-decoration: underline solid var(--fg);
+    text-decoration-thickness: from-font;
+}
+
+/* Under the composer like a drawer: narrower than the card, flat where they meet. */
+.composer-strip {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    margin: -1px 22px 0;
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 14px 14px;
+    background: color-mix(in srgb, var(--fg) 2.5%, transparent);
+    font-size: 0.857rem;
+    color: var(--fg-muted);
+}
+
+.strip-ctl {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    max-width: 62%;
+    height: 24px;
+    padding: 0 6px;
+    border-radius: 6px;
+    color: inherit;
+    transition: background var(--dur-fast), color var(--dur-fast);
+}
+
+.strip-ctl svg {
+    flex: none;
+}
+
+.strip-ctl .chv {
+    opacity: 0.6;
+}
+
+button.strip-ctl:hover,
+button.strip-ctl[aria-expanded="true"] {
+    background: var(--bg-hover);
+    color: var(--fg);
+}
+
+.trust-callout {
+    display: flex;
+    gap: 12px;
+    padding: 16px 18px;
+    border-radius: 16px;
+    background: var(--warning-soft);
+    animation: rise 260ms var(--ease-out);
+}
+
+.trust-callout > svg {
+    color: var(--warning);
+    flex: none;
+    margin-top: 2px;
+}
+
+.trust-title {
+    font-weight: 600;
+    margin-bottom: 3px;
+}
+
+.trust-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+}
+
+.trust-callout.onboard {
+    background: var(--accent-softer);
+}
+
+.trust-callout.onboard > svg {
+    color: var(--accent);
+}
+
+/* Claude Code / Codex sessions of this project, to carry on here. */
+.cli-sessions {
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+}
+
+.cli-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 10px 14px;
+    color: var(--fg-muted);
+    transition: background var(--dur-fast), color var(--dur-fast);
+}
+
+.cli-head:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+}
+
+.cli-head .chv {
+    transition: transform var(--dur-fast);
+}
+
+.cli-head .chv.open {
+    transform: rotate(90deg);
+}
+
+.cli-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 420px;
+    overflow-y: auto;
+    border-top: 1px solid var(--border);
+}
+
+.cli-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 14px;
+}
+
+.cli-row + .cli-row {
+    border-top: 1px solid var(--border);
+}
+
+.cli-main {
+    flex: 1;
+    min-width: 0;
+}
+
+.cli-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.cli-source {
+    flex: none;
+    padding: 1px 6px;
+    border-radius: 5px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    background: var(--accent-softer);
+    color: var(--fg-muted);
+}
+
+.cli-meta {
+    margin-top: 2px;
+}
+
+.cli-warn {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 4px;
+    color: var(--warning);
+}
+
+.cli-warn svg {
+    flex: none;
+}
+
+.cli-off {
+    flex: none;
+    max-width: 45%;
+    text-align: right;
+}
+
+.cli-more {
+    padding: 8px 14px;
+    border-top: 1px solid var(--border);
+}
+

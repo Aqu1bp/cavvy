@@ -1,0 +1,46 @@
+/* ---- The session's stage: transcript, composer, panel ------------------ */
+
+.stage {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    --lane-l: 48px;
+    --lane-r: 48px;
+    --dock-h: 140px;
+}
+
+.stage.with-panel {
+    --lane-r: 324px;
+}
+
+/* Not enough room for the conversation beside the panel: the card floats over it. */
+@container main (max-width: 940px) {
+    .stage.with-panel {
+        --lane-r: 48px;
+    }
+}
+
+@container main (max-width: 640px) {
+    .stage {
+        --lane-l: 16px;
+        --lane-r: 16px;
+    }
+}
+
+.composer-dock {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    padding: 0 var(--lane-r) 16px var(--lane-l);
+    pointer-events: none;
+}
+
+.composer-col {
+    position: relative;
+    max-width: var(--column-w);
+    margin: 0 auto;
+    pointer-events: auto;
+}
+
