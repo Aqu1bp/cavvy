@@ -264,6 +264,8 @@
     width: 16px;
     height: 16px;
     margin: 1px;
+    place-content: center;
+    justify-self: center;
     border-radius: 50%;
     background: var(--accent);
     color: var(--accent-ink);

@@ -456,6 +456,18 @@ for (const view of ["date", "project"]) {
     });
 }
 
+test("picked rows hold the list still; clearing the selection lets it move", () => {
+    const f = fixture(6);
+    try {
+        const before = f.ids;
+        click(hitOf(f, before[3]!), { metaKey: true });
+        f.update(before[5]!, { updatedAt: 1000 });
+        expect(f.ids).toEqual(before);
+        key(f, "Escape");
+        expect(f.ids[0]).toBe(before[5]);
+    } finally { f.dispose(); }
+});
+
 test("the selection bar and a selected row's menu act on the whole selection", () => {
     const f = fixture(6);
     try {

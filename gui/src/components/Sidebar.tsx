@@ -189,7 +189,7 @@ function useRowMenu(more: () => HTMLElement | undefined) {
 /** How a session is doing, at the start of its row; a check in an accent disc while it's selected. */
 function Glyph(p: { kind: RailGlyph; picked?: boolean }) {
     return (
-        <Show when={!p.picked} fallback={<span class="st pick" aria-hidden="true"><Check size={11} stroke-width={3} /></span>}>
+        <Show when={!p.picked} fallback={<span class="st pick" aria-hidden="true"><Check size={12} stroke-width={3} /></span>}>
             <StatusGlyph kind={p.kind} />
         </Show>
     );
@@ -471,7 +471,8 @@ export function Sidebar() {
         const provider = st?.model?.provider;
         return railFoot({ limits: app.limits, providers: app.providers, provider, account: provider ? st?.accounts?.[provider] : undefined, recent: recent(), now: now() });
     });
-    const held = () => (hovered() && !manualLayout()) || locked().size > 0;
+    // While rows are picked they stay put too, so a range never jumps under the pointer or the keys.
+    const held = () => (hovered() && !manualLayout()) || locked().size > 0 || railSelection().ids.length > 0;
     const layout = createMemo<SidebarEntry[]>((previous) => {
         const next = sidebarEntries(app.sessions, app.archived, {
             activeId: app.activeId, groupBy: prefs.groupBy, archived: showArchived(),
