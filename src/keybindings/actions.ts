@@ -13,6 +13,8 @@ export interface ActionDef {
     description: string;
     /** Default keys per app; an app missing here doesn't have the action. `mod` is Cmd on macOS, Ctrl elsewhere. */
     defaults: Partial<Record<KeyApp, string[]>>;
+    /** A Global action that only acts in the input box, where Chat's keys come first. */
+    inInput?: boolean;
 }
 
 export const ACTIONS: readonly ActionDef[] = [
@@ -33,7 +35,7 @@ export const ACTIONS: readonly ActionDef[] = [
     { id: "chat:modelPicker", context: "Global", description: "Switch model", defaults: { gui: ["mod+/"] } },
     { id: "chat:focusInput", context: "Global", description: "Focus the input box", defaults: { gui: ["mod+l"] } },
     // Global, like the shortcut it replaced: any binding of its key, in any context, takes the key from it.
-    { id: "chat:submitOtherWay", context: "Global", description: "While a turn runs: send the other way (steer or queue)", defaults: { tui: ["tab"], gui: ["mod+shift+enter"] } },
+    { id: "chat:submitOtherWay", context: "Global", description: "While a turn runs: send the other way (steer or queue)", defaults: { tui: ["tab"], gui: ["mod+shift+enter"] }, inInput: true },
     // Chat (the input box)
     { id: "chat:submit", context: "Chat", description: "Send", defaults: { tui: ["enter"], gui: ["enter", "mod+enter"] } },
     { id: "chat:newline", context: "Chat", description: "New line", defaults: { tui: ["shift+enter", "alt+enter", "ctrl+j"], gui: ["shift+enter", "alt+enter"] } },

@@ -282,8 +282,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const onKeyDown = (e: KeyboardEvent) => {
         if (composingKey(e)) return;
         const items = menu();
-        // Enter on the / and @ menu takes the suggestion, whatever Enter is bound to.
-        if (items.length && e.key === "Enter" && !e.shiftKey && !e.altKey) {
+        // Enter on the / and @ menu takes the suggestion, whatever Enter is bound to (a modified Enter goes by its binding).
+        if (items.length && e.key === "Enter" && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
             e.preventDefault();
             apply(items[menuSel()] ?? items[0]!, true);
             return;

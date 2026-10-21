@@ -66,6 +66,13 @@ describe("the window's keymap", () => {
         expect(kb.shortcut("chat:submitOtherWay")).toBe(os === "macos" ? "⌥+Enter" : "Alt+Enter");
         kb.applyKeybindingsFile(fileOf([{ context: "Global", bindings: { "mod+shift+enter": null } }]));
         expect(kb.shortcut("chat:submitOtherWay")).toBeUndefined();
+        // Taken away where it acts (the input box, where Chat's keys come first): no label either.
+        kb.applyKeybindingsFile(fileOf([{ context: "Chat", bindings: { "mod+shift+enter": null } }]));
+        expect(kb.actionOf(ev("Enter", "Enter", { ...MOD, shiftKey: true }), ["Chat", "Global"])).toBeUndefined();
+        expect(kb.shortcut("chat:submitOtherWay")).toBeUndefined();
+        // A Chat null doesn't hide an app-wide key that works outside the input box.
+        kb.applyKeybindingsFile(fileOf([{ context: "Chat", bindings: { "mod+b": null } }]));
+        expect(kb.shortcut("app:toggleSidebar")).toBe(os === "macos" ? "⌘+B" : "Ctrl+B");
         kb.applyKeybindingsFile({ path: "/k.json" });
     });
 

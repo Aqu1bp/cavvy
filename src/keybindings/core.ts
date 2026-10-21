@@ -317,8 +317,12 @@ export function buildKeymap(user: UserBinding[], app: KeyApp, platform: KeyPlatf
     const customized = new Set<string>();
     for (const a of ACTIONS) {
         if (!(opts.defaults?.[a.id] ?? a.defaults[app])) continue;
-        const live = (k: string) => [...table.values()].some((m) => m.get(k) === a.id);
-        const keys = [...(userKeys.get(a.id) ?? []), ...(defaultKeys.get(a.id) ?? [])].filter((k, i, arr) => arr.indexOf(k) === i && live(k) && !prefixes.get(a.context)!.has(k));
+        // Where a Global key is pressed with Chat in force (always in the terminal app, in the GUI's
+        // input box), a Chat binding or null of the same key, or a Chat chord starting with it, comes first.
+        const over = (c: Context): Context[] => (c === "Global" && (app === "tui" || a.inInput) ? ["Chat"] : []);
+        const live = (k: string) =>
+            CONTEXTS.some((c) => table.get(c)!.get(k) === a.id && ![c, ...over(c)].some((o) => prefixes.get(o)!.has(k)) && !over(c).some((o) => table.get(o)!.has(k)));
+        const keys = [...(userKeys.get(a.id) ?? []), ...(defaultKeys.get(a.id) ?? [])].filter((k, i, arr) => arr.indexOf(k) === i && live(k));
         keysOf.set(a.id, keys);
         const defaults = defaultKeys.get(a.id) ?? [];
         if (keys.length !== defaults.length || keys.some((k) => !defaults.includes(k))) customized.add(a.id);

@@ -239,6 +239,17 @@ assert.equal(ta.props["aria-expanded"], true);
 assert.equal(key("Enter", { ...MOD, shiftKey: true }).prevented, true);
 await Bun.sleep(0);
 assert.deepEqual(sent.at(-1), { text: "@queue-file", followUp: "steer" });
+// Moved to Mod+Enter, it still sends with the suggestions open: only a plain Enter takes the suggestion.
+applyKeybindingsFile({ path: "/test/keybindings.json", text: JSON.stringify({ bindings: [{ context: "Chat", bindings: { "mod+enter": "chat:submitOtherWay" } }] }) });
+input("@queue-again");
+await Bun.sleep(80);
+replies.at(-1)!.resolve(["queue-file.ts"]);
+await Bun.sleep(0);
+assert.equal(ta.props["aria-expanded"], true);
+assert.equal(key("Enter", MOD).prevented, true);
+await Bun.sleep(0);
+assert.deepEqual(sent.at(-1), { text: "@queue-again", followUp: "steer" });
+applyKeybindingsFile({ path: "/test/keybindings.json" });
 input("");
 appState.settings.followUpBehavior = undefined;
 setWorking(false);
