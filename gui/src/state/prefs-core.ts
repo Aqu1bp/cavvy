@@ -8,6 +8,8 @@ export type AccentId = "blue" | "indigo" | "violet" | "pink" | "red" | "orange" 
 /** Settings → Appearance → Window: how much of the desktop shows through. */
 export type GlassId = "glass" | "tinted" | "solid";
 export type ContrastId = "standard" | "high";
+/** Settings → Appearance → Window tint: the colour laid on the glass behind the rail. */
+export type TintId = "clear" | "ocean" | "accent";
 
 export const ACCENTS: { id: AccentId; name: string; color: string }[] = [
     { id: "blue", name: "Blue", color: "#2a6bff" },
@@ -26,6 +28,7 @@ export interface Prefs {
     /** Unset: blue, the default. */
     accent?: AccentId;
     glass: GlassId;
+    tint: TintId;
     contrast: ContrastId;
     density: "comfortable" | "compact";
     fontSize: number;
@@ -56,6 +59,7 @@ export const CHAT_WIDTHS: Record<Prefs["chatWidth"], number> = { narrow: 640, de
 export const PREF_DEFAULTS: Prefs = {
     scheme: "system",
     glass: "glass",
+    tint: "clear",
     contrast: "standard",
     density: "comfortable",
     fontSize: 14,
@@ -77,6 +81,7 @@ export const PREF_DEFAULTS: Prefs = {
 
 const SCHEMES: readonly string[] = ["system", "light", "dark"];
 const GLASSES: readonly string[] = ["glass", "tinted", "solid"];
+const TINTS: readonly string[] = ["clear", "ocean", "accent"];
 const CONTRASTS: readonly string[] = ["standard", "high"];
 
 /**
@@ -101,6 +106,7 @@ export function migratePrefs(saved: unknown): Partial<Prefs> {
         if (theme === "contrast") out.contrast = "high";
     }
     if (!GLASSES.includes(out.glass as string)) delete out.glass;
+    if (!TINTS.includes(out.tint as string)) delete out.tint;
     if (!ACCENTS.some((a) => a.id === out.accent)) delete out.accent;
     return out as Partial<Prefs>;
 }
@@ -117,6 +123,7 @@ export function applyAppearance(d: AppearanceTarget, p: Prefs, systemDark: boole
     d.dataset.theme = theme;
     d.dataset.scheme = theme;
     d.dataset.glass = p.glass;
+    d.dataset.tint = p.tint;
     d.dataset.contrast = p.contrast;
     if (p.accent) d.dataset.accent = p.accent;
     else delete d.dataset.accent;
