@@ -2,6 +2,7 @@
 // (RightPanel) and the diff reader (ReviewPane).
 
 import type { GitFileDiff } from "@shared/protocol";
+import { CONVERSATION_MIN } from "./layout";
 
 export type Change = GitFileDiff["change"];
 
@@ -34,6 +35,14 @@ export const REVIEW_STEP = 24;
  */
 export function reviewDragWidth(shown: number, dx: number): number {
     return Math.round(Math.max(REVIEW_MIN, Math.min(REVIEW_MAX, shown - dx)));
+}
+
+/**
+ * The handle's range, for assistive tech: from its least width to the most the layout lets it
+ * dock at (the conversation keeps CONVERSATION_MIN), widened to take in the width shown.
+ */
+export function reviewWidthRange(shown: number, sheetWidth: number): { min: number; max: number } {
+    return { min: Math.min(REVIEW_MIN, shown), max: Math.max(shown, Math.min(REVIEW_MAX, sheetWidth - CONVERSATION_MIN)) };
 }
 
 /** The side panel's two panes (the mockup's Changes | Plan). */

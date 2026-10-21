@@ -18,7 +18,7 @@ import { changedOutside, commitUnavailable, fetchGitChanges, lastView, sessionRe
 import { editorName, openInEditor } from "../state/actions";
 import { canReveal, revealPath } from "../lib/platform";
 import { plural } from "../lib/format";
-import { CHANGE, dirOf, nameOf, REVIEW_DEFAULT, REVIEW_STEP, reviewDragWidth } from "../lib/inspector";
+import { CHANGE, dirOf, nameOf, REVIEW_DEFAULT, REVIEW_STEP, reviewDragWidth, reviewWidthRange } from "../lib/inspector";
 import { DiffView, type DiffComments } from "./blocks/DiffView";
 import { buildComment } from "../lib/review-comments";
 import { newCommentId, reviewComments } from "../state/review-comments";
@@ -133,6 +133,8 @@ function ReviewResizer() {
             aria-orientation="vertical"
             aria-label="Resize the diff reader"
             aria-valuenow={shown()}
+            aria-valuemin={reviewWidthRange(shown(), shellLayout().sheet.w).min}
+            aria-valuemax={reviewWidthRange(shown(), shellLayout().sheet.w).max}
             tabIndex={0}
             onPointerDown={start}
             onDblClick={() => set(REVIEW_DEFAULT)}

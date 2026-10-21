@@ -1,7 +1,7 @@
 // The inspector: the diff reader's resize rule (lib/inspector.ts), and its controls rendered
 // (fixtures/gui-inspector.ts: real Solid reactivity in an in-memory DOM).
 import { expect, test } from "bun:test";
-import { CHANGE, dirOf, nameOf, REVIEW_MAX, REVIEW_MIN, reviewDragWidth } from "../gui/src/lib/inspector";
+import { CHANGE, dirOf, nameOf, REVIEW_MAX, REVIEW_MIN, reviewDragWidth, reviewWidthRange } from "../gui/src/lib/inspector";
 
 test("dragging the reader's edge moves from the width shown, within its bounds", () => {
     // Left (negative dx) widens it, right narrows it, from the width shown.
@@ -11,6 +11,16 @@ test("dragging the reader's edge moves from the width shown, within its bounds",
     expect(reviewDragWidth(640, 0.4)).toBe(640);
     expect(reviewDragWidth(500, 400)).toBe(REVIEW_MIN);
     expect(reviewDragWidth(1100, -400)).toBe(REVIEW_MAX);
+});
+
+test("the handle's range: from its least width to the most the layout lets it dock at", () => {
+    // A 1400px sheet keeps the conversation 480px: up to 920.
+    expect(reviewWidthRange(640, 1400)).toEqual({ min: REVIEW_MIN, max: 920 });
+    // A very wide sheet: the reader's own cap.
+    expect(reviewWidthRange(860, 3000)).toEqual({ min: REVIEW_MIN, max: REVIEW_MAX });
+    // Shown wider than a drag could make it (the layout's share), or narrower than its least: the range takes it in.
+    expect(reviewWidthRange(700, 1100)).toEqual({ min: REVIEW_MIN, max: 700 });
+    expect(reviewWidthRange(400, 1100)).toEqual({ min: 400, max: 620 });
 });
 
 test("file names, folders and git's letters", () => {

@@ -4,7 +4,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, text } from "../helpers/gui-render";
-import { CHANGE, dirOf, nameOf, REVIEW_DEFAULT, REVIEW_STEP, reviewDragWidth } from "../../gui/src/lib/inspector";
+import { CHANGE, dirOf, nameOf, REVIEW_DEFAULT, REVIEW_MIN, REVIEW_STEP, reviewDragWidth, reviewWidthRange } from "../../gui/src/lib/inspector";
 
 const review = readFileSync(new URL("../../gui/src/components/ReviewPane.tsx", import.meta.url), "utf8");
 const panel = readFileSync(new URL("../../gui/src/components/RightPanel.tsx", import.meta.url), "utf8");
@@ -14,9 +14,10 @@ test("the reader's handle starts from the width shown, not the saved one, and ta
     const world = dragWorld();
     const Resizer = component(between(review, "function ReviewResizer(", "export function ReviewPane("), "ReviewResizer", {
         // Saved at 420; the layout shows it at 640 (55% of the sheet).
-        shellLayout: () => ({ inspector: { mode: "dock", width: 640 } }),
+        // A 1400px sheet: the conversation keeps 480, so it can widen to 920.
+        shellLayout: () => ({ sheet: { w: 1400 }, inspector: { mode: "dock", width: 640 } }),
         setPrefs: (key: string, value: number) => saved.push([key, value]),
-        reviewDragWidth, REVIEW_DEFAULT, REVIEW_STEP,
+        reviewDragWidth, reviewWidthRange, REVIEW_DEFAULT, REVIEW_STEP,
         window: world.window, document: world.document,
     });
     const saved: [string, number][] = [];
@@ -26,6 +27,9 @@ test("the reader's handle starts from the width shown, not the saved one, and ta
         const handle = all(root).find((n) => String(n.props.class).includes("rv-resizer"))!;
         expect(handle.props.role).toBe("separator");
         expect(handle.props["aria-valuenow"]).toBe(640);
+        // Its range is the real one in pixels, not the 0-100 a separator defaults to.
+        expect(handle.props["aria-valuemin"]).toBe(REVIEW_MIN);
+        expect(handle.props["aria-valuemax"]).toBe(920);
         const listeners = world.listeners;
         const target = {};
         handle.props.onPointerDown({ button: 0, clientX: 500, pointerId: 1, preventDefault() {}, currentTarget: target });
@@ -78,7 +82,7 @@ test("closing the reader in the middle of a drag ends it: no resizing class or l
     const Resizer = component(between(review, "function ReviewResizer(", "export function ReviewPane("), "ReviewResizer", {
         shellLayout: () => ({ sheet: { w: 1400 }, inspector: { mode: "dock", width: 640 } }),
         setPrefs() {},
-        reviewDragWidth, REVIEW_DEFAULT, REVIEW_STEP,
+        reviewDragWidth, reviewWidthRange, REVIEW_DEFAULT, REVIEW_STEP,
         window: world.window, document: world.document,
     });
     const root = node("root");
