@@ -702,6 +702,29 @@ describe("the GUI server, against a cached Anthropic API", () => {
         }
     });
 
+    test("a watched PR's event while it compacts takes over: the compaction stops and the wake runs on the warm cache", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        let release!: () => void;
+        const gate = new Promise<void>((r) => (release = r));
+        mock.hold = (r) => (r.compaction ? gate : undefined);
+        try {
+            await longTurn(engine, c, id, rt);
+            const history = rt.session.messages.length;
+            fire(rt);
+            await until(() => rt.snapshot().state.activity?.label === "Compacting while idle");
+            rt.toolState.wakes.push({ source: "pull-request", label: "PR #12: checks failed", text: "PR #12's checks failed." });
+            await until(() => rt.idle && rt.session.messages.length === history + 2);
+            expect(rt.session.summary).toBeUndefined();
+            expect(JSON.stringify(rt.session.messages.at(-2))).toContain("checks failed");
+            const last = mock.requests.filter((r) => !r.compaction).at(-1)!;
+            expect(last.usage.cache_read_input_tokens).toBeGreaterThan(100_000);
+        } finally {
+            release();
+            mock.hold = undefined;
+            await engine.stop();
+        }
+    });
+
     test("a new turn disarms it, and so does closing the session", async () => {
         const { engine, c, id, rt } = await engineWithSession();
         try {
@@ -820,6 +843,22 @@ describe("the TUI", () => {
         expect(app.session.messages.filter((m) => m.role === "assistant").length).toBe(2);
         expect(text()).not.toContain("Cancelled");
         app.schedules.scheduler.clear();
+    });
+
+    test("a watched PR's event while it compacts takes over: the compaction stops and the wake runs", async () => {
+        const { app, requests, text } = testApp({ hold: true });
+        (app as any).modelReady = true;
+        await app.startTurn("review everything");
+        fire(app);
+        const until = Date.now() + 5000;
+        while (!requests.some(isCompaction) && Date.now() < until) await Bun.sleep(5);
+        expect(app.busy).toBe(true);
+        (app as any).toolState.wakes.push({ source: "pull-request", label: "PR #12: checks failed", text: "PR #12's checks failed." });
+        while (!app.session.messages.some((m) => JSON.stringify(m).includes("checks failed")) && Date.now() < until) await Bun.sleep(5);
+        while (app.busy && Date.now() < until) await Bun.sleep(5);
+        expect(app.session.summary).toBeUndefined();
+        expect(app.session.messages.filter((m) => m.role === "assistant").length).toBe(2);
+        expect(text()).not.toContain("Cancelled");
     });
 
     test("quitting disarms it: it can't start during the exit hooks", async () => {

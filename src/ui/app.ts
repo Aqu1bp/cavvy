@@ -2315,6 +2315,8 @@ export class App {
 
     /** Events a tool asked to be woken for (a watched PR): a turn of their own when nothing else is going on. */
     private wake() {
+        // An idle compaction stops: the wake runs on the cache that's still warm, not after a summary nobody asked for.
+        if (this.idleCompacting) return void this.yieldIdleCompaction().then(() => this.toolState.wakes?.poke());
         // Busy or with messages queued, the turn's end looks again.
         if (this.exiting || this.busy || this.queued.length) return;
         // A model switch, a dialog open, no agent yet, a goal between its turns (it goes first, as with scheduled
