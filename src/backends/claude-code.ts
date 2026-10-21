@@ -339,7 +339,10 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         this.turns.add(turn);
         try {
             const documents = (t.documents ?? []).map((d) => ({ type: "document", source: { type: "base64", media_type: "application/pdf", data: d.data } }));
-            return await turn.run([{ type: "text", text: prompt }, ...t.images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.mediaType, data: i.data } })), ...documents]);
+            const images = t.images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.mediaType, data: i.data } }));
+            // The text goes last: Claude Code reads a /command only from the last block (what's before it goes along with it),
+            // so with images or PDFs first, /skill and its own commands run with them attached instead of reaching the model as words.
+            return await turn.run([...images, ...documents, { type: "text", text: prompt }]);
         } finally {
             this.turns.delete(turn);
             const s = turn.spending();
