@@ -70,7 +70,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT"]) delete process.env[k];
+    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -2519,6 +2519,150 @@ describe("Claude Code background grace (#60 follow-up)", () => {
             expect(notices(a.events).join("\n")).toContain("did not confirm a task stop");
             expect(JSON.stringify(a.session.messages.at(-1))).toContain("Map auth");
         } finally { Object.assign(backgroundTiming, saved); }
+    });
+});
+
+// A background Bash command runs until its own timeout, as in Claude Code (scaled down through backgroundTiming).
+describe("Claude Code background commands' own timeouts (#193)", () => {
+    const stops = () => received().filter((m) => m.request?.subtype === "stop_task").map((m) => m.request.task_id);
+    const timing = (t: Partial<typeof backgroundTiming>) => {
+        const saved = { ...backgroundTiming };
+        Object.assign(backgroundTiming, { pollMs: 10, ...t });
+        return () => Object.assign(backgroundTiming, saved);
+    };
+    const prompt = () => {
+        const args = starts()[0].argv;
+        return args[args.indexOf("--append-system-prompt") + 1] as string;
+    };
+
+    test("only a background Bash call's own timeout counts", async () => {
+        const { claudeCommandTimeoutMs } = await import("../src/backends/claude-code");
+        expect(claudeCommandTimeoutMs({ command: "bun test", run_in_background: true, timeout: 3_600_000 })).toBe(3_600_000);
+        expect(claudeCommandTimeoutMs({ command: "bun test", timeout: 3_600_000 })).toBeUndefined();
+        expect(claudeCommandTimeoutMs({ command: "bun test", run_in_background: true })).toBeUndefined();
+        for (const timeout of [0, -1, Infinity, NaN, "3600000"]) expect(claudeCommandTimeoutMs({ command: "bun test", run_in_background: true, timeout })).toBeUndefined();
+    });
+
+    test("a command's own timeout outlives the default grace and the overall cap", async () => {
+        process.env.FAKE_SCENARIO = "shell-background";
+        process.env.FAKE_TIMEOUT = "3600000";
+        process.env.FAKE_SHELL_MS = "500";
+        const restore = timing({ commandWaitMs: 50, maxWaitMs: 200 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            const start = Date.now();
+            expect(await a.run("run the suite")).toBe("done");
+            expect(Date.now() - start).toBeGreaterThanOrEqual(500);
+            expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
+            expect(notices(a.events).some((n) => n.includes("Stopped"))).toBe(false);
+            expect(stops()).toEqual([]);
+        } finally { restore(); }
+    });
+
+    test("a command's own timeout is capped at Claude Code's maximum", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        process.env.FAKE_TIMEOUT = "3600000";
+        const restore = timing({ commandWaitMs: 50, maxWaitMs: 100, commandMaxTimeoutMs: 400 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            const start = Date.now();
+            expect(await a.run("run the suite")).toBe("done");
+            const took = Date.now() - start;
+            expect(took).toBeGreaterThanOrEqual(400);
+            expect(took).toBeLessThan(3000);
+            expect(notices(a.events).join("\n")).toMatch(/Stopped 1 background task \(Wait for checks\) \(its background timeout of 1s ran out\)/);
+            expect(notices(a.events).join("\n")).not.toContain("Stopped waiting for");
+        } finally { restore(); }
+    });
+
+    test("a timeout shorter than the default grace ends the wait at that timeout", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        process.env.FAKE_TIMEOUT = "300";
+        const restore = timing({});
+        const abort = new AbortController();
+        const timer = setTimeout(() => abort.abort(), 4000);
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            const start = Date.now();
+            expect(await a.run("run the suite", abort.signal)).toBe("done");
+            expect(Date.now() - start).toBeGreaterThanOrEqual(300);
+            expect(notices(a.events).join("\n")).toContain("its background timeout of 1s ran out");
+        } finally { clearTimeout(timer); restore(); }
+    });
+
+    test("without a timeout the default grace applies, and the model is told to pass one for long jobs", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        const restore = timing({ commandWaitMs: 150, commandMaxTimeoutMs: 60_000 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            const start = Date.now();
+            expect(await a.run("run the suite")).toBe("done");
+            expect(Date.now() - start).toBeGreaterThanOrEqual(150);
+            expect(notices(a.events).join("\n")).toContain("background grace expired after 0.15s");
+            expect(prompt()).toContain("until its own `timeout` runs out, counted from its start (at most 1 min)");
+            expect(prompt()).toContain("up to 0.15 seconds after the answer");
+            expect(prompt()).toContain("pass `timeout` with `run_in_background`");
+        } finally { restore(); }
+    });
+
+    for (const sec of [0, 0.05]) test(`backgroundWaitSec ${sec} replaces only the default: a command's own timeout still holds`, async () => {
+        process.env.FAKE_SCENARIO = "shell-background";
+        process.env.FAKE_TIMEOUT = "3600000";
+        process.env.FAKE_SHELL_MS = "300";
+        const restore = timing({});
+        try {
+            const a = await makeAgent({ provider: "claude-code", settings: { claudeCode: { backgroundWaitSec: sec } } });
+            expect(await a.run("run the suite")).toBe("done");
+            expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
+            expect(notices(a.events).some((n) => n.includes("Stopped"))).toBe(false);
+            expect(prompt()).toContain(`up to ${sec} seconds after the answer`);
+        } finally { restore(); }
+    });
+
+    test("at the overall cap a sub-agent is stopped while a command within its timeout runs on", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-mixed";
+        process.env.FAKE_TIMEOUT = "3600000";
+        process.env.FAKE_SHELL_MS = "600";
+        process.env.FAKE_BACKGROUND_MS = "10000";
+        const restore = timing({ commandWaitMs: 50, maxWaitMs: 250 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            const start = Date.now();
+            expect(await a.run("start both")).toBe("done");
+            expect(Date.now() - start).toBeLessThan(5000);
+            expect(stops()).toEqual(["agent-1"]);
+            expect(notices(a.events).join("\n")).toMatch(/Stopped 1 background sub-agent \(Map auth\) \(waited 1s, the limit for background work\)/);
+            expect(notices(a.events).some((n) => /Stopped.*Wait for checks/.test(n))).toBe(false);
+            expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
+            expect(a.events.some((e) => e.type === "subagent" && e.event.type === "turn_end" && e.event.reason === "aborted")).toBe(true);
+            expect(JSON.stringify(a.session.messages.at(-1))).toContain("sub-agent: Map auth");
+        } finally { restore(); }
+    });
+
+    test("a recognized server is stopped at the answer even with a timeout", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        process.env.FAKE_COMMAND = "bun run dev";
+        process.env.FAKE_TIMEOUT = "3600000";
+        const a = await makeAgent({ provider: "claude-code" });
+        const start = Date.now();
+        expect(await a.run("start the server")).toBe("done");
+        expect(Date.now() - start).toBeLessThan(3000);
+        expect(a.events.some((e) => e.type === "activity" && e.text?.includes("Waiting for"))).toBe(false);
+        expect(notices(a.events).join("\n")).toContain("recognized long-lived server/watcher");
+    });
+
+    test("Esc stops a command still within its own timeout", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        process.env.FAKE_TIMEOUT = "3600000";
+        const a = await makeAgent({ provider: "claude-code" });
+        const ac = new AbortController();
+        const done = a.run("run the suite", ac.signal);
+        while (!a.events.some((e) => e.type === "activity" && e.text?.includes("Waiting for background command"))) await Bun.sleep(10);
+        const start = Date.now();
+        ac.abort();
+        expect(await done).toBe("aborted");
+        expect(Date.now() - start).toBeLessThan(1500);
+        expect(notices(a.events).join("\n")).toContain("interrupted by user");
     });
 });
 

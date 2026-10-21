@@ -29,6 +29,9 @@
 // FAKE_LATE_TASK=ms   after a background sub-agent's notification, another background task is listed this long before the report turn
 // FAKE_HOLD_STDOUT=1  starts a command that keeps its stdout open for a while after it exits
 // FAKE_COMMAND      the "bash" scenario's command (default: npm test)
+// FAKE_TIMEOUT      shell-background*: the background Bash call's timeout (ms; default none)
+// FAKE_SHELL_MS     shell-background*: the background command finishes this long after the answer (default 150; the
+//                   stuck, mixed and nested ones finish only when it's set)
 // FAKE_API_KEY_SOURCE  system/init apiKeySource (default "none": a plan)
 // FAKE_IGNORE_STOP=1   ignores interrupt requests and SIGTERM
 // FAKE_CRASH_ON_SECOND=1  exits without a result on its second prompt
@@ -225,6 +228,8 @@ function result(subtype: string, extra: Record<string, unknown> = {}) {
 
 /** What Claude Code says runs in the background. */
 const bgTasks = new Map<string, { task_id: string; task_type: string; description: string }>();
+/** Tasks stopped by the host (stop_task): they don't finish or report later. */
+const stoppedTasks = new Set<string>();
 function backgroundChanged() {
     out({ type: "system", subtype: "background_tasks_changed", tasks: [...bgTasks.values()], session_id: sessionId });
 }
@@ -334,6 +339,7 @@ let afterResult: (() => void) | undefined;
  * FAKE_LATE_TASK=1 another background task runs for a while before that turn.
  */
 async function backgroundAgentEnds(id: string) {
+    if (stoppedTasks.has("agent-1")) return;
     sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_sub_glob", content: "src/auth/index.ts", is_error: false }]);
     sub(id, "assistant", [{ type: "text", text: REPORT }]);
     out({ type: "system", subtype: "task_updated", task_id: "agent-1", patch: { status: "completed" }, session_id: sessionId });
@@ -649,7 +655,7 @@ async function turn(content: any[], uuid?: string) {
             afterResult = undefined;
         }
         if (type === "local_bash") {
-            const input = { command: process.env.FAKE_COMMAND ?? "sleep 150; echo done", description: "Wait for checks", run_in_background: true };
+            const input = { command: process.env.FAKE_COMMAND ?? "sleep 150; echo done", description: "Wait for checks", run_in_background: true, ...(process.env.FAKE_TIMEOUT ? { timeout: Number(process.env.FAKE_TIMEOUT) } : {}) };
             if (nested) sub("toolu_agent", "assistant", [{ type: "tool_use", id: "background-tool", name: "Bash", input }]);
             else toolUse("background-tool", "Bash", input);
             out({ type: "system", subtype: "task_started", task_id: "background-1", tool_use_id: "background-tool", is_backgrounded: true, session_id: sessionId });
@@ -666,7 +672,8 @@ async function turn(content: any[], uuid?: string) {
         backgroundChanged();
         text("Waiting for checks.");
         result("success");
-        if (!["shell-background-stuck", "shell-background-mixed", "shell-background-nested", "monitor-background-stuck"].includes(scenario)) setTimeout(async () => {
+        if (process.env.FAKE_SHELL_MS || !["shell-background-stuck", "shell-background-mixed", "shell-background-nested", "monitor-background-stuck"].includes(scenario)) setTimeout(async () => {
+            if (stoppedTasks.has("background-1")) return;
             bgTasks.delete("background-1");
             backgroundChanged();
             await Bun.sleep(80);
@@ -674,7 +681,7 @@ async function turn(content: any[], uuid?: string) {
             out({ type: "system", subtype: "task_notification", task_id: "background-1", status: "completed", summary: "Checks passed", session_id: sessionId });
             await Bun.sleep(80);
             followUp("Background checks passed.");
-        }, 150);
+        }, Number(process.env.FAKE_SHELL_MS ?? 150));
         return;
     }
     if (scenario === "write") go = await use("toolu_1", "Write", { file_path: join(cwd, "out.txt"), content: "hi\n" });
@@ -826,6 +833,7 @@ for await (const chunk of Bun.stdin.stream()) {
                     continue;
                 }
                 bgTasks.delete(m.request.task_id);
+                stoppedTasks.add(m.request.task_id);
                 backgroundChanged();
                 out({ type: "control_response", response: { subtype: "success", request_id: m.request_id } });
                 out({ type: "system", subtype: "task_notification", task_id: m.request.task_id, status: "stopped", summary: "Stopped by host", session_id: sessionId });
