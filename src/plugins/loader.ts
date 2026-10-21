@@ -14,6 +14,7 @@
 import { existsSync, statSync } from "fs";
 import { isAbsolute, join, resolve } from "path";
 import type { HookConfig, McpServerConfig, Settings, SettingsScope } from "../config/settings";
+import type { LspServerConfig } from "../lsp/config";
 import { paths } from "../config/paths";
 import { normalizeHooks } from "../config/hook-config";
 import { canonical, isInside } from "../util/files";
@@ -41,7 +42,7 @@ export interface LoadedPlugin {
     skillFolders: string[];
     hooks: Partial<Record<string, HookConfig[]>>;
     mcpServers: Record<string, McpServerConfig>;
-    /** Language servers by name (.lsp.json or the manifest's lspServers), plugin root substituted. Only Claude Code runs them, loading the plugin itself. */
+    /** Language servers by name (.lsp.json or the manifest's lspServers), plugin root substituted. Claude Code runs them itself (loading the plugin); elsewhere they join settings.lsp.servers. */
     lspServers: Record<string, unknown>;
     /** The configuration files read: manifests, and the hooks, MCP and language server files. */
     configFiles: string[];
@@ -296,8 +297,8 @@ function addMcp(p: LoadedPlugin, j: unknown) {
 }
 
 /**
- * Add the plugins' hooks and MCP servers to merged settings. A plugin server
- * never replaces one the user configured under the same name.
+ * Add the plugins' hooks, MCP servers and language servers to merged settings.
+ * A plugin server never replaces one the user configured under the same name.
  */
 export function applyPlugins(merged: Settings, plugins: LoadedPlugin[]) {
     for (const p of plugins) {
@@ -309,6 +310,14 @@ export function applyPlugins(merged: Settings, plugins: LoadedPlugin[]) {
         for (const [name, config] of Object.entries(p.mcpServers)) {
             merged.mcpServers ??= {};
             if (!Object.hasOwn(merged.mcpServers, name)) merged.mcpServers[name] = config;
+        }
+        // Named like its MCP servers, so it adds to the built-ins rather than replacing one; `"lsp": false` keeps them off.
+        const lsp = Object.entries(p.lspServers);
+        if (lsp.length && merged.lsp !== false) {
+            const base = merged.lsp ?? {};
+            const servers: Record<string, LspServerConfig> = { ...base.servers };
+            for (const [name, config] of lsp) if (!Object.hasOwn(servers, pluginServerName(p.name, name))) servers[pluginServerName(p.name, name)] = config as LspServerConfig;
+            merged.lsp = { ...base, servers };
         }
     }
 }

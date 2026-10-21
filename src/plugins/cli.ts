@@ -46,13 +46,11 @@ export function countsText(c: Counts): string {
     const add = (n: number, one: string, many = `${one}s`) => n && parts.push(`${n} ${n === 1 ? one : many}`);
     add(c.commands, "command");
     add(c.agents, "agent");
-    // Counted, but not loaded until the native skills and LSP support read them.
     add(c.skills, "skill");
     add(c.hooks, "hook");
     add(c.mcpServers, "MCP server");
     add(c.lspServers, "language server");
-    const pending = c.lspServers ? " (language servers run on Claude Code only)" : "";
-    return (parts.join(", ") || "nothing") + pending;
+    return parts.join(", ") || "nothing";
 }
 
 /** "on (user), off (local)" for the scopes that set it. */
