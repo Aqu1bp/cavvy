@@ -1,5 +1,5 @@
 import { createEffect, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
-import { Play, Plus, RotateCw, SquareTerminal, X } from "lucide-solid";
+import { ChevronDown, Maximize2, Minimize2, Play, Plus, RotateCw, TerminalIcon, X } from "lucide-solid";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -7,7 +7,7 @@ import "../styles/terminal.css";
 import { app, refreshProviders, reportError, rpc, toast, trustRequest } from "../state/app";
 import { RpcError } from "../lib/rpc";
 import { prefs, setPrefs } from "../state/prefs";
-import { terminalActions, terminalOpen, setTerminalOpen, setSettingsTab, setupObscured, type SetupRun } from "../state/ui";
+import { terminalActions, terminalOpen, setTerminalOpen, setSettingsTab, setupObscured, terminalMax, setTerminalMax, setTerminalShown, shellLayout, type SetupRun } from "../state/ui";
 import { basename, tildify } from "../lib/format";
 import { EarlyInput, loadTabs, restoreTabs, saveTabs, TerminalClosures, terminalInputChunks, type SavedTab } from "../lib/terminal";
 import { isTerminalReply } from "@shared/terminal-reply";
@@ -36,6 +36,8 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
     const currentTabs = () => tabs().filter((t) => t.login || t.cwd === p.cwd);
     const active = () => currentTabs().find((t) => t.id === selected()) ?? currentTabs().at(-1);
     const visible = () => terminalOpen() && !p.hidden && (!!p.cwd || currentTabs().some((t) => t.login));
+    // The sheet gives the panel its row while it shows.
+    createEffect(() => setTerminalShown(visible()));
     let next = saved.next;
     // Not saved until the saved tabs are back, which would lose them to a reload meanwhile.
     const [restored, setRestored] = createSignal(false);
@@ -123,6 +125,9 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
         setTabs((all) => all.filter((t) => t !== tab));
     };
     let panel: HTMLElement | undefined;
+    // The conversation keeps its room above the terminal (lib/layout.ts); dragging ends a maximized terminal.
+    const setHeight = (h: number) => setPrefs("terminalHeight", Math.round(Math.max(120, Math.min(shellLayout().terminal.most, h))));
+    const [dragging, setDragging] = createSignal(false);
     const resize = (e: PointerEvent) => {
         if (e.button !== 0) return;
         e.preventDefault();
@@ -130,26 +135,28 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
         target.setPointerCapture(e.pointerId);
         const y = e.clientY;
         const height = panel?.offsetHeight ?? 260;
-        const move = (event: PointerEvent) => setPrefs("terminalHeight", Math.min(window.innerHeight * 0.7, Math.max(120, height + y - event.clientY)));
-        const end = () => { target.removeEventListener("pointermove", move); target.removeEventListener("lostpointercapture", end); };
+        setTerminalMax(false);
+        setDragging(true);
+        const move = (event: PointerEvent) => setHeight(height + y - event.clientY);
+        const end = () => { setDragging(false); target.removeEventListener("pointermove", move); target.removeEventListener("lostpointercapture", end); };
         target.addEventListener("pointermove", move);
         target.addEventListener("lostpointercapture", end);
     };
     return (
-        <section ref={panel} class="terminal-panel" aria-label="Terminal panel" style={{ display: visible() ? "flex" : "none", height: `${prefs.terminalHeight}px` }}>
+        <section ref={panel} class={`terminal-panel ${terminalMax() ? "max" : ""} ${dragging() ? "dragging" : ""}`} aria-label="Terminal panel" style={{ display: visible() ? "flex" : "none" }}>
             <div class="terminal-resize" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" tabIndex={0} onPointerDown={resize}
-                onKeyDown={(e) => { if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); setPrefs("terminalHeight", Math.min(window.innerHeight * .7, Math.max(120, prefs.terminalHeight + (e.key === "ArrowUp" ? 24 : -24)))); } }} />
+                onKeyDown={(e) => { if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); setTerminalMax(false); setHeight((panel?.offsetHeight ?? prefs.terminalHeight) + (e.key === "ArrowUp" ? 24 : -24)); } }} />
             <div class="terminal-toolbar">
-                <SquareTerminal size={14} /><span class="terminal-label">Terminal</span>
                 <div class="terminal-tabs" role="tablist" aria-label="Terminals">
                     <For each={currentTabs()}>{(tab) => <div class={`terminal-tab ${active()?.id === tab.id ? "on" : ""}`}>
-                        <button role="tab" aria-selected={active()?.id === tab.id} onClick={() => setSelected(tab.id)} title={tab.script?.setup ? `Setup script “${tab.script.name}” in ${tab.cwd}: ${tab.script.setup.command}` : tab.script ? `Script “${tab.script.name}” in ${tab.cwd}` : tab.cwd}>{tab.login ? `Sign in · ${tab.login.name}` : tab.script ? <><Play size={10} class="terminal-tab-icon" /> {tab.script.setup?.label ?? tab.script.name}</> : `${basename(tab.cwd)} ${tab.number}`}</button>
-                        <button class="hb sm" title="Close terminal and stop its shell" aria-label={tab.script ? `Close terminal ${tab.script.setup?.label ?? tab.script.name}` : `Close terminal ${tab.number}`} onClick={() => close(tab)}><X size={12} /></button>
+                        <button role="tab" aria-selected={active()?.id === tab.id} onClick={() => setSelected(tab.id)} title={tab.script?.setup ? `Setup script “${tab.script.name}” in ${tab.cwd}: ${tab.script.setup.command}` : tab.script ? `Script “${tab.script.name}” in ${tab.cwd}` : tab.cwd}>{tab.script ? <Play size={11} class="terminal-tab-icon" /> : <TerminalIcon size={13} class="terminal-tab-icon" />}{tab.login ? `Sign in · ${tab.login.name}` : tab.script ? (tab.script.setup?.label ?? tab.script.name) : `${basename(tab.cwd)} ${tab.number}`}</button>
+                        <button class="hb sm terminal-tab-x" title="Close terminal and stop its shell" aria-label={tab.script ? `Close terminal ${tab.script.setup?.label ?? tab.script.name}` : `Close terminal ${tab.number}`} onClick={() => close(tab)}><X size={12} /></button>
                     </div>}</For>
                 </div>
                 <button class="hb sm" title={full() ? `${MAX_TABS} terminals are open in this window` : "New terminal"} aria-label="New terminal" disabled={!restored() || app.conn !== "open" || full()} onClick={add}><Plus size={15} /></button>
                 <span class="terminal-cwd truncate" title={p.cwd}>{tildify(p.cwd ?? "", app.hello?.homeDir)}</span>
-                <button class="hb sm" title={withShortcut("Hide terminal", "app:toggleTerminal")} aria-label="Hide terminal" onClick={() => setTerminalOpen(false)}><X size={15} /></button>
+                <button class="hb sm" title={terminalMax() ? "Restore" : "Maximize"} aria-label={terminalMax() ? "Restore terminal size" : "Maximize terminal"} aria-pressed={terminalMax()} onClick={() => setTerminalMax(!terminalMax())}>{terminalMax() ? <Minimize2 size={14} /> : <Maximize2 size={14} />}</button>
+                <button class="hb sm" title={withShortcut("Hide terminal", "app:toggleTerminal")} aria-label="Hide terminal" onClick={() => setTerminalOpen(false)}><ChevronDown size={15} /></button>
             </div>
             <Show when={!currentTabs().length}>
                 <div class="terminal-message">
@@ -359,7 +366,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
         term.open(container);
         const theme = () => {
             const style = getComputedStyle(container);
-            term.options.theme = { background: style.getPropertyValue("--bg").trim(), foreground: style.getPropertyValue("--fg").trim(), cursor: style.getPropertyValue("--fg").trim(), selectionBackground: "#80808060" };
+            term.options.theme = { background: style.getPropertyValue("--term-bg").trim(), foreground: style.getPropertyValue("--fg").trim(), cursor: style.getPropertyValue("--fg").trim(), selectionBackground: "#80808060" };
         };
         theme();
         const themeObserver = new MutationObserver(theme);
