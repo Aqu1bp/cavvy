@@ -322,6 +322,12 @@
     margin: 0;
 }
 
+/* What a dialog says can be copied (names, paths, warnings, errors); its buttons can't. */
+.dialog-body :is(button, [role="button"]) {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
 .dialog-foot {
     padding: 0 18px 18px;
 }
@@ -888,6 +894,7 @@
 @media (max-height: 560px) {
     .dialog .commit-dialog textarea.input {
         min-height: 72px;
+        height: 84px;
     }
 
     .commit-files {

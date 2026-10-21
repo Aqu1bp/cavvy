@@ -90,7 +90,7 @@ function DialogInner(p: DialogProps) {
                             <div>
                                 <div class="dialog-title" id={titleId}>{p.title}</div>
                                 <Show when={p.subtitle}>
-                                    <div class="dialog-sub">{p.subtitle}</div>
+                                    <div class="dialog-sub selectable">{p.subtitle}</div>
                                 </Show>
                             </div>
                             <button class="icon-btn dialog-close" onClick={() => p.onClose()} aria-label="Close">
@@ -98,7 +98,7 @@ function DialogInner(p: DialogProps) {
                             </button>
                         </div>
                     </Show>
-                    <div class="dialog-body">{p.children}</div>
+                    <div class="dialog-body selectable">{p.children}</div>
                     <Show when={p.footer}>
                         <div class="dialog-foot">{p.footer}</div>
                     </Show>
