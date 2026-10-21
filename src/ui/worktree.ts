@@ -123,16 +123,15 @@ export async function decideWorktree(wt: SessionWorktree, o: { cleanup: CleanupM
     if (o.cleanup === "keep") return kept();
     let found;
     try {
-        // Another process's session in it keeps it; this one's own lock doesn't count.
-        const held = heldSessionFolders();
-        found = await worktreeWork({ main: wt.main, path: wt.path, marker, inUse: (dir) => held.some((h) => isInside(h, dir)) });
+        found = await worktreeWork({ main: wt.main, path: wt.path, marker, inUse });
     } catch (e) {
         return kept(clean(e));
     }
     const { plan, work } = found;
     const remove = async (): Promise<Ending> => {
         try {
-            const r = await removeSessionWorktree({ plan, marker, work });
+            // Asked again as it removes: another session may have opened there since.
+            const r = await removeSessionWorktree({ plan, marker, work, inUse });
             if (r.removed) {
                 try {
                     forgetTrustInside(wt.path);
@@ -171,6 +170,11 @@ export async function decideWorktree(wt: SessionWorktree, o: { cleanup: CleanupM
         ],
     });
     return v === "remove" ? remove : kept();
+}
+
+/** Another process's session in the folder; this one's own lock doesn't count. */
+function inUse(dir: string): boolean {
+    return heldSessionFolders().some((h) => isInside(h, dir));
 }
 
 const clean = (e: unknown) => redact((e as Error).message).replace(/\.$/, "");

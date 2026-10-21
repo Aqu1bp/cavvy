@@ -397,6 +397,30 @@ describe("on exit", () => {
         expect((end as { why?: string }).why).toContain("locked (on a USB disk)");
     });
 
+    test("a session opened in it after the question keeps it", async () => {
+        for (const cleanup of ["auto", "ask"] as const) {
+            const { main, wt } = await fresh();
+            const finish = await decideWorktree(wt, { cleanup, ask: answer("remove") });
+            // Another process starts a session there before this one finishes.
+            const other = Session.create(wt.path);
+            other.push({ role: "user", content: [{ type: "text", text: "hi" }] });
+            const holder = Bun.spawn(["sleep", "30"]);
+            try {
+                writeFileSync(`${other.path}.lock`, JSON.stringify({ pid: holder.pid }));
+                const end = await finish();
+                expect(end.kind).toBe("kept");
+                expect((end as { why?: string }).why).toContain("A Harness session is open");
+                expect(existsSync(wt.path)).toBe(true);
+                expect(branches(main)).toContain("harness/w");
+            } finally {
+                holder.kill();
+                await holder.exited;
+                rmSync(`${other.path}.lock`, { force: true });
+                rmSync(other.path, { force: true });
+            }
+        }
+    });
+
     test("HEAD moved to another commit without new ones: asks, and the branch stays", async () => {
         const { main, wt } = await fresh();
         git(wt.path, "commit", "--allow-empty", "-m", "c");

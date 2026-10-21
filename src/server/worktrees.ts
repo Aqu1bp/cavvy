@@ -849,10 +849,12 @@ export function deleteBranchAtBase(main: string, branch: string, base: string): 
 }
 
 /** Removes the worktree (Git refuses if anything uncommitted is there) and, when it was never moved, its branch. */
-export async function removeSessionWorktree(o: { plan: Removal; marker: WorktreeMarker; work: WorktreeWork }, log?: Log): Promise<{ removed: boolean; branchDeleted: boolean; changed?: boolean }> {
+export async function removeSessionWorktree(o: { plan: Removal; marker: WorktreeMarker; work: WorktreeWork; inUse?: (path: string) => boolean }, log?: Log): Promise<{ removed: boolean; branchDeleted: boolean; changed?: boolean }> {
     // A commit made since it was looked at (by a SessionEnd hook, another terminal) keeps it: on a
     // detached HEAD nothing else would hold that commit once the worktree's HEAD and reflog are gone.
+    // So does a session opened in it meanwhile: asked again, not taken from the plan.
     if (o.plan.exists) {
+        if (o.inUse?.(o.plan.path)) throw new RpcError(`A Harness session is open in ${o.plan.path} (in this app, or in another process such as a terminal). Close it first.`, "in_use");
         const head = runGit(o.plan.path, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])?.trim();
         const branch = runGit(o.plan.path, ["symbolic-ref", "--quiet", "--short", "HEAD"])?.trim() || undefined;
         if (head !== o.work.head || branch !== o.work.branch) return { removed: false, branchDeleted: false, changed: true };
@@ -875,7 +877,7 @@ export async function removeIfPristine(o: { main: string; path: string; inUse?: 
     try {
         const { plan, work } = await worktreeWork({ main: o.main, path: o.path, marker, inUse: o.inUse ?? (() => false) }, log);
         if (!isPristine(work, o)) return { removed: false, branchDeleted: false, kept: "It has work in it." };
-        return await removeSessionWorktree({ plan, marker, work }, log);
+        return await removeSessionWorktree({ plan, marker, work, inUse: o.inUse }, log);
     } catch (e) {
         return { removed: false, branchDeleted: false, kept: (e as Error).message };
     }
