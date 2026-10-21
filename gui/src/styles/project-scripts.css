@@ -1,50 +1,49 @@
 /* ---- Project scripts (title line) ----------------------------------- */
 
-/* Run the main script | open the menu: one control, split by a hairline. */
+/* Run the main script | open the menu: one pill in the title bar's capsule, split by a hairline. */
 .script-split {
     display: inline-flex;
     align-items: center;
     flex: none;
-    border-radius: 8px;
-    transition: background var(--dur-fast);
+    border-radius: var(--pill);
+    transition: background 140ms;
 }
 
 .script-split:has(.script-split-main):hover,
 .script-split.open:has(.script-split-main) {
-    background: var(--bg-hover);
+    background: var(--hover);
 }
 
 .script-split .script-split-main {
-    width: auto;
     max-width: 160px;
-    display: inline-flex;
-    gap: 6px;
-    padding: 0 8px 0 9px;
-    border-radius: 8px 0 0 8px;
+    padding: 0 6px 0 9px;
+    border-radius: var(--pill) 0 0 var(--pill);
     font-size: 0.893rem;
     font-weight: 500;
 }
 
 .script-split .script-split-more {
-    width: 20px;
-    border-radius: 0 8px 8px 0;
     position: relative;
+    min-width: 22px;
+    padding: 0 6px 0 4px;
+    border-radius: 0 var(--pill) var(--pill) 0;
 }
 
 .script-split .script-split-more::before {
     content: "";
     position: absolute;
     left: 0;
-    top: 7px;
-    bottom: 7px;
+    top: 8px;
+    bottom: 8px;
     width: 1px;
-    background: var(--hairline);
+    background: var(--line);
 }
 
 .script-split .script-split-main:hover:not(:disabled),
 .script-split .script-split-more:hover:not(:disabled),
 .script-split .script-split-more[aria-expanded="true"] {
-    background: var(--bg-active);
+    background: var(--press);
+    color: var(--fg);
 }
 
 .script-split-label {

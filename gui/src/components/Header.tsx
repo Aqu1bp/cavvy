@@ -1,23 +1,25 @@
-// The title line above the conversation: where you are (project / session),
-// the session's menu on its title, and the panel toggle.
+// The title bar over the conversation: the session's title (double-click
+// renames) and branch, the project before it when the rail is hidden, and at
+// the right one glass capsule of tools: the changes, the project's scripts,
+// the terminal, the side panel and the session's menu.
 
-import { createSignal, For, Show, type JSX } from "solid-js";
-import { Archive, ChevronDown, FolderOpen, History, PanelLeft, PanelRight, Pencil, Share, ShieldAlert, Shrink, SquareArrowOutUpRight, SquareTerminal, Trash2 } from "lucide-solid";
+import { createEffect, createResource, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { Archive, Copy, Ellipsis, FileDiff, FolderOpen, GitBranch, History, PanelBottom, PanelLeft, PanelRight, Pencil, Search, Share, ShieldAlert, Shrink, SquareArrowOutUpRight, SquarePen, SquareTerminal, Trash2 } from "lucide-solid";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc, toast } from "../state/app";
-import { archive, editorName, exportSession, newSession, openInEditor, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
+import { archive, editorName, exportSession, newSession, openInEditor, openReview, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
+import { sessionReadReady, useGitChanges } from "../state/changes";
 import { prefs } from "../state/prefs";
-import { terminalOpen, setTerminalOpen, setRewindOpen, setDeleteRequest } from "../state/ui";
+import { terminalOpen, setTerminalOpen, setRewindOpen, setDeleteRequest, openFind, review, setReview, setSettingsTab } from "../state/ui";
 import { copyText, isTauri, os } from "../lib/platform";
-import { tildify } from "../lib/format";
-import { Monogram } from "./Sidebar";
+import { plural, tildify } from "../lib/format";
 import { Menu } from "./ui/Menu";
 import { RunSwitcher } from "./RunSwitcher";
 import { ProjectScripts } from "./ProjectScripts";
-import { withShortcut } from "../state/keybindings";
+import { shortcut, withShortcut } from "../state/keybindings";
 import { promptPreview } from "../lib/review-comments";
 
-type MenuEntry = { icon: typeof Pencil; label: string; disabled?: boolean; run: () => void };
+type MenuEntry = { icon: typeof Pencil; label: string; disabled?: boolean; kbd?: string; run: () => void };
 
 export function sessionTitle(h?: SessionHandle): string {
     const first = h?.view.turns.find((t) => t.prompt)?.prompt?.text;
@@ -31,20 +33,56 @@ export function askDelete(h?: SessionHandle) {
     setDeleteRequest({ id: h.id, title: sessionTitle(h), projectName: app.sessions.concat(app.archived).find((s) => s.id === h.id)?.projectName ?? (cwd.split("/").filter(Boolean).pop() || cwd) });
 }
 
-/** The frame every main view shares: room for the traffic lights when the sidebar is hidden, the sidebar toggle, then the crumbs. */
+/**
+ * Where the title starts and the tools end, as --bar-start and --bar-end on the
+ * root (from the window's left and right edges): the toasts drop into this row,
+ * over the title and clear of the capsule, wherever the shell puts it.
+ */
+function placeToasts(header: HTMLElement) {
+    if (!header.isConnected) return;
+    const title = header.querySelector<HTMLElement>(".crumbs")?.getBoundingClientRect();
+    const tools = header.querySelector<HTMLElement>(".bar-end")?.getBoundingClientRect();
+    const box = header.getBoundingClientRect();
+    if (!box.width) return;
+    const root = document.documentElement.style;
+    root.setProperty("--bar-start", `${Math.round(title?.left ?? box.left)}px`);
+    root.setProperty("--bar-end", `${Math.round(window.innerWidth - (tools?.width ? tools.left : box.right))}px`);
+    root.setProperty("--bar-top", `${Math.round(box.top)}px`);
+}
+
+/**
+ * The frame every main view shares. With the rail hidden it starts with the
+ * rail's own two buttons (show it, new session), clear of the traffic lights;
+ * then the title (or crumbs), and the tools at the far end.
+ */
 export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
+    let el: HTMLElement | undefined;
+    onMount(() => {
+        const place = () => el && placeToasts(el);
+        const ro = new ResizeObserver(place);
+        ro.observe(el!);
+        for (const part of el!.querySelectorAll(".crumbs, .bar-end")) ro.observe(part);
+        window.addEventListener("resize", place);
+        place();
+        onCleanup(() => (ro.disconnect(), window.removeEventListener("resize", place)));
+    });
     return (
-        <header class={`header ${!prefs.sidebar && isTauri && os === "macos" ? "traffic" : ""}`} data-tauri-drag-region>
-            <Show when={!prefs.sidebar}>
+        <header ref={el} class={`header ${isTauri && os === "macos" ? "traffic" : ""} ${prefs.sidebar ? "" : "rail-off"}`} data-tauri-drag-region>
+            <div class="bar-rail">
                 <button class="hb" title={withShortcut("Show sidebar", "app:toggleSidebar")} aria-label="Show sidebar" onClick={toggleSidebar}>
                     <PanelLeft size={16} />
                 </button>
-            </Show>
+                <button class="hb" title={withShortcut("New session", "app:newSession")} aria-label="New session" onClick={() => (setSettingsTab(undefined), newSession(app.homeCwd))}>
+                    <SquarePen size={16} />
+                </button>
+            </div>
             <nav class="crumbs" aria-label="Breadcrumb" data-tauri-drag-region>
                 {p.children}
             </nav>
             <span class="grow" data-tauri-drag-region />
-            {p.end}
+            <Show when={p.end}>
+                <div class="bar-end">{p.end}</div>
+            </Show>
         </header>
     );
 }
@@ -65,40 +103,97 @@ export const CrumbSep = () => (
     </span>
 );
 
+/**
+ * What changed in the session's folder: git's count, or Harness's own record of
+ * its edits outside a repository. Opens (and closes) the diff reader.
+ */
+function ChangesChip(p: { handle: SessionHandle }) {
+    const [git] = useGitChanges(() => p.handle);
+    // Only asked for outside a repository, where git has nothing to say.
+    const [edits] = createResource(
+        () => git()?.repo === false && sessionReadReady(p.handle) && { id: p.handle.id, n: p.handle.view.state.filesChanged, busy: p.handle.view.state.busy },
+        ({ id }) => rpc.call("session.changes", { id }).catch(() => undefined),
+    );
+    const changes = () => {
+        const g = git();
+        if (!g) return undefined;
+        if (g.repo) return g.error ? undefined : { files: g.files.length + g.more, atLeast: g.moreAtLeast, added: g.added, removed: g.removed };
+        const e = edits();
+        return e && { files: e.files.length, atLeast: false, added: e.added, removed: e.removed };
+    };
+    return (
+        <Show when={changes()?.files ? changes() : undefined}>
+            {(c) => (
+                <>
+                    <button
+                        class={`hb diffchip ${review() ? "on" : ""}`}
+                        title={`${review() ? "Close the changes" : "Review changes"}: ${plural(c().files, "changed file")}${c().atLeast ? " or more" : ""}`}
+                        aria-label={`Changes: ${plural(c().files, "file")}, ${c().added} added, ${c().removed} removed`}
+                        aria-pressed={!!review()}
+                        onClick={() => (review() ? setReview(undefined) : openReview())}
+                    >
+                        <FileDiff size={15} />
+                        <span class="a">+{c().added}</span>
+                        <span class="d">−{c().removed}</span>
+                    </button>
+                    <span class="sep" />
+                </>
+            )}
+        </Show>
+    );
+}
+
 export function Header(p: { handle?: SessionHandle }) {
     const [editing, setEditing] = createSignal(false);
     const [menuOpen, setMenuOpen] = createSignal(false);
-    let titleBtn: HTMLButtonElement | undefined;
+    let moreBtn: HTMLButtonElement | undefined;
     const st = () => p.handle?.view.state;
     const close = () => setMenuOpen(false);
     const copy = async (text: string, done: string) => {
         close();
         if (await copyText(text)) toast(done, "success");
     };
+    // Another session in view: no rename carries over.
+    createEffect(on(() => p.handle?.id, () => setEditing(false), { defer: true }));
 
     return (
         <TitleBar
             end={
                 <>
                     <Show when={st()}>{(s) => <RunSwitcher id={s().id} />}</Show>
-                    <Show when={st()?.cwd}>{(cwd) => <ProjectScripts cwd={cwd()} />}</Show>
-                    <button class={`hb ${terminalOpen() ? "on" : ""}`} title={withShortcut("Toggle terminal", "app:toggleTerminal")} aria-label="Toggle terminal" aria-pressed={terminalOpen()} disabled={!st()?.cwd && !app.homeCwd} onClick={() => setTerminalOpen(!terminalOpen())}><SquareTerminal size={16} /></button>
-                    <Show when={st()}>
-                        <button class={`hb ${prefs.panel ? "on" : ""}`} title={withShortcut("Toggle panel", "app:togglePanel")} aria-label="Toggle panel" aria-pressed={prefs.panel} onClick={() => togglePanel()}>
-                            <PanelRight size={16} />
+                    <div class="cap glass">
+                        <Show when={p.handle}>{(h) => <ChangesChip handle={h()} />}</Show>
+                        <Show when={st()?.cwd}>
+                            {(cwd) => (
+                                <>
+                                    <ProjectScripts cwd={cwd()} />
+                                    <span class="sep" />
+                                </>
+                            )}
+                        </Show>
+                        <button class={`hb ${terminalOpen() ? "on" : ""}`} title={withShortcut("Terminal", "app:toggleTerminal")} aria-label="Toggle terminal" aria-pressed={terminalOpen()} disabled={!st()?.cwd && !app.homeCwd} onClick={() => setTerminalOpen(!terminalOpen())}>
+                            <PanelBottom size={16} />
                         </button>
-                    </Show>
+                        <Show when={st()}>
+                            <button class={`hb ${prefs.panel ? "on" : ""}`} title={withShortcut("Side panel", "app:togglePanel")} aria-label="Toggle panel" aria-pressed={prefs.panel} onClick={() => togglePanel()}>
+                                <PanelRight size={16} />
+                            </button>
+                            <button ref={moreBtn} class="hb" title="More" aria-label="Session actions" aria-haspopup="menu" aria-expanded={menuOpen()} onClick={() => (setMenuOpen(!menuOpen()), menuOpen() && void refreshEditors())}>
+                                <Ellipsis size={16} />
+                            </button>
+                        </Show>
+                    </div>
                 </>
             }
         >
-            <Show when={st()} fallback={<span class="bc static current">New session</span>}>
+            <Show when={st()} fallback={<h1 class="ttl-h">New session</h1>}>
                 {(s) => (
                     <>
-                        <Crumb title={`New session in ${s().projectName}`} onClick={() => newSession(s().cwd)}>
-                            <Monogram name={s().projectName} size={14} />
+                        {/* With the rail hidden, the project goes before the title (and starts a session in it). */}
+                        <button class="proj" title={`New session in ${s().projectName}`} onClick={() => newSession(s().cwd)}>
                             <span class="truncate">{s().projectName}</span>
-                        </Crumb>
-                        <CrumbSep />
+                            <span class="sl" aria-hidden="true">/</span>
+                        </button>
                         <Show
                             when={!editing()}
                             fallback={
@@ -121,17 +216,22 @@ export function Header(p: { handle?: SessionHandle }) {
                                 />
                             }
                         >
-                            <button ref={titleBtn} class={`bct ${menuOpen() ? "open" : ""}`} aria-haspopup="menu" aria-expanded={menuOpen()} title="Session actions" onClick={() => (setMenuOpen(!menuOpen()), menuOpen() && void refreshEditors())} onDblClick={() => (close(), setEditing(true))}>
-                                <span class="truncate">{sessionTitle(p.handle)}</span>
-                                <ChevronDown size={14} class="chv" />
-                            </button>
+                            <h1 class="ttl-h" title="Double-click to rename" onDblClick={() => (close(), setEditing(true))}>
+                                {sessionTitle(p.handle)}
+                            </h1>
+                        </Show>
+                        <Show when={s().branch}>
+                            <span class="br" title="Git branch">
+                                <GitBranch size={13} />
+                                <span class="truncate">{s().branch}</span>
+                            </span>
                         </Show>
                         <Show when={!s().trusted}>
                             <span class="pill warn" title="This folder's own configuration (hooks, MCP servers, permission rules) is ignored">
                                 <ShieldAlert size={12} /> Untrusted
                             </span>
                         </Show>
-                        <Menu label="Session actions" open={menuOpen()} anchor={() => titleBtn} onClose={close} width={244}>
+                        <Menu label="Session actions" open={menuOpen()} anchor={() => moreBtn} onClose={close} align="end" width={244}>
                             <For
                                 each={[
                                     { icon: Pencil, label: "Rename", run: () => void (close(), setEditing(true)) },
@@ -143,11 +243,13 @@ export function Header(p: { handle?: SessionHandle }) {
                                         disabled: s().busy && !s().activity?.idle,
                                         run: () => void (close(), rpc.call("session.compact", { id: s().id }).catch(reportError)),
                                     },
+                                    { icon: Search, label: "Find in conversation", kbd: "app:find", run: () => void (close(), openFind()) },
                                 ] as MenuEntry[]}
                             >
                                 {(it) => (
                                     <button role="menuitem" class="menu-item compact" disabled={it.disabled} onClick={it.run}>
-                                        <it.icon size={14} /> {it.label}
+                                        <it.icon size={14} /> <span class="menu-label">{it.label}</span>
+                                        <Show when={it.kbd && shortcut(it.kbd)}>{(k) => <kbd class="menu-kbd">{os === "macos" ? k().replaceAll("+", "") : k()}</kbd>}</Show>
                                     </button>
                                 )}
                             </For>
@@ -158,6 +260,13 @@ export function Header(p: { handle?: SessionHandle }) {
                             <button role="menuitem" class="menu-item compact" onClick={() => void copy(`harness --resume ${s().id}`, "Copied a command that resumes this session in the terminal")}>
                                 <SquareTerminal size={14} /> Copy resume command
                             </button>
+                            <Show when={s().branch}>
+                                {(branch) => (
+                                    <button role="menuitem" class="menu-item compact" onClick={() => void copy(branch(), `Copied ${branch()}`)}>
+                                        <Copy size={14} /> Copy branch name
+                                    </button>
+                                )}
+                            </Show>
                             <button role="menuitem" class="menu-item compact" title={s().cwd} onClick={() => void copy(s().cwd, `Copied ${tildify(s().cwd, app.hello?.homeDir)}`)}>
                                 <FolderOpen size={14} /> Copy folder path
                             </button>
