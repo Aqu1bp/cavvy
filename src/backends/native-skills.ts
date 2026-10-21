@@ -38,7 +38,7 @@ export function skillFolder(skills: readonly Skill[], opts: { plugin?: boolean }
     const hash = createHash("sha256");
     hash.update(opts.plugin ? "plugin\0" : "skills\0");
     // The folder's time too: a file added beside a SKILL.md that's copied (below) needs linking.
-    for (const s of sorted) hash.update(`${s.name}\0${s.dir}\0${mtime(s.file)}\0${mtime(s.dir)}\0`);
+    for (const s of sorted) hash.update(`${s.name}\0${s.dir}\0${mtime(s.file)}\0${mtime(s.dir)}\0${copiedTimes(s)}\0`);
     const key = hash.digest("hex").slice(0, 16);
     const base = join(harnessHome(), "cache", "cli-skills");
     const dir = join(base, key);
@@ -63,6 +63,19 @@ export function skillFolder(skills: readonly Skill[], opts: { plugin?: boolean }
     }
     built.set(key, dir);
     return touch(dir);
+}
+
+/** On Windows, a skill's files beside a filled-in SKILL.md are copies (see link): their times, so an edit is copied again. */
+function copiedTimes(s: Skill): string {
+    if (process.platform !== "win32") return "";
+    try {
+        return readdirSync(s.dir, { withFileTypes: true })
+            .filter((e) => e.isFile() && e.name !== "SKILL.md")
+            .map((e) => `${e.name}:${mtime(join(s.dir, e.name))}`)
+            .join(",");
+    } catch {
+        return "";
+    }
 }
 
 /** Marks a folder used (prune goes by this), at most once a minute. */

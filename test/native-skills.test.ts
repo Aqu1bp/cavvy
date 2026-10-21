@@ -348,7 +348,40 @@ describe("review round 3", () => {
     });
 });
 
-async function runTurn(provider: "claude-code" | "codex", text: string, opts: { trusted?: boolean; skills?: () => Skill[]; attached?: string } = {}) {
+describe("review round 4", () => {
+    test("a sub-agent's task (the parent model's words) runs no skill the model may not load", async () => {
+        skill(userRoot(), "secret", "description: Hush\ndisable-model-invocation: true", "Secret steps.");
+        await runTurn("claude-code", "Use $secret", { subagent: true });
+        const sent = received().filter((m) => m.type === "user").map((m) => m.message.content[0].text);
+        expect(sent).toEqual(["Use $secret"]);
+        rmSync(LOG, { force: true });
+        // The user's own message does.
+        await runTurn("claude-code", "Use $secret");
+        expect(received().filter((m) => m.type === "user")[0].message.content[0].text).toContain("Secret steps.");
+    });
+
+    test("on Windows, where the files beside a filled-in SKILL.md are copies, editing one makes a new folder", () => {
+        const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+        Object.defineProperty(process, "platform", { value: "win32" });
+        try {
+            const dir = skill(tempDir("win-"), "tools", "description: x", "Read ${HARNESS_SKILL_DIR}/reference.md");
+            writeFileSync(join(dir, "reference.md"), "old");
+            const s: Skill = { name: "tools", description: "x", modelInvocable: true, userInvocable: true, source: "user", file: join(dir, "SKILL.md"), dir };
+            const first = native.skillFolder([s])!;
+            expect(readFileSync(join(native.skillFile(first, s, ""), "reference.md"), "utf-8")).toBe("old");
+            writeFileSync(join(dir, "reference.md"), "new");
+            const later = new Date(Date.now() + 5000);
+            utimesSync(join(dir, "reference.md"), later, later);
+            const second = native.skillFolder([s])!;
+            expect(second).not.toBe(first);
+            expect(readFileSync(join(native.skillFile(second, s, ""), "reference.md"), "utf-8")).toBe("new");
+        } finally {
+            Object.defineProperty(process, "platform", platform);
+        }
+    });
+});
+
+async function runTurn(provider: "claude-code" | "codex", text: string, opts: { trusted?: boolean; skills?: () => Skill[]; attached?: string; subagent?: boolean } = {}) {
     if (opts.trusted) trust.trustFolder(cwd);
     else trust.trustForSession(cwd);
     const events: AgentEvent[] = [];
@@ -360,6 +393,7 @@ async function runTurn(provider: "claude-code" | "codex", text: string, opts: { 
         client: await clientFor(provider),
         settings: () => settings,
         skills: opts.skills ?? (() => loadSkills(cwd, trust.isTrusted(cwd))),
+        isSubagent: opts.subagent,
         checker: new PermissionChecker(() => settings, cwd),
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },

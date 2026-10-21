@@ -1234,7 +1234,8 @@ export class Agent {
         const base = this.backendTurn(signal, host);
         let stopRounds = 0;
         // The user's own message, for the skills it names: its first part, not the files and notes after it.
-        const first = parts[0]?.type === "text" && text.startsWith(parts[0].text) ? parts[0].text : undefined;
+        // A sub-agent's task is the parent model's words, not the user's: it runs no skill the model may not.
+        const first = !this.o.isSubagent && parts[0]?.type === "text" && text.startsWith(parts[0].text) ? parts[0].text : undefined;
         const asked = { request: first, requestAfter: first === undefined ? undefined : text.slice(first.length) };
         let prompt = text;
         let promptImages = images;
