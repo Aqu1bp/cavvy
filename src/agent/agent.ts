@@ -79,6 +79,7 @@ import { isTrusted, trustedByUser } from "../config/trust";
 import { deniedWithin } from "../permissions/rules";
 import { expandPath } from "../util/files";
 import type { PlanLimits } from "../server/protocol";
+import type { NativeGoal } from "./goal";
 
 // ---------------------------------------------------------------------------
 // Host interface (implemented by the TUI and by headless mode)
@@ -106,6 +107,8 @@ export type AgentEvent =
     | { type: "limits"; limits: PlanLimits; partial: boolean }
     /** The commands an agent CLI says it runs itself (Claude Code's skills and built-ins). */
     | { type: "cli_commands"; provider: string; names: string[] }
+    /** The goal an agent CLI keeps itself (src/agent/goal.ts NativeGoal); null when it has none. */
+    | { type: "goal"; goal: NativeGoal | null }
     | { type: "turn_end"; reason: TurnEndReason };
 
 export type TurnEndReason = "done" | "aborted" | "error" | "denied" | "max_turns" | "blocked";

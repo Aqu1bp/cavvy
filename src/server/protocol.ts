@@ -449,8 +449,11 @@ export interface GoalState {
     note?: string;
     /** When a retry is due (waiting), ms. */
     retryAt?: number;
-    /** Who checks: a separate model, or the working model's own report. */
-    judge: "model" | "self";
+    /** Who checks: a separate model, the working model's own report, or the agent CLI's own /goal (Claude Code, Codex). */
+    judge: "model" | "self" | "native";
+    /** judge "native": the CLI that keeps the goal ("Claude Code"), and whether it can be paused (Codex's can). */
+    by?: string;
+    canPause?: boolean;
 }
 
 export interface SessionState {

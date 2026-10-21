@@ -21,7 +21,7 @@ import { loadImageFile, planPaste, prepareImage, readClipboardImage, type NamedI
 import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
 import { DELEGATE_TOOL } from "../agent/delegation";
 import { fireHooks, type HookEvent } from "../agent/hooks";
-import { backgroundWork, canAnswerOneOff, GoalController, sessionTokens } from "../agent/goal";
+import { backgroundWork, canAnswerOneOff, GoalController, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, sessionTokens, type NativeGoal } from "../agent/goal";
 import { Notifier } from "./notify";
 import { Session } from "../agent/session";
 import { SessionSchedules } from "../agent/schedule-host";
@@ -482,6 +482,8 @@ export class App {
         const prev = this.model;
         this.model = info;
         this.client = client;
+        // A CLI's own goal stays with that CLI: another provider doesn't carry it on.
+        if (this.nativeGoal && this.nativeGoal.provider !== info.provider) this.nativeGoal = undefined;
         this.updateHelpers();
         if (!this.agent) this.makeAgent();
         else {
@@ -740,6 +742,53 @@ export class App {
         return this.goal?.pending() ?? false;
     }
 
+    /** Claude Code's or Codex's own goal, as it last reported it (src/agent/goal.ts NativeGoal). */
+    nativeGoal?: NativeGoal;
+    /** After the running turn has been stopped: the /goal command that stopped it (clear, pause), sent to the CLI then. */
+    private afterStop?: string;
+
+    /** /goal goes to the session's agent CLI (Claude Code, Codex) rather than the loop here. */
+    nativeGoals(): boolean {
+        return nativeGoals(this.model?.provider);
+    }
+
+    /**
+     * /goal on Claude Code or Codex: what needs no turn is answered here, a clear or pause mid-turn stops the
+     * turn and is sent after. False: it's sent to the CLI as it is (queued while a turn runs).
+     */
+    nativeGoalCommand(text: string, args: string): boolean {
+        const c = parseGoalCommand(args);
+        if (c.kind === "invalid") {
+            this.notice(c.message, "error");
+            return true;
+        }
+        if (this.model?.provider === "claude-code" && (c.kind === "pause" || c.kind === "resume")) {
+            this.notice(c.kind === "pause" ? "Claude Code's goals don't pause: press esc to stop the turn (it carries on with your next message), or /goal clear." : "Claude Code carries on with the goal when you send a message.");
+            return true;
+        }
+        if (!this.busy) return false;
+        if (c.kind === "status") {
+            this.notice(nativeGoalStatus(this.nativeGoal, true));
+            return true;
+        }
+        if (c.kind === "clear" || c.kind === "pause") {
+            this.afterStop = text;
+            this.interrupt();
+            return true;
+        }
+        return false;
+    }
+
+    private nativeGoalReported(g: NativeGoal | null) {
+        if (g?.status === "complete") {
+            this.session.recordNotice("info", `✓ Goal achieved: ${g.condition}`);
+            this.screen.print(["", `  ⎿  ${theme.success(`✓ Goal achieved: ${g.condition}`)}`]);
+            g = null;
+        }
+        this.nativeGoal = g ?? undefined;
+        this.renderLive();
+    }
+
     private goalChanged() {
         // A check or a wait has a spinner and a clock of its own while no turn runs.
         if (this.goal?.pending() && !this.busy) this.startTicker();
@@ -749,8 +798,13 @@ export class App {
 
     /** The line under the output while a goal is set. */
     private goalLine(cols: number): string | undefined {
-        const v = this.goal?.view();
+        const v = this.goal?.view() ?? (this.nativeGoal ? nativeGoalView(this.nativeGoal, this.busy) : undefined);
         if (!v) return undefined;
+        if (v.judge === "native") {
+            const turns = v.turns ? ` · ${v.turns} check${v.turns === 1 ? "" : "s"}` : "";
+            if (v.state === "paused") return truncate(`${theme.muted(`◎ /goal (${v.by})`)} ${theme.subtle(`· ${v.note ?? "paused"} · /goal clear removes it`)}`, cols - 1);
+            return truncate(`${theme.accent(`◎ /goal active (${v.by})`)} ${theme.muted(`· ${formatDuration(Date.now() - v.since)}${turns}`)}`, cols - 1);
+        }
         const clock = formatDuration(Date.now() - v.since);
         const turns = v.turns ? ` · ${v.turns} check${v.turns === 1 ? "" : "s"}` : "";
         if (v.state === "paused") return truncate(`${theme.muted("◎ /goal paused")} ${theme.subtle(`· send a message or /goal resume to continue · /goal clear removes it`)}`, cols - 1);
@@ -993,6 +1047,9 @@ export class App {
                 this.thinkingNow = false;
                 this.receiving.clear();
                 this.status = `${e.reason.slice(0, 80)} · retrying in ${Math.ceil(e.delayMs / 1000)}s (attempt ${e.attempt})`;
+                break;
+            case "goal":
+                this.nativeGoalReported(e.goal);
                 break;
             case "cli_commands":
                 this.cliCommands = { provider: e.provider, names: new Set(e.names) };
@@ -1909,6 +1966,10 @@ export class App {
         if (ac.signal.aborted) {
             if (goal === this.goal) void goal?.afterTurn("aborted", from, Boolean(opts.goal));
             this.returnQueued();
+            // The /goal clear or pause that stopped the turn: now the CLI gets it.
+            const after = this.afterStop;
+            this.afterStop = undefined;
+            if (after) return void (await this.submitText(after));
             return this.schedules.poke();
         }
         const next = this.nextQueued();

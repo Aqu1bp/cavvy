@@ -158,6 +158,8 @@ let prompts = 0;
 let answering: string | undefined;
 // A busy CLI folds these into the current turn, rather than starting concurrent turns.
 let steering: { uuid?: string; text: string }[] | undefined;
+/** FAKE_GOAL_HOLD=1: the goal's second turn waits for an interrupt. */
+let goalRelease: (() => void) | undefined;
 let steeringWake: (() => void) | undefined;
 /**
  * What the session has spent so far: like Claude Code's, each result's
@@ -441,6 +443,25 @@ async function turn(content: any[], uuid?: string) {
         out({ type: "system", subtype: "compact_boundary", session_id: sessionId });
         return result("success", { result: "" });
     }
+    // /goal is Claude Code's own too: it reports the goal as it goes (active_goal), and the loop runs inside the one query.
+    const goal = String(content.find((c) => c?.type === "text")?.text ?? "").match(/^\/goal(?:\s+([\s\S]*))?$/);
+    if (goal) {
+        const condition = (goal[1] ?? "").trim();
+        const setAt = Date.now();
+        const report = (value: unknown) => out({ type: "active_goal", value, uuid: `g-${Date.now()}`, session_id: sessionId });
+        if (!condition || condition === "clear") {
+            report(null);
+            return result("success", { result: condition ? "Goal cleared" : "No goal set" });
+        }
+        report({ condition, iterations: 0, set_at: setAt, tokens_at_start: 0 });
+        text("Working toward the goal.");
+        report({ condition, iterations: 1, set_at: setAt, tokens_at_start: 0, last_reason: "The tests haven't run yet." });
+        if (process.env.FAKE_GOAL_HOLD === "1") await new Promise<void>((r) => (goalRelease = r));
+        if (interrupted) return result("success", { result: "" });
+        text("Ran the tests: they pass.");
+        report(null);
+        return result("success", { result: "Goal achieved" });
+    }
     if (process.env.FAKE_CLAUDE_LIMIT_INFO) out({ type: "rate_limit_event", rate_limit_info: JSON.parse(process.env.FAKE_CLAUDE_LIMIT_INFO) });
     if (process.env.FAKE_LIMIT_ERROR === "1") {
         out({ type: "assistant", error: "rate_limit", message: { role: "assistant", content: [] } });
@@ -707,6 +728,7 @@ for await (const chunk of Bun.stdin.stream()) {
                 interrupted = true;
                 out({ type: "control_response", response: { subtype: "success", request_id: m.request_id } });
                 wake?.();
+                goalRelease?.();
             } else {
                 if (sub === "set_permission_mode") mode = m.request.mode;
                 out({ type: "control_response", response: { subtype: "success", request_id: m.request_id } });

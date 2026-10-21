@@ -2073,6 +2073,8 @@ export async function runCommand(app: App, text: string, draft?: Draft): Promise
         app.editor.restore([draft]);
         return true;
     }
+    // On Claude Code and Codex, /goal is theirs: it goes to them (src/ui/app.ts nativeGoalCommand).
+    if (cmd.name === "goal" && app.nativeGoals()) return app.nativeGoalCommand(text.trim(), args);
     // A new goal waits its turn in the queue like a prompt (with its images); the rest of /goal answers at once.
     if (app.busy && cmd.name === "goal" && parseGoalCommand(args).kind === "set") return false;
     if (app.busy && !cmd.whileBusy) {

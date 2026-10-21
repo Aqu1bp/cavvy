@@ -30,6 +30,7 @@ import { accountEnv, defaultAccount } from "../providers/accounts";
 import { accountPermissionConfig, accountPermissionProfile, watchAccountFolders } from "./account-permissions";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendQuestion, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "./types";
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
+import { parseGoalCommand, type GoalCommand, type NativeGoal } from "../agent/goal";
 
 /** A JSON-RPC peer over a JsonLinesProcess: our requests, its notifications and requests. */
 class Rpc {
@@ -430,6 +431,13 @@ class CodexTurn {
     private turnMode?: PermissionMode;
     /** The user switched to a stricter mode mid-turn: the turn was interrupted to go on under it. */
     private restartFor?: PermissionMode;
+    /** The thread's goal (thread/goal/*) as Codex last reported it; undefined until it has. */
+    private goal?: NativeGoal | null;
+    /** A turn Codex started on its own (the goal going on), not taken up yet. */
+    private autoTurn?: string;
+    private completedTurns = new Set<string>();
+    /** Wakes the wait for the goal's next turn (one started, the goal changed, Codex gone). */
+    private goalWake?: () => void;
 
     constructor(
         private def: ProviderDef,
@@ -466,13 +474,22 @@ class CodexTurn {
             void this.rpc.proc.kill();
         });
         let abortTimer: ReturnType<typeof setTimeout> | undefined;
+        /** Stopped by the user with the goal active: its pause, which goes in before Codex is stopped. */
+        let pausing: Promise<void> | undefined;
         const onAbort = () => {
             this.aborted = true;
+            // Stopped by the user: Codex mustn't go on with the goal by itself (as T3 Code stops it).
+            if (this.threadId && this.goal?.status === "active")
+                pausing = withTimeout(this.rpc.request("thread/goal/set", { threadId: this.threadId, status: "paused" }), 2000, "").then(
+                    (r) => r?.goal && this.setGoal(r.goal),
+                    () => {},
+                );
+            this.goalWake?.();
             if (this.threadId && this.turnId) {
                 this.interrupt();
                 // It answers an interrupt with turn/completed; if it doesn't, stop it.
                 abortTimer = setTimeout(() => void this.rpc.proc.kill(), stopTiming.interruptMs);
-            } else void this.rpc.proc.kill(); // still starting: nothing to interrupt
+            } else void (pausing ?? Promise.resolve()).then(() => this.rpc.proc.kill()); // still starting, or between the goal's turns: nothing to interrupt
         };
         t.signal.addEventListener("abort", onAbort, { once: true });
         // A message to steer with goes into the running turn as it's sent (turn/steer), not at its end.
@@ -541,11 +558,27 @@ class CodexTurn {
                 if (!this.threadId) throw new ProviderError("Codex didn't start a thread");
             }
             this.host.sessionId(this.threadId!);
-            if (opts.compact) {
+            // /goal goes to Codex's own thread goal: a set runs the goal's first turn here, and a resume makes it
+            // active again, for Codex to go on with in a turn of its own.
+            const goalCommand = opts.compact ? undefined : codexGoalCommand(t.prompt);
+            const goalReply = goalCommand ? await this.goalCommand(goalCommand) : undefined;
+            const goalTurn = goalReply && "text" in goalReply ? goalReply : undefined;
+            if (!goalCommand) void this.readGoal();
+            /** A turn Codex started itself for the goal: waited on instead of starting one. */
+            let adopt: string | undefined;
+            if (goalReply && "resume" in goalReply && !this.aborted) {
+                this.setGoal((await this.rpc.request("thread/goal/set", { threadId: this.threadId, status: "active" }))?.goal);
+                adopt = await this.nextGoalTurn();
+            }
+            if (goalCommand && !goalTurn && !adopt) {
+                // Answered: no turn.
+            } else if (opts.compact) {
                 await this.waitFor(() => this.rpc.request("thread/compact/start", { threadId: this.threadId }));
             } else {
-                let text = t.prompt;
-                let images = t.images;
+                let text = goalTurn ? goalTurn.text : t.prompt;
+                let images = goalTurn ? [] : t.images;
+                /** Make the goal active once its first turn has started (so Codex doesn't start one of its own first). */
+                let activate = Boolean(goalTurn);
                 while (true) {
                     // The policy for the mode as it is now: it may have changed since the last turn.
                     const mode = this.host.mode();
@@ -560,11 +593,22 @@ class CodexTurn {
                     // Queued and restarted turns explicitly request this model again, even after a reroute.
                     if (model) this.threadModels.set(this.threadId!, model);
                     await this.waitFor(async () => {
+                        if (adopt) {
+                            this.turnId = adopt;
+                            adopt = undefined;
+                            // It may have finished already.
+                            if (this.completedTurns.has(this.turnId)) this.turnDone?.();
+                            return;
+                        }
                         const r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, ...(accountPermissions ? { permissions: accountPermissionProfile(mode, t.readOnly) } : { sandboxPolicy: policy.sandboxPolicy }), approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
                         this.turnId = r?.turn?.id;
                         if (this.turnId) this.turnsSeen.add(this.turnId);
                         // Sent while the turn was starting: it can take them now.
                         if (this.turnId && this.steerWaiting) this.steerQueued();
+                        if (activate && this.turnId && !this.aborted) {
+                            activate = false;
+                            this.setGoal((await this.rpc.request("thread/goal/set", { threadId: this.threadId, status: "active" }))?.goal);
+                        }
                     });
                     if (serviceTier !== undefined) tierNow = serviceTier ?? "default";
                     this.turnId = undefined;
@@ -584,7 +628,13 @@ class CodexTurn {
                     const followUp = this.followUp && this.followUps++ < 5 ? this.followUp : undefined;
                     this.followUp = undefined;
                     const next = followUp ? [followUp] : this.unsteered.length ? this.unsteered.splice(0) : await this.host.drainQueued(() => this.progress());
-                    if (!next.length) break;
+                    if (!next.length) {
+                        // The goal still active: Codex goes on with it in a turn of its own, which this run waits for.
+                        if (this.goal?.status !== "active") break;
+                        adopt = await this.nextGoalTurn();
+                        if (!adopt) break;
+                        continue;
+                    }
                     text = next.join("\n\n");
                 }
             }
@@ -593,6 +643,9 @@ class CodexTurn {
         } catch (e) {
             if (!this.aborted) this.failure = redact((e as Error).message);
         } finally {
+            // Ended with the goal still active (an error, Codex gone): it waits for the user, not for Codex.
+            await pausing;
+            if (this.threadId && this.goal?.status === "active") await withTimeout(this.rpc.request("thread/goal/set", { threadId: this.threadId, status: "paused" }), 2000, "").catch(() => {});
             stopAccountWatch();
             stopSteering?.();
             t.signal.removeEventListener("abort", onAbort);
@@ -611,6 +664,74 @@ class CodexTurn {
         if (this.aborted) return { reason: "aborted", text, answer, actions: this.actions };
         if (this.failure) return { reason: "error", text, answer, actions: this.actions, error: this.limitHit ? `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached. ${resetSentence(this.limits?.resetsAt, "Codex")} Choose another account with /account or the plan meter, then send again.` : this.failure, ...(this.limitHit ? { limit: { resetsAt: this.limits?.resetsAt } } : {}) };
         return { reason: "done", text, answer, actions: this.actions };
+    }
+
+    private setGoal(raw: unknown) {
+        this.goal = codexGoal(raw);
+        this.host.emit({ type: "goal", goal: this.goal });
+        this.goalWake?.();
+    }
+
+    /** What the thread's goal is now, for the UI (a Codex without goals answers with an error: nothing to show). */
+    private async readGoal() {
+        try {
+            const r = await withTimeout(this.rpc.request("thread/goal/get", { threadId: this.threadId }), 5000, "");
+            if (this.goal === undefined) this.setGoal(r?.goal ?? null);
+        } catch {
+            // An older Codex: no goals.
+        }
+    }
+
+    /** /goal on Codex: answered here (a notice), or the text of the goal's first turn. */
+    private async goalCommand(c: GoalCommand): Promise<{ text: string } | { resume: true } | undefined> {
+        const say = (message: string, level: "info" | "warn" | "error" = "info") => void this.host.emit({ type: "notice", level, message });
+        if (c.kind === "invalid") return void say(c.message, "error");
+        const threadId = this.threadId;
+        let current: NativeGoal | null;
+        try {
+            current = codexGoal((await this.rpc.request("thread/goal/get", { threadId }))?.goal);
+        } catch (e) {
+            return void say(`This Codex doesn't keep goals (${redact((e as Error).message).replace(/^Codex:\s*/, "")}). Update Codex to use /goal with it.`, "error");
+        }
+        this.setGoal(current);
+        if (c.kind === "status") return void say(current ? describeCodexGoal(current) : "No goal set.");
+        if (c.kind === "clear") {
+            const r = await this.rpc.request("thread/goal/clear", { threadId });
+            this.setGoal(null);
+            return void say(r?.cleared === false || !current ? "No goal set" : `Goal cleared: ${current.condition}`);
+        }
+        if (!current && c.kind !== "set") return void say("No goal set. /goal <condition> sets one.");
+        if (c.kind === "pause") {
+            this.setGoal((await this.rpc.request("thread/goal/set", { threadId, status: "paused" }))?.goal);
+            return void say("Goal paused. /goal resume continues it.");
+        }
+        if (c.kind === "resume") return { resume: true };
+        if (current) await this.rpc.request("thread/goal/clear", { threadId });
+        // Paused until its first turn has started, so Codex doesn't start one of its own first.
+        this.setGoal((await this.rpc.request("thread/goal/set", { threadId, objective: c.condition, status: "paused" }))?.goal);
+        return { text: c.condition };
+    }
+
+    /** The turn Codex starts by itself while the goal is active; undefined once the goal isn't (or Codex is gone, or it was stopped). */
+    private async nextGoalTurn(): Promise<string | undefined> {
+        const deadline = Date.now() + GOAL_TURN_WAIT_MS;
+        while (!this.aborted && this.goal?.status === "active") {
+            const id = this.autoTurn;
+            if (id && !this.completedTurns.has(id)) {
+                this.autoTurn = undefined;
+                return id;
+            }
+            this.autoTurn = undefined;
+            const left = deadline - Date.now();
+            if (left <= 0) {
+                this.host.emit({ type: "notice", level: "warn", message: "Codex didn't go on with the goal by itself, so it's paused. /goal resume continues it." });
+                return undefined;
+            }
+            const gone = await Promise.race([new Promise<boolean>((r) => (this.goalWake = () => r(false))), this.rpc.done.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), left))]);
+            this.goalWake = undefined;
+            if (gone) return undefined;
+        }
+        return undefined;
     }
 
     private async readLimits() {
@@ -691,6 +812,17 @@ class CodexTurn {
         switch (method) {
             case "turn/started":
                 this.host.emit({ type: "request_start" });
+                // One Codex started itself, for the goal.
+                if (typeof p.turn?.id === "string" && p.turn.id !== this.turnId && !this.turnId) {
+                    this.autoTurn = p.turn.id;
+                    this.goalWake?.();
+                }
+                break;
+            case "thread/goal/updated":
+                this.setGoal(p.goal);
+                break;
+            case "thread/goal/cleared":
+                this.setGoal(null);
                 break;
             case "item/agentMessage/delta":
                 if (p.delta) {
@@ -718,6 +850,7 @@ class CodexTurn {
                 this.onItemCompleted(p.item ?? {}, p.turnId);
                 break;
             case "turn/completed":
+                if (typeof p.turn?.id === "string") this.completedTurns.add(p.turn.id);
                 if (p.turn?.id && this.turnId && p.turn.id !== this.turnId) break;
                 this.status = p.turn?.status;
                 if (p.turn?.status === "failed") this.fail(p.turn?.error, "Codex reported a failed turn");
@@ -1731,4 +1864,35 @@ export function applyHunks(text: string, diff: string): string | undefined {
     }
     out.push(...src.slice(pos));
     return out.join("\n");
+}
+
+/** How long a run waits for Codex to start the goal's next turn itself before it gives up on it. */
+const GOAL_TURN_WAIT_MS = 60_000;
+
+/** `/goal …` as the prompt, for Codex's own goals; undefined for anything else. */
+export function codexGoalCommand(prompt: string): GoalCommand | undefined {
+    const m = prompt.trim().match(/^\/goal(?:\s+([\s\S]*))?$/i);
+    return m ? parseGoalCommand(m[1] ?? "") : undefined;
+}
+
+const CODEX_GOAL_STATUS: Record<string, NativeGoal["status"]> = { active: "active", paused: "paused", blocked: "blocked", usageLimited: "limited", budgetLimited: "limited", complete: "complete" };
+
+/** A ThreadGoal from Codex's app-server (thread/goal/get, set, updated). */
+export function codexGoal(raw: unknown): NativeGoal | null {
+    if (!raw || typeof raw !== "object") return null;
+    const g = raw as { objective?: unknown; status?: unknown; createdAt?: unknown; tokensUsed?: unknown };
+    const condition = typeof g.objective === "string" ? g.objective.trim() : "";
+    if (!condition) return null;
+    return {
+        provider: "codex",
+        condition,
+        status: CODEX_GOAL_STATUS[String(g.status)] ?? "paused",
+        since: typeof g.createdAt === "number" ? g.createdAt * 1000 : Date.now(),
+        ...(typeof g.tokensUsed === "number" ? { tokens: Math.max(0, g.tokensUsed) } : {}),
+    };
+}
+
+function describeCodexGoal(g: NativeGoal): string {
+    const status = g.status === "limited" ? "stopped at a limit" : g.status === "complete" ? "achieved" : g.status;
+    return `◎ Goal (Codex, ${status}): ${g.condition}`;
 }

@@ -502,6 +502,15 @@
     letter-spacing: 0.04em;
 }
 
+.goal-by {
+    flex: none;
+    font-size: 0.786rem;
+    color: var(--fg-muted);
+    padding: 0 6px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+}
+
 .goal-text {
     flex: 1;
     font-size: 0.929rem;

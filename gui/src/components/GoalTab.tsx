@@ -13,7 +13,8 @@ export function goalStatus(g: GoalState, at: number): string {
     const parts: string[] = [];
     if (g.state === "checking") parts.push("Checking the goal…");
     else if (g.state === "waiting") parts.push(g.retryAt ? `Retrying in ${turnDuration(Math.max(0, g.retryAt - at))}` : "Waiting for background tasks");
-    else if (g.state === "paused") parts.push("Paused");
+    // A CLI's own goal between turns waits for the user's next message (Claude Code has no pause of its own).
+    else if (g.state === "paused") parts.push(g.judge === "native" && !g.canPause ? "Waiting for you" : "Paused");
     else parts.push("Working");
     // A paused goal's clock isn't running.
     if (g.state !== "paused") parts.push(turnDuration(Math.max(0, at - g.since)));
@@ -37,7 +38,10 @@ export function GoalTab(p: { sessionId: string; goal: GoalState }) {
         }
     };
     const g = () => p.goal;
-    const details = () => [g().note, g().lastReason ? `Last check: ${g().lastReason}` : undefined, g().judge === "self" ? "Checked by the working model's own report: no other model can answer one-off requests. Set a small model on another provider in Settings for an independent check." : undefined].filter(Boolean) as string[];
+    const native = () => g().judge === "native";
+    const details = () => [g().note, g().lastReason ? `Last check: ${g().lastReason}` : undefined, g().judge === "self" ? "Checked by the working model's own report: no other model can answer one-off requests. Set a small model on another provider in Settings for an independent check." : native() ? `${g().by} keeps and checks this goal itself.` : undefined].filter(Boolean) as string[];
+    // Claude Code's goals don't pause (Stop interrupts the turn, and it carries on with the next message).
+    const pausable = () => !native() || g().canPause;
     return (
         <div class={`tab goal-tab st-${g().state}`} role="status" aria-label="Goal">
             <div class="goal-row">
@@ -45,6 +49,9 @@ export function GoalTab(p: { sessionId: string; goal: GoalState }) {
                     <LoaderCircle size={14} class="goal-icon spinner" aria-hidden="true" />
                 </Show>
                 <span class="goal-label">Goal</span>
+                <Show when={native()}>
+                    <span class="goal-by">{g().by}</span>
+                </Show>
                 <span class="goal-text truncate" title={g().condition}>
                     {g().condition}
                 </span>
@@ -54,17 +61,19 @@ export function GoalTab(p: { sessionId: string; goal: GoalState }) {
                         {open() ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                     </button>
                 </Show>
-                <Show
-                    when={g().state === "paused"}
-                    fallback={
-                        <button class="hb sm" title="Pause the goal (it stops after this step)" aria-label="Pause goal" disabled={sending()} onClick={() => void run("pause")}>
-                            <Pause size={13} />
+                <Show when={pausable()}>
+                    <Show
+                        when={g().state === "paused"}
+                        fallback={
+                            <button class="hb sm" title="Pause the goal (it stops after this step)" aria-label="Pause goal" disabled={sending()} onClick={() => void run("pause")}>
+                                <Pause size={13} />
+                            </button>
+                        }
+                    >
+                        <button class="hb sm" title="Resume the goal" aria-label="Resume goal" disabled={sending()} onClick={() => void run("resume")}>
+                            <Play size={13} />
                         </button>
-                    }
-                >
-                    <button class="hb sm" title="Resume the goal" aria-label="Resume goal" disabled={sending()} onClick={() => void run("resume")}>
-                        <Play size={13} />
-                    </button>
+                    </Show>
                 </Show>
                 <button class="hb sm" title="Clear the goal" aria-label="Clear goal" disabled={sending()} onClick={() => void run("clear")}>
                     <X size={14} />

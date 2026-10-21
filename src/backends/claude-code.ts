@@ -44,6 +44,7 @@ import { CLAUDE_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle
 import { claudeMcpPolicy } from "./claude-mcp-policy";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn } from "./types";
 import type { TurnEndReason } from "../agent/agent";
+import type { NativeGoal } from "../agent/goal";
 
 /** How long each turn waits for approved MCP servers and delegation before sending the prompt (changeable for tests). */
 export const attachTiming = { timeoutMs: 30_000 };
@@ -805,6 +806,9 @@ class ClaudeTurn {
             case "rate_limit_event":
                 this.onRateLimit(m.rate_limit_info ?? {});
                 break;
+            case "active_goal":
+                this.host.emit({ type: "goal", goal: claudeGoal(m.value) });
+                break;
         }
     }
 
@@ -1402,4 +1406,20 @@ function resultDisplay(p: PendingTool, r: unknown, cwd: string): ToolDisplay | u
         return { summary: `Found ${n} ${what}${n === 1 ? "" : what === "match" ? "es" : "s"}` };
     }
     return undefined;
+}
+
+/** Claude Code's `active_goal` value (its /goal, set or with a new verdict; null once it's cleared or met). */
+export function claudeGoal(v: unknown): NativeGoal | null {
+    if (!v || typeof v !== "object") return null;
+    const g = v as { condition?: unknown; iterations?: unknown; set_at?: unknown; last_reason?: unknown };
+    if (typeof g.condition !== "string" || !g.condition.trim()) return null;
+    const at = typeof g.set_at === "number" && g.set_at > 0 ? (g.set_at < 1e12 ? g.set_at * 1000 : g.set_at) : Date.now();
+    return {
+        provider: "claude-code",
+        condition: g.condition,
+        status: "active",
+        since: at,
+        ...(typeof g.iterations === "number" ? { turns: g.iterations } : {}),
+        ...(typeof g.last_reason === "string" && g.last_reason.trim() ? { lastReason: redact(g.last_reason) } : {}),
+    };
 }

@@ -477,6 +477,58 @@ export function canAnswerOneOff(smallModel: string | undefined, sessionProvider:
     return Boolean(provider) && !(ACCOUNT_PROVIDERS as readonly string[]).includes(provider!);
 }
 
+/** Claude Code and Codex keep goals of their own: there /goal goes to them, not to the loop here. */
+export function nativeGoals(provider: string | undefined): boolean {
+    return Boolean(provider) && (ACCOUNT_PROVIDERS as readonly string[]).includes(provider!);
+}
+
+/** A goal an agent CLI keeps itself (Claude Code's /goal, Codex's thread goal), as it reports it. */
+export interface NativeGoal {
+    provider: "claude-code" | "codex";
+    condition: string;
+    /** "limited": a usage or token budget stopped it; "complete": met. */
+    status: "active" | "paused" | "blocked" | "limited" | "complete";
+    /** When it was set, ms. */
+    since: number;
+    /** Turns it has checked (Claude Code), when known. */
+    turns?: number;
+    tokens?: number;
+    lastReason?: string;
+}
+
+const NATIVE_NAMES: Record<NativeGoal["provider"], string> = { "claude-code": "Claude Code", codex: "Codex" };
+
+/** What the goal tab and status line show for one. `running`: a turn is going (Claude Code reports no pause of its own). */
+export function nativeGoalView(g: NativeGoal, running: boolean): GoalState {
+    const by = NATIVE_NAMES[g.provider];
+    const waiting = g.status === "active" && !running;
+    const note =
+        g.status === "paused" ? `Paused in ${by}. /goal resume continues it.`
+        : g.status === "blocked" ? `${by} stopped working on it: it's blocked. Send a message to go on.`
+        : g.status === "limited" ? `${by} stopped at a usage or token limit.`
+        : waiting ? `${by} goes on with it after your next message.`
+        : undefined;
+    return {
+        condition: g.condition,
+        state: g.status === "active" && running ? "active" : "paused",
+        since: g.since,
+        turns: g.turns ?? 0,
+        tokens: g.tokens ?? 0,
+        judge: "native",
+        by,
+        canPause: g.provider === "codex",
+        ...(g.lastReason ? { lastReason: g.lastReason } : {}),
+        ...(note ? { note } : {}),
+    };
+}
+
+/** "Goal (Codex, paused): …" and its details, for /goal while a turn runs (the CLI answers it otherwise). */
+export function nativeGoalStatus(g: NativeGoal | undefined, running: boolean): string {
+    if (!g) return "No goal set.";
+    const v = nativeGoalView(g, running);
+    return [`◎ Goal (${v.by}${v.state === "paused" ? ", paused" : ""}): ${g.condition}`, ...(v.note ? [v.note] : []), ...(g.lastReason ? [`Last check: ${g.lastReason}`] : [])].join("\n");
+}
+
 function clip(s: string, n: number): string {
     const t = s.trim();
     return t.length > n ? `${t.slice(0, n - 1)}…` : t;
