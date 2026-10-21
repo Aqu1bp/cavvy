@@ -6,6 +6,7 @@ import { all, component, node, renderer, text, type Node } from "../helpers/gui-
 import { boundary } from "../helpers/render-boundary";
 import * as format from "../../gui/src/lib/format";
 import { MarkdownRenderer } from "../../gui/src/lib/markdown";
+import { createReveal } from "../../gui/src/lib/reveal";
 import { applyOp } from "../../src/server/timeline";
 
 const source = (file: string) => readFileSync(new URL(`../../gui/src/components/${file}.tsx`, import.meta.url), "utf8").replace(/^import [\s\S]*?;\n/gm, "");
@@ -181,14 +182,18 @@ test("more work after prose folds the old group tail without remounting it", () 
     } finally { h.dispose(); }
 });
 
-test("streaming Markdown retains code host, defers highlighting until closed and preserves finished segments", async () => {
+test("streaming Markdown retains code host, highlights finished lines at a bounded rate and preserves finished segments", async () => {
     let mounts = 0, highlights = 0;
+    const highlighted: string[] = [];
     const Code = component(source("blocks/CodeBlock"), "CodeBlock", {
         RenderBoundary: boundary(), CopyButton: () => node("copy"),
-        highlight: async () => { highlights++; return "highlighted"; },
+        highlight: async (code: string) => { highlights++; highlighted.push(code); return "highlighted"; },
     });
+    // The DOM side (lib/stream-dom.ts) is a browser's: here a block just records what it was given.
+    const painted: { html: string; live: boolean; caret: boolean }[] = [];
     const Markdown = component(source("blocks/Markdown"), "Markdown", {
-        RenderBoundary: boundary(), MarkdownRenderer,
+        RenderBoundary: boundary(), MarkdownRenderer, createReveal,
+        paint: (el: Node, html: string, live: boolean, caret: boolean) => { el.props.innerHTML = html; painted.push({ html, live, caret }); },
         CodeBlock: (p: any) => { mounts++; return Code(p); },
     });
     const [value, setValue] = solid.createSignal("Finished paragraph.\n\n```ts\nconst a = 1;\n");
@@ -204,6 +209,16 @@ test("streaming Markdown retains code host, defers highlighting until closed and
         expect(all(root).find((n) => has(n, "code"))).toBe(code);
         expect(all(root).find((n) => has(n, "md-block"))).toBe(paragraph);
         expect(text(root)).toContain("const v99 = 99;");
+        // A finished paragraph above the code was painted once, live, without the writing mark.
+        expect(painted).toEqual([{ html: "<p>Finished paragraph.</p>\n", live: true, caret: false }]);
+        // While it's written, the finished lines are highlighted once the interval has passed, in one go (the last
+        // line may still be being typed: marked drops an open block's final newline).
+        await Bun.sleep(300);
+        expect(highlights).toBe(1);
+        expect(highlighted[0]!.endsWith("const v98 = 98;")).toBe(true);
+        const lit = all(root).find((n) => has(n, "code-lit"));
+        expect(lit?.props.innerHTML).toBe("highlighted\n");
+        highlights = 0;
         setValue(value() + "```\n\nAfter code.");
         setStreaming(false);
         await Promise.resolve();

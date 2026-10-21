@@ -234,29 +234,47 @@
     margin-left: -1.2em;
 }
 
-/* While the reply streams, a caret at the end of its last line. */
-.md.streaming > .md-block:last-child > :is(p, h1, h2, h3, h4):last-child::after,
-.md.streaming > .md-block:last-child > :is(ul, ol):last-child > li:last-child::after {
-    content: "";
+/* While the reply streams: what just arrived fades in (lib/stream-dom.ts marks
+   it), and a soft dot sits where it's being written, after the last text or the
+   code being typed. */
+.md.streaming :is(.md-fresh, .code.fresh) {
+    animation: md-fresh 280ms var(--ease-out) both;
+}
+
+/* Never fully clear at first, so the dot doesn't sit past a blank. */
+@keyframes md-fresh {
+    from {
+        opacity: 0.2;
+    }
+}
+
+.md-caret,
+.md .code.writing .code-body code::after {
     display: inline-block;
-    width: 7px;
-    height: 15px;
-    margin-left: 2px;
-    vertical-align: -2px;
-    border-radius: 2px;
+    width: 0.5em;
+    height: 0.5em;
+    margin-left: 0.3em;
+    border-radius: 50%;
     background: var(--accent);
-    animation: md-caret 1s steps(2) infinite;
+    vertical-align: 0.05em;
+    animation: md-caret 1.1s var(--ease-in-out) infinite alternate;
+}
+
+.md .code.writing .code-body code::after {
+    content: "";
 }
 
 @keyframes md-caret {
-    50% {
-        opacity: 0;
+    to {
+        opacity: 0.35;
+        transform: scale(0.75);
     }
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .md.streaming > .md-block:last-child > :is(p, h1, h2, h3, h4):last-child::after,
-    .md.streaming > .md-block:last-child > :is(ul, ol):last-child > li:last-child::after {
+    .md.streaming :is(.md-fresh, .code.fresh),
+    .md-caret,
+    .md .code.writing .code-body code::after {
         animation: none;
     }
 }

@@ -9,8 +9,10 @@ import { anchoredTop, atBottom, restoredShown, positionCache, TURN_PAGE } from "
 const frames = new Map<number, () => void>();
 let sequence = 0;
 const observers = new Map<() => void, Set<Node>>();
-const raf = (fn: () => void) => { frames.set(++sequence, fn); return sequence; };
-const flush = () => { const pending = [...frames.values()]; frames.clear(); pending.forEach((fn) => fn()); };
+const raf = (fn: (now: number) => void) => { frames.set(++sequence, fn); return sequence; };
+// Each flush is the next frame, 16ms on (performance.now()'s clock, as in a browser).
+let clock = performance.now();
+const flush = () => { const pending = [...frames.values()]; frames.clear(); clock = Math.max(clock + 16, performance.now()); pending.forEach((fn) => fn(clock)); };
 const resize = (target?: Node) => observers.forEach((targets, fn) => { if (!target || targets.has(target)) fn(); });
 const cache = positionCache();
 let reduced = false;
@@ -203,6 +205,32 @@ try {
     setATurns(turns(132)); flush(); scroll(0);
     assert.ok(button("jump"), "a send before initial restoration still enables scroll tracking");
     dispose();
+    // While a turn runs, growth at the end glides into view over a few frames and stays followed.
+    const live = { id: "live", view: { state: {}, turns: turns(45).map((t, i) => ({ ...t, status: i === 44 ? "running" : "done" })) } };
+    dispose = mount(live);
+    const bottom = () => height(scroller()) - viewportHeight;
+    assert.equal(top, bottom(), "a running turn starts followed");
+    turnHeights.set("turn-44", 420); resize();
+    assert.ok(top < bottom(), "growth doesn't jump: it glides");
+    flush();
+    assert.ok(top > bottom() - 220 && top < bottom(), "the first frame moves part of the way");
+    scroller().props.onScroll(); // The glide's own scroll event, still more than 64px from the end.
+    assert.equal(button("jump"), undefined, "a glide on its way down stays stuck to the end");
+    let glideFrames = 1;
+    while (frames.size && glideFrames < 60) { flush(); glideFrames++; }
+    assert.equal(top, bottom(), "the glide reaches the end");
+    assert.ok(glideFrames > 3, "over several frames");
+    turnHeights.set("turn-44", 620); resize(); flush();
+    scroller().props.onWheel();
+    assert.equal(frames.size, 0, "the reader scrolling stops a glide");
+    scroller().props.onScroll();
+    assert.ok(button("jump"), "and where they leave it decides whether it follows");
+    scroll(bottom()); assert.equal(button("jump"), undefined);
+    reduced = true; turnHeights.set("turn-44", 740); resize();
+    assert.equal(top, bottom(), "reduced motion follows at once");
+    reduced = false; live.view.turns[44]!.status = "done"; turnHeights.set("turn-44", 780); resize();
+    assert.equal(top, bottom(), "the end of a turn lands at once");
+    turnHeights.clear(); dispose();
     const running = { id: "background", view: { state: {}, turns: turns(45).map((t) => ({ ...t, status: "running" })) } };
     dispose = mount(running); scroll(0); dispose();
     running.view.turns.forEach((t) => { t.status = "done"; });

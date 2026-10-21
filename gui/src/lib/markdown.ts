@@ -13,6 +13,10 @@
 //   finished block's HTML is cached by its source, so only the block still
 //   being written is rendered again on each update.
 //
+// Streaming: the end of a reply still being written is shown as it will
+//   read once it's finished (see `settle`), so markers never flash as raw
+//   text before snapping into place.
+//
 // File links: paths in the text (relative to the session's folder or absolute,
 //   with an optional :line or :line:col), in inline code or as a link's target,
 //   become links to open in the editor, but only once the server has said the
@@ -213,7 +217,7 @@ export type Segment = { kind: "html"; key: string; html: string; answers?: [stri
 /** Renders one reply; keeps finished blocks between calls. */
 export class MarkdownRenderer {
     private html = new Map<string, Segment>();
-    private lexed?: { text: string; tokens: Token[] & { links?: unknown }; tailIndex: number; tailStart: number };
+    private lexed?: { text: string; streaming: boolean; tokens: Token[] & { links?: unknown }; tailIndex: number; tailStart: number };
     private references = "";
     /** Paths in the last render that `lookup` didn't know. */
     pending = new Set<string>();
@@ -240,7 +244,7 @@ export class MarkdownRenderer {
         try {
             // Rendered again with the same text when answers arrive: lex it once.
             const previous = this.lexed;
-            if (previous?.text === text) tokens = previous.tokens;
+            if (previous?.text === text && previous.streaming === streaming) tokens = previous.tokens;
             else {
                 // Freeze only across a blank line after a closed, stable block.
                 // Adjacent blocks can change classification as markers arrive
@@ -248,13 +252,18 @@ export class MarkdownRenderer {
                 // Reference definitions can change earlier inline tokens, so any
                 // '[' takes the conservative full-lexer path. Normalized source
                 // (e.g. CRLF) and replacements also use the full lexer.
-                const append = previous && previous.tailStart >= 0 && text.startsWith(previous.text) && !text.includes("[");
+                // While streaming, only the tail is settled: frozen blocks are
+                // closed, and settle() only changes the end of what it's given.
+                const append = previous && previous.streaming === streaming && previous.tailStart >= 0 && text.startsWith(previous.text) && !text.includes("[");
                 relexedFrom = append ? previous.tailIndex : 0;
-                const tail = md.lexer(append ? text.slice(previous.tailStart) : text);
+                const from = append ? previous.tailStart : 0;
+                const source = streaming ? settle(text.slice(from)) : text.slice(from);
+                const tail = md.lexer(source);
                 tokens = append ? Object.assign([...previous.tokens.slice(0, previous.tailIndex), ...tail], { links: tail.links }) : tail;
+                const view = text.slice(0, from) + source;
                 const raw = tokens.map((t) => t.raw).join("");
                 let tailIndex = 0;
-                let tailStart = raw === text ? 0 : -1;
+                let tailStart = raw === view ? 0 : -1;
                 let offset = 0;
                 let stable = false;
                 // Leave at least the final non-space block mutable, even if it
@@ -271,7 +280,7 @@ export class MarkdownRenderer {
                         tailStart = offset;
                     }
                 }
-                this.lexed = { text, tokens, tailIndex, tailStart };
+                this.lexed = { text, streaming, tokens, tailIndex, tailStart };
             }
             // A late reference definition must also invalidate cached HTML.
             const references = JSON.stringify(tokens.links ?? {});
@@ -332,6 +341,125 @@ export class MarkdownRenderer {
         this.html = next;
         return out;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Streaming
+
+/** A fence line: backticks can't appear in a backtick fence's info string. */
+const FENCE = /^\s*(?:(`{3,})[^`]*|(~{3,}).*)$/;
+/** A line that's only a marker so far: a list item, heading, quote or rule that hasn't said what it is yet. */
+const BARE = /^\s*(?:[-*+]|\d{1,9}[.)]?|#{1,6}|>|[-=_*][-=_* ]*|`{1,2}|~{1,2})\s*$/;
+const TABLE_ROW = /^\s*\|/;
+const DELIMITER = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/;
+/** What starts a line before its text: quote markers, a list marker, a task box. */
+const LINE_PREFIX = /^\s*(?:>\s?)*(?:(?:[-*+]|\d{1,9}[.)])\s+)?(?:\[[ xX]\]\s+)?(?:#{1,6}\s+)?/;
+
+/**
+ * The end of a streaming reply as it will read once finished, so nothing
+ * flashes as raw markdown and then snaps into place:
+ *
+ * - a line that's only a marker so far ("-", "1", "##", "---") waits for its text;
+ * - a table waits for its header and delimiter row, then shows a row at a time;
+ * - a code fence's opening line waits for its newline (the language is whole),
+ *   and a closing fence for its last backtick;
+ * - emphasis, strikethrough and inline code still open on the last line are
+ *   closed (a marker with nothing after it yet waits), and a link still being
+ *   written shows as its text.
+ *
+ * Only the end changes: the result is a prefix of `text` up to its last line,
+ * so finished blocks before it lex the same.
+ */
+export function settle(text: string): string {
+    const lines = text.split("\n");
+    const starts: number[] = [];
+    let at = 0;
+    let fence: { char: string; len: number; line: number } | undefined;
+    lines.forEach((line, i) => {
+        starts.push(at);
+        at += line.length + 1;
+        const m = FENCE.exec(line);
+        if (!m) return;
+        const marker = m[1] ?? m[2]!;
+        if (!fence) fence = { char: marker[0]!, len: marker.length, line: i };
+        else if (marker[0] === fence.char && marker.length >= fence.len && line.trim() === marker) fence = undefined;
+    });
+    const last = lines.length - 1;
+    const upTo = (line: number) => text.slice(0, starts[line]);
+    if (fence) {
+        // The opening line until its language is whole; a closing fence until its last backtick.
+        if (fence.line === last) return upTo(last);
+        const l = lines[last]!.trim();
+        if (l && l.length < fence.len && [...l].every((c) => c === fence!.char)) return upTo(last);
+        return text;
+    }
+    let end = lines.length;
+    // A line that's only a marker (the last, or the one before a newline that just arrived).
+    for (let k = 0; k < 2 && end > 0; k++) {
+        const i = lines[end - 1] === "" && end > 1 && k === 0 ? end - 2 : end - 1;
+        if (!BARE.test(lines[i]!) || !lines[i]!.trim()) break;
+        end = i;
+    }
+    // A table: whole once the delimiter row is in, then complete rows only.
+    const runEnd = end > 0 && lines[end - 1] === "" ? end - 1 : end;
+    let t = runEnd;
+    while (t > 0 && TABLE_ROW.test(lines[t - 1]!)) t--;
+    if (t < runEnd) {
+        const finished = runEnd < lines.length; // the run's last line has its newline
+        const delimiter = runEnd - t >= 2 && DELIMITER.test(lines[t + 1]!) && lines[t + 1]!.includes("|") && (t + 2 < runEnd || finished);
+        if (!delimiter) end = t;
+        else if (!finished) end = runEnd - 1;
+    }
+    if (end < lines.length) return upTo(end);
+    const start = starts[last]!;
+    return text.slice(0, start) + closeInline(lines[last]!);
+}
+
+/** One line still being written, with its open inline markers closed. */
+function closeInline(line: string): string {
+    const prefix = LINE_PREFIX.exec(line)?.[0] ?? "";
+    // Markers at the very end may be an opener with nothing after it yet, or half a closer.
+    let body = line.slice(prefix.length).replace(/[*_~`]+$/, "");
+    // A link still being written: its text for now.
+    body = body.replace(/\[([^\]\n]*)\]\([^)\s]*$/, "$1").replace(/(^|[\s(])\[([^\]\n]*)\]?$/, "$1$2");
+    const open: string[] = [];
+    for (let i = 0; i < body.length; ) {
+        const c = body[i]!;
+        if (c === "\\") {
+            i += 2;
+            continue;
+        }
+        if (c === "`") {
+            const run = /^`+/.exec(body.slice(i))![0];
+            const close = body.indexOf(run, i + run.length);
+            if (close < 0) {
+                // Everything after an open code span is code.
+                open.push(run);
+                break;
+            }
+            i = close + run.length;
+            continue;
+        }
+        if (c !== "*" && c !== "_" && c !== "~") {
+            i++;
+            continue;
+        }
+        let j = i;
+        while (body[j] === c) j++;
+        const run = body.slice(i, j);
+        const before = body[i - 1] ?? " ";
+        const after = body[j] ?? " ";
+        i = j;
+        if (c === "~" && run.length !== 2) continue;
+        // snake_case isn't emphasis.
+        if (c === "_" && /[\p{L}\p{N}]/u.test(before) && /[\p{L}\p{N}]/u.test(after)) continue;
+        if (open.at(-1) === run && !/\s/.test(before)) open.pop();
+        else if (!/\s/.test(after)) open.push(run);
+    }
+    if (!open.length) return prefix + body;
+    // A closer must touch the text it closes.
+    const code = open.at(-1)!.startsWith("`");
+    return prefix + (code ? body : body.trimEnd()) + open.reverse().join("");
 }
 
 /** Markdown to HTML in one go (plans, summaries). */

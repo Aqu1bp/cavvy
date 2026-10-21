@@ -12,6 +12,9 @@ import { CardFoldsProvider } from "./blocks/Activity";
 import { rewindTarget } from "./RewindDialog";
 import { BAR_ROOM, FindBar, type FindAnchor } from "./FindBar";
 
+/** How quickly a glide closes the distance to the end: about 63% of it in this long. */
+const GLIDE_MS = 70;
+
 export function Transcript(p: { handle: SessionHandle }) {
     let scroller: HTMLDivElement | undefined;
     let content: HTMLDivElement | undefined;
@@ -51,6 +54,41 @@ export function Transcript(p: { handle: SessionHandle }) {
         scroller.scrollTo({ top: height, behavior: smoothScroll ? "smooth" : "instant" });
     };
 
+    // Following the end as a reply streams: each new line glides into view
+    // instead of the column jumping a line at a time. Starts where it is and
+    // eases toward the bottom, picking up new growth on the way; the reader
+    // scrolling, a jump, or reduced motion stops it.
+    let glideFrame = 0;
+    let gliding = false;
+    const stopGlide = () => {
+        cancelAnimationFrame(glideFrame);
+        glideFrame = 0;
+        gliding = false;
+    };
+    const follow = () => {
+        if (!scroller) return;
+        if (matchMedia("(prefers-reduced-motion: reduce)").matches) return toBottom();
+        if (gliding) return;
+        const gap = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;
+        // Far behind (a session opened, a panel resized): no glide through it.
+        if (gap > scroller.clientHeight / 2) return toBottom();
+        if (gap <= 0.5) return;
+        gliding = true;
+        let last = performance.now();
+        const step = (now: number) => {
+            glideFrame = 0;
+            if (!scroller || !stick() || smoothScroll) return stopGlide();
+            const gap = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;
+            if (gap <= 0.5) return stopGlide();
+            const dt = Math.min(48, now - last);
+            last = now;
+            const move = gap > scroller.clientHeight / 2 ? gap : Math.max(1, gap * (1 - Math.exp(-dt / GLIDE_MS)));
+            scroller.scrollTop += move;
+            glideFrame = requestAnimationFrame(step);
+        };
+        glideFrame = requestAnimationFrame(step);
+    };
+
     const capture = (): ScrollAnchor | undefined => {
         if (!scroller || !content) return;
         const top = scroller.getBoundingClientRect().top;
@@ -86,7 +124,10 @@ export function Transcript(p: { handle: SessionHandle }) {
         if (!scroller || !content) return;
         const ro = new ResizeObserver(() => {
             if (!ready) return;
-            if (stick() || smoothScroll) toBottom(smoothScroll);
+            if (smoothScroll) toBottom(true);
+            // Glides only while a turn is running: the end of a turn (its
+            // footer, the composer settling) lands at once, as before.
+            else if (stick()) turns().at(-1)?.status === "running" ? follow() : toBottom();
             else restore();
         });
         ro.observe(content);
@@ -99,6 +140,7 @@ export function Transcript(p: { handle: SessionHandle }) {
     });
     onCleanup(() => {
         cancelAnimationFrame(frame);
+        stopGlide();
         // A running log can finish while this keyed view is unmounted.
         if (!stick()) for (const turn of visible()) if (turn.status === "running") openWork.add(turn.id);
         transcriptPositions.set(id, {
@@ -140,10 +182,13 @@ export function Transcript(p: { handle: SessionHandle }) {
     const onScroll = () => {
         if (!scroller || !ready) return;
         if (scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= 1) smoothScroll = false;
-        setStick(atBottom(scroller.scrollTop, scroller.scrollHeight, scroller.clientHeight));
+        // A glide is still on its way down: it stays stuck to the end.
+        if (!gliding) setStick(atBottom(scroller.scrollTop, scroller.scrollHeight, scroller.clientHeight));
         reading = capture();
     };
     const interruptJump = () => {
+        // The reader takes over from a glide; where they leave it decides whether it follows.
+        if (gliding) stopGlide();
         if (!smoothScroll) return;
         smoothScroll = false;
         setStick(false);
