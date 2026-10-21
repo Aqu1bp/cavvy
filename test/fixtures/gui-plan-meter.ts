@@ -98,7 +98,7 @@ test("one ring uses the higher share; card orders context, plan windows/account,
         expect(text(m.root).match(/Pro · Default/g)).toHaveLength(1);
         m.setState({ ...m.state(), contextTokens: 180000 });
         expect(m.stroke().stroke).toBe("var(--danger)");
-        const circumference = 2 * Math.PI * (18 - 2.4) / 2;
+        const circumference = 2 * Math.PI * (26 - 2.5) / 2;
         expect(m.stroke()["stroke-dasharray"]).toBe(`${circumference * 0.9} ${circumference}`);
     } finally { m.dispose(); }
 });
@@ -111,7 +111,7 @@ for (const plan of [undefined, 100]) test(`unknown size ${plan ? "still shows th
             expect(m.stroke()["stroke-dasharray"]).toStartWith("0 ");
         } else {
             // Known plan usage must not disappear just because context size is unknown (e.g. on Home).
-            const circumference = 2 * Math.PI * (18 - 2.4) / 2;
+            const circumference = 2 * Math.PI * (26 - 2.5) / 2;
             expect(m.stroke().stroke).toBe("var(--danger)");
             expect(m.stroke()["stroke-dasharray"]).toBe(`${circumference} ${circumference}`);
         }
