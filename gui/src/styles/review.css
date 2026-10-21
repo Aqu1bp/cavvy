@@ -89,6 +89,26 @@
     flex: none;
 }
 
+/* "Earlier turns" and Refresh: one piece, at the row's end, wrapping together. */
+.rv-tools {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    flex: 1 1 auto;
+    min-width: 0;
+    margin-left: auto;
+}
+
+/* With the turn picker: wrap by a modest width, not the picker's longest option, then fill the row. */
+.rv-tools:has(.review-turn) {
+    flex-basis: 180px;
+}
+
+.rv-tools .hb {
+    flex: none;
+}
+
 .rv-reason {
     font-size: 0.857rem;
     color: var(--fg-3);
@@ -96,6 +116,7 @@
 
 .review-turn {
     flex: 1 1 140px;
+    min-width: 110px;
     max-width: 240px;
     height: 26px;
     padding: 0 26px 0 11px;
@@ -483,3 +504,4 @@
         display: none;
     }
 }
+

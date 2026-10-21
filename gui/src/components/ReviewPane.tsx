@@ -369,6 +369,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                     </button>
                 </Show>
             </div>
+            {/* Which changes. Refresh travels with "Earlier turns" (rv-tools), so a wrap never leaves it on a row alone. */}
             <div class="rv-bar">
                 <Show when={!noRepo()} fallback={<span class="rv-reason selectable">{git()?.reason}</span>}>
                     <Segmented
@@ -383,7 +384,17 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                             { value: "harness", label: "Harness edits", title: "Only what Harness's edit tools changed in this session" },
                         ]}
                     />
-                    <Show when={git()?.turns?.length}>
+                    <Show when={scope() === "branch"}>
+                        <span class="review-branch">
+                            <GitBranch size={13} />
+                            <span class="mono truncate">{branchLabel()}</span>
+                            <span class="arrow">→</span>
+                            <BasePicker value={git()?.base?.ref ?? base() ?? git()?.defaultBase} bases={bases()} onPick={setBase} />
+                        </span>
+                    </Show>
+                </Show>
+                <span class="rv-tools">
+                    <Show when={!noRepo() && git()?.turns?.length}>
                         <select
                             class="select review-turn"
                             aria-label="Review a recorded turn"
@@ -399,21 +410,12 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                             <For each={git()?.turns}>{(t, i) => <option value={String(t.id)}>Turn {i() + 1} · {new Date(t.startedAt).toLocaleString()} · {t.prompt.slice(0, 80)}</option>}</For>
                         </select>
                     </Show>
-                    <Show when={scope() === "branch"}>
-                        <span class="review-branch">
-                            <GitBranch size={13} />
-                            <span class="mono truncate">{branchLabel()}</span>
-                            <span class="arrow">→</span>
-                            <BasePicker value={git()?.base?.ref ?? base() ?? git()?.defaultBase} bases={bases()} onPick={setBase} />
-                        </span>
-                    </Show>
-                </Show>
-                <span class="grow" />
-                <button class="hb sm" title="Refresh" aria-label="Refresh" disabled={loading()} onClick={refresh}>
-                    <Show when={loading()} fallback={<RefreshCw size={14} />}>
-                        <Spinner size={13} />
-                    </Show>
-                </button>
+                    <button class="hb sm" title="Refresh" aria-label="Refresh" disabled={loading()} onClick={refresh}>
+                        <Show when={loading()} fallback={<RefreshCw size={14} />}>
+                            <Spinner size={13} />
+                        </Show>
+                    </button>
+                </span>
             </div>
             <Show when={files().length}>
                 <nav class="rv-files" aria-label="Changed files" aria-busy={loading()}>
