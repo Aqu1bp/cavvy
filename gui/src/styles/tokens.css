@@ -10,8 +10,9 @@
       --ctl, --ctl-stroke, --ctl-hi/--ctl-lo, --ctl-shadow, --sheen).
 
    Settings → Appearance adds [data-glass="glass"|"tinted"|"solid"] (how much
-   of the desktop shows through), [data-contrast="high"], [data-accent],
-   [data-density] and [data-motion].
+   of the desktop shows through), [data-tint="clear"|"ocean"|"accent"] (the
+   colour washed over the window behind the rail), [data-contrast="high"],
+   [data-accent], [data-density] and [data-motion].
 
    Syntax colours are variables too (Shiki's css-variables theme), so code
    re-themes instantly without re-highlighting.
@@ -263,6 +264,86 @@
     --ctl-strong: var(--sheet);
     --rail-sel: var(--sheet);
     --rail-float: var(--sheet-2);
+}
+
+/* ---- Window tint (Settings → Appearance) ------------------------------
+   Ocean is the mockup's Ocean wallpaper as the rail sees it: deep blue in
+   dark, soft blue in light. Accent is the same wash in the accent's hue.
+   --win-wash is laid over --win-tint (base.css), so it colours the window
+   behind the rail with every Window setting: translucent over the desktop
+   with Glass and Tinted, opaque with Solid. The sheet keeps --sheet.
+
+   Its stops are the colours the mockup's rail shows over that wallpaper
+   (the wallpaper saturated 1.9x under the 0.6 tint), at 75%, so a little
+   of the desktop still shows through. --tint-backdrop is what a browser
+   paints in place of the desktop (the mockup's wallpaper, for Ocean).
+   test/contrast.test.ts measures the rail over each stop.
+
+   The second selector of each rule draws Settings' tint tiles: an element
+   carrying its own data-tint under <html>. */
+:root,
+[data-tint="clear"] {
+    --win-wash: none;
+    --tint-backdrop: var(--backdrop);
+}
+
+[data-tint="ocean"],
+[data-tint="accent"] {
+    --win-wash:
+        radial-gradient(55% 60% at 80% 10%, var(--wash-1) 0%, transparent 60%),
+        radial-gradient(60% 60% at 10% 30%, var(--wash-2) 0%, transparent 60%),
+        radial-gradient(60% 50% at 70% 95%, var(--wash-3) 0%, transparent 60%),
+        linear-gradient(180deg, var(--wash-top), var(--wash-end));
+}
+
+[data-tint="ocean"][data-theme="light"],
+[data-theme="light"] [data-tint="ocean"] {
+    --wash-1: rgba(171, 245, 240, 0.75);
+    --wash-2: rgba(181, 217, 252, 0.75);
+    --wash-3: rgba(155, 194, 252, 0.75);
+    --wash-top: rgba(223, 243, 252, 0.75);
+    --wash-end: rgba(180, 206, 252, 0.75);
+    --tint-backdrop:
+        radial-gradient(55% 60% at 80% 10%, #7fe0d6 0%, transparent 60%),
+        radial-gradient(60% 60% at 10% 30%, #7aa8ff 0%, transparent 60%),
+        radial-gradient(60% 50% at 70% 95%, #3d6fd8 0%, transparent 60%),
+        linear-gradient(180deg, #cfe9f2, #6d8fd8);
+}
+
+[data-tint="ocean"][data-theme="dark"],
+[data-theme="dark"] [data-tint="ocean"] {
+    --wash-1: rgba(13, 56, 56, 0.75);
+    --wash-2: rgba(13, 35, 82, 0.75);
+    --wash-3: rgba(13, 32, 83, 0.75);
+    --wash-top: rgba(13, 27, 36, 0.75);
+    --wash-end: rgba(14, 19, 34, 0.75);
+    --tint-backdrop:
+        radial-gradient(55% 60% at 80% 10%, #0f5a57 0%, transparent 60%),
+        radial-gradient(60% 60% at 10% 30%, #17336e 0%, transparent 60%),
+        radial-gradient(60% 50% at 70% 95%, #0d2b6b 0%, transparent 60%),
+        linear-gradient(180deg, #0b1d26, #070d1d);
+}
+
+/* The accent mixed into the tint's own light or dark; the blobs carry the
+   most of it, the ground the least. */
+[data-tint="accent"][data-theme="light"],
+[data-theme="light"] [data-tint="accent"] {
+    --wash-1: color-mix(in srgb, color-mix(in srgb, var(--accent) 18%, #f6f8fc) 75%, transparent);
+    --wash-2: color-mix(in srgb, color-mix(in srgb, var(--accent) 24%, #f6f8fc) 75%, transparent);
+    --wash-3: color-mix(in srgb, color-mix(in srgb, var(--accent) 30%, #f6f8fc) 75%, transparent);
+    --wash-top: color-mix(in srgb, color-mix(in srgb, var(--accent) 10%, #f6f8fc) 75%, transparent);
+    --wash-end: color-mix(in srgb, color-mix(in srgb, var(--accent) 22%, #f6f8fc) 75%, transparent);
+    --tint-backdrop: linear-gradient(180deg, color-mix(in srgb, var(--accent) 20%, #f6f8fc), color-mix(in srgb, var(--accent) 45%, #f6f8fc));
+}
+
+[data-tint="accent"][data-theme="dark"],
+[data-theme="dark"] [data-tint="accent"] {
+    --wash-1: color-mix(in srgb, color-mix(in srgb, var(--accent) 24%, #0b0f1a) 75%, transparent);
+    --wash-2: color-mix(in srgb, color-mix(in srgb, var(--accent) 28%, #0b0f1a) 75%, transparent);
+    --wash-3: color-mix(in srgb, color-mix(in srgb, var(--accent) 26%, #0b0f1a) 75%, transparent);
+    --wash-top: color-mix(in srgb, color-mix(in srgb, var(--accent) 14%, #0b0f1a) 75%, transparent);
+    --wash-end: color-mix(in srgb, color-mix(in srgb, var(--accent) 8%, #0b0f1a) 75%, transparent);
+    --tint-backdrop: linear-gradient(180deg, color-mix(in srgb, var(--accent) 22%, #0b0f1a), color-mix(in srgb, var(--accent) 8%, #0b0f1a));
 }
 
 /* ---- Contrast (Settings → Appearance): stronger text and edges -------- */

@@ -32,7 +32,8 @@ export const SHEET = [
  * The rail sits on the window glass, not the sheet: --win-tint over whatever
  * the desktop shows through. There is no single worst case for a translucent
  * tint (white behind it hurts light text, black hurts dark text), so the
- * reference desktop is a mid grey, #808080.
+ * reference desktop is a mid grey, #808080. With a Window tint, its wash lies
+ * over --win-tint: see washes().
  */
 export const GLASS = [
     "#808080 > --win-tint", "#808080 > --win-tint > --rail-hover", "#808080 > --win-tint > --rail-sel",
@@ -87,22 +88,26 @@ function declared(selectors: string[], attr: string): string[] {
 }
 
 /**
- * Each theme as the app sets it up (glass window, standard contrast), then
- * with every Window and Contrast setting the file declares, and with every
- * custom accent declared for its scheme.
+ * Each theme as the app sets it up (clear tint, glass window, standard
+ * contrast), then with every Window tint, Window and Contrast setting the
+ * file declares, and with every custom accent declared for its scheme under
+ * every tint and Window (the accent tint is made of the accent).
  */
 export function configurations(css: string): Root[] {
     const selectors = parseRules(css).flatMap((r) => r.selectors);
+    const tints = ["clear", ...declared(selectors, "tint").filter((t) => t !== "clear")];
     const glasses = ["glass", ...declared(selectors, "glass").filter((g) => g !== "glass")];
     const contrasts = ["standard", ...declared(selectors, "contrast").filter((c) => c !== "standard")];
     return themes(css).flatMap((theme) => {
-        const root: Root = { ...theme, glass: "glass", contrast: "standard" };
+        const root: Root = { ...theme, tint: "clear", glass: "glass", contrast: "standard" };
         const accents = new Set(selectors.flatMap((s) => {
             const match = /^\[data-scheme="([^"]+)"\]\[data-accent="([^"]+)"\]$/.exec(s);
             return match?.[1] === root.scheme ? [match[2]!] : [];
         }));
-        const looks = glasses.flatMap((glass) => contrasts.map((contrast) => ({ ...root, glass, contrast })));
-        return [...looks, ...[...accents].map((accent) => ({ ...root, accent }))];
+        return tints.flatMap((tint) => {
+            const looks = glasses.flatMap((glass) => contrasts.map((contrast) => ({ ...root, tint, glass, contrast })));
+            return [...looks, ...glasses.flatMap((glass) => [...accents].map((accent) => ({ ...root, tint, glass, accent })))];
+        });
     });
 }
 
@@ -112,10 +117,24 @@ export interface Measurement {
     ratio: number;
 }
 
+/**
+ * The Window tint's wash (tokens.css): radial blobs (--wash-1..3) over a
+ * linear ground (--wash-top to --wash-end), all laid over --win-tint. Every
+ * point of the window shows one ground stop, under at most one blob at full
+ * strength, so those are the stacks measured. None with Clear.
+ */
+export function washes(vars: Map<string, string>): string[] {
+    if (!vars.has("--wash-top")) return [];
+    return ["--wash-top", "--wash-end"].flatMap((ground) => [ground, ...["--wash-1", "--wash-2", "--wash-3"].map((blob) => `${ground} > ${blob}`)]);
+}
+
 export function measure(css: string, root: Root): Measurement[] {
     const vars = cascade(parseRules(css), root);
     const color = (name: string) => resolveColor(name.startsWith("--") ? `var(${name})` : name, vars);
-    return TEXT.flatMap(([token, surfaces]) => surfaces.map((surface) => ({
+    const wash = washes(vars);
+    // With a tint, nothing sits on the bare --win-tint: put each wash stack over it.
+    const tinted = (surface: string) => (wash.length && surface.includes("--win-tint") ? wash.map((w) => surface.replace("--win-tint", `--win-tint > ${w}`)) : [surface]);
+    return TEXT.flatMap(([token, surfaces]) => surfaces.flatMap(tinted).map((surface) => ({
         token,
         surface,
         ratio: contrast(color(token), stack(surface.split(" > ").map(color))),
