@@ -11,8 +11,11 @@ import { matchSkills, skillToken } from "../../gui/src/lib/commands";
 import { createRunSheet, type RunRequest } from "../../gui/src/lib/run-sheet";
 import { firstSendable, followUpFor, otherFollowUp } from "../../gui/src/lib/queue";
 import type { RunResult } from "../../src/server/protocol";
-import { applyKeybindingsFile, keymap, matchKey, withShortcut } from "../../gui/src/state/keybindings";
+import { applyKeybindingsFile, keymap, matchKey, shortcut, withShortcut } from "../../gui/src/state/keybindings";
 import { eventStrokes } from "../../gui/src/lib/keystrokes";
+import { os } from "../../gui/src/lib/platform";
+/** The keybindings follow the OS the tests run on (Mod is Ctrl off a Mac); the steer-or-queue key is Mod+Shift+Enter. */
+const MOD = os === "macos" ? { metaKey: true } : { ctrlKey: true };
 
 const saved = new Map<string, string>();
 const localStorage = { getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => { saved.set(key, value); }, removeItem: (key: string) => { saved.delete(key); } };
@@ -60,7 +63,7 @@ const sessionState = { cwd: "/workspace", queued: ["joins", "waits"], queueIds: 
 const sent: { text: string; followUp?: string }[] = [];
 const calls: { method: string; params: any }[] = [];
 const appState = { conn: "open", homeCwd: "/workspace", settings: {} as { followUpBehavior?: string }, models: [] };
-const deps = { ...solid, ...components, renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, firstSendable, followUpFor, otherFollowUp, keymap, matchKey, withShortcut, eventStrokes,
+const deps = { ...solid, ...components, renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, firstSendable, followUpFor, otherFollowUp, keymap, matchKey, withShortcut, shortcut, eventStrokes,
     comparePicks, setComparePicks, startRun: runSheet.startRun,
     createLifetimeGuard: () => (fn: any) => fn, wasDeleted: () => false,
     app: appState,
@@ -187,7 +190,7 @@ key("Enter");
 await Bun.sleep(0);
 assert.deepEqual(sent.at(-1), { text: "steer this", followUp: "steer" });
 input("queue this");
-assert.equal(key("Enter", { metaKey: true, shiftKey: true }).prevented, true);
+assert.equal(key("Enter", { ...MOD, shiftKey: true }).prevented, true);
 await Bun.sleep(0);
 assert.deepEqual(sent.at(-1), { text: "queue this", followUp: "queue" });
 appState.settings.followUpBehavior = "queue";
@@ -196,28 +199,36 @@ key("Enter");
 await Bun.sleep(0);
 assert.deepEqual(sent.at(-1), { text: "waits by default", followUp: "queue" });
 input("steers this once");
-key("Enter", { metaKey: true, shiftKey: true });
+key("Enter", { ...MOD, shiftKey: true });
 await Bun.sleep(0);
 assert.deepEqual(sent.at(-1), { text: "steers this once", followUp: "steer" });
 // Nothing typed: mod+shift+enter sends the first queued message that isn't already steering.
 const sendsBefore = sends;
-key("Enter", { metaKey: true, shiftKey: true });
+key("Enter", { ...MOD, shiftKey: true });
 assert.equal(sends, sendsBefore);
 assert.deepEqual(calls.at(-1), { method: "session.sendQueuedNow", params: { id: "f", queueId: 2 } });
 // Custom bindings, explicit unbinding and a pending chord take precedence over the queue shortcut.
-// Spelled cmd, the key this fixture presses (its isMod is the Mac one): mod is Ctrl off a Mac, as on CI.
 input("keep this draft");
 for (const binding of [null, "app:interrupt"]) {
-    applyKeybindingsFile({ path: "/test/keybindings.json", text: JSON.stringify({ bindings: [{ context: "Global", bindings: { "cmd+shift+enter": binding } }] }) });
-    key("Enter", { metaKey: true, shiftKey: true });
+    applyKeybindingsFile({ path: "/test/keybindings.json", text: JSON.stringify({ bindings: [{ context: "Global", bindings: { "mod+shift+enter": binding } }] }) });
+    key("Enter", { ...MOD, shiftKey: true });
     assert.equal(sends, sendsBefore);
     assert.equal(ta.props.value, "keep this draft");
 }
-applyKeybindingsFile({ path: "/test/keybindings.json", text: JSON.stringify({ bindings: [{ context: "Global", bindings: { "cmd+shift+enter t": "app:interrupt" } }] }) });
-assert.equal(key("Enter", { metaKey: true, shiftKey: true }).prevented, true);
+applyKeybindingsFile({ path: "/test/keybindings.json", text: JSON.stringify({ bindings: [{ context: "Global", bindings: { "mod+shift+enter t": "app:interrupt" } }] }) });
+assert.equal(key("Enter", { ...MOD, shiftKey: true }).prevented, true);
 assert.equal(sends, sendsBefore);
 key("t");
 assert.equal(sends, sendsBefore);
+// Moved to another key: that key sends the other way, and the send button says so.
+applyKeybindingsFile({ path: "/test/keybindings.json", text: JSON.stringify({ bindings: [{ context: "Chat", bindings: { "alt+s": "chat:submitOtherWay" } }] }) });
+assert.equal(key("s", { altKey: true }).prevented, true);
+await Bun.sleep(0);
+assert.deepEqual(sent.at(-1), { text: "keep this draft", followUp: "steer" });
+input("titled");
+assert.ok(nodes.some((n) => typeof n.props.title === "string" && n.props.title.endsWith(`-click or ${shortcut("chat:submitOtherWay")} to steer instead.`)), "the send button names the moved key");
+applyKeybindingsFile({ path: "/test/keybindings.json", text: JSON.stringify({ bindings: [{ context: "Global", bindings: { "mod+shift+enter": null } }] }) });
+assert.ok(nodes.some((n) => typeof n.props.title === "string" && n.props.title.endsWith("-click to steer instead.")), "an unbound key isn't named");
 applyKeybindingsFile({ path: "/test/keybindings.json" });
 // The opposite-send shortcut still works with file suggestions open.
 input("@queue-file");
@@ -225,9 +236,20 @@ await Bun.sleep(80);
 replies.at(-1)!.resolve(["queue-file.ts"]);
 await Bun.sleep(0);
 assert.equal(ta.props["aria-expanded"], true);
-assert.equal(key("Enter", { metaKey: true, shiftKey: true }).prevented, true);
+assert.equal(key("Enter", { ...MOD, shiftKey: true }).prevented, true);
 await Bun.sleep(0);
 assert.deepEqual(sent.at(-1), { text: "@queue-file", followUp: "steer" });
+// Moved to Mod+Enter, it still sends with the suggestions open: only a plain Enter takes the suggestion.
+applyKeybindingsFile({ path: "/test/keybindings.json", text: JSON.stringify({ bindings: [{ context: "Chat", bindings: { "mod+enter": "chat:submitOtherWay" } }] }) });
+input("@queue-again");
+await Bun.sleep(80);
+replies.at(-1)!.resolve(["queue-file.ts"]);
+await Bun.sleep(0);
+assert.equal(ta.props["aria-expanded"], true);
+assert.equal(key("Enter", MOD).prevented, true);
+await Bun.sleep(0);
+assert.deepEqual(sent.at(-1), { text: "@queue-again", followUp: "steer" });
+applyKeybindingsFile({ path: "/test/keybindings.json" });
 input("");
 appState.settings.followUpBehavior = undefined;
 setWorking(false);

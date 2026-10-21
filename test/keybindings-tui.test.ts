@@ -97,6 +97,78 @@ describe("a keybindings file", () => {
         expect(app.editor.text).toBe("unsent follow-up");
     });
 
+    test("the steer-or-queue key is an action: Tab by default, rebindable, and only while a turn runs", () => {
+        write([{ context: "Global", bindings: { tab: null, "ctrl+s": "chat:submitOtherWay" } }]);
+        const { app, a, press } = testApp();
+        const sent: boolean[] = [];
+        a.submit = async (opposite: boolean) => void sent.push(opposite);
+        app.editor.set("follow-up");
+        // Idle, the key does nothing.
+        press("\x13");
+        expect(sent).toEqual([]);
+        a.busy = true;
+        press("\t");
+        expect(sent).toEqual([]);
+        press("\x13");
+        expect(sent).toEqual([true]);
+        // Nothing typed: nothing to send.
+        app.editor.clear();
+        press("\x13");
+        expect(sent).toEqual([true]);
+        expect(a.keys.label("chat:submitOtherWay")).toBe("ctrl+s");
+        expect(stripAnsi(a.renderInput(160).join("\n"))).toContain("ctrl+s to queue it for after");
+    });
+
+    test("unbound in Chat, the steer-or-queue key is gone from the help and the placeholder too", () => {
+        write([{ context: "Chat", bindings: { tab: null } }]);
+        const { app, a, press } = testApp();
+        const sent: boolean[] = [];
+        a.busy = true;
+        a.submit = async (opposite: boolean) => void sent.push(opposite);
+        app.editor.set("follow-up");
+        press("\t");
+        expect(sent).toEqual([]);
+        expect(a.keys.label("chat:submitOtherWay")).toBeUndefined();
+        app.editor.clear();
+        const shown = stripAnsi(a.renderInput(160).join("\n"));
+        expect(shown).toContain("Steer the current turn (enter)");
+        expect(shown).not.toContain("tab to");
+    });
+
+    test("a chord whose first key Chat takes isn't shown, as it can't run", () => {
+        write([{ context: "Global", bindings: { "ctrl+x ctrl+s": "chat:submitOtherWay" } }, { context: "Chat", bindings: { "ctrl+x": null } }]);
+        const { app, a, press } = testApp();
+        const sent: boolean[] = [];
+        a.busy = true;
+        a.submit = async (opposite: boolean) => void sent.push(opposite);
+        app.editor.set("follow-up");
+        press("\x18", "\x13");
+        expect(sent).toEqual([]);
+        expect(a.keys.all("chat:submitOtherWay")).toEqual(["tab"]);
+        // Without the Chat null the chord runs, and shows.
+        write([{ context: "Global", bindings: { "ctrl+x ctrl+s": "chat:submitOtherWay" } }]);
+        const b = testApp();
+        b.a.busy = true;
+        b.a.submit = async (opposite: boolean) => void sent.push(opposite);
+        b.app.editor.set("follow-up");
+        b.press("\x18", "\x13");
+        expect(sent).toEqual([true]);
+        expect(b.a.keys.all("chat:submitOtherWay")).toEqual(["ctrl+x ctrl+s", "tab"]);
+    });
+
+    test("a Tab chord that goes nowhere still sends the other way, as Tab did before it was bindable", async () => {
+        write([{ context: "Chat", bindings: { "tab t": "chat:externalEditor" } }]);
+        const { app, a, press } = testApp();
+        const sent: boolean[] = [];
+        a.busy = true;
+        a.submit = async (opposite: boolean) => void sent.push(opposite);
+        app.editor.set("follow-up");
+        press("\t");
+        expect(sent).toEqual([]);
+        await Bun.sleep(CHORD_TIMEOUT_MS + 80);
+        expect(sent).toEqual([true]);
+    });
+
     test("mid-turn Tab respects a custom action or explicit unbinding", () => {
         for (const action of [null, "chat:externalEditor"]) {
             write([{ context: "Chat", bindings: { tab: action } }]);
@@ -251,6 +323,7 @@ describe("what the app shows", () => {
         expect(help).toContain("ctrl+e to edit in $EDITOR");
         expect(help).toContain("double esc to clear or rewind");
         expect(help).not.toContain("ctrl+g");
+        expect(help).toContain("tab: steer or queue the other way");
     });
 
     test("/help and /keybindings show the live keys and the file's problems", async () => {
@@ -258,6 +331,7 @@ describe("what the app shows", () => {
         const { app, text } = testApp();
         await runCommand(app, "/help");
         expect(text()).toContain("ctrl+e edit the prompt in $editor *");
+        expect(text()).toContain("tab while a turn runs: send the other way (steer or queue)");
         await runCommand(app, "/keybindings");
         const out = text();
         expect(out).toContain("chat:externalEditor");

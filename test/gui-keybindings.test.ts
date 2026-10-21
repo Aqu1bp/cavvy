@@ -52,8 +52,28 @@ describe("the window's keymap", () => {
         expect(kb.actionOf(ev("Enter", "Enter"), ["Chat", "Global"])).toBe("chat:submit");
         expect(kb.actionOf(ev("Enter", "Enter", { shiftKey: true }), ["Chat", "Global"])).toBe("chat:newline");
         expect(kb.actionOf(ev("Tab", "Tab", { shiftKey: true }), ["Chat", "Global"])).toBe("chat:cycleMode");
+        // Mid-turn, steer or queue the other way; the composer asks for it.
+        expect(kb.actionOf(ev("Enter", "Enter", { ...MOD, shiftKey: true }), ["Chat", "Global"])).toBe("chat:submitOtherWay");
+        expect(kb.shortcut("chat:submitOtherWay")).toBe(os === "macos" ? "⇧+⌘+Enter" : "Ctrl+Shift+Enter");
         // Exact: a shifted Mod+K isn't the palette.
         expect(kb.actionOf(ev("K", "KeyK", { ...MOD, shiftKey: true }), ["Global"])).toBeUndefined();
+    });
+
+    test("the steer-or-queue key can be moved or taken away", () => {
+        kb.applyKeybindingsFile(fileOf([{ context: "Chat", bindings: { "mod+shift+enter": null, "alt+enter": "chat:submitOtherWay" } }]));
+        expect(kb.actionOf(ev("Enter", "Enter", { ...MOD, shiftKey: true }), ["Chat", "Global"])).toBeUndefined();
+        expect(kb.actionOf(ev("Enter", "Enter", { altKey: true }), ["Chat", "Global"])).toBe("chat:submitOtherWay");
+        expect(kb.shortcut("chat:submitOtherWay")).toBe(os === "macos" ? "⌥+Enter" : "Alt+Enter");
+        kb.applyKeybindingsFile(fileOf([{ context: "Global", bindings: { "mod+shift+enter": null } }]));
+        expect(kb.shortcut("chat:submitOtherWay")).toBeUndefined();
+        // Taken away where it acts (the input box, where Chat's keys come first): no label either.
+        kb.applyKeybindingsFile(fileOf([{ context: "Chat", bindings: { "mod+shift+enter": null } }]));
+        expect(kb.actionOf(ev("Enter", "Enter", { ...MOD, shiftKey: true }), ["Chat", "Global"])).toBeUndefined();
+        expect(kb.shortcut("chat:submitOtherWay")).toBeUndefined();
+        // A Chat null doesn't hide an app-wide key that works outside the input box.
+        kb.applyKeybindingsFile(fileOf([{ context: "Chat", bindings: { "mod+b": null } }]));
+        expect(kb.shortcut("app:toggleSidebar")).toBe(os === "macos" ? "⌘+B" : "Ctrl+B");
+        kb.applyKeybindingsFile({ path: "/k.json" });
     });
 
     test("one answer per event, however many handlers ask", () => {
