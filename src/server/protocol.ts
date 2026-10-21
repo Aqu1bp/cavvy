@@ -238,6 +238,8 @@ export interface TurnPrompt {
     command?: boolean;
     /** Started by a schedule, not the user: what it is ("Scheduled (every 10m)"). */
     scheduled?: string;
+    /** Started by an event the agent asked to be woken for (a watched pull request, a monitor), not by the user. */
+    wake?: boolean;
     /** Position of the prompt in the session's messages, when it can be rewound to. */
     index?: number;
 }
@@ -472,6 +474,8 @@ export interface SessionState {
     filesChanged: number;
     /** Background shells started by the agent. */
     shells: { id: string; command: string; running: boolean; exitCode: number | null; startedAt: number }[];
+    /** What the agent is watching in the background (pull requests): each wakes it when there's news. */
+    watches?: WatchInfo[];
     plan?: PlanRef;
     planLinks?: PlanLink[];
     /** Forked from this session (its title then). */
@@ -1041,6 +1045,15 @@ export interface GitPublishRequest {
     body?: string;
     draft?: boolean;
 }
+export interface WatchInfo {
+    id: string;
+    /** "pull-request". */
+    kind: string;
+    label: string;
+    url?: string;
+    detail?: string;
+}
+
 export interface GitPrInfo {
     number: number;
     url: string;
@@ -1290,6 +1303,7 @@ export interface Methods {
     "session.delete": { params: { id: string }; result: null };
     "session.restore": { params: { id: string }; result: null };
     "session.killShell": { params: { id: string; shellId: string }; result: null };
+    "session.stopWatch": { params: { id: string; watchId: string }; result: null };
     /** New shells no longer get this secret. */
     "session.forgetSecret": { params: { id: string; name: string }; result: null };
     /** Stop a delegated task (by its sub-agent's id), or every one still running. Task sub-agents stop with the turn. */

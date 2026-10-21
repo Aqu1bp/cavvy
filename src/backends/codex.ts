@@ -594,7 +594,12 @@ class CodexTurn {
                     this.followUp = undefined;
                     const next = followUp ? [followUp] : this.unsteered.length ? this.unsteered.splice(0) : await this.host.drainQueued(() => this.progress());
                     if (!next.length) break;
-                    text = request = next.join("\n\n");
+                    // The user's words name skills; a watch's events (others' words, such as a PR comment) come after and don't.
+                    const typed = next.filter((x) => !this.host.fromWake?.(x));
+                    const woke = next.filter((x) => this.host.fromWake?.(x));
+                    request = typed.length ? typed.join("\n\n") : undefined;
+                    after = woke.length ? `${typed.length ? "\n\n" : ""}${woke.join("\n\n")}` : "";
+                    text = [...typed, ...woke].join("\n\n");
                 }
             }
             // Codex's error may not say when the limit resets; its limits do.
@@ -1394,7 +1399,8 @@ class CodexTurn {
             try {
                 await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: turnId, input: this.input(text, []) });
             } catch {
-                this.unsteered.push(text);
+                // Each as it was queued, so the user's words and a watch's events stay told apart.
+                this.unsteered.push(...texts);
             }
         }).catch(() => {});
     }

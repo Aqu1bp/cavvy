@@ -3,7 +3,7 @@
 // that failed or ask for approval, and its sub-agents. Empty sections aren't drawn.
 
 import { createMemo, createResource, createSignal, For, Show } from "solid-js";
-import { ArrowUpLeft, Bot, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDashed, ClipboardList, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitBranchPlus, KeyRound, Plug, Save, SquarePen, Terminal, X } from "lucide-solid";
+import { ArrowUpLeft, Bot, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDashed, ClipboardList, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitBranchPlus, GitPullRequestArrow, KeyRound, Plug, Save, SquarePen, Terminal, X } from "lucide-solid";
 import type { AgentRun, PlanLink } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { activate, app, reportError, rpc, toast } from "../state/app";
@@ -12,7 +12,7 @@ import { newSession, openAgents, openReview, stopAgent } from "../state/actions"
 import { setMcpOpen } from "../state/ui";
 import { needsAttention, shownName, statusLabel } from "../lib/mcp";
 import { useChanges, useGitChanges } from "../state/changes";
-import { canReveal, copyText, revealPath } from "../lib/platform";
+import { canReveal, copyText, openExternal, revealPath } from "../lib/platform";
 import { duration, plural, tildify } from "../lib/format";
 import { now } from "../lib/clock";
 import { Menu } from "./ui/Menu";
@@ -204,6 +204,35 @@ function Shells(p: { handle: SessionHandle }) {
     );
 }
 
+/** Pull requests the agent watches: it's woken when checks fail or someone comments. */
+function Watches(p: { handle: SessionHandle }) {
+    const watches = () => p.handle.view.state.watches ?? [];
+    const tone = (detail?: string) => (/failing|conflicts|can't reach/.test(detail ?? "") ? "tone-err" : /passed/.test(detail ?? "") ? "tone-ok" : "");
+    return (
+        <Show when={watches().length}>
+            <div class="sec">
+                <div class="sh">Watching</div>
+                <For each={watches()}>
+                    {(w) => (
+                        <div class="prow swap" title={`${w.label}${w.detail ? ` · ${w.detail}` : ""}. The agent is woken when there's news.`}>
+                            <GitPullRequestArrow size={16} class="watch-live" />
+                            <Show when={w.url} fallback={<span class="truncate grow">{w.label.replace(/ in \S+$/, "")}</span>}>
+                                <button class="link-btn truncate grow watch-link" onClick={() => void openExternal(w.url!)}>
+                                    {w.label.replace(/ in \S+$/, "")}
+                                </button>
+                            </Show>
+                            <span class={`meta ${tone(w.detail)}`}>{w.detail}</span>
+                            <button class="act hb sm" title="Stop watching" aria-label={`Stop watching ${w.label}`} onClick={() => void rpc.call("session.stopWatch", { id: p.handle.id, watchId: w.id }).catch(reportError)}>
+                                <X size={14} />
+                            </button>
+                        </div>
+                    )}
+                </For>
+            </div>
+        </Show>
+    );
+}
+
 /** The secrets the user gave this session, by name: its shell commands see them until forgotten or the session closes. */
 function Secrets(p: { handle: SessionHandle }) {
     const names = () => p.handle.view.state.secrets ?? [];
@@ -344,6 +373,7 @@ export function RightPanel(p: { handle: SessionHandle }) {
                 <ProposedPlan handle={p.handle} />
                 <Plan handle={p.handle} />
                 <Shells handle={p.handle} />
+                <Watches handle={p.handle} />
                 <Secrets handle={p.handle} />
                 <Mcp handle={p.handle} />
                 <Lineage handle={p.handle} />

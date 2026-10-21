@@ -55,7 +55,7 @@ export interface UserMessage {
     content: UserContent[];
     /** Harness-only bookkeeping, never sent to providers. */
     meta?: {
-        kind?: "prompt" | "tool_results" | "interrupt" | "summary" | "command" | "reminder";
+        kind?: "prompt" | "tool_results" | "interrupt" | "summary" | "command" | "reminder" | "wake";
         display?: string;
         /** The file checkpoint this prompt started (/rewind). */
         checkpoint?: number;

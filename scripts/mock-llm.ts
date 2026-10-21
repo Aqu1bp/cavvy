@@ -20,6 +20,8 @@
 //   "waitcheck"      starts a background command, then waits and checks it in one response
 //   "use the x skill" loads skill x (Skill tool), then quotes the start of its instructions
 //   "schedule"       schedules the test suite for weekday mornings (CronCreate)
+//   "ship"           commits, opens a pull request and watches it (GitCommit, CreatePullRequest)
+//   (a wake)         answers a watched pull request's news: failed checks, comments, passing checks
 //   anything else    a short markdown answer
 //
 //   bun scripts/mock-llm.ts [--port 4010] [--delay 12]
@@ -81,6 +83,24 @@ const TESTS_REPORT = `Only email sign-in is tested (\`test/auth.test.ts\`, one c
 
 function scenario(prompt: string, toolRounds: number, lastResult: string): Step | undefined {
     const p = prompt.toLowerCase();
+    // News from a watched pull request (the harness woke the agent).
+    if (/events? you asked to be told about arrived/.test(p)) {
+        if (/checks failed/.test(p)) return { text: "CI's **test** job failed on the latest commit. The log shows the SAML assertion test expects an issuer check; I'll fix it and push again." };
+        if (/new comments?:/.test(p)) return { text: "A reviewer asked for a test of the rejected-assertion path. I'll add it and reply once it's pushed." };
+        if (/passed/.test(p)) return { text: "All checks passed. The pull request is ready for your review." };
+        return { text: "Noted." };
+    }
+    if (/\bship\b/.test(p)) {
+        const steps: Step[] = [
+            { text: "I'll commit the SSO work first.", calls: [{ name: "GitCommit", args: { message: "Add SAML SSO sign-in\n\nRegisters a SamlProvider strategy next to email sign-in." } }] },
+            {
+                text: "Now the pull request, and I'll watch it.",
+                calls: [{ name: "CreatePullRequest", args: { title: "Add SAML SSO sign-in", body: "Adds a SAML strategy next to email sign-in.\n\nTested with `bun test`.", watch: true } }],
+            },
+            { text: "The pull request is open and I'm watching it: I'll be back when CI finishes or someone comments." },
+        ];
+        return steps[toolRounds];
+    }
     // A sub-agent's task (from "agents"): look around, then report.
     if (/^subtask:/.test(p)) {
         // One that changes something (asks permission in Manual mode).

@@ -112,6 +112,8 @@ function isLink(p: string): boolean {
 }
 
 /** What isHarnessConfig looks for in a path. */
+/** Tools whose yes covers only the call it answered (see approve). */
+const ONE_CALL_APPROVAL = new Set(["GitCommit", "GitPush", "CreatePullRequest"]);
 const CONFIG_NAMES = new Set([".harness", ".claude", ".codex", ".git", ".mcp.json"]);
 
 /**
@@ -205,6 +207,10 @@ export class PermissionChecker {
      * asking again this session. What the reviewer hears is the action itself, never a summary.
      */
     approve(tool: Tool<any>, input: any, cwd: string, opts: { sandbox?: boolean; grant?: SessionGrant } = {}) {
+        // The git tools act on whatever the repo holds when they run, so the same input can mean another
+        // branch, commit or set of files: a yes covers the call it answered. "Don't ask again" is the rule.
+        // Nor does the reviewer hear of it: it would read close variations (a push from Bash) as approved too.
+        if (ONE_CALL_APPROVAL.has(tool.name)) return;
         this.approved.add(this.actionKey(tool, input, cwd, opts.sandbox));
         const a = approvedAction(tool, input, canonical(cwd), this.target(tool, input, cwd).path, opts.grant);
         const key = stableStringify(a);
@@ -395,6 +401,10 @@ export class PermissionChecker {
             if (tool.name === "Bash" && !isReadOnlyCommand(t.command ?? "")) {
                 return { behavior: "deny", reason: "Plan mode is active: only read-only shell commands are allowed. Call ExitPlanMode with your plan before making changes." };
             }
+            // Commit, push, open a pull request.
+            if (tool.category === "execute" && tool.name !== "Bash" && !isReadOnly(tool, input)) {
+                return { behavior: "deny", reason: "Plan mode is active: nothing can be committed or pushed. Call ExitPlanMode with your plan first." };
+            }
             if (tool.name === "Task" && t.agentType !== "explore") {
                 return { behavior: "deny", reason: 'Plan mode is active: only "explore" sub-agents can run.' };
             }
@@ -498,7 +508,11 @@ export class PermissionChecker {
                     }
                     return { behavior: "ask", needsClassifier: true, suggestions };
                 }
-                return mode === "auto" ? { behavior: "ask", needsClassifier: true } : { behavior: "ask" };
+                // GitCommit, GitPush, CreatePullRequest: "don't ask again" allows the tool in this project.
+                const suggestions = [tool.name];
+                // Publishing reaches other people and can't be taken back: auto mode's reviewer doesn't decide it, the user does.
+                if (tool.name === "GitPush" || tool.name === "CreatePullRequest") return { behavior: "ask", suggestions, ...(mode === "auto" ? { reason: "Pushing to the remote always asks in auto mode." } : {}) };
+                return mode === "auto" ? { behavior: "ask", needsClassifier: true, suggestions } : { behavior: "ask", suggestions };
             }
             case "network": {
                 if (tool.name === "WebSearch") return { behavior: "allow" };
