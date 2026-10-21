@@ -350,6 +350,13 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
                 results.push(`(no server ${server})`);
                 continue;
             }
+            // Codex's PreToolUse hooks run before every tool call, MCP ones too.
+            const hooked = await preToolUse(threadId, turnId, `mcp__${server}__${c.tool}`, c.args, item.id);
+            if (hooked.deny !== undefined) {
+                notify("item/completed", { threadId, turnId, item: { ...item, status: "failed", error: { message: hooked.deny } } });
+                results.push(`(denied: ${hooked.deny})`);
+                continue;
+            }
             // Codex sends the call's id in the request's _meta.
             const r = await callTool(s, c.tool, c.args, { callId: item.id });
             log({ mcpResult: { tool: c.tool, ...r } });

@@ -1436,6 +1436,26 @@ describe("Monitor for Codex (it has none of its own)", () => {
         }
     });
 
+    test("hooks run once for a call, as Monitor, though Codex runs them before its MCP calls too", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "monitor", args: { command: "tail -f /dev/null", description: "quiet" } }]);
+        const pre = join(cwd, "pre.log");
+        const post = join(cwd, "post.log");
+        const record = (file: string) => `cat >> ${file}; echo >> ${file}`;
+        const { run, agent } = await makeAgent({ provider: "codex", wakes: true, settings: { hooks: { PreToolUse: [{ matcher: "*", command: record(pre) }], PostToolUse: [{ matcher: "*", command: record(post) }] } } });
+        try {
+            expect(await run("watch")).toBe("done");
+            // Codex took the PreToolUse hook as its own, so it called it before the monitor call.
+            expect(logLines().some((l) => l.hookCalled)).toBe(true);
+            const names = (file: string) => readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l).tool_name);
+            expect(names(pre)).toEqual(["Monitor"]);
+            expect(names(post)).toEqual(["Monitor"]);
+            expect(monitors(agent)).toHaveLength(1);
+        } finally {
+            stopWatchers(agent.state);
+        }
+    });
+
     test("monitor_output and monitor_stop act on monitors only", async () => {
         process.env.FAKE_SCENARIO = "mcp";
         calls([
