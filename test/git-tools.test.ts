@@ -437,6 +437,21 @@ describe("permissions", () => {
         expect(deny.check(tool("GitPush"), {}, "bypassPermissions", cwd).behavior).toBe("deny");
     });
 
+    test("a plain yes to a git tool covers that call only: the next push, PR or commit asks again", () => {
+        const cwd = iso.home;
+        const checker = new PermissionChecker(() => ({}) as any, cwd);
+        for (const [name, input] of [["GitPush", {}], ["CreatePullRequest", { title: "t" }], ["GitCommit", { message: "m" }]] as const) {
+            for (const mode of ["default", "auto"] as const) {
+                checker.approve(tool(name), input, cwd);
+                expect(checker.check(tool(name), input, mode, cwd)).toMatchObject({ behavior: "ask" });
+                expect(checker.check(tool(name), input, mode, cwd).remembered).toBeUndefined();
+            }
+        }
+        // Other tools still remember an exact yes.
+        checker.approve(tool("Bash"), { command: "make" }, cwd);
+        expect(checker.check(tool("Bash"), { command: "make" }, "default", cwd)).toMatchObject({ behavior: "allow", remembered: true });
+    });
+
     test("watching only reads, so it runs without asking, plan mode included", () => {
         for (const mode of ["default", "plan", "auto"] as const) {
             expect(decide("WatchPullRequest", mode).behavior).toBe("allow");

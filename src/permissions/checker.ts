@@ -112,6 +112,8 @@ function isLink(p: string): boolean {
 }
 
 /** What isHarnessConfig looks for in a path. */
+/** Tools whose yes covers only the call it answered (see approve). */
+const ONE_CALL_APPROVAL = new Set(["GitCommit", "GitPush", "CreatePullRequest"]);
 const CONFIG_NAMES = new Set([".harness", ".claude", ".codex", ".git", ".mcp.json"]);
 
 /**
@@ -205,7 +207,9 @@ export class PermissionChecker {
      * asking again this session. What the reviewer hears is the action itself, never a summary.
      */
     approve(tool: Tool<any>, input: any, cwd: string, opts: { sandbox?: boolean; grant?: SessionGrant } = {}) {
-        this.approved.add(this.actionKey(tool, input, cwd, opts.sandbox));
+        // The git tools act on whatever the repo holds when they run, so the same input can mean another
+        // branch, commit or set of files: a yes covers the call it answered. "Don't ask again" is the rule.
+        if (!ONE_CALL_APPROVAL.has(tool.name)) this.approved.add(this.actionKey(tool, input, cwd, opts.sandbox));
         const a = approvedAction(tool, input, canonical(cwd), this.target(tool, input, cwd).path, opts.grant);
         const key = stableStringify(a);
         this.approvals = [...this.approvals.filter((x) => stableStringify(x) !== key), a].slice(-10);
