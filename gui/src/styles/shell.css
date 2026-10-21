@@ -1,0 +1,48 @@
+/* ---- Shell ----------------------------------------------------------
+   The sidebar is flush with the window's edge, a step darker than the
+   canvas. One 52px title line runs across the sidebar and the main view.
+   The conversation scrolls under a glass composer; the panel is a glass
+   card floating at the top right; the review pane docks on the right. */
+
+.app {
+    display: flex;
+    height: 100%;
+    width: 100%;
+    background: var(--bg);
+    overflow: hidden;
+}
+
+.main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+    background: var(--bg);
+    container: main / inline-size;
+}
+
+/* The conversation keeps a readable column; the review gives way first. */
+.main:has(+ .review) {
+    min-width: min(520px, 40vw);
+}
+
+.banner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 6px;
+    font-size: 0.857rem;
+    color: var(--warning);
+    background: var(--warning-soft);
+    flex: none;
+}
+
+.hb:active:not(:disabled),
+.btn:active:not(:disabled),
+.send:active:not(:disabled) {
+    transform: scale(0.97);
+}
+

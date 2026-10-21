@@ -54,7 +54,7 @@ describe("WCAG contrast of GUI text tokens", () => {
 // A passing token is not enough if an entire card/turn is faded afterwards.
 // Reintroducing the old .75/.55 opacity must fail even with the new tokens.
 for (const [file, selector, surface] of [
-    ["layout.css", ".card.rec", "--bg-sidebar"],
+    ["sidebar.css", ".card.rec", "--bg-sidebar"],
     ["transcript.css", ".turn.archived", "--bg"],
 ] as const) {
     test(`${selector}: group opacity preserves secondary-text contrast`, () => {

@@ -1,0 +1,111 @@
+/* ---- Project scripts (title line) ----------------------------------- */
+
+/* Run the main script | open the menu: one control, split by a hairline. */
+.script-split {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    border-radius: 8px;
+    transition: background var(--dur-fast);
+}
+
+.script-split:has(.script-split-main):hover,
+.script-split.open:has(.script-split-main) {
+    background: var(--bg-hover);
+}
+
+.script-split .script-split-main {
+    width: auto;
+    max-width: 160px;
+    display: inline-flex;
+    gap: 6px;
+    padding: 0 8px 0 9px;
+    border-radius: 8px 0 0 8px;
+    font-size: 0.893rem;
+    font-weight: 500;
+}
+
+.script-split .script-split-more {
+    width: 20px;
+    border-radius: 0 8px 8px 0;
+    position: relative;
+}
+
+.script-split .script-split-more::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 7px;
+    bottom: 7px;
+    width: 1px;
+    background: var(--hairline);
+}
+
+.script-split .script-split-main:hover:not(:disabled),
+.script-split .script-split-more:hover:not(:disabled),
+.script-split .script-split-more[aria-expanded="true"] {
+    background: var(--bg-active);
+}
+
+.script-split-label {
+    min-width: 0;
+}
+
+.scripts-note {
+    white-space: normal;
+    line-height: 1.45;
+    padding: 4px 8px 8px;
+}
+
+.scripts-note code {
+    font-size: 0.95em;
+}
+
+/* A script: run it by clicking the row; edit, reorder and delete on hover. */
+.script-row {
+    position: relative;
+}
+
+.script-row .menu-desc {
+    margin-top: 1px;
+}
+
+.script-acts {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: none;
+    align-items: center;
+    gap: 2px;
+}
+
+/* Room for the actions: the command truncates sooner while they show. */
+.script-row:hover .script-run,
+.script-row:focus-within .script-run,
+.script-row.confirming .script-run {
+    background: var(--bg-hover);
+    padding-right: 84px;
+}
+
+.script-row.confirming .script-run {
+    padding-right: 136px;
+}
+
+.script-row:hover .script-acts,
+.script-row:focus-within .script-acts,
+.script-row.confirming .script-acts {
+    display: flex;
+}
+
+/* The name, and a label on the setup script (the one that runs in each new worktree). */
+.script-name {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+.script-badge {
+    flex: none;
+}
+
