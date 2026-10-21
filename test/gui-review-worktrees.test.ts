@@ -3,9 +3,10 @@
 // and the reader's choice of worktree, its views, and falling back when the
 // worktree goes away.
 import { describe, expect, test } from "bun:test";
+import { fileURLToPath } from "url";
 import type { AgentRun, Block } from "../src/server/protocol";
 import { agentsByWorktree, agentWorktree, commandPaths, normalPath, toolPaths, worktreeOf } from "../src/server/worktree-agents";
-import { keepWorktree, pickScope, pickWorktree, worktreeWork, type ReviewPlace } from "../gui/src/lib/worktree-work";
+import { keepWorktree, ownOnScreen, pickScope, pickWorktree, worktreeWork, type ReviewPlace } from "../gui/src/lib/worktree-work";
 
 const HOME = "/Users/me";
 const MAIN = "/Users/me/repo";
@@ -158,4 +159,24 @@ describe("the reader's choice of worktree", () => {
         // At home, nothing to fall back from.
         expect(keepWorktree(own, [])).toBe(own);
     });
+
+    test("the session's own actions wait for the session's own answer: back from another worktree, its diff stays on screen until the session's comes", () => {
+        // Just switched back: the other worktree's answer is still the one shown.
+        expect(ownOnScreen(undefined, "uncommitted", { worktree: TMP })).toBe(false);
+        expect(ownOnScreen(undefined, "branch", { worktree: TMP })).toBe(false);
+        // The session's answer arrived (or none has yet, so there's nothing on screen to act on).
+        expect(ownOnScreen(undefined, "uncommitted", {})).toBe(true);
+        expect(ownOnScreen(undefined, "uncommitted", undefined)).toBe(true);
+        // Another worktree chosen: never, even while the session's last answer is still shown.
+        expect(ownOnScreen(TMP, "branch", {})).toBe(false);
+        // Harness edits come from the session's own record, not git's answer.
+        expect(ownOnScreen(undefined, "harness", { worktree: TMP })).toBe(true);
+    });
+});
+
+test("switching back from another worktree, its diff isn't taken for the session's while the session's loads", async () => {
+    // Solid's server build doesn't run effects: browser conditions, in a child (as gui-changes-reconnect does).
+    const child = Bun.spawn([process.execPath, "--no-env-file", "--conditions=browser", fileURLToPath(new URL("./fixtures/gui-review-worktree-answer.ts", import.meta.url))], { stdout: "pipe", stderr: "pipe" });
+    const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    expect({ code, stdout, stderr }).toEqual({ code: 0, stdout: "", stderr: "" });
 });

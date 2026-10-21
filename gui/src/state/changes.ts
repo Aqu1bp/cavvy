@@ -32,8 +32,8 @@ export function useChanges(handle: () => SessionHandle) {
     );
 }
 
-/** Git's answer, or why there isn't one (a base that's gone, a folder too big). */
-export type GitView = GitChangesInfo & { error?: string };
+/** Git's answer, or why there isn't one (a base that's gone, a folder too big); `worktree`: the other worktree it's of, if it is. */
+export type GitView = GitChangesInfo & { error?: string; worktree?: string };
 
 const asked = new Map<string, Slot<GitView>>();
 
@@ -46,7 +46,9 @@ export function fetchGitChanges(id: string, scope: GitScope, base?: string, path
     return coalesce(asked, JSON.stringify([id, scope, base, path, turnId, worktree]), () =>
         rpc
             .call("session.gitChanges", { id, scope, ...(base ? { base } : {}), ...(path !== undefined ? { path } : {}), ...(turnId !== undefined ? { turnId } : {}), ...(worktree !== undefined ? { worktree } : {}) })
-            .catch((e): GitView => ({ repo: true, scope, files: [], added: 0, removed: 0, tracked: true, bases: [], more: 0, error: e instanceof Error ? e.message : String(e) })),
+            .catch((e): GitView => ({ repo: true, scope, files: [], added: 0, removed: 0, tracked: true, bases: [], more: 0, error: e instanceof Error ? e.message : String(e) }))
+            // Which folder the answer is of travels with it: a view switching folders shows the last answer until the next one comes.
+            .then((v): GitView => (worktree !== undefined ? { ...v, worktree } : v)),
     );
 }
 

@@ -85,3 +85,14 @@ export function keepWorktree(cur: ReviewPlace, listed: { path: string; exists: b
     const w = listed.find((x) => x.path === cur.worktree);
     return w && w.exists && w.prunable === undefined && !w.current ? cur : pickWorktree(cur, undefined);
 }
+
+/**
+ * Whether the diff on screen is the session's own folder's, so what's the session's alone (comments
+ * for its next message, Commit, Push, the editor) can act on it. Both the choice and the answer on
+ * screen must be the session's: after switching back from another worktree, that worktree's answer
+ * stays on screen until the session's comes. Harness edits are always the session's.
+ */
+export function ownOnScreen(selected: string | undefined, scope: ReviewScope, answer: { worktree?: string } | undefined): boolean {
+    if (selected !== undefined) return false;
+    return scope === "harness" || answer?.worktree === undefined;
+}

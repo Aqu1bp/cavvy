@@ -29,7 +29,7 @@ import { newCommentId, reviewComments } from "../state/review-comments";
 import { PublishStatus } from "./PublishStatus";
 import { BasePicker } from "./BasePicker";
 import { ReviewWorktreePicker } from "./ReviewWorktreePicker";
-import { keepWorktree, pickScope, pickWorktree, worktreeWork, type ReviewPlace } from "../lib/worktree-work";
+import { keepWorktree, ownOnScreen, pickScope, pickWorktree, worktreeWork, type ReviewPlace } from "../lib/worktree-work";
 import { Segmented, Spinner } from "./ui/bits";
 
 type Row = FileDiff & Partial<Pick<GitFileDiff, "change" | "from" | "kind" | "deferred" | "filter">>;
@@ -243,6 +243,10 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     /** Outside a Git repository, Harness's own record is all there is. */
     const noRepo = () => git()?.repo === false;
     const shownScope = (): ReviewScope => (noRepo() && !away() ? "harness" : scope());
+    /** The diff on screen is the session's own folder's (not the answer for another worktree, still shown while the session's loads). */
+    const own = () => ownOnScreen(worktree(), shownScope(), git());
+    /** The folder the files on screen are relative to. */
+    const shownRoot = () => (own() ? p.handle.view.state.cwd : (git()?.worktree ?? worktree() ?? p.handle.view.state.cwd));
     const [harness, { refetch: refetchHarness }] = createResource(
         () => sessionReadReady(p.handle) && shownScope() === "harness" && { id: id(), n: p.handle.view.state.filesChanged, busy: p.handle.view.state.busy, outside: changedOutside() },
         ({ id }) =>
@@ -266,7 +270,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     });
 
     const absolute = (path: string) => {
-        const full = path.startsWith("/") ? path : path.startsWith("~/") && app.hello?.homeDir ? `${app.hello.homeDir}/${path.slice(2)}` : `${worktree() ?? p.handle.view.state.cwd}/${path}`;
+        const full = path.startsWith("/") ? path : path.startsWith("~/") && app.hello?.homeDir ? `${app.hello.homeDir}/${path.slice(2)}` : `${shownRoot()}/${path}`;
         // Files elsewhere in the repository come as ../path.
         const parts: string[] = [];
         for (const part of full.split("/")) {
@@ -358,7 +362,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const commentCounts = createMemo(() => {
         const out = new Map<string, number>();
         // Another worktree's files take no comments, and the session's don't belong on them.
-        if (away()) return out;
+        if (!own()) return out;
         for (const c of reviewComments.list(id())) out.set(absolute(c.path), (out.get(absolute(c.path)) ?? 0) + 1);
         return out;
     });
@@ -395,12 +399,12 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     // The editor opens files in the session's folders only (fs.open confines it); another worktree's file can be revealed in Finder.
     const canOpen = () => {
         const f = shownFile();
-        return Boolean(!away() && f && changeOf(f) !== "deleted" && f.kind !== "repo" && f.kind !== "submodule");
+        return Boolean(own() && f && changeOf(f) !== "deleted" && f.kind !== "repo" && f.kind !== "submodule");
     };
     /** The diff shown is redrawn for a new file, or the same file in another worktree (which takes no comments). */
     const viewKey = createMemo(() => {
         const path = shownFile()?.path;
-        return path ? JSON.stringify([worktree() ?? null, path]) : undefined;
+        return path ? JSON.stringify([own() ? null : shownRoot(), path]) : undefined;
     });
     const awayNote = "Looking at another worktree: comments, Commit and Push are for this session's own folder.";
 
@@ -519,7 +523,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
             </div>
             <Show when={files().length}>
                 <nav class="rv-files" aria-label="Changed files" aria-busy={loading()}>
-                    <For each={files()}>{(f) => <FilePill file={f} on={file()?.path === f.path} onSelect={() => setPicked(f.path)} commit={shownScope() === "uncommitted" && !away()} checked={f.kind !== "folder" && f.kind !== "repo" && !unchecked().has(f.path)} onCheck={(checked) => check(f.path, checked)} comments={commentCounts().get(absolute(f.path))} />}</For>
+                    <For each={files()}>{(f) => <FilePill file={f} on={file()?.path === f.path} onSelect={() => setPicked(f.path)} commit={shownScope() === "uncommitted" && own()} checked={f.kind !== "folder" && f.kind !== "repo" && !unchecked().has(f.path)} onCheck={(checked) => check(f.path, checked)} comments={commentCounts().get(absolute(f.path))} />}</For>
                     <Show when={more()}>
                         <span class="rv-more">
                             {more().toLocaleString()}
@@ -529,7 +533,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                 </nav>
             </Show>
             <div class="insp-body rv-body" aria-busy={loading()}>
-                <Show when={git()?.repo && !away()}>
+                <Show when={git()?.repo && own()}>
                     <div class="rv-pr selectable">
                         <PublishStatus handle={p.handle} request={publishRequest()} onClose={() => setPublishRequest(undefined)} />
                     </div>
@@ -600,11 +604,11 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                 <p class="rv-note">
                     <Show when={files().length}>{where()} </Show>
                     {SCOPE_NOTE[shownScope()]}
-                    <Show when={shownFile() && !away()}> Click a line number, or drag across several, to comment; comments go with your next message.</Show>
-                    <Show when={away()}> {awayNote}</Show>
+                    <Show when={shownFile() && own()}> Click a line number, or drag across several, to comment; comments go with your next message.</Show>
+                    <Show when={!own()}> {awayNote}</Show>
                 </p>
             </div>
-            <Show when={!noRepo() && !away()}>
+            <Show when={!noRepo() && own()}>
                 <div class="insp-foot">
                     <Show when={shownScope() === "uncommitted"}>
                         <span class="grow" title={commitDisabled() ?? "Commit the checked files"}>
