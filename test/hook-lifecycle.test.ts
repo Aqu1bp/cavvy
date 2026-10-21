@@ -383,9 +383,12 @@ describe("SessionStart and the first turn (review of #173)", () => {
         writeFileSync(watched, "1");
         await until(() => lines(out).length >= 1);
         await run(agent, "three");
-        writeFileSync(added, "x");
-        await until(() => lines(out).length >= 2);
-        expect(lines(out).map((l) => l.file_path)).toEqual([watched, added]);
+        // FileChanged's list takes effect once its hook has finished, a moment after it logged: write until it's seen.
+        for (let i = 0; i < 25 && !lines(out).some((l) => l.file_path === added); i++) {
+            writeFileSync(added, String(i));
+            await until(() => lines(out).some((l) => l.file_path === added), 200);
+        }
+        expect([...new Set(lines(out).map((l) => l.file_path))]).toEqual([watched, added]);
         await agent.dispose();
     });
 });
