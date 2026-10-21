@@ -642,38 +642,6 @@
     opacity: 0.55;
 }
 
-/* The Settings rail's footer (Settings.tsx): where the server runs, its dot where the ring would be. */
-.side-foot-text {
-    min-width: 0;
-    color: var(--rail-fg-2);
-}
-
-.side-foot > .conn {
-    margin: 0 9.5px;
-}
-
-.sidebar .conn {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--fg-4);
-    flex: none;
-}
-
-.sidebar .conn-open {
-    background: var(--ok);
-}
-
-.sidebar .conn-connecting,
-.sidebar .conn-reconnecting {
-    background: var(--warn);
-}
-
-.sidebar .conn-unauthorized,
-.sidebar .conn-unavailable {
-    background: var(--danger);
-}
-
 /* ---- Settings: its sections take the list's place ---------------------- */
 
 .sidebar.settings-nav .set-back-wrap {

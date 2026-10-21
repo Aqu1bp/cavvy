@@ -3,7 +3,7 @@
 // when it's been changed.
 
 import { createEffect, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
-import { AlertTriangle, ArrowLeft, ChartColumn, ChevronDown, Copy, ExternalLink, FolderOpen, Info, Keyboard, Minus, Palette, Plug, Plus, Puzzle, RotateCcw, Settings as Gear, SlidersHorizontal, X } from "lucide-solid";
+import { AlertTriangle, ArrowLeft, ChartColumn, ChevronDown, Copy, ExternalLink, FolderOpen, Info, Keyboard, Minus, Palette, Plug, Plus, Puzzle, RotateCcw, SlidersHorizontal, X } from "lucide-solid";
 import { MODE_LABELS, type FollowUpMode, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
 import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
 import { connectCli, editors, refreshEditors } from "../state/actions";
@@ -60,15 +60,6 @@ export function SettingsNav() {
                     )}
                 </For>
             </nav>
-            <span class="grow" />
-            <div class="side-foot">
-                <span class={`conn conn-${app.conn}`} />
-                <span class="side-foot-text truncate">{app.conn === "open" ? "This computer" : "Reconnecting…"}</span>
-                <span class="grow" />
-                <button class="hb lg" aria-pressed="true" title={withShortcut("Close settings", "app:settings")} aria-label="Close settings" onClick={() => setSettingsTab(undefined)}>
-                    <Gear size={16} />
-                </button>
-            </div>
         </SidebarFrame>
     );
 }
