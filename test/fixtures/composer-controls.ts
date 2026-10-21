@@ -9,6 +9,7 @@ import { composerStorage, createComposerStorage } from "../../gui/src/lib/drafts
 import { composingKey, revealMenuOption } from "../../gui/src/lib/composer-menu";
 import { matchSkills, skillToken } from "../../gui/src/lib/commands";
 import { createRunSheet, type RunRequest } from "../../gui/src/lib/run-sheet";
+import { firstSendable, followUpFor, otherFollowUp } from "../../gui/src/lib/queue";
 import type { RunResult } from "../../src/server/protocol";
 
 const saved = new Map<string, string>();
@@ -51,18 +52,23 @@ const replies: ReturnType<typeof Promise.withResolvers<string[]>>[] = [];
 let sends = 0;
 let commandLists = 0;
 const noop = () => undefined;
-const components = Object.fromEntries(["ArrowUp", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "Sparkles", "SquareTerminal", "X", "ModelPicker", "FastModeToggle", "EffortMenu", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring"].map((key) => [key, noop]));
-const deps = { ...solid, ...components, renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken,
+const components = Object.fromEntries(["ArrowUp", "CornerDownRight", "QueueTab", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "Sparkles", "SquareTerminal", "X", "ModelPicker", "FastModeToggle", "EffortMenu", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring"].map((key) => [key, noop]));
+const [working, setWorking] = solid.createSignal(false);
+const sessionState = { cwd: "/workspace", queued: ["joins", "waits"], queueIds: [1, 2], queuedModes: ["steer", "queue"], interactions: [], model: {}, get busy() { return working(); } };
+const sent: { text: string; followUp?: string }[] = [];
+const calls: { method: string; params: any }[] = [];
+const appState = { conn: "open", homeCwd: "/workspace", settings: {} as { followUpBehavior?: string }, models: [] };
+const deps = { ...solid, ...components, renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, firstSendable, followUpFor, otherFollowUp,
     comparePicks, setComparePicks, startRun: runSheet.startRun,
     createLifetimeGuard: () => (fn: any) => fn, wasDeleted: () => false,
-    app: { conn: "open", homeCwd: "/workspace", settings: {}, models: [] },
-    handleFor: () => ({ view: { state: { cwd: "/workspace", queued: [], interactions: [], model: {}, busy: false } }, draft: noop }),
+    app: appState,
+    handleFor: () => ({ view: { state: sessionState }, draft: noop }),
     contextCardOpen: () => false, setContextCardOpen: noop, contextView: () => ({ ring: false }),
     focusComposer: () => 0, modelPickerOpen: () => false, modePickerOpen: () => false,
     setModelPickerOpen: noop, setModePickerOpen: noop, blockedBy: () => false,
     prefs: { enterSends: true }, mod: "⌘", isMod: (e: any) => e.metaKey, interrupt: noop,
-    send: async (_text: string, _attachments: unknown[], opts: { accepted: (id: string) => void }) => { sends++; opts.accepted(session()); return true; }, toast: noop,
-    rpc: { call: async (method: string) => { if (method === "commands.list") { commandLists++; return [{ name: "help", description: "Help" }, { name: "pdf", description: "Read PDFs", skill: true }]; } const reply = Promise.withResolvers<string[]>(); replies.push(reply); return reply.promise; } },
+    send: async (text: string, _attachments: unknown[], opts: { accepted: (id: string) => void; followUp?: string }) => { sends++; sent.push({ text, followUp: opts.followUp }); opts.accepted(session()); return true; }, toast: noop, reportError: noop,
+    rpc: { call: async (method: string, params: any) => { calls.push({ method, params }); if (method === "commands.list") { commandLists++; return [{ name: "help", description: "Help" }, { name: "pdf", description: "Read PDFs", skill: true }]; } const reply = Promise.withResolvers<string[]>(); replies.push(reply); return reply.promise; } },
     window: { innerHeight: 800, matchMedia: () => ({ matches: narrow }) },
     document: { get activeElement() { return focused; }, querySelector: () => modal ? {} : undefined },
     requestAnimationFrame: (fn: () => void) => { frames.push(fn); return frames.length; }, cancelAnimationFrame: noop,
@@ -170,7 +176,36 @@ await Bun.sleep(0);
 assert.deepEqual(composerStorage.history("f"), ["sent from F"]);
 assert.equal(composerStorage.draft("f"), "");
 assert.equal(ta.props.value, "");
+// While a turn runs: Enter does what the setting says (steer by default), mod+shift+enter the other; idle, neither is sent.
+assert.equal(sent.at(-1)!.followUp, undefined);
+setWorking(true);
+assert.match(ta.props.placeholder, /^Steer/);
+input("steer this");
+key("Enter");
+await Bun.sleep(0);
+assert.deepEqual(sent.at(-1), { text: "steer this", followUp: "steer" });
+input("queue this");
+assert.equal(key("Enter", { metaKey: true, shiftKey: true }).prevented, true);
+await Bun.sleep(0);
+assert.deepEqual(sent.at(-1), { text: "queue this", followUp: "queue" });
+appState.settings.followUpBehavior = "queue";
+input("waits by default");
+key("Enter");
+await Bun.sleep(0);
+assert.deepEqual(sent.at(-1), { text: "waits by default", followUp: "queue" });
+input("steers this once");
+key("Enter", { metaKey: true, shiftKey: true });
+await Bun.sleep(0);
+assert.deepEqual(sent.at(-1), { text: "steers this once", followUp: "steer" });
+// Nothing typed: mod+shift+enter sends the first queued message that isn't already steering.
+const sendsBefore = sends;
+key("Enter", { metaKey: true, shiftKey: true });
+assert.equal(sends, sendsBefore);
+assert.deepEqual(calls.at(-1), { method: "session.sendQueuedNow", params: { id: "f", queueId: 2 } });
+appState.settings.followUpBehavior = undefined;
+setWorking(false);
 // Exercise the actual Home submit handler through the run-sheet controller.
+const sessionSends = sends;
 setSession(undefined);
 const models = ["mock:a", "mock:b"];
 const success: RunResult = { ok: true, model: models[0]!, modelName: "A", sessionId: "run-a", branch: "run-a", path: "/workspace/run-a" };
@@ -201,7 +236,7 @@ for (const results of [[failure, failure], [success, success], [success, failure
         assert.equal(ta.props.value, prompt);
     }
 }
-assert.equal(sends, 1); // Multi-model sends never use session.send.
+assert.equal(sends, sessionSends); // Multi-model sends never use session.send.
 await Bun.sleep(2);
 setComparePicks(models);
 input("Pending comparison");

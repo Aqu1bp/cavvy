@@ -3,7 +3,7 @@
 import { createSignal } from "solid-js";
 import { adjacentSession, sidebarEntries, sidebarIds, SESSION_PAGE } from "../lib/session-order";
 import { sidebarOrder } from "./sidebar";
-import type { ArchiveResult, CliSessionInfo, EditorInfo, EffortLevel, GitCommitHead, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
+import type { ArchiveResult, CliSessionInfo, EditorInfo, EffortLevel, FollowUpMode, GitCommitHead, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
 import { copyText, pickFolder } from "../lib/platform";
@@ -180,7 +180,7 @@ export async function exportSession(id: string) {
  * in the box); the toast offers to send it as a message, and `sent` runs if it is.
  * `accepted` identifies the receiving session, including one just created from Home.
  */
-export async function send(text: string, attachments: Attachment[] = [], opts: { literal?: boolean; sent?: () => void; accepted?: (id: string) => void; to?: { id?: string; cwd?: string }; throwErrors?: boolean } = {}): Promise<boolean | "command"> {
+export async function send(text: string, attachments: Attachment[] = [], opts: { literal?: boolean; /** What it does if a turn is running (default: the setting). */ followUp?: FollowUpMode; sent?: () => void; accepted?: (id: string) => void; to?: { id?: string; cwd?: string }; throwErrors?: boolean } = {}): Promise<boolean | "command"> {
     // Where it was typed, even if the user has moved on by the time the toast is clicked.
     let id = opts.to ? opts.to.id : app.activeId;
     const cwd = opts.to ? opts.to.cwd : app.homeCwd;
@@ -211,7 +211,7 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
             id = h.id;
             created = true;
         }
-        await rpc.call("session.send", { id, text, ...toWire(attachments), literal: opts.literal || undefined });
+        await rpc.call("session.send", { id, text, ...toWire(attachments), literal: opts.literal || undefined, ...(opts.followUp ? { mode: opts.followUp } : {}) });
         opts.accepted?.(id);
         // A final server refusal leaves the original Home composer and its draft in place.
         if (created && app.activeId === undefined && app.homeCwd === cwd) setApp("activeId", id);

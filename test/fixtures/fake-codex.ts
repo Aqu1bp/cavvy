@@ -39,6 +39,8 @@
 // FAKE_THREAD_TIER     the service tier a resumed thread is already on (e.g. priority from an earlier turn);
 // FAKE_CONFIG_TIER     the tier Codex's own config gives a new thread
 // FAKE_SLOW_RESUME, FAKE_SLOW_TURN_START  milliseconds before answering thread/resume, turn/start
+// FAKE_STEER_WAKES=1  turn/steer is refused unless its expectedTurnId is the turn running now; in the "slow"
+//                     scenario a steer ends the first turn's wait, and its answer repeats what was steered
 // FAKE_MCP_CALLS      the "mcp" scenario's calls to servers from the thread's config: [{ server?, tool, args }]
 // FAKE_RATE_LIMITS    a JSON file: account/rateLimits/read's result (without it, the method is unknown, as to an
 //                     older Codex); FAKE_LIMIT_UPDATE a JSON file: an account/rateLimits/updated's params, sent as a
@@ -94,7 +96,7 @@ const setTier = (id: string, tier: unknown) => {
     tiers.set(id, typeof tier === "string" ? tier : "default");
     if (tierFile) writeFileSync(tierFile, JSON.stringify(Object.fromEntries(tiers)));
 };
-let current: { threadId: string; turnId: string; interrupted: boolean; wake?: () => void } | undefined;
+let current: { threadId: string; turnId: string; interrupted: boolean; wake?: () => void; steered?: string[]; done?: boolean } | undefined;
 type Tokens = { totalTokens: number; inputTokens: number; cachedInputTokens: number; cacheWriteInputTokens: number; outputTokens: number; reasoningOutputTokens: number };
 /** Each thread's token usage: its running total, its last response's, and the turn that was in. */
 const usageFile = process.env.FAKE_LOG ? process.env.FAKE_LOG + ".usage.json" : undefined;
@@ -145,7 +147,10 @@ let releasedLimits: Promise<void> | undefined;
 async function runTurn(threadId: string, turnId: string, policy: { approvalPolicy?: string; sandboxPolicy?: { type?: string }; approvalsReviewer?: string }) {
     const t: NonNullable<typeof current> = { threadId, turnId, interrupted: false };
     current = t;
-    const finish = (status: string) => notify("turn/completed", { threadId, turn: { id: turnId, status, error: null } });
+    const finish = (status: string) => {
+        t.done = true;
+        notify("turn/completed", { threadId, turn: { id: turnId, status, error: null } });
+    };
     notify("turn/started", { threadId, turn: { id: turnId, status: "inProgress" } });
     for (let i = 0; process.env.FAKE_LIMIT_UPDATE && i < Number(process.env.FAKE_LIMIT_REPEAT ?? 1); i++) notify("account/rateLimits/updated", JSON.parse(readFileSync(process.env.FAKE_LIMIT_UPDATE, "utf-8")));
     // Answer an earlier read after the push, before completing the turn.
@@ -168,6 +173,8 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     if (scenario === "slow" && turnSeq === 1) {
         // The first turn works until interrupted (or a while).
         await Promise.race([new Promise<void>((r) => (t.wake = r)), Bun.sleep(5000)]);
+        // FAKE_STEER_WAKES=1: a steer ends the wait, and the answer says what it heard.
+        if (t.steered?.length && !t.interrupted) notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg-heard-${turnId}`, text: `Heard: ${t.steered.join(" | ")}` } });
         return finish(t.interrupted ? "interrupted" : "completed");
     }
     if (scenario === "steps") {
@@ -469,6 +476,12 @@ async function handle(m: any) {
         case "turn/steer":
             // FAKE_STEER_FAIL: the turn has already ended.
             if (process.env.FAKE_STEER_FAIL) return fail("no active turn to steer");
+            if (process.env.FAKE_STEER_WAKES === "1") {
+                // As Codex checks it: only the turn running now takes it.
+                if (!current || current.done || current.turnId !== p.expectedTurnId) return fail("expected turn does not match the active turn");
+                (current.steered ??= []).push(p.input?.[0]?.text ?? "");
+                current.wake?.();
+            }
             return reply({ turnId: p.expectedTurnId });
         case "thread/compact/start": {
             reply({});

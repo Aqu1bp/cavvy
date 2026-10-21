@@ -38,6 +38,7 @@ import { displayPath } from "../util/files";
 import { gitBranch } from "../util/git";
 import { redact, redactPrefix, lineRedactor } from "../util/redact";
 import { attachedLabel, attachedPrompt, toWire } from "./attachments";
+import { followUpDefault, loadQueue, saveQueue, type FollowUp } from "../agent/queue-store";
 import { RpcError } from "./rpc-error";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
 import { gitChanges } from "./git-changes";
@@ -63,6 +64,7 @@ import type {
     PermissionInteraction,
     PlanLink,
     PlanRef,
+    QueuedMode,
     RewindPlanInfo,
     RewindTargetInfo,
     SessionOp,
@@ -94,6 +96,18 @@ interface Queued {
     attachments?: AttachedPart[];
     /** Sent as a message even though it starts with a /word. */
     literal?: boolean;
+    /** Join the running turn at its next step, or wait for it to end. */
+    mode: FollowUp;
+    /** Restored after a restart: it waits for the user (Send now) rather than run on its own. */
+    held?: boolean;
+}
+
+/** A message the running turn can take: text only (images, files, commands and `!commands` get a turn of their own), read as dispatch reads it. */
+function steerable(q: Queued): boolean {
+    if (q.attachments?.length) return false;
+    if (q.literal) return true;
+    const t = q.text.trim();
+    return !t.startsWith("!") && (!t.startsWith("/") || t.startsWith("//"));
 }
 
 /** The slash commands the server runs itself (the GUI runs the others). */
@@ -280,6 +294,11 @@ export class Runtime {
         if (opts.resumed && cutOffPrompt(this.ui, this.segment, session.messages, session.notices) !== undefined) session.push({ role: "user", content: [{ type: "text", text: INTERRUPTED }], meta: { kind: "interrupt" } });
         const turns = opts.resumed ? replay({ segments, current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() }) : [];
         this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model, this.ui.agents) };
+        // Messages that were waiting when the server stopped: back in the queue, held until the user sends them.
+        if (opts.resumed) {
+            this.queued = loadQueue(session.path, session.meta.id).map((q) => ({ ...q, id: ++this.queueSeq, held: true }));
+            if (this.queued.length) Object.assign(this.view.state, this.queueState());
+        }
         this.ready = this.track(this.initModel());
         void this.hook("SessionStart", { source: opts.resumed ? "resume" : "startup" });
     }
@@ -1716,11 +1735,11 @@ export class Runtime {
     // Prompts
 
     private drainQueued(): string[] {
-        // Messages with images or files wait for their own turn.
-        const take = this.queued.filter((q) => !q.attachments?.length && !q.text.startsWith("/") && !q.text.startsWith("!"));
+        // Messages to steer with; queued ones, held ones and those with images or files wait for their own turn.
+        const take = this.queued.filter((q) => q.mode === "steer" && !q.held && steerable(q));
         if (!take.length) return [];
         this.queued = this.queued.filter((q) => !take.includes(q));
-        this.setState(this.queueState());
+        this.queueUpdated();
         const texts = take.map((q) => q.text);
         // After tool calls they ride along with the results; otherwise they're a prompt of their own.
         const last = this.session.messages[this.session.messages.length - 1];
@@ -1750,15 +1769,17 @@ export class Runtime {
         return texts;
     }
 
-    /** A message from the GUI: a prompt, a slash command, or `!command`. Queued while busy. */
-    async send(text: string, attachments?: AttachedPart[], literal = false): Promise<{ queued: boolean }> {
+    /**
+     * A message from the GUI: a prompt, a slash command, or `!command`. Queued while busy: to steer
+     * the running turn with or to wait for its end (`mode`, else the followUpBehavior setting).
+     */
+    async send(text: string, attachments?: AttachedPart[], literal = false, mode?: FollowUp): Promise<{ queued: boolean }> {
         // Another switch can start while it waits for one.
         while (this.switching) await this.switching.catch(() => undefined);
         this.checkCommitting();
         if (this.closed) throw new Error("This session was closed.");
         // No await between this check and queueing/dispatch: a switch must not change the model we checked.
-        const pdf = attachments?.find((p) => p.type === "file" && p.kind === "pdf");
-        if (pdf && this.model && !readsPdf(this.model)) throw new RpcError(`${this.model.name ?? this.model.id} can't read PDFs. Remove ${pdf.name}, or switch to a model that can.`, "pdf_unsupported");
+        this.checkPdfs(attachments);
         const trimmed = text.trim();
         if (!trimmed && !attachments?.length) return { queued: false };
         if (!literal && attachments?.length && /^\/compact(\s|$)/i.test(trimmed)) throw new RpcError("/compact doesn't take attachments. Send them in a message of their own.");
@@ -1766,12 +1787,20 @@ export class Runtime {
         const unknown = literal ? undefined : this.unknownCommand(text);
         if (unknown) throw new RpcError(`Unknown command /${unknown}`, "unknown_command");
         if (this.busy) {
-            this.queued.push({ id: ++this.queueSeq, text, attachments, literal: literal || undefined });
-            this.setState(this.queueState());
+            const q: Queued = { id: ++this.queueSeq, text, attachments, literal: literal || undefined, mode: mode ?? followUpDefault(this.settings().followUpBehavior) };
+            this.queued.push(q);
+            this.queueUpdated();
+            if (q.mode === "steer" && steerable(q)) this.agent?.queueChanged();
             return { queued: true };
         }
         void this.dispatch(text, attachments, literal).catch((e) => this.notice(redact((e as Error).message), "error"));
         return { queued: false };
+    }
+
+    /** A PDF the session's model can't read is refused before it's sent. */
+    private checkPdfs(attachments: AttachedPart[] | undefined) {
+        const pdf = attachments?.find((p) => p.type === "file" && p.kind === "pdf");
+        if (pdf && this.model && !readsPdf(this.model)) throw new RpcError(`${this.model.name ?? this.model.id} can't read PDFs. Remove ${pdf.name}, or switch to a model that can.`, "pdf_unsupported");
     }
 
     /** The /name a message starts with when it names no command this server or the project has. */
@@ -1917,9 +1946,10 @@ export class Runtime {
     private async runQueued(aborted: boolean) {
         if (this.closed) return;
         if (aborted) return this.returnQueued();
-        const next = this.queued.shift();
+        const next = this.nextQueued();
         if (!next) return;
-        this.setState(this.queueState());
+        this.queued = this.queued.filter((q) => q !== next);
+        this.queueUpdated();
         await this.dispatch(next.text, next.attachments, next.literal).catch((e) => this.notice(redact((e as Error).message), "error"));
     }
 
@@ -1929,11 +1959,70 @@ export class Runtime {
         const text = this.queued.map((q) => q.text).filter((t) => t.trim()).join("\n\n");
         this.engine.draft(this, text, this.queued.flatMap((q) => q.attachments ?? []));
         this.queued = [];
-        this.setState(this.queueState());
+        this.queueUpdated();
+    }
+
+    /** What runs when the turn ends: the first message that isn't held. */
+    nextQueued(): Queued | undefined {
+        return this.queued.find((q) => !q.held);
     }
 
     private queueState() {
-        return { queued: this.queued.map((q) => q.text), queueIds: this.queued.map((q) => q.id), queuedAttached: this.queued.map((q) => attachedLabel(q.attachments)) };
+        return {
+            queued: this.queued.map((q) => q.text),
+            queueIds: this.queued.map((q) => q.id),
+            queuedAttached: this.queued.map((q) => attachedLabel(q.attachments)),
+            queuedModes: this.queued.map((q): QueuedMode => (q.held ? "held" : !steerable(q) ? "turn" : q.mode)),
+        };
+    }
+
+    /** Shown, and saved beside the transcript so a restart doesn't lose it. */
+    private queueUpdated() {
+        this.setState(this.queueState());
+        if (this.session.persisted) saveQueue(this.session.path, this.id, this.queued.map(({ text, mode, attachments, literal }) => ({ text, mode, attachments, literal })));
+    }
+
+    /**
+     * "Send now": a queued message steers the running turn instead of waiting
+     * for its end; one held since a restart runs now (or, while a turn runs,
+     * steers it or waits for it). False when it isn't in the queue any more.
+     */
+    sendQueuedNow(queueId: number): { sent: boolean; started?: boolean } | Promise<{ sent: boolean; started?: boolean }> {
+        // After a model switch, as send() waits for one.
+        if (this.switching) return this.switching.catch(() => undefined).then(() => this.sendQueuedNow(queueId));
+        const q = this.queued.find((x) => x.id === queueId);
+        if (!q) return { sent: false };
+        if (!this.busy) {
+            // What send() checks, before it leaves the queue: a refused one stays there.
+            this.checkCommitting();
+            if (this.closed) throw new Error("This session was closed.");
+            this.checkPdfs(q.attachments);
+            this.queued = this.queued.filter((x) => x !== q);
+            this.queueUpdated();
+            void this.dispatch(q.text, q.attachments, q.literal).catch((e) => this.notice(redact((e as Error).message), "error"));
+            return { sent: true, started: true };
+        }
+        if (!steerable(q)) {
+            if (!q.held) throw new RpcError("Messages with images or files, and commands, can't join a running turn: they run after it.", "not_steerable");
+            q.held = undefined;
+            this.queueUpdated();
+            return { sent: true };
+        }
+        q.held = undefined;
+        q.mode = "steer";
+        this.queueUpdated();
+        this.agent?.queueChanged();
+        return { sent: true };
+    }
+
+    /** Move a queued message to position `to` (0 is next). False when it isn't in the queue any more. */
+    moveQueued(queueId: number, to: number): boolean {
+        const i = this.queued.findIndex((q) => q.id === queueId);
+        if (i < 0) return false;
+        const [q] = this.queued.splice(i, 1);
+        this.queued.splice(Math.max(0, Math.min(this.queued.length, Math.trunc(to))), 0, q!);
+        this.queueUpdated();
+        return true;
     }
 
     /** Out of the queue, by its id (a message the queue has moved past isn't there any more). */
@@ -1941,7 +2030,7 @@ export class Runtime {
         const i = this.queued.findIndex((q) => q.id === queueId);
         if (i < 0) return undefined;
         const [q] = this.queued.splice(i, 1);
-        this.setState(this.queueState());
+        this.queueUpdated();
         return q;
     }
 
@@ -2425,7 +2514,7 @@ export class Runtime {
 
     /** Nothing running, waiting for the user, or still to be delivered to the model: closing it loses nothing. */
     get idle(): boolean {
-        if (this.busy || this.committing || this.queued.length || this.pending.size || this.switching) return false;
+        if (this.busy || this.committing || this.nextQueued() || this.pending.size || this.switching) return false;
         if ([...this.toolState.shells.values()].some((s) => s.exitCode === null)) return false;
         return !(this.agent?.delegatedTasks ?? []).some((t) => t.status === "running" || !t.delivered);
     }

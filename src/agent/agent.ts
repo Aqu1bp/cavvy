@@ -146,7 +146,7 @@ export interface AgentHost {
     /** Persist "don't ask again" rules. */
     saveRules?(rules: string[], scope: "local" | "project" | "user"): void;
     ui: UiBridge;
-    /** Messages the user typed while the agent was busy. */
+    /** Messages the user typed while the agent was busy, to steer the running turn with. */
     drainQueued?(): string[];
 }
 
@@ -338,6 +338,8 @@ export class Agent {
     private retrying?: string;
     /** additionalContext from PostToolUse hooks, sent along with the tool results. */
     private toolHookContext: string[] = [];
+    /** A backend turn that takes steering at once (Codex), told when a message to steer with arrives. */
+    private queueListeners = new Set<() => void>();
     private running = false;
     /** The session is being let go; awaited checkpoints must not append another prompt or tool result. */
     private cutOff = false;
@@ -374,6 +376,11 @@ export class Agent {
 
     get tools(): Tool<any>[] {
         return typeof this.o.tools === "function" ? this.o.tools() : this.o.tools;
+    }
+
+    /** The host has a message to steer the running turn with. API models take it at their next step; a backend that can, now. */
+    queueChanged() {
+        for (const l of [...this.queueListeners]) l();
     }
 
     get busy(): boolean {
@@ -1120,8 +1127,13 @@ export class Agent {
      */
     private backendPrompt(text: string, promptIndex: number, resume?: { synced: number }): string {
         const missed = this.session.messages.slice(resume ? resume.synced : 0, promptIndex).map(withoutStateNotes);
-        // Only that its last turn was stopped, which it never heard (Harness stopped or died part way): said plainly.
-        if (resume && missed.length && missed.every((m) => m.role === "user" && m.meta?.kind === "interrupt")) return `${reminder(BACKEND_CUT_OFF).text}\n\n${text}`;
+        // Only that its last turn was stopped, which it never heard (Harness stopped or died part way), and
+        // Harness's notes to it since (a message that missed that turn): said plainly, not as another model's turn.
+        if (resume && missed.length && missed.every((m) => m.role === "user" && (m.meta?.kind === "interrupt" || m.meta?.kind === "reminder"))) {
+            const kinds = missed.map((m) => (m.role === "user" ? m.meta?.kind : undefined));
+            const notes = missed.filter((_, i) => kinds[i] === "reminder").map(textOf);
+            return [...(kinds.includes("interrupt") ? [reminder(BACKEND_CUT_OFF).text] : []), ...notes, text].join("\n\n");
+        }
         const { text: transcript, shortenedChars } = handoffTranscript(missed, 60_000);
         if (!transcript && !shortenedChars) return text;
         const intro = resume
@@ -1185,6 +1197,12 @@ export class Agent {
             usage: (u, o) => this.recordBackendUsage(u, o),
             context: (tokens) => this.recordBackendContext(tokens),
             sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length, folder),
+            onQueued: (listener) => {
+                this.queueListeners.add(listener);
+                return () => this.queueListeners.delete(listener);
+            },
+            // Saved past the sync cursor (see runBackend), so the next turn is sent them, after a restart too.
+            undelivered: (texts) => this.backendStopReminders.push(`The user sent this while you were working, but your turn ended before it reached you:\n${texts.join("\n\n")}`),
             drainQueued: async (progress) => {
                 if (this.cutOff) return [];
                 const queued = this.o.host.drainQueued?.() ?? [];

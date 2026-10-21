@@ -21,6 +21,7 @@ import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSe
 import { fireHooks } from "../agent/hooks";
 import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder } from "../agent/session";
 import { forkSession } from "../agent/fork";
+import { isFollowUp } from "../agent/queue-store";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { loadSkills, sameSkills, type Skill } from "../agent/skills";
 import { McpManager } from "../mcp/manager";
@@ -1442,6 +1443,7 @@ export class Engine {
             autoCompact: s.autoCompact,
             webSearch: s.webSearch,
             allowBypass: s.permissions?.allowBypass,
+            followUpBehavior: s.followUpBehavior,
             editor: s.editor,
         };
     }
@@ -1465,6 +1467,12 @@ export class Engine {
                 const perms = (s.permissions ??= {});
                 if ("defaultMode" in patch) perms.defaultMode = patch.defaultMode && PERMISSION_MODES.includes(patch.defaultMode) ? patch.defaultMode : undefined;
                 if ("allowBypass" in patch) perms.allowBypass = Boolean(patch.allowBypass) || undefined;
+            }
+            if ("followUpBehavior" in patch) {
+                const v: unknown = patch.followUpBehavior;
+                // null or "" clears it (the default, steer).
+                if (v !== null && v !== "" && v !== undefined && !isFollowUp(v)) throw new RpcError("followUpBehavior must be steer or queue", "invalid");
+                s.followUpBehavior = isFollowUp(v) ? v : undefined;
             }
             if ("editor" in patch) {
                 if (patch.editor && !EDITOR_IDS.includes(patch.editor)) throw new RpcError("Unknown editor", "invalid");
@@ -1798,7 +1806,8 @@ export class Engine {
                     });
                     this.sessionChanged(rt);
                 }
-                return await rt.send(str(p.text ?? "", "text"), attached.length ? attached : undefined, p.literal === true);
+                if (p.mode !== undefined && !isFollowUp(p.mode)) throw new RpcError("mode must be steer or queue", "invalid");
+                return await rt.send(str(p.text ?? "", "text"), attached.length ? attached : undefined, p.literal === true, p.mode);
             }
             case "session.interrupt":
                 this.runtime(p.id).interrupt();
@@ -1914,6 +1923,13 @@ export class Engine {
                 if (!q) return { removed: false };
                 // Edited, it goes back to the window that asked (not to every one showing the session).
                 return p.edit === true ? { removed: true, text: q.text, ...toWire(q.attachments) } : { removed: true };
+            }
+            case "session.sendQueuedNow":
+                return this.runtime(p.id).sendQueuedNow(num(p.queueId, -1));
+            case "session.moveQueued": {
+                const to = num(p.to, -1);
+                if (to < 0) throw new RpcError("to must be a position in the queue", "invalid");
+                return { moved: this.runtime(p.id).moveQueued(num(p.queueId, -1), to) };
             }
             case "session.pin":
             case "session.settle":
