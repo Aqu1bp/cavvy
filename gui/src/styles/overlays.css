@@ -606,8 +606,7 @@
 
 /* ---- Find in the conversation (⌘F) ---------------------------------- */
 
-/* A small glass pill under the title bar, on the right.
-   (.glass in the selector: it outranks transcript.css's older .find-bar rule whatever the load order.) */
+/* A small glass pill under the title bar, on the right. */
 .find-bar.glass {
     position: absolute;
     top: 58px;

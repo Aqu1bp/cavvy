@@ -131,52 +131,6 @@
 
 /* ---- Find in the conversation (⌘F) ---------------------------------- */
 
-.find-bar {
-    position: absolute;
-    top: 10px;
-    right: calc(var(--lane-r) + 12px);
-    z-index: 26;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    height: 36px;
-    padding: 0 6px 0 12px;
-    border-radius: 10px;
-    background: var(--ctl-strong);
-    -webkit-backdrop-filter: blur(16px);
-    backdrop-filter: blur(16px);
-    box-shadow: var(--pop-shadow);
-    animation: rise 160ms var(--ease-out);
-    max-width: calc(100% - 24px);
-}
-
-.find-bar input {
-    width: 220px;
-    min-width: 0;
-    flex: 1;
-    margin-left: 4px;
-    border: 0;
-    background: transparent;
-    font-size: 0.93rem;
-}
-
-.find-bar input:focus-visible {
-    outline: 2px solid var(--accent-text);
-}
-
-.find-bar input::placeholder {
-    color: var(--fg-3);
-    opacity: 1;
-}
-
-
-.find-count {
-    font-size: 0.8rem;
-    color: var(--fg-3);
-    white-space: nowrap;
-    padding: 0 4px;
-}
-
 ::highlight(find-match) {
     background-color: var(--find);
     color: var(--fg);
@@ -188,10 +142,6 @@
 }
 
 @media (forced-colors: active) {
-    .find-bar input:focus-visible {
-        outline-color: Highlight;
-    }
-
     ::highlight(find-match) {
         background-color: Mark;
         color: MarkText;
