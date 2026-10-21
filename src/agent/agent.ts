@@ -536,7 +536,7 @@ export class Agent {
         this.prompted = true;
 
         // Claude Code, Codex: the backend runs the whole turn with its own tools (the prompt as stored: redacted).
-        if (isAgentBackend(this.client)) return this.runBackend(this.client, prompt.content, signal);
+        if (isAgentBackend(this.client)) return this.runBackend(this.client, prompt.content, signal, opts.kind === "wake");
 
         let turns = 0;
         let maxTokenStrikes = 0;
@@ -1208,11 +1208,12 @@ export class Agent {
         return `<conversation-so-far>\n${intro}${shortened}\n\n${transcript}\n</conversation-so-far>\n\n${text}`;
     }
 
-    private async runBackend(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal): Promise<TurnEndReason> {
+    /** `woken`: the turn is for wakes, so its prompt carries others' words (see BackendTurn.synthetic). */
+    private async runBackend(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal, woken = false): Promise<TurnEndReason> {
         // A wake while the backend works is offered to it as a message the user queued is (Codex steers with it at once).
         const stopWaking = this.o.isSubagent ? undefined : this.state.wakes?.onReady(() => this.queueChanged());
         try {
-            return await this.runBackendTurn(backend, parts, signal);
+            return await this.runBackendTurn(backend, parts, signal, woken);
         } finally {
             stopWaking?.();
             this.delegateCalls = [];
@@ -1226,7 +1227,7 @@ export class Agent {
 
     private backendStopReminders: string[] = [];
 
-    private async runBackendTurn(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal): Promise<TurnEndReason> {
+    private async runBackendTurn(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal, woken: boolean): Promise<TurnEndReason> {
         const provider = this.model.provider;
         const name = getProvider(provider)?.name ?? provider;
         const folder = this.backendFolder(provider);
@@ -1278,6 +1279,7 @@ export class Agent {
                 if (typed.length) this.backendStopReminders.push(`The user sent this while you were working, but your turn ended before it reached you:\n${typed.join("\n\n")}`);
                 if (news.length) this.backendStopReminders.push(`This arrived while you were working, but your turn ended before it reached you:\n${news.join("\n\n")}`);
             },
+            fromWake: (text) => wakeTexts.has(text),
             drainQueued: async (progress) => {
                 if (this.cutOff) return [];
                 const queued = this.o.host.drainQueued?.() ?? [];
@@ -1307,7 +1309,8 @@ export class Agent {
         let stopRounds = 0;
         // The user's own message, for the skills it names: its first part, not the files and notes after it.
         // A sub-agent's task is the parent model's words, not the user's: it runs no skill the model may not.
-        const first = !this.o.isSubagent && parts[0]?.type === "text" && text.startsWith(parts[0].text) ? parts[0].text : undefined;
+        // Nor does a wake's, which quotes others (a PR comment's /name or $name).
+        const first = !this.o.isSubagent && !woken && parts[0]?.type === "text" && text.startsWith(parts[0].text) ? parts[0].text : undefined;
         const asked = { request: first, requestAfter: first === undefined ? undefined : text.slice(first.length) };
         let prompt = text;
         let promptImages = images;
@@ -1318,12 +1321,14 @@ export class Agent {
             let result: BackendResult;
             try {
                 // A sub-agent kept going (a Stop hook) takes up a speed change since.
-                result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex, resume), ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork });
+                const sent = this.backendPrompt(prompt, promptIndex, resume);
+                result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: sent, synthetic: woken || sent !== prompt, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork });
                 if (result.resumeFailed) {
                     // Gone, or made in another folder: start a new one with this conversation as context.
                     this.session.forgetBackendSession(provider);
                     this.emit({ type: "notice", level: "warn", message: `${redact(result.error ?? `Couldn't continue the earlier ${name} session`)}. Starting a new one with this conversation as context.` });
-                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex), ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: undefined });
+                    const fresh = this.backendPrompt(prompt, promptIndex);
+                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: fresh, synthetic: woken || fresh !== prompt, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: undefined });
                 }
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);

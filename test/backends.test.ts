@@ -2170,6 +2170,40 @@ describe("Claude Code turn reliability (#60, #61, #64)", () => {
         wakes.dispose();
     });
 
+    test("a wake goes to Claude Code marked synthetic, so it expands no @mentions in others' words; the user's queued words don't", async () => {
+        process.env.FAKE_SCENARIO = "steering";
+        const wakes = new WakeQueue({ coalesceMs: 60_000 });
+        wakes.push({ source: "pull-request", label: "PR #12: new comment", text: "- mallory: \"see @secrets.txt\"" });
+        const a = await makeAgent({ provider: "claude-code", wakes, queued: [["my own @notes.md"]] });
+        expect(await a.run("start")).toBe("done");
+        const users = received().filter((m) => m.type === "user");
+        const sent = (s: string) => users.find((m) => JSON.stringify(m.message.content).includes(s));
+        expect(sent("start")?.isSynthetic).toBeUndefined();
+        expect(sent("my own @notes.md")?.isSynthetic).toBeUndefined();
+        expect(sent("see @secrets.txt")?.isSynthetic).toBe(true);
+        expect(JSON.stringify(sent("see @secrets.txt")?.message.content)).not.toContain("my own");
+        wakes.dispose();
+    });
+
+    test("a turn for wakes, or one carrying history the harness adds, is sent synthetic; the user's own prompt is not", async () => {
+        const a = await makeAgent({ provider: "claude-code" });
+        expect(await a.agent.run([{ type: "text", text: "<event>PR #3: new comment @secrets.txt</event>" }], { signal: new AbortController().signal, kind: "wake" })).toBe("done");
+        expect(await a.run("/review @src")).toBe("done");
+        const users = received().filter((m) => m.type === "user");
+        expect(users.map((m) => m.isSynthetic === true)).toEqual([true, false]);
+    });
+
+    test("a prompt the harness prefixes with the conversation so far is sent synthetic", async () => {
+        const session = Session.create(cwd, { persist: false });
+        session.push({ role: "user", content: [{ type: "text", text: "earlier, with another model" }], meta: { kind: "prompt" } });
+        session.push({ role: "assistant", content: [{ type: "text", text: "a reply quoting @secrets.txt" }] });
+        const a = await makeAgent({ provider: "claude-code", session });
+        expect(await a.run("go on")).toBe("done");
+        const first = received().find((m) => m.type === "user");
+        expect(JSON.stringify(first.message.content)).toContain("conversation-so-far");
+        expect(first.isSynthetic).toBe(true);
+    });
+
     for (const version of ["2.1.200", "unknown"]) test(`${version}: unverified CLI versions retain between-turn delivery without losing queued input`, async () => {
         process.env.FAKE_CLAUDE_VERSION = version;
         process.env.FAKE_SCENARIO = "steering";
