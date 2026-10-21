@@ -179,11 +179,6 @@ export function promptPreview(message: string): string {
     return text.trim() ? `${text} (+${n})` : n[0]!.toUpperCase() + n.slice(1);
 }
 
-/**
- * Where a comment sits in this diff: the index (into `lines`) of the last line it covers, found by
- * its quoted text nearest its old place, so it follows lines that moved. Undefined when those
- * lines aren't here any more (edited, reverted, another view): it's outdated here.
- */
 /** Whether the lines from `from`, going `step`, read as `want` does (nearest first when going back). */
 function nextTo(lines: readonly DiffLine[], from: number, step: 1 | -1, want: readonly string[] | undefined): boolean {
     if (!want?.length) return false;
@@ -195,6 +190,11 @@ function nextTo(lines: readonly DiffLine[], from: number, step: 1 | -1, want: re
     return true;
 }
 
+/**
+ * Where a comment sits in this diff: the index (into `lines`) of the last line it covers, found by
+ * its quoted text and its neighbours, nearest its old place, so it follows lines that moved.
+ * Undefined when those lines aren't here any more (edited, reverted, another view): it's outdated here.
+ */
 export function locate(c: Pick<ReviewComment, "snippet" | "end" | "before" | "after">, lines: readonly DiffLine[]): number | undefined {
     const want = snippetLines(c.snippet);
     if (!want.length) return undefined;
@@ -206,10 +206,11 @@ export function locate(c: Pick<ReviewComment, "snippet" | "end" | "before" | "af
         let match = true;
         for (let k = 1; k < want.length && match; k++) match = lines[i - k]!.text === want[want.length - 1 - k]!.text && (lines[i - k]!.t === "del") === (want[want.length - 1 - k]!.t === "del");
         if (!match || (lines[i]!.t === "del") !== (c.end.side === "old")) continue;
-        // Its neighbours on one side at least, if it knows them: an identical line elsewhere isn't this one.
-        if ((c.before || c.after) && !nextTo(lines, i - want.length, -1, c.before) && !nextTo(lines, i + 1, 1, c.after)) continue;
         const ref = lineRef(lines[i]!);
         const distance = ref ? Math.abs(ref.line - c.end.line) : Infinity;
+        // Its neighbours on one side at least: an identical line elsewhere isn't this one. Without them it
+        // can't tell, so only its own place counts.
+        if (c.before || c.after ? !nextTo(lines, i - want.length, -1, c.before) && !nextTo(lines, i + 1, 1, c.after) : distance !== 0) continue;
         if (distance < bestDistance) {
             best = i;
             bestDistance = distance;

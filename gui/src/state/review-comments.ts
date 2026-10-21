@@ -33,6 +33,25 @@ const valid = (c: unknown): c is ReviewComment => {
     return !!x && typeof x.id === "string" && typeof x.path === "string" && typeof x.text === "string" && typeof x.snippet === "string" && Number.isFinite(x.created) && ref(x.start) && ref(x.end) && lines(x.before) && lines(x.after);
 };
 
+/**
+ * The neighbouring lines of comments sent from this tab, by what they say: the message keeps only the
+ * quoted lines, so ones that come back to the box (a queued message edited, a rewind) get them again.
+ */
+const sentAround = new Map<string, Pick<ReviewComment, "before" | "after">>();
+const sentKey = (c: Pick<ReviewComment, "path" | "snippet" | "text">) => `${c.path}\0${c.snippet}\0${c.text}`;
+const MAX_SENT_AROUND = 500;
+function rememberAround(sent: readonly ReviewComment[]) {
+    for (const c of sent) {
+        if (!c.before && !c.after) continue;
+        const key = sentKey(c);
+        sentAround.delete(key);
+        sentAround.set(key, { ...(c.before ? { before: c.before } : {}), ...(c.after ? { after: c.after } : {}) });
+        if (sentAround.size > MAX_SENT_AROUND) sentAround.delete(sentAround.keys().next().value!);
+    }
+}
+/** A sent comment's neighbouring lines, if it went from this tab. */
+export const aroundOf = (c: Pick<ReviewComment, "path" | "snippet" | "text">): Pick<ReviewComment, "before" | "after"> => sentAround.get(sentKey(c)) ?? {};
+
 export function createReviewCommentStore(storage: () => Storage | undefined, now = Date.now) {
     return createRoot(() => {
         const [all, setAll] = createSignal<ReadonlyMap<string, readonly ReviewComment[]>>(new Map());
@@ -117,7 +136,10 @@ export function createReviewCommentStore(storage: () => Storage | undefined, now
                 }
                 if (entries.length) target.setItem(REVIEW_COMMENTS_KEY, JSON.stringify(Object.fromEntries(entries)));
                 else target.removeItem(REVIEW_COMMENTS_KEY);
-                pending.clear();
+                // Written, or deleted: done. A session of this tab's that didn't fit stays to be written,
+                // and on screen, until there's room.
+                const kept = new Set(entries.map(([id]) => id));
+                for (const id of [...pending.keys()]) if (kept.has(id) || !merged.has(id)) pending.delete(id);
                 // Another window's comments this one hadn't heard of yet show here too.
                 setAll(view(new Map(entries)));
             } catch { /* Quota or private mode: they stay in this tab, and are tried again on the next change. */ }
@@ -175,6 +197,7 @@ export function createReviewCommentStore(storage: () => Storage | undefined, now
             },
             /** Takes out comments that went with a message, unless they've changed since: an edit made meanwhile wasn't sent. */
             removeSent(id: string, sent: readonly ReviewComment[]) {
+                rememberAround(sent);
                 const current = new Map((all().get(id) ?? EMPTY).map((c) => [c.id, c]));
                 const same = sent.filter((c) => {
                     const now = current.get(c.id);

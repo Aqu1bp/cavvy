@@ -170,13 +170,15 @@ function DiffViewContent(p: DiffProps) {
     };
     const span = (s: { anchor: number; head: number }) => ({ lo: Math.min(s.anchor, s.head), hi: Math.max(s.anchor, s.head) });
     const linesIn = (lo: number, hi: number) => rows().slice(lo, hi + 1).flatMap((r) => (r.kind === "line" ? [r.line] : []));
-    /** Up to AROUND lines of the same hunk past `from`, in file order. */
-    const near = (from: number, step: 1 | -1) => {
-        const h = lineAt(from)?.h;
+    /** Up to AROUND lines of the same hunk past `from` in these rows, in file order. */
+    const nearIn = (list: readonly Row[], from: number, step: 1 | -1) => {
+        const at = (i: number) => (list[i]?.kind === "line" ? (list[i] as Line) : undefined);
+        const h = at(from)?.h;
         const out: DiffLine[] = [];
-        for (let i = from + step; out.length < AROUND && lineAt(i)?.h === h; i += step) out.push(lineAt(i)!.line);
+        for (let i = from + step; out.length < AROUND && h !== undefined && at(i)?.h === h; i += step) out.push(at(i)!.line);
         return step === 1 ? out : out.reverse();
     };
+    const near = (from: number, step: 1 | -1) => nearIn(rows(), from, step);
     const lineRows = createMemo(() => (p.comments ? rows().filter((r): r is Line => r.kind === "line") : []));
     // Saved comments being changed: what's typed, by comment id, so a redrawn card (a refresh, another
     // window's write) opens its box again with the text, and the focus if it had it.
@@ -205,6 +207,7 @@ function DiffViewContent(p: DiffProps) {
     };
     /** Before the cards are drawn again: the edit box with the focus gets it back. */
     const keepEditFocus = () => {
+        if (!untrack(editing).size) return;
         const id = (document.activeElement?.closest?.(".dc-box") as HTMLElement | null | undefined)?.dataset.edit;
         if (id && el?.contains(document.activeElement)) editFocus = id;
     };
@@ -247,14 +250,14 @@ function DiffViewContent(p: DiffProps) {
         const lines = now.filter((r): r is Line => r.kind === "line");
         const follow = (lo: number, hi: number) => {
             const was = before.slice(lo, hi + 1).flatMap((r) => (r.kind === "line" ? [r.line] : []));
-            const probe = was.length ? buildComment({ id: "", path: "", lines: was, text: "-" }) : undefined;
+            const probe = was.length ? buildComment({ id: "", path: "", lines: was, before: nearIn(before, lo, -1), after: nearIn(before, hi, 1), text: "-" }) : undefined;
             const i = probe && locate(probe, lines.map((r) => r.line));
             return i === undefined ? undefined : { lo: lines[Math.max(0, i - was.length + 1)]!.idx, hi: lines[i]!.idx };
         };
         const d = untrack(draft);
         if (d) {
             const active = document.activeElement;
-            boxFocus = Boolean(active && rowsEl?.contains(active) && active.closest(".dc-box"));
+            boxFocus = Boolean(active && rowsEl?.contains(active) && active.closest(".dc-box:not([data-edit])"));
             setDraft(follow(d.lo, d.hi));
         }
         const c = untrack(cursor);

@@ -20,7 +20,7 @@ import { AttachmentChips } from "./AttachmentChips";
 import { ReviewCommentChips } from "./ReviewCommentChips";
 import { splitComments, takesComments, withComments } from "../lib/review-comments";
 import { plural } from "../lib/format";
-import { newCommentId, reviewComments } from "../state/review-comments";
+import { aroundOf, newCommentId, reviewComments } from "../state/review-comments";
 import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
 import { createLifetimeGuard } from "../lib/lifetime";
 import { createComposerDraft } from "../lib/composer-draft";
@@ -89,7 +89,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         h()!.setDraft(undefined);
         // Comments sent with it come back as comments, not as their markup.
         const back = splitComments(d.text);
-        if (back.comments.length) reviewComments.restore(h()!.id, back.comments.map((c) => ({ ...c, id: newCommentId(), created: Date.now() })));
+        if (back.comments.length) reviewComments.restore(h()!.id, back.comments.map((c) => ({ ...c, ...aroundOf(c), id: newCommentId(), created: Date.now() })));
         if (back.text) setText((t) => (t.trim() ? `${back.text}\n${t}` : back.text));
         if (d.images?.length || d.files?.length) setAttachments((a) => [...a, ...fromWire(d.images, d.files)]);
         requestAnimationFrame(() => {

@@ -209,8 +209,15 @@ export async function checkDiffComments(root: HTMLElement) {
         setDiff(small);
         await settle();
 
-        // Changing a saved comment survives a refresh, and another window's write: its text and its focus.
-        root.querySelector<HTMLElement>(".dc-slot .dc-card")!.querySelector<HTMLButtonElement>('[aria-label^="Edit comment"]')!.click();
+        // Changing a saved comment survives a refresh, and another window's write: its text and its focus,
+        // even with a new comment open under the same line.
+        const savedCard = root.querySelector<HTMLElement>(".dc-slot .dc-card")!;
+        const savedRow = Number(savedCard.closest(".dc-slot")!.previousElementSibling!.getAttribute("data-i"));
+        pointer("pointerdown", gutter(root, savedRow));
+        pointer("pointerup", gutter(root, savedRow));
+        await settle();
+        check(root.querySelector(".dc-box:not([data-edit])"), "a new comment opens under the commented line");
+        savedCard.querySelector<HTMLButtonElement>('[aria-label^="Edit comment"]')!.click();
         await settle();
         const editBox = () => root.querySelector<HTMLTextAreaElement>(".dc-box[data-edit] .dc-input");
         check(editBox() && document.activeElement === editBox(), "Edit opens a focused box");
@@ -228,6 +235,24 @@ export async function checkDiffComments(root: HTMLElement) {
         const escSave = key(save, "Escape");
         await settle();
         check(escSave.defaultPrevented && !editBox() && JSON.stringify(s.list().map((c) => c.text)) === savedTexts, "Esc on Save drops the edit and keeps the pane");
+        key(root.querySelector<HTMLTextAreaElement>(".dc-input")!, "Escape");
+        await settle();
+
+        // The same line twice: a box open on one doesn't move to the other when its line is edited.
+        const twin = diffOf(([[10, "a();"], [11, "return x;"], [12, "c();"], [29, "b();"], [30, "return x;"], [31, "d();"]] as const).map(([b, text]): DiffLine => ({ t: "add", b, text })));
+        setDiff(twin);
+        await settle();
+        pointer("pointerdown", gutter(root, 4));
+        pointer("pointerup", gutter(root, 4));
+        await settle();
+        await type(root, "On the second");
+        const twinEdited = structuredClone(twin);
+        twinEdited.hunks[0]!.lines[4]!.text = "return y;";
+        setDiff(twinEdited);
+        await settle();
+        check(!root.querySelector(".dc-input"), `the box closes rather than jump to the other copy (${root.querySelector(".dc-input")?.closest(".dc-slot")?.previousElementSibling?.getAttribute("data-i")})`);
+        setDiff(small);
+        await settle();
 
         // The file changes under the comments: moved lines follow, edited ones are outdated.
         const moved = structuredClone(small);

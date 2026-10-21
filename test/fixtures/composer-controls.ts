@@ -13,7 +13,7 @@ import { firstSendable, followUpFor, otherFollowUp } from "../../gui/src/lib/que
 import { canStop } from "../../gui/src/lib/session-status";
 import { splitComments, takesComments, withComments } from "../../gui/src/lib/review-comments";
 import { plural } from "../../gui/src/lib/format";
-import { createReviewCommentStore } from "../../gui/src/state/review-comments";
+import { aroundOf, createReviewCommentStore } from "../../gui/src/state/review-comments";
 import type { RunResult } from "../../src/server/protocol";
 import { applyKeybindingsFile, keymap, matchKey, shortcut, withShortcut } from "../../gui/src/state/keybindings";
 import { eventStrokes } from "../../gui/src/lib/keystrokes";
@@ -74,7 +74,7 @@ const appState = { conn: "open", homeCwd: "/workspace", settings: {} as { follow
 const deps = { ...solid, ...components, renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, firstSendable, followUpFor, otherFollowUp, canStop, keymap, matchKey, withShortcut, shortcut, eventStrokes,
     comparePicks, setComparePicks, startRun: runSheet.startRun,
     splitComments, takesComments, withComments, plural, setReview: noop,
-    reviewComments: commentStore, newCommentId: () => crypto.randomUUID(),
+    aroundOf, reviewComments: commentStore, newCommentId: () => crypto.randomUUID(),
     createLifetimeGuard: () => (fn: any) => fn, wasDeleted: () => false,
     app: appState,
     handleFor: () => ({ view: { state: sessionState }, draft: noop }),

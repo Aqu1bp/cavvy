@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import type { DiffLine } from "../src/server/protocol";
 import { buildComment, formatComment, promptPreview, takesComments, lineRef, linesLabel, linesPhrase, locate, snippetLines, splitComments, withComments, type ReviewComment } from "../gui/src/lib/review-comments";
-import { createReviewCommentStore, MAX_AGE, MAX_PER_SESSION, REVIEW_COMMENTS_KEY } from "../gui/src/state/review-comments";
+import { aroundOf, createReviewCommentStore, MAX_AGE, MAX_PER_SESSION, REVIEW_COMMENTS_KEY } from "../gui/src/state/review-comments";
 import { promptTitle, reviewGist, titleWorthy } from "../src/server/runtime";
 
 const ctx = (a: number, b: number, text: string): DiffLine => ({ t: "ctx", a, b, text });
@@ -160,7 +160,7 @@ describe("finding a comment's lines again", () => {
         add(3 + shift, "const b = 3;"),
         ctx(3, 4 + shift, "}"),
     ];
-    const c = comment([add(2, "const a = 2;"), add(3, "const b = 3;")]);
+    const c = buildComment({ id: "c1", path: "src/a.ts", lines: [add(2, "const a = 2;"), add(3, "const b = 3;")], before: [ctx(1, 1, "import x;"), del(2, "const a = 1;")], after: [ctx(3, 4, "}")], text: "Look at this", now: 1000 })!;
 
     test("in the same place", () => {
         expect(locate(c, file())).toBe(3);
@@ -181,10 +181,18 @@ describe("finding a comment's lines again", () => {
         expect(locate(d, [add(2, "same"), del(2, "same")])).toBe(1);
     });
 
-    test("the copy nearest its old place wins when the lines repeat", () => {
-        const one = comment([add(50, "}")]);
-        const lines = [add(10, "}"), add(48, "}"), add(90, "}")];
-        expect(locate(one, lines)).toBe(1);
+    test("the copy nearest its old place wins when the lines and their neighbours repeat", () => {
+        const one = buildComment({ id: "n", path: "a", lines: [add(50, "}")], before: [add(49, "x();")], text: "x", now: 1 })!;
+        const lines = [add(9, "x();"), add(10, "}"), add(47, "x();"), add(48, "}"), add(89, "x();"), add(90, "}")];
+        expect(locate(one, lines)).toBe(3);
+    });
+
+    test("without its neighbours (saved before they were kept), only its own place counts", () => {
+        const bare = comment([add(30, "return x;")]);
+        const lines = [add(11, "return x;"), add(30, "return x;")];
+        expect(locate(bare, lines)).toBe(1);
+        expect(locate(bare, [add(11, "return x;"), add(30, "return y;")])).toBeUndefined();
+        expect(locate(bare, [add(11, "return x;"), add(31, "return x;")])).toBeUndefined(); // moved: outdated, not guessed
     });
 
     test("with the same line twice, editing the commented one makes it outdated, not moved to the other", () => {
@@ -205,9 +213,9 @@ describe("finding a comment's lines again", () => {
         expect(locate(on30, twice(3))).toBe(7); // moved down: still followed
         expect(locate(on30, twice(0, "return y;"))).toBeUndefined(); // edited: outdated, though line 11 reads the same
         expect(locate(on30, twice(2, "return x;", "b2();"))).toBe(6); // moved, and a neighbour edited: the other side still holds
-        // Without its neighbours (a comment put back from a sent message), the nearest copy is taken, as before.
+        // Without its neighbours, it isn't moved to the other copy either.
         const bare = { ...on30, before: undefined, after: undefined };
-        expect(locate(bare, twice(0, "return y;"))).toBe(1);
+        expect(locate(bare, twice(0, "return y;"))).toBeUndefined();
     });
 
     test("stays fast on a long diff with many comments", () => {
@@ -343,6 +351,36 @@ describe("keeping comments between reloads", () => {
         a.flush();
         b.refresh();
         for (const st of [a, b]) expect(st.list("s1").map((x) => [x.id, x.text])).toEqual([["edited", "newer, unsent"]]);
+    });
+
+    test("a sent comment that comes back to the box gets its neighbouring lines again", () => {
+        const store = createReviewCommentStore(() => undefined);
+        const withAround = buildComment({ id: "w", path: "a.ts", lines: [add(30, "return x;")], before: [add(29, "b();")], after: [add(31, "d();")], text: "this one", now: 1 })!;
+        store.add("s", withAround);
+        store.removeSent("s", [withAround]);
+        const back = splitComments(withComments("Hi", [withAround])).comments[0]!;
+        expect(back.before).toBeUndefined();
+        expect(aroundOf(back)).toEqual({ before: ["+b();"], after: ["+d();"] });
+        expect(aroundOf({ ...back, text: "something else" })).toEqual({});
+    });
+
+    test("past the storage budget, the sessions left out of storage keep their comments in this tab", () => {
+        const s = memory();
+        const store = createReviewCommentStore(() => s, () => 5000);
+        const big = (id: string, created: number) => c(id, created, "x".repeat(400_000));
+        store.add("old", big("o", 2000));
+        store.add("mid", big("m", 3000));
+        store.add("new", big("n", 4000));
+        store.flush();
+        const saved = Object.keys(JSON.parse(s.data.get(REVIEW_COMMENTS_KEY)!));
+        expect(saved).toEqual(["mid", "new"]); // the oldest session didn't fit
+        expect(store.list("old").map((x) => x.id)).toEqual(["o"]);
+        // Still there after another window writes, and tried again once there's room.
+        store.refresh();
+        expect(store.list("old").map((x) => x.id)).toEqual(["o"]);
+        store.remove("mid", ["m"]);
+        store.flush();
+        expect(Object.keys(JSON.parse(s.data.get(REVIEW_COMMENTS_KEY)!)).sort()).toEqual(["new", "old"]);
     });
 
     test("two windows adding to the same session before either writes keep both", () => {
