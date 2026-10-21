@@ -483,7 +483,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const interactions = () => st()?.interactions ?? [];
     /** The status row: while a turn runs, unless a request card already says what's happening. */
     const working = () => Boolean(p.sessionId && busy() && !interactions().length);
-    const since = () => h()?.view.turns?.at(-1)?.startedAt ?? st()?.activity?.since;
+    /** Compacting while idle: no turn runs, so it counts from the compaction's start (the placeholder says a message stops it). */
+    const idle = () => Boolean(st()?.activity?.idle);
+    const since = () => (idle() ? st()?.activity?.since : (h()?.view.turns?.at(-1)?.startedAt ?? st()?.activity?.since));
     const elapsed = () => (since() === undefined ? "" : turnDuration(Math.max(0, now() - since()!)));
     /** Puts an @ where the caret is (after a space), which opens the file menu. */
     const mention = () => {

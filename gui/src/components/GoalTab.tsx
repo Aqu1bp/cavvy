@@ -80,7 +80,7 @@ export function GoalTab(p: { sessionId: string; goal: GoalState }) {
                 </button>
             </div>
             <Show when={open() && details().length}>
-                <div class="goal-details">
+                <div class="goal-details selectable">
                     {details().map((d) => (
                         <p>{d}</p>
                     ))}

@@ -80,7 +80,7 @@ function Head(p: { icon: JSX.Element; title: string; aside?: string; sub?: JSX.E
         <>
             <div class="ask-h">
                 <span class="ask-ic">{p.icon}</span>
-                <span class="ask-title">{p.title}</span>
+                <span class="ask-title selectable">{p.title}</span>
                 <span class="grow" />
                 <Show when={p.aside}>
                     <span class="aside truncate" title={p.aside}>
@@ -89,7 +89,7 @@ function Head(p: { icon: JSX.Element; title: string; aside?: string; sub?: JSX.E
                 </Show>
             </div>
             <Show when={p.sub}>
-                <div class="itab-sub">{p.sub}</div>
+                <div class="itab-sub selectable">{p.sub}</div>
             </Show>
         </>
     );
@@ -175,25 +175,25 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
             />
             <div class="itab-body">
                 <Show when={p.it.plain}>
-                    <div class="itab-desc">
+                    <div class="itab-desc selectable">
                         {p.it.plainLabel ?? "AI summary"}: <b>{p.it.plain}</b>
                     </div>
                 </Show>
                 <Show when={p.it.dangerous}>
-                    <div class="itab-warn">
+                    <div class="itab-warn selectable">
                         <AlertTriangle size={14} /> {p.it.reason ?? "This action looks potentially destructive."}
                     </div>
                 </Show>
                 <Show when={p.it.command !== undefined}>
                     <pre class="itab-code ask-cmd mono">{p.it.command}</pre>
                     <Show when={p.it.description}>
-                        <div class="itab-desc why">{p.it.description}</div>
+                        <div class="itab-desc why selectable">{p.it.description}</div>
                     </Show>
                     <Show when={p.it.hosts?.length}>
-                        <div class="itab-desc why">Sandboxed, with network access to {p.it.hosts!.join(", ")}</div>
+                        <div class="itab-desc why selectable">Sandboxed, with network access to {p.it.hosts!.join(", ")}</div>
                     </Show>
                     <Show when={p.it.secrets?.length}>
-                        <div class="itab-desc secret-names">
+                        <div class="itab-desc secret-names selectable">
                             <KeyRound size={13} /> It gets <span class="mono">{p.it.secrets!.map((n) => `$${n}`).join(", ")}</span> in its environment.
                         </div>
                     </Show>
@@ -207,18 +207,18 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                 <Show when={p.it.url}>
                     <div class="itab-code mono">{p.it.url}</div>
                     <Show when={p.it.description}>
-                        <div class="itab-desc why">{p.it.description}</div>
+                        <div class="itab-desc why selectable">{p.it.description}</div>
                     </Show>
                 </Show>
                 <Show when={p.it.json}>
-                    <div class="itab-desc">{p.it.title}</div>
+                    <div class="itab-desc selectable">{p.it.title}</div>
                     <pre class="itab-code mono">{p.it.json}</pre>
                 </Show>
                 <Show when={!p.it.command && !p.it.diff && !p.it.path && !p.it.url && !p.it.json}>
-                    <div class="itab-desc">{p.it.title}</div>
+                    <div class="itab-desc selectable">{p.it.title}</div>
                 </Show>
                 <Show when={!p.it.dangerous && p.it.reason && p.it.toolName !== "Bash" && p.it.toolName !== "Monitor"}>
-                    <div class="itab-desc why">{p.it.reason}</div>
+                    <div class="itab-desc why selectable">{p.it.reason}</div>
                 </Show>
                 <Show when={feedback() !== undefined}>
                     <textarea
@@ -383,7 +383,7 @@ function SecretCard(p: { sessionId: string; it: SecretInteraction }) {
         <>
             <Head icon={<KeyRound size={16} />} title={`The agent asks for a secret: ${p.it.name}`} aside="Only its shell commands see the value" />
             <div class="itab-body">
-                <p class="secret-purpose" id={descriptionId}>{p.it.purpose}<span class="sr-only"> At least {MIN_SECRET} characters.</span></p>
+                <p class="secret-purpose selectable" id={descriptionId}>{p.it.purpose}<span class="sr-only"> At least {MIN_SECRET} characters.</span></p>
                 <div class="secret-field">
                     <input
                         ref={input}
