@@ -9,6 +9,7 @@
 //   "slow"           streams a long answer slowly
 //   "agents"         hands two reviews to sub-agents on other models (Task), then sums up
 //   "note"           a sub-agent that writes a file (asks permission in Manual mode)
+//   "background"     a sub-agent in the background (Task run_in_background), and a turn that goes on meanwhile
 //   "first message"  says what the user's first message was, and how many they've sent
 //   "pause"          a short answer after a moment's wait (time to queue a message meanwhile)
 //   "reject400"      the request is refused (HTTP 400, as for a bad request)
@@ -17,6 +18,8 @@
 //   "untitled"       the request for the session's title is refused (HTTP 400)
 //   "stubborn"       runs a command that ignores being told to stop (SIGTERM)
 //   "waitcheck"      starts a background command, then waits and checks it in one response
+//   "use the x skill" loads skill x (Skill tool), then quotes the start of its instructions
+//   "schedule"       schedules the test suite for weekday mornings (CronCreate)
 //   anything else    a short markdown answer
 //
 //   bun scripts/mock-llm.ts [--port 4010] [--delay 12]
@@ -96,6 +99,15 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
             { text: tests ? TESTS_REPORT : AUTH_REPORT },
         ];
         return steps[toolRounds];
+    }
+    if (/\bbackground\b/.test(p)) {
+        if (toolRounds === 0)
+            return {
+                text: "I'll have a reviewer look at the tests in the background while I check the auth module.",
+                calls: [{ name: "Task", args: { description: "Find gaps in sign-in tests", prompt: "Subtask: check which tests cover sign-in and list what's missing.", subagent_type: "general-purpose", model: "mock:mock-haiku", run_in_background: true } }],
+            };
+        if (toolRounds === 1) return { text: "While it works, the auth module:", calls: [{ name: "Read", args: { file_path: "src/auth/index.ts" } }] };
+        return { text: "Strategies are registered in `src/auth/index.ts`. The test review is still running in the background; its findings come with your next message." };
     }
     if (/\bnote\b/.test(p)) {
         if (toolRounds === 0)
@@ -184,12 +196,22 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         if (toolRounds < 3) return { text: toolRounds === 0 ? "I'll track this as a short list." : undefined, calls: [{ name: "TodoWrite", args: { todos: todos(toolRounds) } }] };
         return { text: "All three steps are done." };
     }
+    if (/\bschedule\b/.test(p)) {
+        if (toolRounds === 0) return { text: "I'll set that up.", calls: [{ name: "CronCreate", args: { cron: "57 8 * * 1-5", prompt: "Run the test suite and summarize any failures", durable: true } }] };
+        return { text: `Done: the test suite runs on weekday mornings at 8:57. ${lastResult.match(/Next run: [^.]*/)?.[0] ?? ""}. It's saved with this session, and recurring schedules stop after 7 days.` };
+    }
     // Starts a background command, then waits a moment and checks it in one response (the check queues behind the wait).
     if (/\bwaitcheck\b/.test(p)) {
         if (toolRounds === 0) return { text: "Starting it.", calls: [{ name: "Bash", args: { command: "sleep 2", description: "Run the slow suite", run_in_background: true } }] };
         const shell = /bash_\d+/.exec(lastResult)?.[0];
         if (toolRounds === 1 && shell) return { calls: [{ name: "Bash", args: { command: "sleep 1; echo done", description: "Wait for it" } }, { name: "BashOutput", args: { bash_id: shell } }] };
         return { text: "Done." };
+    }
+    // "use the <name> skill": loads it (Skill), then says what its instructions begin with.
+    const skill = p.match(/\buse the ([a-z0-9][a-z0-9:_-]*) skill\b/);
+    if (skill) {
+        if (toolRounds === 0) return { text: `Loading the ${skill[1]} skill.`, calls: [{ name: "Skill", args: { skill: skill[1] } }] };
+        if (toolRounds === 1) return { text: `Following the skill. It starts: ${lastResult.split("\n").find((l) => l.trim() && !l.startsWith("<") && !l.startsWith("Base directory")) ?? lastResult.slice(0, 80)}` };
     }
     if (/\bstubborn\b/.test(p)) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: "trap '' TERM; sleep 3", description: "Wait, ignoring SIGTERM" } }] } : { text: "Done." };
     if (/\bslow\b/.test(p)) return { reasoning: "Let me think about this carefully. ".repeat(6), text: Array.from({ length: 12 }, (_, i) => `Paragraph ${i + 1}: streaming text arrives a few words at a time so the interface can be checked for smooth rendering and stable scrolling.`).join("\n\n") };
@@ -209,6 +231,7 @@ function titleFor(prompt: string): string {
     if (/\btodo\b/.test(p)) return "Track SSO tasks";
     if (/\bagents?\b/.test(p)) return "Review auth with agents";
     if (/\bnote\b/.test(p)) return "Write a release note";
+    if (/\bbackground\b/.test(p)) return "Review tests in the background";
     return prompt.split(/\s+/).slice(0, 4).join(" ").replace(/^\w/, (c) => c.toUpperCase());
 }
 

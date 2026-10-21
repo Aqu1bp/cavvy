@@ -20,9 +20,9 @@
 // failure) goes to the reviewer and runs unsandboxed if it's allowed. Without
 // a sandbox, read-only commands run and the rest go to the reviewer.
 
-import { existsSync, readdirSync, realpathSync, statSync } from "fs";
+import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "fs";
 import { homedir, tmpdir } from "os";
-import { dirname, join } from "path";
+import { dirname, join, resolve } from "path";
 import type { HiddenReason, Tool } from "../tools/types";
 import type { PermissionMode } from "./modes";
 import { sandboxAllowedHosts, sandboxExcludedCommands, type Settings } from "../config/settings";
@@ -87,6 +87,28 @@ const SENSITIVE_HOME = [".ssh", ".aws", ".gnupg", ".kube", ".docker/config.json"
  */
 function pathForms(p: string): string[] {
     return [...new Set([p, canonical(p)].flatMap(spellings))];
+}
+
+/**
+ * In a sub-agent's own memory folder, as written and where its symlinks lead:
+ * notes it keeps for its own prompt, not configuration (for that agent alone).
+ * The folder and the agent-memory folder holding it must be real folders: a
+ * link there could make `.harness` itself (or its agents) the "memory".
+ */
+function inMemory(p: string, dir: string): boolean {
+    const real = resolve(dir);
+    if ([real, dirname(real)].some(isLink)) return false;
+    const dirs = [real, canonical(real)];
+    const inside = (x: string) => dirs.some((d) => x !== d && isInside(x, d));
+    return inside(resolve(p)) && isInside(canonical(p), dirs[1]!) && canonical(p) !== dirs[1] && !/(^|\/)\.git(\/|$)/.test(p);
+}
+
+function isLink(p: string): boolean {
+    try {
+        return lstatSync(p).isSymbolicLink();
+    } catch {
+        return false;
+    }
 }
 
 /** What isHarnessConfig looks for in a path. */
@@ -163,8 +185,9 @@ export class PermissionChecker {
         this.approvals = [];
     }
 
-    check(tool: Tool<any>, input: any, mode: PermissionMode, cwd: string): Decision {
-        const d = this.decide(tool, input, mode, cwd);
+    /** `own.memoryDir`: a sub-agent's memory folder (src/agent/agents.ts), which isn't configuration for that agent. */
+    check(tool: Tool<any>, input: any, mode: PermissionMode, cwd: string, own?: { memoryDir?: string }): Decision {
+        const d = this.decide(tool, input, mode, cwd, own?.memoryDir);
         if (d.behavior !== "ask") return d;
         // Rules that ask every time keep asking; anything else the user already said yes to runs.
         if (!d.rule && this.approved.has(this.actionKey(tool, input, cwd, d.sandbox))) return { behavior: "allow", remembered: true, reason: "approved earlier this session", ...(d.sandbox ? { sandbox: true } : {}), ...(d.hosts ? { hosts: d.hosts } : {}) };
@@ -343,7 +366,7 @@ export class PermissionChecker {
         return rules.length > 0 && findMatch(rules, { toolName: "Bash", command: cmd }, this.root, "allow") !== undefined;
     }
 
-    private decide(tool: Tool<any>, input: any, mode: PermissionMode, cwd: string): Decision {
+    private decide(tool: Tool<any>, input: any, mode: PermissionMode, cwd: string, memoryDir?: string): Decision {
         const s = this.settings();
         const allow = [...(s.permissions?.allow ?? []), ...this.sessionAllow, ...this.grants(cwd).rules];
         const deny = s.permissions?.deny ?? [];
@@ -391,7 +414,7 @@ export class PermissionChecker {
 
         // The model must not be able to widen its own permissions (settings,
         // hooks, MCP servers) or plant git hooks without the user seeing it.
-        if (tool.category === "edit" && t.path && this.isHarnessConfig(t.path)) {
+        if (tool.category === "edit" && t.path && this.isHarnessConfig(t.path) && !(memoryDir && inMemory(t.path, memoryDir))) {
             return { behavior: "ask", config: true, reason: "This file configures the harness or git itself (permissions, hooks, MCP servers); changes always need your approval." };
         }
         if (tool.name === "Bash") {

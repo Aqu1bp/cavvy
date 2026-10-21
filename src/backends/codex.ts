@@ -427,6 +427,12 @@ class CodexTurn {
     /** What the user said when declining something, when it can't go into the running turn: it starts the next one. */
     private followUp?: string;
     private followUps = 0;
+    /** Messages the user steered with, one after another (each waits for the one before). */
+    private steering: Promise<void> = Promise.resolve();
+    /** Steered messages the turn ended before taking: they start the next. */
+    private unsteered: string[] = [];
+    /** One came while no turn was running (it was starting): steered once it is. */
+    private steerWaiting = false;
     /** Why an approval was refused, by item, for the item's result. */
     private refusals = new Map<string, string>();
     private turnDone?: () => void;
@@ -479,6 +485,8 @@ class CodexTurn {
             } else void this.rpc.proc.kill(); // still starting: nothing to interrupt
         };
         t.signal.addEventListener("abort", onAbort, { once: true });
+        // A message to steer with goes into the running turn as it's sent (turn/steer), not at its end.
+        const stopSteering = opts.compact ? undefined : this.host.onQueued?.(() => this.steerQueued());
         try {
             await withTimeout(handshake(this.rpc, Boolean(accountPermissions)), 30_000, "Codex didn't start (no answer to initialize)");
             const account = parseAccount(await this.rpc.request("account/read", {}));
@@ -566,6 +574,8 @@ class CodexTurn {
                         const r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, ...(accountPermissions ? { permissions: accountPermissionProfile(mode, t.readOnly) } : { sandboxPolicy: policy.sandboxPolicy }), approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
                         this.turnId = r?.turn?.id;
                         if (this.turnId) this.turnsSeen.add(this.turnId);
+                        // Sent while the turn was starting: it can take them now.
+                        if (this.turnId && this.steerWaiting) this.steerQueued();
                     });
                     if (serviceTier !== undefined) tierNow = serviceTier ?? "default";
                     this.turnId = undefined;
@@ -575,11 +585,16 @@ class CodexTurn {
                     this.restartFor = undefined;
                     if (restart) {
                         text = `<system-reminder>\nThe user switched the permission mode to ${restart === "plan" ? "plan mode" : `"${restart}"`} while you were working, so your turn was stopped and resumes under it. Continue from where you were, within the new mode.\n</system-reminder>`;
+                        // A steer the interrupt beat goes in with it, not after the restarted turn.
+                        await this.steering;
+                        if (this.unsteered.length) text = [text, ...this.unsteered.splice(0)].join("\n\n");
                         continue;
                     }
+                    // A steer on its way when the turn ended: whether Codex took it decides what's next.
+                    await this.steering;
                     const followUp = this.followUp && this.followUps++ < 5 ? this.followUp : undefined;
                     this.followUp = undefined;
-                    const next = followUp ? [followUp] : await this.host.drainQueued();
+                    const next = followUp ? [followUp] : this.unsteered.length ? this.unsteered.splice(0) : await this.host.drainQueued(() => this.progress());
                     if (!next.length) break;
                     text = next.join("\n\n");
                 }
@@ -590,9 +605,14 @@ class CodexTurn {
             if (!this.aborted) this.failure = redact((e as Error).message);
         } finally {
             stopAccountWatch();
+            stopSteering?.();
             t.signal.removeEventListener("abort", onAbort);
             if (abortTimer) clearTimeout(abortTimer);
             await this.rpc.proc.stop(1000);
+            // Settled once Codex is gone (its pending requests fail): nothing records a prompt after the turn's end.
+            await this.steering;
+            // Recorded as sent but never taken (the turn failed or was stopped): saved for the next turn.
+            if (this.unsteered.length) this.host.undelivered?.(this.unsteered.splice(0));
         }
         for (const [id, it] of this.items) this.endItem(id, it, this.aborted ? "Interrupted by user" : it.sub ? "Stopped with the sub-agent." : "Codex stopped before this finished.", true);
         // Sub-agents still working stopped with Codex.
@@ -600,7 +620,7 @@ class CodexTurn {
         const text = this.texts.join("\n\n");
         const answer = answerOf(this.answer) || undefined;
         if (this.aborted) return { reason: "aborted", text, answer, actions: this.actions };
-        if (this.failure) return { reason: "error", text, answer, actions: this.actions, error: this.limitHit ? `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached. ${resetSentence(this.limits?.resetsAt, "Codex")} Choose another account with /account or the plan meter, then send again.` : this.failure };
+        if (this.failure) return { reason: "error", text, answer, actions: this.actions, error: this.limitHit ? `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached. ${resetSentence(this.limits?.resetsAt, "Codex")} Choose another account with /account or the plan meter, then send again.` : this.failure, ...(this.limitHit ? { limit: { resetsAt: this.limits?.resetsAt } } : {}) };
         return { reason: "done", text, answer, actions: this.actions };
     }
 
@@ -1388,6 +1408,33 @@ class CodexTurn {
         if (a.fromUser) this.steer(a.message, true, from);
         else this.steer(`<system-reminder>\n${APP_TITLE} refused that: ${a.message}\n</system-reminder>`, false, from);
         return "decline";
+    }
+
+    /** What the turn has said and done so far, taken out: recorded before a message the user sent meanwhile. */
+    private progress(): BackendResult {
+        return { reason: "done", text: this.texts.splice(0).join("\n\n"), actions: this.actions.splice(0) };
+    }
+
+    /**
+     * The user's messages to steer with, into the running turn. Taken from the
+     * queue only while a turn is running (else its end takes them), and once
+     * recorded; one Codex refuses (its turn had just ended, failed or was
+     * stopped) starts the next turn.
+     */
+    private steerQueued() {
+        this.steering = this.steering.then(async () => {
+            const turnId = this.turnId;
+            this.steerWaiting = !turnId;
+            if (this.aborted || !this.threadId || !turnId) return;
+            const texts = await this.host.drainQueued(() => this.progress());
+            if (!texts.length) return;
+            const text = texts.join("\n\n");
+            try {
+                await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: turnId, input: this.input(text, []) });
+            } catch {
+                this.unsteered.push(text);
+            }
+        }).catch(() => {});
     }
 
     /**

@@ -6,8 +6,8 @@
 // already synced up to those messages: the next turn resumes it natively
 // (--resume, thread/resume) and nothing imported is sent again.
 
-import { lstatSync, readdirSync, realpathSync } from "fs";
-import { join, resolve } from "path";
+import { lstatSync, readdirSync, realpathSync, rmSync } from "fs";
+import { dirname, join, resolve } from "path";
 import { projectStateDir } from "../config/paths";
 import { cliLinks, Session, type CliLink } from "../agent/session";
 import { defaultModelFrom, type ProviderListing } from "../providers/models";
@@ -16,6 +16,7 @@ import { account, accountRealPath } from "../providers/accounts";
 import { modelRef, parseModelRef, type AssistantMessage } from "../providers/types";
 import type { CliSessionEntry, CliSource, CliTranscript } from "./cli-sessions";
 import { UiLog } from "./history";
+import { pieces } from "./session-delete";
 
 /** "claude-code:<id>" for a CLI session; ids compared without case. */
 export function linkKey(source: string, id: string): string {
@@ -135,6 +136,17 @@ export function writeImportedSession(o: { cwd: string; entry: CliSessionEntry; t
         session.setBackendSession(entry.source, entry.id, session.messages.length, accountRealPath(account(entry.source).folder));
         // Dedup must only see the import once all messages and the resume id are saved.
         session.setImported({ source: entry.source, id: entry.id, startedAt: entry.startedAt, importedAt: Date.now(), messages, omitted: transcript.omitted });
+    } catch (e) {
+        // Half an import would list as a normal session, and a retry would import it again beside it.
+        // Removed while still held, so no other process takes it up in between; the write's own error is what's reported.
+        for (const { live } of pieces(dirname(session.path), session.meta.id)) {
+            try {
+                rmSync(live, { recursive: true, force: true });
+            } catch {
+                // left behind; the import still failed
+            }
+        }
+        throw e;
     } finally {
         session.release();
     }

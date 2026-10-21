@@ -78,7 +78,7 @@ const App = component(appSource.slice(appSource.indexOf("export function App")),
     // Stubs first: a component given explicitly below wins.
     ...Object.fromEntries(widgets.map((tag) => [tag, () => node(tag)])),
     RenderBoundary: boundary(), Spinner: () => node("Spinner"), activate: second.activate, app: second.app, handleFor: second.handleFor, restoreActiveSession: second.restoreActiveSession,
-    prefs: { sidebar: false }, isTauri: mode === "desktop", os: "other",
+    prefs: { sidebar: false }, isTauri: mode === "desktop", os: "other", setEnterSends() {}, actionOf: () => undefined,
     settingsTab: () => undefined, agentFocus: () => undefined, review: () => undefined,
     attentionCount: () => 0, setAgentFocus() {}, setReview() {}, onMount() {},
 });

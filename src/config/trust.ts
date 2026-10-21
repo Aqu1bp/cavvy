@@ -91,5 +91,8 @@ export function projectConfigSummary(cwd: string, has: (path: string) => boolean
     if (has(paths.projectAgents(cwd))) found.push(".harness/agents/");
     // Agent CLIs that are turned on load their own project configuration only in a folder the user trusted.
     for (const p of ["claude-code", "codex"] as const) if (readAgentConfig(p)) found.push(...agentProjectConfig(cwd, p, has));
-    return found;
+    // Skills are instructions for the model, read natively from both folders whatever the model (src/agent/skills.ts).
+    if (has(join(cwd, ".harness", "skills"))) found.push(".harness/skills/");
+    if (has(join(cwd, ".claude", "skills"))) found.push(".claude/skills/");
+    return [...new Set(found)];
 }

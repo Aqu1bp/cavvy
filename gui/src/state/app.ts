@@ -18,7 +18,8 @@ export type { Toast } from "../lib/toasts";
 import { DelayedPending } from "../lib/delayed-pending";
 import { safeRenderText } from "../lib/render-error";
 import { afterFailedReopen } from "../lib/reopen";
-import { jumpTarget, setFindOpen, setJumpTarget } from "./ui";
+import { jumpTarget, setFindOpen, setJumpTarget, setSettingsTab } from "./ui";
+import { applyKeybindingsFile, keymap } from "./keybindings";
 import { orderSessions } from "../lib/session-order";
 import { composerStorage } from "../lib/drafts";
 import { composerDrafts } from "../lib/composer-draft";
@@ -539,6 +540,29 @@ export async function refreshLimits() {
     setApp("limits", reconcile(Object.fromEntries(limits.map((l) => [planLimitKey(l.provider, l.accountId), l]))));
 }
 
+let keybindingsLoaded = false;
+export async function refreshKeybindings() {
+    const { fatal } = applyKeybindingsFile(await rpc.call("keybindings.get", {}));
+    // Problems in the file are told once a window opens; reconnects stay quiet.
+    if (keybindingsLoaded) return;
+    keybindingsLoaded = true;
+    const issues = keymap().issues;
+    if (fatal || issues.length) toast(`Your keybindings file has ${issues.length === 1 ? "a problem" : `${issues.length} problems`}: ${issues[0]!.message}`, issues.some((i) => i.level === "error") ? "error" : "warn", { label: "Show", run: () => void setSettingsTab("shortcuts") });
+}
+
+/** A save of the keybindings file: applied at once, and a word on how it went. */
+function keybindingsChanged(next: Parameters<typeof applyKeybindingsFile>[0]) {
+    const { fatal } = applyKeybindingsFile(next);
+    const show = { label: "Show", run: () => void setSettingsTab("shortcuts") };
+    if (fatal) return toast(`Keybindings not reloaded: ${fatal}`, "error", show);
+    const issues = keymap().issues;
+    if (issues.length) {
+        const errors = issues.filter((i) => i.level === "error").length;
+        return toast(`Keybindings reloaded with ${issues.length} problem${issues.length === 1 ? "" : "s"}: ${issues[0]!.message}`, errors ? "error" : "warn", show);
+    }
+    toast(next.text === undefined ? "Keybindings file removed: default shortcuts" : "Keybindings reloaded", "info");
+}
+
 export async function refreshSettings() {
     setApp("settings", await rpc.call("settings.get", {}));
     // Observe the first settings immediately: other startup refreshes may still be pending when the editor changes.
@@ -644,6 +668,9 @@ function onEvent(ev: ServerEvent) {
         case "limits":
             setApp("limits", planLimitKey(ev.limits.provider, ev.limits.accountId), reconcile(ev.limits));
             return;
+        case "keybindings.changed":
+            keybindingsChanged(ev.keybindings);
+            return;
         case "models.changed":
             void refreshProviders().catch(() => undefined);
             // A fetch in flight gets the new list anyway.
@@ -675,7 +702,7 @@ export function start() {
         void (async () => {
             try {
                 setApp("hello", await rpc.call("hello", { client: isTauri ? "desktop" : "browser" }));
-                await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders()]);
+                await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders(), refreshKeybindings().catch(() => undefined)]);
                 void refreshModels().catch(() => undefined);
                 void refreshLimits().catch(() => undefined);
                 // After a reconnect, the open sessions start over from fresh snapshots.

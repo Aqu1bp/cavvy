@@ -3,6 +3,7 @@
 // once, in different projects; each project gets its own settings, trust
 // decision, MCP servers and file index, shared by its sessions.
 
+import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
 import { ACCOUNT_PROVIDERS, account, accountProvider, addAccount, defaultAccount, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots } from "../providers/accounts";
 import { loginCommand } from "../backends/account-login";
 import { planLimitKey, type AccountInfo } from "./protocol";
@@ -21,7 +22,9 @@ import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSe
 import { fireHooks } from "../agent/hooks";
 import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder } from "../agent/session";
 import { forkSession } from "../agent/fork";
+import { isFollowUp } from "../agent/queue-store";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
+import { loadSkills, sameSkills, type Skill } from "../agent/skills";
 import { McpManager } from "../mcp/manager";
 import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
 import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
@@ -44,7 +47,7 @@ import { expandPath, isInside, sniffImage } from "../util/files";
 /** The largest image file shown inline in a reply. */
 const MAX_SHOWN_IMAGE = 10 * 1024 * 1024;
 import { maskKey, redact } from "../util/redact";
-import { cleanTitle, modelSummary, Runtime } from "./runtime";
+import { cleanTitle, modelSummary, promptTitle, Runtime } from "./runtime";
 import { forkUiLog } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
 import { harnessLinks, importModel, linkKey, writeImportedSession, type HarnessLinks } from "./cli-import";
@@ -64,6 +67,7 @@ import type {
     EffortLevel,
     GuiSettings,
     HelloResult,
+    KeybindingsFile,
     ImplementMode,
     ImplementPlanResult,
     McpListInfo,
@@ -86,6 +90,7 @@ import type {
     SessionSummary,
     WorktreeInfo,
 } from "./protocol";
+import { ensureKeybindingsFile, keybindingsPath, readKeybindings, watchKeybindings } from "../keybindings/file";
 import { IMPLEMENT_MODES, PROTOCOL_VERSION, SCRIPT_LIMITS } from "./protocol";
 import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
 import { checkFiles, checkMedia, toWire } from "./attachments";
@@ -206,6 +211,8 @@ export class Workspace {
     mcp: McpManager;
     files: FileIndex;
     commands: CustomCommand[];
+    skills: Skill[];
+    private skillsReadAt = Date.now();
 
     constructor(
         private engine: Engine,
@@ -216,6 +223,7 @@ export class Workspace {
         this.mcp = this.startMcp();
         this.files = new FileIndex(cwd);
         this.commands = loadCustomCommands(cwd, trusted);
+        this.skills = loadSkills(cwd, trusted);
     }
 
     private startMcp(): McpManager {
@@ -226,9 +234,19 @@ export class Workspace {
         return mcp;
     }
 
+    /** The skills, read again when the last read is a couple of seconds old, so a new SKILL.md shows up without a restart. */
+    freshSkills(): Skill[] {
+        if (Date.now() - this.skillsReadAt > 2000) {
+            this.skills = sameSkills(this.skills, loadSkills(this.cwd, this.trusted));
+            this.skillsReadAt = Date.now();
+        }
+        return this.skills;
+    }
+
     reload() {
         this.settings = loadSettings(this.cwd, { trusted: this.trusted });
         this.commands = loadCustomCommands(this.cwd, this.trusted);
+        this.skills = loadSkills(this.cwd, this.trusted);
         this.engine.workspaceChanged(this);
     }
 
@@ -245,6 +263,7 @@ export class Workspace {
         const old = this.mcp;
         this.settings = loadSettings(this.cwd, { trusted: true });
         this.commands = loadCustomCommands(this.cwd, true);
+        this.skills = loadSkills(this.cwd, true);
         this.mcp = this.startMcp();
         await old.closeAll().catch(() => undefined);
         this.engine.workspaceChanged(this);
@@ -317,6 +336,7 @@ export class Engine {
     private cliCommandNames = new Map<string, Set<string>>();
 
     private readonly unregisterAccountRoots: () => void;
+    private stopKeybindings?: () => void;
 
     constructor(private o: EngineOptions = {}) {
         this.fallbackModel = o.fallbackModel;
@@ -330,9 +350,33 @@ export class Engine {
 
     async start() {
         void this.firstListings();
+        // Every window applies a save of the keybindings file at once.
+        this.stopKeybindings = watchKeybindings((r) => this.broadcast({ type: "keybindings.changed", keybindings: { path: keybindingsPath(), ...r } }));
+        this.reopenScheduled();
         purgeTrash();
         this.purgeTimer = setInterval(() => purgeTrash(), PURGE_EVERY_MS);
         this.purgeTimer.unref?.();
+    }
+
+    /**
+     * Sessions with saved schedules are opened when the server starts, so
+     * they run without a window on them. One that can't be (open in a
+     * terminal, its folder gone, not trusted) waits until it's opened.
+     */
+    private reopenScheduled() {
+        for (const [id, e] of Object.entries(readScheduleIndex())) {
+            if (this.runtimes.has(id)) continue;
+            try {
+                if (!isDir(e.cwd) || !isTrusted(e.cwd)) continue;
+                const rt = this.openSession(id);
+                // Nothing to run after all (deleted since): let it go again.
+                void rt.ready.then(() => this.unloadIfUnused(id), () => undefined);
+            } catch (err) {
+                const gone = err instanceof RpcError && err.code === "not_found";
+                if (gone) noteScheduleIndex(id, e.cwd, false);
+                this.log(`Schedules: couldn't reopen session ${id}: ${(err as Error).message}`);
+            }
+        }
     }
 
     async stop() {
@@ -340,6 +384,7 @@ export class Engine {
         for (const pending of this.openingTerminals.values()) pending.cancelled = true;
         const terminalsStopped = this.terminals.stop();
         clearInterval(this.purgeTimer);
+        this.stopKeybindings?.();
         for (const t of this.unloadTimers.values()) clearTimeout(t);
         this.unloadTimers.clear();
         await Promise.all([...this.runtimes.values()].map((r) => r.close().catch(() => undefined)).concat([...this.closing.values()]));
@@ -373,7 +418,10 @@ export class Engine {
     }
 
     notify(rt: Runtime, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
-        const title = rt.title ?? rt.firstPrompt()?.slice(0, 60) ?? basename(rt.ws.cwd);
+        // One line cut at a word (as a title from the prompt is made), not the raw prompt with its
+        // newlines. Redacted first: the title reaches every window and the OS notification center.
+        const first = rt.firstPrompt();
+        const title = rt.title ?? (first ? promptTitle(redact(first)) : undefined) ?? basename(rt.ws.cwd);
         this.broadcast({ type: "notify", sessionId: rt.id, kind, title, body });
         this.sessionChanged(rt);
         const message = `Harness: ${body}`;
@@ -883,7 +931,7 @@ export class Engine {
     private unloadIfUnused(id: string) {
         const rt = this.runtimes.get(id);
         if (!rt || this.stopping || [...this.clients].some((c) => c.subs.has(id))) return;
-        if (!rt.idle) return this.unloadLater(id);
+        if (!rt.idle || rt.scheduled) return this.unloadLater(id);
         void this.unload(rt);
     }
 
@@ -1424,6 +1472,7 @@ export class Engine {
             autoCompact: s.autoCompact,
             webSearch: s.webSearch,
             allowBypass: s.permissions?.allowBypass,
+            followUpBehavior: s.followUpBehavior,
             editor: s.editor,
         };
     }
@@ -1447,6 +1496,12 @@ export class Engine {
                 const perms = (s.permissions ??= {});
                 if ("defaultMode" in patch) perms.defaultMode = patch.defaultMode && PERMISSION_MODES.includes(patch.defaultMode) ? patch.defaultMode : undefined;
                 if ("allowBypass" in patch) perms.allowBypass = Boolean(patch.allowBypass) || undefined;
+            }
+            if ("followUpBehavior" in patch) {
+                const v: unknown = patch.followUpBehavior;
+                // null or "" clears it (the default, steer).
+                if (v !== null && v !== "" && v !== undefined && !isFollowUp(v)) throw new RpcError("followUpBehavior must be steer or queue", "invalid");
+                s.followUpBehavior = isFollowUp(v) ? v : undefined;
             }
             if ("editor" in patch) {
                 if (patch.editor && !EDITOR_IDS.includes(patch.editor)) throw new RpcError("Unknown editor", "invalid");
@@ -1576,6 +1631,17 @@ export class Engine {
         return usable(model && modelRef(model));
     }
 
+    private homeSkillCache = new Map<string, { at: number; skills: Skill[] }>();
+    /** A project no session has open (Home's composer): its skills, read at most every couple of seconds. */
+    private homeSkills(cwd: string): Skill[] {
+        const hit = this.homeSkillCache.get(cwd);
+        if (hit && Date.now() - hit.at < 2000) return hit.skills;
+        const skills = loadSkills(cwd, isTrusted(cwd));
+        if (this.homeSkillCache.size > 50) this.homeSkillCache.clear();
+        this.homeSkillCache.set(cwd, { at: Date.now(), skills });
+        return skills;
+    }
+
     /** With `provider`, the commands that agent CLI runs itself too (those it last listed). */
     private commandsFor(cwd: string, provider?: string): CommandInfo[] {
         const builtin: CommandInfo[] = [
@@ -1594,14 +1660,20 @@ export class Engine {
             { name: "settings", description: "Open settings" },
             { name: "cost", description: "Tokens and cost by model, and your plan's limits" },
             { name: "context", description: "How full the context window is, and your plan's limits" },
+            { name: "loop", description: "Run a prompt now and then every interval (default 10m); /loop stop stops it", args: "[interval] <prompt>" },
+            { name: "schedules", description: "This session's schedules (pause, run or delete them above the message box)", args: "[pause|resume|delete|run <id>]" },
         ];
         const ws = this.workspaces.get(resolve(cwd));
         // Before a session opens the project, its commands are read from disk (the home screen checks a /word against them).
         const custom = (ws?.commands ?? loadCustomCommands(resolve(cwd), isTrusted(resolve(cwd)))).map((c) => ({ name: c.name, description: c.description || `Custom command (${c.source})`, args: c.argumentHint, custom: true }));
-        const own = new Set([...builtin, ...custom].map((c) => c.name));
+        const taken = new Set([...builtin, ...custom].map((c) => c.name));
+        const skills = (ws?.freshSkills() ?? this.homeSkills(resolve(cwd)))
+            .filter((s) => s.userInvocable && !taken.has(s.name))
+            .map((s) => ({ name: s.name, description: s.description, args: s.argumentHint, skill: true }));
+        const own = new Set([...taken, ...skills.map((s) => s.name)]);
         const name = provider ? (getProvider(provider)?.name ?? provider) : "";
         const cli = [...(this.cliCommands(provider, cwd) ?? [])].filter((n) => !own.has(n)).map((n) => ({ name: n, description: `${name}'s own command` }));
-        return [...builtin, ...custom, ...cli];
+        return [...builtin, ...custom, ...skills, ...cli];
     }
 
     // -----------------------------------------------------------------------
@@ -1711,6 +1783,12 @@ export class Engine {
                 }
                 return { version: APP_VERSION, protocol: PROTOCOL_VERSION, home: harnessHome(), platform: process.platform, homeDir: homedir(), user, host: hostname().replace(/\.local$/, ""), startCwd } satisfies HelloResult;
             }
+            case "keybindings.get":
+                return { path: keybindingsPath(), ...readKeybindings() } satisfies KeybindingsFile;
+            case "keybindings.create": {
+                const path = keybindingsPath();
+                return { created: ensureKeybindingsFile(path), path };
+            }
             case "sessions.list":
                 return this.listSessions(num(p.limit, 200), Boolean(p.archived));
             case "sessions.search":
@@ -1765,7 +1843,8 @@ export class Engine {
                     });
                     this.sessionChanged(rt);
                 }
-                return await rt.send(str(p.text ?? "", "text"), attached.length ? attached : undefined, p.literal === true);
+                if (p.mode !== undefined && !isFollowUp(p.mode)) throw new RpcError("mode must be steer or queue", "invalid");
+                return await rt.send(str(p.text ?? "", "text"), attached.length ? attached : undefined, p.literal === true, p.mode);
             }
             case "session.interrupt":
                 this.runtime(p.id).interrupt();
@@ -1876,11 +1955,23 @@ export class Engine {
                 return { output: this.runtime(p.id).toolOutput(str(p.toolId, "toolId")) };
             case "session.promptImages":
                 return { images: this.runtime(p.id).promptImages(num(p.seg, -1), num(p.index, -1)) };
+            case "session.schedule": {
+                const action = p.action;
+                if (action !== "pause" && action !== "resume" && action !== "run" && action !== "delete") throw new RpcError("action must be pause, resume, run or delete", "invalid");
+                return { found: this.runtime(p.id).scheduleAction(text(p.scheduleId, "scheduleId", 40), action) };
+            }
             case "session.dequeue": {
                 const q = this.runtime(p.id).dequeue(num(p.queueId, -1));
                 if (!q) return { removed: false };
                 // Edited, it goes back to the window that asked (not to every one showing the session).
                 return p.edit === true ? { removed: true, text: q.text, ...toWire(q.attachments) } : { removed: true };
+            }
+            case "session.sendQueuedNow":
+                return this.runtime(p.id).sendQueuedNow(num(p.queueId, -1));
+            case "session.moveQueued": {
+                const to = num(p.to, -1);
+                if (to < 0) throw new RpcError("to must be a position in the queue", "invalid");
+                return { moved: this.runtime(p.id).moveQueued(num(p.queueId, -1), to) };
             }
             case "session.pin":
             case "session.settle":

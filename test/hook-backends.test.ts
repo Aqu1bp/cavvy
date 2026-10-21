@@ -234,7 +234,7 @@ describe("Codex's items run the harness's hooks", () => {
         expect(await a.run("write there")).toBe("done");
         expect(logLines().find((l) => "granted" in l)?.granted).toEqual({ permissions: {}, scope: "turn" });
         expect(a.asked).toEqual([]);
-        expect(a.events.some((e) => e.type === "notice" && e.message.includes("rewrite"))).toBe(true);
+        expect(a.events.some((e) => e.type === "notice" && e.message.includes("a hook rewrote the request"))).toBe(true);
     });
 
     test("PostToolUse runs after the command with its output, and its context is steered into the turn", async () => {

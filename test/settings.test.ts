@@ -282,6 +282,17 @@ describe("folder trust", () => {
         expect(r.afterRoot).toEqual({ elsewhere: true, file: null });
     });
 
+    test("a repository's skills are configuration trust would unlock, with any model", () => {
+        // A folder with nothing else is trusted for the session as having nothing to protect, so skills must count.
+        const harness = project();
+        mkdirSync(join(harness, ".harness", "skills", "repo-only"), { recursive: true });
+        expect(trust.projectConfigSummary(harness)).toEqual([".harness/skills/"]);
+        // Read natively too, not only when Claude Code is set up.
+        const claude = project();
+        mkdirSync(join(claude, ".claude", "skills", "x"), { recursive: true });
+        expect(trust.projectConfigSummary(claude)).toEqual([".claude/skills/"]);
+    });
+
     test("projectConfigSummary lists what trust would unlock", () => {
         const cwd = project();
         expect(trust.projectConfigSummary(cwd)).toEqual([]);

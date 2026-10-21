@@ -930,6 +930,62 @@ describe("connecting", () => {
         }
     });
 
+    test("while a tool call's input streams, the activity says the tool is being prepared, not \"Writing Write\"", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            await engine.handle(c, "session.send", { id, text: "Hi" });
+            await whenIdle(rt);
+            (rt as any).onEvent({ type: "tool_call_start", id: "call_w", name: "Write" });
+            expect(rt.snapshot().state.activity?.label).toBe("Preparing Write");
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("an untitled session's notification title is one line cut at a word, not the raw prompt with its newlines", async () => {
+        const { engine, rt } = await engineWithSession();
+        const sent: any[] = [];
+        engine.clients.add({ subs: new Set<string>(), send: (m: any) => sent.push(m) } as any);
+        try {
+            expect(rt.title).toBeUndefined();
+            (rt as any).firstPrompt = () => 'Feature request: project scripts ("actions") in the GUI\n\nYou should be able to run them';
+            engine.notify(rt, "done", "Finished in 20m 52s");
+            const title = sent.find((e) => e.type === "notify")?.title;
+            expect(title).not.toContain("\n");
+            expect(title).toBe('Feature request: project scripts ("actions") in the GUI');
+            // It reaches every window and the OS notification center, so a key in the prompt is masked.
+            const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+            const secret = "zq7Xv9Lr2Wm4Kp8Tq0Jd5Hs3Nb6Yc1Fe";
+            registerSecret(secret, "NS");
+            try {
+                (rt as any).firstPrompt = () => `${secret} why does this fail`;
+                engine.notify(rt, "done", "Finished in 3s");
+                expect(sent.filter((e) => e.type === "notify").at(-1)?.title).toBe("[REDACTED NS] why does this fail");
+            } finally {
+                unregisterSecret(secret);
+            }
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("the title request is redacted before it's cut, so a secret across the 3000-character cut doesn't reach the title model", async () => {
+        const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+        const { engine, rt } = await engineWithSession();
+        const secret = "zq7Xv9Lr2Wm4Kp8Tq0Jd5Hs3Nb6Yc1Fe";
+        try {
+            registerSecret(secret, "TS");
+            const before = mock.requests.length;
+            await (rt as any).generateTitle(`explain ${"x".repeat(2990 - 8)}${secret} and more`);
+            const sent = mock.requests.slice(before).filter((r) => r.kind === "title");
+            expect(sent).toHaveLength(1);
+            for (let i = 0; i + 6 <= secret.length; i++) expect(sent[0]!.body).not.toContain(secret.slice(i, i + 6));
+        } finally {
+            unregisterSecret(secret);
+            await engine.stop();
+        }
+    });
+
     test("a title that fails every try comes from the first prompt that said something, and each failure is logged", async () => {
         const logged: string[] = [];
         const { engine, c, id, rt } = await engineWithSession({ log: (m) => logged.push(m) });
@@ -3860,4 +3916,191 @@ describe("a project's MCP servers (.mcp.json approval)", () => {
         for (const f of [...files(join(dir, ".harness")), ...files(iso.home)]) expect(readFileSync(f, "utf-8")).not.toContain(SENTINEL);
         c.close();
     }, 30_000);
+});
+
+// A message sent while a turn runs steers it (joins at its next step) or waits for it to end; the queue
+// can be reordered, a queued message sent now, and it outlives the server.
+describe("steering and the queue", () => {
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const prompts = (v: { turns: Turn[] }) => v.turns.flatMap((t) => (t.prompt ? [t.prompt.text] : []));
+    async function queueFileOf(id: string) {
+        const { findSessionAnywhere } = await import("../src/agent/session");
+        return join(dirname(findSessionAnywhere(id)!), "queue", `${id}.json`);
+    }
+    /** A session waiting on its first permission prompt: a turn is running. */
+    async function working(c: Client) {
+        const id = await c.open("session.create", { cwd: project() });
+        await c.call("session.send", { id, text: "demo" });
+        await c.until(id, (v) => v.state.interactions.length > 0);
+        return id;
+    }
+
+    test("each queued message says what it will do; the steering one joins the turn, the queued ones run after it, in order", async () => {
+        const c = await client();
+        const id = await working(c);
+        await c.call("session.send", { id, text: "steer with this", mode: "steer" });
+        await c.call("session.send", { id, text: "after it", mode: "queue" });
+        await c.call("session.send", { id, text: "", images: [{ mediaType: "image/png", data: png }], mode: "steer" });
+        await c.call("session.send", { id, text: "/compact", mode: "steer" });
+        await c.until(id, (v) => v.state.queued.length === 4);
+        expect(c.view(id).state.queuedModes).toEqual(["steer", "queue", "turn", "turn"]);
+        await c.answer(id, { kind: "permission", choice: "yes" });
+        // Taken at the next step: what waits for the turn's end stays.
+        await c.until(id, (v) => v.state.queued.length === 3);
+        expect(c.view(id).state.queued).toEqual(["after it", "", "/compact"]);
+        expect(prompts(c.view(id))).toEqual(["demo", "steer with this"]);
+        // Then each waiting one in a turn of its own, in the order they were sent.
+        await c.until(id, (v) => done(v) && v.state.queued.length === 0 && v.turns.length === 5, 30_000);
+        expect(prompts(c.view(id))).toEqual(["demo", "steer with this", "after it", ""]);
+        expect(lastTurn(c.view(id)).blocks.map((b) => b.t)).toEqual(["compact"]);
+        c.close();
+    }, 60_000);
+
+    test("the setting decides what a message sent mid-turn does when it doesn't say", async () => {
+        const c = await client();
+        await c.call("settings.update", { patch: { followUpBehavior: "queue" } });
+        try {
+            expect((await c.call("settings.get", {})).followUpBehavior).toBe("queue");
+            const id = await working(c);
+            await c.call("session.send", { id, text: "waits" });
+            await c.call("session.send", { id, text: "steers", mode: "steer" });
+            await c.until(id, (v) => v.state.queued.length === 2);
+            expect(c.view(id).state.queuedModes).toEqual(["queue", "steer"]);
+            await expect(c.call("settings.update", { patch: { followUpBehavior: "sometimes" } })).rejects.toThrow(/steer or queue/);
+            await expect(c.call("session.send", { id, text: "x", mode: "later" })).rejects.toThrow(/steer or queue/);
+            await c.call("session.interrupt", { id });
+            await c.until(id, done);
+        } finally {
+            await c.call("settings.update", { patch: { followUpBehavior: null } });
+        }
+        // Unset (the wire says null): steer, the default.
+        expect((await c.call("settings.get", {})).followUpBehavior).toBeNull();
+        c.close();
+    }, 30_000);
+
+    test("send now: a queued message steers instead; one with an image can't; one already gone sends nothing", async () => {
+        const c = await client();
+        const id = await working(c);
+        await c.call("session.send", { id, text: "later", mode: "queue" });
+        await c.call("session.send", { id, text: "", images: [{ mediaType: "image/png", data: png }] });
+        await c.until(id, (v) => v.state.queued.length === 2);
+        const [later, image] = c.view(id).state.queueIds;
+        expect(await c.call("session.sendQueuedNow", { id, queueId: later })).toEqual({ sent: true });
+        await c.until(id, (v) => v.state.queuedModes?.[0] === "steer");
+        await expect(c.call("session.sendQueuedNow", { id, queueId: image })).rejects.toThrow(/can.t join a running turn/);
+        expect(await c.call("session.sendQueuedNow", { id, queueId: 99_999 })).toEqual({ sent: false });
+        // Taken at the next step.
+        await c.answer(id, { kind: "permission", choice: "yes" });
+        await c.until(id, (v) => v.state.queued.length === 1);
+        expect(prompts(c.view(id))).toContain("later");
+        await c.call("session.interrupt", { id });
+        await c.until(id, done);
+        c.close();
+    }, 30_000);
+
+    test("what can steer is read as a sent message is: a spaced-out command or !command can't, a //line can", async () => {
+        const c = await client();
+        const id = await working(c);
+        for (const text of [" /review", "  !ls", "//not a command"]) await c.call("session.send", { id, text, mode: "queue" });
+        await c.until(id, (v) => v.state.queued.length === 3);
+        expect(c.view(id).state.queuedModes).toEqual(["turn", "turn", "queue"]);
+        await c.call("session.interrupt", { id });
+        await c.until(id, done);
+        c.close();
+    }, 30_000);
+
+    test("moving a queued message changes what runs next; a position past the end is the end; one already gone moves nothing", async () => {
+        const c = await client();
+        const id = await working(c);
+        for (const text of ["one", "two", "three"]) await c.call("session.send", { id, text, mode: "queue" });
+        await c.until(id, (v) => v.state.queued.length === 3);
+        const [one, two, three] = c.view(id).state.queueIds;
+        expect(await c.call("session.moveQueued", { id, queueId: three, to: 0 })).toEqual({ moved: true });
+        await c.until(id, (v) => v.state.queued[0] === "three");
+        expect(c.view(id).state.queueIds).toEqual([three, one, two]);
+        expect(await c.call("session.moveQueued", { id, queueId: three, to: 99 })).toEqual({ moved: true });
+        await c.until(id, (v) => v.state.queued.at(-1) === "three");
+        expect(await c.call("session.moveQueued", { id, queueId: 99_999, to: 0 })).toEqual({ moved: false });
+        await expect(c.call("session.moveQueued", { id, queueId: one, to: -1 })).rejects.toThrow(/position/);
+        // Saved as it is now.
+        const saved = JSON.parse(readFileSync(await queueFileOf(id), "utf-8"));
+        expect(saved.items.map((q: { text: string; mode: string }) => [q.text, q.mode])).toEqual([["one", "queue"], ["two", "queue"], ["three", "queue"]]);
+        await c.call("session.interrupt", { id });
+        await c.until(id, done);
+        // Handed back to the composer: nothing is left to save.
+        expect(existsSync(await queueFileOf(id))).toBe(false);
+        expect(c.events.some((e) => e.type === "draft" && e.sessionId === id && e.text === "one\n\ntwo\n\nthree")).toBe(true);
+        c.close();
+    }, 30_000);
+
+    test("the queue outlives the server: it comes back held, runs only when sent, and what's left is still saved", async () => {
+        const own = await startServer({ token: TOKEN });
+        let id: string;
+        try {
+            const c = new Client(TOKEN, {}, own.port);
+            await c.opened();
+            id = await working(c);
+            await c.call("session.send", { id, text: "first after restart", mode: "queue" });
+            await c.call("session.send", { id, text: "with a picture", images: [{ mediaType: "image/png", data: png }] });
+            await c.until(id, (v) => v.state.queued.length === 2);
+            c.close();
+        } finally {
+            await own.stop();
+        }
+        const file = await queueFileOf(id);
+        const saved = JSON.parse(readFileSync(file, "utf-8"));
+        expect(saved.items.map((q: { text: string }) => q.text)).toEqual(["first after restart", "with a picture"]);
+        expect(saved.items[1].attachments).toEqual([{ type: "image", mediaType: "image/png", data: png }]);
+        expect(statSync(file).mode & 0o777).toBe(0o600);
+
+        const c = await client();
+        await c.open("session.open", { id });
+        expect(c.view(id).state.queued).toEqual(["first after restart", "with a picture"]);
+        expect(c.view(id).state.queuedModes).toEqual(["held", "held"]);
+        expect(c.view(id).state.queuedAttached).toEqual(["", "1 image"]);
+        // Nothing runs on its own.
+        await Bun.sleep(300);
+        expect(c.view(id).state.busy).toBe(false);
+        const before = prompts(c.view(id)).length;
+        const [first] = c.view(id).state.queueIds;
+        expect(await c.call("session.sendQueuedNow", { id, queueId: first })).toEqual({ sent: true, started: true });
+        await c.until(id, (v) => prompts(v).length === before + 1 && done(v), 30_000);
+        expect(prompts(c.view(id)).at(-1)).toBe("first after restart");
+        // The other stays held, and saved.
+        expect(c.view(id).state.queuedModes).toEqual(["held"]);
+        expect(JSON.parse(readFileSync(file, "utf-8")).items.map((q: { text: string }) => q.text)).toEqual(["with a picture"]);
+        const [left] = c.view(id).state.queueIds;
+        expect(await c.call("session.dequeue", { id, queueId: left })).toEqual({ removed: true });
+        await c.until(id, (v) => v.state.queued.length === 0);
+        expect(existsSync(file)).toBe(false);
+        c.close();
+    }, 60_000);
+
+    test("a held message sent now while a turn runs steers it", async () => {
+        const own = await startServer({ token: TOKEN });
+        let id: string;
+        try {
+            const c = new Client(TOKEN, {}, own.port);
+            await c.opened();
+            id = await working(c);
+            await c.call("session.send", { id, text: "held one", mode: "queue" });
+            await c.until(id, (v) => v.state.queued.length === 1);
+            c.close();
+        } finally {
+            await own.stop();
+        }
+        const c = await client();
+        await c.open("session.open", { id });
+        await c.call("session.send", { id, text: "demo" });
+        await c.until(id, (v) => v.state.interactions.length > 0);
+        const [held] = c.view(id).state.queueIds;
+        expect(await c.call("session.sendQueuedNow", { id, queueId: held })).toEqual({ sent: true });
+        await c.until(id, (v) => v.state.queuedModes?.[0] === "steer");
+        await c.answer(id, { kind: "permission", choice: "yes" });
+        await c.until(id, (v) => v.state.queued.length === 0);
+        expect(prompts(c.view(id)).at(-1)).toBe("held one");
+        await c.call("session.interrupt", { id });
+        await c.until(id, done);
+        c.close();
+    }, 60_000);
 });

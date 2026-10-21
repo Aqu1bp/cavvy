@@ -161,6 +161,7 @@ interface Opts {
     persist?: boolean;
     ui?: import("../src/tools/types").UiBridge;
     secrets?: import("../src/agent/secrets").SecretStore;
+    scheduler?: import("../src/agent/schedule").Scheduler;
 }
 
 async function makeAgent(o: Opts) {
@@ -180,7 +181,7 @@ async function makeAgent(o: Opts) {
         checker: new PermissionChecker(() => settings, cwd),
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
-        toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: o.secrets },
+        toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: o.secrets, scheduler: o.scheduler },
         helpers: { resolveModel },
         listings: () => listings,
         host: {
@@ -1006,6 +1007,28 @@ describe("Claude Code as the main agent", () => {
         expect(JSON.parse(argv[argv.indexOf("--settings") + 1]).disabledMcpjsonServers).toContain("harness");
     });
 
+    test("with a scheduler, Claude Code gets the schedule tools, and its own (which can't outlive the turn) are denied", async () => {
+        const { Scheduler } = await import("../src/agent/schedule");
+        const scheduler = new Scheduler({ idle: () => false, fire: () => {} });
+        const { run } = await makeAgent({ provider: "claude-code", scheduler });
+        expect(await run("hi")).toBe("done");
+        const tools = setServers()[0].request.servers.harness.tools.map((t: { name: string }) => t.name);
+        expect(tools).toEqual(expect.arrayContaining(["schedule_create", "schedule_list", "schedule_delete"]));
+        const argv = starts()[0].argv;
+        const settings = JSON.parse(argv[argv.indexOf("--settings") + 1]!);
+        expect(settings.permissions.deny).toEqual(expect.arrayContaining(["CronCreate", "CronDelete", "CronList", "ScheduleWakeup"]));
+        scheduler.dispose();
+    });
+
+    test("without one (-p, a sub-agent), no schedule tools and Claude Code's own aren't touched", async () => {
+        const { run } = await makeAgent({ provider: "claude-code" });
+        expect(await run("hi")).toBe("done");
+        const servers = setServers()[0]?.request.servers.harness;
+        expect((servers?.tools ?? []).map((t: { name: string }) => t.name)).not.toContain("schedule_create");
+        const argv = starts()[0].argv;
+        expect(JSON.parse(argv[argv.indexOf("--settings") + 1]!).permissions.deny).not.toContain("CronCreate");
+    });
+
     for (const response of ["hang", "1", "exit"]) test(`delegation attachment distinguishes timeout from refusal or exit (${response})`, async () => {
         const previousTimeout = attachTiming.timeoutMs;
         attachTiming.timeoutMs = response === "hang" ? 50 : 5000;
@@ -1344,7 +1367,7 @@ describe("harness models", () => {
         expect(childRequests.map((r) => [r.model.id, r.fastMode])).toEqual([["gemini-fast", true], ["gemini-test", false]]);
     });
 
-    test("a Claude Code or Codex sub-agent kept going (a Stop hook) takes up a speed change made meanwhile", async () => {
+    test("a Claude Code or Codex sub-agent kept going (a SubagentStop hook) takes up a speed change made meanwhile", async () => {
         const flag = join(cwd, "stopped-once");
         const main = (content: unknown[], stopReason = "end_turn") => ({ role: "assistant", provider: "anthropic", model: "claude-main", stopReason, content, usage: { inputTokens: 10, outputTokens: 5 } });
         const steps = [main([{ type: "tool_call", id: "t1", name: "Task", input: { description: "On Codex", prompt: "a", model: "codex:gpt-fast" } }], "tool_use"), main([{ type: "text", text: "ok" }])];

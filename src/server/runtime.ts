@@ -3,6 +3,8 @@
 // sent to every GUI window that has the session open. The terminal app does
 // the same work in ui/app.ts; this is its counterpart without a terminal.
 
+import { NO_SCHEDULES, SessionSchedules, type ScheduleAction } from "../agent/schedule-host";
+import { CRON_TOOLS, jobLine } from "../agent/schedule-tools";
 import { turnDuration } from "./duration";
 import { existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
@@ -21,6 +23,8 @@ import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "../permissions/classifier";
 import { toolPath } from "../permissions/rules";
 import { BUILTIN_TOOLS } from "../tools/index";
+import { skillTool } from "../tools/skill-tool";
+import { claudeCodeRuns, formatSkill, skillMentions, withSkills } from "../agent/skills";
 import { childEnv, killAllShells, runShell } from "../tools/bash";
 import type { Tool, ToolResult, ToolState } from "../tools/types";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
@@ -35,8 +39,9 @@ import { expandMentions } from "../ui/mentions";
 import { notifyAfterMs } from "../ui/notify";
 import { displayPath } from "../util/files";
 import { gitBranch } from "../util/git";
-import { redact, lineRedactor } from "../util/redact";
+import { redact, redactPrefix, lineRedactor } from "../util/redact";
 import { attachedLabel, attachedPrompt, toWire } from "./attachments";
+import { followUpDefault, loadQueue, saveQueue, type FollowUp } from "../agent/queue-store";
 import { RpcError } from "./rpc-error";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
 import { gitChanges } from "./git-changes";
@@ -62,6 +67,7 @@ import type {
     PermissionInteraction,
     PlanLink,
     PlanRef,
+    QueuedMode,
     RewindPlanInfo,
     RewindTargetInfo,
     SessionOp,
@@ -93,10 +99,22 @@ interface Queued {
     attachments?: AttachedPart[];
     /** Sent as a message even though it starts with a /word. */
     literal?: boolean;
+    /** Join the running turn at its next step, or wait for it to end. */
+    mode: FollowUp;
+    /** Restored after a restart: it waits for the user (Send now) rather than run on its own. */
+    held?: boolean;
+}
+
+/** A message the running turn can take: text only (images, files, commands and `!commands` get a turn of their own), read as dispatch reads it. */
+function steerable(q: Queued): boolean {
+    if (q.attachments?.length) return false;
+    if (q.literal) return true;
+    const t = q.text.trim();
+    return !t.startsWith("!") && (!t.startsWith("/") || t.startsWith("//"));
 }
 
 /** The slash commands the server runs itself (the GUI runs the others). */
-const SERVER_COMMANDS = new Set(["compact", "init", "review"]);
+const SERVER_COMMANDS = new Set(["compact", "init", "review", "loop", "schedules"]);
 
 /** A session title as it's stored: one line, 120 characters at most ("" if there's nothing left). */
 export function cleanTitle(title: string): string {
@@ -206,6 +224,10 @@ export class Runtime {
     private commitAbort?: AbortController;
     /** Being closed: it starts nothing more and sends nothing more (the session may be open again by then). */
     private closed = false;
+    /** /loop, cron jobs and the resume after a usage limit (src/agent/schedule.ts). */
+    readonly schedules: SessionSchedules;
+    /** The next turn is a schedule's ("every 10m"), not the user's. */
+    private scheduledLabel?: string;
     /** The rewind last shown: restoring does what it showed, or nothing if the conversation moved on. */
     private rewindShown?: { id: string; index: number; message: Message; count: number; plan?: RestoreItem[] };
 
@@ -268,6 +290,18 @@ export class Runtime {
         // Secrets live as long as the session is loaded: unloading it (closed, or idle with no window on it) drops them.
         this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore() };
         this.toolState.secrets!.onChange(() => this.setState({ secrets: this.toolState.secrets!.names() }));
+        this.schedules = new SessionSchedules({
+            session: () => this.session,
+            settings: () => this.settings(),
+            idle: () => this.schedulable(),
+            run: (prompt, _job, label) => this.runScheduled(prompt, label),
+            notice: (text, level) => this.notice(text, level),
+            changed: () => {
+                if (this.view) this.setState({ schedules: this.schedules.scheduler.info() });
+                this.engine.sessionChanged(this);
+            },
+        });
+        this.toolState.scheduler = this.schedules.scheduler;
         this.checker = new PermissionChecker(() => this.settings(), ws.cwd);
         this.classifier = new AutoClassifier(undefined);
         this.reviewer = ws.settings.reviewModel;
@@ -279,7 +313,14 @@ export class Runtime {
         if (opts.resumed && cutOffPrompt(this.ui, this.segment, session.messages, session.notices) !== undefined) session.push({ role: "user", content: [{ type: "text", text: INTERRUPTED }], meta: { kind: "interrupt" } });
         const turns = opts.resumed ? replay({ segments, current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() }) : [];
         this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model, this.ui.agents) };
+        // Messages that were waiting when the server stopped: back in the queue, held until the user sends them.
+        if (opts.resumed) {
+            this.queued = loadQueue(session.path, session.meta.id).map((q) => ({ ...q, id: ++this.queueSeq, held: true }));
+            if (this.queued.length) Object.assign(this.view.state, this.queueState());
+        }
         this.ready = this.track(this.initModel());
+        // Saved schedules come back once there's a model to run them with.
+        void this.ready.then(() => !this.closed && this.schedules.restore(), () => undefined);
         void sessionStartHooks(this.settings(), session, opts.resumed ? "resume" : "startup", this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level));
     }
 
@@ -368,7 +409,25 @@ export class Runtime {
             planLinks: [...this.session.planLinks],
             ...(this.session.meta.forkOf ? { forkOf: { id: this.session.meta.forkOf.id, title: this.session.meta.forkOf.title } } : {}),
             secrets: this.toolState.secrets?.names() ?? [],
+            schedules: [],
         };
+    }
+
+    /** A scheduled prompt may start now: nothing running, waiting on the user, or being set up. */
+    private schedulable(): boolean {
+        return !this.closed && !this.busy && !this.pending.size && !this.switching && !this.committing && !this.queued.length && Boolean(this.agent);
+    }
+
+    private runScheduled(prompt: string, label: string): Promise<unknown> {
+        this.scheduledLabel = label;
+        return this.dispatch(prompt)
+            .catch((e) => this.notice(redact((e as Error).message), "error"))
+            .finally(() => (this.scheduledLabel = undefined));
+    }
+
+    /** session.schedule: one of the composer's schedule buttons. */
+    scheduleAction(scheduleId: string, action: ScheduleAction): boolean {
+        return Boolean(this.schedules.act(scheduleId, action));
     }
 
     /** Claude Code or Codex: an agent backend runs this session's turns. */
@@ -809,11 +868,12 @@ export class Runtime {
     tools(): Tool<any>[] {
         const native = this.nativeSearch();
         const off = this.settings().webSearch === "off";
-        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off))), ...this.ws.mcp.tools()];
+        const skill = skillTool(this.ws.skills);
+        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off))), ...(skill ? [skill] : []), ...CRON_TOOLS, ...this.ws.mcp.tools()];
     }
 
     private toolMeta(call: ToolCallPart): ToolMeta {
-        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
+        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? CRON_TOOLS.find((t) => t.name === call.name) ?? (call.name === "Skill" ? (skillTool(this.ws.skills) as Tool<any> | undefined) : undefined) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
         let title = call.name;
         try {
             if (tool) title = tool.title(call.input ?? {});
@@ -1033,7 +1093,8 @@ export class Runtime {
                 const turnId = this.addBlock({ t: "tool", id: e.id, name: e.name, title: e.name, category: meta.category, status: "streaming", receiving: 0, ...(runsAgent(e.name) ? { agent: true } : {}) });
                 this.toolTurn.set(e.id, turnId);
                 this.responseBlocks.push(e.id);
-                this.activity(`Writing ${e.name}`);
+                // Its input is still arriving: "Writing Write" read as a typo.
+                this.activity(`Preparing ${e.name}`);
                 break;
             }
             case "tool_call_delta": {
@@ -1488,6 +1549,8 @@ export class Runtime {
         if (!this.pending.size) this.setStatus(this.busy ? "running" : "idle");
         else this.engine.sessionChanged(this);
         p.resolve(r);
+        // A question answered between turns (a plan handed off, say) may leave it idle.
+        if (!this.pending.size) queueMicrotask(() => this.schedules.poke());
     }
 
     /** The sub-agent itself, or for a sub-agent's own, the one at the top it runs under (a delegated task, say). */
@@ -1713,11 +1776,11 @@ export class Runtime {
     // Prompts
 
     private drainQueued(): string[] {
-        // Messages with images or files wait for their own turn.
-        const take = this.queued.filter((q) => !q.attachments?.length && !q.text.startsWith("/") && !q.text.startsWith("!"));
+        // Messages to steer with; queued ones, held ones and those with images or files wait for their own turn.
+        const take = this.queued.filter((q) => q.mode === "steer" && !q.held && steerable(q));
         if (!take.length) return [];
         this.queued = this.queued.filter((q) => !take.includes(q));
-        this.setState(this.queueState());
+        this.queueUpdated();
         const texts = take.map((q) => q.text);
         // After tool calls they ride along with the results; otherwise they're a prompt of their own.
         const last = this.session.messages[this.session.messages.length - 1];
@@ -1747,15 +1810,17 @@ export class Runtime {
         return texts;
     }
 
-    /** A message from the GUI: a prompt, a slash command, or `!command`. Queued while busy. */
-    async send(text: string, attachments?: AttachedPart[], literal = false): Promise<{ queued: boolean }> {
+    /**
+     * A message from the GUI: a prompt, a slash command, or `!command`. Queued while busy: to steer
+     * the running turn with or to wait for its end (`mode`, else the followUpBehavior setting).
+     */
+    async send(text: string, attachments?: AttachedPart[], literal = false, mode?: FollowUp): Promise<{ queued: boolean }> {
         // Another switch can start while it waits for one.
         while (this.switching) await this.switching.catch(() => undefined);
         this.checkCommitting();
         if (this.closed) throw new Error("This session was closed.");
         // No await between this check and queueing/dispatch: a switch must not change the model we checked.
-        const pdf = attachments?.find((p) => p.type === "file" && p.kind === "pdf");
-        if (pdf && this.model && !readsPdf(this.model)) throw new RpcError(`${this.model.name ?? this.model.id} can't read PDFs. Remove ${pdf.name}, or switch to a model that can.`, "pdf_unsupported");
+        this.checkPdfs(attachments);
         const trimmed = text.trim();
         if (!trimmed && !attachments?.length) return { queued: false };
         if (!literal && attachments?.length && /^\/compact(\s|$)/i.test(trimmed)) throw new RpcError("/compact doesn't take attachments. Send them in a message of their own.");
@@ -1763,18 +1828,26 @@ export class Runtime {
         const unknown = literal ? undefined : this.unknownCommand(text);
         if (unknown) throw new RpcError(`Unknown command /${unknown}`, "unknown_command");
         if (this.busy) {
-            this.queued.push({ id: ++this.queueSeq, text, attachments, literal: literal || undefined });
-            this.setState(this.queueState());
+            const q: Queued = { id: ++this.queueSeq, text, attachments, literal: literal || undefined, mode: mode ?? followUpDefault(this.settings().followUpBehavior) };
+            this.queued.push(q);
+            this.queueUpdated();
+            if (q.mode === "steer" && steerable(q)) this.agent?.queueChanged();
             return { queued: true };
         }
         void this.dispatch(text, attachments, literal).catch((e) => this.notice(redact((e as Error).message), "error"));
         return { queued: false };
     }
 
+    /** A PDF the session's model can't read is refused before it's sent. */
+    private checkPdfs(attachments: AttachedPart[] | undefined) {
+        const pdf = attachments?.find((p) => p.type === "file" && p.kind === "pdf");
+        if (pdf && this.model && !readsPdf(this.model)) throw new RpcError(`${this.model.name ?? this.model.id} can't read PDFs. Remove ${pdf.name}, or switch to a model that can.`, "pdf_unsupported");
+    }
+
     /** The /name a message starts with when it names no command this server or the project has. */
     unknownCommand(text: string): string | undefined {
         const c = slashCommand(text);
-        if (!c || SERVER_COMMANDS.has(c.name) || this.ws.commands.some((x) => x.name === c.name)) return undefined;
+        if (!c || SERVER_COMMANDS.has(c.name) || this.ws.commands.some((x) => x.name === c.name) || this.ws.freshSkills().some((s) => s.userInvocable && s.name === c.name)) return undefined;
         // One the session's agent CLI runs itself (Claude Code's /code-review, a skill).
         const provider = this.agent?.model.provider;
         const commands = this.engine.cliCommands(provider, this.ws.cwd);
@@ -1791,15 +1864,33 @@ export class Runtime {
             const [, name = "", args = ""] = trimmed.match(/^\/(\S+)\s*([\s\S]*)$/) ?? [];
             const cmd = name.toLowerCase();
             if (cmd === "compact") return void (await this.compact(args.trim() || undefined));
+            if (cmd === "loop") {
+                const r = this.schedules.loop(args);
+                return this.notice(r.text, r.level ?? "info");
+            }
+            if (cmd === "schedules") {
+                const r = this.schedules.manage(args) ?? { text: this.scheduleList() };
+                return this.notice(r.text, r.level ?? "info");
+            }
             if (cmd === "init") return this.startTurn(INIT_PROMPT, { display: "/init", kind: "command", attachments });
             if (cmd === "review") return this.startTurn(reviewPrompt(args.trim()), { display: `/review${args.trim() ? ` ${args.trim()}` : ""}`, kind: "command", attachments });
             const custom = this.ws.commands.find((c) => c.name === cmd);
             if (custom) return this.startTurn(expandCommand(custom.body, args.trim()), { display: trimmed, kind: "command", attachments });
+            const skill = this.ws.skills.find((s) => s.userInvocable && s.name === cmd);
+            // Claude Code runs a skill it lists itself, with its own handling (allowed-tools and the rest).
+            const provider = this.agent?.model.provider;
+            if (skill && !(provider === "claude-code" && claudeCodeRuns(cmd, skill, this.engine.cliCommands(provider, this.ws.cwd)))) {
+                const body = formatSkill(skill, args.trim());
+                if (body === undefined) return this.notice(`The ${skill.name} skill is gone: ${skill.file} can't be read.`, "error");
+                return this.startTurn(body, { display: trimmed, kind: "command", attachments, mentionsIn: args.trim(), about: `${skill.description}${args.trim() ? `: ${args.trim()}` : ""}` });
+            }
         }
         return this.startTurn(text, { attachments });
     }
 
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command"; attachments?: AttachedPart[] } = {}) {
+    /** `about`: what to name the session after, when the text sent isn't the best guide (a skill's instructions). */
+    /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files (a skill's instructions are sent as written). */
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string } = {}) {
         if (!this.agent) {
             await this.ready.catch(() => undefined);
             if (this.closed) return;
@@ -1811,6 +1902,10 @@ export class Runtime {
         this.checkCommitting();
         const agent = this.agent;
         this.busy = true;
+        const scheduled = this.scheduledLabel;
+        this.scheduledLabel = undefined;
+        // The user's own turn: a resume waiting for the usage limit isn't needed.
+        if (!scheduled) this.schedules.userSent();
         let settled!: () => void;
         this.turnDone = new Promise<void>((r) => (settled = r));
         const ac = (this.abort = new AbortController());
@@ -1823,7 +1918,7 @@ export class Runtime {
         const { imagesKey: _provisional, ...attached } = attachedPrompt(opts.attachments);
         const turn: Turn = {
             id: this.newId(),
-            prompt: { text: display, ...attached, ...(opts.kind === "command" ? { command: true } : {}), index },
+            prompt: { text: display, ...attached, ...(opts.kind === "command" ? { command: true } : {}), ...(scheduled ? { scheduled } : {}), index },
             blocks: [],
             status: "running",
             startedAt: this.turnStartedAt,
@@ -1842,7 +1937,7 @@ export class Runtime {
         this.setState({ busy: true, status: "running", activity: { label: "Thinking", since: this.turnStartedAt } });
         this.engine.sessionChanged(this);
         // A command's own text says more than "/init"; a greeting says nothing, so a later prompt names it.
-        const about = opts.kind === "command" ? text : display;
+        const about = opts.about ?? (opts.kind === "command" ? text : display);
         if (!this.session.title && !this.titleAsked && this.titleTries < TITLE_TRIES && titleWorthy(about)) void this.generateTitle(about);
 
         let reason: TurnEndReason | undefined;
@@ -1854,7 +1949,11 @@ export class Runtime {
                 this.endTurn("aborted");
             } else {
                 const roots = [this.ws.cwd, ...(this.settings().permissions?.additionalDirectories ?? [])];
-                const { parts, attached, notices } = await expandMentions(text, this.toolState, roots, this.checker);
+                // $name brings that skill's instructions along; the transcript keeps what was typed.
+                const skills = opts.kind === "command" ? [] : skillMentions(text, this.ws.skills);
+                const { parts, attached, notices } = await expandMentions(opts.mentionsIn ?? text, this.toolState, roots, this.checker);
+                parts[0] = { type: "text", text: skills.length ? withSkills(text, skills) : text };
+                if (skills.length) this.notice(`Using ${skills.length === 1 ? "skill" : "skills"} ${skills.map((s) => s.name).join(", ")}`);
                 for (const n of notices) this.notice(n, "warn");
                 if (attached.length) this.notice(`Attached ${attached.join(", ")}`);
                 if (opts.attachments?.length) {
@@ -1893,16 +1992,26 @@ export class Runtime {
         if (reason && reason !== "aborted" && (reason === "error" || elapsed >= notifyAfterMs(this.settings()))) {
             this.engine.notify(this, reason === "error" ? "error" : "done", reason === "error" ? "Stopped with an error" : `Finished in ${turnDuration(elapsed)}`);
         }
+        if (reason && !this.closed) this.schedules.turnEnded(reason, agent.limitStop);
         await this.runQueued(ac.signal.aborted);
+        this.schedules.poke();
+    }
+
+    /** /schedules in the GUI: the composer shows them too, with buttons. */
+    private scheduleList(): string {
+        const jobs = this.schedules.scheduler.list();
+        if (!jobs.length) return NO_SCHEDULES;
+        return ["Schedules (pause, run or delete them above the message box):", ...jobs.map((j) => `• ${jobLine(j)}`)].join("\n");
     }
 
     /** After a turn, a `!command` or a compaction: the next message sent meanwhile, or all of them back to the input box after an interrupt. */
     private async runQueued(aborted: boolean) {
         if (this.closed) return;
         if (aborted) return this.returnQueued();
-        const next = this.queued.shift();
+        const next = this.nextQueued();
         if (!next) return;
-        this.setState(this.queueState());
+        this.queued = this.queued.filter((q) => q !== next);
+        this.queueUpdated();
         await this.dispatch(next.text, next.attachments, next.literal).catch((e) => this.notice(redact((e as Error).message), "error"));
     }
 
@@ -1912,11 +2021,70 @@ export class Runtime {
         const text = this.queued.map((q) => q.text).filter((t) => t.trim()).join("\n\n");
         this.engine.draft(this, text, this.queued.flatMap((q) => q.attachments ?? []));
         this.queued = [];
-        this.setState(this.queueState());
+        this.queueUpdated();
+    }
+
+    /** What runs when the turn ends: the first message that isn't held. */
+    nextQueued(): Queued | undefined {
+        return this.queued.find((q) => !q.held);
     }
 
     private queueState() {
-        return { queued: this.queued.map((q) => q.text), queueIds: this.queued.map((q) => q.id), queuedAttached: this.queued.map((q) => attachedLabel(q.attachments)) };
+        return {
+            queued: this.queued.map((q) => q.text),
+            queueIds: this.queued.map((q) => q.id),
+            queuedAttached: this.queued.map((q) => attachedLabel(q.attachments)),
+            queuedModes: this.queued.map((q): QueuedMode => (q.held ? "held" : !steerable(q) ? "turn" : q.mode)),
+        };
+    }
+
+    /** Shown, and saved beside the transcript so a restart doesn't lose it. */
+    private queueUpdated() {
+        this.setState(this.queueState());
+        if (this.session.persisted) saveQueue(this.session.path, this.id, this.queued.map(({ text, mode, attachments, literal }) => ({ text, mode, attachments, literal })));
+    }
+
+    /**
+     * "Send now": a queued message steers the running turn instead of waiting
+     * for its end; one held since a restart runs now (or, while a turn runs,
+     * steers it or waits for it). False when it isn't in the queue any more.
+     */
+    sendQueuedNow(queueId: number): { sent: boolean; started?: boolean } | Promise<{ sent: boolean; started?: boolean }> {
+        // After a model switch, as send() waits for one.
+        if (this.switching) return this.switching.catch(() => undefined).then(() => this.sendQueuedNow(queueId));
+        const q = this.queued.find((x) => x.id === queueId);
+        if (!q) return { sent: false };
+        if (!this.busy) {
+            // What send() checks, before it leaves the queue: a refused one stays there.
+            this.checkCommitting();
+            if (this.closed) throw new Error("This session was closed.");
+            this.checkPdfs(q.attachments);
+            this.queued = this.queued.filter((x) => x !== q);
+            this.queueUpdated();
+            void this.dispatch(q.text, q.attachments, q.literal).catch((e) => this.notice(redact((e as Error).message), "error"));
+            return { sent: true, started: true };
+        }
+        if (!steerable(q)) {
+            if (!q.held) throw new RpcError("Messages with images or files, and commands, can't join a running turn: they run after it.", "not_steerable");
+            q.held = undefined;
+            this.queueUpdated();
+            return { sent: true };
+        }
+        q.held = undefined;
+        q.mode = "steer";
+        this.queueUpdated();
+        this.agent?.queueChanged();
+        return { sent: true };
+    }
+
+    /** Move a queued message to position `to` (0 is next). False when it isn't in the queue any more. */
+    moveQueued(queueId: number, to: number): boolean {
+        const i = this.queued.findIndex((q) => q.id === queueId);
+        if (i < 0) return false;
+        const [q] = this.queued.splice(i, 1);
+        this.queued.splice(Math.max(0, Math.min(this.queued.length, Math.trunc(to))), 0, q!);
+        this.queueUpdated();
+        return true;
     }
 
     /** Out of the queue, by its id (a message the queue has moved past isn't there any more). */
@@ -1924,7 +2092,7 @@ export class Runtime {
         const i = this.queued.findIndex((q) => q.id === queueId);
         if (i < 0) return undefined;
         const [q] = this.queued.splice(i, 1);
-        this.setState(this.queueState());
+        this.queueUpdated();
         return q;
     }
 
@@ -1964,7 +2132,8 @@ export class Runtime {
         try {
             const raw = await this.complete(
                 "You name coding-assistant sessions for a sidebar. Reply with only the title: 2 to 6 words, sentence case, no quotes, no trailing punctuation. Describe the task, not the user.",
-                prompt.slice(0, 3000),
+                // Cut after redacting, so a registered value crossing the cut can't leave a prefix.
+                redactPrefix(prompt, 3000),
                 AbortSignal.timeout(20_000),
             );
             title = raw
@@ -2411,13 +2580,20 @@ export class Runtime {
 
     /** Nothing running, waiting for the user, or still to be delivered to the model: closing it loses nothing. */
     get idle(): boolean {
-        if (this.busy || this.committing || this.queued.length || this.pending.size || this.switching) return false;
+        if (this.busy || this.committing || this.nextQueued() || this.pending.size || this.switching) return false;
         if ([...this.toolState.shells.values()].some((s) => s.exitCode === null)) return false;
         return !(this.agent?.delegatedTasks ?? []).some((t) => t.status === "running" || !t.delivered);
     }
 
+    /** Schedules run only while it's loaded: one that will run keeps it open with no window on it (it isn't busy, though). */
+    get scheduled(): boolean {
+        const s = this.schedules.scheduler;
+        return s.active > 0 || s.list().some((j) => j.due);
+    }
+
     /** SessionEnd hooks and background shells, when the server stops or the session is closed. */
     async close() {
+        this.schedules.dispose();
         this.abort?.abort();
         this.commitAbort?.abort();
         this.cancelInteractions();

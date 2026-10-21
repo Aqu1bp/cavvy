@@ -276,7 +276,7 @@ describe("reading the stores", () => {
 });
 
 describe("importing", () => {
-    test.each(["msg", "backend"])("a failed %s write leaves no completed import and a retry imports the whole conversation", async (failAt) => {
+    test.each(["msg", "backend"])("a failed %s write leaves no session behind and a retry imports the whole conversation once", async (failAt) => {
         turnOn();
         const { id } = claudeSession(CLAUDE, { cwd: real, turns: TURNS });
         const entry = findCliSession("claude-code", cwd, id)!;
@@ -301,9 +301,10 @@ describe("importing", () => {
             fault.mockRestore();
         }
         expect(file).not.toBe("");
-        expect(cliLinks(file)).toEqual([]);
         expect(harnessLinks([cwd]).held.size).toBe(0);
-        expect(readFileSync(file, "utf-8")).not.toContain('"t":"import"');
+        // Half of it would list as an ordinary session with part of the conversation.
+        expect(existsSync(file)).toBe(false);
+        expect(listSessions(cwd).map((m) => m.title)).not.toContain("Login bug");
 
         const { e, c } = await engine();
         try {
@@ -312,6 +313,7 @@ describe("importing", () => {
             expect(snap.turns[0]!.blocks[0]).toMatchObject({ t: "imported", source: "Claude Code" });
             expect(prompts(snap.turns)).toHaveLength(2);
             expect(e.runtimes.get(snap.state.id)!.session.backends.get("claude-code")).toEqual({ id, synced: 4 });
+            expect(listSessions(cwd).map((m) => m.id)).toEqual([snap.state.id]);
         } finally {
             await e.stop();
         }

@@ -16,9 +16,6 @@ export const os: Os = (() => {
 
 export const mod = os === "macos" ? "⌘" : "Ctrl";
 export const isMod = (e: KeyboardEvent | MouseEvent) => (os === "macos" ? e.metaKey : e.ctrlKey);
-/** Ctrl+` everywhere (macOS keeps ⌘` for cycling windows; it works too where the system leaves it alone). */
-export const isTerminalToggle = (e: KeyboardEvent) => (e.code === "Backquote" || e.key === "`") && !e.altKey && (e.ctrlKey || isMod(e));
-export const terminalShortcut = "Ctrl+`";
 
 const TOKEN_KEY = "harness.token";
 const WINDOW_KEY = "harness.window";

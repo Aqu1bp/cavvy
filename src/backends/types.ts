@@ -99,6 +99,14 @@ export interface BackendHost {
     hooks?(event: HookEvent, payload: Record<string, unknown>): Promise<HookOutcome | undefined>;
     /** Run one hook handler the backend called back for (Claude Code's hook_callback), with the backend's input. */
     hookHandler?(event: HookEvent, h: HookConfig, input: Record<string, unknown>, signal: AbortSignal): Promise<HookResult>;
+    /** Called when a message to steer with arrives mid-turn, for a backend that can take it at once (Codex). Returns the unsubscribe. */
+    onQueued?(listener: () => void): () => void;
+    /**
+     * Drained messages the backend never received (its turn ended before it took
+     * them). They're in the transcript already; the host saves them for the next
+     * turn, so they reach it even after a restart.
+     */
+    undelivered?(texts: string[]): void;
 }
 
 export interface BackendTurn {
@@ -174,6 +182,8 @@ export interface BackendResult {
     backgroundStopped?: string[];
     /** The session in resumeId couldn't be resumed (gone, or another folder's). */
     resumeFailed?: boolean;
+    /** It stopped on the plan's usage limit; `resetsAt` (ms) when the backend said when that lifts. */
+    limit?: { resetsAt?: number };
 }
 
 export interface AgentBackendClient extends ProviderClient {

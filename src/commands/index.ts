@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import { spawnSync } from "bun";
-import type { App } from "../ui/app";
+import type { App, QueuedDraft } from "../ui/app";
 import type { Draft } from "../ui/editor";
 import { renderTodos } from "../ui/app";
 import { InputDialog, MessageDialog, SelectDialog } from "../ui/dialogs";
@@ -51,6 +51,7 @@ import { forkSession, forkTargets } from "../agent/fork";
 import { forkUiLog } from "../server/history";
 import { loadMemory } from "../agent/memory";
 import { BUILTIN_AGENTS, loadAgents } from "../agent/agents";
+import { agentTraits } from "../agent/delegation";
 import { estimateTokens } from "../agent/compact";
 import { BLOCKING_EVENTS, HOOK_EVENTS } from "../agent/hooks";
 import { toSchema } from "../tools/index";
@@ -58,15 +59,20 @@ import { displayPath, expandPath } from "../util/files";
 import { gitRoot } from "../util/git";
 import { childEnv } from "../util/env";
 import { expandCommand, type CustomCommand } from "./custom";
+import { claudeCodeRuns, formatSkill, loadSkills, sameSkills, skillRoots, type Skill } from "../agent/skills";
 import { rewindCommand } from "./rewind";
 import { checkAgentCli, vendorOf, type AgentCliStatus } from "../backends/index";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { account, addAccount, listAccounts } from "../providers/accounts";
 import { loginCommand as accountLoginCommand } from "../backends/account-login";
 import { clockTime, limitAccountLabel, limitLines } from "../backends/limits";
+import { describeJob, shortTime } from "../agent/schedule";
+import { NO_SCHEDULES } from "../agent/schedule-host";
 import { approvalMeaning, maskConfigValues, McpApprovalError, visible } from "../mcp/approval";
 import type { McpServerInfo } from "../mcp/info";
 import { mayStart } from "../mcp/manager";
+import { ACTIONS, CONTEXTS, KEYBINDINGS_DOCS } from "../keybindings/core";
+import { ensureKeybindingsFile } from "../keybindings/file";
 
 export interface Command {
     name: string;
@@ -80,6 +86,7 @@ export interface Command {
     noEcho?: boolean;
     hidden?: boolean;
     custom?: CustomCommand;
+    skill?: Skill;
     /** Starts a model turn, which takes the images typed with the command (`draft`). Other commands refuse images. */
     images?: boolean;
     run(app: App, args: string, draft?: Draft): Promise<void> | void;
@@ -1070,11 +1077,11 @@ function tasksCommand(app: App, args: string) {
     const [verb, id] = args.trim().split(/\s+/);
     if (verb === "stop") {
         const n = agent?.stopDelegated(id) ?? 0;
-        return app.notice(n ? `Stopping ${n} delegated task${n === 1 ? "" : "s"}.` : id ? `No running task ${id}.` : "No delegated tasks are running.");
+        return app.notice(n ? `Stopping ${n} task${n === 1 ? "" : "s"}.` : id ? `No running task ${id}.` : "No background or delegated tasks are running.");
     }
     if (verb) return app.notice("Usage: /tasks, or /tasks stop [task-id]", "error");
-    if (!tasks.length) return app.notice("No tasks were delegated in this session. Claude Code and Codex can hand tasks to other providers' models; ask them to.");
-    const lines = ["", heading("Delegated tasks")];
+    if (!tasks.length) return app.notice("No background or delegated tasks in this session. Sub-agents run in the background when the model asks (Task with run_in_background) or their definition says background: true; Claude Code and Codex can hand tasks to other providers' models.");
+    const lines = ["", heading("Background and delegated tasks")];
     for (const t of tasks) {
         const r = t.result;
         const state = t.status === "running" ? theme.warning(`running ${formatDuration(Date.now() - t.startedAt)}`) : t.status === "done" ? theme.success("done") : t.status === "failed" ? theme.error("failed") : theme.muted("stopped");
@@ -1231,10 +1238,74 @@ async function effortCommand(app: App, args: string) {
     set(v === "default" ? undefined : v);
 }
 
+/**
+ * The messages sent while a turn runs. Enter sends the selected one now (it steers the turn
+ * instead of waiting for its end); shift or alt with ↑↓ moves it; e takes it back to edit;
+ * x or delete removes it. The list stays open until esc, or the queue empties.
+ */
+async function queueCommand(app: App) {
+    if (!app.queueEntries().length) return app.notice("Nothing is queued. Messages you send while a turn runs wait here.");
+    const items = () =>
+        app.queueEntries().map((q): SelectItem<QueuedDraft> => ({
+            label: truncate(q.text.replace(/\s+/g, " ") || "(images)", 70),
+            value: q.draft,
+            detail: q.steering ? theme.accent("next step") : theme.muted("after this turn"),
+            description: q.steering ? undefined : q.canSteer ? undefined : "images and commands can't join a running turn",
+        }));
+    const hint = "enter send now · shift+↑↓ move · e edit · x remove · esc close";
+    const d = new SelectDialog<QueuedDraft>({
+        title: "Queued messages",
+        header: [theme.muted("Next step: joins the running turn. After this turn: runs once it ends.")],
+        items: items(),
+        numbers: false,
+        hint,
+        onExtraKey: (k, dlg) => {
+            const cur = dlg.list.current()?.value;
+            const refresh = (select?: QueuedDraft) => {
+                const next = items();
+                if (!next.length) return dlg.choose(undefined);
+                dlg.list.items = next;
+                dlg.list.index = Math.max(0, select ? next.findIndex((i) => i.value === select) : Math.min(dlg.list.index, next.length - 1));
+                app.renderLive();
+            };
+            const gone = () => {
+                dlg.header[0] = theme.warning("That one has already been sent.");
+                refresh();
+            };
+            if (!cur) return k.name === "enter";
+            if (k.name === "enter") {
+                const r = app.sendQueuedNow(cur);
+                if (r === "gone") gone();
+                else if (r === "cant") dlg.header[0] = theme.warning("Images and commands can't join a running turn: it runs after it.");
+                else {
+                    dlg.header[0] = theme.muted("Sent: it joins the turn at its next step.");
+                    refresh(cur);
+                }
+                return true;
+            }
+            if ((k.name === "up" || k.name === "down") && (k.shift || k.meta)) {
+                const i = app.queueEntries().findIndex((q) => q.draft === cur);
+                if (i < 0) gone();
+                else if (app.moveQueued(cur, i + (k.name === "up" ? -1 : 1))) refresh(cur);
+                return true;
+            }
+            const text = k.name === "text" ? k.text : undefined;
+            if (text === "e" || text === "x" || k.name === "delete" || k.name === "backspace") {
+                if (!app.takeOutQueued(cur, text === "e")) gone();
+                else if (text === "e") dlg.choose(undefined);
+                else refresh();
+                return true;
+            }
+            return false;
+        },
+    });
+    await app.showDialog(d);
+}
+
 async function configCommand(app: App) {
     let index = 0;
     for (;;) {
-        type K = "showThinking" | "autoCompact" | "webSearch" | "notifications" | "defaultMode" | "allowBypass" | "smallModel" | "reviewModel" | "verbose";
+        type K = "showThinking" | "autoCompact" | "webSearch" | "notifications" | "followUpBehavior" | "defaultMode" | "allowBypass" | "smallModel" | "reviewModel" | "verbose";
         const s = app.settings;
         const onOff = (b: boolean | undefined) => (b ? theme.success("on") : theme.muted("off"));
         const items: SelectItem<K>[] = [
@@ -1242,6 +1313,7 @@ async function configCommand(app: App) {
             { label: "Auto-compact", value: "autoCompact", detail: onOff(s.autoCompact !== false), description: "summarize the conversation near the context limit" },
             { label: "Web search backend", value: "webSearch", detail: s.webSearch ?? "auto", description: "auto · anthropic · brave · tavily · duckduckgo · off" },
             { label: "Notifications", value: "notifications", detail: notificationMode(s), description: `auto · terminal · bell · system · off (prompts, turns over ${notifyAfterMs(s) / 1000}s)` },
+            { label: "Messages sent while working", value: "followUpBehavior", detail: s.followUpBehavior === "queue" ? "queue" : "steer", description: "steer joins the turn at its next step · queue waits for it to end (tab does the other)" },
             { label: "Default permission mode", value: "defaultMode", detail: MODE_INFO[s.permissions?.defaultMode ?? "default"].label, description: "mode at startup" },
             { label: "Bypass in shift+tab cycle", value: "allowBypass", detail: onOff(s.permissions?.allowBypass), description: "lets shift+tab reach bypass permissions" },
             { label: "Small model", value: "smallModel", detail: s.smallModel ?? "auto", description: "for session titles and summaries" },
@@ -1285,6 +1357,9 @@ async function configCommand(app: App) {
             }
             case "allowBypass":
                 save((x) => ((x.permissions ??= {}).allowBypass = !s.permissions?.allowBypass));
+                break;
+            case "followUpBehavior":
+                save((x) => (x.followUpBehavior = s.followUpBehavior === "queue" ? undefined : "queue"));
                 break;
             case "smallModel": {
                 const items2: SelectItem<string>[] = [{ label: "Auto", value: "", description: "the cheapest model from the current provider" }, ...(await modelItems(app)).filter((i) => !i.value.startsWith("login:") && !i.disabled)];
@@ -1509,11 +1584,104 @@ function agentsCommand(app: App) {
     const agents = loadAgents(app.cwd);
     const lines = ["", heading("Sub-agents"), theme.muted("  The model starts these with the Task tool.")];
     for (const a of agents) {
-        lines.push(`  ${bold(a.name)} ${theme.muted(`(${a.source}${a.readOnly ? ", read-only" : ""}${a.model ? `, ${a.model}` : ""})`)}`);
+        lines.push(`  ${bold(a.name)} ${theme.muted(`(${[a.source, ...agentTraits(a)].join(", ")})`)}`);
         lines.push(theme.muted(`    ${truncate(a.description, termCols() - 8)}`));
-        if (a.tools?.length) lines.push(theme.subtle(`    tools: ${a.tools.join(", ")}`));
+        const more = [
+            a.tools?.length ? `tools: ${a.tools.join(", ")}` : "",
+            a.disallowedTools?.length ? `disallowed tools: ${a.disallowedTools.join(", ")}` : "",
+            a.maxTurns ? `max turns: ${a.maxTurns}` : "",
+            a.skills?.length ? `skills: ${a.skills.join(", ")}` : "",
+            a.mcpServers?.length ? `MCP: ${a.mcpServers.map((s) => s.name + (s.config ? " (own)" : "")).join(", ")}` : "",
+            a.hooks ? `hooks: ${Object.entries(a.hooks).map(([e, l]) => `${e}${(l?.length ?? 0) > 1 ? ` ×${l!.length}` : ""}`).join(", ")}` : "",
+        ].filter(Boolean);
+        for (const m of more) lines.push(theme.subtle(`    ${truncate(m, termCols() - 6)}`));
+        for (const w of a.warnings ?? []) lines.push(theme.warning(`    ⚠ ${truncate(w, termCols() - 8)}`));
     }
-    if (agents.length === BUILTIN_AGENTS.length) lines.push("", theme.muted(`  Add your own as markdown files in ${displayPath(paths.userAgents(), app.cwd)}/ or .harness/agents/ (frontmatter: name, description, tools, model).`));
+    if (agents.length === BUILTIN_AGENTS.length) lines.push("", theme.muted(`  Add your own as markdown files in ${displayPath(paths.userAgents(), app.cwd)}/ or .harness/agents/ (frontmatter: name, description, tools, disallowedTools, model, permissionMode, effort, maxTurns, isolation, background, memory, skills, mcpServers, hooks).`));
+    app.print(lines);
+}
+
+function skillsCommand(app: App, args: string) {
+    // Read again, so a skill added since startup shows up (and runs) without a restart.
+    app.skills = sameSkills(app.skills, loadSkills(app.cwd, app.init.trusted));
+    const q = args.trim().toLowerCase();
+    const skills = app.skills.filter((s) => !q || s.name.includes(q) || s.description.toLowerCase().includes(q));
+    app.print((cols) => {
+        const lines = ["", heading("Skills"), theme.muted(`  /name runs one, $name adds one to a prompt, and the model loads them when they fit.`)];
+        for (const s of skills) {
+            const who = !s.userInvocable ? "model only" : !s.modelInvocable ? "you only" : undefined;
+            lines.push(`  ${bold(s.name)}${s.argumentHint ? " " + theme.subtle(s.argumentHint) : ""} ${theme.muted(`(${[s.source, who].filter(Boolean).join(", ")})`)}`);
+            lines.push(theme.muted(`    ${truncate(s.description, cols - 8)}`));
+            // The end of a long path says which skill it is.
+            const path = displayPath(s.file, app.cwd);
+            lines.push(theme.subtle(`    ${path.length > cols - 8 ? "…" + path.slice(path.length - (cols - 9)) : path}`));
+        }
+        if (!skills.length) lines.push(theme.muted(q ? `  No skill matches "${q}".` : "  None yet."));
+        if (!app.skills.length) {
+            const dirs = skillRoots(app.cwd, app.init.trusted).map((r) => displayPath(r.dir, app.cwd) + "/");
+            lines.push(theme.muted(`  Add one as <name>/SKILL.md in ${dirs.join(", ")} (frontmatter: name, description).`));
+        }
+        if (!app.init.trusted) lines.push(theme.warning("  This folder isn't trusted, so its skills (.harness/skills, .claude/skills) are ignored."));
+        return lines;
+    });
+}
+
+/** The keys and what they do now, after the keybindings file. */
+function keyHelp(app: App, cols: number): string[] {
+    const items: string[] = [];
+    for (const a of ACTIONS) {
+        const keys = app.keys.all(a.id);
+        if (!a.defaults.tui) continue;
+        const shown = keys.length ? keys.map((k) => (k === "escape" ? "esc" : k)).join("/") : theme.subtle("unbound");
+        items.push(`${bold(shown)} ${a.description.toLowerCase()}${app.keys.keymap.customized.has(a.id) ? theme.accent(" *") : ""}`);
+    }
+    items.push(`${bold("ctrl+c ×2")} exit`);
+    const lines: string[] = [];
+    let line = " ";
+    for (const it of items) {
+        if (width(line) + width(it) + 4 > cols - 1 && line.trim()) {
+            lines.push(line);
+            line = " ";
+        }
+        line += `   ${it}`;
+    }
+    if (line.trim()) lines.push(line);
+    lines.push(theme.subtle(`  Change them in ${displayPath(app.keys.path, app.cwd)} (/keybindings)${app.keys.keymap.customized.size ? "; * is a custom key" : ""}.`));
+    return lines;
+}
+
+async function keybindingsCommand(app: App, args: string) {
+    const path = app.keys.path;
+    if (args.trim() === "edit") {
+        ensureKeybindingsFile(path);
+        const editor = process.env.VISUAL || process.env.EDITOR || "vi";
+        await app.screen.suspend(() => {
+            spawnSync(["sh", "-c", `${editor} "$1"`, "sh", path], { stdio: ["inherit", "inherit", "inherit"], env: childEnv() });
+        });
+        app.renderLive();
+        return;
+    }
+    const km = app.keys.keymap;
+    const lines = ["", heading("Keybindings")];
+    lines.push(theme.muted(`  File: ${displayPath(path, app.cwd)}${existsSync(path) ? "" : " (not created yet: /keybindings edit creates it)"}`));
+    lines.push(theme.muted("  Changes apply when you save. /keybindings edit opens it in $EDITOR. Same format as Claude Code's."));
+    lines.push(theme.subtle(`  e.g. { "bindings": [{ "context": "Chat", "bindings": { "ctrl+e": "chat:externalEditor", "ctrl+g": null } }] }`));
+    const keyW = Math.min(36, Math.max(16, ...ACTIONS.filter((a) => a.defaults.tui).map((a) => width(app.keys.all(a.id).join(", ")) + 2)));
+    for (const ctx of CONTEXTS) {
+        const actions = ACTIONS.filter((a) => a.context === ctx && a.defaults.tui);
+        if (!actions.length) continue;
+        lines.push("", `  ${bold(ctx)}`);
+        for (const a of actions) {
+            const keys = app.keys.all(a.id);
+            const shown = keys.length ? keys.join(", ") : theme.subtle("not bound");
+            lines.push(truncate(`    ${padEnd(km.customized.has(a.id) ? theme.accent(shown) : shown, keyW)}${padEnd(theme.muted(a.id), 24)}${theme.subtle(a.description)}`, termCols() - 1));
+        }
+    }
+    if (km.issues.length) {
+        lines.push("", `  ${bold("Problems")}`);
+        for (const i of km.issues) lines.push(`    ${i.level === "error" ? theme.error("✘") : theme.warning("!")} ${i.message}`);
+    }
+    lines.push("", theme.subtle(`  Modifiers: ctrl, alt (opt, meta), shift, mod (ctrl in the terminal). Chords: "ctrl+x ctrl+e".`), theme.subtle(`  Docs: ${KEYBINDINGS_DOCS}`));
     app.print(lines);
 }
 
@@ -1607,6 +1775,61 @@ async function bashesCommand(app: App) {
         const how = await sh.kill();
         app.toolState.shells.delete(sh.id);
         app.notice(how === "killed" ? `Stopped ${sh.id} (it ignored SIGTERM, so it was force-killed)` : `Stopped ${sh.id}`);
+    }
+}
+
+/** /loop [interval] <prompt>, /loop stop, /loop (what's looping). */
+function loopCommand(app: App, args: string) {
+    const r = app.schedules.loop(args);
+    app.notice(r.text, r.level ?? "info");
+}
+
+type ScheduleAction = { do: "pause" | "run" | "delete"; id: string; index: number };
+
+/** /schedules: this session's schedules, to pause, resume, run now or delete. With arguments, does one of those. */
+async function schedulesCommand(app: App, args: string) {
+    const direct = app.schedules.manage(args);
+    if (direct) return app.notice(direct.text, direct.level ?? "info");
+    let index = 0;
+    while (true) {
+        const jobs = app.schedules.scheduler.list();
+        if (!jobs.length) {
+            app.notice(NO_SCHEDULES);
+            return;
+        }
+        const now = Date.now();
+        const dialog = new SelectDialog<ScheduleAction>({
+            title: "Schedules",
+            header: [theme.muted("They run in this session while it's idle. Recurring ones stop after 7 days.")],
+            items: jobs.map((j, i) => ({
+                label: truncate(j.prompt.replace(/\s+/g, " "), 48),
+                value: { do: "pause", id: j.id, index: i },
+                description: describeJob(j) + (j.durable ? theme.subtle(" · saved") : ""),
+                detail: j.paused ? theme.warning("paused") : j.due ? theme.accent("due") : j.nextAt ? `next ${shortTime(j.nextAt, now)}` : "",
+            })),
+            initial: Math.min(index, jobs.length - 1),
+            numbers: false,
+            hint: "enter pause or resume · r run now · d delete · esc close",
+            onExtraKey: (k, d) => {
+                const cur = d.list.current();
+                if (!cur) return false;
+                const i = jobs.findIndex((j) => j.id === cur.value.id);
+                if (k.name === "text" && k.text === " ") return (d.choose({ do: "pause", id: cur.value.id, index: i }), true);
+                if (k.name === "text" && (k.text === "r" || k.text === "R")) return (d.choose({ do: "run", id: cur.value.id, index: i }), true);
+                if ((k.name === "text" && (k.text === "d" || k.text === "D")) || k.name === "delete") return (d.choose({ do: "delete", id: cur.value.id, index: i }), true);
+                return false;
+            },
+        });
+        const pick = (await app.showDialog(dialog)) as ScheduleAction | undefined;
+        if (!pick) return;
+        index = pick.index;
+        const job = jobs.find((j) => j.id === pick.id);
+        if (!job) continue;
+        const verb = pick.do === "pause" ? (job.paused ? "resume" : "pause") : pick.do;
+        const r = app.schedules.manage(`${verb} ${job.id}`);
+        if (r) app.notice(r.text, r.level ?? "info");
+        // Running one closes the list: its turn starts.
+        if (pick.do === "run") return;
     }
 }
 
@@ -1714,7 +1937,8 @@ const BUILTIN: Command[] = [
         },
     },
     { name: "cost", description: "Token usage and cost for this session", whileBusy: true, run: (app) => costCommand(app) },
-    { name: "tasks", description: "Tasks Claude Code or Codex delegated to other models (stop them with /tasks stop)", args: "[stop [task-id]]", whileBusy: true, run: (app, args) => tasksCommand(app, args) },
+    { name: "queue", description: "Messages waiting for the turn: send one now, reorder, edit or remove", whileBusy: true, run: (app) => queueCommand(app) },
+    { name: "tasks", description: "Background sub-agents, and tasks Claude Code or Codex delegated to other models (stop them with /tasks stop)", args: "[stop [task-id]]", whileBusy: true, run: (app, args) => tasksCommand(app, args) },
     { name: "context", description: "How much of the context window is used", whileBusy: true, run: (app) => contextCommand(app) },
     { name: "status", description: "Version, model, key source, mode, MCP, memory", whileBusy: true, run: (app) => statusCommand(app) },
     { name: "resume", aliases: ["continue"], description: "Resume an earlier conversation", args: "[session-id]", run: resumeCommand },
@@ -1739,6 +1963,8 @@ const BUILTIN: Command[] = [
     } },
     { name: "mcp", description: "MCP servers: status, approval, tools, reconnect", run: mcpCommand },
     { name: "agents", description: "List sub-agents", whileBusy: true, run: (app) => agentsCommand(app) },
+    { name: "skills", description: "List skills (and pick up new ones)", args: "[filter]", whileBusy: true, run: skillsCommand },
+    { name: "keybindings", description: "Customize keyboard shortcuts (keybindings.json)", args: "[edit]", whileBusy: true, run: keybindingsCommand },
     { name: "hooks", description: "List configured hooks", whileBusy: true, run: (app) => hooksCommand(app) },
     { name: "todos", description: "Show the current todo list", whileBusy: true, run: (app) => {
             const todos = app.toolState.todos.map((t) => ({ ...t }));
@@ -1746,6 +1972,8 @@ const BUILTIN: Command[] = [
             app.print((cols) => ["", heading("Todos"), ...renderTodos(todos, cols)]);
         } },
     { name: "bashes", description: "List and stop background shells", run: bashesCommand },
+    { name: "loop", description: "Run a prompt now and then every interval (default 10m); /loop stop stops it", args: "[interval] <prompt>", whileBusy: true, run: (app, args) => loopCommand(app, args) },
+    { name: "schedules", description: "This session's schedules: pause, resume, run now or delete", args: "[pause|resume|delete|run <id>]", run: schedulesCommand },
     { name: "secrets", description: "List the secrets this session holds (names only), or forget one", args: "[forget NAME]", whileBusy: true, run: secretsCommand },
     { name: "add-dir", description: "Allow working in another directory", args: "<path>", run: addDirCommand },
     { name: "doctor", description: "Check the installation and providers", run: doctorCommand },
@@ -1764,13 +1992,45 @@ function customToCommand(c: CustomCommand): Command {
     };
 }
 
-export function commandList(app: App): Command[] {
+function skillToCommand(s: Skill): Command {
+    return {
+        name: s.name,
+        description: `${s.description} ${theme.subtle("(skill)")}`,
+        args: s.argumentHint,
+        noEcho: true,
+        skill: s,
+        images: true,
+        run: (app, args, draft) => {
+            const display = `/${s.name}${args ? " " + args : ""}`;
+            // Claude Code runs a skill it lists itself, with its own handling (allowed-tools and the rest).
+            const listed = app.cliCommands?.provider === app.model?.provider ? app.cliCommands?.names : undefined;
+            if (app.model?.provider === "claude-code" && claudeCodeRuns(s.name, s, listed)) return app.startTurn(display, { draft });
+            const text = formatSkill(s, args);
+            if (text === undefined) {
+                app.notice(`The ${s.name} skill is gone: ${displayPath(s.file, app.cwd)} can't be read. Run /skills to read them again.`, "error");
+                if (draft) app.editor.restore([draft]);
+                return;
+            }
+            return app.startTurn(text, { display, kind: "command", draft, mentionsIn: args });
+        },
+    };
+}
+
+/** Built-ins, then custom commands, then skills: a name the one before has is taken. */
+function allCommands(app: App): Command[] {
     const names = new Set(BUILTIN.flatMap((c) => [c.name, ...(c.aliases ?? [])]));
-    return [...BUILTIN.filter((c) => !c.hidden), ...app.customCommands.filter((c) => !names.has(c.name)).map(customToCommand)];
+    const custom = app.customCommands.filter((c) => !names.has(c.name));
+    for (const c of custom) names.add(c.name);
+    const skills = (app.skills ?? []).filter((s) => s.userInvocable && !names.has(s.name));
+    return [...BUILTIN, ...custom.map(customToCommand), ...skills.map(skillToCommand)];
+}
+
+export function commandList(app: App): Command[] {
+    return allCommands(app).filter((c) => !c.hidden);
 }
 
 function findCommand(app: App, name: string): Command | undefined {
-    const all = [...BUILTIN, ...app.customCommands.map(customToCommand)];
+    const all = allCommands(app);
     return all.find((c) => c.name === name) ?? all.find((c) => c.aliases?.includes(name));
 }
 
@@ -1795,11 +2055,20 @@ export async function runCommand(app: App, text: string, draft?: Draft): Promise
     const p = parseCommand(text);
     if (!p) return false;
     const { name, args } = p;
-    const cmd = findCommand(app, name);
+    let cmd = findCommand(app, name);
+    if (!cmd && !name.includes("/") && !name.includes(".")) {
+        // A skill added since startup.
+        app.skills = sameSkills(app.skills ?? [], loadSkills(app.cwd, app.init?.trusted ?? false));
+        cmd = findCommand(app, name);
+    }
     if (!cmd) {
         // "/usr/bin/foo is broken" is a prompt, not a command.
         if (name.includes("/") || name.includes(".")) return false;
-        app.notice(`Unknown command /${name}. Type /help to see the commands.`, "error");
+        // One the session's agent CLI runs itself (Claude Code's /code-review, its skills and plugins).
+        // Until it has listed them (before the first turn), let Claude Code resolve the name.
+        const cli = app.cliCommands?.provider === app.model?.provider ? app.cliCommands?.names : undefined;
+        if (cli?.has(name) || (!cli && app.model?.provider === "claude-code")) return false;
+        app.notice(`Unknown command /${name}. Type /help to see the commands${app.skills?.length ? " and /skills for skills" : ""}.`, "error");
         if (draft?.attachments.size) app.editor.restore([draft]);
         return true;
     }
@@ -1810,7 +2079,7 @@ export async function runCommand(app: App, text: string, draft?: Draft): Promise
     }
     if (app.busy && !cmd.whileBusy) {
         // Turn-starting commands queue like a prompt (by the caller); a bare /plan only switches mode, so it can't wait.
-        if (cmd.custom || cmd.name === "init" || cmd.name === "review" || (cmd.name === "plan" && args)) return false;
+        if (cmd.custom || cmd.skill || cmd.name === "init" || cmd.name === "review" || (cmd.name === "plan" && args)) return false;
         app.notice(`/${cmd.name} isn't available while ${APP_TITLE} is working. Press esc to interrupt first.`, "warn");
         if (draft) app.editor.restore([draft]);
         return true;
@@ -1827,7 +2096,7 @@ export async function runCommand(app: App, text: string, draft?: Draft): Promise
 
 function helpCommand(app: App) {
     const cmds = commandList(app);
-    const custom = app.customCommands.length;
+    const custom = app.customCommands.length + (app.skills?.length ?? 0);
     app.print((cols) => helpLines(app, cmds, custom, cols));
 }
 
@@ -1835,15 +2104,14 @@ function helpLines(app: App, cmds: ReturnType<typeof commandList>, custom: numbe
     const lines = ["", `${theme.accent("✻")} ${bold(APP_TITLE)} ${theme.muted(`v${APP_VERSION} · a coding agent for your terminal, with any model`)}`, "", heading("Commands")];
     const w = Math.min(28, Math.max(...cmds.map((c) => width(c.name) + (c.args ? width(c.args) + 1 : 0))) + 4);
     for (const c of cmds) lines.push(truncate(`  ${padEnd(`/${c.name}${c.args ? " " + theme.subtle(c.args) : ""}`, w)}${theme.muted(c.description)}`, cols - 1));
-    if (!custom) lines.push(theme.subtle(`  Add your own: markdown files in ${displayPath(paths.userCommands(), app.cwd)}/ or .harness/commands/`));
+    if (!custom) lines.push(theme.subtle(`  Add your own: markdown files in ${displayPath(paths.userCommands(), app.cwd)}/ or .harness/commands/, or skills (<name>/SKILL.md) in ${displayPath(join(paths.home(), "skills"), app.cwd)}/ or .harness/skills/`));
     lines.push(
         "",
         heading("Input"),
-        `  ${theme.bashMode("!")} run a shell command    ${theme.memoryMode("#")} save a memory    ${bold("@")} attach a file    ${bold("/")} commands    ${bold("\\⏎")} or ${bold("shift+⏎")} newline`,
+        `  ${theme.bashMode("!")} run a shell command    ${theme.memoryMode("#")} save a memory    ${bold("@")} attach a file    ${bold("$")} skills    ${bold("/")} commands    ${bold("\\⏎")} or ${bold("shift+⏎")} newline`,
         "",
         heading("Keys"),
-        `  ${bold("shift+tab")} cycle permission modes    ${bold("esc")} interrupt    ${bold("esc esc")} clear or rewind    ${bold("ctrl+c ×2")} exit`,
-        `  ${bold("ctrl+o")} verbose output    ${bold("ctrl+t")} todos    ${bold("ctrl+g")} edit in $EDITOR    ${bold("ctrl+l")} clear screen    ${bold("↑/↓")} history`,
+        ...keyHelp(app, cols),
         "",
         heading("Permission modes"),
         ...PERMISSION_MODES.map((m) => `  ${padEnd(MODE_INFO[m].color(MODE_INFO[m].label), 22)}${theme.muted(truncate(MODE_INFO[m].description, cols - 26))}`),

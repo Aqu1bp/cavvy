@@ -7,7 +7,10 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { Screen, type Entry, type Printable } from "./screen";
 import { Editor, imagesIn, plainText, withoutImage, type Draft } from "./editor";
+import { followUpDefault, loadQueue, saveQueue, type FollowUp, type StoredQueued } from "../agent/queue-store";
 import type { Key } from "./keys";
+import { CHORD_TIMEOUT_MS, type Keymap } from "../keybindings/core";
+import { TuiKeybindings, tuiStroke } from "../keybindings/tui";
 import { bold, dim, italic, strike, stripAnsi, theme, truncate, width, wrapLine, termCols, termRows, padEnd, sanitizeLine } from "./ansi";
 import { inline, MarkdownStream, renderMarkdown } from "./markdown";
 import { SelectDialog, InputDialog, MessageDialog, type Dialog } from "./dialogs";
@@ -21,6 +24,9 @@ import { fireHooks, type HookEvent } from "../agent/hooks";
 import { sessionStartHooks } from "../agent/session-hooks";
 import { Notifier } from "./notify";
 import { Session } from "../agent/session";
+import { SessionSchedules } from "../agent/schedule-host";
+import { CRON_TOOLS } from "../agent/schedule-tools";
+import { shortTime } from "../agent/schedule";
 import { appendPromptHistory, loadPromptHistory } from "../agent/session";
 import { rewindTargets } from "../agent/checkpoints";
 import { buildSystemPrompt } from "../agent/system-prompt";
@@ -41,13 +47,15 @@ import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveMode
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { account } from "../providers/accounts";
 import { RpcError } from "../server/rpc-error";
-import { modelRef, parseModelRef, textOf, type Message, type ModelInfo, type ProviderClient, type TextPart, type ToolCallPart } from "../providers/types";
+import { modelRef, parseModelRef, textOf, type ImagePart, type Message, type ModelInfo, type ProviderClient, type TextPart, type ToolCallPart } from "../providers/types";
 import { formatCost, formatTokens } from "../providers/pricing";
 import { attachmentsNote } from "../providers/files";
 import { configuredProviders, storageDescription } from "../auth/credentials";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { commandList, commandRefusesImages, runCommand } from "../commands/index";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
+import { loadSkills, skillMentions, withSkills, type Skill } from "../agent/skills";
+import { skillTool } from "../tools/skill-tool";
 import { displayPath } from "../util/files";
 import { redact } from "../util/redact";
 import { SecretStore, secretValueError } from "../agent/secrets";
@@ -108,6 +116,9 @@ export class App {
     session!: Session;
     toolState: ToolState;
     customCommands: CustomCommand[] = [];
+    skills: Skill[] = [];
+    /** The commands the session's agent CLI said it runs itself (Claude Code's skills and built-ins), by provider. */
+    cliCommands?: { provider: string; names: ReadonlySet<string> };
     verbose = false;
     lastResponse = "";
 
@@ -117,8 +128,8 @@ export class App {
     /** Whether the last renderLive showed just the prompt (no turn, no dialog), to tell when it's back. */
     private wasIdle = false;
     private abort?: AbortController;
-    /** Prompts typed while busy, each with the images behind its placeholders. */
-    private queued: Draft[] = [];
+    /** Prompts typed while busy, each with the images behind its placeholders, and whether it steers the turn or waits for its end. */
+    private queued: QueuedDraft[] = [];
     /** Images being read or shrunk, by attachment id. */
     private preparing = new Map<number, Promise<void>>();
     /** How long sending waits for images still being prepared before going without them. */
@@ -167,6 +178,11 @@ export class App {
     private takeBackBlockedAt = 0;
     private flash?: { text: string; until: number };
     private showHelp = false;
+    /** The keybindings file, applied (and reapplied on every save). */
+    readonly keys = new TuiKeybindings();
+    /** Keys of a chord being typed, handled as usual if it isn't finished. */
+    private chordHeld: Key[] = [];
+    private chordToken = 0;
     private menuIndex = 0;
     private menuHiddenFor?: string;
     private exitResolve!: () => void;
@@ -191,7 +207,33 @@ export class App {
         this.mcp.onChange = () => this.renderLive();
         this.files = new FileIndex(init.cwd);
         this.toolState = { cwd: init.cwd, projectRoot: init.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore() };
+        this.schedules = new SessionSchedules({
+            session: () => this.session,
+            settings: () => this.settings,
+            idle: () => this.schedulable(),
+            run: (prompt, _job, label) => this.runScheduled(prompt, label),
+            notice: (text, level) => this.notice(text, level),
+            changed: () => this.renderLive(),
+        });
+        this.toolState.scheduler = this.schedules.scheduler;
         this.editor.setHistory(loadPromptHistory(init.cwd));
+    }
+
+    /** /loop, cron jobs and the resume after a usage limit (src/agent/schedule.ts). */
+    readonly schedules: SessionSchedules;
+    /** The next turn to start is a schedule's, not the user's. */
+    private scheduledTurn = false;
+
+    /** A scheduled prompt may start now: nothing running, waiting, or being set up. */
+    private schedulable(): boolean {
+        return !this.busy && !this.dialogs.length && !this.dialogQueue.length && !this.switching && !this.pendingSubmit && !this.exiting && this.modelReady && Boolean(this.session);
+    }
+
+    private runScheduled(prompt: string, label: string): Promise<unknown> {
+        // A line of its own, so it doesn't read as part of the answer before it.
+        this.print(["", theme.muted(`⏱ ${label}`)]);
+        this.scheduledTurn = true;
+        return this.submitText(prompt).finally(() => (this.scheduledTurn = false));
     }
 
     get cwd(): string {
@@ -227,11 +269,14 @@ export class App {
         process.on("exit", restore);
         // stderr would scribble over the screen.
         onConfigWarning((msg) => this.notice(msg, "warn"));
+        this.keys.watch((km, status) => this.reportKeybindings(km, status));
         for (const sig of ["SIGTERM", "SIGHUP"] as const) process.on(sig, () => void this.exit(0));
 
         this.customCommands = loadCustomCommands(this.cwd, this.init.trusted);
+        this.skills = loadSkills(this.cwd, this.init.trusted);
         this.printWelcome();
         for (const n of this.init.startupNotes) this.notice(n, "warn");
+        if (this.keys.keymap.issues.length) this.reportKeybindings(this.keys.keymap, "start");
 
         this.mcp.load();
         const approvals = this.mcp.needsApproval();
@@ -240,6 +285,7 @@ export class App {
 
         if (this.init.resumeFile) this.resume(this.init.resumeFile);
         else this.session = Session.create(this.cwd);
+        this.schedules.restore();
         if (this.init.fastMode !== undefined) this.session.setFastMode(this.init.fastMode);
         void this.sessionHook("SessionStart", { source: this.init.resumeFile ? "resume" : "startup" });
 
@@ -258,10 +304,12 @@ export class App {
     async exit(code = 0) {
         if (this.exiting) return;
         this.exiting = true;
+        this.schedules.dispose();
         this.abort?.abort();
         const disposed = this.agent?.dispose();
         for (const d of [...this.dialogs, ...this.dialogQueue]) d.cancel();
         this.stopTicker();
+        this.keys.close();
         this.screen.setLive([]);
         const hint = this.session?.messages.length && this.session.persisted ? theme.muted(`Resume this session with: harness --resume ${this.session.meta.id}`) : "";
         if (this.session?.cost || this.session?.costUnknown) this.screen.print(theme.muted(`Total cost: ${formatCost(this.session.cost, this.session.costUnknown)}${this.session.costUnknown ? " (no price known for some of the models used)" : ""}`));
@@ -520,7 +568,8 @@ export class App {
     tools(): Tool<any>[] {
         const native = this.nativeSearch();
         const builtin = BUILTIN_TOOLS.filter((t) => !(native && t.name === "WebSearch") && !(t.name === "WebSearch" && this.settings.webSearch === "off"));
-        return [...builtin, ...this.mcp.tools()];
+        const skill = skillTool(this.skills);
+        return [...builtin, ...(skill ? [skill] : []), ...CRON_TOOLS, ...this.mcp.tools()];
     }
 
     makeAgent() {
@@ -614,6 +663,7 @@ export class App {
         this.toolState.secrets?.clear();
         this.checker.resetSession();
         this.makeAgent();
+        this.schedules.switchSession();
         this.sessionSwitched(prev, "clear");
     }
 
@@ -635,8 +685,12 @@ export class App {
         this.checker.resetSession();
         if (this.agent) this.makeAgent();
         this.replayTranscript();
-        // At startup, run() fires SessionStart.
-        if (prev) this.sessionSwitched(prev, "resume");
+        this.restoreSavedQueue();
+        // At startup, run() fires SessionStart (and restores its schedules).
+        if (prev) {
+            this.schedules.switchSession();
+            this.sessionSwitched(prev, "resume");
+        }
     }
 
     /** /clear or /resume: SessionEnd for the old session, then SessionStart for the new one. */
@@ -770,7 +824,7 @@ export class App {
             const lines = thinkingLines(t, cols);
             const shown = lines.slice(0, max);
             const out = ["", ...shown.map((l, i) => (i === 0 ? theme.muted("✻ ") : "  ") + italic(theme.muted(l)))];
-            if (lines.length > max) out.push(theme.subtle(`  … +${lines.length - max} lines (ctrl+o to show more next time)`));
+            if (lines.length > max) out.push(theme.subtle(`  … +${lines.length - max} lines (${this.keys.label("app:toggleTranscript") ?? "/config"} to show more next time)`));
             return out;
         });
     }
@@ -874,6 +928,9 @@ export class App {
                 this.receiving.clear();
                 this.status = `${e.reason.slice(0, 80)} · retrying in ${Math.ceil(e.delayMs / 1000)}s (attempt ${e.attempt})`;
                 break;
+            case "cli_commands":
+                this.cliCommands = { provider: e.provider, names: new Set(e.names) };
+                break;
             case "limits":
                 {
                     const key = planLimitKey(e.limits.provider, e.limits.accountId);
@@ -917,11 +974,13 @@ export class App {
         let a = this.active.get(parentId) ?? this.detached.get(parentId);
         // One working after its call returned (Codex's spawn does at once): shown on its own while it works.
         if (!a && (e.type === "request_start" || e.type === "tool_start")) {
-            a = { call: { type: "tool_call", id: parentId, name: "Task", input: { description: label } }, title: `Task(${label})`, startedAt: Date.now(), progress: "" };
+            // A background task's time counts from its start, not from when its call returned.
+            const startedAt = this.agent?.delegatedTasks.find((t) => t.callId === parentId)?.startedAt ?? Date.now();
+            a = { call: { type: "tool_call", id: parentId, name: "Task", input: { description: label } }, title: `Task(${label})`, startedAt, progress: "" };
             this.detached.set(parentId, a);
         }
         if (!a) return;
-        a.sub ??= { label, tools: [], count: 0, tokens: 0, startedAt: Date.now() };
+        a.sub ??= { label, tools: [], count: 0, tokens: 0, startedAt: a.startedAt };
         if (e.type === "tool_start") {
             a.sub.count++;
             a.sub.tools.push(e.title);
@@ -955,7 +1014,10 @@ export class App {
             const out: string[] = ["", toolLine(displayTitle(title, tool), state)];
             if (sandboxed && autoReason === "sandboxed") out.push(theme.subtle("  ⎿  ran in the sandbox"));
             else if (autoReason && autoReason !== "hook") out.push(theme.subtle(`  ⎿  auto-approved${sandboxed ? " (sandboxed)" : ""}: ${truncate(autoReason, cols - 34)}`));
-            if ((call.name === "Task" || call.name === DELEGATE_TOOL) && sub) {
+            if (call.name === "Task" && d?.summary === "Started in the background") {
+                const id = /background task (task-\d+)/.exec(result.content)?.[1];
+                out.push(theme.muted(`  ⎿  Running in the background${id ? ` as ${id}` : ""} · /tasks shows it`));
+            } else if ((call.name === "Task" || call.name === DELEGATE_TOOL) && sub) {
                 out.push(theme.muted(`  ⎿  ${result.isError ? "Failed" : "Done"} (${sub.count} tool use${sub.count === 1 ? "" : "s"} · ${formatTokens(sub.tokens)} tokens · ${formatDuration(durationMs)})`));
                 if (verbose) out.push(...resultLines(result.content, cols, 40));
             } else if (denied) {
@@ -1018,6 +1080,7 @@ export class App {
                 const next = this.dialogQueue.shift();
                 if (next) this.dialogs.push(next);
                 this.renderLive();
+                if (!next) this.schedules.poke();
             });
         }
         this.renderLive();
@@ -1231,18 +1294,9 @@ export class App {
         const e = this.editor;
         const n = k.name;
         if (this.pendingSubmit && ((k.ctrl && n === "c") || n === "escape")) return this.pendingSubmit.cancel();
-        const menu = this.completions();
-        if (menu && menu.items.length) {
-            if (n === "up") return void (this.menuIndex = (this.menuIndex - 1 + menu.items.length) % menu.items.length);
-            if (n === "down") return void (this.menuIndex = (this.menuIndex + 1) % menu.items.length);
-            if (n === "tab" && !k.shift) return this.applyCompletion(menu, false);
-            if (n === "enter" && !k.shift && !k.meta && !k.ctrl) return this.applyCompletion(menu, true);
-            if (n === "escape") {
-                this.menuHiddenFor = e.text;
-                return;
-            }
-        }
+        // Ctrl+C and Ctrl+D can't be rebound: they always get you out.
         if (k.ctrl && n === "c") {
+            this.dropChord();
             if (this.busy) return this.interrupt();
             if (!e.isEmpty || this.inputMode !== "prompt") {
                 e.clear();
@@ -1256,45 +1310,157 @@ export class App {
             return;
         }
         if (k.ctrl && n === "d") {
+            this.dropChord();
             if (e.isEmpty && !this.busy) return void this.exit(0);
             return e.del();
         }
-        if (n === "escape") {
-            if (this.busy) {
-                // An Esc meant to cancel a queued follow-up must not kill the running turn.
-                if (this.queued.length && Date.now() - this.takeBackBlockedAt >= 3000) return this.takeBackQueued();
-                this.takeBackBlockedAt = 0;
-                return this.interrupt();
-            }
-            if (this.showHelp) return void (this.showHelp = false);
-            if (Date.now() - this.escAt < 800) {
-                this.escAt = 0;
-                this.flash = undefined;
-                if (!e.isEmpty) {
-                    e.clear();
-                    this.inputMode = "prompt";
-                } else if (this.inputMode === "prompt") void runCommand(this, "/rewind");
-                return;
-            }
-            this.escAt = Date.now();
-            if (!e.isEmpty) this.flash = { text: "Esc again to clear", until: Date.now() + 800 };
-            else if (this.inputMode === "prompt" && rewindTargets(this.session.messages).length) this.flash = { text: "Esc again to rewind", until: Date.now() + 800 };
+        const menu = this.completions();
+        // Enter on the / and @ menu takes the suggestion, whatever Enter is bound to.
+        if (n === "enter" && menu?.items.length && !k.shift && !k.meta && !k.ctrl && !this.chordHeld.length) return this.applyCompletion(menu, true);
+        const stroke = tuiStroke(k);
+        if (!stroke) {
+            this.flushChord(menu);
+            return this.fixedKey(k, menu);
+        }
+        const r = this.keys.matcher.match(stroke, menu?.items.length ? ["Autocomplete", "Chat", "Global"] : ["Chat", "Global"]);
+        if (r.kind === "pending") {
+            // A new chord after one that went nowhere: the old one's keys first.
+            if (r.abandoned) for (const h of this.chordHeld.splice(0)) this.fixedKey(h, menu);
+            this.chordHeld.push(k);
+            this.flash = { text: `${r.keys.replace(/ctrl\+enter/g, "ctrl+j")} … (waiting for the next key)`, until: Date.now() + CHORD_TIMEOUT_MS };
+            const token = ++this.chordToken;
+            // A chord left unfinished: its keys do what they'd do on their own.
+            setTimeout(() => {
+                if (token !== this.chordToken || this.keys.matcher.waiting) return;
+                // A dialog opened meanwhile: its keys aren't typed into the prompt behind it.
+                if (this.dialogs.length) return this.dropChord();
+                this.flushChord(this.completions());
+                this.renderLive();
+            }, CHORD_TIMEOUT_MS + 20);
             return;
         }
-        if (n === "tab" && k.shift) return this.cycleMode();
-        if (n === "enter") {
-            if (k.shift || k.meta || k.ctrl) return e.insert("\n");
-            if (e.text.endsWith("\\") && e.cursor === e.text.length) {
-                e.backspace();
+        const held = this.chordHeld.splice(0);
+        if (held.length) this.flash = undefined;
+        if (r.abandoned) for (const h of held) this.fixedKey(h, menu);
+        if (r.kind === "action") return this.runKeyAction(r.action, k, this.completions());
+        // Unbinding takes away an action, not the key's editing meaning (a GUI-only null can't break the prompt).
+        return this.fixedKey(k, held.length ? this.completions() : menu, r.kind === "none" && r.unbound);
+    }
+
+    /** The keys of an unfinished chord, as they'd be on their own. */
+    private flushChord(menu: ReturnType<App["completions"]>) {
+        const held = this.chordHeld.splice(0);
+        this.keys.matcher.reset();
+        this.chordToken++;
+        if (held.length && this.flash?.text.endsWith("(waiting for the next key)")) this.flash = undefined;
+        for (const h of held) this.fixedKey(h, menu);
+    }
+
+    private dropChord() {
+        if (!this.chordHeld.length) return;
+        this.chordHeld = [];
+        this.keys.matcher.reset();
+        this.chordToken++;
+        this.flash = undefined;
+    }
+
+    /** What a bound action does in the input box. */
+    private runKeyAction(action: string, k: Key, menu: ReturnType<App["completions"]>) {
+        const e = this.editor;
+        const items = menu?.items.length ? menu : undefined;
+        switch (action) {
+            case "autocomplete:accept":
+                return items && this.applyCompletion(items, false);
+            case "autocomplete:dismiss":
+                return void (this.menuHiddenFor = e.text);
+            case "autocomplete:previous":
+                return void (items && (this.menuIndex = (this.menuIndex - 1 + items.items.length) % items.items.length));
+            case "autocomplete:next":
+                return void (items && (this.menuIndex = (this.menuIndex + 1) % items.items.length));
+            case "chat:submit":
+                // Enter on an open menu takes the suggestion (and runs a command).
+                if (items) return this.applyCompletion(items, true);
+                if (e.text.endsWith("\\") && e.cursor === e.text.length) {
+                    e.backspace();
+                    return e.insert("\n");
+                }
+                return void this.submit();
+            case "chat:newline":
                 return e.insert("\n");
-            }
-            return void this.submit();
+            case "chat:cancel":
+                return this.escapeKey();
+            case "chat:cycleMode":
+                return this.cycleMode();
+            case "chat:externalEditor":
+                return void this.externalEditor();
+            case "chat:imagePaste":
+                return void this.pasteClipboardImage();
+            case "chat:undo":
+                return e.undo();
+            case "history:previous":
+                // The arrow moves between the lines of a long prompt first.
+                if (k.name === "up" && !k.ctrl && !k.meta && e.up()) return;
+                if (e.historyPrev()) this.syncModeFromHistory();
+                return;
+            case "history:next":
+                if (k.name === "down" && !k.ctrl && !k.meta && e.down()) return;
+                if (e.historyNext()) this.syncModeFromHistory();
+                return;
+            case "app:toggleTranscript":
+                this.verbose = !this.verbose;
+                this.flash = { text: `Verbose output ${this.verbose ? "on" : "off"}`, until: Date.now() + 1500 };
+                return;
+            case "app:toggleTodos":
+                this.showTodos = !this.showTodos;
+                return;
+            case "app:redraw":
+                return this.screen.clearScreen();
         }
+    }
+
+    private escapeKey() {
+        const e = this.editor;
+        if (this.busy) {
+            // An Esc meant to cancel a queued follow-up must not kill the running turn.
+            if (this.queued.length && Date.now() - this.takeBackBlockedAt >= 3000) return this.takeBackQueued();
+            this.takeBackBlockedAt = 0;
+            return this.interrupt();
+        }
+        if (this.showHelp) return void (this.showHelp = false);
+        const again = this.keys.label("chat:cancel") ?? "esc";
+        if (Date.now() - this.escAt < 800) {
+            this.escAt = 0;
+            this.flash = undefined;
+            if (!e.isEmpty) {
+                e.clear();
+                this.inputMode = "prompt";
+            } else if (this.inputMode === "prompt") void runCommand(this, "/rewind");
+            return;
+        }
+        this.escAt = Date.now();
+        const name = again === "escape" ? "Esc" : again;
+        if (!e.isEmpty) this.flash = { text: `${name} again to clear`, until: Date.now() + 800 };
+        else if (this.inputMode === "prompt" && rewindTargets(this.session.messages).length) this.flash = { text: `${name} again to rewind`, until: Date.now() + 800 };
+    }
+
+    /** Keys that aren't bindings: typing and moving around the input box. */
+    private fixedKey(k: Key, menu: ReturnType<App["completions"]>, unbound = false) {
+        const e = this.editor;
+        const n = k.name;
+        // Tab keeps the mid-turn shortcut unless a binding, chord, or explicit unbinding claims it.
+        if (!unbound && n === "tab" && !k.shift && !k.ctrl && !k.meta && this.busy && this.inputMode === "prompt" && e.text.trim()) {
+            const contexts = menu?.items.length ? ["Autocomplete", "Chat", "Global"] as const : ["Chat", "Global"] as const;
+            // A held chord prefix also comes here on timeout; preserve an explicit null then too.
+            const binding = contexts.map((context) => this.keys.keymap.table.get(context)?.get("tab")).find((value) => value !== undefined);
+            if (binding !== null) return void this.submit(true);
+        }
+        if (n === "enter" && menu?.items.length && !k.shift && !k.meta && !k.ctrl) return this.applyCompletion(menu, true);
+        // Any other modified Enter nobody unbound adds a line, in terminals that tell them apart.
+        if (n === "enter" && (k.shift || k.meta || k.ctrl)) return unbound ? undefined : e.insert("\n");
         if (n === "paste" && k.paste !== undefined) return this.pasteInto(k.paste);
-        if (k.ctrl && !k.meta && n === "v") return void this.pasteClipboardImage();
         if (n === "text" && k.text) {
             if (e.isEmpty && this.inputMode === "prompt") {
-                if (k.text === "!" ) return void (this.inputMode = "bash");
+                if (k.text === "!") return void (this.inputMode = "bash");
                 if (k.text === "#") return void (this.inputMode = "memory");
                 if (k.text === "?") return void (this.showHelp = !this.showHelp);
             }
@@ -1317,28 +1483,22 @@ export class App {
         if (k.ctrl && n === "u") return e.killToStart();
         if (k.ctrl && n === "w") return e.killWordLeft();
         if (k.ctrl && n === "y") return e.yank();
-        if (k.ctrl && (n === "_" || n === "-")) return e.undo();
-        if (n === "up" || (k.ctrl && n === "p")) {
-            if (n === "up" && e.up()) return;
-            if (e.historyPrev()) this.syncModeFromHistory();
-            return;
-        }
-        if (n === "down" || (k.ctrl && n === "n")) {
-            if (n === "down" && e.down()) return;
-            if (e.historyNext()) this.syncModeFromHistory();
-            return;
-        }
-        if (k.ctrl && n === "o") {
-            this.verbose = !this.verbose;
-            this.flash = { text: `Verbose output ${this.verbose ? "on" : "off"}`, until: Date.now() + 1500 };
-            return;
-        }
-        if (k.ctrl && n === "t") {
-            this.showTodos = !this.showTodos;
-            return;
-        }
-        if (k.ctrl && n === "l") return this.screen.clearScreen();
-        if (k.ctrl && n === "g") return void this.externalEditor();
+    }
+
+    /** Keybindings problems, shown when the file loads or changes. */
+    private reportKeybindings(km: Keymap, status: "start" | "applied" | "kept") {
+        if (km.issues.length) {
+            const errors = km.issues.filter((i) => i.level === "error").length;
+            const warnings = km.issues.length - errors;
+            const counts = [errors && `${errors} error${errors === 1 ? "" : "s"}`, warnings && `${warnings} warning${warnings === 1 ? "" : "s"}`].filter(Boolean).join(", ");
+            const head = `${status === "kept" ? "Keybindings not reloaded, the last good ones stay" : status === "applied" ? "Keybindings reloaded with problems" : "Problems in your keybindings"} (${counts}): ${displayPath(this.keys.path, this.cwd)}`;
+            const color = errors ? theme.error : theme.warning;
+            this.screen.print((cols) => [
+                ...wrapLine(head, cols - 6).map((l, i) => (i === 0 ? "  ⎿  " : "     ") + color(l)),
+                ...km.issues.flatMap((issue) => wrapLine(issue.message, cols - 9).map((l, i) => (i === 0 ? `     ${issue.level === "error" ? theme.error("✘") : theme.warning("!")} ` : "       ") + l)),
+            ]);
+        } else if (status === "applied") this.notice(`Keybindings reloaded${km.customized.size ? ` (${km.customized.size} customized)` : ""}`);
+        this.renderLive();
     }
 
     private syncModeFromHistory() {
@@ -1509,6 +1669,16 @@ export class App {
             if (this.menuIndex >= items.length) this.menuIndex = 0;
             return { items };
         }
+        if (/^\$[a-zA-Z0-9:_-]*$/.test(tok.text) && !/[A-Z]/.test(tok.text)) {
+            const q = tok.text.slice(1);
+            const found = this.skills
+                .filter((s) => s.userInvocable && (s.name.startsWith(q) || (q.length > 1 && s.name.includes(q))))
+                .sort((a, b) => Number(!a.name.startsWith(q)) - Number(!b.name.startsWith(q)) || a.name.localeCompare(b.name))
+                .slice(0, 8);
+            if (found.length === 1 && found[0]!.name === q) return { items: [] };
+            if (this.menuIndex >= found.length) this.menuIndex = 0;
+            return { items: found.map((s) => ({ label: "$" + s.name, description: s.description, insert: `$${s.name} `, start: tok.start, end: e.cursor })) };
+        }
         if (tok.text.startsWith("@") && tok.text.length >= 1) {
             const q = tok.text.slice(1).replace(/^"/, "");
             const found = this.files.search(q, 8);
@@ -1529,7 +1699,8 @@ export class App {
     // -----------------------------------------------------------------------
     // Submitting
 
-    private async submit() {
+    /** `opposite`: Tab while working, the other of steer and queue for this message. */
+    private async submit(opposite = false) {
         if (this.pendingSubmit) {
             this.flash = { text: "Still preparing images for the last prompt (esc cancels it)", until: Date.now() + 2000 };
             return;
@@ -1559,11 +1730,16 @@ export class App {
             // Images that never came leave nothing to send when they were all there was.
             if (!plainText(draft!.text).trim() && !imagesIn(draft!.text, draft!.attachments).length) return;
         }
-        await this.submitText(draft ?? text);
+        await this.submitText(draft ?? text, opposite ? otherFollowUp(this.followUp()) : undefined);
     }
 
-    /** A prompt, or a draft with images, as typed: a command, queued while busy, or a turn. */
-    async submitText(input: string | Draft) {
+    /** What a message sent while a turn runs does, unless the key says otherwise. */
+    followUp(): FollowUp {
+        return followUpDefault(this.settings.followUpBehavior);
+    }
+
+    /** A prompt, or a draft with images, as typed: a command, queued while busy, or a turn. `followUp`: what it does if a turn is running (default: the setting). */
+    async submitText(input: string | Draft, followUp?: FollowUp) {
         const draft: Draft = typeof input === "string" ? { text: input, attachments: new Map() } : input;
         const text = plainText(draft.text);
         if (this.switching) await this.switching.catch(() => undefined);
@@ -1572,15 +1748,18 @@ export class App {
             if (handled) return;
         }
         if (this.busy) {
-            this.queued.push(draft);
-            this.renderLive();
+            const q: QueuedDraft = { ...draft, mode: followUp ?? this.followUp() };
+            this.queued.push(q);
+            this.queueUpdated();
+            if (q.mode === "steer" && steers(q)) this.agent?.queueChanged?.();
             return;
         }
         await this.startTurn(text, { draft });
     }
 
     /** `draft` carries the images typed with the prompt (or with the command that built it). */
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command"; draft?: Draft } = {}) {
+    /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files (a skill's instructions are sent as written). */
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command"; draft?: Draft; mentionsIn?: string } = {}) {
         if (!this.agent) {
             this.notice("No model is selected. Pick one with /model (or add an API key with /login).", "error");
             return;
@@ -1588,6 +1767,9 @@ export class App {
         // Busy from here on, so prompts typed while MCP servers finish connecting queue up.
         const agent = this.agent;
         this.busy = true;
+        // The user's own turn: a resume waiting for the usage limit isn't needed.
+        if (!this.scheduledTurn) this.schedules.userSent();
+        this.scheduledTurn = false;
         const ac = (this.abort = new AbortController());
         this.turnStart = Date.now();
         this.turnTokens = 0;
@@ -1607,10 +1789,15 @@ export class App {
             if (ac.signal.aborted) {
                 // Nothing was sent: hand the message back rather than dropping it.
                 this.screen.print(theme.error(`  ⎿  Interrupted before sending; your message is back in the prompt.`));
-                this.queued.unshift(opts.draft ?? { text: opts.kind === "command" ? (opts.display ?? text) : text, attachments: new Map() });
+                this.queued.unshift({ ...(opts.draft ?? { text: opts.kind === "command" ? (opts.display ?? text) : text, attachments: new Map() }), mode: "queue" });
             } else {
                 const roots = [this.cwd, ...(this.settings.permissions?.additionalDirectories ?? [])];
-                const { parts, attached, notices } = await expandMentions(text, this.toolState, roots, this.checker, { prepare: this.imagePrep });
+                // $name brings that skill's instructions along; the transcript keeps what was typed.
+                const skills = opts.kind === "command" ? [] : skillMentions(text, this.skills);
+                const sent = skills.length ? withSkills(text, skills) : text;
+                const { parts, attached, notices } = await expandMentions(opts.mentionsIn ?? text, this.toolState, roots, this.checker, { prepare: this.imagePrep });
+                parts[0] = { type: "text", text: sent };
+                if (skills.length) this.notice(`Using ${skills.length === 1 ? "skill" : "skills"} ${skills.map((sk) => sk.name).join(", ")}`);
                 parts.push(...images.map((im) => im.part));
                 for (const n of notices) this.notice(n, "warn");
                 if (attached.length) this.notice(`Attached ${attached.join(", ")}`);
@@ -1630,9 +1817,114 @@ export class App {
             this.renderLive();
         }
         if (reason) void this.notifier.turnEnded(reason, Date.now() - this.turnStart);
-        if (ac.signal.aborted) return this.returnQueued();
-        const next = this.queued.shift();
-        if (next !== undefined) await this.submitText(next);
+        if (reason) this.schedules.turnEnded(reason, agent.limitStop);
+        if (ac.signal.aborted) {
+            this.returnQueued();
+            return this.schedules.poke();
+        }
+        const next = this.nextQueued();
+        if (next === undefined) return this.schedules.poke();
+        this.queued.shift();
+        this.queueUpdated();
+        await this.submitText(next);
+    }
+
+    /** What runs when the turn ends: the first message still waiting. */
+    nextQueued(): Draft | undefined {
+        return this.queued[0];
+    }
+
+    /** Shown, and saved beside the transcript so quitting mid-turn doesn't lose it. */
+    private queueUpdated() {
+        this.renderLive();
+        if (!this.session?.persisted) return;
+        const mine = this.queued.map((d): StoredQueued => {
+            const images = imagesIn(d.text, d.attachments).map((im) => im.part);
+            return { text: plainText(d.text), mode: d.mode, ...(images.length ? { attachments: images } : {}) };
+        });
+        const kept = this.keptQueue?.id === this.session.meta.id ? this.keptQueue.items : [];
+        saveQueue(this.session.path, this.session.meta.id, [...mine, ...kept]);
+    }
+
+    /** A session's saved messages with files the terminal can't attach: kept in its file for the app. */
+    private keptQueue?: { id: string; items: StoredQueued[] };
+
+    /**
+     * Messages that were waiting when Harness last closed on this session (it quit mid-turn) come
+     * back into the prompt, images too, as an interrupt would have handed them back.
+     */
+    private restoreSavedQueue() {
+        if (!this.session.persisted) return;
+        const all = loadQueue(this.session.path, this.session.meta.id);
+        // The terminal attaches images only: one with a file (a PDF) stays saved for the app, rather than lose it.
+        const saved = all.filter((q) => !q.attachments?.some((a) => a.type !== "image"));
+        const kept = all.filter((q) => !saved.includes(q));
+        this.keptQueue = { id: this.session.meta.id, items: kept };
+        if (!saved.length) {
+            if (kept.length) this.notice(kept.length === 1 ? "A message with a file that was waiting when Harness closed is still saved: open this session in the app to send it." : `${kept.length} messages with files that were waiting when Harness closed are still saved: open this session in the app to send them.`);
+            return;
+        }
+        const e = this.editor;
+        const typed = e.text ? e.capture() : undefined;
+        e.set("");
+        saved.forEach((q, i) => {
+            if (i) e.insert("\n");
+            const images = (q.attachments ?? []).filter((a): a is ImagePart => a.type === "image");
+            let n = 0;
+            // Each [Image #k] label gets its image again, in order (the editor numbers them afresh).
+            const attach = (image: ImagePart) => e.attachImage({ name: `image ${++n}`, bytes: Math.floor((image.data.length * 3) / 4), part: image });
+            for (const piece of q.text.split(/(\[Image #\d+\])/)) {
+                const image = /^\[Image #\d+\]$/.test(piece) ? images[n] : undefined;
+                if (image) attach(image);
+                else if (piece) e.insert(piece);
+            }
+            // The app keeps a message's images beside its text, with no labels in it: they go after the text.
+            for (const image of images.slice(n)) {
+                if (e.text && !/\s$/.test(e.text)) e.insert(" ");
+                attach(image);
+            }
+        });
+        if (typed) e.restore([typed]);
+        saveQueue(this.session.path, this.session.meta.id, kept);
+        const back = saved.length === 1 ? "A message that was waiting when Harness closed is back in the prompt." : `${saved.length} messages that were waiting when Harness closed are back in the prompt.`;
+        this.notice(kept.length ? `${back} ${kept.length === 1 ? "One with a file is" : `${kept.length} with files are`} still saved: open this session in the app to send ${kept.length === 1 ? "it" : "them"}.` : back);
+        this.renderLive();
+    }
+
+    // ---- /queue: what's waiting, with send now, reorder and remove
+
+    /** The queue as it is now (oldest first), and what each will do. */
+    queueEntries(): { draft: QueuedDraft; text: string; steering: boolean; canSteer: boolean }[] {
+        return this.queued.map((d) => ({ draft: d, text: plainText(d.text), steering: d.mode === "steer" && steers(d), canSteer: steers(d) }));
+    }
+
+    /** "Send now": it steers the running turn instead of waiting for its end. False when it's gone, or can't (images, commands). */
+    sendQueuedNow(d: QueuedDraft): "sent" | "gone" | "cant" {
+        if (!this.queued.includes(d)) return "gone";
+        if (!steers(d)) return "cant";
+        d.mode = "steer";
+        this.queueUpdated();
+        this.agent?.queueChanged?.();
+        return "sent";
+    }
+
+    /** Move it to position `to` (0 runs next). False when it's gone. */
+    moveQueued(d: QueuedDraft, to: number): boolean {
+        const i = this.queued.indexOf(d);
+        if (i < 0) return false;
+        this.queued.splice(i, 1);
+        this.queued.splice(Math.max(0, Math.min(this.queued.length, to)), 0, d);
+        this.queueUpdated();
+        return true;
+    }
+
+    /** Out of the queue; with `edit`, back into the prompt (ahead of what's typed). False when it's gone. */
+    takeOutQueued(d: QueuedDraft, edit: boolean): boolean {
+        if (!this.queued.includes(d)) return false;
+        this.queued = this.queued.filter((x) => x !== d);
+        if (edit) this.editor.restore([d]);
+        this.queueUpdated();
+        return true;
     }
 
     /** Run a non-chat task (like /compact) with the spinner and esc-to-cancel. */
@@ -1671,15 +1963,16 @@ export class App {
     }
 
     /**
-     * Queued messages that join the running turn: plain ones (slash commands wait
-     * for it to end). The host takes text only, so a message with images gets a
-     * turn of its own, and what was queued after it waits behind it.
+     * Queued messages that join the running turn: those sent to steer it, if they
+     * can (the host takes text only, so a message with images or a slash command
+     * gets a turn of its own). Like a message queued for the turn's end, one of
+     * those doesn't hold a steer back: steering is joining the turn now.
      */
     private drainQueued(): string[] {
-        const barrier = this.queued.findIndex((d) => imagesIn(d.text, d.attachments).length > 0);
-        const head = barrier < 0 ? this.queued : this.queued.slice(0, barrier);
-        const take = head.filter((d) => !isCommand(plainText(d.text)));
+        const take = this.queued.filter((d) => d.mode === "steer" && steers(d));
+        if (!take.length) return [];
         this.queued = this.queued.filter((d) => !take.includes(d));
+        this.queueUpdated();
         const q = take.map((d) => plainText(d.text));
         for (const t of q) this.printUser(t);
         return q;
@@ -1687,9 +1980,14 @@ export class App {
 
     /** Messages typed during a task run next; after a cancel they go back to the prompt. */
     private afterTask(cancelled: boolean) {
-        if (!this.queued.length) return;
+        if (!this.queued.length) {
+            // After the caller (a command like /compact) has finished, as below.
+            setTimeout(() => this.schedules.poke(), 0);
+            return;
+        }
         if (cancelled) return this.returnQueued();
         const next = this.queued.shift()!;
+        this.queueUpdated();
         // After the caller (a command like /compact) has finished.
         setTimeout(() => void this.submitText(next), 0);
     }
@@ -1711,6 +2009,7 @@ export class App {
             return this.renderLive();
         }
         this.queued.pop();
+        this.queueUpdated();
         const cursor = e.cursor;
         if (draft && prefix) e.set(draft);
         // The queued message's images come back with it, ahead of the draft; the cursor stays where it was in the draft.
@@ -1735,6 +2034,7 @@ export class App {
         // The queue owns its images, so they come back whatever the editor's undo history has dropped.
         const queued = this.queued;
         this.queued = [];
+        this.queueUpdated();
         this.inputMode = "prompt";
         // Each draft in full (paste placeholders expanded) decides whether it's a command; the prompt
         // keeps showing what's in it as it was (a long paste stays a placeholder) unless it's one.
@@ -1908,7 +2208,12 @@ export class App {
         }
         const todos = this.toolState.todos;
         if (this.showTodos && todos.length && todos.some((t) => t.status !== "completed")) status.push(...renderTodos(todos, cols).slice(0, 10));
-        for (const q of this.queued) status.push(theme.muted(`  ⏵ queued: ${truncate(plainText(q.text).replace(/\s+/g, " "), cols - 16)}`));
+        for (const q of this.queued) {
+            const steering = q.mode === "steer" && steers(q);
+            const label = steering ? `${theme.accent("↳")} steering: ` : "⏵ queued: ";
+            status.push(theme.muted(`  ${label}${truncate(plainText(q.text).replace(/\s+/g, " "), cols - 18)}`));
+        }
+        if (this.queued.length) status.push(theme.subtle(`    /queue to send now, reorder or remove`));
         return { flow: out, status };
     }
 
@@ -1916,7 +2221,7 @@ export class App {
         const color = this.inputMode === "bash" ? theme.bashMode : this.inputMode === "memory" ? theme.memoryMode : this.mode === "plan" ? theme.planMode : theme.subtle;
         const symbol = this.inputMode === "bash" ? "!" : this.inputMode === "memory" ? "#" : ">";
         const rule = color("─".repeat(Math.max(10, cols - 1)));
-        const placeholder = this.inputMode === "bash" ? "Run a shell command" : this.inputMode === "memory" ? "Add to memory" : this.busy ? "Type a message to queue it for the next step" : 'Try "explain this codebase" or "fix the failing test"';
+        const placeholder = this.inputMode === "bash" ? "Run a shell command" : this.inputMode === "memory" ? "Add to memory" : this.busy ? (this.followUp() === "steer" ? "Steer the current turn (enter) · tab to queue it for after" : "Queue a message for after this turn (enter) · tab to steer now") : 'Try "explain this codebase" or "fix the failing test"';
         const r = this.editor.render(cols - 2, color(symbol) + " ", "  ", { showCursor: true, placeholder });
         const maxInput = Math.max(3, termRows() - 12);
         let inputLines = r.lines;
@@ -1936,7 +2241,7 @@ export class App {
             return out;
         }
         if (this.showHelp) {
-            out.push(...shortcutHelp(cols));
+            out.push(...shortcutHelp(cols, this.keys));
             return out;
         }
         out.push(this.footer(cols));
@@ -1964,6 +2269,12 @@ export class App {
             }
         }
         if (this.session?.cost) parts.push(formatCost(this.session.cost, this.session.costUnknown));
+        const sched = this.schedules.scheduler;
+        if (sched.size) {
+            const next = sched.nextAt;
+            const due = sched.list().some((j) => j.due);
+            parts.push(theme.accent(`⏱ ${sched.size}`) + (due ? " due" : next ? ` next ${shortTime(next)}` : " paused"));
+        }
         const mcpFailed = [...this.mcp.servers.values()].filter((s) => s.status === "failed").length;
         if (mcpFailed) parts.push(theme.error(`${mcpFailed} MCP failed · /mcp`));
         const custom = this.statusLineText();
@@ -2041,22 +2352,41 @@ export function renderTodos(todos: TodoItem[], cols: number): string[] {
     });
 }
 
+/** A message typed while working: the images behind it, and whether it steers the turn or waits for its end. */
+export interface QueuedDraft extends Draft {
+    mode: FollowUp;
+}
+
+const otherFollowUp = (m: FollowUp): FollowUp => (m === "steer" ? "queue" : "steer");
+
+/** One the running turn can take: not a command (it runs after), and without images (they get a turn of their own). */
+function steers(d: Draft): boolean {
+    return !isCommand(plainText(d.text)) && !imagesIn(d.text, d.attachments).length;
+}
+
 /** A slash command, as submitting reads it (`//` is plain text). */
 function isCommand(text: string): boolean {
     return text.startsWith("/") && !text.startsWith("//");
 }
 
-function shortcutHelp(cols: number): string[] {
+function shortcutHelp(cols: number, keys: TuiKeybindings): string[] {
+    // Each hint names the key bound now; one with no key isn't shown.
+    const hint = (action: string, text: (key: string) => string) => {
+        const key = keys.label(action);
+        return key === undefined ? undefined : text(key === "escape" ? "esc" : key);
+    };
+    const newline = keys.all("chat:newline").filter((k) => k !== "shift+enter");
     const rows = [
-        ["! for bash mode", "double esc to clear or rewind", "shift+tab to cycle modes"],
-        ["/ for commands", "ctrl+g to edit in $EDITOR", "ctrl+o for verbose output"],
-        ["@ for file paths", "\\⏎ or ctrl+j for newline", "ctrl+t to toggle todos"],
-        ["# to memorize", "esc to interrupt (queued first)", "ctrl+c twice to exit"],
+        ["! for bash mode", hint("chat:cancel", (k) => `double ${k} to clear or rewind`), hint("chat:cycleMode", (k) => `${k} to cycle modes`)],
+        ["/ for commands", hint("chat:externalEditor", (k) => `${k} to edit in $EDITOR`), hint("app:toggleTranscript", (k) => `${k} for verbose output`)],
+        ["@ for file paths", `\\⏎${newline.length ? ` or ${newline[newline.length - 1]}` : ""} for newline`, hint("app:toggleTodos", (k) => `${k} to toggle todos`)],
+        ["# to memorize", hint("chat:cancel", (k) => `${k} to interrupt (queued first)`), "ctrl+c twice to exit"],
+        ["tab: steer or queue the other way", "/queue to manage queued messages", ""],
     ];
     const w = Math.floor((cols - 4) / 3);
     return [
-        ...rows.map((r) => "  " + r.map((c) => padEnd(theme.muted(truncate(c, w - 1)), w)).join("")),
-        "  " + theme.muted(truncate("shift+enter also adds a newline, in terminals that support it", cols - 4)),
+        ...rows.map((r) => "  " + r.map((c) => padEnd(theme.muted(truncate(c ?? "", w - 1)), w)).join("")),
+        "  " + theme.muted(truncate(keys.all("chat:newline").includes("shift+enter") ? "shift+enter also adds a newline, in terminals that support it" : `Keys: ${keys.path}`, cols - 4)),
     ];
 }
 

@@ -1,15 +1,19 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, Show, type JSX } from "solid-js";
-import { ArrowUp, FileText, Folder, ListEnd, Paperclip, Pencil, Slash, SquareTerminal, X } from "lucide-solid";
-import type { CommandInfo, PermissionModeId } from "@shared/protocol";
+import { isMod, mod } from "../lib/platform";
+import { ArrowUp, CornerDownRight, FileText, Folder, ListEnd, Paperclip, Slash, Sparkles, SquareTerminal } from "lucide-solid";
+import type { CommandInfo, FollowUpMode, PermissionModeId } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
 import { interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
-import { isMod, mod } from "../lib/platform";
+import { keymap, matchKey, withShortcut } from "../state/keybindings";
+import { eventStrokes } from "../lib/keystrokes";
+import type { MatchResult } from "../../../src/keybindings/core";
 import { EffortMenu, FastModeToggle, ModelPicker, type CompareOption } from "./ModelPicker";
 import { startRun } from "./RunSheet";
 import { ModePicker, nextMode } from "./ModePicker";
 import { InteractionTab } from "./InteractionDock";
+import { ScheduleTab } from "./ScheduleTab";
 import { ComposerMeter } from "./ComposerMeter";
 import { AttachmentChips } from "./AttachmentChips";
 import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
@@ -18,8 +22,12 @@ import { createComposerDraft } from "../lib/composer-draft";
 
 import { composerStorage } from "../lib/drafts";
 import { composingKey, revealMenuOption } from "../lib/composer-menu";
+import { matchSkills, skillToken } from "../lib/commands";
+import { firstSendable, followUpFor, otherFollowUp } from "../lib/queue";
+import { QueueTab } from "./QueueTab";
 
-type MenuItem = { kind: "command"; cmd: CommandInfo } | { kind: "file"; path: string };
+/** `mention`: a skill picked from the $ menu, which goes in where the $ is. */
+type MenuItem = { kind: "command"; cmd: CommandInfo; mention?: boolean } | { kind: "file"; path: string };
 
 export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; /** Tucked under the card, like a drawer (Home's folder and branch). */ strip?: JSX.Element; /** Home: sending to several models at once. */ compare?: CompareOption }) {
     const whileMounted = createLifetimeGuard();
@@ -39,9 +47,13 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     let historyDraft = "";
     const menuId = `composer-menu-${createUniqueId()}`;
     let menuList: HTMLDivElement | undefined;
-    const [menuStatus, setMenuStatus] = createSignal<"loading" | "empty" | "error">();
+    const [menuStatus, setMenuStatus] = createSignal<"loading" | "empty" | "error" | "no-skills">();
     const menuOpen = () => menu().length > 0 || !!menuStatus();
     let commands: CommandInfo[] = [];
+    /** The list came back (not still loading, not failed), so an empty one means there are none. */
+    let commandsLoaded = false;
+    /** Asks for the commands again (a skill added since): set while the composer has a project. */
+    let refetchCommands: (() => void) | undefined;
 
     const h = () => handleFor(p.sessionId);
     const st = () => h()?.view.state;
@@ -102,13 +114,26 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 let current = true;
                 onCleanup(() => { current = false; });
                 commands = [];
+                commandsLoaded = false;
                 // A reply from the previous project or provider must not replace this menu.
-                if (cwd) void rpc.call("commands.list", { cwd, provider }).then((c) => { if (current) commands = c; }).catch(() => undefined);
+                const fetch = () => {
+                    if (cwd) void rpc.call("commands.list", { cwd, provider }).then((c) => {
+                        if (!current) return;
+                        commands = c;
+                        commandsLoaded = true;
+                        // Typed while it loaded: the open menu shows the new list.
+                        if (menuOpen() || /^\/\S*$/.test(text()) || skillAtCursor()) updateMenu(false);
+                    }).catch(() => undefined);
+                };
+                fetch();
+                refetchCommands = fetch;
+                onCleanup(() => { if (refetchCommands === fetch) refetchCommands = undefined; });
             },
         ),
     );
 
-    // ---- menus: /commands at the start, @files at the cursor
+    // ---- menus: /commands at the start, @files and $skills at the cursor
+    const skillAtCursor = () => (ta ? skillToken(text().slice(0, ta.selectionStart ?? text().length)) : undefined);
     const token = () => {
         if (!ta) return undefined;
         const upto = text().slice(0, ta.selectionStart ?? text().length);
@@ -123,16 +148,28 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         setMenu([]);
         setMenuStatus(undefined);
     };
-    const updateMenu = () => {
+    /** `refresh`: a menu that just opened asks the server again, which reads new skills. */
+    const updateMenu = (refresh = true) => {
         dismissMenu();
         const version = mentionVersion;
         const t = text();
         if (menuDismissedFor() === t) return setMenu([]);
+        const skill = skillAtCursor();
+        if (refresh && (t === "/" || (skill && !skill.query))) refetchCommands?.();
+        if (skill && !(/^\/\S*$/.test(t))) {
+            const items = matchSkills(commands, skill.query).map((cmd) => ({ kind: "command" as const, cmd, mention: true }));
+            setMenu(items.length === 1 && items[0]!.cmd.name === skill.query ? [] : items);
+            setMenuSel(0);
+            // A lone $ asks for skills; with none, say how to add one (a price like $5 just closes the menu).
+            if (!items.length && t.trim() === "$" && commandsLoaded && !commands.some((c) => c.skill)) setMenuStatus("no-skills");
+            return;
+        }
         if (/^\/\S*$/.test(t)) {
             const q = t.slice(1).toLowerCase();
             const items = commands
                 .filter((c) => c.name.startsWith(q) || (q.length > 1 && c.name.includes(q)))
-                .slice(0, 8)
+                // The menu scrolls: skills and custom commands after the built-ins stay reachable.
+                .slice(0, 100)
                 .map((cmd) => ({ kind: "command" as const, cmd }));
             setMenu(items.length === 1 && `/${items[0]!.cmd.name}` === t ? [] : items);
             setMenuSel(0);
@@ -160,7 +197,16 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     onCleanup(dismissMenu);
 
     const apply = (item: MenuItem, run: boolean) => {
-        if (item.kind === "command") {
+        if (item.kind === "command" && item.mention) {
+            const tok = skillAtCursor();
+            if (!tok || !ta) return;
+            const end = ta.selectionStart ?? text().length;
+            const ins = `$${item.cmd.name} `;
+            setText(text().slice(0, tok.start) + ins + text().slice(end));
+            const pos = tok.start + ins.length;
+            dismissMenu();
+            requestAnimationFrame(() => ta!.setSelectionRange(pos, pos));
+        } else if (item.kind === "command") {
             const next = `/${item.cmd.name}${item.cmd.args ? " " : ""}`;
             setText(next);
             dismissMenu();
@@ -182,7 +228,12 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     };
 
     // ---- sending
-    const submit = async () => {
+    /** What a message sent now does while a turn runs: the setting, or with `opposite` (mod+shift+enter, mod-click) the other. */
+    const followUp = (opposite = false): FollowUpMode => followUpFor(app.settings.followUpBehavior, opposite);
+    /** mod+shift held in the box: the send button shows the other. */
+    const [flipped, setFlipped] = createSignal(false);
+    const shown = () => followUp(flipped());
+    const submit = async (opposite = false) => {
         if (app.conn !== "open") return toast("Not sent: not connected");
         const t = text();
         if (!canSend() || sending()) return;
@@ -204,7 +255,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             dismissMenu();
             requestAnimationFrame(resize);
         });
-        const ok = picks ? await startRun({ path: app.homeCwd!, models: [...picks], text: t, attachments: atts, mode: mode() }) : await send(t, atts, { sent, accepted: (id) => {
+        const ok = picks ? await startRun({ path: app.homeCwd!, models: [...picks], text: t, attachments: atts, mode: mode() }) : await send(t, atts, { followUp: busy() ? followUp(opposite) : undefined, sent, accepted: (id) => {
             if (!wasDeleted(id)) composerStorage.remember(id, t);
         } });
         if (ok) {
@@ -220,58 +271,89 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         finish(ok);
     };
 
+    /** Adds a line where the caret is, keeping the box's own undo. */
+    const newline = () => {
+        if (!ta) return;
+        if (!document.execCommand?.("insertText", false, "\n")) ta.setRangeText("\n", ta.selectionStart, ta.selectionEnd, "end");
+        setText(ta.value);
+        requestAnimationFrame(resize);
+    };
+
     const onKeyDown = (e: KeyboardEvent) => {
         if (composingKey(e)) return;
-        if (e.key === "Escape" && menuOpen()) {
-            e.preventDefault();
-            e.stopPropagation();
-            setMenuDismissedFor(text());
-            dismissMenu();
-            return;
-        }
-        const history = composerStorage.history(draftKey());
         const items = menu();
-        if (items.length) {
-            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                e.preventDefault();
-                setMenuSel((s) => (s + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length);
-                return;
-            }
-            if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
-                e.preventDefault();
-                apply(items[menuSel()] ?? items[0]!, e.key === "Enter");
-                return;
-            }
-        }
-        if (e.key === "Tab" && e.shiftKey) {
+        // Enter on the / and @ menu takes the suggestion, whatever Enter is bound to.
+        if (items.length && e.key === "Enter" && !e.shiftKey && !e.altKey) {
             e.preventDefault();
-            void setMode(nextMode(mode(), bypassAllowed()));
+            apply(items[menuSel()] ?? items[0]!, true);
             return;
         }
-        if (e.key === "Enter") {
-            const sendKey = prefs.enterSends ? !e.shiftKey && !e.altKey : isMod(e);
-            if (sendKey || (isMod(e) && !e.shiftKey)) {
+        // A menu with nothing to pick (a status line) only takes the key that closes it.
+        const closesStatus = !items.length && menuOpen() && eventStrokes(e).some((id) => keymap().table.get("Autocomplete")?.get(id) === "autocomplete:dismiss");
+        const r: MatchResult = closesStatus ? { kind: "action", action: "autocomplete:dismiss", context: "Autocomplete", abandoned: 0 } : matchKey(e, items.length ? ["Autocomplete", "Chat", "Global"] : ["Chat", "Global"]);
+        // Keep the mid-turn shortcut when no custom binding or chord claims it.
+        if (r.kind === "none" && !r.unbound && e.key === "Enter" && isMod(e) && e.shiftKey && !e.altKey && busy()) {
+            e.preventDefault();
+            if (hasContent()) void submit(true);
+            else sendFirstQueued();
+            return;
+        }
+        if (r.kind !== "action") return;
+        const history = composerStorage.history(draftKey());
+        switch (r.action) {
+            case "autocomplete:dismiss":
+                if (!menuOpen()) return;
                 e.preventDefault();
+                // Not also a way out of the view behind.
+                e.stopPropagation();
+                setMenuDismissedFor(text());
+                dismissMenu();
+                return;
+            case "autocomplete:previous":
+            case "autocomplete:next":
+                if (!items.length) return;
+                e.preventDefault();
+                setMenuSel((s) => (s + (r.action === "autocomplete:next" ? 1 : -1) + items.length) % items.length);
+                return;
+            case "autocomplete:accept":
+                if (!items.length) return;
+                e.preventDefault();
+                apply(items[menuSel()] ?? items[0]!, false);
+                return;
+            case "chat:cycleMode":
+                e.preventDefault();
+                void setMode(nextMode(mode(), bypassAllowed()));
+                return;
+            case "chat:submit":
+                e.preventDefault();
+                // Sending with the menu open takes the suggestion (and runs a command).
+                if (items.length) return apply(items[menuSel()] ?? items[0]!, true);
                 void submit();
                 return;
-            }
-        }
-        if (e.key === "Escape" && busy()) {
-            e.preventDefault();
-            interrupt(p.sessionId);
-            return;
-        }
-        if (e.key === "ArrowUp" && (!text() || (histIdx >= 0 && (ta?.selectionStart ?? 0) === 0)) && history.length) {
-            e.preventDefault();
-            if (histIdx < 0) historyDraft = text();
-            histIdx = histIdx < 0 ? history.length - 1 : Math.max(0, histIdx - 1);
-            setText(history[histIdx]!);
-            requestAnimationFrame(resize);
-        } else if (e.key === "ArrowDown" && histIdx >= 0 && (ta?.selectionStart ?? 0) === text().length) {
-            e.preventDefault();
-            histIdx = histIdx + 1 >= history.length ? -1 : histIdx + 1;
-            setText(histIdx < 0 ? historyDraft : history[histIdx]!);
-            requestAnimationFrame(resize);
+            case "chat:newline":
+                e.preventDefault();
+                newline();
+                return;
+            case "app:interrupt":
+                if (!busy()) return;
+                e.preventDefault();
+                interrupt(p.sessionId);
+                return;
+            case "history:previous":
+                if ((text() && !(histIdx >= 0 && (ta?.selectionStart ?? 0) === 0)) || !history.length) return;
+                e.preventDefault();
+                if (histIdx < 0) historyDraft = text();
+                histIdx = histIdx < 0 ? history.length - 1 : Math.max(0, histIdx - 1);
+                setText(history[histIdx]!);
+                requestAnimationFrame(resize);
+                return;
+            case "history:next":
+                if (histIdx < 0 || (ta?.selectionStart ?? 0) !== text().length) return;
+                e.preventDefault();
+                histIdx = histIdx + 1 >= history.length ? -1 : histIdx + 1;
+                setText(histIdx < 0 ? historyDraft : history[histIdx]!);
+                requestAnimationFrame(resize);
+                return;
         }
     };
 
@@ -329,12 +411,26 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         }
     };
 
+    const sendFirstQueued = () => {
+        const s = st();
+        const i = s && p.sessionId ? firstSendable(s.queuedModes ?? s.queued.map(() => "steer" as const), busy()) : -1;
+        const queueId = i >= 0 ? s!.queueIds[i] : undefined;
+        if (queueId === undefined) return;
+        void rpc.call("session.sendQueuedNow", { id: p.sessionId!, queueId }).catch(reportError);
+    };
+
     const placeholder = () => {
         if (shell()) return "Run a shell command";
-        if (busy()) return "Queue a message for the next step…";
-        return p.placeholder ?? "Ask, plan, or describe a change…  (@ for files, / for commands)";
+        if (busy()) return followUp() === "steer" ? "Steer: add to the current turn at its next step…" : "Queue a message for after this turn…";
+        return p.placeholder ?? "Ask, plan, or describe a change…  (@ files, / commands, $ skills)";
     };
     const hasContent = () => Boolean(text().trim() || attachments().length);
+    const sendTitle = () => {
+        const key = prefs.enterSends ? "Enter" : `${mod}+Enter`;
+        const other = otherFollowUp(followUp());
+        const now = followUp() === "steer" ? `Steer: joins the current turn at its next step (${key})` : `Queue: runs after this turn (${key})`;
+        return `${now}. ${mod}-click or ${mod}+Shift+Enter to ${other} instead.`;
+    };
     const canSend = createMemo(() => hasContent() && !blocked());
     /** Menus open clear of the whole card, tabs included, so they never cover what you're typing. */
     let root: HTMLDivElement | undefined;
@@ -360,33 +456,11 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 if (e.dataTransfer?.files) void addFiles(e.dataTransfer.files);
             }}
         >
-            <Show when={st()?.queued.length}>
-                <div class="tab queue-tab">
-                    <For each={st()!.queued}>
-                        {(q, i) => (
-                            <div class="queue-row">
-                                <ListEnd size={14} class="queue-icon" />
-                                <span class="queue-text truncate">{q}</span>
-                                <Show when={st()!.queuedAttached?.[i()]}>
-                                    {(label) => (
-                                        <span class="queue-attached truncate" title={label()}>
-                                            <Paperclip size={12} /> {label()}
-                                        </span>
-                                    )}
-                                </Show>
-                                <Show when={i() === 0}>
-                                    <span class="queue-hint">Sends after this step</span>
-                                </Show>
-                                <button class="hb sm" title="Edit" aria-label="Edit queued message" onClick={() => void dequeue(i(), true)}>
-                                    <Pencil size={13} />
-                                </button>
-                                <button class="hb sm" title="Remove from the queue" aria-label="Remove from the queue" onClick={() => void dequeue(i(), false)}>
-                                    <X size={14} />
-                                </button>
-                            </div>
-                        )}
-                    </For>
-                </div>
+            <Show when={p.sessionId && st()?.queued.length}>
+                <QueueTab sessionId={p.sessionId!} state={st()!} dequeue={(i, edit) => void dequeue(i, edit)} />
+            </Show>
+            <Show when={p.sessionId && st()?.schedules?.length}>
+                <ScheduleTab sessionId={p.sessionId!} items={st()!.schedules} />
             </Show>
             <Show when={p.sessionId && interactions().length}>
                 <InteractionTab sessionId={p.sessionId!} items={interactions()} />
@@ -418,12 +492,15 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                 >
                                     {(c) => (
                                         <>
-                                            <span class="cm-icon">
-                                                <Slash size={13} />
+                                            <span class={`cm-icon ${c().cmd.skill ? "skill" : ""}`}>
+                                                <Show when={c().cmd.skill} fallback={<Slash size={13} />}>
+                                                    <Sparkles size={13} />
+                                                </Show>
                                             </span>
                                             <span class="cm-name mono">
+                                                {c().mention ? "$" : ""}
                                                 {c().cmd.name}
-                                                <Show when={c().cmd.args}>
+                                                <Show when={c().cmd.args && !c().mention}>
                                                     <span class="cm-args"> {c().cmd.args}</span>
                                                 </Show>
                                             </span>
@@ -436,7 +513,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     </For>
                     <Show when={menuStatus()}>
                         <div class="cm-status" role="status">
-                            {menuStatus() === "loading" ? "Searching…" : menuStatus() === "empty" ? "No matching files" : "Could not search files"}
+                            {menuStatus() === "loading" ? "Searching…" : menuStatus() === "empty" ? "No matching files" : menuStatus() === "no-skills" ? (
+                                <>No skills yet. Add one as <span class="mono">&lt;name&gt;/SKILL.md</span> in <span class="mono">~/.harness/skills</span> or the project's <span class="mono">.harness/skills</span>.</>
+                            ) : "Could not search files"}
                         </div>
                     </Show>
                 </div>
@@ -464,12 +543,17 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                             resize();
                             updateMenu();
                         }}
-                        onKeyDown={onKeyDown}
+                        onKeyDown={(e) => {
+                            setFlipped(isMod(e) && e.shiftKey);
+                            onKeyDown(e);
+                        }}
                         onKeyUp={(e) => {
+                            setFlipped(isMod(e) && e.shiftKey);
                             if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key) && !composingKey(e)) updateMenu();
                         }}
+                        onBlur={() => setFlipped(false)}
                         onPaste={onPaste}
-                        onClick={updateMenu}
+                        onClick={() => updateMenu()}
                         aria-label="Message"
                         role="combobox"
                         aria-autocomplete="list"
@@ -505,15 +589,17 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         when={busy() && !hasContent()}
                         fallback={
                             <button
-                                class={`send ${(runPicks()?.length ?? 0) >= 2 ? "wide" : ""}`}
+                                class={`send ${(runPicks()?.length ?? 0) >= 2 ? "wide" : ""} ${busy() ? `mid-${shown()}` : ""}`}
                                 disabled={app.conn !== "open" || !canSend() || sending() || Boolean(runPicks() && runPicks()!.length < 2)}
-                                onClick={() => void submit()}
-                                title={app.conn !== "open" ? "Not connected" : runPicks() ? "Each model gets this prompt in a new worktree" : prefs.enterSends ? "Send (Enter)" : `Send (${mod}+Enter)`}
+                                onClick={(e) => void submit(busy() && isMod(e))}
+                                title={app.conn !== "open" ? "Not connected" : runPicks() ? "Each model gets this prompt in a new worktree" : busy() ? sendTitle() : withShortcut("Send", "chat:submit")}
                                 aria-description={app.conn !== "open" ? "Not connected" : undefined}
-                                aria-label={runPicks() ? `Send to ${runPicks()!.length} models` : "Send"}
+                                aria-label={runPicks() ? `Send to ${runPicks()!.length} models` : busy() ? (shown() === "steer" ? "Steer the current turn" : "Queue for after this turn") : "Send"}
                             >
                                 <Show when={(runPicks()?.length ?? 0) >= 2}><span>Send to {runPicks()!.length} models</span></Show>
-                                <ArrowUp size={17} stroke-width={2.4} />
+                                <Show when={busy()} fallback={<ArrowUp size={17} stroke-width={2.4} />}>
+                                    {shown() === "steer" ? <CornerDownRight size={16} stroke-width={2.4} /> : <ListEnd size={16} stroke-width={2.4} />}
+                                </Show>
                             </button>
                         }
                     >

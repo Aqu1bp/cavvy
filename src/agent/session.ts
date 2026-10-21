@@ -12,6 +12,7 @@ import type { PlanLink } from "../server/protocol";
 import { textOf } from "../providers/types";
 import { redact, redactedJson } from "../util/redact";
 import { defaultAccount, validAccountId } from "../providers/accounts";
+import { validJob, type ScheduledJob } from "./schedule";
 
 export { redactedJson };
 
@@ -103,7 +104,9 @@ export type Line =
     /** This session was brought in from a Claude Code or Codex session (the first messages). */
     | ({ t: "import" } & ImportRecord)
     /** A backend session or thread one of this session's sub-agents (Task, delegate) ran on. */
-    | { t: "subagent"; provider: string; id: string };
+    | { t: "subagent"; provider: string; id: string }
+    /** Its durable schedules as they are now (the last line wins). */
+    | { t: "schedules"; jobs: ScheduledJob[] };
 
 /**
  * Where an imported session came from. It stays in the file for good, so the
@@ -200,6 +203,9 @@ export class Session {
     notices: TurnNotice[] = [];
     /** The Claude Code or Codex session this one was imported from. */
     imported?: ImportRecord;
+    /** Durable schedules as last saved (src/agent/schedule.ts), for restoring when it's opened again. */
+    schedules: ScheduledJob[] = [];
+    private savedSchedules = "[]";
     /**
      * The session a sub-agent runs for. Its own isn't saved, so the backend
      * sessions it starts are recorded in that one: they're Harness's, not
@@ -308,6 +314,17 @@ export class Session {
             this.torn = true;
             return false;
         }
+    }
+
+    /** Saves the durable ones of these jobs, when they changed. */
+    setSchedules(jobs: ScheduledJob[]) {
+        // What it is, not how it's going: a line per change, not per run (a recurring job's next run comes from its cron).
+        const durable = jobs.filter((j) => j.durable).map(({ due: _due, dueAt: _dueAt, runs: _runs, lastRunAt: _last, nextAt, ...j }) => ({ ...j, runs: 0, ...(j.recurring ? {} : { nextAt }) }));
+        const text = JSON.stringify(durable);
+        if (text === this.savedSchedules) return;
+        this.savedSchedules = text;
+        this.schedules = durable;
+        this.write({ t: "schedules", jobs: durable });
     }
 
     setSystem(system: string) {
@@ -564,6 +581,10 @@ export class Session {
             else if (l.t === "planLink" && validLink(l.link)) s.planLinks = [...s.planLinks, l.link].slice(-PLANS_KEPT);
             else if (l.t === "import" && typeof l.source === "string" && typeof l.id === "string") s.imported = { source: l.source, id: l.id, startedAt: l.startedAt, importedAt: l.importedAt, messages: l.messages, omitted: l.omitted };
             else if (l.t === "usage") s.accumulate(l.model, l.usage, l.cost, l.unknown === true);
+            else if (l.t === "schedules" && Array.isArray(l.jobs)) {
+                s.schedules = l.jobs.map(validJob).filter((j): j is ScheduledJob => Boolean(j));
+                s.savedSchedules = JSON.stringify(s.schedules);
+            }
         }
         repairTail(s);
         return s;

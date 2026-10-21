@@ -1,6 +1,6 @@
 import { RenderBoundary } from "./ui/ErrorBoundary";
 import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, Show, Switch } from "solid-js";
-import { AlertCircle, AlertTriangle, Brain, ChevronRight, FileDiff, FileText, GitFork, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
+import { AlertCircle, AlertTriangle, Brain, ChevronRight, Clock, FileDiff, FileText, GitFork, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
 import { duration, turnDuration, firstChangedLine, plural, stripAnsi } from "../lib/format";
 import { now } from "../lib/clock";
@@ -61,6 +61,13 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
                 </Show>
             </div>
             <div class={`user-bubble ${p.turn.prompt?.command ? "command" : ""} ${shell() ? "shell" : ""} ${long() && !expanded() ? "clamped" : ""}`} data-find="prompt">
+                <Show when={p.turn.prompt?.scheduled}>
+                    {(label) => (
+                        <span class="prompt-scheduled" data-find-skip>
+                            <Clock size={12} /> {label()}
+                        </span>
+                    )}
+                </Show>
                 <Show when={shell()} fallback={<span class="user-text">{text()}</span>}>
                     <span class="user-text mono">
                         <SquareTerminal size={13} /> {text().slice(1)}

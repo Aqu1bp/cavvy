@@ -58,6 +58,7 @@ async function setup(cwd = createDemoProject(tempDir("harness-del-proj-"), { git
         lock: `${file}.lock`,
         ui: join(dir, "ui", `${id}.jsonl`),
         history: join(dir, "file-history", id),
+        queue: join(dir, "queue", `${id}.json`),
     };
     if (!existsSync(f.ui)) {
         mkdirSync(dirname(f.ui), { recursive: true, mode: 0o700 });
@@ -107,14 +108,17 @@ describe("session.delete", () => {
         const { engine, c, events, id, f } = await setup(cwd);
         try {
             addHistory(f.history);
+            // Messages that were waiting when it was last open.
+            mkdirSync(dirname(f.queue), { recursive: true, mode: 0o700 });
+            writeFileSync(f.queue, '{"v":1,"items":[{"text":"later","mode":"queue"}]}', { mode: 0o600 });
             await engine.handle(c, "session.pin", { id, pinned: true });
             await engine.handle(c, "session.archive", { id, archived: true });
-            const bytes = { file: readFileSync(f.file), ui: readFileSync(f.ui), index: readFileSync(join(f.history, "index.jsonl")), blob: readFileSync(join(f.history, "blobs", "abc")) };
+            const bytes = { file: readFileSync(f.file), ui: readFileSync(f.ui), queue: readFileSync(f.queue), index: readFileSync(join(f.history, "index.jsonl")), blob: readFileSync(join(f.history, "blobs", "abc")) };
             const before = { status: git(cwd, "status", "--porcelain"), readme: readFileSync(join(cwd, "README.md")) };
             expect(existsSync(f.lock)).toBe(true);
 
             await engine.handle(c, "session.delete", { id });
-            for (const p of [f.file, f.lock, f.ui, f.history]) expect(gone(p)).toBe(true);
+            for (const p of [f.file, f.lock, f.ui, f.history, f.queue]) expect(gone(p)).toBe(true);
             expect(engine.runtimes.has(id)).toBe(false);
             expect(store().pinned ?? []).not.toContain(id);
             expect(store().archived ?? []).not.toContain(id);
@@ -128,6 +132,7 @@ describe("session.delete", () => {
             await engine.handle(c, "session.restore", { id });
             expect(readFileSync(f.file)).toEqual(bytes.file);
             expect(readFileSync(f.ui)).toEqual(bytes.ui);
+            expect(readFileSync(f.queue)).toEqual(bytes.queue);
             expect(readFileSync(join(f.history, "index.jsonl"))).toEqual(bytes.index);
             expect(readFileSync(join(f.history, "blobs", "abc"))).toEqual(bytes.blob);
             expect([mode(f.file), mode(f.ui), mode(f.history)]).toEqual([0o600, 0o600, 0o700]);

@@ -537,10 +537,10 @@ describe("queued prompts keep their images", () => {
         return app;
     }
 
-    test("the running turn takes plain messages only up to one with images, which gets its own turn", async () => {
+    test("the running turn takes the plain messages; one with images gets its own turn (and doesn't hold a later steer back)", async () => {
         const app = await queueWithImage();
         (app as any).printUser = () => {};
-        expect((app as any).drainQueued()).toEqual(["first"]);
+        expect((app as any).drainQueued()).toEqual(["first", "after"]);
         expect((app as any).drainQueued()).toEqual([]);
         app.busy = false;
         const sent = captureTurns(app);

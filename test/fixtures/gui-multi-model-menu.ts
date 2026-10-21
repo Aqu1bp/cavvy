@@ -81,7 +81,7 @@ function picker(available = true) {
         app: { models: [{ provider: "mock", providerName: "Mock", models }], providers: [] },
         prefs: { favoriteModels: [] }, setPrefs() {}, handleFor() {}, refreshModels() {},
         setModel: (ref: string) => chosen.push(ref), toast: (msg: string) => warnings.push(msg),
-        isMod: (e: any) => e.ctrlKey, mod: "Ctrl", ProviderIcon: () => node("icon"),
+        isMod: (e: any) => e.ctrlKey, mod: "Ctrl", withShortcut: (label: string, action: string) => (action === "chat:modelPicker" ? `${label} (Ctrl+/)` : label), ProviderIcon: () => node("icon"),
         ...Object.fromEntries(["Brain", "Check", "ChevronDown", "Layers", "RefreshCw", "Search", "Settings2", "Star", "Zap", "Spinner"].map((name) => [name, () => node("icon")])),
     });
     cleanups.push(renderer.render(() => ModelPicker({ get open() { return open(); }, setOpen, currentRef: models[0]!.ref, compare: { available, why: "Requires a Git project" } }), root));
@@ -159,4 +159,14 @@ test("unavailable Compare is disabled and excluded from keyboard focus", () => {
     f.toggle().click();
     expect(f.comparePicks()).toBeUndefined();
     expect(text(f.root)).toContain("Requires a Git project");
+});
+
+test("the model chip's tooltip and accessible name say whose model it is", () => {
+    const f = picker();
+    f.key("Escape");
+    // Claude Code's Opus and the Anthropic API's read the same on the chip; the provider tells them apart.
+    expect(f.trigger.props.title).toBe("Alpha · Mock (Ctrl+/)");
+    // The accessible name is the chip's own text plus the provider the hidden icon stands for.
+    expect(f.trigger.props["aria-label"]).toBeUndefined();
+    expect(text(f.trigger)).toBe("Alpha, Mock");
 });

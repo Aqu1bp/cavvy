@@ -236,6 +236,8 @@ export interface TurnPrompt {
     files?: FileChip[];
     /** Started by a slash command (/init, /review, custom commands). */
     command?: boolean;
+    /** Started by a schedule, not the user: what it is ("Scheduled (every 10m)"). */
+    scheduled?: string;
     /** Position of the prompt in the session's messages, when it can be rewound to. */
     index?: number;
 }
@@ -404,6 +406,32 @@ export interface PlanLink {
 }
 export type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus };
 
+/**
+ * A queued message: "steer" joins the running turn at its next step, "queue" waits for it to end,
+ * "turn" must wait (images, files, commands), "held" came back after a restart and waits for the user.
+ */
+export type QueuedMode = "steer" | "queue" | "turn" | "held";
+
+/** What a message sent while a turn runs does (the followUpBehavior setting, or the opposite key). */
+export type FollowUpMode = "steer" | "queue";
+/** A schedule as a list shows it (src/agent/schedule.ts keeps the jobs). */
+export interface ScheduleInfo {
+    id: string;
+    kind: "loop" | "cron" | "resume";
+    prompt: string;
+    /** "every 10m", "weekdays at 9:00 AM", "once, Tue 21 Oct, 2:30 PM". */
+    when: string;
+    recurring: boolean;
+    durable: boolean;
+    paused: boolean;
+    nextAt?: number;
+    expiresAt?: number;
+    lastRunAt?: number;
+    runs: number;
+    /** Came due while the session was busy: runs as soon as it isn't. */
+    due: boolean;
+}
+
 export interface SessionState {
     accounts?: Record<string, string>;
     id: string;
@@ -436,6 +464,8 @@ export interface SessionState {
     queueIds: number[];
     /** What each queued message carries besides its text ("report.log, 1 image"), "" for nothing. */
     queuedAttached?: string[];
+    /** What each queued message will do (missing from older servers: all "steer"). */
+    queuedModes?: QueuedMode[];
     interactions: Interaction[];
     mcp: McpStatus[];
     /** Files this session's edit tools changed (the Changes panel). */
@@ -448,6 +478,8 @@ export interface SessionState {
     forkOf?: { id: string; title: string };
     /** The names of the secrets the user gave this session (never their values). */
     secrets: string[];
+    /** Its schedules (/loop, cron jobs, the resume after a usage limit), soonest first as the server keeps them. */
+    schedules: ScheduleInfo[];
 }
 
 export interface SessionSnapshot {
@@ -811,6 +843,8 @@ export interface CommandInfo {
     description: string;
     args?: string;
     custom?: boolean;
+    /** A skill (SKILL.md): runs as /name, and $name mentions it in a prompt. */
+    skill?: boolean;
 }
 
 /** One window of a plan's usage limits (five hours, a week), as an agent CLI reported it. */
@@ -1045,6 +1079,8 @@ export interface GuiSettings {
     autoCompact?: boolean;
     webSearch?: string;
     allowBypass?: boolean;
+    /** A message sent while a turn runs: steer it (default) or wait for it to end. */
+    followUpBehavior?: FollowUpMode;
     /** "Open files with": an id from the server's editor list (src/server/editors.ts). */
     editor?: string;
 }
@@ -1112,7 +1148,9 @@ export type ServerEvent =
     /** A project's scripts changed (in any window); `project` is ProjectScripts.project. */
     | { type: "scripts.changed"; project: string }
     /** An agent CLI reported where the user's plan stands. */
-    | { type: "limits"; limits: PlanLimits };
+    | { type: "limits"; limits: PlanLimits }
+    /** The keybindings file was saved, created or deleted. */
+    | { type: "keybindings.changed"; keybindings: KeybindingsFile };
 
 // ---------------------------------------------------------------------------
 // Requests
@@ -1137,6 +1175,18 @@ export interface TerminalInfo {
     script?: TerminalScript;
     login?: TerminalLogin;
     exitCode?: number;
+}
+
+/**
+ * The keybindings file as it is on disk (`text` undefined: there's none).
+ * Each window builds its own keymap from it: what `mod` means depends on the
+ * computer the window runs on.
+ */
+export interface KeybindingsFile {
+    path: string;
+    text?: string;
+    /** It exists but couldn't be read. */
+    error?: string;
 }
 
 export interface HelloResult {
@@ -1176,6 +1226,9 @@ export interface Methods {
     /** Login terminals clear the screen and never replay output, regardless of `have`. */
     "terminal.attach": { params: { id: string; have?: number }; result: TerminalInfo };
     hello: { params: { client?: string }; result: HelloResult };
+    "keybindings.get": { params: Record<string, never>; result: KeybindingsFile };
+    /** Creates the keybindings file from the template when there's none; true when it did. */
+    "keybindings.create": { params: Record<string, never>; result: { created: boolean; path: string } };
     "scripts.list": { params: { cwd: string }; result: ProjectScripts };
     /** Creates a script, or updates the one with `id`. */
     "scripts.save": { params: { cwd: string; id?: string; name: string; command: string; icon?: ScriptIcon | null; runOnWorktreeCreate?: boolean }; result: ProjectScript };
@@ -1196,7 +1249,8 @@ export interface Methods {
     "session.open": { params: { id: string }; result: SessionSnapshot };
     "session.close": { params: { id: string }; result: null };
     /** `literal`: send a leading /word as a message. Unknown commands fail with `unknown_command`, so clients keep the draft. */
-    "session.send": { params: { id: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[]; literal?: boolean }; result: { queued: boolean } };
+    /** `mode`: what it does if a turn is running (default: the followUpBehavior setting). */
+    "session.send": { params: { id: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[]; literal?: boolean; mode?: FollowUpMode }; result: { queued: boolean } };
     "session.interrupt": { params: { id: string }; result: null };
     "session.respond": { params: { id: string; interactionId: string; response: InteractionResponse }; result: null };
     "session.setModel": { params: { id: string; ref: string; persist?: boolean }; result: null };
@@ -1244,8 +1298,14 @@ export interface Methods {
     "session.toolOutput": { params: { id: string; toolId: string }; result: { output: string } };
     /** The images a prompt carried, by its turn's `pos` (TurnPrompt only says how many). */
     "session.promptImages": { params: { id: string; seg: number; index: number }; result: { images: { mediaType: string; data: string }[] } };
+    /** One of the session's schedules: pause, resume, run now, or delete. `found` false: it's gone already. */
+    "session.schedule": { params: { id: string; scheduleId: string; action: "pause" | "resume" | "run" | "delete" }; result: { found: boolean } };
     /** By the message's id (queueIds). With `edit`, the message comes back to put in the input box, images and files too. */
     "session.dequeue": { params: { id: string; queueId: number; edit?: boolean }; result: { removed: boolean; text?: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } };
+    /** "Send now": steer the running turn with it, or run it now if none is running. `sent` false: it had already gone. */
+    "session.sendQueuedNow": { params: { id: string; queueId: number }; result: { sent: boolean; started?: boolean } };
+    /** Move a queued message to position `to` (0 runs next). */
+    "session.moveQueued": { params: { id: string; queueId: number; to: number }; result: { moved: boolean } };
     "models.list": { params: { refresh?: boolean }; result: ProviderModels[] };
     "session.setAccount": { params: { id: string; provider: string; accountId: string }; result: null };
     "accounts.list": { params: { provider: string; refresh?: boolean }; result: AccountInfo[] };
