@@ -103,11 +103,15 @@ export function fileChips(parts: readonly { type: string }[]): FileChip[] {
     });
 }
 
-/** A turn prompt's attachment fields: how many images and what's in them (imagesKey), which files. */
-export function attachedPrompt(parts: readonly { type: string }[] | undefined): { images?: number; imagesKey?: string; files?: FileChip[] } {
+/**
+ * A turn prompt's attachment fields: how many images and what's in them
+ * (imagesKey), which files. `keyed: false` leaves the key out, and the hash of
+ * every image's bytes (~6 ms for a 12 MB screenshot) with it.
+ */
+export function attachedPrompt(parts: readonly { type: string }[] | undefined, keyed = true): { images?: number; imagesKey?: string; files?: FileChip[] } {
     const images = (parts ?? []).filter((p): p is ImagePart => p.type === "image");
     const files = fileChips(parts ?? []);
-    return { ...(images.length ? { images: images.length, imagesKey: imagesKey(images) } : {}), ...(files.length ? { files } : {}) };
+    return { ...(images.length ? { images: images.length, ...(keyed ? { imagesKey: imagesKey(images) } : {}) } : {}), ...(files.length ? { files } : {}) };
 }
 
 /** The same for the same images, in the same order, and only then: what the GUI keeps fetched images by. */
