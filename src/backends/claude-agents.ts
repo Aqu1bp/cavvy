@@ -14,7 +14,6 @@ import type { PermissionMode } from "../permissions/modes";
 import { parseModelRef } from "../providers/types";
 import { findSkill, type AgentDef } from "../agent/agents";
 import { MCP_SERVER_NAME } from "../agent/delegation";
-import { childMode } from "../agent/subagent-setup";
 
 /** One entry of --agents: the fields Claude Code reads from a sub-agent file, plus its prompt. */
 export interface ClaudeAgentDefinition {
@@ -99,9 +98,10 @@ function claudeAgent(def: AgentDef, model: string, o: ClaudeAgentsOptions): Clau
         model,
     };
     if (def.tools?.length) a.tools = def.tools;
-    // The harness's own tools (delegate, secrets, schedules) run under the session's mode, which Claude Code
-    // approves without asking: an agent whose own mode differs (a plan agent in an acceptEdits session) doesn't get them.
-    const disallowed = [...(def.disallowedTools ?? []), ...(def.permissionMode && childMode(o.mode, def.permissionMode) !== o.mode ? [`mcp__${MCP_SERVER_NAME}`] : [])];
+    // The harness's own tools (delegate, secrets, schedules) run under the session's mode as it is when they're
+    // called, which Claude Code approves without asking: an agent with a mode of its own (a plan agent, while
+    // the session is or becomes acceptEdits) doesn't get them.
+    const disallowed = [...(def.disallowedTools ?? []), ...(def.permissionMode ? [`mcp__${MCP_SERVER_NAME}`] : [])];
     if (disallowed.length) a.disallowedTools = disallowed;
     if (def.effort) a.effort = def.effort;
     if (def.permissionMode && !["plan", "auto", "bypassPermissions"].includes(o.mode)) a.permissionMode = CLAUDE_MODES[def.permissionMode];
@@ -138,16 +138,14 @@ function claudeHooks(def: AgentDef): ClaudeAgentDefinition["hooks"] {
  */
 function claudeServers(def: AgentDef, o: ClaudeAgentsOptions): NonNullable<ClaudeAgentDefinition["mcpServers"]> {
     const out: NonNullable<ClaudeAgentDefinition["mcpServers"]> = [];
-    // The harness's own server among them: its tools are approved by their names.
-    const configured = [MCP_SERVER_NAME, ...Object.keys(o.settings.mcpServers ?? {}), ...(o.trusted ? projectServers(o.projectRoot) : [])];
+    const configured = [...Object.keys(o.settings.mcpServers ?? {}), ...(o.trusted ? projectServers(o.projectRoot) : [])];
     for (const s of def.mcpServers ?? []) {
-        if (!s.config) {
-            out.push(s.name);
-            continue;
-        }
         const skip = (why: string) => o.notes?.push(`The ${def.name} agent's MCP server "${s.name}" isn't passed to Claude Code: ${why}.`);
-        if (s.config.disabled) continue;
-        if (configured.some((n) => serverSegment(n) === serverSegment(s.name))) skip("a configured server has that name");
+        // The harness's own server isn't an agent's to name: its tools are approved by their names.
+        if (serverSegment(s.name) === serverSegment(MCP_SERVER_NAME)) skip("that name is the harness's own server's");
+        else if (!s.config) out.push(s.name);
+        else if (s.config.disabled) continue;
+        else if (configured.some((n) => serverSegment(n) === serverSegment(s.name))) skip("a configured server has that name");
         else if (!s.config.url && !sameFolder(serverCwd(s.config, o.projectRoot), o.cwd)) skip("Claude Code would start it in this folder, not the one it names (it has no cwd for servers)");
         else if (def.source === "project" && expands(s.config)) skip("Claude Code would expand its ${VAR}s, which its approval doesn't cover");
         else if (def.source === "project" && approvalOf(s.name, s.config, o.settings, o.projectRoot, o.trusted).state !== "approved") skip("a project's agent's servers need the approval .mcp.json servers do (/mcp)");

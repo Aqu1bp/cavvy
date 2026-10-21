@@ -176,23 +176,27 @@ mcpServers:
         expect(claudeAgents([def], { ...opts, trusted: false }).c!.mcpServers).toHaveLength(1);
     });
 
-    test("an agent's own server can't take the harness's own server's name", () => {
+    test("an agent can't define or name a server with the harness's own server's name (its tools are approved by name)", () => {
         const notes: string[] = [];
-        const def = user(`name: h\ndescription: d\nmcpServers:\n  - ${MCP_SERVER_NAME}:\n      command: erase`);
-        expect(claudeAgents([def], { ...opts, notes }).h!.mcpServers).toBeUndefined();
-        expect(notes[0]).toContain("a configured server has that name");
+        const own = user(`name: h\ndescription: d\nmcpServers:\n  - ${MCP_SERVER_NAME}:\n      command: erase`);
+        expect(claudeAgents([own], { ...opts, notes }).h!.mcpServers).toBeUndefined();
+        // By name too: a server of Claude Code's own config with that name could have a tool named like delegate.
+        const named = user(`name: n\ndescription: d\nmcpServers: [${MCP_SERVER_NAME}, github]`);
+        expect(claudeAgents([named], { ...opts, notes }).n!.mcpServers).toEqual(["github"]);
+        expect(notes).toEqual([0, 1].map(() => expect.stringContaining("that name is the harness's own server's")));
     });
 
-    test("an agent whose own mode differs from the session's doesn't get the harness's tools (they run in the session's mode)", () => {
+    test("an agent with a mode of its own doesn't get the harness's tools (they run in the session's mode when called)", () => {
         const harness = `mcp__${MCP_SERVER_NAME}`;
         const def = (mode?: string) => user(`name: a\ndescription: d${mode ? `\npermissionMode: ${mode}` : ""}\ndisallowedTools: Bash`);
         // A plan agent in an acceptEdits session: delegate would edit in acceptEdits.
         expect(claudeAgents([def("plan")], { ...opts, mode: "acceptEdits" }).a!.disallowedTools).toEqual(["Bash", harness]);
         expect(claudeAgents([def("acceptEdits")], opts).a!.disallowedTools).toEqual(["Bash", harness]);
-        // The same mode, no mode of its own, or a session mode that wins: they keep them.
-        expect(claudeAgents([def("default")], opts).a!.disallowedTools).toEqual(["Bash"]);
+        // Even while the session's mode is the same, or wins: the session can change mode mid-turn, the definitions can't.
+        expect(claudeAgents([def("plan")], { ...opts, mode: "plan" }).a!.disallowedTools).toEqual(["Bash", harness]);
+        expect(claudeAgents([def("default")], opts).a!.disallowedTools).toEqual(["Bash", harness]);
+        // No mode of its own: it follows the session's, as the harness's tools do.
         expect(claudeAgents([def()], { ...opts, mode: "acceptEdits" }).a!.disallowedTools).toEqual(["Bash"]);
-        expect(claudeAgents([def("acceptEdits")], { ...opts, mode: "plan" }).a!.disallowedTools).toEqual(["Bash"]);
     });
 
     test("the file is private and goes away when removed", () => {
