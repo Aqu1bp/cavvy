@@ -61,7 +61,6 @@ body {
 .shell-block,
 .xterm,
 .mono,
-.srow-value,
 .set-val,
 .err,
 .tone-err,
@@ -939,8 +938,7 @@ select:focus-visible {
     .menu-item.current:not(:focus-visible),
     .mr.sel,
     .mr.on,
-    .rw-item.on:not(:focus-visible),
-    .rf-row.on {
+    .rw-item.on:not(:focus-visible) {
         outline: 1px solid SelectedItem;
         outline-offset: -1px;
     }
