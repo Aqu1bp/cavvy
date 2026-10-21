@@ -51,6 +51,7 @@ import { forkSession, forkTargets } from "../agent/fork";
 import { forkUiLog } from "../server/history";
 import { loadMemory } from "../agent/memory";
 import { BUILTIN_AGENTS, loadAgents } from "../agent/agents";
+import { claudeModel } from "../backends/claude-agents";
 import { agentTraits } from "../agent/delegation";
 import { estimateTokens } from "../agent/compact";
 import { BLOCKING_EVENTS, HOOK_EVENTS } from "../agent/hooks";
@@ -1583,9 +1584,12 @@ async function memoryCommand(app: App) {
 
 function agentsCommand(app: App) {
     const agents = loadAgents(app.cwd);
-    const lines = ["", heading("Sub-agents"), theme.muted("  The model starts these with the Task tool.")];
+    // On Claude Code its own Agent tool runs them, except those on another provider's model (the delegate tool's).
+    const claude = app.model?.provider === "claude-code";
+    const lines = ["", heading("Sub-agents"), theme.muted(claude ? "  Claude Code runs these with its own Agent tool (built-in ones are its own)." : "  The model starts these with the Task tool.")];
     for (const a of agents) {
-        lines.push(`  ${bold(a.name)} ${theme.muted(`(${[a.source, ...agentTraits(a)].join(", ")})`)}`);
+        const where = claude && a.source !== "builtin" && !claudeModel(a.model) ? "through delegate on Claude Code" : "";
+        lines.push(`  ${bold(a.name)} ${theme.muted(`(${[a.source, ...agentTraits(a), where].filter(Boolean).join(", ")})`)}`);
         lines.push(theme.muted(`    ${truncate(a.description, termCols() - 8)}`));
         const more = [
             a.tools?.length ? `tools: ${a.tools.join(", ")}` : "",

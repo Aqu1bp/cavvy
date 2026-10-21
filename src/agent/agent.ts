@@ -49,6 +49,7 @@ import { FileHistory, promptNotes, resetToolState } from "./checkpoints";
 import { TurnSnapshots } from "./turn-snapshots";
 import { redact } from "../util/redact";
 import type { Skill } from "./skills";
+import { claudeAgents } from "../backends/claude-agents";
 import { isAgentBackend, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "../backends/types";
 import { getProvider } from "../providers/registry";
 import { ACCOUNT_PROVIDERS, account, accountRealPath } from "../providers/accounts";
@@ -952,9 +953,20 @@ export class Agent {
             maxTurns: this.o.maxTurns,
             orchestrator: this.orchestrator(),
             readOnly: this.o.readOnly,
+            agents: this.nativeAgents(trusted),
             signal,
             host,
         };
+    }
+
+    /** On Claude Code, the harness's agents run on its own Agent tool; none for sub-agents, which can't start more. */
+    private nativeAgents(trusted: boolean): BackendTurn["agents"] {
+        if (this.model.provider !== "claude-code" || this.o.isSubagent || this.o.readOnly) return undefined;
+        try {
+            return claudeAgents(loadAgents(this.state.projectRoot), { mode: this.o.mode.get(), trusted, projectRoot: this.state.projectRoot, settings: this.o.settings() });
+        } catch {
+            return undefined;
+        }
     }
 
     // -----------------------------------------------------------------------

@@ -65,6 +65,11 @@ function pluginSkills(): string[] {
 const cwd = process.cwd();
 log({ argv, cwd, sawApiKey: Boolean(process.env.ANTHROPIC_API_KEY), sawOpenAiKey: Boolean(process.env.OPENAI_API_KEY), claudeConfigDir: process.env.CLAUDE_CONFIG_DIR, codexHome: process.env.CODEX_HOME, sawOauthToken: Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN) });
 if (process.env.FAKE_LOG_ENV === "1") log({ env: process.env });
+// What --agents gave it (a file under -p), read at start as Claude Code does.
+if (argv.includes("--agents")) {
+    const file = argv[argv.indexOf("--agents") + 1]!;
+    log({ agents: existsSync(file) ? JSON.parse(readFileSync(file, "utf-8")) : null, agentsFile: file });
+}
 
 if (argv[0] === "auth" && argv[1] === "status") {
     const on = process.env.FAKE_LOGGED_IN !== "0";

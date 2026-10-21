@@ -2,7 +2,7 @@
 // `claude` and `codex` programs that speak the same protocols (test/fixtures).
 // Nothing here runs the real CLIs or touches the network.
 
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { join } from "path";
@@ -2588,5 +2588,48 @@ describe("Codex mid-turn steering", () => {
         expect(await done).toBe("aborted");
         expect(steers()).toEqual([]);
         expect(host).toEqual(["too late"]);
+    });
+});
+
+const { paths } = await import("../src/config/paths");
+describe("the harness's agents on Claude Code", () => {
+    const agentLogs = () => logLines().filter((l) => "agents" in l);
+    function writeAgents() {
+        mkdirSync(paths.userAgents(), { recursive: true });
+        writeFileSync(join(paths.userAgents(), "mine.md"), "---\nname: mine\ndescription: Mine\nmaxTurns: 3\n---\nBe brief.\n");
+        writeFileSync(join(paths.userAgents(), "gpt.md"), "---\nname: gpt\ndescription: On GPT\nmodel: openai:gpt-5\n---\nx\n");
+        mkdirSync(join(cwd, ".harness", "agents"), { recursive: true });
+        writeFileSync(join(cwd, ".harness", "agents", "repo.md"), "---\nname: repo\ndescription: The repo's\n---\ny\n");
+    }
+    afterEach(() => rmSync(paths.userAgents(), { recursive: true, force: true }));
+
+    test("go to its own Agent tool through --agents: user ones always, the repo's once the user trusts it", async () => {
+        writeAgents();
+        const a = await makeAgent({ provider: "claude-code" });
+        await a.run("go");
+        const [first] = agentLogs();
+        expect(first.agents).toEqual({ mine: { description: "Mine", prompt: "Be brief.", model: "inherit", maxTurns: 3 } });
+        // Read from a file only for the run: it's gone once Claude Code exits.
+        expect(existsSync(first.agentsFile)).toBe(false);
+        trust.trustFolder(cwd);
+        rmSync(LOG, { force: true });
+        await a.run("again");
+        expect(Object.keys(agentLogs()[0].agents).sort()).toEqual(["mine", "repo"]);
+    });
+
+    test("not for read-only sub-agents, or when there are none to pass", async () => {
+        writeAgents();
+        await (await makeAgent({ provider: "claude-code", readOnly: true })).run("go");
+        expect(starts()[0].argv).not.toContain("--agents");
+        rmSync(paths.userAgents(), { recursive: true, force: true });
+        rmSync(LOG, { force: true });
+        await (await makeAgent({ provider: "claude-code" })).run("go");
+        expect(starts()[0].argv).not.toContain("--agents");
+    });
+
+    test("Codex isn't given them", async () => {
+        writeAgents();
+        await (await makeAgent({ provider: "codex" })).run("go");
+        expect(agentLogs()).toEqual([]);
     });
 });

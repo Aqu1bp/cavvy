@@ -11,6 +11,7 @@ import type { Effort } from "../config/settings";
 import type { ApprovedMcpServers } from "../mcp/manager";
 import type { ToolDisplay } from "../tools/types";
 import type { Skill } from "../agent/skills";
+import type { ClaudeAgentDefinition } from "./claude-agents";
 
 /** A permission prompt raised by the backend's own permission system. */
 export interface BackendPermission {
@@ -145,6 +146,11 @@ export interface BackendTurn {
      * sandbox auto-approval for commands, MCP servers from its own config).
      */
     readOnly?: boolean;
+    /**
+     * The harness's agent definitions for Claude Code to run with its own
+     * Agent tool (src/backends/claude-agents.ts). Codex ignores them.
+     */
+    agents?: Record<string, ClaudeAgentDefinition>;
     signal: AbortSignal;
     host: BackendHost;
 }

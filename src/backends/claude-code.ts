@@ -44,6 +44,7 @@ import { formatSkill } from "../agent/skills";
 import { CLAUDE_PREFIX, claudeNames, claudePrompt, forClaudeCode, skillFolder } from "./native-skills";
 import { CLAUDE_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
 import { claudeMcpPolicy } from "./claude-mcp-policy";
+import { writeAgentsFile } from "./claude-agents";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn } from "./types";
 import type { TurnEndReason } from "../agent/agent";
 
@@ -364,6 +365,8 @@ class ClaudeTurn {
     private toldStopped = false;
     /** The harness's skills, as a plugin folder (src/backends/native-skills.ts). */
     pluginDir?: string;
+    /** Where --agents reads from, removed when the process exits. */
+    private agentsFile?: { path: string; remove: () => void };
 
     constructor(
         private def: ProviderDef,
@@ -403,6 +406,11 @@ class ClaudeTurn {
         if (this.pluginDir) a.push("--plugin-dir", this.pluginDir);
         // An untrusted folder's Claude Code settings (hooks, permission rules), skills, agents and .mcp.json stay off.
         if (!t.trusted) a.push("--setting-sources", "user");
+        // The harness's agents, for its own Agent tool (a file: -p reads one, and prompts can outgrow an argument).
+        if (t.agents && Object.keys(t.agents).length && !t.readOnly) {
+            this.agentsFile ??= writeAgentsFile(t.agents);
+            a.push("--agents", this.agentsFile.path);
+        }
         // The harness's deny and ask rules also cover what Claude Code would do without asking.
         const permissions = claudePermissions(t.rules);
         const sandbox = claudeAccountSandbox();
@@ -688,7 +696,12 @@ class ClaudeTurn {
     async run(content: unknown[]): Promise<BackendResult> {
         const { signal } = this.t;
         if (signal.aborted) return { reason: "aborted", text: "", actions: [] };
-        this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd, env: accountEnv(this.def.id, this.t.accountId, this.t.cwd) });
+        try {
+            this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd, env: accountEnv(this.def.id, this.t.accountId, this.t.cwd) });
+        } catch (e) {
+            this.agentsFile?.remove();
+            throw e;
+        }
         const stopAccountWatch = watchAccountFolders(() => {
             this.failure = "Account folders changed while Claude Code was running. Send again to apply their updated protections.";
             this.reason = "error";
@@ -735,6 +748,7 @@ class ClaudeTurn {
             clearTimeout(this.settleTimer);
             this.finishing = true;
             await this.proc.stop(this.aborted ? 1000 : 3000);
+            this.agentsFile?.remove();
             // Polling may still be recording a queued prompt's start. Finish it before Agent records the end.
             await this.idlePending;
             await this.deliveryPending;
