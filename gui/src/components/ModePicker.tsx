@@ -1,5 +1,5 @@
 import { For, Show } from "solid-js";
-import { ChevronDown, Eye, FastForward, Hand, ShieldAlert, Zap } from "lucide-solid";
+import { Check, ChevronDown, FilePen, Hand, Map as MapIcon, ShieldAlert, Zap } from "lucide-solid";
 import { MODE_LABELS, type PermissionModeId } from "@shared/protocol";
 import { setMode } from "../state/actions";
 import { Menu } from "./ui/Menu";
@@ -11,8 +11,8 @@ export function ModeIcon(p: { mode: PermissionModeId; size?: number }) {
     const s = p.size ?? 13;
     return (
         <Show when={p.mode !== "default"} fallback={<Hand size={s} />}>
-            <Show when={p.mode !== "acceptEdits"} fallback={<FastForward size={s} />}>
-                <Show when={p.mode !== "plan"} fallback={<Eye size={s} />}>
+            <Show when={p.mode !== "acceptEdits"} fallback={<FilePen size={s} />}>
+                <Show when={p.mode !== "plan"} fallback={<MapIcon size={s} />}>
                     <Show when={p.mode !== "auto"} fallback={<Zap size={s} />}>
                         <ShieldAlert size={s} />
                     </Show>
@@ -30,18 +30,24 @@ export function nextMode(m: PermissionModeId, bypass: boolean): PermissionModeId
 
 const BYPASS_OFF = "Turn on “Allow bypass mode” in Settings first.";
 
-/** All grey but Bypass, the one worth noticing. */
+/** Grey but Plan, in the accent, and Bypass, in red: the two worth noticing. */
 export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAllowed: boolean }) {
     let anchor: HTMLButtonElement | undefined;
     return (
         <>
-            <span class="vs" aria-hidden="true" />
-            <button ref={anchor} class={`ctl ${p.mode === "bypassPermissions" ? "danger" : ""}`} aria-haspopup="menu" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title="Permission mode (⇧Tab cycles)">
-                <ModeIcon mode={p.mode} size={16} />
-                <span>{MODE_LABELS[p.mode].label}</span>
-                <ChevronDown size={14} class="chv" />
+            <button
+                ref={anchor}
+                class={`pick mode ${p.mode === "plan" ? "mode-plan" : p.mode === "bypassPermissions" ? "mode-bypass" : ""} ${p.open ? "open" : ""}`}
+                aria-haspopup="menu"
+                aria-expanded={p.open}
+                onClick={() => p.setOpen(!p.open)}
+                title="Permission mode (⇧Tab cycles)"
+            >
+                <ModeIcon mode={p.mode} size={14} />
+                <span class="lbl">{MODE_LABELS[p.mode].label}</span>
+                <ChevronDown size={13} class="chev" />
             </button>
-            <Menu label="Permission mode" open={p.open} anchor={() => anchor} edge={p.edge} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={344}>
+            <Menu label="Permission mode" open={p.open} anchor={() => anchor} edge={p.edge} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={340}>
                 <div class="mode-menu">
                     <div class="menu-head">
                         <span>Permission mode</span>
@@ -63,7 +69,7 @@ export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAll
                                     }}
                                 >
                                     <span class="menu-ico">
-                                        <ModeIcon mode={m} size={16} />
+                                        <ModeIcon mode={m} size={15} />
                                     </span>
                                     <span class="menu-text">
                                         <span class="menu-label">{MODE_LABELS[m].label}</span>
@@ -72,6 +78,9 @@ export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAll
                                             <span class="menu-desc menu-hint">{BYPASS_OFF}</span>
                                         </Show>
                                     </span>
+                                    <Show when={p.mode === m}>
+                                        <Check size={15} stroke-width={2} class="menu-check" />
+                                    </Show>
                                 </button>
                             );
                         }}

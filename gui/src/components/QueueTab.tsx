@@ -9,7 +9,7 @@ import { plural } from "../lib/format";
 const DRAG_TYPE = "application/x-harness-queued";
 
 /**
- * Messages sent while a turn runs, on the composer's top edge: what each will
+ * Messages sent while a turn runs, as rows inside the composer card: what each will
  * do (join the turn at its next step, run after it, or wait for you after a
  * restart), with Send now, Edit and Remove. With more than one, the grip
  * reorders them: drag it, or focus it and press ↑/↓.
@@ -60,7 +60,7 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
     };
 
     return (
-        <div ref={tab} class="tab queue-tab" role="list" aria-label={`${p.state.queued.length} queued message${p.state.queued.length === 1 ? "" : "s"}`}>
+        <div ref={tab} class="queue queue-tab" role="list" aria-label={`${p.state.queued.length} queued message${p.state.queued.length === 1 ? "" : "s"}`}>
             <For each={p.state.queued}>
                 {(q, i) => {
                     const mode = () => p.state.queuedModes?.[i()];

@@ -93,12 +93,19 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string }) {
         panel?.focus();
     };
     onCleanup(cancelClose);
+    /** The ring's share as a number inside it; nothing while neither share is known. */
+    const shownPct = () => (view().pct === undefined && !meter() ? undefined : Math.round(Math.min(1, urgency()) * 100));
+    const bar = (pct: number | undefined) => (
+        <div class="cc-bar" aria-hidden="true">
+            <i style={{ width: `${Math.max(0, Math.min(100, pct ?? 0))}%` }} />
+        </div>
+    );
     return (
         <Show when={state() || meter()}>
             <button
                 ref={btn}
                 type="button"
-                class="hb ctx-ring"
+                class={`ctx-btn tone-${tone()} ${open() ? "open" : ""}`}
                 aria-haspopup="dialog"
                 aria-expanded={open()}
                 aria-controls={open() ? panelId : undefined}
@@ -112,20 +119,22 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string }) {
                     if (e.key === "ArrowDown") { e.preventDefault(); enterPanel(); }
                 }}
             >
-                <span aria-hidden="true"><Ring value={urgency()} size={18} stroke={2.4} neutral tone={tone()} /></span>
+                <span class="ctx-ring" aria-hidden="true"><Ring value={urgency()} size={26} stroke={2.5} neutral tone={tone()} /></span>
+                <span class="ctx-num num" aria-hidden="true">{shownPct()}</span>
             </button>
             <Popover open={open()} anchor={() => btn} onClose={close} placement="top" align="end" width={288} class="ctx-card usage-card">
                 <div ref={panel} id={panelId} role="dialog" aria-label="Context and usage" tabIndex={-1}
                     onMouseEnter={cancelClose} onMouseLeave={hide} onFocusIn={cancelClose} onFocusOut={hide}>
                     <section class="usage-section" aria-label="Context window">
                         <h3 class="ctx-label">Context window</h3>
-                        <div class="ctx-line">
+                        <div class="cc-line">
                             <span class="num">{state() ? view().line : "Send a message to measure context usage."}</span>
-                            <Show when={view().pct !== undefined}><span class="ctx-pct num">{Math.round(view().pct! * 100)}%</span></Show>
+                            <Show when={view().pct !== undefined}><b class="num">{Math.round(view().pct! * 100)}%</b></Show>
                         </div>
+                        <Show when={view().pct !== undefined}>{bar(view().pct! * 100)}</Show>
                         <div class="usage-actions">
                             <span>{app.settings.autoCompact === false ? "Automatic compaction is off." : "Compacts on its own near the limit."}</span>
-                            <button class="ghost-btn outlined" disabled={!state() || (state()?.busy && !state()?.activity?.idle)} onClick={() => {
+                            <button class="cbtn" disabled={!state() || (state()?.busy && !state()?.activity?.idle)} onClick={() => {
                                 if (!p.sessionId) return;
                                 close();
                                 void rpc.call("session.compact", { id: p.sessionId }).catch(reportError);
@@ -134,28 +143,31 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string }) {
                     </section>
                     <Show when={meter()}>
                         <section class="usage-section" aria-label="Plan limits">
-                            <h3 class="ctx-label">Plan limits</h3>
-                            <div class="usage-account">{name()}</div>
+                            <div class="usage-heading">
+                                <h3 class="ctx-label">Plan limits</h3>
+                                <span class="usage-account truncate">· {name()}</span>
+                            </div>
                             <Show when={meter()?.asOf}><div class="plan-asof">{meter()!.asOf}</div></Show>
                             <Show when={meter()?.reached}><div class="plan-reached">Limit reached</div></Show>
                             <For each={meter()?.windows}>{(w) => (
                                 <div class="plan-window">
-                                    <div class="ctx-line"><span>{w.label}</span><span class="ctx-pct num">{w.pct !== undefined ? `${w.pct}%` : w.reached ? "reached" : "—"}</span></div>
-                                    <Show when={w.resets}><div class="plan-resets num">Resets {w.resets}</div></Show>
+                                    <div class="cc-line"><span>{w.label}</span><b class="num">{w.pct !== undefined ? `${w.pct}%` : w.reached ? "reached" : "—"}</b></div>
+                                    {bar(w.reached && w.pct === undefined ? 100 : w.pct)}
+                                    <Show when={w.resets}><div class="cc-sub num">Resets {w.resets}</div></Show>
                                 </div>
                             )}</For>
-                            <Show when={meter()?.resets && !meter()?.windows.some((w) => w.resets === meter()?.resets)}><div class="plan-resets num">Resets {meter()!.resets}</div></Show>
+                            <Show when={meter()?.resets && !meter()?.windows.some((w) => w.resets === meter()?.resets)}><div class="cc-sub num">Resets {meter()!.resets}</div></Show>
                             <Show when={p.sessionId && meter()?.reached}>
                                 <div class="usage-switches">
                                     <Show when={checking()}><span class="plan-account-hint" role="status">Checking accounts…</span></Show>
-                                    <For each={alternatives()}>{(a) => <button class="ghost-btn outlined" disabled={(state()?.busy && !state()?.activity?.idle) || switching()} onClick={() => void switchTo(a.id)} title="Starts a new CLI thread with this conversation; send your message again">Switch to {a.name}</button>}</For>
+                                    <For each={alternatives()}>{(a) => <button class="cbtn" disabled={(state()?.busy && !state()?.activity?.idle) || switching()} onClick={() => void switchTo(a.id)} title="Starts a new CLI thread with this conversation; send your message again">Switch to {a.name}</button>}</For>
                                 </div>
                             </Show>
                         </section>
                     </Show>
                     <section class="usage-section" aria-label="Spend">
-                        <div class="usage-heading"><h3 class="ctx-label">Spend</h3><button class="ghost-btn" onClick={() => { close(); setSettingsTab("usage"); }}>Usage</button></div>
-                        <Show when={state()} fallback={<div class="plan-resets">No session yet.</div>}>
+                        <div class="usage-heading"><h3 class="ctx-label">Spend</h3><span class="grow" /><button class="cbtn quiet" onClick={() => { close(); setSettingsTab("usage"); }}>Usage</button></div>
+                        <Show when={state()} fallback={<div class="cc-sub">No session yet.</div>}>
                             <div class="ctx-grid">
                                 <span>Session</span><span class="num" title={state()?.costUnknown ? "No price is known for some of the models used, so their usage isn't counted" : undefined}>{cost(state()?.cost ?? 0, state()?.costUnknown)}</span>
                                 <span>Tokens</span><span class="num">{tokens(state()?.tokensIn ?? 0)} in · {tokens(state()?.tokensOut ?? 0)} out</span>

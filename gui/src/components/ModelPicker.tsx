@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show } from "solid-js";
-import { Brain, Check, ChevronDown, Layers, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
+import { Check, ChevronDown, Layers, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
 import type { EffortLevel, ModelSummary } from "@shared/protocol";
 import { app, handleFor, refreshModels, toast } from "../state/app";
 import { setEffort, setModel, setFastMode, setAccount } from "../state/actions";
@@ -11,14 +11,7 @@ import { Menu } from "./ui/Menu";
 import { Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { withShortcut } from "../state/keybindings";
-
-const EFFORTS: { id: EffortLevel; label: string; desc: string }[] = [
-    { id: "low", label: "Low", desc: "Fastest replies, for simple tasks." },
-    { id: "medium", label: "Medium", desc: "Balanced speed and depth." },
-    { id: "high", label: "High", desc: "Thorough reasoning for real changes." },
-    { id: "xhigh", label: "Extra high", desc: "More time on hard problems." },
-    { id: "max", label: "Max", desc: "The deepest reasoning this model offers." },
-];
+import { effortAt, effortKey, effortLevels, effortOf, takesEffort, type Effort } from "../lib/effort";
 
 function fuzzy(q: string, s: string): boolean {
     q = q.toLowerCase();
@@ -192,10 +185,10 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     return (
         <>
             {/* Keep the trigger mounted when Compare changes so Menu can restore focus. */}
-            <button ref={anchor} class={`ctl model ${multi() ? "on" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => resolve(undefined, r)?.name ?? r).join(", ") || "Pick 2 to 4 models" : withShortcut(chipName(), "chat:modelPicker")}>
+            <button ref={anchor} class={`pick model ${multi() ? "on" : ""} ${p.open ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => resolve(undefined, r)?.name ?? r).join(", ") || "Pick 2 to 4 models" : withShortcut(chipName(), "chat:modelPicker")}>
                 <Show when={multi()} fallback={
                     <>
-                        <Show when={currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={16} />}</Show>
+                        <Show when={currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={15} />}</Show>
                         {/* What an alias resolves to, "(claude-opus-5-5)", is in the list and the tooltip. */}
                         <span class="truncate">{(currentModel() ? shortModel(currentModel()) : currentRef() ? currentRef()!.split(":").slice(1).join(":") : "No model").replace(/^Claude /, "").replace(/\s+\([^()]*\)$/, "")}</span>
                         {/* The icon is hidden from assistive tech, so the provider is named for it here. */}
@@ -203,10 +196,10 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                         <Show when={showAccounts()}><span> · {accountName() ?? "Default"}</span></Show>
                     </>
                 }>
-                    <Layers size={16} />
+                    <Layers size={15} />
                     <span class="truncate">{picks().length >= 2 ? `${picks().length} models` : "Pick 2–4 models"}</span>
                 </Show>
-                <ChevronDown size={14} class="chv" />
+                <ChevronDown size={13} class="chev" />
             </button>
             <Menu label="Choose a model" kind="dialog" initialFocus={() => input} onKeyDown={onKey} open={p.open} anchor={() => anchor} edge={p.edge} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={360} maxHeight={340} minHeight={240} class="mp">
                 <Show when={showAccounts(rail())}>
@@ -319,63 +312,172 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     );
 }
 
-/** Its own menu: each level spelled out, and which one new sessions start with. */
-export function EffortMenu(p: ComposerMenu & { current?: ModelSummary; currentRef?: string; effort?: EffortLevel }) {
-    let anchor: HTMLButtonElement | undefined;
-    const model = createMemo(() => resolve(p.current, p.current?.ref ?? p.currentRef));
-    const supported = () => Boolean(model()?.supportsReasoning || model()?.effortLevels?.length);
-    const levels = () => EFFORTS.filter((e) => !model()?.effortLevels?.length || model()!.effortLevels!.includes(e.id));
+/** Effort as a glyph: five bars, filled up to the level (1 low … 5 max; 0 none chosen). */
+export function EffortGlyph(p: { level: number }) {
     return (
-        <Show when={supported()}>
-            <span class="vs" aria-hidden="true" />
-            <button ref={anchor} class="ctl" aria-haspopup="menu" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title="Reasoning effort">
-                <Brain size={16} />
-                <span>{EFFORTS.find((e) => e.id === p.effort)?.label ?? "Default"}</span>
-                <ChevronDown size={14} class="chv" />
-            </button>
-            <Menu label="Reasoning effort" open={p.open} anchor={() => anchor} edge={p.edge} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={272}>
-                <div class="effort-menu">
-                    <div class="menu-head">Reasoning effort</div>
-                    <For each={levels()}>
-                        {(e) => (
-                            <button
-                                class={`menu-item ${p.effort === e.id ? "on" : ""}`}
-                                role="menuitemradio"
-                                aria-checked={p.effort === e.id}
-                                onClick={() => {
-                                    p.setOpen(false);
-                                    void setEffort(e.id);
-                                }}
-                            >
-                                <span class="menu-text">
-                                    <span class="menu-label">
-                                        {e.label}
-                                        <Show when={app.settings.effort === e.id}>
-                                            <span class="dbadge" title="New sessions start with this">
-                                                Default
-                                            </span>
-                                        </Show>
-                                    </span>
-                                    <span class="menu-desc">{e.desc}</span>
-                                </span>
-                            </button>
-                        )}
-                    </For>
-                </div>
-            </Menu>
-        </Show>
+        <span class="eg" aria-hidden="true">
+            <For each={[1, 2, 3, 4, 5]}>{(i) => <i class={i <= p.level ? "on" : ""} style={{ height: `${2 + i * 2}px` }} />}</For>
+        </span>
     );
 }
 
-/** Fast service changes speed and pricing, independently of reasoning effort. */
-export function FastModeToggle(p: { current?: ModelSummary; currentRef?: string; enabled?: boolean; busy?: boolean }) {
+/**
+ * The glyph grown into a control: one bar per level the model takes, rising
+ * left to right; the chosen level and those below fill with the accent.
+ * Click or drag across them, or use the arrows, Home/End and 1–n; hovering
+ * previews a level before it's picked. It applies as it moves. Settings →
+ * General uses it too (`size="sm"`).
+ */
+export function EffortBars(p: { levels: Effort[]; value?: EffortLevel; onChange: (id: EffortLevel) => void; size?: "sm"; label?: string; ref?: (el: HTMLDivElement) => void }) {
+    let el: HTMLDivElement | undefined;
+    let down = false;
+    const [hover, setHover] = createSignal(-1);
+    const at = () => p.levels.findIndex((e) => e.id === p.value);
+    const go = (i: number) => {
+        const l = p.levels[i];
+        if (l && l.id !== p.value) p.onChange(l.id);
+    };
+    const under = (e: PointerEvent) => {
+        const r = el!.getBoundingClientRect();
+        return effortAt(e.clientX, r.left, r.width, p.levels.length);
+    };
+    const up = () => (down = false);
+    return (
+        <div
+            ref={(e) => {
+                el = e;
+                p.ref?.(e);
+            }}
+            class={`es ${p.size ?? ""} ${hover() >= 0 ? "hov" : ""}`}
+            role="slider"
+            tabIndex={0}
+            aria-label={p.label ?? "Reasoning effort"}
+            aria-valuemin={1}
+            aria-valuemax={p.levels.length}
+            aria-valuenow={at() >= 0 ? at() + 1 : undefined}
+            aria-valuetext={p.levels[at()]?.label ?? "Default"}
+            onPointerDown={(e) => {
+                // Only the primary button picks; a right- or middle-click leaves the level alone.
+                if (e.button !== 0) return;
+                e.preventDefault();
+                el!.focus({ preventScroll: true });
+                try {
+                    el!.setPointerCapture(e.pointerId);
+                } catch {
+                    // Synthetic events have no pointer to capture.
+                }
+                down = true;
+                go(under(e));
+            }}
+            onPointerMove={(e) => (down ? go(under(e)) : setHover(under(e)))}
+            onPointerLeave={() => setHover(-1)}
+            onPointerUp={up}
+            onPointerCancel={up}
+            onKeyDown={(e) => {
+                const i = effortKey(e, at(), p.levels.length);
+                if (i === undefined) return;
+                e.preventDefault();
+                e.stopPropagation();
+                go(i);
+            }}
+        >
+            <For each={p.levels}>
+                {(l, i) => (
+                    <span class={`eb ${i() <= at() ? "on" : ""} ${i() <= hover() ? "pre" : ""}`} style={{ "--h": String((i() + 1) / p.levels.length) }} title={l.label}>
+                        <i />
+                    </span>
+                )}
+            </For>
+        </div>
+    );
+}
+
+const FAST_TIP = "Faster service at higher usage/cost. Same model and reasoning effort; account eligibility applies.";
+const FAST_BUSY = "Change speed after this response finishes";
+
+/**
+ * Reasoning effort (and fast mode, where the model has it) in one picker: the
+ * level glyph, with a filled ⚡ before it while fast mode is on. Its popover
+ * names the level, has the "⚡ Fast" pill, and the bars.
+ */
+export function EffortPicker(p: ComposerMenu & { current?: ModelSummary; currentRef?: string; effort?: EffortLevel; fast?: boolean; busy?: boolean }) {
+    let anchor: HTMLButtonElement | undefined;
+    let bars: HTMLDivElement | undefined;
+    let fastBtn: HTMLButtonElement | undefined;
     const model = createMemo(() => resolve(p.current, p.current?.ref ?? p.currentRef));
-    return <Show when={model()?.supportsFastMode}>
-        <span class="vs" aria-hidden="true" />
-        <button class={`ctl ${p.enabled ? "on" : ""}`} aria-label="Fast mode" aria-pressed={Boolean(p.enabled)} disabled={p.busy}
-            title={p.busy ? "Change speed after this response finishes" : "Faster service at higher usage/cost. Same model and reasoning effort; account eligibility applies."}
-            onClick={() => void setFastMode(!p.enabled)}>
-            <Zap size={16} /><span>{p.enabled ? "Fast" : "Standard"}</span>
-        </button>
-    </Show>;
+    const reasoning = () => takesEffort(model());
+    const fastOk = () => Boolean(model()?.supportsFastMode);
+    const fastOn = () => fastOk() && Boolean(p.fast);
+    const levels = () => effortLevels(model());
+    // Shown at once while the server takes it, so a drag across the bars doesn't lag behind the pointer.
+    const [shown, setShown] = createSignal(p.effort);
+    createEffect(on(() => p.effort, (e) => setShown(() => e)));
+    let picks = 0;
+    const pick = (id: EffortLevel) => {
+        setShown(() => id);
+        const n = ++picks;
+        // Refused (disconnected, say): back to the level the session has, so picking it again sends again.
+        void setEffort(id).then((ok) => {
+            if (!ok && n === picks) setShown(() => p.effort);
+        });
+    };
+    const label = () => (reasoning() ? (effortOf(shown())?.label ?? "Default") : fastOn() ? "Fast" : "Standard");
+    return (
+        <Show when={reasoning() || fastOk()}>
+            <button ref={anchor} class={`pick effort ${p.open ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={reasoning() ? `Reasoning effort${fastOn() ? ", fast mode on" : ""}` : "Speed"}>
+                <Show when={fastOn()}>
+                    <span class="fz" aria-hidden="true">
+                        <Zap size={13} stroke-width={2} />
+                    </span>
+                </Show>
+                <Show when={reasoning()} fallback={<Show when={!fastOn()}><Zap size={14} /></Show>}>
+                    <EffortGlyph level={effortOf(shown())?.lv ?? 0} />
+                </Show>
+                <span class="lbl">{label()}</span>
+                <Show when={fastOn()}>
+                    <span class="sr-only">, fast mode on</span>
+                </Show>
+                <ChevronDown size={13} class="chev" />
+            </button>
+            <Menu
+                label={reasoning() ? "Reasoning effort" : "Speed"}
+                kind="dialog"
+                open={p.open}
+                anchor={() => anchor}
+                edge={p.edge}
+                onClose={() => p.setOpen(false)}
+                placement={p.placement ?? "top"}
+                width={220}
+                class="effort-pop"
+                initialFocus={() => (bars?.isConnected ? bars : fastBtn)}
+                onKeyDown={(e) => {
+                    // The panel takes the keys before the bars see them (it keeps focus inside), so it moves them here.
+                    if (!bars?.isConnected || e.target !== bars) return;
+                    if (e.key === "Enter") {
+                        e.preventDefault();
+                        p.setOpen(false);
+                        return;
+                    }
+                    const i = effortKey(e, levels().findIndex((l) => l.id === shown()), levels().length);
+                    if (i === undefined) return;
+                    e.preventDefault();
+                    const l = levels()[i];
+                    if (l && l.id !== shown()) pick(l.id);
+                }}
+            >
+                <div class="ep-h">
+                    <b class="ep-lv">{label()}</b>
+                    <Show when={fastOk()}>
+                        <button ref={fastBtn} class={`ep-fast ${fastOn() ? "on" : ""}`} aria-pressed={fastOn()} disabled={p.busy} title={p.busy ? FAST_BUSY : FAST_TIP} onClick={() => void setFastMode(!p.fast)}>
+                            <Zap size={12} stroke-width={2.25} />
+                            Fast
+                        </button>
+                    </Show>
+                </div>
+                <Show when={reasoning()}>
+                    <EffortBars ref={(e) => (bars = e)} levels={levels()} value={shown()} onChange={pick} />
+                </Show>
+            </Menu>
+        </Show>
+    );
 }

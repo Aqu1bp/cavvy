@@ -1,5 +1,7 @@
 // What the agent is waiting on you for: a permission, a question, a plan, a secret.
-// A tab on the composer's top edge, the box it blocks. Its buttons never take
+// A glass card in the dock above the composer, ringed in the colour of what it
+// asks (amber for a permission or a secret, the accent for a plan or a
+// question, red for something destructive). Its buttons never take
 // focus by themselves, so an Enter meant for the input can't approve
 // anything; the number keys and Esc work when you're not typing.
 
@@ -28,6 +30,9 @@ function useKeys(handler: (key: string) => boolean) {
         const onKey = (e: KeyboardEvent) => {
             if (e.metaKey || e.ctrlKey || e.altKey || typing() || document.querySelector(".dialog-backdrop, .popover")) return;
             if (performance.now() - shown < SETTLE_MS) return;
+            // Not while the card is out of sight (the terminal maximized over the conversation).
+            const card = document.querySelector<HTMLElement>(".itab");
+            if (card?.checkVisibility?.() === false) return;
             if (handler(e.key)) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -44,7 +49,7 @@ export function InteractionTab(p: { sessionId: string; items: Interaction[] }) {
     return (
         <Show when={first()?.id} keyed>
             {(_id) => (
-                <div class={`tab itab itab-${first()!.kind} ${first()!.kind === "permission" && (first() as PermissionInteraction).dangerous ? "danger" : ""}`} role="alertdialog" aria-label="Waiting for you">
+                <div class={`ask glass itab itab-${first()!.kind} ${first()!.kind === "permission" && (first() as PermissionInteraction).dangerous ? "danger" : ""}`} role="alertdialog" aria-label="Waiting for you">
                     <Show when={p.items.length > 1}>
                         <div class="itab-count">1 of {p.items.length} waiting</div>
                     </Show>
@@ -76,17 +81,18 @@ function Label(p: { text: string }) {
 function Head(p: { icon: JSX.Element; title: string; aside?: string; sub?: JSX.Element }) {
     return (
         <>
-            <div class="itab-head">
-                <span class="itab-icon">{p.icon}</span>
-                <span class="itab-title">{p.title}</span>
+            <div class="ask-h">
+                <span class="ask-ic">{p.icon}</span>
+                <span class="ask-title selectable">{p.title}</span>
+                <span class="grow" />
                 <Show when={p.aside}>
-                    <span class="itab-aside truncate" title={p.aside}>
+                    <span class="aside truncate" title={p.aside}>
                         {p.aside}
                     </span>
                 </Show>
             </div>
             <Show when={p.sub}>
-                <div class="itab-sub">{p.sub}</div>
+                <div class="itab-sub selectable">{p.sub}</div>
             </Show>
         </>
     );
@@ -94,30 +100,30 @@ function Head(p: { icon: JSX.Element; title: string; aside?: string; sub?: JSX.E
 
 function PermIcon(p: { it: PermissionInteraction }) {
     return (
-        <Switch fallback={<ShieldAlert size={14} />}>
+        <Switch fallback={<ShieldAlert size={16} />}>
             <Match when={p.it.toolName === "Bash"}>
-                <SquareTerminal size={14} />
+                <SquareTerminal size={16} />
             </Match>
             <Match when={p.it.toolName === "Monitor"}>
-                <Radar size={14} />
+                <Radar size={16} />
             </Match>
             <Match when={p.it.category === "edit"}>
-                <FilePen size={14} />
+                <FilePen size={16} />
             </Match>
             <Match when={p.it.toolName === "WebFetch"}>
-                <Globe size={14} />
+                <Globe size={16} />
             </Match>
             <Match when={p.it.category === "mcp"}>
-                <Plug size={14} />
+                <Plug size={16} />
             </Match>
             <Match when={p.it.toolName === "GitCommit"}>
-                <GitCommitHorizontal size={14} />
+                <GitCommitHorizontal size={16} />
             </Match>
             <Match when={p.it.toolName === "GitPush"}>
-                <ArrowUpFromLine size={14} />
+                <ArrowUpFromLine size={16} />
             </Match>
             <Match when={p.it.toolName === "CreatePullRequest"}>
-                <GitPullRequestArrow size={14} />
+                <GitPullRequestArrow size={16} />
             </Match>
         </Switch>
     );
@@ -172,25 +178,25 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
             />
             <div class="itab-body">
                 <Show when={p.it.plain}>
-                    <div class="itab-desc">
+                    <div class="itab-desc selectable">
                         {p.it.plainLabel ?? "AI summary"}: <b>{p.it.plain}</b>
                     </div>
                 </Show>
                 <Show when={p.it.dangerous}>
-                    <div class="itab-warn">
+                    <div class="itab-warn selectable">
                         <AlertTriangle size={14} /> {p.it.reason ?? "This action looks potentially destructive."}
                     </div>
                 </Show>
                 <Show when={p.it.command !== undefined}>
-                    <pre class="itab-code mono">{p.it.command}</pre>
+                    <pre class="itab-code ask-cmd mono">{p.it.command}</pre>
                     <Show when={p.it.description}>
-                        <div class="itab-desc">{p.it.description}</div>
+                        <div class="itab-desc why selectable">{p.it.description}</div>
                     </Show>
                     <Show when={p.it.hosts?.length}>
-                        <div class="itab-desc">Sandboxed, with network access to {p.it.hosts!.join(", ")}</div>
+                        <div class="itab-desc why selectable">Sandboxed, with network access to {p.it.hosts!.join(", ")}</div>
                     </Show>
                     <Show when={p.it.secrets?.length}>
-                        <div class="itab-desc secret-names">
+                        <div class="itab-desc secret-names selectable">
                             <KeyRound size={13} /> It gets <span class="mono">{p.it.secrets!.map((n) => `$${n}`).join(", ")}</span> in its environment.
                         </div>
                     </Show>
@@ -204,18 +210,18 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                 <Show when={p.it.url}>
                     <div class="itab-code mono">{p.it.url}</div>
                     <Show when={p.it.description}>
-                        <div class="itab-desc">{p.it.description}</div>
+                        <div class="itab-desc why selectable">{p.it.description}</div>
                     </Show>
                 </Show>
                 <Show when={p.it.json}>
-                    <div class="itab-desc">{p.it.title}</div>
+                    <div class="itab-desc selectable">{p.it.title}</div>
                     <pre class="itab-code mono">{p.it.json}</pre>
                 </Show>
                 <Show when={!p.it.command && !p.it.diff && !p.it.path && !p.it.url && !p.it.json}>
-                    <div class="itab-desc">{p.it.title}</div>
+                    <div class="itab-desc selectable">{p.it.title}</div>
                 </Show>
                 <Show when={!p.it.dangerous && p.it.reason && p.it.toolName !== "Bash" && p.it.toolName !== "Monitor"}>
-                    <div class="itab-desc">{p.it.reason}</div>
+                    <div class="itab-desc why selectable">{p.it.reason}</div>
                 </Show>
                 <Show when={feedback() !== undefined}>
                     <textarea
@@ -238,7 +244,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                     />
                 </Show>
             </div>
-            <div class="itab-actions">
+            <div class="itab-actions ask-row">
                 <For each={order()}>
                     {({ o, key }) => (
                         <>
@@ -255,7 +261,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                                 <kbd>{o.id === "no" ? "Esc" : key}</kbd>
                             </button>
                             <Show when={o.id === "no"}>
-                                <span class="spacer" />
+                                <span class="grow" />
                             </Show>
                         </>
                     )}
@@ -288,7 +294,7 @@ function QuestionCard(p: { sessionId: string; it: QuestionInteraction }) {
     });
     return (
         <>
-            <Head icon={<MessageCircleQuestion size={14} />} title={p.it.question} aside={!p.it.options.length ? "Type your answer" : p.it.multi ? "Pick any that apply" : "Pick one, or type your own answer"} />
+            <Head icon={<MessageCircleQuestion size={16} />} title={p.it.question} aside={!p.it.options.length ? "Type your answer" : p.it.multi ? "Pick any that apply" : "Pick one, or type your own answer"} />
             <div class="itab-body">
                 <div class="q-options">
                     <For each={p.it.options}>
@@ -321,11 +327,11 @@ function QuestionCard(p: { sessionId: string; it: QuestionInteraction }) {
                     }}
                 />
             </div>
-            <div class="itab-actions">
+            <div class="itab-actions ask-row">
                 <button class="pbtn quiet" onClick={() => void submit(undefined)}>
                     Skip <kbd>Esc</kbd>
                 </button>
-                <span class="spacer" />
+                <span class="grow" />
                 <Show when={p.it.multi || other().trim()}>
                     <button class="pbtn primary" disabled={!picked().length && !other().trim()} onClick={() => void submit([...picked(), ...(other().trim() ? [other().trim()] : [])])}>
                         Answer
@@ -378,9 +384,9 @@ function SecretCard(p: { sessionId: string; it: SecretInteraction }) {
     });
     return (
         <>
-            <Head icon={<KeyRound size={14} />} title={`The agent asks for a secret: ${p.it.name}`} aside="Only its shell commands see the value" />
+            <Head icon={<KeyRound size={16} />} title={`The agent asks for a secret: ${p.it.name}`} aside="Only its shell commands see the value" />
             <div class="itab-body">
-                <p class="secret-purpose" id={descriptionId}>{p.it.purpose}<span class="sr-only"> At least {MIN_SECRET} characters.</span></p>
+                <p class="secret-purpose selectable" id={descriptionId}>{p.it.purpose}<span class="sr-only"> At least {MIN_SECRET} characters.</span></p>
                 <div class="secret-field">
                     <input
                         ref={input}
@@ -415,11 +421,11 @@ function SecretCard(p: { sessionId: string; it: SecretInteraction }) {
                     </button>
                 </div>
             </div>
-            <div class="itab-actions">
+            <div class="itab-actions ask-row">
                 <button class="pbtn quiet" onClick={decline}>
                     Decline <kbd>Esc</kbd>
                 </button>
-                <span class="spacer" />
+                <span class="grow" />
                 <button class="pbtn primary" aria-busy={busy()} disabled={!ready() || busy()} title={ready() ? undefined : `At least ${MIN_SECRET} characters`} onClick={() => void provide()}>
                     Provide
                 </button>
@@ -450,29 +456,35 @@ function PlanCard(p: { sessionId: string; it: PlanInteraction }) {
     });
     return (
         <>
-            <Head icon={<ClipboardList size={14} />} title="Plan ready for review" aside="Nothing has been changed yet" />
+            <Head icon={<ClipboardList size={16} />} title="Plan ready for review" aside="Nothing has been changed yet" />
             <div class="itab-body">
                 <div class="plan-body" ref={body}>
                     <Markdown text={p.it.plan} />
                 </div>
                 <Show when={feedback() !== undefined}>
                     <textarea
-                        class="itab-feedback"
-                        rows={3}
-                        placeholder="What should change in the plan?"
+                        class="itab-feedback plan-fb"
+                        rows={2}
+                        placeholder="What should change? Enter sends, Esc cancels"
+                        aria-label="What should change in the plan"
                         value={feedback()}
                         onInput={(e) => setFeedback(e.currentTarget.value)}
                         onKeyDown={(e) => {
                             if (e.key === "Enter" && !e.shiftKey) {
                                 e.preventDefault();
                                 void reject();
+                            } else if (e.key === "Escape") {
+                                // Like the permission card's: closes the field, without stopping the turn.
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setFeedback(undefined);
                             }
                         }}
                         ref={(el) => requestAnimationFrame(() => el.focus())}
                     />
                 </Show>
             </div>
-            <div class="itab-actions">
+            <div class="itab-actions ask-row plan-row quiet-row">
                 <button class="pbtn quiet" onClick={() => (feedback() === undefined ? setFeedback("") : void reject())}>
                     {feedback() === undefined ? "Keep planning" : "Send feedback"} <kbd>4</kbd>
                 </button>
@@ -480,14 +492,16 @@ function PlanCard(p: { sessionId: string; it: PlanInteraction }) {
                     <Save size={13} /> Save… <kbd>6</kbd>
                 </button>
                 <button
-                    class="pbtn outlined"
+                    class="pbtn quiet"
                     disabled={!info()?.git}
                     title={info()?.notGit ?? "Build it in a new Git worktree, in a new session; this one stops, still in plan mode"}
                     onClick={worktree}
                 >
                     <FolderGit2 size={13} /> New worktree… <kbd>5</kbd>
                 </button>
-                <span class="spacer" />
+            </div>
+            <div class="itab-actions ask-row plan-row">
+                <span class="grow" />
                 <button class="pbtn outlined" onClick={() => void approve("auto")}>
                     Auto mode <kbd>3</kbd>
                 </button>

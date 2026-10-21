@@ -63,21 +63,25 @@ let commandLists = 0;
 let holdSend: Promise<void> | undefined;
 const commentStore = createReviewCommentStore(() => undefined);
 const noop = () => undefined;
-const components = Object.fromEntries(["ArrowUp", "CornerDownRight", "QueueTab", "GoalTab", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "Sparkles", "SquareTerminal", "X", "ModelPicker", "FastModeToggle", "EffortMenu", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring", "ReviewCommentChips"].map((key) => [key, noop]));
+const components = Object.fromEntries(["ArrowUp", "CornerDownRight", "QueueTab", "GoalTab", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "Sparkles", "SquareTerminal", "X", "ModelPicker", "EffortPicker", "AtSign", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring", "ReviewCommentChips"].map((key) => [key, noop]));
 const [working, setWorking] = solid.createSignal(false);
 const [goal, setGoal] = solid.createSignal<any>();
-const sessionState = { cwd: "/workspace", queued: ["joins", "waits"], queueIds: [1, 2], queuedModes: ["steer", "queue"], interactions: [], model: {}, get busy() { return working(); }, get goal() { return goal(); } };
+const [asks, setAsks] = solid.createSignal<any[]>([]);
+const [activity, setActivity] = solid.createSignal<any>({ label: "Running bun test", since: Date.now() });
+/** The last turn started an hour ago: an idle compaction counts from its own start, not from it. */
+const turns = [{ startedAt: Date.now() - 3_600_000 }];
+const sessionState = { cwd: "/workspace", queued: ["joins", "waits"], queueIds: [1, 2], queuedModes: ["steer", "queue"], get interactions() { return asks(); }, model: {}, get activity() { return activity(); }, get busy() { return working(); }, get goal() { return goal(); } };
 let interrupts = 0;
 const sent: { text: string; followUp?: string }[] = [];
 const calls: { method: string; params: any }[] = [];
 const appState = { conn: "open", homeCwd: "/workspace", settings: {} as { followUpBehavior?: string }, models: [] };
-const deps = { ...solid, ...components, renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, firstSendable, followUpFor, otherFollowUp, canStop, keymap, matchKey, withShortcut, shortcut, eventStrokes,
+const deps = { ...solid, ...components, renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, firstSendable, followUpFor, otherFollowUp, canStop, now: () => Date.now(), turnDuration: (ms: number) => `${Math.round(ms / 1000)}s`, keymap, matchKey, withShortcut, shortcut, eventStrokes,
     comparePicks, setComparePicks, startRun: runSheet.startRun,
     splitComments, takesComments, withComments, plural, setReview: noop,
     aroundOf, reviewComments: commentStore, newCommentId: () => crypto.randomUUID(),
     createLifetimeGuard: () => (fn: any) => fn, wasDeleted: () => false,
     app: appState,
-    handleFor: () => ({ view: { state: sessionState }, draft: noop }),
+    handleFor: () => ({ view: { state: sessionState, turns }, draft: noop }),
     contextCardOpen: () => false, setContextCardOpen: noop, contextView: () => ({ ring: false }),
     focusComposer: () => 0, modelPickerOpen: () => false, modePickerOpen: () => false,
     setModelPickerOpen: noop, setModePickerOpen: noop, blockedBy: () => false,
@@ -280,6 +284,34 @@ for (const g of [{ state: "paused", judge: "model" }, { state: "active", judge: 
 }
 assert.equal(interrupts, stopsBefore + 3);
 setGoal(undefined);
+// The status row shows while a turn runs, not while a request card already says what's happening.
+const statusRows = () => nodes.filter((n) => n.props.class === "c-status").length;
+const rowsBefore = statusRows();
+setAsks([{ id: "ask", kind: "permission" }]);
+setWorking(true);
+assert.equal(statusRows(), rowsBefore, "no status row under a request card");
+setAsks([]);
+assert.equal(statusRows(), rowsBefore + 1, "the status row appears once the card is answered");
+assert.ok(renderedText.includes("Running bun test"), "it says what the turn is doing");
+assert.ok(renderedText.includes("3600s"), "a turn's timer counts from the turn's start");
+// Compacting while idle: no turn runs, so its timer starts with the compaction.
+setActivity({ label: "Compacting", since: Date.now() - 2000, idle: true });
+assert.ok(renderedText.includes("Compacting"));
+assert.equal(renderedText.at(-1), "2s", "an idle compaction counts from its own start");
+setActivity({ label: "Running bun test", since: Date.now() });
+setWorking(false);
+// The mention button puts an @ at the caret (after a space) and asks for files.
+input("look at");
+const mentionsBefore = calls.filter((c) => c.method === "fs.mentions").length;
+nodes.findLast((n) => n.props["aria-label"] === "Mention a file").props.onClick();
+assert.equal(ta.props.value, "look at @");
+tick();
+assert.equal(ta.selectionStart, "look at @".length);
+await Bun.sleep(80);
+assert.equal(calls.filter((c) => c.method === "fs.mentions").length, mentionsBefore + 1);
+replies.at(-1)!.resolve([]);
+await Bun.sleep(0);
+input("");
 // Exercise the actual Home submit handler through the run-sheet controller.
 const sessionSends = sends;
 setSession(undefined);

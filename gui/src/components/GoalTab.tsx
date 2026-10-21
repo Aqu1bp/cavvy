@@ -1,4 +1,4 @@
-// The session's /goal, as a tab on the composer: what it's working toward,
+// The session's /goal, as a row inside the composer card: what it's working toward,
 // where it stands, and buttons to pause, resume or clear it.
 
 import { createSignal, Show } from "solid-js";
@@ -43,7 +43,7 @@ export function GoalTab(p: { sessionId: string; goal: GoalState }) {
     // Claude Code's goals don't pause (Stop interrupts the turn, and it carries on with the next message).
     const pausable = () => !native() || g().canPause;
     return (
-        <div class={`tab goal-tab st-${g().state}`} role="status" aria-label="Goal">
+        <div class={`queue goal-tab st-${g().state}`} role="status" aria-label="Goal">
             <div class="goal-row">
                 <Show when={g().state === "checking" || g().state === "waiting"} fallback={<Goal size={14} class="goal-icon" aria-hidden="true" />}>
                     <LoaderCircle size={14} class="goal-icon spinner" aria-hidden="true" />
@@ -80,7 +80,7 @@ export function GoalTab(p: { sessionId: string; goal: GoalState }) {
                 </button>
             </div>
             <Show when={open() && details().length}>
-                <div class="goal-details">
+                <div class="goal-details selectable">
                     {details().map((d) => (
                         <p>{d}</p>
                     ))}
