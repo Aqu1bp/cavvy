@@ -716,6 +716,36 @@
     background: var(--sheet);
 }
 
+/* Window tint: Clear, Ocean, Accent. Each face is the window as tokens.css
+   draws it (the tint over the window tint over the backdrop), smaller tiles
+   than the scheme's as they sit in a row. */
+.ap-tint-tiles {
+    gap: 10px;
+    padding: 0;
+}
+
+.ap-tint-tiles .ap-pv {
+    width: 76px;
+    height: 50px;
+    border-radius: 8px;
+}
+
+.ap-face.ap-tint {
+    padding: 4px;
+    gap: 3px;
+    background: var(--win-wash), linear-gradient(var(--win-tint), var(--win-tint)), var(--tint-backdrop);
+}
+
+.ap-face.ap-tint i,
+.ap-face.ap-tint u {
+    border-radius: 4px;
+}
+
+/* The rail is the tint itself, with one selected row on it. */
+.ap-face.ap-tint i {
+    background: linear-gradient(var(--rail-sel), var(--rail-sel)) 0 5px / 100% 7px no-repeat;
+}
+
 /* Accent. */
 .ap-swatches {
     display: flex;
