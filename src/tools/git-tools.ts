@@ -209,7 +209,7 @@ export const GitPushTool: Tool<Record<string, never>> = {
     name: "GitPush",
     category: "execute",
     readOnly: false,
-    description: `Push the current branch to its remote (its upstream, or origin on the first push, which then becomes its upstream).
+    description: `Push the current branch to its remote (its upstream; on the first push, origin when it's the only remote, which then becomes its upstream).
 
 Never forces and never pushes tags. Refuses the repository's main branch: work on your own branch. A rejected push means the remote has commits you don't: fetch, reconcile (rebase or merge), then push again. Only what's committed is pushed. The user is asked first unless they've allowed it.`,
     parameters: { type: "object", properties: {} },
