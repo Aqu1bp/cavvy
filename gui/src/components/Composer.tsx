@@ -6,7 +6,7 @@ import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/ap
 import { interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen } from "../state/ui";
-import { keymap, matchKey, withShortcut } from "../state/keybindings";
+import { keymap, matchKey, shortcut, withShortcut } from "../state/keybindings";
 import { eventStrokes } from "../lib/keystrokes";
 import type { MatchResult } from "../../../src/keybindings/core";
 import { EffortMenu, FastModeToggle, ModelPicker, type CompareOption } from "./ModelPicker";
@@ -228,7 +228,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     };
 
     // ---- sending
-    /** What a message sent now does while a turn runs: the setting, or with `opposite` (mod+shift+enter, mod-click) the other. */
+    /** What a message sent now does while a turn runs: the setting, or with `opposite` (the steer-or-queue key, mod-click) the other. */
     const followUp = (opposite = false): FollowUpMode => followUpFor(app.settings.followUpBehavior, opposite);
     /** mod+shift held in the box: the send button shows the other. */
     const [flipped, setFlipped] = createSignal(false);
@@ -282,8 +282,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const onKeyDown = (e: KeyboardEvent) => {
         if (composingKey(e)) return;
         const items = menu();
-        // Enter on the / and @ menu takes the suggestion, whatever Enter is bound to.
-        if (items.length && e.key === "Enter" && !e.shiftKey && !e.altKey) {
+        // Enter on the / and @ menu takes the suggestion, whatever Enter is bound to (a modified Enter goes by its binding).
+        if (items.length && e.key === "Enter" && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
             e.preventDefault();
             apply(items[menuSel()] ?? items[0]!, true);
             return;
@@ -291,13 +291,6 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         // A menu with nothing to pick (a status line) only takes the key that closes it.
         const closesStatus = !items.length && menuOpen() && eventStrokes(e).some((id) => keymap().table.get("Autocomplete")?.get(id) === "autocomplete:dismiss");
         const r: MatchResult = closesStatus ? { kind: "action", action: "autocomplete:dismiss", context: "Autocomplete", abandoned: 0 } : matchKey(e, items.length ? ["Autocomplete", "Chat", "Global"] : ["Chat", "Global"]);
-        // Keep the mid-turn shortcut when no custom binding or chord claims it.
-        if (r.kind === "none" && !r.unbound && e.key === "Enter" && isMod(e) && e.shiftKey && !e.altKey && busy()) {
-            e.preventDefault();
-            if (hasContent()) void submit(true);
-            else sendFirstQueued();
-            return;
-        }
         if (r.kind !== "action") return;
         const history = composerStorage.history(draftKey());
         switch (r.action) {
@@ -333,6 +326,13 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             case "chat:newline":
                 e.preventDefault();
                 newline();
+                return;
+            case "chat:submitOtherWay":
+                // While a turn runs, with the / and @ menu open too: the message goes the other way, or the first queued one now.
+                if (!busy()) return;
+                e.preventDefault();
+                if (hasContent()) void submit(true);
+                else sendFirstQueued();
                 return;
             case "app:interrupt":
                 if (!busy()) return;
@@ -429,7 +429,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         const key = prefs.enterSends ? "Enter" : `${mod}+Enter`;
         const other = otherFollowUp(followUp());
         const now = followUp() === "steer" ? `Steer: joins the current turn at its next step (${key})` : `Queue: runs after this turn (${key})`;
-        return `${now}. ${mod}-click or ${mod}+Shift+Enter to ${other} instead.`;
+        const otherKey = shortcut("chat:submitOtherWay");
+        return `${now}. ${mod}-click${otherKey ? ` or ${otherKey}` : ""} to ${other} instead.`;
     };
     const canSend = createMemo(() => hasContent() && !blocked());
     /** Menus open clear of the whole card, tabs included, so they never cover what you're typing. */
