@@ -1,4 +1,5 @@
 // Drives the mockup in headless Chrome over CDP: runs steps, screenshots, reports page errors.
+// Env: W, H (viewport, default 1512x982), DPR (default 1), SHOW=1 prints each step's result.
 import { spawn } from "node:child_process";
 import { writeFileSync, mkdtempSync } from "node:fs";
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -20,7 +21,7 @@ ws.onmessage = (m) => {
 };
 const cdp = (method: string, params: any = {}) => new Promise<any>((r) => { const id = ++n; wait.set(id, r); ws.send(JSON.stringify({ id, method, params })); });
 await cdp("Runtime.enable"); await cdp("Page.enable");
-await cdp("Emulation.setDeviceMetricsOverride", { width: 1512, height: 982, deviceScaleFactor: 1, mobile: false });
+await cdp("Emulation.setDeviceMetricsOverride", { width: Number(process.env.W ?? 1512), height: Number(process.env.H ?? 982), deviceScaleFactor: Number(process.env.DPR ?? 1), mobile: false });
 await cdp("Page.navigate", { url }); await Bun.sleep(1200);
 for (const [name, js, ms] of steps) {
     if (js) { const r = await cdp("Runtime.evaluate", { expression: js, awaitPromise: true }); if (r.result?.exceptionDetails) errors.push(`${name}: ${r.result.exceptionDetails.exception?.description}`); else if (process.env.SHOW) console.log(name, r.result?.result?.value); }
