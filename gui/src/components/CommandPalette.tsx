@@ -12,6 +12,7 @@ import { askDelete } from "./Header";
 import { Spinner } from "./ui/bits";
 import { searchRounds } from "../lib/search";
 import { plainSnippet } from "../lib/plain-snippet";
+import { groupSections, keepSelection } from "../lib/palette-order";
 import { shortcutHint } from "../state/keybindings";
 
 interface Entry {
@@ -35,6 +36,8 @@ interface Entry {
 const MIN_SEARCH = 2;
 const MAX_SEARCH = 200;
 const MAX_HITS = 50;
+/** With a query, the results' groups in this order (the mockup's Sessions, Messages, Actions); the rest follow. */
+const SECTION_ORDER = ["Sessions", "Messages", "Projects", "Actions", "Session", "Permission mode", "Theme"];
 
 function Snippet(p: { text: string; match?: [number, number] }) {
     return (
@@ -179,7 +182,7 @@ export function CommandPalette() {
             .sort((a, b) => b.s - a.s)
             .slice(0, 40)
             .map((x) => x.e);
-        // Below the rest, as they come: the messages that say it.
+        // As they come: the messages that say it, between the sessions and the actions.
         const said = hits();
         // Fresh answers are authoritative, even if a capped session list missed
         // an Undo. The generation check above drops answers predating deletion.
@@ -196,13 +199,24 @@ export function CommandPalette() {
                 run: () => openHit(h, said.query),
             };
         });
-        return [...found, ...messages];
+        return groupSections([...found, ...messages], SECTION_ORDER);
     });
 
     createEffect(on(paletteOpen, (o) => o && (setQ(""), setSel(0))));
-    createEffect(on(q, () => setSel(0), { defer: true }));
-    // Fewer messages than before: the selection stays on the list.
-    createEffect(on(results, (r) => setSel((s) => Math.min(s, Math.max(0, r.length - 1))), { defer: true }));
+    // A new query starts at the top. Otherwise (message hits arriving, a list
+    // that shrinks) the selection stays on its entry, or as near as it can.
+    let shownFor = q();
+    createEffect(
+        on(
+            results,
+            (r, prev) => {
+                const newQuery = q() !== shownFor;
+                shownFor = q();
+                setSel((s) => keepSelection(prev, r, s, newQuery));
+            },
+            { defer: true },
+        ),
+    );
 
     const runAt = (i: number) => {
         const e = results()[i];
