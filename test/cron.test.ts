@@ -171,6 +171,27 @@ describe("nextRun", () => {
         expect(quarter.every((r) => r.startsWith("2026-11-01 01:"))).toBe(true);
     });
 
+    test("half-hour daylight saving (Lord Howe): a daily time in the repeated half hour runs once; one in the gap runs once after it", () => {
+        process.env.TZ = "Australia/Lord_Howe";
+        try {
+            // 2026-04-05 02:00 LHDT (+11) goes back to 01:30 LHST (+10:30): 01:30-01:59 happen twice.
+            const daily = parseCron("45 1 * * *");
+            const first = nextRun(daily, at(2026, 4, 4, 12))!;
+            expect(new Date(first).toISOString()).toBe("2026-04-04T14:45:00.000Z");
+            const second = nextRun(daily, first)!;
+            expect(local(second)).toBe("2026-04-06 01:45");
+            // Hourly at :45 isn't a fixed time: it runs in both, half an hour apart.
+            const hourly = parseCron("45 * * * *");
+            const h2 = nextRun(hourly, first)!;
+            expect(local(h2)).toBe("2026-04-05 01:45");
+            expect(h2 - first).toBe(30 * 60_000);
+            // 2026-10-04 02:00 LHST jumps to 02:30 LHDT: 02:15 runs at 02:30, once.
+            expect(runs("15 2 * * *", at(2026, 10, 3, 12), 2)).toEqual(["2026-10-04 02:30", "2026-10-05 02:15"]);
+        } finally {
+            process.env.TZ = "America/New_York";
+        }
+    });
+
     test("never matching within 5 years: undefined", () => {
         // Feb 29 on a Monday only, restricted both ways, still matches Feb 29 or Mondays in Feb: fine.
         expect(nextRun(parseCron("0 0 29 2 1"), at(2026, 3, 1))).toBeDefined();

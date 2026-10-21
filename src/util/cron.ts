@@ -186,10 +186,14 @@ export function nextRun(c: Cron, after: number): number | undefined {
             t += MINUTE;
             continue;
         }
-        // The repeated hour after clocks go back: a fixed time (not every few minutes, not every hour) already ran an hour ago.
-        if (!c.anyMinute && c.hours.size < 24 && wall(new Date(t - 3_600_000)) === nowWall) {
-            t += MINUTE;
-            continue;
+        // The repeated stretch after clocks go back (an hour, or half an hour on Lord Howe): a fixed
+        // time (not every few minutes, not every hour) already ran that much earlier.
+        if (!c.anyMinute && c.hours.size < 24) {
+            const back = new Date(t).getTimezoneOffset() - new Date(t - 3 * 3_600_000).getTimezoneOffset();
+            if (back > 0 && wall(new Date(t - back * MINUTE)) === nowWall) {
+                t += MINUTE;
+                continue;
+            }
         }
         return t;
     }
