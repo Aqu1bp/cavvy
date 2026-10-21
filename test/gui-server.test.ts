@@ -1064,6 +1064,31 @@ describe("connecting", () => {
         }
     }, 30_000);
 
+    test("a message Claude Code takes at a tool result has its turn at its own place in the session (rewind and fork go by it)", async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        process.env.FAKE_SCENARIO = "steering";
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            await engine.handle(c, "models.list", { refresh: true });
+            await engine.handle(c, "session.setModel", { id, ref: "claude-code:default", persist: false });
+            await engine.handle(c, "session.send", { id, text: "start" });
+            expect(await engine.handle(c, "session.send", { id, text: "a correction", mode: "steer" })).toEqual({ queued: true });
+            for (let k = 0; k < 500 && (rt.busy || rt.snapshot().state.queued.length); k++) await Bun.sleep(20);
+            const at = rt.session.messages.findIndex((m) => m.role === "user" && m.content.some((p) => (p as { text?: string }).text === "a correction"));
+            expect(at).toBeGreaterThan(0);
+            // What Claude Code said before it is recorded first, so the prompt sits after it.
+            expect(rt.session.messages[at - 1]!.role).toBe("assistant");
+            const turn = rt.snapshot().turns.find((t) => t.prompt?.text === "a correction")!;
+            expect(turn.prompt!.index).toBe(at);
+            expect(turn.pos).toEqual({ seg: 0, index: at });
+        } finally {
+            await engine.stop();
+            delete process.env.FAKE_SCENARIO;
+            removeAgentConfig("claude-code");
+        }
+    }, 30_000);
+
     test("a turn still waiting on the model when the server stops is saved as interrupted", async () => {
         const { findSessionAnywhere } = await import("../src/agent/session");
         const { engine, c, id } = await engineWithSession();

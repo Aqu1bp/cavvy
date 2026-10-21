@@ -165,8 +165,11 @@ export interface AgentHost {
     /** Persist "don't ask again" rules. */
     saveRules?(rules: string[], scope: "local" | "project" | "user"): void;
     ui: UiBridge;
-    /** Messages the user typed while the agent was busy, to steer the running turn with. */
-    drainQueued?(): string[];
+    /**
+     * Messages the user typed while the agent was busy, to steer the running turn with. `record`, when
+     * given, is run once some are taken and before their turn starts, so the output before them is recorded first.
+     */
+    drainQueued?(record?: () => void): string[];
     /**
      * For a backend's CLI that's between its turns, waiting only on its background work: the first queued
      * message that can go now, as a prompt of its own, whatever its mode, prepared as a sent one is (its
@@ -1595,11 +1598,18 @@ export class Agent {
             fromWake: (text) => wakeTexts.has(text),
             drainQueued: async (progress) => {
                 if (this.cutOff) return [];
-                const queued = this.o.host.drainQueued?.() ?? [];
+                // What the backend said before them goes first: the host places their turn after it.
+                let recorded = false;
+                const record = () => {
+                    if (recorded || !progress) return;
+                    recorded = true;
+                    this.recordBackendTurn(provider, name, progress());
+                };
+                const queued = this.o.host.drainQueued?.(record) ?? [];
                 // Events a watch raised join the running turn as the user's messages do (Codex steers with them at once).
                 const woke = this.takeWakes();
                 if (!queued.length && !woke) return [];
-                if (progress) this.recordBackendTurn(provider, name, progress());
+                record();
                 const out: string[] = [];
                 if (queued.length) {
                     await this.checkpoint(queued.join("\n"), false, (checkpoint) => {

@@ -1190,7 +1190,7 @@ export class Runtime {
                     approvePlan: (plan) => this.approvePlan(plan),
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
                 },
-                drainQueued: () => this.drainQueued(),
+                drainQueued: (record) => this.drainQueued(record),
                 drainWaiting: (record) => this.drainWaiting(record),
             },
             helpers: {
@@ -2069,13 +2069,15 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Prompts
 
-    private drainQueued(): string[] {
+    private drainQueued(record?: () => void): string[] {
         // Messages to steer with; queued ones, held ones and those with images or files wait for their own turn.
         const take = this.queued.filter((q) => q.mode === "steer" && !q.held && steerable(q));
         if (!take.length) return [];
         this.queued = this.queued.filter((q) => !take.includes(q));
         this.queueUpdated();
         const texts = take.map((q) => q.text);
+        // What the agent CLI said before them goes first, so their prompt's place in the session is where it lands.
+        record?.();
         this.drainedTurn(texts.join("\n\n"));
         return texts;
     }
