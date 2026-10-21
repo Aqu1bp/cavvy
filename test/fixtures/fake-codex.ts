@@ -11,7 +11,7 @@
 // and loads .codex/config.toml (its model), unless -c projects=… marks the
 // folder untrusted.
 //
-// FAKE_LOG            each line: what it was started with, and what it received
+// FAKE_LOG            each line: what it was started with, and what it received (threadMcp: a new thread's mcp_servers)
 // FAKE_ACCOUNT        chatgpt (default) | apikey | none
 // FAKE_DECLINE=1      offer "decline" among the command's availableDecisions
 // FAKE_REVIEW_DENY=1  with approvalsReviewer auto_review, the command leaves the sandbox and Codex's
@@ -618,6 +618,7 @@ async function handle(m: any) {
                 nextCursor: null,
             });
         case "thread/start":
+            log({ threadMcp: p.config?.mcp_servers ?? null });
             // A one-off: an ephemeral thread answering one question (FAKE_ONEOFF_ANSWER).
             if (p.ephemeral) {
                 log({ oneOffThread: { baseInstructions: p.baseInstructions, config: p.config, approvalPolicy: p.approvalPolicy, sandbox: p.sandbox, cwd: p.cwd } });

@@ -3,7 +3,7 @@
 // when it's been changed.
 
 import { createEffect, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
-import { AlertTriangle, ArrowLeft, ArrowUp, ChartColumn, Check, Copy, ExternalLink, FolderOpen, Info, Keyboard, KeyRound, Minus, Palette, Plug, Plus, RotateCcw, Settings as Gear, SlidersHorizontal, Trash2 } from "lucide-solid";
+import { AlertTriangle, ArrowLeft, ArrowUp, ChartColumn, Check, Copy, ExternalLink, FolderOpen, Info, Keyboard, KeyRound, Minus, Palette, Plug, Plus, Puzzle, RotateCcw, Settings as Gear, SlidersHorizontal, Trash2 } from "lucide-solid";
 import { MODE_LABELS, type EffortLevel, type FollowUpMode, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
 import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
 import { connectCli, editors, refreshEditors } from "../state/actions";
@@ -20,11 +20,13 @@ import { CrumbSep, TitleBar } from "./Header";
 import { SidebarFrame } from "./Sidebar";
 import { Kbd, Segmented, Spinner, Toggle } from "./ui/bits";
 import { UsageView } from "./UsageView";
+import { Plugins } from "./Plugins";
 
 const TABS: { id: SettingsTab; label: string; icon: typeof Palette }[] = [
     { id: "general", label: "General", icon: SlidersHorizontal },
     { id: "appearance", label: "Appearance", icon: Palette },
     { id: "providers", label: "Providers", icon: Plug },
+    { id: "plugins", label: "Plugins", icon: Puzzle },
     { id: "usage", label: "Usage", icon: ChartColumn },
     { id: "shortcuts", label: "Shortcuts", icon: Keyboard },
     { id: "about", label: "About", icon: Info },
@@ -713,6 +715,7 @@ const INTRO: Record<SettingsTab, string> = {
     general: "Defaults for new sessions, and how Harness behaves.",
     appearance: "How Harness looks on this computer. Changes apply as you pick.",
     providers: "Where the models come from: API keys, and the CLIs signed in on this computer.",
+    plugins: "Commands, agents, skills, hooks and MCP servers, installed from marketplaces.",
     usage: "Your plans' limits, and the tokens and cost of your sessions by model.",
     shortcuts: "Keys that work across the app, with any you set in your keybindings file.",
     about: "This build, and where it keeps its data.",
@@ -743,6 +746,9 @@ export function SettingsPage() {
                         </Match>
                         <Match when={tab() === "providers"}>
                             <Providers />
+                        </Match>
+                        <Match when={tab() === "plugins"}>
+                            <Plugins />
                         </Match>
                         <Match when={tab() === "usage"}>
                             <UsageView />

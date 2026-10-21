@@ -179,6 +179,129 @@
     padding: 0 1px;
 }
 
+/* ---- Settings: plugins --------------------------------------------- */
+
+.plg-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 18px 0 6px;
+}
+
+.plg-n {
+    margin-left: 4px;
+    color: var(--fg-subtle);
+    font-variant-numeric: tabular-nums;
+}
+
+.plg-search {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--fg-muted);
+}
+
+.plg-search .input {
+    width: 160px;
+    height: 28px;
+}
+
+.plg-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--hairline);
+}
+
+.plg-main {
+    flex: 1;
+    min-width: 0;
+}
+
+.plg-title {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.plg-name {
+    font-weight: 560;
+}
+
+.plg-row.off .plg-name,
+.plg-row.off .plg-desc {
+    color: var(--fg-muted);
+}
+
+.plg-desc,
+.plg-meta {
+    margin-top: 3px;
+    font-size: 0.857rem;
+    line-height: 1.45;
+    color: var(--fg-muted);
+    overflow-wrap: anywhere;
+}
+
+.plg-meta {
+    color: var(--fg-subtle);
+}
+
+.plg-warn,
+.plg-err {
+    margin-top: 3px;
+    font-size: 0.821rem;
+    color: var(--warning);
+    overflow-wrap: anywhere;
+}
+
+.plg-err {
+    color: var(--danger);
+}
+
+.plg-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+    padding-top: 1px;
+}
+
+.plg-actions .select {
+    width: auto;
+    height: 28px;
+    font-size: 0.857rem;
+}
+
+.plg-empty {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 22px 16px;
+    margin-top: 8px;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-md);
+    color: var(--fg-muted);
+}
+
+.plg-empty > div {
+    flex: 1;
+}
+
+.plg-empty-title {
+    color: var(--fg);
+    font-weight: 540;
+    margin-bottom: 2px;
+}
+
+@media (max-width: 640px) {
+    .plg-row {
+        flex-direction: column;
+    }
+}
+
 /* ---- Settings: providers ------------------------------------------- */
 
 .prov-quick {

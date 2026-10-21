@@ -156,6 +156,8 @@ export interface BackendTurn {
     request?: string;
     /** What follows the user's message in `prompt`: its attached files' text and the harness's notes, which name no skills. */
     requestAfter?: string;
+    /** Enabled harness plugins' folders, for a backend that loads them itself (Claude Code's --plugin-dir). */
+    pluginDirs?: string[];
     /** Snapshot of the MCP manager’s folder and approved definitions; absent means strict MCP isolation. */
     approvedMcpServers?: ApprovedMcpServers;
     /** The harness's deny and ask rules, and the root their paths are relative to. */

@@ -22,6 +22,7 @@ import { homedir } from "os";
 import { basename, dirname, join } from "path";
 import { harnessHome } from "../config/paths";
 import { expandCommand } from "../commands/custom";
+import { loadPlugins } from "../plugins/loader";
 
 export interface Skill {
     name: string;
@@ -37,7 +38,7 @@ export interface Skill {
     file: string;
     /** Its folder: scripts and references next to it resolve against this. */
     dir: string;
-    /** In one of Claude Code's skill folders, so Claude Code runs it itself. */
+    /** In one of Claude Code's skill folders, or a plugin's (Claude Code loads plugins itself: src/plugins/native.ts), so Claude Code runs it itself. */
     claudeCode?: boolean;
 }
 
@@ -71,13 +72,13 @@ export function skillRoots(cwd: string, trusted: boolean): SkillRoot[] {
 /** Skill folders installed plugins bring (see the plugins loader). */
 export type ExtraSkillRoot = { dir: string; namespace: string; single?: boolean };
 
-export function pluginSkillRoots(_cwd: string, _trusted: boolean): ExtraSkillRoot[] {
-    return [];
+export function pluginSkillRoots(cwd: string, trusted: boolean): ExtraSkillRoot[] {
+    return loadPlugins(cwd, trusted).flatMap((p) => [...p.skillDirs.map((dir) => ({ dir, namespace: p.name })), ...p.skillFolders.map((dir) => ({ dir, namespace: p.name, single: true }))]);
 }
 
 export function loadSkills(cwd: string, trusted: boolean, extra: ExtraSkillRoot[] = pluginSkillRoots(cwd, trusted)): Skill[] {
     const byName = new Map<string, Skill>();
-    const roots: SkillRoot[] = [...skillRoots(cwd, trusted), ...extra.map((r) => ({ dir: r.dir, source: "plugin" as const, namespace: r.namespace, single: r.single }))];
+    const roots: SkillRoot[] = [...skillRoots(cwd, trusted), ...extra.map((r) => ({ dir: r.dir, source: "plugin" as const, namespace: r.namespace, single: r.single, claudeCode: true }))];
     for (const root of roots) for (const s of scanRoot(root)) byName.set(s.name, s);
     return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }

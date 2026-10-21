@@ -9,25 +9,51 @@
 //   ---
 //   Create a pull request against $1 (default main). Extra notes: $ARGUMENTS
 //
+// Enabled plugins add theirs as /<plugin>:<name> (src/plugins).
+//
 // The body is sent as the prompt with $ARGUMENTS / $1..$9 substituted.
 // @path mentions in the body attach files like they do in normal prompts.
 
 import { existsSync, readdirSync, readFileSync, statSync } from "fs";
-import { join, relative } from "path";
+import { basename, join, relative } from "path";
 import { paths } from "../config/paths";
 import { parseFrontmatter } from "../agent/agents";
+import { loadPlugins } from "../plugins/loader";
 
 export interface CustomCommand {
     name: string;
     description: string;
     argumentHint?: string;
     body: string;
-    source: "user" | "project";
+    source: "user" | "project" | "plugin";
     file: string;
+    /** For plugin commands: the plugin's id (name@marketplace). */
+    plugin?: string;
 }
 
-function scan(dir: string, source: "user" | "project", out: Map<string, CustomCommand>) {
+function scan(dir: string, source: CustomCommand["source"], out: Map<string, CustomCommand>, plugin?: { id: string; name: string }) {
     if (!existsSync(dir)) return;
+    const add = (p: string, rel: string) => {
+        try {
+            if (statSync(p).size > 100_000) return;
+            const { data, body } = parseFrontmatter(readFileSync(p, "utf-8"));
+            const name = [...(plugin ? [plugin.name] : []), ...rel.replace(/\.md$/, "").split("/")].join(":").toLowerCase();
+            if (!/^[a-z0-9][a-z0-9:_-]*$/.test(name)) return;
+            out.set(name, {
+                name,
+                description: data.description || body.trim().split("\n")[0]!.slice(0, 80),
+                argumentHint: data["argument-hint"] || undefined,
+                body: body.trim(),
+                source,
+                file: p,
+                ...(plugin ? { plugin: plugin.id } : {}),
+            });
+        } catch {
+            // skip unreadable command files
+        }
+    };
+    // A plugin may list a single command file.
+    if (plugin && dir.endsWith(".md")) return add(dir, basename(dir));
     const walk = (d: string, depth: number) => {
         if (depth > 3) return;
         let entries;
@@ -39,24 +65,7 @@ function scan(dir: string, source: "user" | "project", out: Map<string, CustomCo
         for (const e of entries) {
             const p = join(d, e.name);
             if (e.isDirectory()) walk(p, depth + 1);
-            else if (e.name.endsWith(".md")) {
-                try {
-                    if (statSync(p).size > 100_000) continue;
-                    const { data, body } = parseFrontmatter(readFileSync(p, "utf-8"));
-                    const name = relative(dir, p).replace(/\.md$/, "").split("/").join(":").toLowerCase();
-                    if (!/^[a-z0-9][a-z0-9:_-]*$/.test(name)) continue;
-                    out.set(name, {
-                        name,
-                        description: data.description || body.trim().split("\n")[0]!.slice(0, 80),
-                        argumentHint: data["argument-hint"] || undefined,
-                        body: body.trim(),
-                        source,
-                        file: p,
-                    });
-                } catch {
-                    // skip unreadable command files
-                }
-            }
+            else if (e.name.endsWith(".md")) add(p, relative(dir, p));
         }
     };
     walk(dir, 0);
@@ -64,6 +73,8 @@ function scan(dir: string, source: "user" | "project", out: Map<string, CustomCo
 
 export function loadCustomCommands(cwd: string, trusted: boolean): CustomCommand[] {
     const out = new Map<string, CustomCommand>();
+    // Plugin commands are namespaced (/plugin:name), so they never shadow a user's or project's own.
+    for (const p of loadPlugins(cwd, trusted)) for (const dir of p.commandPaths) scan(dir, "plugin", out, p);
     scan(paths.userCommands(), "user", out);
     // Project commands override user ones with the same name.
     if (trusted) scan(paths.projectCommands(cwd), "project", out);
@@ -105,4 +116,14 @@ export function cliCommandNames(v: unknown): string[] | undefined {
         .filter((n): n is string => typeof n === "string" && n.length <= 100)
         .map((n) => n.replace(/^\//, "").toLowerCase())
         .filter((n) => /^[a-z0-9_][a-z0-9:_-]*$/.test(n));
+}
+
+/**
+ * The command a bare /name means when no command has that name: the one
+ * plugin command called <plugin>:name, if exactly one plugin has it.
+ */
+export function pluginCommandFor<T extends { name: string; source: string }>(commands: T[], name: string): T | undefined {
+    if (name.includes(":")) return undefined;
+    const hits = commands.filter((c) => c.source === "plugin" && c.name.endsWith(`:${name}`) && c.name.split(":").length === 2);
+    return hits.length === 1 ? hits[0] : undefined;
 }

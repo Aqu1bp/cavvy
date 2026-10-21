@@ -7,6 +7,7 @@
 //   harness auth add|list|remove manage API keys
 //   harness models               combined model list from every provider
 //   harness mcp list|add|remove  manage MCP servers
+//   harness plugin …             install and manage plugins and marketplaces
 //   harness gui | serve          the desktop/browser GUI (see src/server/)
 
 import { basename, dirname, join, resolve } from "path";
@@ -48,6 +49,9 @@ ${bold("Usage")}
   ${APP_NAME} mcp add [opts] <name> -- <command> [args…]
   ${APP_NAME} mcp add --transport http [opts] <name> <url>
   ${APP_NAME} mcp remove <name> [--scope s]
+  ${APP_NAME} plugin install <name>[@marketplace] [--scope user|project|local]
+  ${APP_NAME} plugin list | uninstall | enable | disable | update | validate   (plugin help)
+  ${APP_NAME} plugin marketplace add <owner/repo | git URL | folder>
   ${APP_NAME} gui                          open the GUI in your browser (${APP_NAME} gui --help)
   ${APP_NAME} serve                        run the GUI server without opening a browser
 
@@ -494,6 +498,14 @@ async function modelsCommand(args: string[]): Promise<number> {
     return 0;
 }
 
+async function pluginCli(args: string[], cwd: string): Promise<number> {
+    const { runPluginCli } = await import("./plugins/cli");
+    const tty = Boolean(process.stderr.isTTY);
+    const r = await runPluginCli(args, cwd, isTrusted(cwd), { bold, muted: theme.muted, success: theme.success, warning: theme.warning, error: theme.error }, (m) => tty && process.stderr.write(theme.muted(m) + "\n"));
+    process[r.ok ? "stdout" : "stderr"].write(r.lines.join("\n") + (r.lines.length ? "\n" : ""));
+    return r.ok ? 0 : 1;
+}
+
 async function mcpCli(args: string[], cwd: string): Promise<number> {
     const sub = args[0];
     if (sub === "list" || !sub) {
@@ -666,6 +678,7 @@ async function main() {
     if (sub === "auth") process.exit(await authCommand(argv.slice(1)));
     if (sub === "models") process.exit(await modelsCommand(argv.slice(1)));
     if (sub === "mcp") process.exit(await mcpCli(argv.slice(1), cwd));
+    if (sub === "plugin" || sub === "plugins") process.exit(await pluginCli(argv.slice(1), cwd));
     if (sub === "gui" || sub === "serve") {
         const { serveCommand } = await import("./server/cli");
         return serveCommand(sub, argv.slice(1), { fallbackModel: env.legacyModel, notes: env.notes });

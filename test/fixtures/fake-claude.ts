@@ -63,7 +63,8 @@ function pluginSkills(): string[] {
         if (a !== "--plugin-dir") return [];
         const dir = argv[i + 1]!;
         const name = JSON.parse(readFileSync(join(dir, ".claude-plugin", "plugin.json"), "utf-8")).name;
-        return readdirSync(join(dir, "skills")).map((f) => `${name}:${f}`);
+        // A plugin can have no skills (only commands, hooks…).
+        return existsSync(join(dir, "skills")) ? readdirSync(join(dir, "skills")).map((f) => `${name}:${f}`) : [];
     });
 }
 const cwd = process.cwd();

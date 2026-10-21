@@ -29,9 +29,10 @@
 
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { basename, join } from "path";
 import { paths, harnessHome } from "../config/paths";
 import { isTrusted } from "../config/trust";
+import { loadPlugins } from "../plugins/loader";
 import { EFFORT_LEVELS, type Effort, type HookConfig, type McpServerConfig, type Settings } from "../config/settings";
 import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { HOOK_EVENTS, type HookEvent } from "./hooks";
@@ -281,14 +282,24 @@ export function parseAgentFile(text: string, fallbackName: string, source: Agent
     return def;
 }
 
-function loadDir(dir: string, source: "user" | "project"): AgentDef[] {
+/** `prefix`: a plugin's name, which its agents' names start with ("<plugin>:<name>"). `dir` may be one .md file. */
+function loadDir(dir: string, source: AgentDef["source"], prefix?: string): AgentDef[] {
     if (!existsSync(dir)) return [];
     const out: AgentDef[] = [];
-    for (const f of readdirSync(dir)) {
+    const single = prefix !== undefined && dir.endsWith(".md");
+    let files: string[];
+    try {
+        files = single ? [basename(dir)] : readdirSync(dir);
+    } catch {
+        return []; // not a folder: one bad entry doesn't hide every other agent
+    }
+    for (const f of files) {
         if (!f.endsWith(".md")) continue;
         try {
-            const file = join(dir, f);
-            out.push(parseAgentFile(readFileSync(file, "utf-8"), f.replace(/\.md$/, ""), source, file));
+            const file = single ? dir : join(dir, f);
+            const def = parseAgentFile(readFileSync(file, "utf-8"), f.replace(/\.md$/, ""), source, file);
+            if (prefix) def.name = `${prefix}:${def.name}`;
+            out.push(def);
         } catch {
             // skip unreadable files
         }
@@ -299,8 +310,10 @@ function loadDir(dir: string, source: "user" | "project"): AgentDef[] {
 export function loadAgents(cwd: string): AgentDef[] {
     const byName = new Map<string, AgentDef>();
     // Project agents only in trusted folders: their prompts and tool lists come from the repository.
-    const project = isTrusted(cwd) ? loadDir(paths.projectAgents(cwd), "project") : [];
-    for (const a of [...BUILTIN_AGENTS, ...loadDir(paths.userAgents(), "user"), ...project]) byName.set(a.name, a);
+    const trusted = isTrusted(cwd);
+    const project = trusted ? loadDir(paths.projectAgents(cwd), "project") : [];
+    const plugin = loadPlugins(cwd, trusted).flatMap((p) => p.agentPaths.flatMap((d) => loadDir(d, "plugin", p.name)));
+    for (const a of [...BUILTIN_AGENTS, ...plugin, ...loadDir(paths.userAgents(), "user"), ...project]) byName.set(a.name, a);
     return [...byName.values()];
 }
 

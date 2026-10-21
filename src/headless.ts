@@ -28,6 +28,7 @@ import { expandMentions } from "./ui/mentions";
 import { redact, redactedJson } from "./util/redact";
 import { sanitizeLine } from "./ui/ansi";
 import { isAgentBackend } from "./backends/types";
+import { sessionHookSettings } from "./plugins/native";
 
 export type OutputFormat = "text" | "json" | "stream-json";
 
@@ -282,7 +283,9 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
     }
 
     const hookWarning = (m: string, level: "info" | "warn" = "warn") => stderr(level === "info" ? m : `warning: ${m}`);
-    const sessionStarted = sessionStartHooks(settings, session, resumed ? "resume" : "startup", o.cwd, hookWarning, sessionHookServices({ session: () => session, warn: hookWarning, complete, mcpTools: () => mcp.tools() }));
+    // Claude Code runs the plugins' own (src/plugins/native.ts).
+    const sessionSettings = sessionHookSettings(settings, model.provider);
+    const sessionStarted = sessionStartHooks(sessionSettings, session, resumed ? "resume" : "startup", o.cwd, hookWarning, sessionHookServices({ session: () => session, warn: hookWarning, complete, mcpTools: () => mcp.tools() }));
     const ac = new AbortController();
     const onSig = () => ac.abort();
     process.on("SIGINT", onSig);
@@ -313,7 +316,7 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
         const deadline = AbortSignal.timeout(5000);
         const timedOut = new Promise<void>((r) => deadline.addEventListener("abort", () => r(), { once: true }));
         const ended = Promise.race([
-            Promise.race([sessionStarted, timedOut]).then(() => (deadline.aborted ? undefined : fireHooks(settings, "SessionEnd", { session_id: session.meta.id, reason: "exit" }, o.cwd, hookWarning, deadline))),
+            Promise.race([sessionStarted, timedOut]).then(() => (deadline.aborted ? undefined : fireHooks(sessionSettings, "SessionEnd", { session_id: session.meta.id, reason: "exit" }, o.cwd, hookWarning, deadline))),
             timedOut,
         ]);
         // Delegated tasks still running end with the run.

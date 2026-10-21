@@ -23,7 +23,7 @@ import { fireHooks } from "../agent/hooks";
 import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder } from "../agent/session";
 import { forkSession } from "../agent/fork";
 import { isFollowUp } from "../agent/queue-store";
-import { loadCustomCommands, type CustomCommand } from "../commands/custom";
+import { loadCustomCommands, pluginCommandFor, type CustomCommand } from "../commands/custom";
 import { loadSkills, sameSkills, type Skill } from "../agent/skills";
 import { McpManager } from "../mcp/manager";
 import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
@@ -89,8 +89,14 @@ import type {
     SessionSearchResult,
     SessionSummary,
     WorktreeInfo,
+    PluginActionParams,
+    PluginsInfo,
 } from "./protocol";
 import { ensureKeybindingsFile, keybindingsPath, readKeybindings, watchKeybindings } from "../keybindings/file";
+import { listPlugins } from "../plugins/install";
+import { runPluginCli } from "../plugins/cli";
+import { pluginServerMatch } from "../plugins/loader";
+import { withPluginCommands } from "../plugins/native";
 import { IMPLEMENT_MODES, PROTOCOL_VERSION, SCRIPT_LIMITS } from "./protocol";
 import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
 import { checkFiles, checkMedia, toWire } from "./attachments";
@@ -445,6 +451,78 @@ export class Engine {
 
     reloadSettings() {
         for (const ws of this.workspaces.values()) ws.reload();
+    }
+
+    // -----------------------------------------------------------------------
+    // Plugins
+
+    private pluginsInfo(cwd?: string): PluginsInfo {
+        const dir = cwd ? resolve(cwd) : homedir();
+        const trusted = cwd ? isTrusted(dir) : false;
+        return { ...listPlugins(dir, trusted), cwd: cwd ? dir : undefined, trusted };
+    }
+
+    /** Plugin changes run one at a time: two updates of one marketplace mustn't swap its folder at once. */
+    private pluginQueue: Promise<unknown> = Promise.resolve();
+
+    private pluginAction(p: PluginActionParams): Promise<PluginsInfo & { message: string }> {
+        const run = this.pluginQueue.then(() => this.runPluginAction(p));
+        this.pluginQueue = run.catch(() => undefined);
+        return run;
+    }
+
+    private async runPluginAction(p: PluginActionParams): Promise<PluginsInfo & { message: string }> {
+        const cwd = typeof p.cwd === "string" && p.cwd ? resolve(p.cwd) : undefined;
+        const dir = cwd ?? homedir();
+        const trusted = cwd ? isTrusted(dir) : false;
+        const scope = "scope" in p && p.scope !== undefined ? p.scope : undefined;
+        if (scope !== undefined && scope !== "user" && scope !== "project" && scope !== "local") throw new RpcError("scope must be user, project or local", "invalid");
+        if (scope && scope !== "user" && !cwd) throw new RpcError(`Open a project to use the ${scope} scope.`, "invalid");
+        let argv: string[];
+        switch (p.action) {
+            case "install":
+                argv = ["install", str(p.id, "id"), "--scope", scope ?? "user"];
+                break;
+            case "uninstall":
+            case "enable":
+            case "disable":
+                argv = [p.action, str(p.id, "id"), ...(scope ? ["--scope", scope] : [])];
+                break;
+            case "update":
+                argv = ["update", optStr(p.id) ?? "--all"];
+                break;
+            case "marketplaceAdd":
+                argv = ["marketplace", "add", str(p.source, "source")];
+                break;
+            case "marketplaceRemove":
+                argv = ["marketplace", "remove", str(p.name, "name")];
+                break;
+            case "marketplaceUpdate":
+                argv = ["marketplace", "update", str(p.name, "name")];
+                break;
+            default:
+                throw new RpcError(`Unknown plugin action ${String((p as { action?: unknown }).action)}`, "invalid");
+        }
+        const r = await runPluginCli(argv, dir, trusted);
+        if (r.changed) {
+            // Plugins change settings, commands and servers in every open folder.
+            const restart = pluginServerMatch(r.restart);
+            for (const ws of this.workspaces.values()) {
+                ws.reload();
+                void ws.mcp
+                    .sync()
+                    .then(() => restart && ws.mcp.restartWhere(restart))
+                    .catch(() => undefined);
+            }
+            // What Claude Code listed predates the change: it runs the plugins' commands now enabled too.
+            for (const [key, names] of this.cliCommandNames) {
+                const ws = this.workspaces.get(key.slice(key.indexOf(":") + 1));
+                if (ws) this.cliCommandNames.set(key, withPluginCommands(names, ws.commands));
+            }
+        }
+        const message = r.lines.map((l) => l.trim()).filter(Boolean).join("\n");
+        if (!r.ok) throw new RpcError(message || "That didn't work.", "plugin");
+        return { ...this.pluginsInfo(cwd), message };
     }
 
     bypassAllowed(cwd: string): boolean {
@@ -1664,6 +1742,7 @@ export class Engine {
             { name: "new", description: "Start a new session in this project" },
             { name: "export", description: "Copy the conversation as markdown" },
             { name: "settings", description: "Open settings" },
+            { name: "plugin", description: "Browse, install and manage plugins" },
             { name: "cost", description: "Tokens and cost by model, and your plan's limits" },
             { name: "context", description: "How full the context window is, and your plan's limits" },
             { name: "loop", description: "Run a prompt now and then every interval (default 10m); /loop stop stops it", args: "[interval] <prompt>" },
@@ -2173,7 +2252,9 @@ export class Engine {
                 const commands = this.commandsFor(cwd, provider);
                 const command = optStr(p.command);
                 // An uninitialized Claude Code workspace resolves its own skills, just as session.send does.
-                if (command && !commands.some((c) => c.name === command) && !(provider === "claude-code" && this.cliCommands(provider, cwd) === undefined)) {
+                // A bare /name may be a plugin's command (/plugin:name) when only one plugin has it.
+                const plugin = () => pluginCommandFor(this.workspaces.get(cwd)?.commands ?? loadCustomCommands(cwd, isTrusted(cwd)), command!);
+                if (command && !commands.some((c) => c.name === command) && !(provider === "claude-code" && this.cliCommands(provider, cwd) === undefined) && !plugin()) {
                     throw new RpcError(`Unknown command /${command}`, "unknown_command");
                 }
                 return commands;
@@ -2220,6 +2301,10 @@ export class Engine {
                 void rt.ws.mcp.reconnect(name).catch(() => undefined);
                 return rt.ws.mcpList(rt);
             }
+            case "plugins.list":
+                return this.pluginsInfo(optStr(p.cwd));
+            case "plugins.action":
+                return this.pluginAction(p as PluginActionParams);
             case "settings.get":
                 return this.guiSettings(optStr(p.cwd));
             case "settings.update":

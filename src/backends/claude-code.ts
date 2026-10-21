@@ -466,6 +466,8 @@ class ClaudeTurn {
         ].filter(Boolean).join("\n\n"));
         for (const d of t.additionalDirectories) a.push("--add-dir", d);
         if (this.pluginDir) a.push("--plugin-dir", this.pluginDir);
+        // The harness's plugins, in Claude Code's own format: it runs their commands, agents, skills, hooks and servers.
+        if (!t.readOnly) for (const d of t.pluginDirs ?? []) a.push("--plugin-dir", d);
         // An untrusted folder's Claude Code settings (hooks, permission rules), skills, agents and .mcp.json stay off.
         if (!t.trusted) a.push("--setting-sources", "user");
         // The harness's agents, for its own Agent tool (a file: -p reads one, and prompts can outgrow an argument).
