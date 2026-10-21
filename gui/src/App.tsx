@@ -1,11 +1,12 @@
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
-import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
-import { AlertCircle, CheckCircle2, Info, PlugZap, X } from "lucide-solid";
-import { activate, app, attentionCount, dismissToast, handleFor, pauseToast, restoreActiveSession, rpc, runToastChoice, toast, toasts, type Toast, type SessionHandle } from "./state/app";
+import { createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
+import { PlugZap } from "lucide-solid";
+import { Toasts } from "./components/Toasts";
+import { activate, app, attentionCount, handleFor, restoreActiveSession, rpc, type SessionHandle } from "./state/app";
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
 import { agentFocus, dockHeight, inspectorWidth, paletteOpen, railOpen, requestComposerFocus, review, reviewSplit, setAgentFocus, setDockHeight, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalMax, terminalShown } from "./state/ui";
-import { copyText, isTauri, os } from "./lib/platform";
+import { isTauri, os } from "./lib/platform";
 import { canStop } from "./lib/session-status";
 import { actionOf, setEnterSends } from "./state/keybindings";
 import { clampInspectorWidth, closesOnShrink, requestCloses, INSPECTOR_DEFAULT, windowLayout } from "./lib/layout";
@@ -33,79 +34,6 @@ import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
 import { CommitDialog } from "./components/CommitDialog";
 import { ImageViewer } from "./components/ImageViewer";
 import { Logo, Spinner } from "./components/ui/bits";
-
-function ToastItem(p: { toast: Toast }) {
-    const t = () => p.toast;
-    onCleanup(() => {
-        // Failed actions move to the alert region, replacing their old DOM node.
-        pauseToast(t().id, "hover", false);
-        pauseToast(t().id, "focus", false);
-    });
-    return (
-        <div
-            class={`toast ${t().level}`}
-            onPointerEnter={() => pauseToast(t().id, "hover", true)}
-            onPointerLeave={() => pauseToast(t().id, "hover", false)}
-            onFocusIn={() => pauseToast(t().id, "focus", true)}
-            onFocusOut={(e) => {
-                if (!e.currentTarget.contains(e.relatedTarget as Node | null)) pauseToast(t().id, "focus", false);
-            }}
-        >
-            <Switch fallback={<Info size={15} />}>
-                <Match when={t().level === "error"}>
-                    <AlertCircle size={15} />
-                </Match>
-                <Match when={t().level === "success"}>
-                    <CheckCircle2 size={15} />
-                </Match>
-            </Switch>
-            <span class="toast-msg" title={t().message}>
-                {t().message}
-            </span>
-            <Show when={t().count > 1}>
-                <span class="toast-count">({t().count} times)</span>
-            </Show>
-            <For each={[...(t().action ? [t().action!] : []), ...(t().additionalActions ?? [])]}>
-                {(action, index) => (
-                    <button
-                        class="link-btn"
-                        disabled={t().running}
-                        onClick={() => void runToastChoice(t().id, index())}
-                    >
-                        {action.label}
-                    </button>
-                )}
-            </For>
-            <Show when={t().level === "error"}>
-                <button
-                    class="link-btn"
-                    onClick={async () => {
-                        const copied = await copyText(t().message);
-                        toast(copied ? "Copied error" : "Couldn't copy error", copied ? "success" : "info");
-                    }}
-                >
-                    Copy
-                </button>
-            </Show>
-            <button class="icon-btn" onClick={() => dismissToast(t().id)} aria-label="Dismiss">
-                <X size={13} />
-            </button>
-        </div>
-    );
-}
-
-function Toasts() {
-    return (
-        <div class="toasts">
-            <div class="toast-region" role="alert" aria-live="assertive" aria-relevant="additions text">
-                <For each={toasts.filter((t) => t.level === "error")}>{(t) => <ToastItem toast={t} />}</For>
-            </div>
-            <div class="toast-region" role="status" aria-live="polite" aria-relevant="additions text">
-                <For each={toasts.filter((t) => t.level !== "error")}>{(t) => <ToastItem toast={t} />}</For>
-            </div>
-        </div>
-    );
-}
 
 function Disconnected() {
     return (
