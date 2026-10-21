@@ -4,7 +4,7 @@
 // permissions, custom tools, resume, and concurrent queries.
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -679,6 +679,68 @@ describe("found in review", () => {
         const t = Date.now();
         await q.close();
         expect(Date.now() - t).toBeLessThan(2000);
+    });
+});
+
+describe("trusted: false in a folder the user trusted", () => {
+    // Claude Code through the fake CLI (test/fixtures/fake-claude.ts): it runs the project's SessionStart
+    // hooks unless --setting-sources leaves "project" out.
+    function trustedRepo() {
+        const cwd = project();
+        mkdirSync(join(cwd, ".claude"), { recursive: true });
+        writeFileSync(join(cwd, ".claude", "settings.json"), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: `touch ${join(cwd, "hook-ran")}` }] }] } }));
+        mkdirSync(join(cwd, ".harness", "agents"), { recursive: true });
+        writeFileSync(join(cwd, ".harness", "agents", "repo-agent.md"), "---\nname: repo-agent\ndescription: from the repository\n---\nRepository instructions.");
+        writeFileSync(join(cwd, "AGENTS.md"), "REPO-MEMORY-MARKER");
+        return cwd;
+    }
+
+    test("Claude Code doesn't load the project's settings or run its hooks", async () => {
+        const { saveAgentConfig } = await import("../src/providers/registry");
+        const { forgetClient } = await import("../src/providers/models");
+        const { trustFolder } = await import("../src/config/trust");
+        const bin = tempDir("harness-sdk-bin-");
+        const claude = join(bin, "claude");
+        const log = join(bin, "log.jsonl");
+        writeFileSync(claude, `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dir, "fixtures", "fake-claude.ts")}" "$@"\n`);
+        chmodSync(claude, 0o755);
+        saveAgentConfig("claude-code", { path: claude });
+        forgetClient("claude-code");
+        process.env.FAKE_LOG = log;
+        process.env.FAKE_SCENARIO = "silent";
+        try {
+            const cwd = trustedRepo();
+            trustFolder(cwd);
+            const ms = await collect(query({ prompt: "hello", options: { cwd, model: "claude-code:default", trusted: false, persistSession: false, canUseTool: () => ({ behavior: "deny" }) } }));
+            expect(ms[0]).toMatchObject({ subtype: "init", agent_backend: expect.any(String) });
+            // Every launch (the turn's, and any side request's) leaves the project's settings out.
+            const launches = readFileSync(log, "utf-8").trim().split("\n").map((l) => JSON.parse(l)).filter((l) => Array.isArray(l.argv)).map((l) => l.argv as string[]);
+            expect(launches.length).toBeGreaterThan(0);
+            for (const argv of launches) {
+                expect(argv).toContain("--setting-sources");
+                expect(argv[argv.indexOf("--setting-sources") + 1]).not.toContain("project");
+            }
+            expect(existsSync(join(cwd, "hook-ran"))).toBe(false);
+        } finally {
+            delete process.env.FAKE_LOG;
+            delete process.env.FAKE_SCENARIO;
+        }
+    });
+
+    test("the harness's own agent doesn't load the project's memory files or agents", async () => {
+        const { trustFolder } = await import("../src/config/trust");
+        const cwd = trustedRepo();
+        trustFolder(cwd);
+        script = (req) => (JSON.stringify(req.messages).includes('"Task"') || req.messages.at(-1)?.role === "tool" ? { text: "ok" } : { calls: [{ id: "c1", name: "Task", args: { description: "d", prompt: "p", subagent_type: "repo-agent" } }] });
+        const ms = await collect(query({ prompt: "hello", options: { cwd, model: MODEL, trusted: false, persistSession: false, permissionMode: "bypassPermissions" } }));
+        expect(JSON.stringify(requests[0]!.messages)).not.toContain("REPO-MEMORY-MARKER");
+        expect(of(ms, "tool_result")[0]!.content).toMatch(/repo-agent/);
+        expect(of(ms, "tool_result")[0]!.is_error).toBe(true);
+
+        // Trusted, both load: the test reaches what it means to.
+        requests.length = 0;
+        await collect(query({ prompt: "hello", options: { cwd, model: MODEL, persistSession: false, permissionMode: "bypassPermissions" } }));
+        expect(JSON.stringify(requests[0]!.messages)).toContain("REPO-MEMORY-MARKER");
     });
 });
 

@@ -220,7 +220,7 @@ async function setupWith(o: RunSetupOptions, settings: Settings, resumed: Sessio
         return opts?.review ? reviewText(res) : textOf(res);
     };
 
-    if (!session.meta.system) session.setSystem(buildSystemPrompt({ cwd: o.cwd, model, append: mcp.instructions() || undefined }));
+    if (!session.meta.system) session.setSystem(buildSystemPrompt({ cwd: o.cwd, model, append: mcp.instructions() || undefined, projectFiles: o.trusted }));
 
     return { cwd: o.cwd, trusted: o.trusted, settings, session, resumed: Boolean(resumed), ref, model, client, provider, toolState, checker, mcp, nativeWebSearch, skills, listings, tools, complete };
 }

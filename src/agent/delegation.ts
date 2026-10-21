@@ -91,6 +91,8 @@ function agentLine(a: AgentDef): string {
 }
 
 export interface CatalogOptions {
+    /** False: the project's own agent definitions stay out (the run doesn't trust it). */
+    projectAgents?: boolean;
     /** The main agent's provider: models it runs itself are left out. */
     caller?: string;
     /** The model the main agent is on, marked as such. */
@@ -109,7 +111,7 @@ const SHOWN_PER_PROVIDER = 8;
 export async function catalog(cwd: string, o: CatalogOptions = {}): Promise<string> {
     const listings = o.listings?.length ? o.listings : await listAllModels({ signal: o.signal }).catch(() => cachedListings());
     const q = o.query?.toLowerCase();
-    const out: string[] = ["Agent types:", ...loadAgents(cwd).filter((a) => !(o.caller && a.model && parseModelRef(a.model) && nativeModel(o.caller, parseModelRef(a.model)!))).map(agentLine), ""];
+    const out: string[] = ["Agent types:", ...loadAgents(cwd, o.projectAgents ?? true).filter((a) => !(o.caller && a.model && parseModelRef(a.model) && nativeModel(o.caller, parseModelRef(a.model)!))).map(agentLine), ""];
     out.push(`Models (provider:model)${o.caller ? "" : `; you are on ${o.current ?? "the session's model"}`}:`);
     let any = false;
     for (const l of listings) {
@@ -332,6 +334,8 @@ export interface OrchestratorHost {
     listings(): ProviderListing[];
     /** For agent definitions. */
     projectRoot(): string;
+    /** False: the project's own agent definitions stay out (the run doesn't trust it). */
+    projectTrusted?(): boolean;
     /** Its supported and inherited effort if it can run here, else why not. */
     checkModel(ref: string): Promise<string | { effortLevels?: Effort[]; effort?: Effort }>;
     /** Which of the main agent's open tool calls a delegate request belongs to. */
@@ -381,7 +385,7 @@ export function orchestratorTools(h: OrchestratorHost): ServerTool[] {
                 },
             },
             annotations: { readOnlyHint: true, openWorldHint: false },
-            call: async (args, ctx) => ({ text: await catalog(h.projectRoot(), { caller: h.caller(), listings: h.listings(), provider: str(args.provider) || undefined, query: str(args.query) || undefined, signal: ctx.signal }) }),
+            call: async (args, ctx) => ({ text: await catalog(h.projectRoot(), { projectAgents: h.projectTrusted?.() ?? true, caller: h.caller(), listings: h.listings(), provider: str(args.provider) || undefined, query: str(args.query) || undefined, signal: ctx.signal }) }),
         },
         {
             name: "delegate",
@@ -408,7 +412,7 @@ export function orchestratorTools(h: OrchestratorHost): ServerTool[] {
                 const description = str(args.description) || prompt.slice(0, 40);
                 if (!prompt) return { text: "The task is empty: say what the delegated agent should do.", isError: true };
                 const agentName = str(args.agent) || "general-purpose";
-                const def = loadAgents(h.projectRoot()).find((a) => a.name === agentName);
+                const def = loadAgents(h.projectRoot(), h.projectTrusted?.() ?? true).find((a) => a.name === agentName);
                 if (!def) return { text: `Unknown agent type "${agentName}". Call models to see the agent types.`, isError: true };
                 const model = str(args.model) || def.model || "";
                 if (!model) return { text: "Say which model to run it on (model: provider:model). Call models to see them.", isError: true };
