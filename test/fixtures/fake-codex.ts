@@ -158,6 +158,7 @@ let lastPolicy: any = {};
 /** FAKE_GOAL_RACE refuses one turn/start, the first it can. */
 let racedOnce = false;
 let turnStarts = 0;
+let refusals = 0;
 /** A thread started or resumed with a policy: the goal's turns Codex starts itself run under it, until a turn/start gives another. */
 function threadPolicy(p: any) {
     const sandbox: Record<string, string> = { "danger-full-access": "dangerFullAccess", "workspace-write": "workspaceWrite", "read-only": "readOnly" };
@@ -523,6 +524,11 @@ async function handle(m: any) {
         case "turn/start": {
             // FAKE_GOAL_RACE=1: with the goal active, Codex has just started its own next turn, and refuses this one.
             const raced = goals.get(p.threadId);
+            // FAKE_REFUSE_TURN_START_AT=n: the nth turn/start is refused that way, the goal active or not (its pause not taken in yet).
+            if (process.env.FAKE_REFUSE_TURN_START_AT && ++refusals === Number(process.env.FAKE_REFUSE_TURN_START_AT) && (!current || current.done)) {
+                void runTurn(p.threadId, `turn-${++turnSeq}`, lastPolicy);
+                return fail("a turn is already running");
+            }
             if (process.env.FAKE_GOAL_RACE === "1" && !racedOnce && raced?.status === "active" && (!current || current.done)) {
                 racedOnce = true;
                 void runTurn(p.threadId, `turn-${++turnSeq}`, lastPolicy);
@@ -548,6 +554,8 @@ async function handle(m: any) {
         case "skills/list":
             return reply({ data: [{ cwd: p.cwds?.[0] ?? cwd, skills: listSkills(), errors: [] }] });
         case "turn/interrupt":
+            // FAKE_IGNORE_INTERRUPT=1: answers, and the turn goes on.
+            if (process.env.FAKE_IGNORE_INTERRUPT === "1") return reply({});
             if (current) {
                 current.interrupted = true;
                 current.wake?.();

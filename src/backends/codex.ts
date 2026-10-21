@@ -461,6 +461,12 @@ export class CodexTurn {
     private running = new Map<string, PermissionMode | undefined>();
     /** Turns Codex started itself that were stopped for the mode: restarted under it when adopted. */
     private stoppedForMode = new Set<string>();
+    /** The mode of the policy the turn/start on its way asks for. */
+    private startingMode?: PermissionMode;
+    /** Kill timers for turns stopped for the mode: Codex that doesn't stop one is stopped itself, as on a user's stop. */
+    private modeKills = new Set<ReturnType<typeof setTimeout>>();
+    /** Why Codex was stopped, when it didn't stop a turn for the mode. */
+    private modeKilled?: string;
     /** The goal was paused in Codex for a mode change, so Codex starts no turns of its own under the old policy: made active again under the new one. */
     private goalPausedForMode = false;
 
@@ -483,6 +489,12 @@ export class CodexTurn {
         return this.adopted || STRICTNESS[m] > STRICTNESS[this.turnMode] || m === "plan";
     }
 
+    /** Of two modes, the one that lets Codex do more by itself (a turn not known to run under either is taken to run under that one). */
+    private leastStrict(a: PermissionMode | undefined, b: PermissionMode | undefined): PermissionMode | undefined {
+        if (a === undefined || b === undefined) return a ?? b;
+        return STRICTNESS[a] <= STRICTNESS[b] ? a : b;
+    }
+
     /** Whether modes `a` and `b` make different policies (or one of them is plan mode). */
     private differs(a: PermissionMode, b: PermissionMode): boolean {
         const ro = Boolean(this.t.readOnly);
@@ -500,7 +512,7 @@ export class CodexTurn {
         if (!this.stale(m)) return false;
         this.restartFor = m;
         this.goalOnRestart = this.goal?.status === "active";
-        this.interrupt();
+        this.interruptForMode(this.turnId);
         return true;
     }
 
@@ -530,10 +542,10 @@ export class CodexTurn {
         if (this.aborted) return;
         const m = this.host.mode();
         for (const [id, known] of this.running) {
-            const mode = known ?? (this.starting ? this.startingThreadMode : undefined);
+            const mode = known ?? (this.starting ? this.leastStrict(this.startingThreadMode, this.startingMode) : undefined);
             if (this.ownTurns.has(id) || mode === undefined || this.stoppedForMode.has(id) || this.completedTurns.has(id) || !this.differs(m, mode)) continue;
             this.stoppedForMode.add(id);
-            void this.rpc.request("turn/interrupt", { threadId: this.threadId, turnId: id }).catch(() => {});
+            this.interruptForMode(id);
         }
     }
 
@@ -547,6 +559,23 @@ export class CodexTurn {
             this.goalOnRestart ||= this.goal?.status === "active";
         }
         this.stopStale();
+    }
+
+    /**
+     * Stop a turn for the mode. It answers with turn/completed; one that's still running after the grace a user's
+     * stop gets means Codex didn't stop it (the request failed, or it ignored it), so Codex is stopped instead:
+     * nothing goes on under the old policy.
+     */
+    private interruptForMode(turnId: string) {
+        void this.rpc.request("turn/interrupt", { threadId: this.threadId, turnId }).catch(() => {});
+        const timer = setTimeout(() => {
+            this.modeKills.delete(timer);
+            if (this.aborted || this.completedTurns.has(turnId)) return;
+            this.modeKilled = "Codex didn't stop a turn running under the permission mode from before, so Codex was stopped. Send your message again to go on under the new mode.";
+            this.failure = this.modeKilled;
+            void this.rpc.proc.kill();
+        }, stopTiming.interruptMs);
+        this.modeKills.add(timer);
     }
 
     /** Codex's turns stopped for the mode, still running: waited for (briefly) before a turn is started beside them. */
@@ -685,6 +714,8 @@ export class CodexTurn {
                 let adopt: string | undefined;
                 /** The user's messages for the turn adopted: they go into it (turn/steer). */
                 let pending: string | undefined;
+                /** The user's queued messages that `text` carries (not the prompt itself, which the session keeps). */
+                let queued: string | undefined;
                 while (true) {
                     // Paused in Codex for a mode change: active again once this turn (under the mode) has started.
                     if (this.goalPausedForMode && !adopt) activate = true;
@@ -711,27 +742,39 @@ export class CodexTurn {
                             return;
                         }
                         let r: any;
-                        // Not beside a turn of Codex's that was stopped for the mode and hasn't ended yet.
-                        await this.stoppedEnded();
-                        this.starting = true;
-                        this.startingThreadMode = this.threadMode;
-                        try {
-                            r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, ...(accountPermissions ? { permissions: accountPermissionProfile(mode, t.readOnly) } : { sandboxPolicy: policy.sandboxPolicy }), approvalsReviewer: policy.approvalsReviewer, summary: "auto" }).finally(() => (this.starting = false));
-                        } catch (e) {
-                            // Any turn that started meanwhile was Codex's own.
-                            this.settleStarted(undefined);
-                            // Codex started the goal's next turn first (and so refused this one): the user's messages go into that one.
-                            const id = this.goal?.status === "active" && !activate ? await this.nextGoalTurn(GOAL_TURN_GRACE_MS, false) : undefined;
-                            if (!id) throw e;
-                            // Under the thread's policy, as any turn Codex starts itself, not this one's mode.
-                            this.turnMode = this.running.get(id) ?? this.threadMode;
-                            this.adopted = true;
-                            return this.adoptTurn(id, text);
+                        for (let attempt = 0; ; attempt++) {
+                            // Not beside a turn of Codex's that was stopped for the mode and hasn't ended yet.
+                            await this.stoppedEnded();
+                            this.starting = true;
+                            this.startingThreadMode = this.threadMode;
+                            this.startingMode = mode;
+                            try {
+                                r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, ...(accountPermissions ? { permissions: accountPermissionProfile(mode, t.readOnly) } : { sandboxPolicy: policy.sandboxPolicy }), approvalsReviewer: policy.approvalsReviewer, summary: "auto" }).finally(() => (this.starting = false));
+                                break;
+                            } catch (e) {
+                                // Any turn that started meanwhile was Codex's own.
+                                this.settleStarted(undefined);
+                                // Refused for a turn of Codex's that's being stopped for the mode: again once it has ended.
+                                if (attempt === 0 && !this.aborted && [...this.stoppedForMode].some((id) => this.running.has(id))) continue;
+                                // Codex started the goal's next turn first (and so refused this one): the user's messages go into that one.
+                                const id = this.goal?.status === "active" && !activate ? await this.nextGoalTurn(GOAL_TURN_GRACE_MS, false) : undefined;
+                                if (!id) {
+                                    // The messages this turn was for aren't lost with it: saved for the next turn.
+                                    if (queued) this.unsteered.push(queued);
+                                    throw e;
+                                }
+                                // Under the thread's policy, as any turn Codex starts itself, not this one's mode.
+                                this.turnMode = this.running.get(id) ?? this.threadMode;
+                                this.adopted = true;
+                                return this.adoptTurn(id, text);
+                            }
                         }
                         this.turnId = r?.turn?.id;
                         this.threadMode = mode;
                         // Which turn that started meanwhile was this one: the others were Codex's own.
                         this.settleStarted(this.turnId, mode);
+                        // Codex's turns stopped for the mode before this one: this one goes on in their place, not after them.
+                        this.startedTurns = this.startedTurns.filter((id) => !this.stoppedForMode.has(id));
                         if (this.turnId) {
                             this.turnsSeen.add(this.turnId);
                             this.ownTurns.add(this.turnId);
@@ -762,7 +805,8 @@ export class CodexTurn {
                         text = modeSwitched(restart);
                         // A steer the interrupt beat goes in with it, not after the restarted turn.
                         await this.steering;
-                        if (this.unsteered.length) text = [text, ...this.unsteered.splice(0)].join("\n\n");
+                        queued = this.unsteered.length ? this.unsteered.splice(0).join("\n\n") : undefined;
+                        if (queued) text = [text, queued].join("\n\n");
                         continue;
                     }
                     // A steer on its way when the turn ended: whether Codex took it decides what's next.
@@ -777,11 +821,12 @@ export class CodexTurn {
                         // Paused for a mode change (before or while waiting): it goes on here, under the mode.
                         if (this.goalPausedForMode && !this.aborted) {
                             text = modeSwitched(this.host.mode());
+                            queued = undefined;
                             continue;
                         }
                         break;
                     }
-                    text = request = next.join("\n\n");
+                    text = request = queued = next.join("\n\n");
                     // The goal active: Codex starts its next turn as this one ends, and the messages go into that one
                     // (a turn started here as well would run beside it).
                     const own = this.goal?.status === "active" ? await this.nextGoalTurn(GOAL_TURN_GRACE_MS, false) : undefined;
@@ -794,7 +839,7 @@ export class CodexTurn {
             // Codex's error may not say when the limit resets; its limits do.
             if (this.limitHit && !this.limits?.resetsAt && !this.aborted) await this.readLimits();
         } catch (e) {
-            if (!this.aborted) this.failure = redact((e as Error).message);
+            if (!this.aborted) this.failure = this.modeKilled ?? redact((e as Error).message);
         } finally {
             // Ended with the goal still active (an error, Codex gone): it waits for the user, not for Codex.
             await pausing;
@@ -808,6 +853,8 @@ export class CodexTurn {
             stopSteering?.();
             t.signal.removeEventListener("abort", onAbort);
             if (abortTimer) clearTimeout(abortTimer);
+            for (const timer of this.modeKills) clearTimeout(timer);
+            this.modeKills.clear();
             await this.rpc.proc.stop(1000);
             // Settled once Codex is gone (its pending requests fail): nothing records a prompt after the turn's end.
             await this.steering;

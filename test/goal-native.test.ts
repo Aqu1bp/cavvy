@@ -19,6 +19,7 @@ const { codexGoal, codexGoalCommand, CodexTurn } = await import("../src/backends
 const { claudeGoal } = await import("../src/backends/claude-code");
 const { nativeGoalView, nativeGoalStatus, nativeGoals } = await import("../src/agent/goal");
 const { Engine } = await import("../src/server/engine");
+const { stopTiming } = await import("../src/backends/cli");
 
 type AgentEvent = import("../src/agent/agent").AgentEvent;
 
@@ -377,14 +378,12 @@ describe("Codex", () => {
         a.setMode("plan");
         expect(await done).toBe("done");
         const starts = received().filter((m) => m.method === "turn/start").map((m) => m.params);
-        // The refused one, then the restart of Codex's own turn (begun under bypass) under plan mode.
-        expect(starts.slice(1).map((p) => p.sandboxPolicy.type)).toEqual(["readOnly", "readOnly"]);
-        // It's the turn Codex started on refusing (turn-2) that was stopped, before the message went into it:
-        // that goes into the restart.
+        // The refused one, then (Codex's own turn-2, begun under bypass, stopped as it started) asked for again under plan mode.
+        expect(starts.slice(1, 3).map((p) => p.sandboxPolicy.type)).toEqual(["readOnly", "readOnly"]);
         expect(received().find((m) => m.method === "turn/interrupt")!.params.turnId).toBe("turn-2");
+        // Nothing went into turn-2: the message went into the turn asked for again.
         expect(received().filter((m) => m.method === "turn/steer" && (m.params.expectedTurnId === "turn-2" || /also fix the links/.test(m.params.input[0].text)))).toEqual([]);
-        expect(starts.at(-1)!.input[0].text).toContain("plan mode");
-        expect(starts.at(-1)!.input[0].text).toContain("also fix the links");
+        expect(JSON.stringify(starts[2]!.input)).toContain("also fix the links");
         expect(a.goals().at(-1)).toMatchObject({ status: "complete" });
     });
 
@@ -551,6 +550,72 @@ describe("Codex", () => {
         a.switchMode("plan");
         expect(await done).toBe("done");
         expect(received().filter((m) => m.method === "turn/interrupt").map((m) => m.params.turnId)).toContain("turn-3");
+        expect(a.goals().at(-1)).toMatchObject({ status: "complete" });
+    });
+
+    test("a turn stopped for the mode that Codex doesn't stop: Codex is stopped, as on a user's stop", async () => {
+        process.env.FAKE_GOAL_TURNS = "3";
+        process.env.FAKE_TURN_MS = "1500";
+        process.env.FAKE_IGNORE_INTERRUPT = "1";
+        const saved = { ...stopTiming };
+        Object.assign(stopTiming, { interruptMs: 200 });
+        try {
+            const a = await makeAgent("codex");
+            const done = a.run("/goal the docs build");
+            const until = Date.now() + 5000;
+            while (!a.goals().some((g) => g?.status === "active") && Date.now() < until) await Bun.sleep(2);
+            const started = Date.now();
+            a.switchMode("plan");
+            expect(await done).toBe("error");
+            expect(Date.now() - started).toBeLessThan(1200);
+            expect(JSON.stringify(a.events)).toContain("Codex didn't stop a turn running under the permission mode from before");
+        } finally {
+            Object.assign(stopTiming, saved);
+        }
+    });
+
+    test("a turn not yet known to be Codex's or the one being started is judged by the looser of their policies", () => {
+        const sent: any[] = [];
+        const turn = Object.assign(Object.create(CodexTurn.prototype), {
+            t: { readOnly: false, host: { mode: () => "plan" } },
+            rpc: { request: async (method: string, params: unknown) => void sent.push({ method, params }), proc: { kill() {} } },
+            threadId: "thr",
+            aborted: false,
+            starting: true,
+            // The thread's policy was plan mode's; the turn/start on its way asks for bypass (a quick switch, then back).
+            startingThreadMode: "plan",
+            startingMode: "bypassPermissions",
+            running: new Map([["turn-9", undefined]]),
+            ownTurns: new Set(),
+            stoppedForMode: new Set(),
+            completedTurns: new Map(),
+            modeKills: new Set(),
+        });
+        turn.stopStale();
+        for (const timer of turn.modeKills) clearTimeout(timer);
+        expect(sent).toEqual([{ method: "turn/interrupt", params: { threadId: "thr", turnId: "turn-9" } }]);
+    });
+
+    test("the turn for a message refused for a turn of Codex's stopped for the mode is asked for again, the message kept", async () => {
+        process.env.FAKE_GOAL_TURNS = "3";
+        process.env.FAKE_TURN_MS = "150";
+        // The turn under plan mode is refused (Codex started one of its own as the pause came): asked again once it's stopped.
+        process.env.FAKE_REFUSE_TURN_START_AT = "2";
+        process.env.FAKE_GOAL_CONTINUE_MS = "3000";
+        const queue: string[] = [];
+        const a = await makeAgent("codex", undefined, queue);
+        const done = a.run("/goal the docs build");
+        const until = Date.now() + 5000;
+        while (!a.goals().some((g) => g?.status === "active") && Date.now() < until) await Bun.sleep(2);
+        queue.push("also fix the links");
+        await Bun.sleep(30);
+        a.switchMode("plan");
+        expect(await done).toBe("done");
+        const starts = received().filter((m) => m.method === "turn/start").map((m) => m.params);
+        // The refused one, asked for again, and the message's turn after it: all under plan mode.
+        expect(starts.length).toBeGreaterThanOrEqual(3);
+        expect(starts.slice(1).every((p) => p.sandboxPolicy.type === "readOnly")).toBe(true);
+        expect(starts.slice(3).some((p) => JSON.stringify(p.input).includes("also fix the links"))).toBe(true);
         expect(a.goals().at(-1)).toMatchObject({ status: "complete" });
     });
 
