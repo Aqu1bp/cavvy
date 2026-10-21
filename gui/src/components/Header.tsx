@@ -61,11 +61,12 @@ export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
     let el: HTMLElement | undefined;
     onMount(() => {
         const place = () => el && placeToasts(el);
+        // Its first report comes after this frame's layout, before it's painted: placing them now
+        // would lay out the whole view a second time (a session opening, say) only to read the bar.
         const ro = new ResizeObserver(place);
         ro.observe(el!);
         for (const part of el!.querySelectorAll(".crumbs, .bar-end")) ro.observe(part);
         window.addEventListener("resize", place);
-        place();
         onCleanup(() => (ro.disconnect(), window.removeEventListener("resize", place)));
     });
     return (
