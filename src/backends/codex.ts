@@ -1653,13 +1653,19 @@ class CodexTurn {
             if (from.turnId) void this.rpc.request("turn/steer", { threadId: from.thread, expectedTurnId: from.turnId, input: this.input(text, []) }).catch(() => {});
             return;
         }
-        if (!this.threadId || !this.turnId) {
+        // The turn is over (a hook finishing after it): the next one takes it.
+        if (!this.threadId || !this.turnId || this.status !== undefined) {
             if (followUp) this.followUp = text;
             return;
         }
-        void this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: this.turnId, input: this.input(text, []) }).catch(() => {
-            if (followUp) this.followUp = text;
-        });
+        // In the steering chain, so a turn that ends meanwhile waits to see whether Codex took it.
+        const sent = this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: this.turnId, input: this.input(text, []) }).then(
+            () => {},
+            () => {
+                if (followUp) this.followUp = text;
+            },
+        );
+        this.steering = this.steering.then(() => sent);
     }
 }
 

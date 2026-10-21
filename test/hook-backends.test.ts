@@ -467,13 +467,26 @@ describe("Codex's items run the harness's hooks", () => {
 
     test("PostToolUse runs after the command with its output, and its context is steered into the turn", async () => {
         const seen = join(cwd, "post.jsonl");
-        const settings = { hooks: { PostToolUse: [{ matcher: "Bash", command: `${record(seen)}; ${say({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: "x is generated" } })}` }] } };
+        const once = `[ -f '${seen}.once' ] || { touch '${seen}.once'; ${say({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: "x is generated" } })}; }`;
+        const settings = { hooks: { PostToolUse: [{ matcher: "Bash", command: `${record(seen)}; ${once}` }] } };
         const { run } = await makeAgent("codex", settings);
         expect(await run("make x")).toBe("done");
         expect(jsonl(seen)[0]).toMatchObject({ hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: { command: "touch x" }, tool_response: { content: "ok\n" } });
         expect(typeof jsonl(seen)[0].duration_ms).toBe("number");
-        const steer = received().find((m) => m.method === "turn/steer");
-        expect(steer?.params.input[0].text).toBe("<system-reminder>\nContext from a PostToolUse hook (Bash):\nx is generated\n</system-reminder>");
+        // Steered into the turn while it runs; this fake ends it right after the command, so it starts the next one.
+        const said = received().flatMap((m) => (m.method === "turn/steer" || (m.method === "turn/start" && m.params.input[0].text !== "make x") ? [m.params.input[0].text] : []));
+        expect(said).toEqual(["<system-reminder>\nContext from a PostToolUse hook (Bash):\nx is generated\n</system-reminder>"]);
+    });
+
+    test("PostToolUse context from a hook that finishes after Codex ended the turn comes in the next turn", async () => {
+        process.env.FAKE_STEER_FAIL = "1";
+        const flag = join(cwd, "once");
+        const settings = { hooks: { PostToolUse: [{ matcher: "Bash", command: `sleep 0.3; [ -f '${flag}' ] || { touch '${flag}'; ${say({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: "x is generated" } })}; }` }] } };
+        const { run } = await makeAgent("codex", settings);
+        expect(await run("make x")).toBe("done");
+        const turns = received().filter((m) => m.method === "turn/start");
+        expect(turns).toHaveLength(2);
+        expect(turns[1].params.input[0].text).toContain("x is generated");
     });
 
     test("a declined command doesn't run PostToolUse or PostToolUseFailure", async () => {
