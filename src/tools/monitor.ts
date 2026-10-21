@@ -21,6 +21,8 @@ const MAX_WAKE_CHARS = 4000;
 export const FLOOD_LINES = 300;
 export const FLOOD_WAKES = 30;
 const FLOOD_WINDOW_MS = 60_000;
+/** After the command exits, how long what it printed has to be read before the watch ends. */
+const EXIT_DRAIN_MS = 300;
 /** Kept of stderr, for the notice when the command fails. */
 const STDERR_TAIL = 10;
 
@@ -86,15 +88,19 @@ Examples:
         if (!ctx.wakes) return "Monitor isn't available here: nothing could deliver its notifications to you. Use Bash with run_in_background and BashOutput instead.";
         const hosts = validateHosts(input.allowedHosts);
         if (hosts) return hosts;
-        const running = [...ctx.state.shells.values()].filter((s) => s.monitor && s.exitCode === null);
-        if (running.length >= MAX_MONITORS) return `${MAX_MONITORS} monitors are already running (${running.map((s) => `${s.id}: ${s.monitor!.description}`).join("; ")}). Stop one with KillShell first.`;
-        return undefined;
+        return runningCap(ctx.state);
     },
     run: (input, ctx) => runMonitor(input, ctx),
 };
 
 async function runMonitor(input: MonitorInput, ctx: ToolContext, say: (text: string) => string = (t) => t) {
     const { env, proxy } = await commandEnv(ctx, input.allowedHosts);
+    // Checked again where it starts: calls checked at the same time (prompts, hooks in between) can't both take the last place.
+    const full = runningCap(ctx.state);
+    if (full) {
+        proxy?.close();
+        return { content: say(full), isError: true };
+    }
     const asked = input.timeout_ms ?? DEFAULT_TIMEOUT;
     const timeoutMs = Math.min(MAX_TIMEOUT, Math.max(MIN_TIMEOUT, asked));
     const m = startMonitor({ command: input.command, description: input.description.trim().split("\n")[0]!.slice(0, 120), timeoutMs, ctx, env, proxy, say });
@@ -103,6 +109,12 @@ async function runMonitor(input: MonitorInput, ctx: ToolContext, say: (text: str
         content: say(`Started monitor ${m.id}${m.pid !== undefined ? ` (pid ${m.pid})` : ""}${ctx.sandbox ? " in the auto-mode sandbox" : ""}. New stdout lines will arrive as notifications. It expires in ${minutes(timeoutMs)}${capped}; stop it earlier with KillShell shell_id "${m.id}", and read its stderr with BashOutput.`),
         display: { summary: `Watching as ${m.id} · expires in ${minutes(timeoutMs)}` },
     };
+}
+
+function runningCap(state: ToolState): string | undefined {
+    const running = [...state.shells.values()].filter((s) => s.monitor && s.exitCode === null);
+    if (running.length >= MAX_MONITORS) return `${MAX_MONITORS} monitors are already running (${running.map((s) => `${s.id}: ${s.monitor!.description}`).join("; ")}). Stop one with KillShell first.`;
+    return undefined;
 }
 
 /** For the agent, when the user stops a monitor it may be waiting on. */
@@ -311,7 +323,19 @@ export function startMonitor(o: StartOpts): { id: string; pid?: number; shell: B
         deliver(`Monitor ${id} (${o.description}) ended: its command ${how} after ${events}.${tail}${hint ? `\n${hint}` : ""}`, code === 0 ? "ended" : how.replace(/ with code/, ""));
     };
     // Killed by a signal: the shell's convention, 128 + its number (137 for SIGKILL), and its name.
-    child.on("close", (code, signal) => (code === null && signal ? finish(128 + (constants.signals[signal] ?? 0), `was killed by ${signal}`) : finish(code ?? -1)));
+    const ended = (code: number | null, signal: NodeJS.Signals | null) => (code === null && signal ? finish(128 + (constants.signals[signal] ?? 0), `was killed by ${signal}`) : finish(code ?? -1));
+    child.on("close", ended);
+    // Its streams close when the last process holding them does: a child it left in the background keeps them
+    // open. The command's exit ends the watch once what it printed has been read (finish stops that child).
+    child.on("exit", (code, signal) => {
+        const t = setTimeout(() => {
+            if (finished) return;
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            ended(code, signal);
+        }, EXIT_DRAIN_MS);
+        t.unref?.();
+    });
     child.on("error", (e) => {
         appendOutput(shell, `\n${e.message}\n`);
         stderrTail.push(e.message);

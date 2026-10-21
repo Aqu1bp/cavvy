@@ -1798,8 +1798,12 @@ export class Agent {
         const call: ToolCallPart = { type: "tool_call", id: callId ?? `served_${++this.servedCalls}`, name: tool.name, input };
         const prep = await this.prepare(call, signal, tool);
         if ("result" in prep) return { text: prep.result.content, isError: true };
-        const r = await this.runTool(call, prep.tool, prep.input, signal, prep.auto, prep.sandbox, true);
-        return { text: r.content, isError: r.isError };
+        // Cancelled while its checks ran (a hook, the reviewer): it doesn't start.
+        if (signal.aborted) return { text: "Interrupted by user before this tool ran.", isError: true };
+        const context: string[] = [];
+        const r = await this.runTool(call, prep.tool, prep.input, signal, prep.auto, prep.sandbox, context);
+        // What a PostToolUse hook adds goes with the result: it's the backend that reads it.
+        return { text: [r.content, ...context].join("\n\n"), isError: r.isError };
     }
 
     /**
@@ -2245,7 +2249,9 @@ export class Agent {
         };
     }
 
-    private async runTool(call: ToolCallPart, tool: Tool<any>, input: any, signal: AbortSignal, auto?: string, sandboxed?: boolean, quiet = false): Promise<ToolResultPart> {
+    /** `served`: a call a backend made through the harness MCP server (no events; hook context is collected here). */
+    private async runTool(call: ToolCallPart, tool: Tool<any>, input: any, signal: AbortSignal, auto?: string, sandboxed?: boolean, served?: string[]): Promise<ToolResultPart> {
+        const quiet = Boolean(served);
         const started = Date.now();
         this.noteAction(tool, input);
         if (auto && !quiet) this.emit({ type: "tool_approved", id: call.id, reason: auto, sandboxed });
@@ -2277,7 +2283,7 @@ export class Agent {
             const h = await this.hooks(event, { ...payload, ...(tool.category === "mcp" ? { mcp_server: mcpServerOf(tool.name) } : {}) }, signal);
             if (h?.updatedToolOutput !== undefined) result = { ...result, content: redact(h.updatedToolOutput) };
             if (h?.blocked) result = { ...result, content: `${result.content}\n\n${event} hook feedback:\n${h.blocked}` };
-            if (h?.additionalContext) this.toolHookContext.push(`Context from a ${event} hook (${tool.name}):\n${h.additionalContext}`);
+            if (h?.additionalContext) (served ?? this.toolHookContext).push(`Context from a ${event} hook (${tool.name}):\n${h.additionalContext}`);
         }
         if (!quiet) this.emit({ type: "tool_end", call, result, durationMs: Date.now() - started });
         return {

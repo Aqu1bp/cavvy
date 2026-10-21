@@ -259,6 +259,22 @@ describe("how it ends", () => {
         expect(state.shells.has(a.id)).toBe(false);
     });
 
+    test("a background child still holding its stdout doesn't hold back the exit notice, and is stopped with it", async () => {
+        const { ctx, woken } = setup();
+        const t0 = Date.now();
+        await start(ctx, `(sleep 1; echo late) & exit 0`);
+        await until(() => woken.some((w) => w.text.includes("exited with code 0")), 5000);
+        expect(Date.now() - t0).toBeLessThan(900);
+        await Bun.sleep(1500);
+        expect(woken.some((w) => w.text.includes("late"))).toBe(false);
+        // One that would outlive the monitor's expiry ends it all the same.
+        const { ctx: ctx2, woken: woken2 } = setup();
+        const m = await start(ctx2, `(sleep 600; echo late) & echo started; exit 3`);
+        await until(() => woken2.some((w) => w.text.includes("exited with code 3")), 5000);
+        expect(woken2.map((w) => w.text).join("\n")).toContain("started");
+        expect(m.shell.exitCode).toBe(3);
+    });
+
     test("a monitor that ended is no longer a watcher", async () => {
         const { ctx, woken, state } = setup();
         const a = await start(ctx, `echo hi`);
@@ -320,6 +336,20 @@ describe("limits", () => {
         expect(stops[0]!.text).toContain("tighter filter");
         // Events up to the limit, nothing read after it.
         expect(shell.monitor!.events).toBe(FLOOD_LINES + 1);
+    });
+
+    test(`calls checked at the same time can't take it past ${MAX_MONITORS}`, async () => {
+        const { ctx } = setup();
+        for (let i = 0; i < MAX_MONITORS - 1; i++) await start(ctx, `tail -f /dev/null`, `quiet ${i}`);
+        const input = { command: "tail -f /dev/null", description: "one more" };
+        // Both pass the check before either starts (their prompts or hooks ran in between).
+        expect(await MonitorTool.validate!(input, ctx)).toBeUndefined();
+        expect(await MonitorTool.validate!(input, ctx)).toBeUndefined();
+        const results = await Promise.all([MonitorTool.run(input, ctx), MonitorTool.run(input, ctx)]);
+        expect(results.filter((r) => r.isError)).toHaveLength(1);
+        expect(results.find((r) => r.isError)!.content).toContain(`${MAX_MONITORS} monitors are already running`);
+        expect([...ctx.state.shells.values()].filter((s) => s.monitor && s.exitCode === null)).toHaveLength(MAX_MONITORS);
+        await killAllShells(ctx);
     });
 
     test(`at most ${MAX_MONITORS} run at once`, async () => {

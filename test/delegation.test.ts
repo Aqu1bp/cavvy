@@ -147,6 +147,7 @@ const setServers = () => received().filter((m) => m.type === "control_request" &
 const userTexts = () => received().flatMap((m) => (m.type === "user" ? m.message.content.filter((c: any) => c.type === "text").map((c: any) => c.text as string) : []));
 const notices = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "notice" ? [`${e.level}: ${e.message}`] : []));
 const { WakeQueue, WatcherMap, stopWatchers } = await import("../src/agent/wakes");
+const { MonitorTool } = await import("../src/tools/monitor");
 const { gitToolDeps } = await import("../src/tools/git-tools");
 const calls = (list: { server?: string; tool: string; args: Record<string, unknown> }[]) => (process.env.FAKE_MCP_CALLS = JSON.stringify(list));
 
@@ -1398,6 +1399,30 @@ describe("Monitor for Codex (it has none of its own)", () => {
         expect(mcpResults()[0]).toMatchObject({ tool: "monitor", isError: true });
         expect(denied.asked).toHaveLength(0);
         expect(monitors(denied.agent)).toHaveLength(0);
+    });
+
+    test("a call cancelled while its checks run starts nothing", async () => {
+        // A read-only command (no prompt), held up by a slow PreToolUse hook; the call is cancelled meanwhile.
+        const { agent } = await makeAgent({ provider: "codex", wakes: true, settings: { hooks: { PreToolUse: [{ matcher: "Bash", command: "sleep 1" }] } } });
+        const ac = new AbortController();
+        setTimeout(() => ac.abort(), 200);
+        const r = await (agent as any).runServed(MonitorTool, { command: "tail -f /dev/null", description: "quiet" }, ac.signal);
+        expect(r.isError).toBe(true);
+        await Bun.sleep(300);
+        expect(monitors(agent)).toHaveLength(0);
+        stopWatchers(agent.state);
+    });
+
+    test("context a PostToolUse hook adds reaches Codex with the result", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "monitor", args: { command: "tail -f /dev/null", description: "quiet" } }]);
+        const { run, agent } = await makeAgent({ provider: "codex", wakes: true, settings: { hooks: { PostToolUse: [{ matcher: "Monitor", command: `echo '{"hookSpecificOutput":{"additionalContext":"watch budget: 2 left"}}'` }] } } });
+        try {
+            expect(await run("watch")).toBe("done");
+            expect(mcpResults()[0].text).toContain("watch budget: 2 left");
+        } finally {
+            stopWatchers(agent.state);
+        }
     });
 
     test("monitor_output and monitor_stop act on monitors only", async () => {
