@@ -14,18 +14,18 @@
     border-radius: 8px;
     font-size: 0.964rem;
     font-weight: 500;
-    color: var(--fg-muted);
+    color: var(--fg-2);
 }
 
 .set-back:hover {
-    background: var(--bg-hover);
+    background: var(--hover);
     color: var(--fg);
 }
 
 .set-back kbd {
     margin-left: auto;
     background: none;
-    color: var(--fg-subtle);
+    color: var(--fg-3);
 }
 
 .set-tabs {
@@ -45,16 +45,16 @@
     border-radius: 8px;
     font-size: 0.964rem;
     font-weight: 500;
-    color: var(--fg-muted);
+    color: var(--fg-2);
 }
 
 .navi:hover {
-    background: var(--bg-hover);
+    background: var(--hover);
     color: var(--fg);
 }
 
 .navi.on {
-    background: var(--bg-active);
+    background: var(--sheet-2);
     color: var(--fg);
 }
 

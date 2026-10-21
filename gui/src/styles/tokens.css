@@ -76,87 +76,8 @@
     --gap: 0.8;
 }
 
-/* ---- The older names --------------------------------------------------
-   Areas not yet ported to the redesign still use these. Each points at the
-   new palette, so they stay legible; the last port removes them.
-
-   old                     new
-   --bg, --bg-card         --sheet
-   --bg-input              --sheet
-   --bg-sidebar            --insp-bg (opaque until the rail moves onto the glass)
-   --bg-panel              --insp-bg
-   --bg-elev               --seg-on (light), --sheet-2 (dark)
-   --bg-code               --sheet-2
-   --bg-user               --sheet-2
-   --bg-inline-code        --sheet-2
-   --bg-subtle             --hover at half strength
-   --bg-hover              --hover
-   --bg-active             --sheet-2 (the mockup's selected tab on the sheet)
-   --bg-overlay            --sheet at 22% (the mockup's dialog scrim)
-   --glass, --pop          --ctl-strong
-   --border, --hairline    --line
-   --border-strong         a stronger --line (per palette)
-   --fg                    --fg (same name, the mockup's value)
-   --fg-prose              --fg
-   --fg-muted              --fg-2
-   --fg-subtle             --fg-3
-   --fg-faint              --fg-4
-   --fg-inverse            --sheet
-   --bg-inverse            --fg
-   --accent-fg             --accent-ink (the mockup's name; both defined)
-   --success               --ok
-   --warning               --warn
-   --danger                --danger (same name, the mockup's value)
-   --info, --link          --accent-text
-   --add-*, --del-*        same names, the mockup's values
-   --find-bg               --find
-   --find-current-bg       --accent (still read with --accent-fg ink)
-   --shadow-md             --ctl-shadow
-   --shadow-card           --sheet-shadow
-   --shadow-lg, --shadow-float,
-   --shadow-pop            --pop-shadow
-   --plan, --auto, --shell, --stop, --shadow-sm, --scrollbar: the old light
-                           and dark values, per palette
-   --shiki-*               the mockup's syntax colours (its --k --s --f --c --t
-                           are --syn-keyword/-string/-function/-comment/-type)
-   ------------------------------------------------------------------------ */
+/* The older names (--bg, --fg-muted, --border, ...) are retired: design/glass/PORTING.md maps them to these. */
 :root {
-    --bg: var(--sheet);
-    --bg-card: var(--sheet);
-    --bg-input: var(--sheet);
-    --bg-sidebar: var(--insp-bg);
-    --bg-panel: var(--insp-bg);
-    --bg-elev: var(--seg-on);
-    --bg-code: var(--sheet-2);
-    --bg-user: var(--sheet-2);
-    --bg-inline-code: var(--sheet-2);
-    --bg-subtle: color-mix(in srgb, var(--hover) 50%, transparent);
-    --bg-hover: var(--hover);
-    --bg-active: var(--sheet-2);
-    --bg-overlay: color-mix(in srgb, var(--sheet) 22%, transparent);
-    --glass: var(--ctl-strong);
-    --pop: var(--ctl-strong);
-    --border: var(--line);
-    --hairline: var(--line);
-    --fg-prose: var(--fg);
-    --fg-muted: var(--fg-2);
-    --fg-subtle: var(--fg-3);
-    --fg-faint: var(--fg-4);
-    --fg-inverse: var(--sheet);
-    --bg-inverse: var(--fg);
-    --accent-fg: var(--accent-ink);
-    --success: var(--ok);
-    --warning: var(--warn);
-    --info: var(--accent-text);
-    --link: var(--accent-text);
-    --find-bg: var(--find);
-    --find-current-bg: var(--accent);
-    --shadow-md: var(--ctl-shadow);
-    --shadow-card: var(--sheet-shadow);
-    --shadow-lg: var(--pop-shadow);
-    --shadow-float: var(--pop-shadow);
-    --shadow-pop: var(--pop-shadow);
-
     --shiki-background: transparent;
     --shiki-foreground: var(--fg);
     --shiki-token-keyword: var(--syn-keyword);
@@ -190,6 +111,7 @@
     --term-bg: #f7f7f9;
     --group: #f4f4f6;
     --seg-on: #ffffff;
+    --raised: var(--seg-on); /* a piece raised off the sheet: the segmented control's thumb, usage cards */
     --sheet-shadow: 0 0 0 0.5px rgba(15, 18, 30, 0.1), 0 1px 2px rgba(15, 18, 30, 0.05), 0 12px 32px -14px rgba(15, 18, 30, 0.28);
 
     --fg: #17181b;
@@ -197,6 +119,7 @@
     --fg-3: #656870; /* mockup #686b73, nudged for AA */
     --fg-4: #a3a6ad; /* glyphs and rules only: too faint for text */
     --line: rgba(15, 18, 30, 0.08);
+    --line-strong: rgba(15, 18, 30, 0.16); /* control outlines, rings' tracks */
     --hover: rgba(15, 18, 30, 0.045);
     --press: rgba(15, 18, 30, 0.08);
 
@@ -238,7 +161,6 @@
     --syn-comment: #6a6e76; /* mockup #6b7078, nudged for AA */
     --syn-type: #0b5fb0;
 
-    --border-strong: rgba(15, 18, 30, 0.16);
     --plan: #7c4dff;
     --auto: #a35401; /* was #a45501, nudged for AA on the new sheet */
     --shell: #086f64;
@@ -265,6 +187,7 @@
     --term-bg: #101113;
     --group: #1a1b1f;
     --seg-on: #2c2d33;
+    --raised: var(--sheet-2);
     --sheet-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.08), 0 16px 40px -14px rgba(0, 0, 0, 0.7);
 
     --fg: #ececef;
@@ -272,6 +195,7 @@
     --fg-3: #989ba2; /* mockup #8d9098, nudged for AA */
     --fg-4: #585b63; /* glyphs and rules only: too faint for text */
     --line: rgba(255, 255, 255, 0.07);
+    --line-strong: rgba(255, 255, 255, 0.13);
     --hover: rgba(255, 255, 255, 0.05);
     --press: rgba(255, 255, 255, 0.09);
 
@@ -313,8 +237,6 @@
     --syn-comment: #8f949c; /* mockup #7d828c, nudged for AA */
     --syn-type: #6cb6ff;
 
-    --bg-elev: var(--sheet-2);
-    --border-strong: rgba(255, 255, 255, 0.13);
     --plan: #a78bfa;
     --auto: #f0a24a;
     --shell: #5eead4;
@@ -390,9 +312,9 @@
     --accent-softer: color-mix(in srgb, var(--accent) 7%, transparent);
     --accent-border: color-mix(in srgb, var(--accent) 40%, transparent);
     --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
-    --warning-soft: color-mix(in srgb, var(--warning) 12%, transparent);
+    --warn-soft: color-mix(in srgb, var(--warn) 12%, transparent);
     --danger-soft: color-mix(in srgb, var(--danger) 11%, transparent);
-    --success-soft: color-mix(in srgb, var(--success) 12%, transparent);
+    --ok-soft: color-mix(in srgb, var(--ok) 12%, transparent);
     --plan-soft: color-mix(in srgb, var(--plan) 12%, transparent);
     --auto-soft: color-mix(in srgb, var(--auto) 12%, transparent);
 }

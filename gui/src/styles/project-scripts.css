@@ -83,7 +83,7 @@
 .script-row:hover .script-run,
 .script-row:focus-within .script-run,
 .script-row.confirming .script-run {
-    background: var(--bg-hover);
+    background: var(--hover);
     padding-right: 84px;
 }
 

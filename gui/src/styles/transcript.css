@@ -900,7 +900,7 @@
 }
 
 .diag-item.warning {
-    background: var(--warning-soft);
+    background: var(--warn-soft);
 }
 
 .diag-icon {
@@ -1828,7 +1828,7 @@
     height: 16px;
     margin-top: 2px;
     border-radius: 5px;
-    border: 1.5px solid var(--border-strong);
+    border: 1.5px solid var(--line-strong);
     display: grid;
     place-items: center;
     flex: none;
@@ -2120,7 +2120,7 @@
 .dc-tag {
     padding: 0 6px;
     border-radius: 999px;
-    background: var(--warning-soft);
+    background: var(--warn-soft);
     color: var(--fg);
     font-size: 0.75rem;
 }

@@ -49,12 +49,12 @@ export function Ring(p: { value: number; size?: number; stroke?: number; title?:
     const r = (size - stroke) / 2;
     const c = 2 * Math.PI * r;
     const v = () => Math.max(0, Math.min(1, p.value));
-    const tone = () => p.tone === "danger" ? "var(--danger)" : p.tone === "warning" ? "var(--warning)" : p.tone === "normal" ? (p.neutral ? "var(--fg-muted)" : "var(--accent)")
-        : (v() >= 0.85 ? "var(--danger)" : v() >= 0.7 ? "var(--warning)" : p.neutral ? "var(--fg-muted)" : "var(--accent)");
+    const tone = () => p.tone === "danger" ? "var(--danger)" : p.tone === "warning" ? "var(--warn)" : p.tone === "normal" ? (p.neutral ? "var(--fg-2)" : "var(--accent)")
+        : (v() >= 0.85 ? "var(--danger)" : v() >= 0.7 ? "var(--warn)" : p.neutral ? "var(--fg-2)" : "var(--accent)");
     return (
         <svg class="ring" width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={p.title}>
             <title>{p.title}</title>
-            <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={p.neutral ? "color-mix(in srgb, var(--fg-muted) 28%, transparent)" : "var(--border-strong)"} stroke-width={stroke} />
+            <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={p.neutral ? "color-mix(in srgb, var(--fg-2) 28%, transparent)" : "var(--line-strong)"} stroke-width={stroke} />
             <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={tone()} stroke-width={stroke} stroke-linecap="round" stroke-dasharray={`${c * v()} ${c}`} transform={`rotate(-90 ${size / 2} ${size / 2})`} />
         </svg>
     );
@@ -88,8 +88,8 @@ export function Logo(p: { size?: number }) {
     const s = p.size ?? 22;
     return (
         <svg class="logo" width={s} height={s} viewBox="0 0 64 64" aria-hidden="true">
-            <rect width="64" height="64" rx="16" fill="var(--bg-inverse)" />
-            <path d="M21 19v26M43 19v26M21 32h22" stroke="var(--fg-inverse)" stroke-width="6.5" stroke-linecap="round" fill="none" />
+            <rect width="64" height="64" rx="16" fill="var(--fg)" />
+            <path d="M21 19v26M43 19v26M21 32h22" stroke="var(--sheet)" stroke-width="6.5" stroke-linecap="round" fill="none" />
             <circle cx="43" cy="19" r="5.5" fill="var(--accent)" />
         </svg>
     );
