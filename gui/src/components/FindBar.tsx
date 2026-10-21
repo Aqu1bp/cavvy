@@ -1,11 +1,11 @@
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show, untrack } from "solid-js";
-import { ChevronDown, ChevronUp, Search, X } from "lucide-solid";
+import { ChevronLeft, ChevronRight, Search, X } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { clearPaint, findMatches, MAX_MATCHES, paintMatches, revealInBoxes, textRanges, type FindMatch } from "../lib/find";
 import { findFocus, findQuery, setFindOpen, setFindQuery, setFindReveal } from "../state/ui";
 
-/** The top of the view the bar covers (prompts sit on the right, under it). */
-export const BAR_ROOM = 60;
+/** The top of the view the bar covers: the title bar's row (52px) and the find pill under it (58px down, 38px tall), with a little air. */
+export const BAR_ROOM = 104;
 
 /** Where a jump from ⌘K landed: the match shown first is in this turn. */
 export interface FindAnchor {
@@ -218,19 +218,19 @@ export function FindBar(p: {
     };
 
     return (
-        <div class="find-bar" role="search" aria-label="Conversation" on:keydown={onBarKey}>
-            <Search size={14} class="muted" />
+        <div class="find-bar glass" role="search" aria-label="Conversation" on:keydown={onBarKey}>
+            <Search size={14} class="find-ic" />
             <input ref={input} value={text()} onInput={(e) => onInput(e.currentTarget.value)} on:keydown={onKey} placeholder="Find in conversation" spellcheck={false} aria-label="Find in conversation" />
             <span class="find-count num" role="status" aria-live="polite" aria-atomic="true">{count()}</span>
             <Show when={matches().length > 1}>
-                <button class="icon-btn" title="Previous (Shift+Enter)" aria-label="Previous match" onClick={() => go(cur() - 1)}>
-                    <ChevronUp size={14} />
+                <button class="find-btn" title="Previous (Shift+Enter)" aria-label="Previous match" onClick={() => go(cur() - 1)}>
+                    <ChevronLeft size={14} />
                 </button>
-                <button class="icon-btn" title="Next (Enter)" aria-label="Next match" onClick={() => go(cur() + 1)}>
-                    <ChevronDown size={14} />
+                <button class="find-btn" title="Next (Enter)" aria-label="Next match" onClick={() => go(cur() + 1)}>
+                    <ChevronRight size={14} />
                 </button>
             </Show>
-            <button class="icon-btn" title="Close (Esc)" aria-label="Close find" onClick={close}>
+            <button class="find-btn" title="Close (Esc)" aria-label="Close find" onClick={close}>
                 <X size={14} />
             </button>
         </div>

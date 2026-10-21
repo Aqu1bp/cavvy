@@ -13,6 +13,8 @@ export interface DialogProps {
     bare?: boolean;
     /** A bare dialog's name: the id of the heading its content brings. */
     labelledBy?: string;
+    /** Opens near the top of the window (the command palette) instead of in its middle. */
+    top?: boolean;
     children: JSX.Element;
     footer?: JSX.Element;
 }
@@ -73,10 +75,10 @@ function DialogInner(p: DialogProps) {
     });
     return (
         <Portal>
-            <div class="dialog-backdrop" onPointerDown={(e) => e.target === e.currentTarget && p.onClose()}>
+            <div class={`dialog-backdrop ${p.top ? "top" : ""}`} onPointerDown={(e) => e.target === e.currentTarget && p.onClose()}>
                 <div
                     ref={box}
-                    class={`dialog ${p.class ?? ""}`}
+                    class={`dialog glass ${p.class ?? ""}`}
                     style={{ width: `min(${p.width ?? 520}px, calc(100vw - 32px))` }}
                     role="dialog"
                     aria-modal="true"
