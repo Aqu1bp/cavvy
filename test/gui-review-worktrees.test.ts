@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { fileURLToPath } from "url";
 import type { AgentRun, Block } from "../src/server/protocol";
-import { agentsByWorktree, agentWorktree, commandPaths, normalPath, toolPaths, worktreeOf } from "../src/server/worktree-agents";
+import { agentsByWorktree, agentWorktree, commandPaths, normalPath, shellWords, toolPaths, worktreeOf } from "../src/server/worktree-agents";
 import { keepWorktree, ownOnScreen, pickScope, pickWorktree, worktreeWork, type ReviewPlace } from "../gui/src/lib/worktree-work";
 
 const HOME = "/Users/me";
@@ -68,6 +68,21 @@ describe("paths", () => {
             expect(commandPaths(cmd)).toEqual(["/repo"]);
         }
         expect(commandPaths("cd /repo && cd && cd src", "/Users/me")).toEqual(["/repo", "/Users/me", "/Users/me/src"]);
+        // Every part of a pipeline runs in a shell of its own, the last one too: the shell after it is where it was before.
+        expect(commandPaths("cd /repo; echo x | cd /other; cd src")).toEqual(["/repo", "/other", "/repo/src"]);
+        expect(commandPaths("cd /repo; cd /a | cat && cd src")).toEqual(["/repo", "/a", "/repo/src"]);
+        // The pushd was the pipeline's shell's, so the outer stack is empty: the popd after it isn't followed.
+        expect(commandPaths("cd /repo && pushd /one | cat; popd; cd src")).toEqual(["/repo", "/one"]);
+        // A subshell has its own copy of the pushd stack.
+        expect(commandPaths("cd /repo; pushd /one; (pushd /two); popd; cd src")).toEqual(["/repo", "/one", "/two", "/repo/src"]);
+        expect(commandPaths("cd /repo; pushd /one; (popd; cd x); cd y")).toEqual(["/repo", "/one", "/repo/x", "/one/y"]);
+        // A background job is the whole list before its &: the shell goes on from where that list began.
+        expect(commandPaths("cd /repo; cd /a && cd b & cd src")).toEqual(["/repo", "/a", "/a/b", "/repo/src"]);
+        // A redirection's & isn't a background job, and |& is a pipe.
+        expect(commandPaths("cd /repo && bun test 2>&1 | tail; cd src")).toEqual(["/repo", "/repo/src"]);
+        expect(commandPaths("cd /repo && make &>/dev/null; cd src")).toEqual(["/repo", "/repo/src"]);
+        expect(commandPaths("cd /repo; cd /a |& cat; cd src")).toEqual(["/repo", "/a", "/repo/src"]);
+        expect(shellWords("a 2>&1 >|f &>g |& b")).toEqual(["a", "2>&1", ">|f", "&>g", "|", "b"]);
         // cd's own options aren't its folder.
         expect(commandPaths("cd -P /repo && cd -- src")).toEqual(["/repo", "/repo/src"]);
     });

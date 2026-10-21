@@ -41,7 +41,7 @@ export function worktreeOf(path: string, worktrees: string[]): string | undefine
     return best;
 }
 
-/** A command's words and control operators (&&, ||, ;, |, &, parentheses, newlines), with quotes and escapes taken off. */
+/** A command's words and control operators (&&, ||, ;, |, &, parentheses, newlines), with quotes and escapes taken off; a redirection's & (2>&1) is its word's. */
 export function shellWords(cmd: string): string[] {
     const out: string[] = [];
     let word: string | undefined;
@@ -70,11 +70,16 @@ export function shellWords(cmd: string): string[] {
         } else if (c === "\n" || c === ";" || c === "(" || c === ")") {
             end();
             out.push(c === "\n" ? ";" : c);
+        } else if ((c === "&" || c === "|") && (word?.endsWith(">") || word?.endsWith("<") || (c === "&" && cmd[i + 1] === ">"))) {
+            // A redirection (2>&1, &>file, >|file), not an operator.
+            word = (word ?? "") + c;
         } else if (c === "&" || c === "|") {
             end();
             const two = cmd[i + 1] === c;
             out.push(two ? c + c : c);
             if (two) i++;
+            // |& is a pipe (the error output goes along too).
+            else if (c === "|" && cmd[i + 1] === "&") i++;
         } else {
             word = (word ?? "") + c;
         }
@@ -102,21 +107,61 @@ const CD_OPTIONS = /^-[LPe@]+$/;
 export function commandPaths(cmd: string, home?: string): string[] {
     const words = shellWords(cmd);
     const out: string[] = [];
-    /** The folder the shell is in, when the command says; undefined once it can't be told. */
-    let dir: string | undefined;
-    /** The folder each open subshell started in, and pushd's stack. */
-    const subshells: (string | undefined)[] = [];
-    const pushed: (string | undefined)[] = [];
+    type Place = { dir: string | undefined; pushed: (string | undefined)[] };
+    const copy = (p: Place): Place => ({ dir: p.dir, pushed: [...p.pushed] });
+    /** The folder the shell is in, when the command says (undefined once it can't be told), and pushd's stack. */
+    let cur: Place = { dir: undefined, pushed: [] };
+    /** Where the shell was when the current list (what a trailing & sends off) and pipeline began, and whether that pipeline has a | yet. */
+    let list = copy(cur);
+    let pipe = copy(cur);
+    let piped = false;
+    /** For each open subshell, the shell outside it: where it is, and its list and pipeline. */
+    const subshells: { outer: Place; list: Place; pipe: Place; piped: boolean }[] = [];
+    // Every command of a pipeline runs in a shell of its own, the last one too: after it, the shell is where it was before it.
+    const endPipeline = () => {
+        if (piped) cur = copy(pipe);
+        piped = false;
+    };
+    const begin = () => {
+        list = copy(cur);
+        pipe = copy(cur);
+    };
     // Not a variable, a substitution, a glob or `cd -`: where those go isn't in the words.
-    const at = (p: string, from = dir) => (/[$`*?]/.test(p) || p === "-" ? undefined : (normalPath(p, home) ?? (from && !p.startsWith("~") ? normalPath(`${from}/${p}`) : undefined)));
+    const at = (p: string, from = cur.dir) => (/[$`*?]/.test(p) || p === "-" ? undefined : (normalPath(p, home) ?? (from && !p.startsWith("~") ? normalPath(`${from}/${p}`) : undefined)));
     let start = true;
     for (let i = 0; i < words.length; i++) {
         const w = words[i]!;
-        if (w === "(") subshells.push(dir);
-        // An unmatched ")" leaves the shell somewhere the command doesn't say.
-        else if (w === ")") dir = subshells.length ? subshells.pop() : undefined;
-        // A pipeline's commands and a background job run in shells of their own: where they went isn't where the next one is.
-        else if (w === "|" || w === "&") dir = undefined;
+        if (w === "(") {
+            // A subshell starts with a copy of the shell's folder and pushd stack; what it does to them stays in it.
+            subshells.push({ outer: cur, list, pipe, piped });
+            cur = copy(cur);
+            begin();
+            piped = false;
+        } else if (w === ")") {
+            endPipeline();
+            const s = subshells.pop();
+            if (s) ({ outer: cur, list, pipe, piped } = s);
+            else {
+                // An unmatched ")" leaves the shell somewhere the command doesn't say.
+                cur = { dir: undefined, pushed: [] };
+                begin();
+            }
+        } else if (w === "|") {
+            // The next command starts where the pipeline did.
+            piped = true;
+            cur = copy(pipe);
+        } else if (w === "&&" || w === "||") {
+            endPipeline();
+            pipe = copy(cur);
+        } else if (w === ";") {
+            endPipeline();
+            begin();
+        } else if (w === "&") {
+            // A background job's shell is its own: the shell goes on from where the list began.
+            endPipeline();
+            cur = copy(list);
+            begin();
+        }
         if (OPERATORS.has(w)) {
             start = true;
             continue;
@@ -130,15 +175,15 @@ export function commandPaths(cmd: string, home?: string): string[] {
             while (k < words.length && CD_OPTIONS.test(words[k]!)) k++;
             if (words[k] === "--") k++;
             const target = k < words.length && !OPERATORS.has(words[k]!) ? words[k]! : undefined;
-            if (w === "pushd") pushed.push(dir);
+            if (w === "pushd") cur.pushed.push(cur.dir);
             // A bare cd goes home; a bare pushd swaps the top two, which isn't followed.
             const p = target !== undefined ? at(target) : w === "cd" && home ? normalPath(home) : undefined;
-            dir = p;
+            cur.dir = p;
             if (p) out.push(p);
         } else if (w === "popd") {
-            dir = pushed.length ? pushed.pop() : undefined;
+            cur.dir = cur.pushed.length ? cur.pushed.pop() : undefined;
         } else if (w === "git") {
-            let gitDir = dir;
+            let gitDir = cur.dir;
             let j = i + 1;
             for (; j < words.length && !OPERATORS.has(words[j]!) && words[j]!.startsWith("-"); j++) {
                 const opt = words[j]!;
