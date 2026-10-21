@@ -1127,8 +1127,13 @@ export class Agent {
      */
     private backendPrompt(text: string, promptIndex: number, resume?: { synced: number }): string {
         const missed = this.session.messages.slice(resume ? resume.synced : 0, promptIndex).map(withoutStateNotes);
-        // Only that its last turn was stopped, which it never heard (Harness stopped or died part way): said plainly.
-        if (resume && missed.length && missed.every((m) => m.role === "user" && m.meta?.kind === "interrupt")) return `${reminder(BACKEND_CUT_OFF).text}\n\n${text}`;
+        // Only that its last turn was stopped, which it never heard (Harness stopped or died part way), and
+        // Harness's notes to it since (a message that missed that turn): said plainly, not as another model's turn.
+        if (resume && missed.length && missed.every((m) => m.role === "user" && (m.meta?.kind === "interrupt" || m.meta?.kind === "reminder"))) {
+            const kinds = missed.map((m) => (m.role === "user" ? m.meta?.kind : undefined));
+            const notes = missed.filter((_, i) => kinds[i] === "reminder").map(textOf);
+            return [...(kinds.includes("interrupt") ? [reminder(BACKEND_CUT_OFF).text] : []), ...notes, text].join("\n\n");
+        }
         const { text: transcript, shortenedChars } = handoffTranscript(missed, 60_000);
         if (!transcript && !shortenedChars) return text;
         const intro = resume
@@ -1196,6 +1201,8 @@ export class Agent {
                 this.queueListeners.add(listener);
                 return () => this.queueListeners.delete(listener);
             },
+            // Saved past the sync cursor (see runBackend), so the next turn is sent them, after a restart too.
+            undelivered: (texts) => this.backendStopReminders.push(`The user sent this while you were working, but your turn ended before it reached you:\n${texts.join("\n\n")}`),
             drainQueued: async (progress) => {
                 if (this.cutOff) return [];
                 const queued = this.o.host.drainQueued?.() ?? [];

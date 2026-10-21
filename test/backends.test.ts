@@ -2530,8 +2530,37 @@ describe("Codex mid-turn steering", () => {
         delete process.env.FAKE_SCENARIO;
         expect(await a.run("next")).toBe("done");
         expect(turnStarts()).toHaveLength(2);
-        expect(turnStarts()[1].input.at(-1).text).toEndWith("refused words\n\nnext");
+        expect(turnStarts()[1].input.at(-1).text).toContain("refused words");
+        expect(turnStarts()[1].input.at(-1).text).toEndWith("next");
         expect(transcript(a.session).filter((l) => l === "user: refused words")).toHaveLength(1);
+    });
+
+    test("a refused steer still reaches Codex after Harness restarts: it's saved in the session, past what Codex has seen", async () => {
+        process.env.FAKE_SCENARIO = "slow";
+        process.env.FAKE_STEER_FAIL = "1";
+        const host: string[] = [];
+        const ac = new AbortController();
+        const session = Session.create(cwd, { persist: true });
+        const a = await makeAgent({ provider: "codex", session, drainQueued: () => host.splice(0) });
+        const done = a.run("start", ac.signal);
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        await Bun.sleep(50);
+        host.push("refused before restart");
+        a.agent.queueChanged();
+        await until(() => steers().length === 1);
+        await Bun.sleep(20);
+        ac.abort();
+        expect(await done).toBe("aborted");
+        const path = session.path;
+        session.release();
+        // A new process: a new Codex client and the session read back from disk.
+        forgetClient("codex");
+        delete process.env.FAKE_SCENARIO;
+        const b = await makeAgent({ provider: "codex", session: Session.load(path) });
+        expect(await b.run("next")).toBe("done");
+        expect(turnStarts()).toHaveLength(2);
+        expect(turnStarts()[1].input.at(-1).text).toContain("refused before restart");
+        expect(turnStarts()[1].input.at(-1).text).toEndWith("next");
     });
 
     test("a message taken when the turn ends is recorded after that turn's words, not before them", async () => {

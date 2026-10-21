@@ -1720,10 +1720,16 @@ export class App {
             const images = (q.attachments ?? []).filter((a): a is ImagePart => a.type === "image");
             let n = 0;
             // Each [Image #k] label gets its image again, in order (the editor numbers them afresh).
+            const attach = (image: ImagePart) => e.attachImage({ name: `image ${++n}`, bytes: Math.floor((image.data.length * 3) / 4), part: image });
             for (const piece of q.text.split(/(\[Image #\d+\])/)) {
                 const image = /^\[Image #\d+\]$/.test(piece) ? images[n] : undefined;
-                if (image) e.attachImage({ name: `image ${++n}`, bytes: Math.floor((image.data.length * 3) / 4), part: image });
+                if (image) attach(image);
                 else if (piece) e.insert(piece);
+            }
+            // The app keeps a message's images beside its text, with no labels in it: they go after the text.
+            for (const image of images.slice(n)) {
+                if (e.text && !/\s$/.test(e.text)) e.insert(" ");
+                attach(image);
             }
         });
         if (typed) e.restore([typed]);

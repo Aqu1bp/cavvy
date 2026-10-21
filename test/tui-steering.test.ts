@@ -264,6 +264,20 @@ describe("a queue that outlives the TUI", () => {
         expect(loadQueue(path, app.session.meta.id).map((q) => q.text)).toEqual(["read this"]);
     });
 
+    test("resumed in the terminal, an image the app queued (no [Image #k] in its text) comes back attached", () => {
+        const { app: before } = testApp({ persist: true });
+        before.session.push({ role: "user", content: [{ type: "text", text: "hello" }], meta: { kind: "prompt" } });
+        const path = before.session.path;
+        saveQueue(path, before.session.meta.id, [{ text: "with a picture", mode: "queue", attachments: [{ type: "image", mediaType: "image/png", data: "AA==" }] }]);
+        before.session.release();
+        const { app } = testApp();
+        app.resume(path);
+        const draft = app.editor.capture();
+        expect(app.editor.text.replace(/[\u{100000}-\u{10fffd}]/gu, "")).toBe("with a picture [Image #1]");
+        expect([...draft.attachments.values()].map((a) => a.image?.part.data)).toEqual(["AA=="]);
+        expect(existsSync(queueFile(path, app.session.meta.id))).toBe(false);
+    });
+
     test("a torn or foreign queue file is ignored", () => {
         const { app } = testApp({ persist: true });
         const path = app.session.path;

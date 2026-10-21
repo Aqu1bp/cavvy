@@ -86,6 +86,12 @@ export interface BackendHost {
     drainQueued(progress?: () => BackendResult): string[] | Promise<string[]>;
     /** Called when a message to steer with arrives mid-turn, for a backend that can take it at once (Codex). Returns the unsubscribe. */
     onQueued?(listener: () => void): () => void;
+    /**
+     * Drained messages the backend never received (its turn ended before it took
+     * them). They're in the transcript already; the host saves them for the next
+     * turn, so they reach it even after a restart.
+     */
+    undelivered?(texts: string[]): void;
 }
 
 export interface BackendTurn {
