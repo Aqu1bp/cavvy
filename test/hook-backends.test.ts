@@ -557,6 +557,9 @@ describe("WorktreeCreate and WorktreeRemove", () => {
         await expect(make("true")).rejects.toThrow("didn't print the new worktree's path");
         await expect(make(`echo '${join(main, "missing")}'`)).rejects.toThrow("isn't a folder");
         await expect(make(`echo '${main}/../${main.split("/").pop()}'`)).rejects.toThrow("without . or ..");
+        // Relative too: resolved against the repository, a .. still names somewhere else.
+        await expect(make(`echo '../${main.split("/").pop()}'`)).rejects.toThrow("without . or ..");
+        await expect(make(`echo './sub'`)).rejects.toThrow("without . or ..");
     });
 
     test("a WorktreeRemove hook that deletes the folder removes it; Git's record is pruned", async () => {

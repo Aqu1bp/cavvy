@@ -465,7 +465,7 @@ function repoSettings(dir: string): Settings {
 
 /** The hook's answer as a folder to work in: an existing directory, a plain path, and not through a symlink inside the repository. */
 function hookWorktreePath(main: string, given: string): string {
-    if (isAbsolute(given) && given.split("/").some((s) => s === "." || s === "..")) throw new RpcError(`The WorktreeCreate hook gave ${given}: use a path without . or .. in it.`, "hook_failed");
+    if (given.split(/[\\/]/).some((s) => s === "." || s === "..")) throw new RpcError(`The WorktreeCreate hook gave ${given}: use a path without . or .. in it.`, "hook_failed");
     const path = resolve(main, given);
     if (!isDir(path)) throw new RpcError(`The WorktreeCreate hook gave ${path}, which isn't a folder.`, "hook_failed");
     // A symlink committed to the repository could point the worktree anywhere.
