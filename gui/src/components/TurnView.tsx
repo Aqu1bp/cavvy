@@ -376,8 +376,8 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
         if (kept) return { id, turnId, view: kept };
         return fetchGitChanges(id, "turn", undefined, undefined, turnId).then((view) => {
             const summary = summarize(view);
-            // Not an error: the next card to mount asks again.
-            if (!view.error) {
+            // Only a complete result: after an error or an incomplete read the next card to mount asks again.
+            if (!view.error && !view.incomplete) {
                 recordedTurns.delete(key);
                 recordedTurns.set(key, summary);
                 if (recordedTurns.size > RECORDED_KEPT) recordedTurns.delete(recordedTurns.keys().next().value!);

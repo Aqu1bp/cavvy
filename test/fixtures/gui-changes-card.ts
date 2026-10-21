@@ -9,11 +9,12 @@ import { firstChangedLine, plural } from "../../gui/src/lib/format";
 const source = readFileSync(new URL("../../gui/src/components/TurnView.tsx", import.meta.url), "utf8").replace(/^import [\s\S]*?;\n/gm, "");
 const calls: unknown[][] = [];
 let fail = false;
+let incomplete = false;
 const hunk = { header: "@@ -1,1 +1,1 @@", oldStart: 1, newStart: 4, lines: [{ kind: "add", text: "x", newLine: 4 }] };
 const fetchGitChanges = async (...args: unknown[]) => {
     calls.push(args);
     if (fail) return { repo: true, turnId: args[4], error: "git failed", files: [] };
-    return { repo: true, turnId: args[4], snapshotAvailable: true, incomplete: false, notes: [], more: 0, files: [{ path: "src/a.ts", status: "modified", added: 3, removed: 1, hunks: [hunk] }] };
+    return { repo: true, turnId: args[4], snapshotAvailable: true, incomplete, notes: incomplete ? ["Couldn't read the snapshot."] : [], more: 0, files: [{ path: "src/a.ts", status: "modified", added: 3, removed: 1, hunks: [hunk] }] };
 };
 const stub = () => node("widget");
 const ChangesCard = component(source, "ChangesCard", {
@@ -61,5 +62,20 @@ test("a failed diff isn't kept: the next card to mount asks again", async () => 
     await settle();
     expect(calls).toHaveLength(2);
     expect(text(b.root)).toContain("src/a.ts");
+    b.dispose();
+});
+
+test("an incomplete read isn't kept either: once the snapshot reads, a reopened card shows it whole", async () => {
+    calls.length = 0;
+    incomplete = true;
+    const a = mount(30);
+    await settle();
+    expect(text(a.root)).toContain("incomplete");
+    a.dispose();
+    incomplete = false;
+    const b = mount(30);
+    await settle();
+    expect(calls).toHaveLength(2);
+    expect(text(b.root)).not.toContain("incomplete");
     b.dispose();
 });
