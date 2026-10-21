@@ -69,7 +69,7 @@ const textFile = "# attached notes\n";
 const pdf = "%PDF-1.4\n%%EOF\n";
 const longPaste = "pasted line\n".repeat(101);
 const attachments: Attachment[] = [
-    { kind: "image", size: 10, name: "image", mediaType: "image/png", data: "image-data", preview: "preview" },
+    { kind: "image", size: 10, name: "image", mediaType: "image/png", data: "image-data" },
     await readAttachment(new File([textFile], "notes.md"), []),
     await readAttachment(new File([pdf], "report.pdf"), []),
     pastedText(longPaste, []),

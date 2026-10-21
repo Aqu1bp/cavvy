@@ -10,7 +10,7 @@ import { prefs } from "../state/prefs";
 import { fetchGitChanges } from "../state/changes";
 import { openInEditor, openReview } from "../state/actions";
 import { findReveal, setViewedImage } from "../state/ui";
-import { imagesReady, promptImages } from "../state/images";
+import { imagesReady, promptImages, type PromptImage } from "../state/images";
 import { ActivityGroup, groupBlocks, type Item } from "./blocks/Activity";
 import { Markdown } from "./blocks/Markdown";
 import { CopyButton, Spinner } from "./ui/bits";
@@ -23,21 +23,21 @@ function PromptImages(p: { sessionId?: string; turn: Turn; count: number }) {
             const k = key();
             return p.sessionId && p.turn.pos && k && imagesReady(p.sessionId) ? { id: p.sessionId, pos: p.turn.pos, key: k } : undefined;
         },
-        (k) => promptImages(k.id, k.pos, k.key).then((urls) => ({ key: k.key, urls }), () => ({ key: k.key, urls: [] as string[] })),
+        (k) => promptImages(k.id, k.pos, k.key).then((images) => ({ key: k.key, images }), () => ({ key: k.key, images: [] as PromptImage[] })),
     );
     // Only the images the prompt has now: the last ones fetched stay while offline, never another prompt's.
-    const urls = () => {
+    const images = () => {
         const f = fetched();
         const k = key();
-        return f && k && f.key === k ? f.urls : undefined;
+        return f && k && f.key === k ? f.images : undefined;
     };
     const label = () => `${p.count} image${p.count === 1 ? "" : "s"}`;
     return (
-        <Show when={urls()?.length} fallback={<span class="chip tiny">{label()}</span>}>
-            <For each={urls()}>
-                {(src, i) => (
-                    <button class="prompt-image" title="View full size" aria-label={`View image ${i() + 1} of ${urls()!.length}`} onClick={() => setViewedImage({ src, alt: `Image ${i() + 1} attached to the prompt` })}>
-                        <img src={src} alt="" />
+        <Show when={images()?.length} fallback={<span class="chip tiny">{label()}</span>}>
+            <For each={images()}>
+                {(img, i) => (
+                    <button class="prompt-image" title="View full size" aria-label={`View image ${i() + 1} of ${images()!.length}`} onClick={() => setViewedImage({ src: img.src, alt: `Image ${i() + 1} attached to the prompt` })}>
+                        <img src={img.thumb} alt="" />
                     </button>
                 )}
             </For>

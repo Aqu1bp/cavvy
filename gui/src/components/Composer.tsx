@@ -51,6 +51,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const [menuSel, setMenuSel] = createSignal(0);
     const [menuDismissedFor, setMenuDismissedFor] = createSignal<string>();
     const [dragging, setDragging] = createSignal(false);
+    /** dragenters less dragleaves: entering a child comes before leaving its parent, so it's 0 only once the drag is out. */
+    let dragDepth = 0;
     const [sending, setSending] = createSignal(false);
     const [effortOpen, setEffortOpen] = createSignal(false);
     let histIdx = -1;
@@ -507,15 +509,25 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     return (
         <div
             class={`composer v-${p.variant ?? "session"} ${shell() ? "shell" : ""} ${dragging() ? "dragging" : ""} ${working() ? "running" : ""}`}
+            onDragEnter={(e) => {
+                if (!e.dataTransfer?.types.includes("Files")) return;
+                dragDepth++;
+                setDragging(true);
+            }}
             onDragOver={(e) => {
                 if (e.dataTransfer?.types.includes("Files")) {
                     e.preventDefault();
                     setDragging(true);
                 }
             }}
-            onDragLeave={() => setDragging(false)}
+            onDragLeave={() => {
+                // Leaving for one of its own children isn't leaving: the ring stays on, instead of blinking off and fading back.
+                dragDepth = Math.max(0, dragDepth - 1);
+                if (!dragDepth) setDragging(false);
+            }}
             onDrop={(e) => {
                 e.preventDefault();
+                dragDepth = 0;
                 setDragging(false);
                 if (e.dataTransfer?.files) void addFiles(e.dataTransfer.files);
             }}

@@ -212,7 +212,6 @@ for (const lifecycle of ["mounted", "disposed", "replaced"] as const) {
     reopened.dispose();
 }
 
-if (image.kind === "image") URL.revokeObjectURL(image.preview);
 
 // Persistence follows live edits, without serializing any attachment content.
 const { composerStorage } = await import("../../gui/src/lib/drafts");
