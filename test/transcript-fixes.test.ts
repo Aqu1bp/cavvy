@@ -16,7 +16,7 @@ const { stallError } = await import("../src/providers/sse");
 const { httpError } = await import("../src/providers/openai-compat");
 const { readSegments, replay, UiLog } = await import("../src/server/history");
 const { formatCost } = await import("../src/providers/pricing");
-import type { ChatRequest } from "../src/providers/types";
+import type { ChatRequest, StreamEvent } from "../src/providers/types";
 
 afterAll(cleanup);
 
@@ -24,7 +24,7 @@ const reply = (content: any[], stopReason = "end_turn") => ({ role: "assistant",
 const text = (t: string) => reply([{ type: "text", text: t }]);
 
 /** An agent on a scripted model, with a session saved to disk. */
-function scripted(script: (req: ChatRequest, n: number) => any, o: { session?: any; mode?: string; model?: any } = {}) {
+function scripted(script: (req: ChatRequest, n: number, onEvent: (e: StreamEvent) => void) => any, o: { session?: any; mode?: string; model?: any; emit?: (e: any) => void } = {}) {
     const cwd = realpathSync(tempDir());
     const session = o.session ?? Session.create(cwd, { system: "SYSTEM" });
     const events: any[] = [];
@@ -35,13 +35,13 @@ function scripted(script: (req: ChatRequest, n: number) => any, o: { session?: a
     const agent = new Agent({
         session,
         model: o.model ?? ({ provider: "test", id: "test", name: "Test Model" } as any),
-        client: { stream: async (req: ChatRequest) => (requests.push(structuredClone({ ...req, signal: undefined })), script(req, ++n)) } as any,
+        client: { stream: async (req: ChatRequest, onEvent: (e: StreamEvent) => void) => (requests.push(structuredClone({ ...req, signal: undefined })), script(req, ++n, onEvent)) } as any,
         settings: () => settings,
         checker: new PermissionChecker(() => settings, cwd),
         tools: [],
         mode: { get: () => mode as any, set: (m: any) => (mode = m) },
         toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() } as any,
-        host: { emit: (e: any) => events.push(e), ui: {} } as any,
+        host: { emit: (e: any) => { events.push(e); o.emit?.(e); }, ui: {} } as any,
     });
     const run = (prompt: string, signal = new AbortController().signal) => agent.run([{ type: "text", text: prompt }], { signal });
     return { agent, session, events, requests, run, cwd };
@@ -129,6 +129,121 @@ describe("a failed turn leaves its reason on disk", () => {
         expect(loaded.notices).toEqual([]);
         loaded.release();
         expect(Session.load(a.session.path).notices).toEqual([]);
+    });
+});
+
+describe("output token limit continuation", () => {
+    test("continues partial text once, without duplicating the transcript or reopened UI", async () => {
+        const a = scripted((_req, n) => n === 1 ? reply([{ type: "text", text: "The answer is " }], "max_tokens") : text("forty-two."));
+        expect(await a.run("answer")).toBe("done");
+        expect(a.requests).toHaveLength(2);
+        expect(a.requests[1]!.messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+        expect(a.requests[1]!.messages.at(-1)).toMatchObject({ role: "user", meta: { kind: "reminder" }, content: [{ type: "text", text: expect.stringContaining("Continue from where you stopped") }] });
+        const parts = a.session.messages.filter((m: any) => m.role === "assistant").flatMap((m: any) => m.content.map((p: any) => p.text));
+        expect(parts).toEqual(["The answer is ", "forty-two."]);
+        expect(a.events.filter((e) => e.type === "assistant").map((e) => e.message.content[0].text)).toEqual(parts);
+        expect(a.session.notices).toEqual([]);
+        a.session.release();
+        const turns = reopenTurns(a.session.path);
+        expect(turns).toHaveLength(1);
+        expect(turns[0]!.blocks.filter((b) => b.t === "text").map((b) => b.text)).toEqual(parts);
+    });
+
+    test("streamed continuations appear once in the live UI", async () => {
+        const { Engine } = await import("../src/server/engine");
+        const engine = new Engine({ listModels: async () => [] });
+        try {
+            const rt = await engine.createSession(realpathSync(tempDir()));
+            await rt.ready;
+            rt.session.setTitle("Continuation test");
+            const a = scripted((_req, n, onEvent) => {
+                const part = n === 1 ? "The answer is " : "forty-two.";
+                onEvent({ type: "text", text: part });
+                return reply([{ type: "text", text: part }], n === 1 ? "max_tokens" : "end_turn");
+            }, { session: rt.session, emit: (e) => (rt as any).onEvent(e) });
+            Object.assign(rt, { model: a.agent.model, agent: a.agent });
+            await rt.startTurn("answer");
+            const turns = rt.snapshot().turns;
+            expect(turns).toHaveLength(1);
+            expect(turns[0]!.blocks.filter((b) => b.t === "text").map((b) => b.text)).toEqual(["The answer is ", "forty-two."]);
+            expect(a.events.filter((e) => e.type === "text").map((e) => e.text)).toEqual(["The answer is ", "forty-two."]);
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test.each(["text", "thinking"])("preserves raw %s and appends a user continuation in every wire format", async (kind) => {
+        const { toAnthropicMessages } = await import("../src/providers/anthropic");
+        const { toOpenAIMessages } = await import("../src/providers/openai-compat");
+        const { toResponsesInput } = await import("../src/providers/openai-responses");
+        const { BUILTIN_PROVIDERS } = await import("../src/providers/registry");
+        const anthropic = kind === "text" ? [{ type: "text", text: "partial" }] : [{ type: "thinking", thinking: "partial", signature: "signed" }];
+        const openai = kind === "text" ? { role: "assistant", content: "partial" } : { role: "assistant", content: null, reasoning_content: "partial" };
+        const responses = kind === "text"
+            ? [{ type: "message", id: "msg_1", role: "assistant", status: "incomplete", content: [{ type: "output_text", text: "partial", annotations: [] }] }]
+            : [{ type: "reasoning", id: "rs_1", status: "incomplete", summary: [], encrypted_content: "encrypted" }];
+        const a = scripted((_req, n) => n === 1 ? { ...reply([{ type: kind, text: "partial" }], "max_tokens"), raw: { anthropic, openai, responses } } : text("finished"));
+        await a.run("answer");
+        expect(a.requests).toHaveLength(2);
+        const messages = a.requests[1]!.messages;
+        const def = { ...BUILTIN_PROVIDERS.find((p) => p.id === "openai")!, id: "test" };
+        const ant = toAnthropicMessages(messages);
+        expect(ant.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+        expect(ant[1]!.content).toEqual(anthropic);
+        const chat = toOpenAIMessages("", messages, def);
+        expect(chat.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+        expect(chat[1]).toEqual(openai);
+        const resp = toResponsesInput(messages, def, "test");
+        expect(resp[1]).toEqual(responses[0]);
+        for (const wire of [ant, chat, resp]) {
+            expect(wire).toHaveLength(3);
+            expect(wire.at(-1)).toMatchObject({ role: "user" });
+            expect(JSON.stringify(wire.at(-1))).toContain("Continue from where you stopped");
+        }
+        // Anthropic's existing signature fallback drops thinking and merges the user messages.
+        if (kind === "thinking") expect(toAnthropicMessages(messages, true).map((m) => m.role)).toEqual(["user"]);
+    });
+
+    test.each(["text", "thinking", "empty"])("bounds repeated %s cut-offs to three continuations per user turn", async (kind) => {
+        const a = scripted((_req, n) => reply(kind === "empty" ? [] : [{ type: kind, text: `part ${n}` }], "max_tokens"));
+        for (let turn = 1; turn <= 2; turn++) {
+            expect(await a.run("answer")).toBe("done");
+            expect(a.requests).toHaveLength(turn * 4);
+            expect(a.session.messages.filter((m: any) => m.meta?.kind === "reminder")).toHaveLength(turn * 3);
+            expect(a.session.notices.map((n: any) => n.text)).toEqual(Array(turn).fill("Response was cut off at the output token limit."));
+        }
+    });
+
+    test("a thinking-only cut-off can continue to a visible answer", async () => {
+        const a = scripted((_req, n) => n === 1 ? reply([{ type: "thinking", text: "Working it out" }], "max_tokens") : text("42"));
+        expect(await a.run("answer")).toBe("done");
+        expect(a.requests).toHaveLength(2);
+        expect(a.session.messages.at(-1).content).toEqual([{ type: "text", text: "42" }]);
+        expect(a.session.notices).toEqual([]);
+    });
+
+    test("abort during a continuation stops requests and discards its partial response", async () => {
+        const ac = new AbortController();
+        const a = scripted((_req, n) => {
+            if (n === 2) ac.abort();
+            return reply([{ type: "text", text: `part ${n}` }], "max_tokens");
+        });
+        expect(await a.run("answer", ac.signal)).toBe("aborted");
+        expect(a.requests).toHaveLength(2);
+        expect(a.events.filter((e) => e.type === "assistant").map((e) => e.message.content[0].text)).toEqual(["part 1"]);
+        expect(a.session.messages.at(-1).meta.kind).toBe("interrupt");
+    });
+
+    test("truncated tool calls still get error results and their own strike limit", async () => {
+        const a = scripted((_req, n) => n % 2 === 1
+            ? reply([{ type: "text", text: "partial" }], "max_tokens")
+            : reply([{ type: "tool_call", id: `c${n}`, name: "Nope", input: {} }], "max_tokens"));
+        expect(await a.run("answer")).toBe("error");
+        expect(a.requests).toHaveLength(6);
+        const results = a.session.messages.filter((m: any) => m.meta?.kind === "tool_results").flatMap((m: any) => m.content);
+        expect(results).toHaveLength(3);
+        for (const r of results) expect(r).toMatchObject({ type: "tool_result", isError: true, content: expect.stringContaining("was not run") });
+        expect(a.events.some((e) => e.type === "tool_start")).toBe(false);
     });
 });
 

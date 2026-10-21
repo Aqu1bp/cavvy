@@ -629,6 +629,7 @@ export class Agent {
 
         let turns = 0;
         let maxTokenStrikes = 0;
+        let maxTokenContinuations = 0;
         let pauses = 0;
         let stopHookRounds = 0;
         let overflowCompacted = false;
@@ -719,6 +720,17 @@ export class Agent {
             }
 
             if (!calls.length) {
+                if (msg.stopReason === "max_tokens" && maxTokenContinuations < 3) {
+                    maxTokenContinuations++;
+                    // Keep the partial response intact, including provider reasoning state.
+                    // A user reminder permits continuation without an assistant prefill.
+                    this.session.push({
+                        role: "user",
+                        content: [reminder("Your response hit the output token limit. Continue from where you stopped without repeating what you already wrote. If you have not answered yet, continue with your answer.")],
+                        meta: { kind: "reminder" },
+                    });
+                    continue;
+                }
                 if (msg.stopReason === "max_tokens") this.endNotice("warn", "Response was cut off at the output token limit.");
                 else if (msg.stopReason === "refusal") this.endNotice("warn", "The model declined this request.");
                 // Nothing at all came back this turn: say so rather than end it blank.
