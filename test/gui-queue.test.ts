@@ -18,19 +18,26 @@ describe("steer or queue", () => {
 });
 
 describe("queue rows", () => {
-    test("send now is offered where it does something: not for one already steering, nor (mid-turn) one that can't join", () => {
-        expect(queueRow("steer", true).sendNow).toBeUndefined();
-        expect(queueRow("queue", true).sendNow).toMatch(/join the current turn/);
-        expect(queueRow("turn", true).sendNow).toBeUndefined();
-        expect(queueRow("turn", false).sendNow).toBe("Send now");
-        expect(queueRow("held", false).sendNow).toMatch(/new turn/);
-        expect(queueRow("held", true).sendNow).toMatch(/join the current turn/);
+    test("while a turn runs, a queued message offers Steer; idle, Send now; none for one already steering, nor one that can't join", () => {
+        expect(queueRow("queue", true).action).toEqual({ label: "Steer", title: "Add to the current turn at its next step" });
+        expect(queueRow("held", true).action).toMatchObject({ label: "Steer", title: expect.stringMatching(/^Add to the current turn at its next step/) });
+        expect(queueRow("steer", true).action).toBeUndefined();
+        expect(queueRow("turn", true).action).toBeUndefined();
+        expect(queueRow("queue", false).action?.label).toBe("Send now");
+        expect(queueRow("turn", false).action?.label).toBe("Send now");
+        expect(queueRow("held", false).action).toEqual({ label: "Send now", title: expect.stringMatching(/new turn/) });
         // An older server sends no modes: everything steered, as it did.
         expect(queueRow(undefined, true)).toEqual(queueRow("steer", true));
     });
 
+    test("one already steering says it's on its way, and where it goes in when no step is left", () => {
+        expect(queueRow("steer", true)).toMatchObject({ hint: "Joins at the next step", joining: true });
+        expect(queueRow("steer", true).detail).toMatch(/at its next step\. If the model is already writing its last reply, it goes in right after that reply/);
+        expect(queueRow("steer", false).joining).toBe(false);
+    });
+
     test("each says what it will do, in a word or two, and why in its tooltip", () => {
-        expect(queueRow("steer", true).hint).toBe("Next step");
+        expect(queueRow("steer", false).hint).toBe("Next step");
         expect(queueRow("queue", true).hint).toBe("After this turn");
         expect(queueRow("turn", true).detail).toMatch(/Images, files and commands/);
         expect(queueRow("held", false)).toMatchObject({ hint: "Held", detail: expect.stringMatching(/restarted/) });

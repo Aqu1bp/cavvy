@@ -2227,9 +2227,19 @@ describe("attachments", () => {
         const { agent } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
         await agent.run([{ type: "text", text: "read these" }, file, pdf], { signal: signal() });
         const content = received().find((m) => m.type === "user").message.content;
-        expect(content[0].type).toBe("text");
-        expect(content[0].text.startsWith(`read these\n\n${framedText(file)}`)).toBe(true);
-        expect(content.slice(1)).toEqual([{ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdf.data } }]);
+        expect(content.at(-1).type).toBe("text");
+        expect(content.at(-1).text.startsWith(`read these\n\n${framedText(file)}`)).toBe(true);
+        expect(content.slice(0, -1)).toEqual([{ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdf.data } }]);
+    });
+
+    test("Claude Code gets a /command with images as its last block, where it reads commands from", async () => {
+        const { agent } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
+        const image = { type: "image", mediaType: "image/png", data: Buffer.from("png").toString("base64") } as const;
+        await agent.run([{ type: "text", text: "/code-review the login form" }, image, image], { signal: signal() });
+        const content = received().find((m) => m.type === "user").message.content;
+        // Claude Code takes the input string from the last block only when it's text; the blocks before go along with it.
+        expect(content.at(-1)).toEqual({ type: "text", text: "/code-review the login form" });
+        expect(content.slice(0, -1)).toEqual([image, image].map((i) => ({ type: "image", source: { type: "base64", media_type: i.mediaType, data: i.data } })));
     });
 
     test("Codex gets text files framed in its prompt; a PDF isn't sent, only named", async () => {

@@ -15,7 +15,7 @@ import { splitComments, takesComments, withComments } from "../../gui/src/lib/re
 import { plural } from "../../gui/src/lib/format";
 import { aroundOf, createReviewCommentStore } from "../../gui/src/state/review-comments";
 import type { RunResult } from "../../src/server/protocol";
-import { applyKeybindingsFile, keymap, matchKey, shortcut, withShortcut } from "../../gui/src/state/keybindings";
+import { applyKeybindingsFile, keymap, matchKey, shortcut, shortcutHint, withShortcut } from "../../gui/src/state/keybindings";
 import { eventStrokes } from "../../gui/src/lib/keystrokes";
 import { os } from "../../gui/src/lib/platform";
 /** The keybindings follow the OS the tests run on (Mod is Ctrl off a Mac); the steer-or-queue key is Mod+Shift+Enter. */
@@ -73,9 +73,11 @@ const turns = [{ startedAt: Date.now() - 3_600_000 }];
 const sessionState = { cwd: "/workspace", queued: ["joins", "waits"], queueIds: [1, 2], queuedModes: ["steer", "queue"], get interactions() { return asks(); }, model: {}, get activity() { return activity(); }, get busy() { return working(); }, get goal() { return goal(); } };
 let interrupts = 0;
 const sent: { text: string; followUp?: string }[] = [];
+/** What went with each message sent. */
+const sentAttachments: unknown[][] = [];
 const calls: { method: string; params: any }[] = [];
 const appState = { conn: "open", homeCwd: "/workspace", settings: {} as { followUpBehavior?: string }, models: [] };
-const deps = { ...solid, ...components, renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, firstSendable, followUpFor, otherFollowUp, canStop, now: () => Date.now(), turnDuration: (ms: number) => `${Math.round(ms / 1000)}s`, keymap, matchKey, withShortcut, shortcut, eventStrokes,
+const deps = { ...solid, ...components, renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, firstSendable, followUpFor, otherFollowUp, canStop, now: () => Date.now(), turnDuration: (ms: number) => `${Math.round(ms / 1000)}s`, keymap, matchKey, withShortcut, shortcut, shortcutHint, eventStrokes,
     comparePicks, setComparePicks, startRun: runSheet.startRun,
     splitComments, takesComments, withComments, plural, setReview: noop,
     aroundOf, reviewComments: commentStore, newCommentId: () => crypto.randomUUID(),
@@ -85,9 +87,10 @@ const deps = { ...solid, ...components, renderer, createComposerDraft, composerS
     contextCardOpen: () => false, setContextCardOpen: noop, contextView: () => ({ ring: false }),
     focusComposer: () => 0, modelPickerOpen: () => false, modePickerOpen: () => false,
     setModelPickerOpen: noop, setModePickerOpen: noop, blockedBy: () => false,
+    readAttachment: async (f: { name: string }) => ({ kind: "image", name: f.name, size: 3, mediaType: "image/png", data: "cG5n", preview: "" }),
     prefs: { enterSends: true }, mod: "⌘", isMod: (e: any) => e.metaKey, interrupt: () => void interrupts++,
-    send: async (text: string, _attachments: unknown[], opts: { accepted: (id: string) => void; followUp?: string }) => { sends++; sent.push({ text, followUp: opts.followUp }); if (holdSend) await holdSend; opts.accepted(session()); return true; }, toast: noop, reportError: noop,
-    rpc: { call: async (method: string, params: any) => { calls.push({ method, params }); if (method === "commands.list") { commandLists++; return [{ name: "help", description: "Help" }, { name: "pdf", description: "Read PDFs", skill: true }]; } const reply = Promise.withResolvers<string[]>(); replies.push(reply); return reply.promise; } },
+    send: async (text: string, attachments: unknown[], opts: { accepted: (id: string) => void; followUp?: string }) => { sends++; sent.push({ text, followUp: opts.followUp }); sentAttachments.push(attachments); if (holdSend) await holdSend; opts.accepted(session()); return true; }, toast: noop, reportError: noop,
+    rpc: { call: async (method: string, params: any) => { calls.push({ method, params }); if (method === "commands.list") { commandLists++; return [{ name: "help", description: "Help" }, { name: "pdf", description: "Read PDFs", skill: true }, { name: "compact", description: "Summarize", noAttachments: true }]; } const reply = Promise.withResolvers<string[]>(); replies.push(reply); return reply.promise; } },
     window: { innerHeight: 800, matchMedia: () => ({ matches: narrow }) },
     document: { get activeElement() { return focused; }, querySelector: () => modal ? {} : undefined },
     requestAnimationFrame: (fn: () => void) => { frames.push(fn); return frames.length; }, cancelAnimationFrame: noop,
@@ -199,7 +202,12 @@ assert.equal(ta.props.value, "");
 assert.equal(sent.at(-1)!.followUp, undefined);
 setWorking(true);
 assert.match(ta.props.placeholder, /^Steer/);
+// Writing while it runs: the key that sends it the other way shows by the send button.
+const altHints = () => nodes.filter((n) => n.props.class === "c-alt").length;
+const hintsBefore = altHints();
 input("steer this");
+assert.equal(altHints(), hintsBefore + 1, "the other way's key shows once something is written");
+assert.ok(renderedText.includes("queue"), "it names the other way: queue");
 key("Enter");
 await Bun.sleep(0);
 assert.deepEqual(sent.at(-1), { text: "steer this", followUp: "steer" });
@@ -383,6 +391,25 @@ assert.equal(list.scrollTop, 20);
     holdSend = undefined;
     await Bun.sleep(0);
     assert.deepEqual(commentStore.list(id).map((c) => [c.id, c.text]), [["sent", "NEW UNSENT TEXT"], ["later", "Added meanwhile"]]);
+}
+// With screenshots pasted in, / still opens the commands; one that would drop them says so, and the others run with them.
+{
+    let pastePrevented = false;
+    ta.props.onPaste({ clipboardData: { files: [{ name: "one.png" }, { name: "two.png" }, { name: "three.png" }], getData: () => "" }, preventDefault: () => { pastePrevented = true; } });
+    await Bun.sleep(0);
+    assert.ok(pastePrevented);
+    const warnings = () => nodes.filter((n) => n.props.class === "cm-desc cm-warn truncate").length;
+    const warned = warnings();
+    input("/");
+    assert.equal(ta.props["aria-expanded"], true, "the / menu opens with images attached");
+    assert.ok(nodes.some((n) => n.props.role === "option" && n.props["aria-selected"]));
+    assert.equal(warnings(), warned + 1, "/compact says it doesn't take attachments");
+    input("/hel");
+    key("Enter");
+    await Bun.sleep(0);
+    assert.equal(sent.at(-1)!.text, "/help");
+    assert.deepEqual((sentAttachments.at(-1) as { name: string }[]).map((a) => a.name), ["one.png", "two.png", "three.png"], "the command goes with the images");
+    assert.equal(ta.props.value, "");
 }
 dispose();
 composerStorage.flush();

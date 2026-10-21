@@ -1816,11 +1816,11 @@ export class Engine {
     /** With `provider`, the commands that agent CLI runs itself too (those it last listed). */
     private commandsFor(cwd: string, provider?: string): CommandInfo[] {
         const builtin: CommandInfo[] = [
-            { name: "compact", description: "Summarize the conversation to free up context", args: "[instructions]" },
+            { name: "compact", description: "Summarize the conversation to free up context", args: "[instructions]", noAttachments: true },
             { name: "init", description: "Create a HARNESS.md with notes about this codebase" },
             { name: "review", description: "Review the current changes (or a PR number) for bugs", args: "[pr|focus]" },
             { name: "goal", description: "Keep working until a condition holds (/goal clear stops)", args: "[condition]" },
-            { name: "trust", description: "Trust this folder yourself (MCP approvals, diagnostics after edits)" },
+            { name: "trust", description: "Trust this folder yourself (MCP approvals, diagnostics after edits)", noAttachments: true },
             { name: "model", description: "Switch the model" },
             { name: "mode", description: "Switch the permission mode" },
             { name: "rewind", description: "Go back to before an earlier prompt" },
@@ -1834,8 +1834,8 @@ export class Engine {
             { name: "plugin", description: "Browse, install and manage plugins" },
             { name: "cost", description: "Tokens and cost by model, and your plan's limits" },
             { name: "context", description: "How full the context window is, and your plan's limits" },
-            { name: "loop", description: "Run a prompt now and then every interval (default 10m); /loop stop stops it", args: "[interval] <prompt>" },
-            { name: "schedules", description: "This session's schedules (pause, run or delete them above the message box)", args: "[pause|resume|delete|run <id>]" },
+            { name: "loop", description: "Run a prompt now and then every interval (default 10m); /loop stop stops it", args: "[interval] <prompt>", noAttachments: true },
+            { name: "schedules", description: "This session's schedules (pause, run or delete them above the message box)", args: "[pause|resume|delete|run <id>]", noAttachments: true },
         ];
         const ws = this.workspaces.get(resolve(cwd));
         // Before a session opens the project, its commands are read from disk (the home screen checks a /word against them).

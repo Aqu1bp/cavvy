@@ -47,7 +47,7 @@ export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAll
                 <span class="lbl">{MODE_LABELS[p.mode].label}</span>
                 <ChevronDown size={13} class="chev" />
             </button>
-            <Menu label="Permission mode" open={p.open} anchor={() => anchor} edge={p.edge} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={340}>
+            <Menu label="Permission mode" open={p.open} anchor={() => anchor} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={340}>
                 <div class="mode-menu">
                     <div class="menu-head">
                         <span>Permission mode</span>

@@ -896,6 +896,8 @@ export interface CommandInfo {
     custom?: boolean;
     /** A skill (SKILL.md): runs as /name, and $name mentions it in a prompt. */
     skill?: boolean;
+    /** Answered without the model (/compact, /loop): a message with attachments is refused, as they'd be lost. */
+    noAttachments?: boolean;
 }
 
 /** One window of a plan's usage limits (five hours, a week), as an agent CLI reported it. */

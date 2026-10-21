@@ -6,7 +6,7 @@ import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/ap
 import { interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview } from "../state/ui";
-import { keymap, matchKey, shortcut, withShortcut } from "../state/keybindings";
+import { keymap, matchKey, shortcut, shortcutHint, withShortcut } from "../state/keybindings";
 import { eventStrokes } from "../lib/keystrokes";
 import type { MatchResult } from "../../../src/keybindings/core";
 import { EffortPicker, ModelPicker, type CompareOption } from "./ModelPicker";
@@ -475,10 +475,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         return `${now}. ${mod}-click${otherKey ? ` or ${otherKey}` : ""} to ${other} instead.`;
     };
     const canSend = createMemo(() => hasContent() && !blocked());
-    /** Menus open clear of the whole card, tabs included, so they never cover what you're typing. */
-    let root: HTMLDivElement | undefined;
-    const edge = () => root;
-    // Home's composer has the page below it; a session's sits at the bottom of the window.
+    // The pickers open from their own button, left-aligned with it (design/glass placePop): above it in a
+    // session, at the bottom of the window; below it on Home, which has the page below it. Each flips if there's no room.
     const menuSide = () => (p.variant === "home" ? "bottom" : "top");
     const interactions = () => st()?.interactions ?? [];
     /** The status row: while a turn runs, unless a request card already says what's happening. */
@@ -508,7 +506,6 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
 
     return (
         <div
-            ref={root}
             class={`composer v-${p.variant ?? "session"} ${shell() ? "shell" : ""} ${dragging() ? "dragging" : ""} ${working() ? "running" : ""}`}
             onDragOver={(e) => {
                 if (e.dataTransfer?.types.includes("Files")) {
@@ -558,7 +555,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                                         <span class="cm-args"> {c().cmd.args}</span>
                                                     </Show>
                                                 </span>
-                                                <span class="cm-desc truncate">{c().cmd.description}</span>
+                                                {/* /compact and the like answer without the model: what's attached would be lost, so the server refuses it. */}
+                                                <Show when={c().cmd.noAttachments && !c().mention && attachments().length} fallback={<span class="cm-desc truncate">{c().cmd.description}</span>}>
+                                                    <span class="cm-desc cm-warn truncate">Doesn't take attachments: send them on their own</span>
+                                                </Show>
                                             </>
                                         )}
                                     </Match>
@@ -690,11 +690,19 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         </button>
                     </Show>
                     <span class="vsep" aria-hidden="true" />
-                    <ModelPicker current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} edge={edge} placement={menuSide()} compare={p.sessionId ? undefined : p.compare} />
-                    <EffortPicker current={st()?.model} currentRef={app.settings.model} effort={st() ? st()!.effort : app.settings.effort} fast={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy && !st()?.activity?.idle} open={effortOpen()} setOpen={setEffortOpen} edge={edge} placement={menuSide()} />
-                    <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} open={modePickerOpen()} setOpen={setModePickerOpen} edge={edge} placement={menuSide()} />
+                    <ModelPicker current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare} />
+                    <EffortPicker current={st()?.model} currentRef={app.settings.model} effort={st() ? st()!.effort : app.settings.effort} fast={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy && !st()?.activity?.idle} open={effortOpen()} setOpen={setEffortOpen} placement={menuSide()} />
+                    <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} open={modePickerOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
                     <span class="grow" />
                     <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} />
+                    {/* Writing while a turn runs: the key that sends it the other way, by the button that sends it this way. */}
+                    <Show when={busy() && hasContent() && !runPicks() && shortcutHint("chat:submitOtherWay")}>
+                        {(key) => (
+                            <kbd class="c-alt" title={sendTitle()}>
+                                {key()} {otherFollowUp(shown())}
+                            </kbd>
+                        )}
+                    </Show>
                     <Show
                         when={canStop(st()) && !hasContent()}
                         fallback={
