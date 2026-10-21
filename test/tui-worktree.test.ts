@@ -396,6 +396,36 @@ describe("on exit", () => {
         }
     });
 
+    test("trust doesn't carry over when the launch subfolder isn't in the checkout: it would cover the whole worktree", async () => {
+        const { trustFolder, isTrusted, forgetTrustInside } = await import("../src/config/trust");
+        const { carryTrust } = await import("../src/ui/worktree");
+        const main = repo();
+        // Only an untracked local/ is trusted; the committed project isn't.
+        const local = join(main, "local");
+        mkdirSync(local);
+        trustFolder(local);
+        try {
+            const wt = await W.enterSessionWorktree({ cwd: local, name: "widen" });
+            expect(wt.cwd).toBe(wt.path);
+            carryTrust(local, wt, "head");
+            expect(isTrusted(wt.path)).toBe(false);
+        } finally {
+            forgetTrustInside(main);
+        }
+    });
+
+    test("a linked subfolder in the worktree that leads back into the main checkout isn't where the session starts", async () => {
+        const main = repo();
+        // On the worktree's branch, src is committed as an absolute link to main's own src.
+        const first = await W.enterSessionWorktree({ cwd: main, name: "linked" });
+        rmSync(join(first.path, "src"), { recursive: true });
+        symlinkSync(join(main, "src"), join(first.path, "src"));
+        git(first.path, "add", "-A");
+        git(first.path, "commit", "-qm", "link");
+        const wt = await W.enterSessionWorktree({ cwd: join(main, "src"), name: "linked" });
+        expect(wt.cwd).toBe(wt.path);
+    });
+
     test("removing a worktree forgets trust saved for it, and only for it", async () => {
         const { trustFolder, trustedByUser } = await import("../src/config/trust");
         const { main, wt } = await fresh();

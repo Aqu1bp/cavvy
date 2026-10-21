@@ -98,7 +98,8 @@ export async function startWorktree(o: { cwd: string; name?: string; branchPrefi
  * Trusting the main checkout already covers its worktrees.
  */
 export function carryTrust(launchCwd: string, wt: SessionWorktree, baseRef: BaseRef) {
-    if (trustedByUser(launchCwd) && wt.created && !wt.fromBranch && baseRef === "head") trustUntilExit(wt.cwd);
+    // Only to the same subfolder: falling back to the root would trust the whole checkout.
+    if (trustedByUser(launchCwd) && wt.sameFolder && wt.created && !wt.fromBranch && baseRef === "head") trustUntilExit(wt.cwd);
 }
 
 /** What else trusting a folder turns on, when it has project configuration. */

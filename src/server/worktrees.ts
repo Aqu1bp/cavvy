@@ -741,6 +741,8 @@ export interface SessionWorktree {
     path: string;
     /** Where the session starts: the folder it was launched from, at the same place in the worktree (when it's there). */
     cwd: string;
+    /** Whether `cwd` is that same place, not the root it fell back to. */
+    sameFolder: boolean;
     main: string;
     /** Undefined when it's on a detached HEAD (a reopened one). */
     branch?: string;
@@ -772,13 +774,16 @@ function pickBase(cwd: string, baseRef: BaseRef): { ref?: string; label?: string
 }
 
 /** The same place in `worktree` as `cwd` is in its own worktree, if that folder is there. */
-function sameSubfolder(cwd: string, worktree: string): string {
+function sameSubfolder(cwd: string, worktree: string): { cwd: string; matched: boolean } {
     const top = runGit(cwd, ["rev-parse", "--show-toplevel"])?.replace(/\n$/, "");
-    if (!top) return worktree;
+    if (!top) return { cwd: worktree, matched: false };
     const rel = relative(canonical(top), canonical(cwd));
-    if (!rel || rel.startsWith("..") || isAbsolute(rel)) return worktree;
+    if (!rel) return { cwd: worktree, matched: true };
+    if (rel.startsWith("..") || isAbsolute(rel)) return { cwd: worktree, matched: false };
     const there = join(worktree, rel);
-    return isDir(there) ? there : worktree;
+    // Still inside the worktree once links are followed: a linked src/ could lead back into the main checkout.
+    const real = canonical(worktree);
+    return isDir(there) && isInside(canonical(there), real) ? { cwd: there, matched: true } : { cwd: worktree, matched: false };
 }
 
 /**
@@ -812,7 +817,8 @@ export async function enterSessionWorktree(o: { cwd: string; name?: string; bran
             const marker = readMarker(existing.path);
             // feat/login and feat-login share a folder name, not a worktree.
             if (marker && marker.name !== name) throw new RpcError(`The folder ${folder} is already the worktree for “${marker.name}”. Use that name to reopen it, or pick another.`, "path_exists");
-            return done({ name, path: existing.path, cwd: sameSubfolder(cwd, existing.path), branch: existing.branch, base: marker?.base, created: false });
+            const at = sameSubfolder(cwd, existing.path);
+            return done({ name, path: existing.path, cwd: at.cwd, sameFolder: at.matched, branch: existing.branch, base: marker?.base, created: false });
         }
         if (lexists(path)) throw new RpcError(`${path} exists but isn't one of this repository's worktrees. Move it, or pick another name.`, "path_exists");
     } else {
@@ -839,7 +845,8 @@ export async function enterSessionWorktree(o: { cwd: string; name?: string; bran
         // Without it the worktree is never cleaned up automatically, which is the safe side.
         logFailure(log, "couldn't mark the worktree", String(e));
     }
-    return done({ name, path: made.path, cwd: sameSubfolder(cwd, made.path), branch: made.branch, base: made.commit, baseLabel: base.label, created: true, fromBranch: kept, note: base.note });
+    const at = sameSubfolder(cwd, made.path);
+    return done({ name, path: made.path, cwd: at.cwd, sameFolder: at.matched, branch: made.branch, base: made.commit, baseLabel: base.label, created: true, fromBranch: kept, note: base.note });
 }
 
 /** What removing a worktree would lose. Nothing here changes anything. */
