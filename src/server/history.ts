@@ -438,7 +438,7 @@ function restoredAgent(rec: AgentRun, t: Turn): AgentRun {
 /** How an interrupted turn ends in the history (as Agent writes it when a turn is stopped). */
 export const INTERRUPTED = "[Request interrupted by user]";
 
-const isPrompt = (m: Message) => m.role === "user" && (m.meta?.kind === undefined || m.meta.kind === "prompt" || m.meta.kind === "command");
+const isPrompt = (m: Message) => m.role === "user" && (m.meta?.kind === undefined || m.meta.kind === "prompt" || m.meta.kind === "command" || m.meta.kind === "wake");
 /** Where a turn starts: a prompt, or tool results a message sent meanwhile rides along with. */
 const startsTurn = (m: Message) => isPrompt(m) || (m.role === "user" && m.meta?.kind === "tool_results" && m.content.some((p) => p.type === "text" && p.text.startsWith(STEERING)));
 
@@ -589,7 +589,8 @@ export function replay(o: ReplayInput): Turn[] {
                 }
                 const rec = o.ui.turn(si, index);
                 const imported = Boolean(m.meta?.imported);
-                const t = start({ text: promptText(m), ...attachedPrompt(m.content), ...(kind === "command" ? { command: true } : {}), ...(archived || imported ? {} : { index }) }, rec?.at, index);
+                // A wake (a watched PR, a monitor) isn't a prompt to rewind to.
+                const t = start({ text: promptText(m), ...attachedPrompt(m.content), ...(kind === "command" ? { command: true } : {}), ...(kind === "wake" ? { wake: true } : archived || imported ? {} : { index }) }, rec?.at, index);
                 t.snapshotId = m.meta?.checkpoint;
                 if (imported) t.imported = true;
                 if (rec?.end) t.endedAt = rec.end;

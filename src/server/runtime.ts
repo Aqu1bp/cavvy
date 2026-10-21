@@ -5,6 +5,8 @@
 
 import { NO_SCHEDULES, SessionSchedules, type ScheduleAction } from "../agent/schedule-host";
 import { CRON_TOOLS, jobLine } from "../agent/schedule-tools";
+import { GIT_TOOL_HEADINGS } from "../tools/git-tools";
+import { WakeQueue, WatcherMap, formatWakes, stopWatchers, wakeDisplay, type Wake } from "../agent/wakes";
 import { turnDuration } from "./duration";
 import { existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
@@ -288,7 +290,7 @@ export class Runtime {
         const effort = opts.resumed ? this.ui.state.effort : undefined;
         if (effort && EFFORT_LEVELS.includes(effort)) this.effort = effort;
         // Secrets live as long as the session is loaded: unloading it (closed, or idle with no window on it) drops them.
-        this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore() };
+        this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore(), wakes: new WakeQueue(), watchers: new WatcherMap() };
         this.toolState.secrets!.onChange(() => this.setState({ secrets: this.toolState.secrets!.names() }));
         this.schedules = new SessionSchedules({
             session: () => this.session,
@@ -302,6 +304,10 @@ export class Runtime {
             },
         });
         this.toolState.scheduler = this.schedules.scheduler;
+        (this.toolState.watchers as WatcherMap).onChange = () => {
+            if (!this.closed) this.setState({ watches: (this.toolState.watchers as WatcherMap).info() });
+        };
+        this.toolState.wakes!.onReady(() => this.wake());
         this.checker = new PermissionChecker(() => this.settings(), ws.cwd);
         this.classifier = new AutoClassifier(undefined);
         this.reviewer = ws.settings.reviewModel;
@@ -405,6 +411,7 @@ export class Runtime {
             mcp: this.ws.mcpStatus(),
             filesChanged: this.filesChanged(),
             shells: [],
+            watches: [],
             plan: this.planRef(this.latestPlan()),
             planLinks: [...this.session.planLinks],
             ...(this.session.meta.forkOf ? { forkOf: { id: this.session.meta.forkOf.id, title: this.session.meta.forkOf.title } } : {}),
@@ -1623,6 +1630,11 @@ export class Runtime {
             it.url = String(input.url ?? "");
             if (input.prompt) it.description = redact(String(input.prompt).slice(0, 300));
             if (suggestions.length) it.options.push({ id: "always", label: `Always allow ${suggestions[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1")}` });
+        } else if (GIT_TOOL_HEADINGS[tool.name]) {
+            it.heading = GIT_TOOL_HEADINGS[tool.name]!;
+            if (req.preview?.body) it.command = redact(req.preview.body);
+            if (req.preview?.summary) it.description = redact(req.preview.summary);
+            if (suggestions.length) it.options.push({ id: "always", label: `Always allow ${tool.name} in ${projectName}` });
         } else if (tool.category === "mcp") {
             it.heading = "Use an MCP tool";
             it.json = redact(JSON.stringify(input, null, 2)).slice(0, 6000);
@@ -1824,6 +1836,7 @@ export class Runtime {
         this.checkPdfs(attachments);
         const trimmed = text.trim();
         if (!trimmed && !attachments?.length) return { queued: false };
+        this.toolState.wakes?.resume();
         if (!literal && attachments?.length && /^\/compact(\s|$)/i.test(trimmed)) throw new RpcError("/compact doesn't take attachments. Send them in a message of their own.");
         // A mistyped command isn't sent to the model; the GUI offers to send it as a message.
         const unknown = literal ? undefined : this.unknownCommand(text);
@@ -1892,7 +1905,7 @@ export class Runtime {
 
     /** `about`: what to name the session after, when the text sent isn't the best guide (a skill's instructions). */
     /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files (a skill's instructions are sent as written). */
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string } = {}) {
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string; wakes?: Wake[] } = {}) {
         if (!this.agent) {
             await this.ready.catch(() => undefined);
             if (this.closed) return;
@@ -1920,7 +1933,7 @@ export class Runtime {
         const { imagesKey: _provisional, ...attached } = attachedPrompt(opts.attachments);
         const turn: Turn = {
             id: this.newId(),
-            prompt: { text: display, ...attached, ...(opts.kind === "command" ? { command: true } : {}), ...(scheduled ? { scheduled } : {}), index },
+            prompt: { text: display, ...attached, ...(opts.kind === "command" ? { command: true } : {}), ...(scheduled ? { scheduled } : {}), ...(opts.kind === "wake" ? { wake: true } : { index }) },
             blocks: [],
             status: "running",
             startedAt: this.turnStartedAt,
@@ -1940,20 +1953,23 @@ export class Runtime {
         this.engine.sessionChanged(this);
         // A command's own text says more than "/init"; a greeting says nothing, so a later prompt names it.
         const about = opts.about ?? (opts.kind === "command" ? text : display);
-        if (!this.session.title && !this.titleAsked && this.titleTries < TITLE_TRIES && titleWorthy(about)) void this.generateTitle(about);
+        if (opts.kind !== "wake" && !this.session.title && !this.titleAsked && this.titleTries < TITLE_TRIES && titleWorthy(about)) void this.generateTitle(about);
 
         let reason: TurnEndReason | undefined;
         try {
             if (!this.session.meta.system) await this.freezeSystemPrompt(ac.signal);
             if (ac.signal.aborted) {
-                this.engine.draft(this, display, opts.attachments);
+                // Nothing was sent: a message goes back to the input box; events go back in their queue.
+                if (opts.wakes) this.toolState.wakes?.requeue(opts.wakes);
+                else this.engine.draft(this, display, opts.attachments);
                 reason = "aborted";
                 this.endTurn("aborted");
             } else {
                 const roots = [this.ws.cwd, ...(this.settings().permissions?.additionalDirectories ?? [])];
                 // $name brings that skill's instructions along; the transcript keeps what was typed.
-                const skills = opts.kind === "command" ? [] : skillMentions(text, this.ws.skills);
-                const { parts, attached, notices } = await expandMentions(opts.mentionsIn ?? text, this.toolState, roots, this.checker);
+                const skills = opts.kind === "command" || opts.kind === "wake" ? [] : skillMentions(text, this.ws.skills);
+                // A wake quotes outside text (PR comments): its @words are not files to attach.
+                const { parts, attached, notices } = opts.kind === "wake" ? { parts: [{ type: "text" as const, text }], attached: [], notices: [] } : await expandMentions(opts.mentionsIn ?? text, this.toolState, roots, this.checker);
                 // Claude Code and Codex are sent the $name, and load the skill themselves.
                 parts[0] = { type: "text", text: skills.length && !cliRunsSkills(this.agent?.model.provider) ? withSkills(text, skills) : text };
                 if (skills.length) this.notice(`Using ${skills.length === 1 ? "skill" : "skills"} ${skills.map((s) => s.name).join(", ")}`);
@@ -2012,7 +2028,8 @@ export class Runtime {
         if (this.closed) return;
         if (aborted) return this.returnQueued();
         const next = this.nextQueued();
-        if (!next) return;
+        // Nothing the user sent is waiting: events a watch raised meanwhile can have their turn.
+        if (!next) return this.toolState.wakes?.poke();
         this.queued = this.queued.filter((q) => q !== next);
         this.queueUpdated();
         await this.dispatch(next.text, next.attachments, next.literal).catch((e) => this.notice(redact((e as Error).message), "error"));
@@ -2099,7 +2116,24 @@ export class Runtime {
         return q;
     }
 
+    /** Events a tool asked to be woken for (a watched PR): a turn of their own when nothing else is going on. */
+    private wake() {
+        // Busy or with messages queued, the turn's end looks again (runQueued).
+        if (this.closed || this.busy || this.queued.length) return;
+        // A model switch, a commit, the agent still starting: look again in a moment.
+        if (this.switching || this.commitDone || !this.agent) {
+            const t = setTimeout(() => this.toolState.wakes?.poke(), 1000);
+            t.unref?.();
+            return;
+        }
+        const wakes = this.toolState.wakes!.takeForTurn();
+        if (!wakes.length) return;
+        void this.startTurn(formatWakes(wakes), { display: wakeDisplay(wakes), kind: "wake", wakes }).catch((e) => this.notice(redact((e as Error).message), "error"));
+    }
+
     interrupt() {
+        // Stopped by the user: what watches wake it again only once they send something.
+        if (this.abort) this.toolState.wakes?.pause();
         this.cancelInteractions();
         if (this.abort) {
             this.abort.abort();
@@ -2564,6 +2598,21 @@ export class Runtime {
         }
     }
 
+    /** The user stopped a watch from the panel: the agent hears of it with their next message. */
+    stopWatch(watchId: string) {
+        const w = this.toolState.watchers?.get(watchId);
+        if (!w) throw new RpcError("That watch has already ended.", "not_found");
+        w.stop();
+        this.toolState.watchers!.delete(watchId);
+        this.agent?.addReminder(`The user stopped watching ${w.label}. Don't watch it again unless they ask.`);
+    }
+
+    /** Watching something (a pull request): kept loaded so the watch goes on with no window open. */
+    get watching(): boolean {
+        // Or news from one is still to be told: closing would drop it.
+        return Boolean(this.toolState.watchers?.size || this.toolState.wakes?.size);
+    }
+
     async killShell(shellId: string) {
         const sh = this.toolState.shells.get(shellId);
         if (!sh) throw new Error(`No background shell ${shellId}`);
@@ -2597,6 +2646,8 @@ export class Runtime {
         this.commitAbort?.abort();
         this.cancelInteractions();
         this.toolState.secrets?.clear();
+        stopWatchers(this.toolState);
+        this.toolState.wakes?.dispose();
         if (this.shellTimer) clearInterval(this.shellTimer);
         this.flush();
         // What's still going (a turn being interrupted, sub-agents delegated past their turn) as far as it got.

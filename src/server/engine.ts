@@ -931,7 +931,8 @@ export class Engine {
     private unloadIfUnused(id: string) {
         const rt = this.runtimes.get(id);
         if (!rt || this.stopping || [...this.clients].some((c) => c.subs.has(id))) return;
-        if (!rt.idle || rt.scheduled) return this.unloadLater(id);
+        // A watch (a pull request) goes on with no window open: it wakes the session when there's news.
+        if (!rt.idle || rt.scheduled || rt.watching) return this.unloadLater(id);
         void this.unload(rt);
     }
 
@@ -2021,6 +2022,9 @@ export class Engine {
             }
             case "session.killShell":
                 await this.runtime(p.id).killShell(str(p.shellId, "shellId"));
+                return null;
+            case "session.stopWatch":
+                this.runtime(p.id).stopWatch(str(p.watchId, "watchId"));
                 return null;
             case "session.forgetSecret":
                 this.runtime(p.id).forgetSecret(str(p.name, "name"));

@@ -222,6 +222,33 @@
     margin-bottom: 28px;
 }
 
+.wake-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 20px;
+    padding: 6px 12px;
+    width: fit-content;
+    max-width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--fg-muted);
+    font-size: 0.929rem;
+    line-height: 1.4;
+}
+
+.wake-row svg {
+    flex: none;
+    color: var(--accent);
+}
+
+.wake-row .wake-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .user-actions {
     display: flex;
     gap: 2px;

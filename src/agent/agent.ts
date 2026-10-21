@@ -34,6 +34,7 @@ import { AutoClassifier, needsSummary, summaryFits, type ReviewContext } from ".
 import { sandboxKind, sandboxPolicy, type Sandbox } from "../permissions/sandbox";
 import { APP_TITLE, harnessHome } from "../config/paths";
 import type { Tool, ToolContext, ToolDisplay, ToolResult, ToolState, UiBridge } from "../tools/types";
+import { formatWakes, wakeDisplay } from "./wakes";
 import { isReadOnly } from "../tools/types";
 import { coerceInput, validateInput, EXPLORE_TOOLS, toSchema } from "../tools/index";
 import { isReadOnlyCommand, notReadOnly } from "../permissions/bash-safety";
@@ -488,7 +489,7 @@ export class Agent {
     // -----------------------------------------------------------------------
 
     /** Run one user turn to completion. */
-    async run(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" }): Promise<TurnEndReason> {
+    async run(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" | "wake" }): Promise<TurnEndReason> {
         if (this.running) throw new Error("Agent is already running");
         this.running = true;
         this.prompted = false;
@@ -507,14 +508,15 @@ export class Agent {
         }
     }
 
-    private async runInner(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" }): Promise<TurnEndReason> {
+    private async runInner(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" | "wake" }): Promise<TurnEndReason> {
         const { signal } = opts;
         const settings = this.o.settings();
         const promptText = [...content.filter((p): p is TextPart => p.type === "text").map((p) => p.text), ...pastedTexts(content)].join("\n");
         const checkpoint = await this.checkpoint(opts.display ?? promptText);
         if (this.cutOff) return "aborted";
 
-        if (!this.o.isSubagent && settings.hooks?.UserPromptSubmit?.length) {
+        // A wake isn't something the user typed.
+        if (!this.o.isSubagent && opts.kind !== "wake" && settings.hooks?.UserPromptSubmit?.length) {
             const h = await runHooks(settings, "UserPromptSubmit", { prompt: promptText, session_id: this.session.meta.id }, this.state.cwd, signal).catch(() => undefined);
             for (const err of h?.errors ?? []) this.emit({ type: "notice", level: "warn", message: err });
             if (h?.blocked) {
@@ -637,6 +639,12 @@ export class Agent {
                     if (this.cutOff) return "aborted";
                     continue;
                 }
+                // Events (a watched PR, a monitor) that came in during the last request: answer them in this turn.
+                const woke = this.takeWakes();
+                if (woke) {
+                    this.session.push({ role: "user", content: [reminder(woke)], meta: { kind: "reminder" } });
+                    continue;
+                }
 
                 const stopEvent = this.o.isSubagent ? "SubagentStop" : "Stop";
                 if (settings.hooks?.[stopEvent]?.length && stopHookRounds < 3) {
@@ -669,6 +677,9 @@ export class Agent {
                     extra.push({ type: "text", text: `${STEERING}${queued.join("\n\n")}` });
                     await this.checkpoint(queued.join("\n"), true, record);
                 }
+                // Not into a round the user denied: that ends the turn, and the wake would go unanswered.
+                const woke = denied ? undefined : this.takeWakes();
+                if (woke) extra.push(reminder(woke));
             }
             if (this.cutOff) return "aborted";
             // Steering saved the completed results before its capture: an interrupt is a new message.
@@ -684,6 +695,15 @@ export class Agent {
                 return "denied";
             }
         }
+    }
+
+    /** Wakes that may join the running turn, as one reminder; noted in the transcript. */
+    private takeWakes(): string | undefined {
+        if (this.o.isSubagent) return undefined;
+        const wakes = this.state.wakes?.drainRunning() ?? [];
+        if (!wakes.length) return undefined;
+        this.emit({ type: "notice", level: "info", message: `↻ ${wakeDisplay(wakes)}` });
+        return formatWakes(wakes);
     }
 
     /** A new file checkpoint for a user prompt; a sub-agent's edits belong to its parent's. */
@@ -1649,6 +1669,8 @@ export class Agent {
             },
             onProgress: (text) => this.emit({ type: "tool_progress", id: callId, text }),
             ui: this.o.host.ui,
+            // Only the session's own agent can be woken: a sub-agent's turn ends with its task.
+            wakes: this.o.isSubagent ? undefined : this.state.wakes,
             hidden: (toolName, abs) => this.o.checker.hiddenFromSearch(toolName, abs),
             runSubagent: this.o.isSubagent ? undefined : (opts, sig) => this.runSubagent(callId, opts, sig),
             taskStatus: this.o.isSubagent ? undefined : (id, ms, sig) => this.taskStatus(id, ms, sig),

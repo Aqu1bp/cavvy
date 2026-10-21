@@ -224,7 +224,7 @@ async function scanLines(file: string, want: (prefix: string) => boolean, fn: (p
 function startsTurn(m: Message): boolean {
     if (m?.role !== "user" || !Array.isArray(m.content)) return false;
     const kind = m.meta?.kind ?? "prompt";
-    if (kind === "prompt" || kind === "command") return true;
+    if (kind === "prompt" || kind === "command" || kind === "wake") return true;
     return kind === "tool_results" && m.content.some((p) => p.type === "text" && p.text.startsWith(STEERING));
 }
 

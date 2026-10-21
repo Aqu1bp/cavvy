@@ -395,6 +395,10 @@ export class PermissionChecker {
             if (tool.name === "Bash" && !isReadOnlyCommand(t.command ?? "")) {
                 return { behavior: "deny", reason: "Plan mode is active: only read-only shell commands are allowed. Call ExitPlanMode with your plan before making changes." };
             }
+            // Commit, push, open a pull request.
+            if (tool.category === "execute" && tool.name !== "Bash" && !isReadOnly(tool, input)) {
+                return { behavior: "deny", reason: "Plan mode is active: nothing can be committed or pushed. Call ExitPlanMode with your plan first." };
+            }
             if (tool.name === "Task" && t.agentType !== "explore") {
                 return { behavior: "deny", reason: 'Plan mode is active: only "explore" sub-agents can run.' };
             }
@@ -498,7 +502,9 @@ export class PermissionChecker {
                     }
                     return { behavior: "ask", needsClassifier: true, suggestions };
                 }
-                return mode === "auto" ? { behavior: "ask", needsClassifier: true } : { behavior: "ask" };
+                // GitCommit, GitPush, CreatePullRequest: "don't ask again" allows the tool in this project.
+                const suggestions = [tool.name];
+                return mode === "auto" ? { behavior: "ask", needsClassifier: true, suggestions } : { behavior: "ask", suggestions };
             }
             case "network": {
                 if (tool.name === "WebSearch") return { behavior: "allow" };

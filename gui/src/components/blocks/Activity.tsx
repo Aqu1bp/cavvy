@@ -26,8 +26,7 @@ import {
     SquareArrowOutUpRight,
     SquareTerminal,
     Wrench,
-    X,
-} from "lucide-solid";
+    X, GitCommitHorizontal, ArrowUpFromLine, GitPullRequestArrow } from "lucide-solid";
 import type { AgentRun, Block, ThinkingBlock, TodoEntry, ToolBlock } from "@shared/protocol";
 import { duration, firstChangedLine, plural, sleepSeconds, splitTitle, stripAnsi, tokens } from "../../lib/format";
 import { now } from "../../lib/clock";
@@ -97,6 +96,11 @@ const VERBS: Record<string, string> = {
     TodoWrite: "Update todos",
     AskUserQuestion: "Ask",
     ExitPlanMode: "Present plan",
+    GitCommit: "Commit",
+    GitPush: "Push",
+    CreatePullRequest: "Open pull request",
+    WatchPullRequest: "Watch pull request",
+    UnwatchPullRequest: "Stop watching",
 };
 
 const RUNNING: Record<string, string> = {
@@ -117,6 +121,10 @@ const RUNNING: Record<string, string> = {
     TodoWrite: "Updating todos",
     AskUserQuestion: "Waiting for your answer",
     ExitPlanMode: "Waiting for plan review",
+    GitCommit: "Committing",
+    GitPush: "Pushing",
+    CreatePullRequest: "Opening pull request",
+    WatchPullRequest: "Reading pull request",
 };
 
 /** "Gemini 3 Pro" style: the model part of provider:model. */
@@ -144,7 +152,10 @@ export function toolLabel(t: ToolBlock): { verb: string; arg?: string } {
     if (t.name === "Task") a = String(input.description ?? arg ?? "");
     if (t.name === "AskUserQuestion") a = String(input.question ?? arg ?? "");
     if (t.name === "Skill") a = String(input.skill ?? input.name ?? arg ?? "");
-    if (t.name === "TodoWrite" || t.name === "ExitPlanMode") a = undefined;
+    if (t.name === "TodoWrite" || t.name === "ExitPlanMode" || t.name === "GitPush") a = undefined;
+    if (t.name === "GitCommit") a = String(input.message ?? arg ?? "").split("\n")[0];
+    if (t.name === "CreatePullRequest") a = String(input.title ?? arg ?? "");
+    if (t.name === "WatchPullRequest" || t.name === "UnwatchPullRequest") a = input.pr !== undefined && input.pr !== "" ? `#${String(input.pr).replace(/^#/, "").replace(/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\//, "")}` : undefined;
     return { verb: VERBS[t.name] ?? t.name, arg: a || undefined };
 }
 
@@ -166,6 +177,9 @@ export function ToolIcon(p: { name: string; size?: number; agent?: boolean }) {
             <Match when={p.name === "AskUserQuestion"}><MessageCircleQuestion size={s()} /></Match>
             <Match when={p.name === "ExitPlanMode"}><ClipboardList size={s()} /></Match>
             <Match when={p.name.startsWith("mcp__")}><Plug size={s()} /></Match>
+            <Match when={p.name === "GitCommit"}><GitCommitHorizontal size={s()} /></Match>
+            <Match when={p.name === "GitPush"}><ArrowUpFromLine size={s()} /></Match>
+            <Match when={p.name === "CreatePullRequest" || p.name === "WatchPullRequest" || p.name === "UnwatchPullRequest"}><GitPullRequestArrow size={s()} /></Match>
         </Switch>
     );
 }
@@ -242,6 +256,21 @@ function summarize(tools: ToolBlock[]): string {
                 break;
             case "ExitPlanMode":
                 misc.push("presented a plan");
+                break;
+            case "GitCommit":
+                misc.push("committed");
+                break;
+            case "GitPush":
+                misc.push("pushed");
+                break;
+            case "CreatePullRequest":
+                misc.push("opened a pull request");
+                break;
+            case "WatchPullRequest":
+                misc.push("watched a pull request");
+                break;
+            case "UnwatchPullRequest":
+                misc.push("stopped watching");
                 break;
             default:
                 if (t.name.startsWith("mcp__")) mcp++;
