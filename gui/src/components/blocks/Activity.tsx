@@ -802,7 +802,7 @@ function EditCardContent(p: { tool: ToolBlock }) {
                     </span>
                 </Show>
                 <Show when={meta()}>
-                    <span class="tcard-dim truncate">{meta()}</span>
+                    <span class="tcard-dim truncate" data-find-skip={live() || undefined}>{meta()}</span>
                 </Show>
                 <Show when={t().diagnostics}>{(r) => <DiagnosticsChip report={r()} />}</Show>
                 <span class="grow" />
@@ -877,7 +877,7 @@ function CommandCardContent(p: { tool: ToolBlock }) {
                     <span class="tcard-dim" data-find-skip>{tokens(t().receiving!)} chars</span>
                 </Show>
                 <Show when={meta()}>
-                    <span class="tcard-dim truncate">{meta()}</span>
+                    <span class="tcard-dim truncate" data-find-skip={live() || undefined}>{meta()}</span>
                 </Show>
                 <span class="grow" />
                 <Show when={t().sandboxed}>

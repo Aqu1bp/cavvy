@@ -82,6 +82,38 @@ async function run() {
     } finally {
         dispose();
     }
+    await checkCards();
+}
+
+/** Command and edit cards: what find counts is what it can highlight, in every state. */
+async function checkCards() {
+    const box = root.appendChild(document.createElement("div"));
+    const command: ToolBlock = { t: "tool", id: "cmd", name: "Bash", title: "echo kiwi", input: { command: "echo kiwi" }, status: "running", summary: "kiwi summary", output: "kiwi output", progress: "kiwi progress", startedAt: Date.now() };
+    const edit: ToolBlock = {
+        t: "tool", id: "edit", name: "Edit", title: "Edit(src/kiwi.ts)", input: { file_path: "src/kiwi.ts" }, status: "running", summary: "kiwi summary", startedAt: Date.now(),
+        diff: { path: "src/kiwi.ts", status: "modified", added: 1, removed: 0, hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 1, lines: [{ t: "add", text: "kiwi line" }] }] },
+    };
+    const [cards, setCards] = createStore([command, edit]);
+    const dispose = render(() => <>
+        <ActivityGroup tools={[cards[0]!]} steps={[cards[0]!]} card="command" turnRunning />
+        <ActivityGroup tools={[cards[1]!]} steps={[cards[1]!]} card="edit" turnRunning />
+    </>, box);
+    try {
+        for (const status of ["streaming", "queued", "awaiting", "running", "ok", "error", "denied"] as const) {
+            for (const i of [0, 1] as const) {
+                setCards(i, "status", status);
+                await frame();
+                const id = cards[i]!.id;
+                const card = box.querySelector<HTMLElement>(`[data-find="${id}"]`)!;
+                check(card.classList.contains("tcard"), `${id} ${status}: drawn as a card`);
+                const counted = findMatches([{ id: "cards", blocks: [cards[i]!], status: "running" }], "kiwi").length;
+                check(textRanges(card, "kiwi").length === counted, `${id} ${status}: drawn matches (${textRanges(card, "kiwi").length}) equal counted matches (${counted})`);
+            }
+        }
+    } finally {
+        dispose();
+        box.remove();
+    }
 }
 run().then(() => checkEditorFind(root)).then(() => checkPaletteDelete(root)).then(() => checkTranscriptScroll(root)).then(() => checkDiffComments(root)).then(() => {
     result.textContent = "PASS: live tool find; deferred file links and ranges; editor actions and find keys; deleted palette hits; transcript scroll; diff comments";

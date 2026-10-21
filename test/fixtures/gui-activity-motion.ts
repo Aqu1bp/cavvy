@@ -11,7 +11,9 @@ import { applyOp } from "../../src/server/timeline";
 const source = (file: string) => readFileSync(new URL(`../../gui/src/components/${file}.tsx`, import.meta.url), "utf8").replace(/^import [\s\S]*?;\n/gm, "");
 // An optional historical source makes the same workload measurable before the fix.
 const activity = process.env.ACTIVITY_BEFORE ? readFileSync(process.env.ACTIVITY_BEFORE, "utf8").replace(/^import [\s\S]*?;\n/gm, "") : source("blocks/Activity");
-const tool = (id: string, status = "running"): any => ({ t: "tool", id, name: "Bash", title: "Bash", input: { command: `echo ${id}` }, status, startedAt: 1000 });
+// A call that streams progress and stays in its group (commands and edits get cards of their own).
+const tool = (id: string, status = "running"): any => ({ t: "tool", id, name: "Monitor", title: "Monitor", input: { description: `watch ${id}` }, status, startedAt: 1000 });
+const command = (id: string, status = "running"): any => ({ t: "tool", id, name: "Bash", title: "Bash", input: { command: `echo ${id}` }, status, startedAt: 1000 });
 const has = (n: Node, cls: string) => n.props.class?.split(" ").includes(cls);
 const row = (root: Node, id: string) => all(root).find((n) => n.props["data-find"] === id)!;
 
@@ -24,8 +26,9 @@ function setup(blocks: any[], expanded = true, agents: any[] = []) {
     const scope = {
         ...format, RenderBoundary: boundary(), now: clock, prefs: { expandActivity: expanded, showThinking: true }, findReveal: reveal,
         CodeBlock: (p: any) => { const n = node("code"); solid.createRenderEffect(() => n.text = p.code); return n; },
-        Markdown: () => node("markdown"), CopyButton: icon, Spinner: icon,
-        ...Object.fromEntries(["AlertTriangle", "Bot", "Check", "ChevronRight", "ClipboardList", "FilePen", "FilePlus2", "FileText", "FolderTree", "Globe", "Hand", "ListChecks", "MessageCircleQuestion", "Plug", "Search", "ShieldCheck", "SquareArrowOutUpRight", "SquareTerminal", "Wrench", "X", "Brain"].map((name) => [name, icon])),
+        DiffView: (p: any) => { const n = node("diff"); solid.createRenderEffect(() => n.text = `diff ${p.diff.path}`); return n; },
+        Markdown: () => node("markdown"), CopyButton: icon, Spinner: icon, openReview: () => {}, openInEditor: () => {},
+        ...Object.fromEntries(["AlertTriangle", "Bot", "Check", "ChevronDown", "ChevronRight", "ClipboardList", "FileDiff", "FilePen", "FilePlus2", "FileText", "FolderTree", "Globe", "Hand", "ListChecks", "MessageCircleQuestion", "Plug", "Radar", "Search", "ShieldCheck", "SquareArrowOutUpRight", "SquareTerminal", "Wrench", "X", "Brain"].map((name) => [name, icon])),
     };
     const ActivityGroup = component(activity, "ActivityGroup", scope);
     const groupBlocks = component(activity, "groupBlocks", scope);
@@ -218,5 +221,37 @@ test("agent activity follows finished rows and displaces a retained plain tail",
         expect(list.children.indexOf(first.parent!)).toBeLessThan(list.children.indexOf(agents));
         h.op({ op: "block", block: tool("b") });
         expect(list.children.indexOf(agents)).toBeLessThan(list.children.indexOf(row(h.root, "b").parent!));
+    } finally { h.dispose(); }
+});
+
+test("commands and edits are cards of their own, kept through output, completion and the next call", () => {
+    const h = setup([tool("read", "ok"), command("cmd")], false);
+    try {
+        const card = row(h.root, "cmd");
+        expect(has(card, "tcard")).toBe(true);
+        expect(has(card, "cmd-card")).toBe(true);
+        // Its group is the command alone: the call before it keeps its own group.
+        expect(all(h.root).filter((n) => has(n, "acts"))).toHaveLength(1);
+        for (let i = 0; i < 40; i++) h.op({ op: "append", blockId: "cmd", field: "progress", text: `line ${i}\n` });
+        expect(row(h.root, "cmd")).toBe(card);
+        expect(text(card)).toContain("line 39");
+        expect(text(card)).toContain("Running");
+        h.op({ op: "block.patch", blockId: "cmd", patch: { status: "ok", durationMs: 2000, output: "ok\n 14 pass\n 0 fail\n" } });
+        expect(row(h.root, "cmd")).toBe(card);
+        expect(text(card)).toContain("14 pass");
+        const diff = { path: "src/a.ts", status: "modified", added: 2, removed: 1, hunks: [] };
+        h.op({ op: "block", block: { t: "tool", id: "edit", name: "Edit", title: "Edit src/a.ts", input: { file_path: "/p/src/a.ts" }, status: "ok", diff } });
+        expect(row(h.root, "cmd")).toBe(card);
+        const edit = row(h.root, "edit");
+        expect(has(edit, "edit-card")).toBe(true);
+        expect(text(edit)).toContain("diff src/a.ts");
+        // Folding the card hides the change; the header stays.
+        all(edit).find((n) => n.tag === "button" && n.props["aria-expanded"] === true)!.props.onClick();
+        expect(text(edit)).not.toContain("diff src/a.ts");
+        expect(text(edit)).toContain("+2");
+        // Find opens it again.
+        h.setReveal({ turnId: "turn", part: "edit" });
+        expect(text(edit)).toContain("diff src/a.ts");
+        expect(text(h.root)).not.toContain("Couldn't render");
     } finally { h.dispose(); }
 });
