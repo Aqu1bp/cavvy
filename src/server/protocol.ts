@@ -205,6 +205,8 @@ export interface CompactBlock {
     id: string;
     summary: string;
     auto: boolean;
+    /** Compacted while idle, before the prompt cache expired. */
+    idle?: boolean;
 }
 
 /** Heads a conversation brought in from a Claude Code or Codex session. */
@@ -1133,6 +1135,8 @@ export interface GuiSettings {
     defaultMode?: PermissionModeId;
     showThinking?: boolean;
     autoCompact?: boolean;
+    /** Compact long conversations left idle (true, the default: one-hour caches; "always": five-minute ones too). */
+    idleCompaction?: boolean | "always";
     webSearch?: string;
     allowBypass?: boolean;
     /** A message sent while a turn runs: steer it (default) or wait for it to end. */
@@ -1312,6 +1316,8 @@ export interface Methods {
     "session.setModel": { params: { id: string; ref: string; persist?: boolean }; result: null };
     "session.setMode": { params: { id: string; mode: PermissionModeId }; result: null };
     "session.setFastMode": { params: { id: string; enabled: boolean }; result: null };
+    /** The window's input box for the session has an unsent message (`present`), or no longer has: one being written holds off compacting while idle. */
+    "session.draft": { params: { id: string; present: boolean }; result: null };
     "session.setEffort": { params: { id: string; effort: EffortLevel }; result: null };
     "session.rename": { params: { id: string; title: string }; result: null };
     "session.compact": { params: { id: string; instructions?: string }; result: null };

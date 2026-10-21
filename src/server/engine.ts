@@ -1057,6 +1057,7 @@ export class Engine {
         this.clients.delete(client);
         this.terminals.drop(client);
         this.setups.drop(client);
+        for (const rt of this.runtimes.values()) rt.setDrafting(client, false);
         for (const id of client.subs) this.unloadLater(id);
     }
 
@@ -1094,6 +1095,8 @@ export class Engine {
             await Promise.race([setup.catch(() => undefined), new Promise((r) => setTimeout(r, until - Date.now()).unref?.())]);
         }
         const rt = this.runtimes.get(id);
+        // Only when one runs: otherwise the delete goes on in the same tick, as before.
+        if (rt?.compactingWhileIdle) await rt.yieldIdleCompaction();
         if (rt && !rt.idle) throw new RpcError("This session is still working (a response, queued messages, a question, or shells or tasks running). Stop it first, then delete it.", "busy");
         const store = readStore();
         const flags: SessionFlags = { pinned: !!store.pinned?.includes(id), archived: !!store.archived?.includes(id), settled: !!store.settled?.includes(id) };
@@ -1556,6 +1559,7 @@ export class Engine {
             defaultMode: s.permissions?.defaultMode,
             showThinking: s.showThinking,
             autoCompact: s.autoCompact,
+            idleCompaction: s.idleCompaction,
             webSearch: s.webSearch,
             allowBypass: s.permissions?.allowBypass,
             followUpBehavior: s.followUpBehavior,
@@ -1577,6 +1581,7 @@ export class Engine {
             }
             if ("showThinking" in patch) s.showThinking = Boolean(patch.showThinking);
             if ("autoCompact" in patch) s.autoCompact = patch.autoCompact !== false;
+            if ("idleCompaction" in patch) s.idleCompaction = patch.idleCompaction === "always" ? "always" : patch.idleCompaction === false ? false : undefined;
             if ("webSearch" in patch && ["auto", "anthropic", "brave", "tavily", "duckduckgo", "off"].includes(String(patch.webSearch))) s.webSearch = patch.webSearch as Settings["webSearch"];
             if ("defaultMode" in patch || "allowBypass" in patch) {
                 const perms = (s.permissions ??= {});
@@ -1949,6 +1954,7 @@ export class Engine {
                 return null;
             case "session.setModel": {
                 const rt = this.runtime(p.id);
+                if (rt.compactingWhileIdle) await rt.yieldIdleCompaction();
                 // As in the terminal: the turn in progress keeps its model (Claude Code and Codex can't take over half way).
                 if (rt.busy) throw new RpcError("Switch models once this response is done, or interrupt it first.", "busy");
                 if (!(await rt.switchModel(str(p.ref, "ref"), { persist: p.persist !== false }))) throw new RpcError(`Couldn't switch to ${p.ref}`);
@@ -1959,8 +1965,13 @@ export class Engine {
                 if (!PERMISSION_MODES.includes(p.mode)) throw new RpcError("Unknown mode");
                 if (!this.runtime(p.id).setMode(p.mode)) throw new RpcError("Bypass mode is off. Start the GUI with --dangerously-skip-permissions or set permissions.allowBypass in your user settings.");
                 return null;
+            case "session.draft":
+                if (typeof p.present !== "boolean") throw new RpcError("present must be a boolean");
+                this.runtimes.get(str(p.id, "id"))?.setDrafting(client, p.present);
+                return null;
             case "session.setFastMode":
                 if (typeof p.enabled !== "boolean") throw new RpcError("enabled must be a boolean");
+                await this.runtime(p.id).yieldIdleCompaction();
                 this.runtime(p.id).setFastMode(p.enabled);
                 return null;
             case "session.setEffort":
@@ -1994,6 +2005,7 @@ export class Engine {
             case "session.rewindPlan":
                 return this.runtime(p.id).rewindPlan(num(p.index, -1));
             case "session.rewind":
+                await this.runtime(p.id).yieldIdleCompaction();
                 return this.runtime(p.id).rewind(num(p.index, -1), str(p.planId, "planId"), Boolean(p.code), Boolean(p.conversation));
             case "session.fork": {
                 const rt = await this.forkSession(this.runtime(p.id), p.index, str(p.text, "text"), str(p.turn, "turn"));
@@ -2133,12 +2145,15 @@ export class Engine {
                 else if (!this.listed) await this.firstListings();
                 return this.modelsList();
             case "session.setAccount":
+                await this.runtime(p.id).yieldIdleCompaction();
                 this.runtime(p.id).setAccount(str(p.provider, "provider"), str(p.accountId, "accountId"));
                 return null;
             case "accounts.list":
                 return this.accountsList(str(p.provider, "provider"), p.refresh === true);
             case "accounts.add": {
                 const provider = str(p.provider, "provider");
+                const idle = [...this.runtimes.values()].filter((rt) => rt.compactingWhileIdle);
+                if (idle.length) await Promise.all(idle.map((rt) => rt.yieldIdleCompaction()));
                 if ([...this.runtimes.values()].some((rt) => rt.busy || rt.agent?.hasCliChild())) throw new RpcError("Add accounts once running responses finish, so CLI protections can be refreshed", "busy");
                 const added = addAccount(provider, { id: str(p.id, "id"), name: str(p.name, "name"), folder: p.folder === undefined ? undefined : str(p.folder, "folder") }, this.accountProjects());
                 forgetClient(provider);
@@ -2158,6 +2173,8 @@ export class Engine {
             case "accounts.remove": {
                 const provider = str(p.provider, "provider");
                 const id = str(p.id, "id");
+                const idle = [...this.runtimes.values()].filter((rt) => rt.compactingWhileIdle && rt.session.accountId(provider) === id);
+                if (idle.length) await Promise.all(idle.map((rt) => rt.yieldIdleCompaction()));
                 for (const rt of this.runtimes.values()) {
                     if ((rt.busy && rt.session.accountId(provider) === id) || rt.agent?.childUsesAccount(provider, id)) throw new RpcError("Stop the account's running turn before removing it", "busy");
                 }

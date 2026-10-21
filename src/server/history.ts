@@ -42,6 +42,8 @@ export function promptText(m: UserMessage): string {
 export interface Segment {
     /** The summary that started this segment (none for the first). */
     summary?: string;
+    /** That summary was written while the conversation was idle, before its prompt cache expired. */
+    idle?: boolean;
     messages: Message[];
     /** How its turns ended, where the messages don't say (errors, limits). */
     notices?: TurnNotice[];
@@ -60,7 +62,7 @@ export function readSegments(file: string): Segment[] {
     }
     for (const raw of text.split("\n")) {
         if (!raw) continue;
-        let l: { t: string; m?: Message; summary?: string; count?: number; source?: unknown; startedAt?: unknown; omitted?: unknown } & Partial<TurnNotice>;
+        let l: { t: string; m?: Message; summary?: string; idle?: boolean; count?: number; source?: unknown; startedAt?: unknown; omitted?: unknown } & Partial<TurnNotice>;
         try {
             l = JSON.parse(raw);
         } catch {
@@ -68,7 +70,7 @@ export function readSegments(file: string): Segment[] {
         }
         const cur = segments[segments.length - 1]!;
         if (l.t === "msg" && l.m) cur.messages.push(l.m);
-        else if (l.t === "compact") segments.push({ summary: l.summary ?? "", messages: [] });
+        else if (l.t === "compact") segments.push({ summary: l.summary ?? "", ...(l.idle === true ? { idle: true } : {}), messages: [] });
         else if (l.t === "rewind" && typeof l.count === "number") {
             cur.messages = cur.messages.slice(0, l.count);
             if (cur.notices) cur.notices = noticesUpTo(cur.notices, l.count);
@@ -519,7 +521,7 @@ export interface ReplayInput {
 export function replay(o: ReplayInput): Turn[] {
     const turns: Turn[] = [];
     const last = o.segments[o.segments.length - 1];
-    const segs: Segment[] = [...o.segments.slice(0, -1), { summary: last?.summary, imported: last?.imported, messages: o.current, notices: o.currentNotices ?? last?.notices }];
+    const segs: Segment[] = [...o.segments.slice(0, -1), { summary: last?.summary, idle: last?.idle, imported: last?.imported, messages: o.current, notices: o.currentNotices ?? last?.notices }];
     segs.forEach((seg, si) => {
         const archived = si < segs.length - 1;
         let turn: Turn | undefined;
@@ -535,7 +537,7 @@ export function replay(o: ReplayInput): Turn[] {
         if (si > 0) {
             // Before any prompt of its segment: what a search finds there leads here.
             const t = start(undefined, undefined, -1);
-            t.blocks.push({ t: "compact", id: o.newId(), summary: seg.summary ?? "", auto: false });
+            t.blocks.push({ t: "compact", id: o.newId(), summary: seg.summary ?? "", auto: false, ...(seg.idle ? { idle: true } : {}) });
             turn = undefined;
         }
         if (seg.imported) {

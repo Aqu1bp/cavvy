@@ -7,7 +7,7 @@ import { findOpen, jumpTarget, openFind, setFindQuery, setJumpTarget, setRewindO
 import { prefs } from "../state/prefs";
 import { anchoredTop, atBottom, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
-import { TurnView } from "./TurnView";
+import { LiveHead, specialActivity, TurnView } from "./TurnView";
 import { rewindTarget } from "./RewindDialog";
 import { BAR_ROOM, FindBar, type FindAnchor } from "./FindBar";
 
@@ -215,6 +215,12 @@ export function Transcript(p: { handle: SessionHandle }) {
                     </Show>
                     <For each={visible()}>{(t) => <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={rewind} onFork={() => forkFrom(t)}
                         workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} />}</For>
+                    {/* Work that isn't a turn (a compaction, one while idle): it shows at the end, as a turn's would. */}
+                    <Show when={p.handle.view.state.busy && specialActivity(p.handle.view.state.activity?.label ?? "") && !turns().some((t) => t.status === "running")}>
+                        <div class="turn">
+                            <LiveHead state={p.handle.view.state} tail hint={p.handle.view.state.activity?.label === "Compacting while idle" ? "send a message to stop it" : undefined} />
+                        </div>
+                    </Show>
                     <div class="transcript-end" />
                 </div>
             </div>

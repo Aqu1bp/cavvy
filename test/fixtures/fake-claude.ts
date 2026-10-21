@@ -214,7 +214,10 @@ function result(subtype: string, extra: Record<string, unknown> = {}) {
         num_turns: 1,
         ...(old ? {} : answering ? { user_message_uuid: answering, user_message_uuids: [answering] } : { user_message_uuid: null, origin: { kind: "task-notification" } }),
         ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: process.env.FAKE_FAST_MODE_END } : {}),
-        usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 0 },
+        usage: process.env.FAKE_CACHE_1H
+            ? // A subscription's turn: its history written to the one-hour cache.
+              { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: Number(process.env.FAKE_CACHE_1H), cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: Number(process.env.FAKE_CACHE_1H) } }
+            : { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 0 },
         modelUsage: { [process.env.FAKE_RESOLVED_MODEL ?? "claude-test-1"]: { contextWindow: 200000 } },
         ...extra,
     });
@@ -240,10 +243,13 @@ function ask(toolName: string, input: Record<string, unknown>, id: string): Prom
     return new Promise((resolve) => pending.set(request_id, resolve));
 }
 
+let replies = 0;
 function text(t: string) {
     out({ type: "stream_event", event: { type: "message_start", message: { id: "m" } }, parent_tool_use_id: null, session_id: sessionId });
     out({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: t } }, parent_tool_use_id: null, session_id: sessionId });
-    out({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: t }], usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0 } }, parent_tool_use_id: null, session_id: sessionId });
+    // FAKE_GROWING_CONTEXT=1: each reply reads more context than the last, as a real turn's do.
+    const input = process.env.FAKE_GROWING_CONTEXT === "1" ? 10 * ++replies : 10;
+    out({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: t }], usage: { input_tokens: input, output_tokens: 5, cache_read_input_tokens: process.env.FAKE_CACHE_1H ? 0 : 1000, cache_creation_input_tokens: Number(process.env.FAKE_CACHE_1H ?? 0) } }, parent_tool_use_id: null, session_id: sessionId });
 }
 
 function toolUse(id: string, name: string, input: Record<string, unknown>) {

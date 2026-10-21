@@ -1159,6 +1159,8 @@ function contextCommand(app: App) {
         for (const p of parts) lines.push(`  ${p.c("█")} ${padEnd(p.label, 18)}${formatTokens(p.n)}`);
         const threshold = app.settings.autoCompactThreshold ?? 0.92;
         lines.push(theme.muted(`  Auto-compact ${app.settings.autoCompact === false ? "off" : `at ~${Math.round(threshold * 100)}%`} · /compact to summarize now`));
+        const due = app.idleCompact.due;
+        if (due !== undefined) lines.push(theme.muted(`  Left idle, it compacts in ${Math.max(1, Math.ceil((due - Date.now()) / 60_000))}m, before the prompt cache expires`));
     } else lines.push(kv("Estimated", formatTokens(total)), theme.muted("  (this model's context window is unknown)"));
     if (!measured) lines.push(theme.subtle("  Estimates (≈3.5 chars/token) until the first response reports real usage."));
     if (!app.session.meta.system) lines.push(theme.subtle("  The system prompt is built when you send the first message."));
@@ -1315,12 +1317,18 @@ async function queueCommand(app: App) {
 async function configCommand(app: App) {
     let index = 0;
     for (;;) {
-        type K = "showThinking" | "autoCompact" | "webSearch" | "notifications" | "followUpBehavior" | "defaultMode" | "allowBypass" | "smallModel" | "reviewModel" | "verbose";
+        type K = "showThinking" | "autoCompact" | "idleCompaction" | "webSearch" | "notifications" | "followUpBehavior" | "defaultMode" | "allowBypass" | "smallModel" | "reviewModel" | "verbose";
         const s = app.settings;
         const onOff = (b: boolean | undefined) => (b ? theme.success("on") : theme.muted("off"));
         const items: SelectItem<K>[] = [
             { label: "Show thinking text", value: "showThinking", detail: onOff(s.showThinking), description: "full reasoning text when the provider returns it" },
             { label: "Auto-compact", value: "autoCompact", detail: onOff(s.autoCompact !== false), description: "summarize the conversation near the context limit" },
+            {
+                label: "Compact while idle",
+                value: "idleCompaction",
+                detail: s.autoCompact === false || s.idleCompaction === false ? theme.muted("off") : s.idleCompaction === "always" ? theme.success("after 5 min too") : theme.success("after an hour"),
+                description: "summarize a long conversation before its prompt cache expires (needs auto-compact)",
+            },
             { label: "Web search backend", value: "webSearch", detail: s.webSearch ?? "auto", description: "auto · anthropic · brave · tavily · duckduckgo · off" },
             { label: "Notifications", value: "notifications", detail: notificationMode(s), description: `auto · terminal · bell · system · off (prompts, turns over ${notifyAfterMs(s) / 1000}s)` },
             { label: "Messages sent while working", value: "followUpBehavior", detail: s.followUpBehavior === "queue" ? "queue" : "steer", description: "steer joins the turn at its next step · queue waits for it to end (tab does the other)" },
@@ -1345,6 +1353,12 @@ async function configCommand(app: App) {
             case "autoCompact":
                 save((x) => (x.autoCompact = s.autoCompact === false));
                 break;
+            case "idleCompaction": {
+                // On (one-hour caches) → five-minute ones too → off → on.
+                const next = s.idleCompaction === false ? undefined : s.idleCompaction === "always" ? false : "always";
+                save((x) => (x.idleCompaction = next));
+                break;
+            }
             case "webSearch": {
                 const order = ["auto", "anthropic", "brave", "tavily", "duckduckgo", "off"] as const;
                 const next = order[(order.indexOf(s.webSearch ?? "auto") + 1) % order.length]!;
@@ -2215,6 +2229,8 @@ export async function runCommand(app: App, text: string, draft?: Draft): Promise
         app.editor.restore([draft]);
         return true;
     }
+    // A command means the user is back: an idle compaction gives way to it (and to /goal, which may start or steer a turn).
+    if (app.busy && (!cmd.whileBusy || cmd.name === "goal")) await app.yieldIdleCompaction?.();
     // On Claude Code and Codex, /goal is theirs: it goes to them (src/ui/app.ts nativeGoalCommand).
     if (cmd.name === "goal" && app.nativeGoals()) return app.nativeGoalCommand(text.trim(), args);
     // A new goal waits its turn in the queue like a prompt (with its images); the rest of /goal answers at once.

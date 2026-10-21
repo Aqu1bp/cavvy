@@ -47,6 +47,7 @@ import { hookApplies, isAsync, matcherFn, runHandler, runHooks, runInBackground,
 import { FileWatchHooks, type FileEvent } from "./file-watch-hooks";
 import { instructionsLoadedHooks, sessionStartHooks } from "./session-hooks";
 import { compactRequestMessage, estimateTokens, summaryMessage, transcriptCompactRequest, compactTranscriptText, handoffTranscript } from "./compact";
+import { cacheTtl, idleCompactPlan, type CacheWindow, type IdleCompactPlan } from "./idle-compact";
 import { agentMemoryDir, agentMemoryPrompt, DEFAULT_MAX_TURNS, findSkill, loadAgents, readAgentMemory, type AgentDef } from "./agents";
 import { childMode, createAgentWorktree, finishAgentWorktree, fromServers, keepLocal, startAgentServers, withAgentHooks, worktreeNote, type AgentServers, type AgentWorktree, type WorktreeOutcome } from "./subagent-setup";
 import { buildSystemPrompt, EXPLORE_APPEND, SUBAGENT_CORE } from "./system-prompt";
@@ -113,8 +114,9 @@ export type AgentEvent =
     | { type: "notice"; level: "info" | "warn" | "error"; message: string }
     | { type: "retry"; attempt: number; delayMs: number; reason: string }
     | { type: "usage"; usage: Usage; cost: CostEstimate; contextTokens: number }
-    | { type: "compact_start"; auto: boolean }
-    | { type: "compact_end"; summary: string }
+    /** `idle`: compacting a conversation left idle, before its prompt cache expires. */
+    | { type: "compact_start"; auto: boolean; idle?: boolean }
+    | { type: "compact_end"; summary: string; idle?: boolean }
     | { type: "subagent"; parentId: string; label: string; event: AgentEvent }
     /** An agent CLI reported the user's plan limits (`partial`: earlier windows it left out still stand). */
     | { type: "limits"; limits: PlanLimits; partial: boolean }
@@ -384,6 +386,10 @@ export class Agent {
     /** Prompt tokens of the most recent request (context usage). */
     contextTokens = 0;
     private lastUsageTotal = 0;
+    /** The prompt cache of the conversation's last request (idle compaction keeps it from going to waste). */
+    private cache?: CacheWindow;
+    /** How the last turn ended: only one that finished compacts while idle. */
+    private lastEnd?: TurnEndReason;
     /** The last few tool calls, for the auto-mode reviewer ("Bash: npm test"). */
     private recentActions: string[] = [];
     /** Tasks a backend (Claude Code, Codex) delegated to other models through the harness's MCP tools. */
@@ -439,6 +445,8 @@ export class Agent {
     setModel(model: ModelInfo, client: ProviderClient) {
         this.model = model;
         this.client = client;
+        // Caches are per model: the next request reads the history afresh.
+        this.cache = undefined;
         this.session.setModel(modelRef(model));
     }
 
@@ -533,6 +541,7 @@ export class Agent {
         const onAbort = () => this.cancelTasks();
         opts.signal.addEventListener("abort", onAbort, { once: true });
         this.hookStop = undefined;
+        this.lastEnd = undefined;
         this.turnError = undefined;
         this.autoCompactBlocked = false;
         try {
@@ -545,7 +554,7 @@ export class Agent {
                 this.session.hookWatchPaths = undefined;
                 if (paths) this.watchFiles()?.setDynamic(paths);
             }
-            const reason = await this.runInner(content, opts);
+            const reason = (this.lastEnd = await this.runInner(content, opts));
             if (reason === "error" && !this.o.isSubagent) {
                 const message = this.turnError ?? "The turn ended on an error";
                 void this.hooks("StopFailure", { error: errorType(message), error_details: message, last_assistant_message: this.lastAssistantText() });
@@ -627,6 +636,7 @@ export class Agent {
             }
 
             let msg: AssistantMessage;
+            const sentAt = Date.now();
             try {
                 msg = await this.callModel(signal);
             } catch (e) {
@@ -652,7 +662,10 @@ export class Agent {
             // From here on, the redacted copy: it's what gets shown and what tools run with.
             msg = this.session.push(msg);
             this.emit({ type: "assistant", message: msg });
-            if (msg.usage) this.recordUsage(msg.usage);
+            if (msg.usage) {
+                this.recordUsage(msg.usage);
+                this.noteCache(msg.usage, sentAt);
+            }
 
             const calls = toolCallsOf(msg);
             if (calls.length || textOf(msg).trim()) answered = true;
@@ -981,6 +994,28 @@ export class Agent {
         this.emit({ type: "usage", usage, cost, contextTokens: this.contextTokens });
     }
 
+    /**
+     * What a response says of the prompt cache: the history it sent is cached
+     * from `at` for the provider's TTL (Anthropic's default five minutes, or
+     * the hour Claude Code asks for on a subscription).
+     */
+    private noteCache(usage: Usage, at: number) {
+        const ttlMs = cacheTtl(usage, getProvider(this.model.provider)?.kind === "anthropic", this.cache?.ttlMs);
+        this.cache = ttlMs ? { at, ttlMs } : undefined;
+    }
+
+    /**
+     * When this conversation, left idle, should compact (src/agent/idle-compact.ts),
+     * or null: a sub-agent, a turn that didn't finish, delegated tasks still
+     * running (their results go with the next message), a context too small or
+     * a cache too short-lived for it to pay.
+     */
+    idleCompactPlan(now = Date.now()): IdleCompactPlan | null {
+        if (this.o.isSubagent || this.running || this.lastEnd !== "done") return null;
+        if (this.delegations?.running().length) return null;
+        return idleCompactPlan({ settings: this.o.settings(), cache: this.cache, contextTokens: this.contextTokens, now });
+    }
+
     /** Estimated tokens in the next request. */
     estimatedContext(): number {
         const since = this.session.messages.slice(this.lastUsageTotal);
@@ -1053,12 +1088,12 @@ export class Agent {
     // Compaction
 
     /** Summarize the history and replace it. Returns false if there was nothing to do. */
-    async compact(opts: { auto: boolean; signal: AbortSignal; instructions?: string; continuing?: boolean }): Promise<boolean> {
+    async compact(opts: { auto: boolean; signal: AbortSignal; instructions?: string; continuing?: boolean; idle?: boolean }): Promise<boolean> {
         if (isAgentBackend(this.client)) return this.compactBackend(this.client, opts);
         const history = this.session.messages;
         if (history.length < 2) return false;
         if (!(await this.preCompact(opts))) return false;
-        this.emit({ type: "compact_start", auto: opts.auto });
+        this.emit({ type: "compact_start", auto: opts.auto, ...(opts.idle ? { idle: true } : {}) });
         const req = [...history, compactRequestMessage(opts.instructions)];
         let summary = "";
         try {
@@ -1093,11 +1128,12 @@ export class Agent {
         }
         if (!summary.trim()) throw new Error("The model returned an empty summary");
         const keep: Message[] = [summaryMessage(summary, Boolean(opts.continuing))];
-        this.session.compact(summary, keep);
+        this.session.compact(summary, keep, opts.idle);
         this.contextTokens = 0;
         this.lastUsageTotal = 0;
+        this.cache = undefined;
         this.state.fileState.clear();
-        this.emit({ type: "compact_end", summary });
+        this.emit({ type: "compact_end", summary, ...(opts.idle ? { idle: true } : {}) });
         if (!this.o.isSubagent) void this.hooks("PostCompact", { trigger: opts.auto ? "auto" : "manual", compact_summary: summary }).then(() => this.compacted());
         return true;
     }
@@ -1463,6 +1499,8 @@ export class Agent {
     }
 
     private async runBackendTurn(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal, woken: boolean): Promise<TurnEndReason> {
+        // Its first request goes with the prompt.
+        this.backendRequestAt = Date.now();
         const provider = this.model.provider;
         const name = getProvider(provider)?.name ?? provider;
         const folder = this.backendFolder(provider);
@@ -1690,7 +1728,7 @@ export class Agent {
         return reason;
     }
 
-    private async compactBackend(backend: AgentBackendClient, opts: { auto: boolean; signal: AbortSignal; instructions?: string }): Promise<boolean> {
+    private async compactBackend(backend: AgentBackendClient, opts: { auto: boolean; signal: AbortSignal; instructions?: string; idle?: boolean }): Promise<boolean> {
         const provider = this.model.provider;
         const folder = this.backendFolder(provider);
         const resume = this.backendResume(provider, folder);
@@ -1698,7 +1736,7 @@ export class Agent {
         // Claude Code runs PreCompact and PostCompact hooks itself (they're registered with it); Codex can't.
         const ownHooks = provider === "codex";
         if (ownHooks && !(await this.preCompact(opts))) return false;
-        this.emit({ type: "compact_start", auto: opts.auto });
+        this.emit({ type: "compact_start", auto: opts.auto, ...(opts.idle ? { idle: true } : {}) });
         const host: BackendHost = {
             ...this.backendHooks(opts.signal),
             emit: (e) => {
@@ -1717,7 +1755,8 @@ export class Agent {
         if (r.reason === "aborted") throw new ProviderError("aborted");
         if (r.reason === "error") throw new Error(r.error ?? "Compaction failed");
         this.contextTokens = 0;
-        this.emit({ type: "compact_end", summary: `${getProvider(provider)?.name ?? provider} compacted its own context.` });
+        this.cache = undefined;
+        this.emit({ type: "compact_end", summary: `${getProvider(provider)?.name ?? provider} compacted its own context.`, ...(opts.idle ? { idle: true } : {}) });
         if (ownHooks && !this.o.isSubagent) void this.hooks("PostCompact", { trigger: opts.auto ? "auto" : "manual", compact_summary: "" });
         // Claude Code runs SessionStart (compact) itself (backendOwnedHooks); the harness runs it for Codex, and the memory files' InstructionsLoaded on both.
         if (!this.o.isSubagent) void (provider === "claude-code" ? instructionsLoadedHooks(this.o.settings(), this.session, "compact", this.state.cwd, (msg, level = "warn") => this.emit({ type: "notice", level, message: msg }), this.hookServices()) : this.compacted());
@@ -1735,6 +1774,8 @@ export class Agent {
      * redact theirs (keys in a file the backend read, say).
      */
     private emitFromBackend(e: AgentEvent) {
+        // Tools' results go back to the model in its next request: the cache is read from about now.
+        if (e.type === "tool_end") this.backendRequestAt = Date.now();
         e = redactBackendEvent(e);
         this.noteServedCall(e, this.servedMain);
         // Harness's own tools it served (Monitor for Codex) show as those tools.
@@ -1782,6 +1823,15 @@ export class Agent {
         this.emit(e);
     }
 
+    /**
+     * When the backend's latest request went, or a little before: its cache
+     * lasts from then (its usage comes at the end of the turn). The CLI reports
+     * a request only once it has answered, so what's known is when the turn
+     * started, or when tool results last went back: never a reply's end, which
+     * for a long reply would be minutes after the cache was read.
+     */
+    private backendRequestAt?: number;
+
     /** The backend's context while it works: shown now, with nothing counted (its usage comes at the end of the turn). */
     private recordBackendContext(tokens: number) {
         if (!tokens || tokens === this.contextTokens) return;
@@ -1794,6 +1844,7 @@ export class Agent {
         this.session.recordUsage(modelRef(this.model), usage, cost.usd, cost.unknown);
         if (o.contextWindow && !this.model.contextWindow) this.model.contextWindow = o.contextWindow;
         if (o.contextTokens) this.contextTokens = o.contextTokens;
+        this.noteCache(usage, this.backendRequestAt ?? Date.now());
         this.lastUsageTotal = this.session.messages.length;
         this.emit({ type: "usage", usage, cost, contextTokens: this.contextTokens });
     }

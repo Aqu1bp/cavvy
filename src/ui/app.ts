@@ -24,6 +24,7 @@ import type { McpAsker } from "../mcp/elicitation";
 import { formatBytes } from "../util/files";
 import { loadImageFile, planPaste, prepareImage, readClipboardImage, type NamedImage, type Prepared, type PrepareOptions } from "./images";
 import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
+import { IdleCompactTimer } from "../agent/idle-compact";
 import { DELEGATE_TOOL } from "../agent/delegation";
 import { fireHooks, type HookEvent } from "../agent/hooks";
 import { backgroundWork, canAnswerOneOff, GoalController, limitedCodexGoal, loopGoalDropped, nativeGoalEnd, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, queuedGoalSet, sessionTokens, type NativeGoal } from "../agent/goal";
@@ -145,6 +146,26 @@ export class App {
     private dialogs: Dialog[] = [];
     private dialogQueue: Dialog[] = [];
     busy = false;
+    /** Compacts a long conversation left idle before its prompt cache expires (src/agent/idle-compact.ts). */
+    readonly idleCompact = new IdleCompactTimer({
+        plan: (now) => this.agent?.idleCompactPlan(now) ?? null,
+        // Not while anything waits on the user, or they're typing: they're back.
+        ready: () => !this.busy && !this.switching && !this.dialogs.length && !this.dialogQueue.length && !this.queued.length && this.editor.isEmpty && !this.pendingSubmit,
+        run: () => void this.compactIdle(),
+    });
+    /** The task running is an idle compaction: a message sent meanwhile cancels it and runs. */
+    idleCompacting = false;
+    private idleDone?: Promise<void>;
+    /** It's being stopped for something the user asked for: no "Cancelled". */
+    private idleYielding = false;
+
+    /** The user is back (a command): an idle compaction stops, and what they asked for goes ahead. */
+    async yieldIdleCompaction() {
+        if (!this.idleCompacting) return;
+        this.idleYielding = true;
+        this.abort?.abort();
+        await this.idleDone;
+    }
     /** Whether the last renderLive showed just the prompt (no turn, no dialog), to tell when it's back. */
     private wasIdle = false;
     private abort?: AbortController;
@@ -249,13 +270,15 @@ export class App {
     /** The turn starting is a scheduled prompt ("resume": the one after a usage limit, which picks a paused goal up again). */
     private scheduledTurn: boolean | "resume" = false;
 
-    /** A scheduled prompt may start now: nothing running, waiting, or being set up. */
+    /** A scheduled prompt may start now: nothing running (an idle compaction gives way), waiting, or being set up. */
     private schedulable(): boolean {
         // A goal between its turns (checking, retrying, waiting on background work) goes first: scheduled prompts wait for it.
-        return !this.busy && !this.dialogs.length && !this.dialogQueue.length && !this.switching && !this.pendingSubmit && !this.exiting && this.modelReady && Boolean(this.session) && !this.goal?.pending();
+        return (!this.busy || this.idleCompacting) && !this.dialogs.length && !this.dialogQueue.length && !this.switching && !this.pendingSubmit && !this.exiting && this.modelReady && Boolean(this.session) && !this.goal?.pending();
     }
 
-    private runScheduled(prompt: string, label: string, resume = false): Promise<unknown> {
+    private async runScheduled(prompt: string, label: string, resume = false): Promise<unknown> {
+        // An idle compaction stops: the prompt runs on the cache that's still warm, not alongside it.
+        if (this.idleCompacting) await this.yieldIdleCompaction();
         // A line of its own, so it doesn't read as part of the answer before it.
         this.print(["", theme.muted(`⏱ ${label}`)]);
         this.scheduledTurn = resume ? "resume" : true;
@@ -1213,10 +1236,10 @@ export class App {
                 this.thinkingNow = false;
                 break;
             case "compact_start":
-                this.verb = "Compacting conversation";
+                this.verb = e.idle ? "Compacting while idle" : "Compacting conversation";
                 break;
             case "compact_end":
-                this.screen.print(["", theme.muted(`✻ Conversation compacted · ${this.verbose ? "summary below" : "/summary to view the summary"}`)]);
+                this.screen.print(["", theme.muted(e.idle ? `✻ Compacted while idle, before the prompt cache expired · ${this.verbose ? "summary below" : "/summary to view"} · /config to turn off` : `✻ Conversation compacted · ${this.verbose ? "summary below" : "/summary to view the summary"}`)]);
                 if (this.verbose) {
                     const summary = e.summary;
                     this.screen.print((cols) => renderMarkdown(summary, cols - 4).map((l) => "  " + dim(l)));
@@ -2078,6 +2101,8 @@ export class App {
             this.queued.push(q);
             this.queueUpdated();
             if (q.mode === "steer" && steers(q)) this.agent?.queueChanged?.();
+            // Back before an idle compaction is done: it stops, and this runs on the cache that's still warm.
+            if (this.idleCompacting) this.abort?.abort();
             return;
         }
         await this.startTurn(text, { draft });
@@ -2101,6 +2126,7 @@ export class App {
         // Busy from here on, so prompts typed while MCP servers finish connecting queue up.
         const agent = this.agent;
         this.busy = true;
+        this.idleCompact.disarm();
         // The user's own turn: a resume waiting for the usage limit isn't needed.
         if (!this.scheduledTurn) this.schedules.userSent();
         this.scheduledTurn = false;
@@ -2178,7 +2204,10 @@ export class App {
             // events a watch raised meanwhile, can have their turn.
             if (reason && goal === this.goal) await goal?.afterTurn(reason, from, Boolean(opts.goal), this.turnStart);
             this.toolState.wakes?.poke();
-            return this.schedules.poke();
+            this.schedules.poke();
+            // Nothing followed it: from here the conversation is idle.
+            if (!this.busy) this.idleCompact.arm();
+            return;
         }
         this.queued.shift();
         this.queueUpdated();
@@ -2298,13 +2327,46 @@ export class App {
         void this.startTurn(formatWakes(wakes), { display: wakeDisplay(wakes), kind: "wake", wakes });
     }
 
+    /**
+     * A long conversation left idle compacts before its prompt cache expires.
+     * Esc cancels it; so does sending a message, which then runs at once.
+     */
+    private async compactIdle() {
+        const agent = this.agent;
+        if (!agent || this.busy) return;
+        this.idleCompacting = true;
+        let done!: () => void;
+        this.idleDone = new Promise<void>((r) => (done = r));
+        try {
+            await this.runTask("Compacting while idle", (signal) => agent.compact({ auto: true, idle: true, signal }), {
+                failed: (message) => this.notice(`Couldn't compact while idle: ${message}. The conversation is unchanged.`, "warn"),
+                // Cancelled by a message sent meanwhile: that message runs rather than coming back to the prompt.
+                cancelled: () => (this.queued.length || this.idleYielding ? false : undefined),
+            });
+        } finally {
+            this.idleCompacting = false;
+            this.idleYielding = false;
+            done();
+        }
+    }
+
     /** Run a non-chat task (like /compact) with the spinner and esc-to-cancel. */
-    async runTask<T>(verb: string, fn: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> {
+    async runTask<T>(
+        verb: string,
+        fn: (signal: AbortSignal) => Promise<T>,
+        o: {
+            /** Says it failed its own way. */
+            failed?: (message: string) => void;
+            /** Cancelled: false runs what was queued meanwhile rather than handing it back (and says nothing). */
+            cancelled?: () => false | undefined;
+        } = {},
+    ): Promise<T | undefined> {
         if (this.busy) {
             this.notice("Wait for the current response to finish, or press esc to interrupt it.", "warn");
             return undefined;
         }
         this.busy = true;
+        this.idleCompact.disarm();
         const ac = (this.abort = new AbortController());
         this.turnStart = Date.now();
         this.turnTokens = 0;
@@ -2315,10 +2377,13 @@ export class App {
         this.verb = verb;
         this.status = undefined;
         this.startTicker();
+        /** Cancelled, but what was queued meanwhile runs rather than coming back to the prompt. */
+        let carryOn = false;
         try {
             return await fn(ac.signal);
         } catch (e) {
-            if (!ac.signal.aborted) this.notice(redact((e as Error).message), "error");
+            if (!ac.signal.aborted) (o.failed ?? ((m) => this.notice(m, "error")))(redact((e as Error).message));
+            else if (o.cancelled?.() === false) carryOn = true;
             else this.notice("Cancelled", "warn");
             return undefined;
         } finally {
@@ -2329,7 +2394,7 @@ export class App {
             this.active.clear();
             this.detached.clear();
             this.renderLive();
-            this.afterTask(ac.signal.aborted);
+            this.afterTask(ac.signal.aborted && !carryOn);
         }
     }
 
@@ -2439,6 +2504,7 @@ export class App {
     }
 
     private async runBashMode(cmd: string) {
+        await this.yieldIdleCompaction();
         if (this.busy) {
             this.notice("Still working on the last request; press esc to interrupt it, then run the command.", "warn");
             if (this.editor.isEmpty) {
@@ -2463,6 +2529,8 @@ export class App {
         // Let the model see it next turn.
         const text = `<bash-input>${cmd}</bash-input>\n<bash-stdout>${out.slice(0, 20_000)}</bash-stdout>${res.exitCode ? `\n<bash-exit-code>${res.exitCode}</bash-exit-code>` : ""}`;
         this.agent?.addReminder(`The user ran a shell command themselves (output shown to them):\n${text}`);
+        // Still idle after it: the conversation's cache is where the last turn left it.
+        if (!this.busy && !this.queued.length) this.idleCompact.arm();
     }
 
     private async addMemory(note: string) {
@@ -2578,7 +2646,7 @@ export class App {
                 : quiet >= 10_000 && this.agentWork && this.model && !this.status && !this.active.size && !this.receiving.size
                   ? ` · waiting for ${shortModel(this.model)} ${formatDuration(quiet)}`
                   : "";
-            status.push(`${theme.accent(glyph)} ${theme.accent(label)} ${theme.muted(`(${elapsed}${tokens ? ` · ↓ ${formatTokens(tokens)} tokens` : ""}${waiting} · ${this.queued.length ? "esc to take back the queued message" : "esc to interrupt"})`)}`);
+            status.push(`${theme.accent(glyph)} ${theme.accent(label)} ${theme.muted(`(${elapsed}${tokens ? ` · ↓ ${formatTokens(tokens)} tokens` : ""}${waiting} · ${this.idleCompacting ? "send a message or esc to cancel" : this.queued.length ? "esc to take back the queued message" : "esc to interrupt"})`)}`);
         }
         const todos = this.toolState.todos;
         if (this.showTodos && todos.length && todos.some((t) => t.status !== "completed")) status.push(...renderTodos(todos, cols).slice(0, 10));
@@ -2601,7 +2669,7 @@ export class App {
         const color = this.inputMode === "bash" ? theme.bashMode : this.inputMode === "memory" ? theme.memoryMode : this.mode === "plan" ? theme.planMode : theme.subtle;
         const symbol = this.inputMode === "bash" ? "!" : this.inputMode === "memory" ? "#" : ">";
         const rule = color("─".repeat(Math.max(10, cols - 1)));
-        const placeholder = this.inputMode === "bash" ? "Run a shell command" : this.inputMode === "memory" ? "Add to memory" : this.busy ? this.followUpPlaceholder() : 'Try "explain this codebase" or "fix the failing test"';
+        const placeholder = this.inputMode === "bash" ? "Run a shell command" : this.inputMode === "memory" ? "Add to memory" : this.idleCompacting ? "Type a message to stop compacting and send it" : this.busy ? this.followUpPlaceholder() : 'Try "explain this codebase" or "fix the failing test"';
         const r = this.editor.render(cols - 2, color(symbol) + " ", "  ", { showCursor: true, placeholder });
         const maxInput = Math.max(3, termRows() - 12);
         let inputLines = r.lines;
