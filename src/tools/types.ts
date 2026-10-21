@@ -5,6 +5,9 @@ import type { PermissionMode } from "../permissions/modes";
 import type { Sandbox } from "../permissions/sandbox";
 import type { FileHistory } from "../agent/checkpoints";
 import type { Scheduler } from "../agent/schedule";
+import type { WakeQueue } from "../agent/wakes";
+import type { LspManager } from "../lsp/manager";
+import type { DiagnosticReport } from "../lsp/diagnostics";
 
 export type JsonSchema = Record<string, unknown>;
 
@@ -17,6 +20,8 @@ export interface ToolDisplay {
     body?: string;
     /** File change to render as a colored diff. */
     diff?: { path: string; before: string; after: string };
+    /** What the language server found after an edit (src/lsp). */
+    diagnostics?: DiagnosticReport;
 }
 
 export interface ToolResult {
@@ -70,6 +75,29 @@ export interface ToolState {
     secrets?: SecretStore;
     /** The session's schedules (CronCreate, /loop); interactive sessions only. */
     scheduler?: Scheduler;
+    /** The project's language servers, for diagnostics after edits; shared with sub-agents, outliving any one Agent. */
+    lsp?: LspManager;
+    /** Events that wake the session's agent (watched pull requests, monitors); the host starts a turn for them when idle. */
+    wakes?: WakeQueue;
+    /** Things watching in the background for this session, by id; the host stops them when the session closes. */
+    watchers?: Map<string, Watcher>;
+}
+
+/** Something a tool left running that raises wakes (a pull request watch, a monitor). */
+export interface Watcher {
+    id: string;
+    /** "pull-request", "monitor". */
+    kind: string;
+    /** One line for listings: "PR #12 in owner/repo". */
+    label: string;
+    /** Where it is on the web. */
+    url?: string;
+    /** How it stands now: "checks pending", "2 checks failing". */
+    detail?: string;
+    /** Stops it and drops its wakes still pending. */
+    stop(): void;
+    /** Set by the list it's in: called when url or detail change. */
+    onChange?: () => void;
 }
 
 export interface UiBridge {
@@ -111,6 +139,8 @@ export interface ToolContext {
     hidden?: (toolName: string, absPath: string) => HiddenReason | undefined;
     /** Auto mode approved this shell command on the condition that it runs in this sandbox. */
     sandbox?: Sandbox;
+    /** Wake the session's agent later (the main agent only; missing for sub-agents and one-shot runs). */
+    wakes?: WakeQueue;
 }
 
 export interface Tool<I = Record<string, unknown>> {

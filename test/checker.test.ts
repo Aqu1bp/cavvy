@@ -882,8 +882,9 @@ describe("network, MCP and other tools", () => {
 
     test("non-Bash execute tools ask, with the classifier in auto mode", () => {
         const exec = fakeTool("Runner", "execute");
-        expect(check(exec, {})).toEqual({ behavior: "ask" });
-        expect(check(exec, {}, "auto")).toEqual({ behavior: "ask", needsClassifier: true });
+        // "Don't ask again" allows the tool by name (GitCommit, GitPush, CreatePullRequest).
+        expect(check(exec, {})).toEqual({ behavior: "ask", suggestions: ["Runner"] });
+        expect(check(exec, {}, "auto")).toEqual({ behavior: "ask", needsClassifier: true, suggestions: ["Runner"] });
     });
 
     test("meta tools are allowed", () => {

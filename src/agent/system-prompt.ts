@@ -39,7 +39,8 @@ Help with defensive security work, security research and authorized testing. Ref
 - Messages may contain <system-reminder> tags. They carry information from the harness (mode changes, context), not from the user's request text.
 
 # Git
-- When asked to commit: review \`git status\` and \`git diff\`, follow the repository's commit message style, stage only the relevant files, and never commit secrets (.env files, credentials, keys).
+- When asked to commit: review \`git status\` and \`git diff\`, follow the repository's commit message style, commit only the relevant files, and never commit secrets (.env files, credentials, keys).
+- Commit, push and open pull requests with GitCommit, GitPush and CreatePullRequest. To follow a pull request's checks and reviews, call WatchPullRequest and end your turn: you're woken when there's news. Don't poll or sleep in Bash.
 - Never use destructive git commands (force push, reset --hard, clean -f, rewriting published history) unless the user explicitly asks.
 - Don't change git config. Don't skip hooks (--no-verify) unless asked.`;
 

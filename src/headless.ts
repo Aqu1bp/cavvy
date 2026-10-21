@@ -317,7 +317,7 @@ export async function runHeadless(o: HeadlessOptions): Promise<number> {
             timedOut,
         ]);
         // Delegated tasks still running end with the run.
-        await Promise.all([ended, agent.dispose(), killAllShells({ state: toolState }), Promise.race([mcp.closeAll(), sleep(1500)])]);
+        await Promise.all([ended, agent.dispose(), killAllShells({ state: toolState }), toolState.lsp?.dispose(), Promise.race([mcp.closeAll(), sleep(1500)])]);
     }
 
     const isError = reason !== "done";

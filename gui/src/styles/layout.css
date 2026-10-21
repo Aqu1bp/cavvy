@@ -974,6 +974,25 @@ a.prow:hover,
     animation: pulse 2s steps(6) infinite;
 }
 
+.prow .meta.tone-err {
+    color: var(--danger, var(--del));
+}
+
+.prow .meta.tone-ok {
+    color: var(--add);
+}
+
+.watch-live {
+    color: var(--accent) !important;
+}
+
+.prow .watch-link {
+    text-align: left;
+    color: inherit;
+    font-weight: inherit;
+    min-width: 0;
+}
+
 .shell-cmd {
     font-size: 0.857rem;
     font-weight: 400;

@@ -493,7 +493,8 @@ class ClaudeTurn {
         this.proc?.send({ type: "control_request", request_id: requestId(), request: { subtype: "set_permission_mode", mode: MODES[m] } });
     }
 
-    private sendUser(content: unknown[]) {
+    /** `synthetic`: not the user's own words (see BackendTurn.synthetic), so Claude Code expands no @mentions in it. */
+    private sendUser(content: unknown[], synthetic = false) {
         if (this.aborted || this.finishing) return;
         this.prompted = true;
         this.busy = true;
@@ -504,7 +505,7 @@ class ClaudeTurn {
         this.settleTimer = undefined;
         const uuid = crypto.randomUUID();
         this.unanswered.add(uuid);
-        this.proc.send({ type: "user", uuid, message: { role: "user", content }, parent_tool_use_id: null, session_id: this.sessionId ?? "" });
+        this.proc.send({ type: "user", uuid, message: { role: "user", content }, parent_tool_use_id: null, session_id: this.sessionId ?? "", ...(synthetic ? { isSynthetic: true } : {}) });
     }
 
     /**
@@ -646,7 +647,11 @@ class ClaudeTurn {
         }));
         if (!queued.length || this.aborted || this.finishing) return false;
         this.reason = undefined;
-        this.sendUser([{ type: "text", text: queued.join("\n\n") }]);
+        // The user's messages as they typed them; a watch's events (others' words) apart, read as written.
+        const typed = queued.filter((t) => !this.host.fromWake?.(t));
+        const woke = queued.filter((t) => this.host.fromWake?.(t));
+        if (typed.length) this.sendUser([{ type: "text", text: typed.join("\n\n") }]);
+        if (woke.length) this.sendUser([{ type: "text", text: woke.join("\n\n") }], true);
         return true;
     }
 
@@ -774,7 +779,7 @@ class ClaudeTurn {
         signal.addEventListener("abort", onAbort, { once: true });
         this.proc.send({ type: "control_request", request_id: requestId(), request: { subtype: "initialize", ...this.hookRegistration() } });
         // The prompt waits for the MCP server, so its first request has the harness's tools.
-        void this.attach().then(() => this.aborted || this.sendUser(content));
+        void this.attach().then(() => this.aborted || this.sendUser(content, this.t.synthetic));
         try {
             for await (const m of this.proc.messages()) {
                 if (m.type === "result") {

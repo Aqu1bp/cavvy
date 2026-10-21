@@ -146,6 +146,8 @@ const mcpResults = () => logLines().flatMap((l) => (l.mcpResult ? [l.mcpResult] 
 const setServers = () => received().filter((m) => m.type === "control_request" && m.request?.subtype === "mcp_set_servers");
 const userTexts = () => received().flatMap((m) => (m.type === "user" ? m.message.content.filter((c: any) => c.type === "text").map((c: any) => c.text as string) : []));
 const notices = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "notice" ? [`${e.level}: ${e.message}`] : []));
+const { WakeQueue, WatcherMap, stopWatchers } = await import("../src/agent/wakes");
+const { gitToolDeps } = await import("../src/tools/git-tools");
 const calls = (list: { server?: string; tool: string; args: Record<string, unknown> }[]) => (process.env.FAKE_MCP_CALLS = JSON.stringify(list));
 
 interface Opts {
@@ -162,6 +164,8 @@ interface Opts {
     ui?: import("../src/tools/types").UiBridge;
     secrets?: import("../src/agent/secrets").SecretStore;
     scheduler?: import("../src/agent/schedule").Scheduler;
+    /** Give the session a wake queue and watch list, as the TUI and the app do. */
+    wakes?: boolean;
 }
 
 async function makeAgent(o: Opts) {
@@ -181,7 +185,7 @@ async function makeAgent(o: Opts) {
         checker: new PermissionChecker(() => settings, cwd),
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
-        toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: o.secrets, scheduler: o.scheduler },
+        toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: o.secrets, scheduler: o.scheduler, ...(o.wakes ? { wakes: new WakeQueue({ coalesceMs: 60_000 }), watchers: new WatcherMap() } : {}) },
         helpers: { resolveModel },
         listings: () => listings,
         host: {
@@ -1026,6 +1030,40 @@ describe("Claude Code as the main agent", () => {
         const settings = JSON.parse(argv[argv.indexOf("--settings") + 1]!);
         expect(settings.permissions.deny).toEqual(expect.arrayContaining(["CronCreate", "CronDelete", "CronList", "ScheduleWakeup"]));
         scheduler.dispose();
+    });
+
+    test("a session that can be woken gives Claude Code watch_pull_request, and a call to it starts a watch", async () => {
+        const realGh = gitToolDeps.gh;
+        const asked: string[][] = [];
+        gitToolDeps.gh = () => async (args) => {
+            asked.push(args);
+            const pr = { number: 12, url: "https://github.com/acme/app/pull/12", title: "Fix it", state: "OPEN", isDraft: false, headRefOid: "abc1234", headRefName: "fix", baseRefName: "main", mergeable: "MERGEABLE", commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "CheckRun", name: "ci", status: "IN_PROGRESS" }] } } } }] }, comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [] } };
+            return { out: JSON.stringify({ data: { viewer: { login: "me" }, rateLimit: { remaining: 4990, resetAt: "2026-10-21T11:00:00Z" }, repository: { pullRequest: pr } } }), err: "", code: 0 };
+        };
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "watch_pull_request", args: { pr: "https://github.com/acme/app/pull/12" } }]);
+        try {
+            const { run, agent } = await makeAgent({ provider: "claude-code", wakes: true });
+            expect(await run("watch my PR")).toBe("done");
+            const tools = setServers()[0].request.servers.harness.tools.map((t: { name: string }) => t.name);
+            expect(tools).toEqual(expect.arrayContaining(["watch_pull_request", "unwatch_pull_request"]));
+            // Committing and pushing stay with the CLI's own shell, under the harness's prompts.
+            expect(tools).not.toContain("GitCommit");
+            expect(mcpResults()[0]).toMatchObject({ tool: "watch_pull_request" });
+            expect(JSON.stringify(mcpResults()[0])).toContain("Watching it now");
+            expect([...agent.state.watchers!.keys()]).toEqual(["pr:acme/app#12"]);
+            expect(asked[0]).toEqual(expect.arrayContaining(["api", "graphql"]));
+            stopWatchers(agent.state);
+        } finally {
+            gitToolDeps.gh = realGh;
+        }
+    });
+
+    test("-p has nowhere to wake, so no watch tools", async () => {
+        const { run } = await makeAgent({ provider: "claude-code", wakes: true, headless: true });
+        expect(await run("hi")).toBe("done");
+        const tools = (setServers()[0]?.request.servers.harness.tools ?? []).map((t: { name: string }) => t.name);
+        expect(tools).not.toContain("watch_pull_request");
     });
 
     test("without one (-p, a sub-agent), no schedule tools and Claude Code's own aren't touched", async () => {

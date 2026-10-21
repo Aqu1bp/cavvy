@@ -4,6 +4,7 @@ import { ensureDir, paths } from "./paths";
 import type { PermissionMode } from "../permissions/modes";
 import { normalizeHooks, type HookEvent, type HookType } from "./hook-config";
 import type { FollowUp } from "../agent/queue-store";
+import type { LspServerConfig } from "../lsp/config";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORT_LEVELS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
@@ -123,6 +124,12 @@ export interface Settings {
     autoResume?: boolean;
     /** Claude Code and Codex get tools to hand tasks to other providers' models (default true). */
     delegation?: boolean;
+    /**
+     * Diagnostics after edits from language servers (src/lsp). Built-in servers
+     * run when installed; `servers` adds or replaces them (Claude Code's
+     * lspServers shape). false turns it off.
+     */
+    lsp?: false | { enabled?: boolean; servers?: Record<string, LspServerConfig> };
     /** The GUI's "Open files with" editor, an id from src/server/editors.ts. User settings only: a project mustn't choose what gets launched. */
     editor?: string;
     /** `harness --worktree`: the new branch's name prefix (default "harness/"), where it starts, and what happens to it on exit. */
@@ -315,7 +322,7 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
     const merged: Settings = {};
     const warnings = new Set<string>();
     for (const s of layers) {
-        const { permissions, env, mcpServers, hooks, worktree, ...rest } = s;
+        const { permissions, env, mcpServers, hooks, worktree, lsp, ...rest } = s;
         // JSON.parse keeps a "__proto__" key as data; assigning it would set merged's prototype (and settings it seems to have).
         for (const [k, v] of Object.entries(rest)) if (k !== "__proto__") (merged as Record<string, unknown>)[k] = v;
         if (permissions) {
@@ -330,6 +337,7 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
         // Field by field: a project's baseRef mustn't drop the user's own cleanup or prefix.
         if (worktree && typeof worktree === "object") merged.worktree = { ...merged.worktree, ...worktree };
         if (mcpServers) merged.mcpServers = { ...merged.mcpServers, ...mcpServers };
+        if (lsp !== undefined) merged.lsp = mergeLsp(merged.lsp, lsp);
         const flat = normalizeHooks(hooks, (msg) => warnings.add(msg));
         if (flat) {
             const h = (merged.hooks ??= {});
@@ -342,6 +350,15 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
     mergeMcpApprovals(merged, trusted ? [user, local] : [user]);
     if (warnings.size) hookWarnings.set(merged, [...warnings]);
     return merged;
+}
+
+/** Servers add up by name across layers (a later one replaces one of the same name); a later on/off wins. */
+function mergeLsp(prev: Settings["lsp"], next: Settings["lsp"]): Settings["lsp"] {
+    if (next === false || next === null || typeof next !== "object") return next === false ? false : prev;
+    const base = typeof prev === "object" && prev !== null ? prev : {};
+    const servers = next.servers && typeof next.servers === "object" ? { ...base.servers, ...next.servers } : base.servers;
+    const enabled = next.enabled ?? (prev === false ? false : base.enabled);
+    return { ...(enabled !== undefined ? { enabled } : {}), ...(servers ? { servers } : {}) };
 }
 
 /** Any layer can turn the sandbox off; hosts and exemptions come from the user's own settings only. */

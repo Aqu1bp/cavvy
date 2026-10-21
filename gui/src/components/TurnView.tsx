@@ -1,6 +1,6 @@
 import { RenderBoundary } from "./ui/ErrorBoundary";
 import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, Show, Switch } from "solid-js";
-import { AlertCircle, AlertTriangle, Brain, ChevronRight, Clock, FileDiff, FileText, GitFork, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
+import { AlertCircle, AlertTriangle, Brain, ChevronRight, Clock, FileDiff, FileText, GitFork, Info, MessageSquareText, RotateCcw, BellRing, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
 import { duration, turnDuration, firstChangedLine, plural, stripAnsi } from "../lib/format";
 import { now } from "../lib/clock";
@@ -50,6 +50,15 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
     const long = () => text().split("\n").length > 14 || text().length > 1400;
     const shell = () => text().startsWith("!");
     createEffect(on(findReveal, (r) => r?.turnId === p.turn.id && r.part === "prompt" && long() && setExpanded(true)));
+    // Started by an event the agent asked to be woken for (a watched pull request), not by the user.
+    if (p.turn.prompt?.wake) {
+        return (
+            <div class="wake-row" data-find="prompt" title="The agent asked to be woken for this event">
+                <BellRing size={13} aria-hidden="true" />
+                <span class="wake-text">{text()}</span>
+            </div>
+        );
+    }
     return (
         <div class="user-row">
             <div class="user-actions">

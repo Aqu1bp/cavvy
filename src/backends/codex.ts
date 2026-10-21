@@ -685,7 +685,12 @@ class CodexTurn {
                     this.followUp = undefined;
                     const next = followUp ? [followUp] : this.unsteered.length ? this.unsteered.splice(0) : await this.host.drainQueued(() => this.progress());
                     if (!next.length) break;
-                    text = request = next.join("\n\n");
+                    // The user's words name skills; a watch's events (others' words, such as a PR comment) come after and don't.
+                    const typed = next.filter((x) => !this.host.fromWake?.(x));
+                    const woke = next.filter((x) => this.host.fromWake?.(x));
+                    request = typed.length ? typed.join("\n\n") : undefined;
+                    after = woke.length ? `${typed.length ? "\n\n" : ""}${woke.join("\n\n")}` : "";
+                    text = [...typed, ...woke].join("\n\n");
                 }
             }
             // Codex's error may not say when the limit resets; its limits do.
@@ -1188,6 +1193,7 @@ class CodexTurn {
                 const content = item.status === "declined" ? this.takeRefusal(id, "The change was declined.") : failed ? "The change was not applied." : `Changed ${changes.length} file${changes.length === 1 ? "" : "s"}: ${changes.map((c) => c.path).join(", ")}`;
                 const body = changes.map((c) => `${c.kind} ${c.path}\n${c.diff}`).join("\n").slice(0, 20_000);
                 this.endItem(id, open, content, failed, failed ? undefined : { summary: `Changed ${changes.length} file${changes.length === 1 ? "" : "s"}`, body }, false, item.status !== "declined");
+                if (!failed && !sub) this.diagnose(changes);
                 break;
             }
             case "mcpToolCall": {
@@ -1671,7 +1677,8 @@ class CodexTurn {
             try {
                 await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: turnId, input: this.input(text, []) });
             } catch {
-                this.unsteered.push(text);
+                // Each as it was queued, so the user's words and a watch's events stay told apart.
+                this.unsteered.push(...texts);
             }
         }).catch(() => {});
     }
@@ -1679,6 +1686,23 @@ class CodexTurn {
     /** Several hooks finishing after the turn all reach the next one. */
     private addFollowUp(text: string) {
         this.followUp = this.followUp ? `${this.followUp}\n\n${text}` : text;
+    }
+
+    /**
+     * The language servers' new problems in files Codex changed (it has no
+     * diagnostics of its own): into the turn that made them while it runs;
+     * once it has ended, the user is told (a notice) and no turn starts.
+     */
+    private diagnose(changes: FileChange[]) {
+        const paths = changes.filter((c) => c.kind !== "delete").map((c) => resolve(this.t.cwd, c.movePath ?? c.path));
+        const turnId = this.turnId;
+        if (!paths.length || !turnId || !this.host.diagnose) return;
+        void this.host.diagnose(paths).then(
+            (note) => {
+                if (note && !this.aborted && this.turnId === turnId) this.steer(`<system-reminder>\n${note}\n</system-reminder>`, false);
+            },
+            () => {},
+        );
     }
 
     /**

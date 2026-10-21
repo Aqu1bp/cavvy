@@ -934,7 +934,8 @@ export class Engine {
     private unloadIfUnused(id: string) {
         const rt = this.runtimes.get(id);
         if (!rt || this.stopping || [...this.clients].some((c) => c.subs.has(id))) return;
-        if (!rt.idle || rt.scheduled) return this.unloadLater(id);
+        // A watch (a pull request) goes on with no window open: it wakes the session when there's news.
+        if (!rt.idle || rt.scheduled || rt.watching) return this.unloadLater(id);
         void this.unload(rt);
     }
 
@@ -1651,6 +1652,7 @@ export class Engine {
             { name: "compact", description: "Summarize the conversation to free up context", args: "[instructions]" },
             { name: "init", description: "Create a HARNESS.md with notes about this codebase" },
             { name: "review", description: "Review the current changes (or a PR number) for bugs", args: "[pr|focus]" },
+            { name: "trust", description: "Trust this folder yourself (MCP approvals, diagnostics after edits)" },
             { name: "model", description: "Switch the model" },
             { name: "mode", description: "Switch the permission mode" },
             { name: "rewind", description: "Go back to before an earlier prompt" },
@@ -2024,6 +2026,9 @@ export class Engine {
             }
             case "session.killShell":
                 await this.runtime(p.id).killShell(str(p.shellId, "shellId"));
+                return null;
+            case "session.stopWatch":
+                this.runtime(p.id).stopWatch(str(p.watchId, "watchId"));
                 return null;
             case "session.forgetSecret":
                 this.runtime(p.id).forgetSecret(str(p.name, "name"));

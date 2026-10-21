@@ -96,7 +96,7 @@ export interface UiState {
 export type AgentHead = { [K in keyof Omit<AgentRun, "blocks">]?: AgentRun[K] | null };
 
 export type UiRecord =
-    | { t: "tool"; id: string; summary?: string; diff?: FileDiff; durationMs?: number; approval?: string; sandboxed?: boolean; images?: number; job?: ToolBlock["job"]; at?: number }
+    | { t: "tool"; id: string; summary?: string; diff?: FileDiff; diagnostics?: ToolBlock["diagnostics"]; durationMs?: number; approval?: string; sandboxed?: boolean; images?: number; job?: ToolBlock["job"]; at?: number }
     /** A turn's start (no `end`) begins its record afresh; its end adds to it, and so does its prompt's promptKey once that's in the history. */
     | { t: "turn"; seg: number; index: number; at: number; end?: number; status?: TurnStatus; prompt?: string }
     | { t: "pending-turn"; text: string; at: number }
@@ -438,7 +438,7 @@ function restoredAgent(rec: AgentRun, t: Turn): AgentRun {
 /** How an interrupted turn ends in the history (as Agent writes it when a turn is stopped). */
 export const INTERRUPTED = "[Request interrupted by user]";
 
-const isPrompt = (m: Message) => m.role === "user" && (m.meta?.kind === undefined || m.meta.kind === "prompt" || m.meta.kind === "command");
+const isPrompt = (m: Message) => m.role === "user" && (m.meta?.kind === undefined || m.meta.kind === "prompt" || m.meta.kind === "command" || m.meta.kind === "wake");
 /** Where a turn starts: a prompt, or tool results a message sent meanwhile rides along with. */
 const startsTurn = (m: Message) => isPrompt(m) || (m.role === "user" && m.meta?.kind === "tool_results" && m.content.some((p) => p.type === "text" && p.text.startsWith(STEERING)));
 
@@ -589,7 +589,8 @@ export function replay(o: ReplayInput): Turn[] {
                 }
                 const rec = o.ui.turn(si, index);
                 const imported = Boolean(m.meta?.imported);
-                const t = start({ text: promptText(m), ...attachedPrompt(m.content), ...(kind === "command" ? { command: true } : {}), ...(archived || imported ? {} : { index }) }, rec?.at, index);
+                // A wake (a watched PR, a monitor) isn't a prompt to rewind to.
+                const t = start({ text: promptText(m), ...attachedPrompt(m.content), ...(kind === "command" ? { command: true } : {}), ...(kind === "wake" ? { wake: true } : archived || imported ? {} : { index }) }, rec?.at, index);
                 t.snapshotId = m.meta?.checkpoint;
                 if (imported) t.imported = true;
                 if (rec?.end) t.endedAt = rec.end;
@@ -653,6 +654,7 @@ function applyResult(b: ToolBlock | undefined, p: ToolResultPart, ui: UiLog) {
     if (rec?.sandboxed !== undefined) b.sandboxed = rec.sandboxed;
     if (p.images?.length || rec?.images) b.images = p.images?.length ?? rec?.images;
     if (rec?.job) b.job = rec.job;
+    if (rec?.diagnostics) b.diagnostics = rec.diagnostics;
 }
 
 /** A one-line summary for a result the GUI didn't see happen (sessions from the terminal). */

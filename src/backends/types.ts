@@ -103,6 +103,8 @@ export interface BackendHost {
     hooks?(event: HookEvent, payload: Record<string, unknown>): Promise<HookOutcome | undefined>;
     /** Run one hook handler the backend called back for (Claude Code's hook_callback), with the backend's input. */
     hookHandler?(event: HookEvent, h: HookConfig, input: Record<string, unknown>, signal: AbortSignal): Promise<HookResult>;
+    /** A drained message is an event a watch raised (others' words, such as a PR comment), not the user's. */
+    fromWake?(text: string): boolean;
     /** Called when a message to steer with arrives mid-turn, for a backend that can take it at once (Codex). Returns the unsubscribe. */
     onQueued?(listener: () => void): () => void;
     /**
@@ -111,12 +113,24 @@ export interface BackendHost {
      * turn, so they reach it even after a restart.
      */
     undelivered?(texts: string[]): void;
+    /**
+     * Files the backend changed (absolute paths): the language servers' new
+     * problems in them, as a note for the model, or undefined when there's
+     * nothing new. The user is told either way (a notice). For a backend
+     * without diagnostics of its own (Codex).
+     */
+    diagnose?(paths: string[]): Promise<string | undefined>;
 }
 
 export interface BackendTurn {
     /** The CLI config folder selection; omitted means its Default account. */
     accountId?: string;
     prompt: string;
+    /**
+     * The prompt isn't only the user's own words (an event a watch raised, or what the harness adds before
+     * them): Claude Code reads it as written, with no @mention expansion or slash command.
+     */
+    synthetic?: boolean;
     images: ImagePart[];
     /** PDFs, for a backend that reads them (Claude Code); others get a note in the prompt instead. */
     documents?: PdfPart[];
