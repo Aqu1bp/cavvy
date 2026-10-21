@@ -7,7 +7,7 @@ import { now } from "../lib/clock";
 import { formatSize } from "../lib/attachments";
 import { linesLabel, linesPhrase, splitComments } from "../lib/review-comments";
 import { prefs } from "../state/prefs";
-import { fetchGitChanges } from "../state/changes";
+import { fetchGitChanges, type GitView } from "../state/changes";
 import { openInEditor, openReview } from "../state/actions";
 import { findReveal, setViewedImage } from "../state/ui";
 import { imagesReady, promptImages, type PromptImage } from "../state/images";
@@ -347,6 +347,21 @@ export function SplitPath(p: { path: string; cwd?: string }) {
 
 const FILES_SHOWN = 6;
 
+/** What a changes card keeps of a turn's recorded diff: the file list, without the hunks. */
+type Recorded = Pick<GitView, "repo" | "turnId" | "error" | "snapshotAvailable" | "incomplete" | "notes" | "more"> & { files: Changed[] };
+/**
+ * Turns' recorded diffs, by session and snapshot. A finished turn's never changes, so a card
+ * mounted again (switching back to the session) has it at once instead of asking the server to
+ * diff the turn again and sending every hunk (megabytes for a turn that touched hundreds of files).
+ */
+const recordedTurns = new Map<string, Recorded>();
+const RECORDED_KEPT = 400;
+
+function summarize(view: GitView): Recorded {
+    const { repo, turnId, error, snapshotAvailable, incomplete, notes, more } = view;
+    return { repo, turnId, error, snapshotAvailable, incomplete, notes, more, files: view.files.map((f) => ({ path: f.path, status: f.status, added: f.added, removed: f.removed, line: firstChangedLine(f) })) };
+}
+
 function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: boolean }) {
     // Load after the closing snapshot is saved. Once ready, a completed turn's
     // key stays stable while later turns run, so its immutable diff is not fetched again.
@@ -355,14 +370,25 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
         const key = JSON.stringify([p.sessionId, p.turn.snapshotId]);
         return !p.busy || previous === key ? key : undefined;
     });
-    const [snapshot] = createResource(snapshotKey, async (key) => {
+    const [snapshot] = createResource(snapshotKey, (key) => {
         const [id, turnId] = JSON.parse(key) as [string, number];
-        return { id, turnId, view: await fetchGitChanges(id, "turn", undefined, undefined, turnId) };
+        const kept = recordedTurns.get(key);
+        if (kept) return { id, turnId, view: kept };
+        return fetchGitChanges(id, "turn", undefined, undefined, turnId).then((view) => {
+            const summary = summarize(view);
+            // Not an error: the next card to mount asks again.
+            if (!view.error) {
+                recordedTurns.delete(key);
+                recordedTurns.set(key, summary);
+                if (recordedTurns.size > RECORDED_KEPT) recordedTurns.delete(recordedTurns.keys().next().value!);
+            }
+            return { id, turnId, view: summary };
+        });
     });
     const recorded = () => snapshot()?.id === p.sessionId && snapshot()?.turnId === p.turn.snapshotId ? snapshot()?.view : undefined;
     const captured = () => recorded()?.repo && recorded()?.turnId === p.turn.snapshotId && !recorded()?.error;
     const snapshotDiff = () => captured() && recorded()?.snapshotAvailable;
-    const files = createMemo<Changed[]>(() => snapshotDiff() ? recorded()!.files.map((f) => ({ ...f, line: firstChangedLine(f) })) : turnChanges(p.turn));
+    const files = createMemo<Changed[]>(() => snapshotDiff() ? recorded()!.files : turnChanges(p.turn));
     const reviewChanges = (path?: string) => openReview(path, snapshotDiff() ? "turn" : "uncommitted", snapshotDiff() ? p.turn.snapshotId : undefined);
     const total = () => files().reduce((a, f) => ({ added: a.added + f.added, removed: a.removed + f.removed }), { added: 0, removed: 0 });
     const [all, setAll] = createSignal(false);
