@@ -131,6 +131,29 @@ describe("the window's keymap", () => {
         expect(kb.actionOf(ev("Enter", "Enter"), ["Chat"])).toBe("chat:submit");
     });
 
+    test("the session list's keys: on in the rail only, labelled for Settings and tooltips, and the file can move them", () => {
+        kb.applyKeybindingsFile({ path: "/k.json" });
+        const del = os === "macos" ? ev("Backspace", "Backspace", MOD) : ev("Delete", "Delete");
+        expect(kb.actionOf(del, ["Sidebar", "Global"])).toBe("sidebar:deleteSelected");
+        expect(kb.actionOf(os === "macos" ? ev("Backspace", "Backspace", MOD) : ev("Delete", "Delete"), ["Chat", "Global"])).toBeUndefined();
+        expect(kb.actionOf(ev("a", "KeyA", MOD), ["Sidebar", "Global"])).toBe("sidebar:selectAll");
+        expect(kb.actionOf(ev("a", "KeyA", MOD), ["Global"])).toBeUndefined();
+        expect(kb.actionOf(ev("S", "KeyS", { ...MOD, shiftKey: true }), ["Sidebar", "Global"])).toBe("sidebar:settleSelected");
+        expect(kb.actionOf(ev("A", "KeyA", { ...MOD, shiftKey: true }), ["Sidebar", "Global"])).toBe("sidebar:archiveSelected");
+        // Plain Backspace isn't bound: a stray one never asks to delete.
+        expect(kb.actionOf(ev("Backspace", "Backspace"), ["Sidebar", "Global"])).toBeUndefined();
+        // Global keys still work from the list.
+        expect(kb.actionOf(ev("k", "KeyK", MOD), ["Sidebar", "Global"])).toBe("app:commandPalette");
+        expect(kb.shortcut("sidebar:deleteSelected")).toBe(os === "macos" ? "⌘+Backspace" : "Delete");
+        expect(kb.withShortcut("Settle 3 sessions", "sidebar:settleSelected")).toBe(os === "macos" ? "Settle 3 sessions (⇧⌘S)" : "Settle 3 sessions (Ctrl+Shift+S)");
+        kb.applyKeybindingsFile(fileOf([{ context: "Sidebar", bindings: { "mod+backspace": null, delete: null, "alt+backspace": "sidebar:deleteSelected" } }]));
+        expect(kb.actionOf(ev("Backspace", "Backspace", { altKey: true }), ["Sidebar", "Global"])).toBe("sidebar:deleteSelected");
+        expect(kb.actionOf(os === "macos" ? ev("Backspace", "Backspace", MOD) : ev("Delete", "Delete"), ["Sidebar", "Global"])).toBeUndefined();
+        expect(kb.shortcut("sidebar:deleteSelected")).toBe(os === "macos" ? "⌥+Backspace" : "Alt+Backspace");
+        expect(kb.keymap().customized.has("sidebar:deleteSelected")).toBe(true);
+        kb.applyKeybindingsFile({ path: "/k.json" });
+    });
+
     test("an unreadable file shows as a problem", () => {
         kb.applyKeybindingsFile({ path: "/k.json", error: "Can't read /k.json: EACCES" });
         expect(kb.keymap().issues[0]!.message).toContain("EACCES");

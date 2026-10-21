@@ -295,6 +295,64 @@ describe("matching", () => {
     });
 });
 
+describe("the session list (Sidebar)", () => {
+    test("defaults: ⌘⌫ deletes on a Mac, Delete elsewhere; settle, archive and select all; only in the list, only in the GUI", () => {
+        const mac = loadKeymap(undefined, "gui", "macos");
+        const linux = loadKeymap(undefined, "gui", "linux");
+        const windows = loadKeymap(undefined, "gui", "windows");
+        expect(mac.keysOf.get("sidebar:deleteSelected")).toEqual(["cmd+backspace"]);
+        expect(linux.keysOf.get("sidebar:deleteSelected")).toEqual(["delete"]);
+        expect(windows.keysOf.get("sidebar:deleteSelected")).toEqual(["delete"]);
+        expect(mac.keysOf.get("sidebar:settleSelected")).toEqual(["shift+cmd+s"]);
+        expect(linux.keysOf.get("sidebar:settleSelected")).toEqual(["ctrl+shift+s"]);
+        expect(mac.keysOf.get("sidebar:archiveSelected")).toEqual(["shift+cmd+a"]);
+        expect(mac.keysOf.get("sidebar:selectAll")).toEqual(["cmd+a"]);
+        expect(linux.keysOf.get("sidebar:selectAll")).toEqual(["ctrl+a"]);
+        for (const km of [mac, linux]) {
+            expect(km.issues).toEqual([]);
+            for (const id of ["sidebar:deleteSelected", "sidebar:settleSelected", "sidebar:archiveSelected", "sidebar:selectAll"]) {
+                expect(ACTIONS.find((a) => a.id === id)!.context).toBe("Sidebar");
+                expect([...km.table.get("Global")!.values()]).not.toContain(id);
+            }
+        }
+        // ⌘A, ⌘⌫ and Delete stay text editing's everywhere else (the input box included).
+        expect(new KeyMatcher(mac).match("cmd+a", ["Chat", "Global"])).toEqual({ kind: "none", abandoned: 0 });
+        expect(new KeyMatcher(mac).match("cmd+a", ["Sidebar", "Global"])).toMatchObject({ kind: "action", action: "sidebar:selectAll", context: "Sidebar" });
+        expect(new KeyMatcher(linux).match("delete", ["Sidebar", "Global"])).toMatchObject({ action: "sidebar:deleteSelected" });
+        expect(new KeyMatcher(linux).match("delete", ["Global"])).toEqual({ kind: "none", abandoned: 0 });
+        // Nor the terminal app's.
+        expect(loadKeymap(undefined, "tui", "macos").keysOf.has("sidebar:deleteSelected")).toBe(false);
+        expect(formatKeys("cmd+backspace", "gui", "macos")).toBe("⌘+Backspace");
+    });
+
+    test("overrides: rebind or unbind in the Sidebar context; Global actions may go there too, other contexts' may not", () => {
+        const km = loadKeymap(file([{ context: "Sidebar", bindings: { "cmd+backspace": null, "cmd+d": "sidebar:deleteSelected", "mod+shift+s": null, "cmd+e": "sidebar:settleSelected", "cmd+n": "app:settings" } }]), "gui", "macos");
+        expect(km.issues).toEqual([]);
+        expect(km.keysOf.get("sidebar:deleteSelected")).toEqual(["cmd+d"]);
+        expect(km.keysOf.get("sidebar:settleSelected")).toEqual(["cmd+e"]);
+        expect(km.customized.has("sidebar:deleteSelected")).toBe(true);
+        const m = new KeyMatcher(km);
+        expect(m.match("cmd+backspace", ["Sidebar", "Global"])).toEqual({ kind: "none", unbound: true, abandoned: 0 });
+        expect(m.match("cmd+n", ["Sidebar", "Global"])).toMatchObject({ action: "app:settings", context: "Sidebar" });
+        // ⌘N is still a new session outside the list.
+        expect(m.match("cmd+n", ["Global"])).toMatchObject({ action: "app:newSession" });
+        const bad = loadKeymap(file([{ context: "Global", bindings: { "cmd+d": "sidebar:deleteSelected" } }, { context: "Sidebar", bindings: { "cmd+j": "chat:submit", "cmd+i": "autocomplete:accept" } }]), "gui", "macos");
+        expect(errors(bad)).toEqual([
+            expect.stringContaining('"sidebar:deleteSelected" only works in the Sidebar context'),
+            expect.stringContaining('"chat:submit" only works in the Global or Chat context'),
+            expect.stringContaining('"autocomplete:accept" only works in the Autocomplete context'),
+        ]);
+        expect(bad.table.get("Global")!.has("cmd+d")).toBe(false);
+    });
+
+    test("a Sidebar chord warns about the Global key it hides, never about the input box's", () => {
+        const km = loadKeymap(file([{ context: "Sidebar", bindings: { "alt+x alt+d": "sidebar:deleteSelected" } }, { context: "Chat", bindings: { "alt+x": "chat:modelPicker" } }]), "gui", "linux");
+        expect(km.issues).toEqual([]);
+        const gui = loadKeymap(file([{ context: "Sidebar", bindings: { "alt+x alt+d": "sidebar:deleteSelected" } }, { context: "Global", bindings: { "alt+x": "app:settings" } }]), "gui", "linux");
+        expect(warnings(gui)).toEqual([expect.stringContaining('Sidebar: "alt+x" starts a chord, so it no longer runs app:settings (Global) on its own where Sidebar applies')]);
+    });
+});
+
 describe("display", () => {
     test("GUI on a Mac uses symbols, elsewhere names; terminal keeps the file's spelling", () => {
         expect(formatKeys("cmd+k", "gui", "macos")).toBe("⌘+K");

@@ -82,36 +82,38 @@ interface RailPick {
 
 /** The actions on several selected sessions, as menu items (a selected row's context menu). */
 function BulkItems(p: { plan: BulkPlan; close: () => void; clear: () => void }) {
+    // Read once: closing the menu ends the selection it was opened on before an item's action runs.
+    const plan = p.plan;
     const n = (ids: readonly string[]) => sessionCount(ids.length);
     return (
         <>
-            <div class="menu-head">{n(p.plan.delete)} selected</div>
-            <Show when={p.plan.settle.length}>
-                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void settleSessions(p.plan.settle, true))}>
-                    <CheckCheck size={14} /> Settle {n(p.plan.settle)}
+            <div class="menu-head">{n(plan.delete)} selected</div>
+            <Show when={plan.settle.length}>
+                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void settleSessions(plan.settle, true))}>
+                    <CheckCheck size={14} /> Settle {n(plan.settle)}
                 </button>
             </Show>
-            <Show when={p.plan.unsettle.length}>
-                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void settleSessions(p.plan.unsettle, false))}>
+            <Show when={plan.unsettle.length}>
+                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void settleSessions(plan.unsettle, false))}>
                     <Undo2 size={14} /> Back in play
                 </button>
             </Show>
-            <Show when={p.plan.archive.length}>
-                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void archiveSessions(p.plan.archive, true))}>
-                    <Archive size={14} /> Archive {n(p.plan.archive)}
+            <Show when={plan.archive.length}>
+                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void archiveSessions(plan.archive, true))}>
+                    <Archive size={14} /> Archive {n(plan.archive)}
                 </button>
             </Show>
-            <Show when={p.plan.restore.length}>
-                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void archiveSessions(p.plan.restore, false))}>
-                    <ArchiveRestore size={14} /> Restore {n(p.plan.restore)}
+            <Show when={plan.restore.length}>
+                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void archiveSessions(plan.restore, false))}>
+                    <ArchiveRestore size={14} /> Restore {n(plan.restore)}
                 </button>
             </Show>
             <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), p.clear())}>
                 <X size={14} /> Clear selection
             </button>
             <div class="menu-sep" />
-            <button role="menuitem" class="menu-item compact danger" onClick={() => (p.close(), askToDelete(p.plan.delete))}>
-                <Trash2 size={14} /> Delete {n(p.plan.delete)}…
+            <button role="menuitem" class="menu-item compact danger" onClick={() => (p.close(), askToDelete(plan.delete))}>
+                <Trash2 size={14} /> Delete {n(plan.delete)}…
             </button>
         </>
     );

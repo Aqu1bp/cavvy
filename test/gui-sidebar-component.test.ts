@@ -409,3 +409,129 @@ for (const archived of [false, true]) {
         } finally { f.dispose(); }
     });
 }
+
+// ---- Picking several sessions --------------------------------------------
+
+const click = (hit: any, mods: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean } = {}) =>
+    hit.props.onClick({ shiftKey: false, metaKey: false, ctrlKey: false, ...mods, currentTarget: hit });
+const key = (f: ReturnType<typeof fixture>, k: string, extra: Record<string, unknown> = {}) => {
+    const e = { key: k, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, defaultPrevented: false, target: { closest: () => null }, preventDefault() { this.defaultPrevented = true; }, ...extra };
+    f.nav.props.onKeyDown(e);
+    return e;
+};
+const hitOf = (f: ReturnType<typeof fixture>, id: string) => f.nodes.findLast((n) => ["card-hit", "slim-hit"].includes(n.props.class) && n.props.title?.startsWith(`Session ${id}\n`));
+const rowOf = (f: ReturnType<typeof fixture>, id: string) => f.nodes.findLast((n) => n.props["data-session-id"] === id && /^(card|slim) /.test(String(n.props.class)));
+// The last bar made is the one showing (one shows while two or more are selected).
+const bar = (f: ReturnType<typeof fixture>) => f.nodes.findLast((n) => n.props.class === "rail-sel glass");
+const barButtons = (f: ReturnType<typeof fixture>) => [...new Set(f.descendants(bar(f)).filter((n) => n.tag === "button"))].map((n) => n.props["aria-label"]).sort();
+
+for (const view of ["date", "project"]) {
+    test(`rail selection in the ${view} view: Shift-click ranges across groups, ⌘-click toggles, a plain click opens and clears`, () => {
+        const f = fixture(9);
+        try {
+            f.setGroupBy(view);
+            const order = f.ids;
+            // A plain click opens the session and anchors there.
+            click(hitOf(f, order[1]!));
+            expect(f.railSelection()).toEqual({ ids: [], anchor: order[1] });
+            click(hitOf(f, order[5]!), { shiftKey: true });
+            expect(f.railSelection().ids).toEqual(order.slice(1, 6));
+            if (view === "project") expect(new Set(order.slice(1, 6).map((id) => Number(id) % 3)).size).toBeGreaterThan(1); // Under more than one heading.
+            // Selected rows: an accent pill with a check for the glyph, and they say so.
+            expect(String(rowOf(f, order[2]!).props.class)).toContain("picked");
+            expect(String(rowOf(f, order[0]!).props.class)).not.toContain("picked");
+            expect(f.descendants(rowOf(f, order[2]!)).some((n) => n.props?.class === "st pick")).toBe(true);
+            expect(hitOf(f, order[2]!).props["aria-label"]).toEndWith(", selected");
+            // The bar: how many, and what applies.
+            expect(f.descendants(bar(f)).some((n) => n.props?.class === "rail-sel-n")).toBe(true);
+            expect(barButtons(f)).toEqual(["Archive 5 sessions", "Clear selection", "Delete 5 sessions…", "Settle 5 sessions"]);
+            click(hitOf(f, order[3]!), { metaKey: true });
+            expect(f.railSelection().ids).toEqual([order[1], order[2], order[4], order[5]]);
+            click(hitOf(f, order[8]!), { metaKey: true });
+            expect(f.railSelection().ids).toHaveLength(5);
+            click(hitOf(f, order[7]!));
+            expect(f.railSelection().ids).toEqual([]);
+            expect(f.nodes.some((n) => n.props["aria-current"] === "page" && n.props.title?.startsWith(`Session ${order[7]}\n`))).toBe(true);
+        } finally { f.dispose(); }
+    });
+}
+
+test("the selection bar and a selected row's menu act on the whole selection", () => {
+    const f = fixture(6);
+    try {
+        const order = f.ids;
+        click(hitOf(f, order[0]!));
+        click(hitOf(f, order[2]!), { shiftKey: true });
+        const picked = order.slice(0, 3);
+        f.descendants(bar(f)).find((n) => n.props?.["aria-label"] === "Delete 3 sessions…").props.onClick();
+        expect(f.bulk.askToDelete).toHaveBeenLastCalledWith(picked);
+        f.descendants(bar(f)).find((n) => n.props?.["aria-label"] === "Archive 3 sessions").props.onClick();
+        expect(f.bulk.archive).toHaveBeenLastCalledWith(picked, true);
+        // Right-click on a selected row: the menu is about all of them.
+        f.contextMenu(rowOf(f, order[1]!));
+        const menu = f.menus.findLast((p) => p.open);
+        expect(menu.label).toBe("Selected sessions actions");
+        const items = f.descendants({ content: menu.children }).filter((n) => n.tag === "button");
+        const labels = items.map((n) => f.descendants(n).map((c) => c.text ?? (typeof c.content === "string" || typeof c.content === "number" ? c.content : "")).join(""));
+        expect(labels.some((l) => l.includes("Delete") && l.includes("3 sessions"))).toBe(true);
+        items.find((n) => n.props.onClick?.toString().includes("settleSessions")).props.onClick();
+        expect(f.bulk.settle).toHaveBeenLastCalledWith(picked, true);
+        // An unselected row keeps its own menu.
+        f.contextMenu(rowOf(f, order[4]!));
+        expect(f.menus.findLast((p) => p.open).label).toBe("Session actions");
+        // ✕ clears.
+        f.descendants(bar(f)).find((n) => n.props?.["aria-label"] === "Clear selection").props.onClick();
+        expect(f.railSelection().ids).toEqual([]);
+    } finally { f.dispose(); }
+});
+
+test("archived rows offer Restore and Delete; switching lists clears the selection", () => {
+    const f = fixture(3);
+    try {
+        f.setArchived(f.sessions().map((s) => ({ ...s, archived: true })));
+        f.setSessions([]);
+        f.nodes.find((n) => n.props.title === "View options").props.onClick();
+        f.nodes.findLast((n) => n.props.onClick?.toString().includes("setShowArchived") && n.props.role === "menuitem").props.onClick();
+        click(hitOf(f, "0"));
+        click(hitOf(f, "2"), { shiftKey: true });
+        expect(f.railSelection().ids).toEqual(["0", "1", "2"]);
+        expect(barButtons(f)).toEqual(["Clear selection", "Delete 3 sessions…", "Restore 3 sessions"]);
+        f.descendants(bar(f)).find((n) => n.props?.["aria-label"] === "Restore 3 sessions").props.onClick();
+        expect(f.bulk.archive).toHaveBeenLastCalledWith(["0", "1", "2"], false);
+        f.nodes.findLast((n) => n.props.class === "shelf-btn" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
+        expect(f.railSelection().ids).toEqual([]);
+    } finally { f.dispose(); }
+});
+
+test("rail keys: select all, act on the selection (else the open row), Esc clears before it can interrupt", () => {
+    let next: string | undefined;
+    const f = fixture(4, { actionOf: (_e, contexts) => (expect(contexts).toEqual(["Sidebar", "Global"]), next) });
+    try {
+        next = "sidebar:selectAll";
+        expect(key(f, "a").defaultPrevented).toBe(true);
+        expect(f.railSelection().ids).toEqual(f.ids);
+        next = "sidebar:settleSelected";
+        key(f, "s");
+        expect(f.bulk.settle).toHaveBeenLastCalledWith(f.ids, true);
+        next = "sidebar:deleteSelected";
+        key(f, "Backspace");
+        expect(f.bulk.askToDelete).toHaveBeenLastCalledWith(f.ids);
+        next = undefined;
+        expect(key(f, "Escape").defaultPrevented).toBe(true);
+        expect(f.railSelection().ids).toEqual([]);
+        // With nothing selected, Esc is the window's again (it interrupts a working session).
+        expect(key(f, "Escape").defaultPrevented).toBe(false);
+        // Nothing selected: the open session, as a selection of one.
+        f.setActiveId("2");
+        next = "sidebar:archiveSelected";
+        key(f, "a");
+        expect(f.bulk.archive).toHaveBeenLastCalledWith(["2"], true);
+        // Not a rail action: left for the window.
+        next = "app:newSession";
+        expect(key(f, "n").defaultPrevented).toBe(false);
+        // Typing in a rename box keeps its keys.
+        next = "sidebar:selectAll";
+        key(f, "a", { target: { closest: () => ({}) } });
+        expect(f.railSelection().ids).toEqual([]);
+    } finally { f.dispose(); }
+});
