@@ -280,6 +280,9 @@
 
 .rv-body {
     padding-top: 0;
+    /* A long diff draws only the rows near the view and keeps the row in view in place itself (blocks/DiffView);
+       the browser's own scroll anchoring would move it a second time. WebKit doesn't anchor. */
+    overflow-anchor: none;
 }
 
 .review .diff {

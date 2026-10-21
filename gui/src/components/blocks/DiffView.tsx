@@ -2,10 +2,11 @@ import { RenderBoundary } from "../ui/ErrorBoundary";
 import { createComputed, createEffect, createMemo, createSelector, createSignal, For, on, onCleanup, onMount, Show, untrack, type JSX } from "solid-js";
 import { ChevronDown, FileMinus2, FilePlus2, FileText } from "lucide-solid";
 import type { DiffLine, FileDiff } from "@shared/protocol";
-import { highlightLines } from "../../lib/highlight";
+import { highlightLineStream } from "../../lib/highlight";
 import { langOf, plural } from "../../lib/format";
 import { escapeHtml } from "../../lib/markdown";
 import { AROUND, buildComment, linesPhrase, lineRef, locate, type ReviewComment } from "../../lib/review-comments";
+import { Heights, joinRanges, rowsIn, widest, wrappedLines } from "../../lib/diff-window";
 import { CommentBox, CommentCard, type CommentEdits } from "./DiffComments";
 
 /** `h`: which hunk the line is in. A comment's lines stay inside one, where the numbers run on. */
@@ -38,6 +39,19 @@ function pairUp(rows: Row[]): Pair[] {
     }
     flush();
     return out;
+}
+
+/** The same rows: a diff fetched again that didn't change. */
+function sameRows(a: Row[], b: Row[]): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+        const x = a[i]!;
+        const y = b[i]!;
+        if (x.kind === "sep" || y.kind === "sep") {
+            if (x.kind !== "sep" || y.kind !== "sep" || x.text !== y.text) return false;
+        } else if (x.h !== y.h || x.line.t !== y.line.t || x.line.text !== y.line.text || x.line.a !== y.line.a || x.line.b !== y.line.b) return false;
+    }
+    return true;
 }
 
 export function DiffStat(p: { added: number; removed: number; class?: string }) {
@@ -81,14 +95,17 @@ export function DiffView(p: DiffProps) {
 function DiffViewContent(p: DiffProps) {
     const [expanded, setExpanded] = createSignal(false);
     const [visible, setVisible] = createSignal(false);
-    const [oldHl, setOldHl] = createSignal<string[]>();
-    const [newHl, setNewHl] = createSignal<string[]>();
+    /** Each side's lines highlighted, filled in a part at a time; `hlVersion` says when a part landed. */
+    let oldHl: (string | undefined)[] = [];
+    let newHl: (string | undefined)[] = [];
+    const [hlVersion, setHlVersion] = createSignal(0);
     let el: HTMLDivElement | undefined;
     const [failure, setFailure] = createSignal<unknown>();
     createEffect(() => { if (failure()) throw failure(); });
     let token = 0;
     onCleanup(() => token++);
 
+    // The same lines fetched again (a refresh, a turn ending) keep the rows as they are: nothing is drawn again.
     const rows = createMemo<Row[]>(() => {
         const out: Row[] = [];
         let oi = 0;
@@ -103,7 +120,7 @@ function DiffViewContent(p: DiffProps) {
             }
         });
         return out;
-    });
+    }, [], { equals: sameRows });
     const total = () => rows().filter((r) => r.kind === "line").length;
     const limit = () => (expanded() || !p.maxLines ? Infinity : p.maxLines);
     const shown = createMemo(() => {
@@ -118,27 +135,50 @@ function DiffViewContent(p: DiffProps) {
         onCleanup(() => io.disconnect());
     });
 
-    // Highlight each side once the diff is on screen.
+    // Highlight each side once the diff is on screen, a part at a time from the top: the first screenful
+    // is colored at once. Until a line's part lands it keeps what it had (plain, or the last version's colors).
     createEffect(
-        on([visible, () => p.diff], ([v, d]) => {
+        on([visible, rows, () => p.diff.path], ([v]) => {
             const mine = ++token;
             if (!v) return;
+            const d = untrack(() => p.diff);
             const lang = langOf(d.path);
             if (!lang) return;
             const lines = d.hunks.flatMap((h) => h.lines);
             const failed = (error: unknown) => {
                 if (mine === token) setFailure(() => error || new Error("Highlighting failed"));
             };
-            void highlightLines(lines.filter((l) => l.t !== "add").map((l) => l.text).join("\n"), lang)
-                .then((html) => { if (mine === token) setOldHl(html); }).catch(failed);
-            void highlightLines(lines.filter((l) => l.t !== "del").map((l) => l.text).join("\n"), lang)
-                .then((html) => { if (mine === token) setNewHl(html); }).catch(failed);
+            const side = (keep: (l: DiffLine) => boolean, set: (hl: (string | undefined)[]) => void, get: () => (string | undefined)[]) => {
+                const text = lines.filter(keep).map((l) => l.text);
+                let fresh = false;
+                const stream = highlightLineStream(text.join("\n"), lang, (from, part) => {
+                    if (mine !== token) return;
+                    // The first part: this version's lines from here on, the rest as they were until theirs come.
+                    if (!fresh) {
+                        fresh = true;
+                        set(get().slice(0, text.length));
+                    }
+                    const hl = get();
+                    for (let i = 0; i < part.length; i++) hl[from + i] = part[i];
+                    setHlVersion((n) => n + 1);
+                });
+                // Nothing colored (a language Shiki can't do, too long a side): plain, not the last version's colors.
+                stream.done.then(() => {
+                    if (mine !== token || fresh) return;
+                    set([]);
+                    setHlVersion((n) => n + 1);
+                }, failed);
+                onCleanup(stream.cancel);
+            };
+            side((l) => l.t !== "add", (hl) => (oldHl = hl), () => oldHl);
+            side((l) => l.t !== "del", (hl) => (newHl = hl), () => newHl);
         }),
     );
 
     const pairs = createMemo(() => (p.split ? pairUp(shown()) : []));
     const html = (r: Line) => {
-        const hl = r.line.t === "del" ? oldHl()?.[r.old ?? -1] : newHl()?.[r.new ?? -1];
+        hlVersion();
+        const hl = r.line.t === "del" ? oldHl[r.old ?? -1] : newHl[r.new ?? -1];
         return hl ?? escapeHtml(r.line.text);
     };
 
@@ -269,7 +309,7 @@ function DiffViewContent(p: DiffProps) {
 
     // Picked lines are marked on the rows themselves, so a drag over a long diff touches only the rows it changes.
     let byIdx: Map<number, HTMLElement[]> | undefined;
-    createEffect(on([shown, () => p.split], () => (byIdx = undefined)));
+    createEffect(on([() => items(), () => p.split], () => (byIdx = undefined)));
     const elementsFor = (idx: number) => {
         if (!byIdx && rowsEl) {
             byIdx = new Map();
@@ -297,7 +337,7 @@ function DiffViewContent(p: DiffProps) {
     };
     createEffect(() => {
         if (!p.comments) return;
-        shown();
+        items();
         void p.split;
         const s = sel();
         const d = draft();
@@ -382,7 +422,7 @@ function DiffViewContent(p: DiffProps) {
                 setSel(undefined);
                 setCursor(next);
             }
-            elementsFor(cursor()!)[0]?.scrollIntoView({ block: "nearest" });
+            revealRow(cursor()!);
         } else if ((e.key === "Enter" || e.key === "c") && !e.shiftKey) {
             const s = sel() ?? (cur !== undefined ? { anchor: cur, head: cur } : undefined);
             if (!s) return;
@@ -410,6 +450,411 @@ function DiffViewContent(p: DiffProps) {
             </Show>
         </div>
     );
+    // ---- Long diffs in the review pane: only the rows near the view are drawn (a few screens' worth),
+    // with spacers standing in for the rest. WebKit pays for every drawn row's positioned cells on each
+    // frame of a scroll, so a 1,500-line diff drawn whole scrolls at a few frames a second. Rows a
+    // selection, a comment being written or changed, or the focus is in stay drawn wherever they are.
+    /** Fixed for the view's life, like `commentable`: the review pane's diffs; the transcript's are short. */
+    const windowed = commentable;
+    type Unit = Row | Pair;
+    type Gap = { gap: true; from: number; to: number };
+    /** What's drawn one after another: rows, or pairs side by side, each with the comments under it. */
+    const units = createMemo<readonly Unit[]>(() => (p.split ? pairs() : shown()));
+    const unitIndex = createMemo(() => new Map<Unit, number>(units().map((u, i) => [u, i])));
+    const unitOfRow = createMemo(() => {
+        const m = new Map<number, number>();
+        units().forEach((u, i) => {
+            if (u.kind === "line") m.set(u.idx, i);
+            else if (u.kind === "pair") {
+                if (u.left) m.set(u.left.idx, i);
+                if (u.right) m.set(u.right.idx, i);
+            }
+        });
+        return m;
+    });
+    /** Measured on the drawn rows: a code line's height, a hunk header's, a comment's, and how many characters fit a side-by-side line. */
+    const typical = { line: 0, empty: 0, sep: 0, slot: 72, cols: 0, charW: 0 };
+    /** Code lines measured so far: their total height, how many, and the shortest (a line that doesn't wrap). An empty line
+     * is shorter (it has no text, only its numbers), so it's kept apart. */
+    const measuredLines = { sum: 0, n: 0, min: 0, empty: 0 };
+    const guess = (u: Unit) => {
+        const line = typical.line || 21;
+        if (u.kind === "sep") return typical.sep || line + 6;
+        const empty = u.kind === "line" ? !u.line.text : !u.left?.line.text && !u.right?.line.text;
+        let h = empty ? typical.empty || line : line;
+        if (u.kind === "pair" && typical.cols > 0 && !empty) {
+            const wraps = (l?: Line) => (l ? wrappedLines(l.line.text, typical.cols) : 1);
+            h = line * Math.max(wraps(u.left), wraps(u.right));
+        }
+        const at = untrack(() => placed().at);
+        const d = untrack(draft);
+        const has = (idx?: number) => idx !== undefined && (at.has(idx) || d?.hi === idx);
+        const slots = u.kind === "line" ? Number(has(u.idx)) : Number(has(u.left?.idx)) + Number(u.right !== u.left && has(u.right?.idx));
+        return h + slots * typical.slot;
+    };
+    const heights = createMemo(() => {
+        const list = units();
+        Object.assign(measuredLines, { sum: 0, n: 0, min: 0, empty: 0 });
+        return new Heights(list.length, (i) => guess(list[i]!));
+    });
+    /** The rows near the view, by index into `units`. */
+    const [around, setAround] = createSignal<[number, number]>([0, 59], { equals: (a, b) => a[0] === b[0] && a[1] === b[1] });
+    /** Bumped when measured heights change, so the spacers follow. */
+    const [measured, setMeasured] = createSignal<void>(undefined, { equals: false });
+    const samePin = (a?: [number, number], b?: [number, number]) => a === b || (!!a && !!b && a[0] === b[0] && a[1] === b[1]);
+    const [selectionPin, setSelectionPin] = createSignal<[number, number] | undefined>(undefined, { equals: samePin });
+    const [focusPin, setFocusPin] = createSignal<number>();
+    const segments = createMemo(
+        () => {
+            if (!windowed) return undefined;
+            const n = units().length;
+            const map = unitOfRow();
+            const clampTo = (a: number, b: number): [number, number] => [Math.max(0, a), Math.min(n - 1, b)];
+            const ranges: [number, number][] = [clampTo(...around())];
+            const s = selectionPin();
+            if (s) ranges.push(clampTo(...s));
+            const f = focusPin();
+            if (f !== undefined) ranges.push(clampTo(f, f));
+            const d = draft();
+            const du = d && map.get(d.hi);
+            if (du !== undefined) ranges.push([du, du]);
+            const ed = editing();
+            if (ed.size) {
+                for (const [idx, list] of placed().at) {
+                    const u = map.get(idx);
+                    if (u !== undefined && list.some((x) => ed.has(x.c.id))) ranges.push([u, u]);
+                }
+            }
+            return joinRanges(ranges);
+        },
+        undefined,
+        { equals: (a, b) => a === b || (!!a && !!b && a.length === b.length && a.every((r, i) => r[0] === b[i]![0] && r[1] === b[i]![1])) },
+    );
+    /** The rows drawn, and spacers for the runs of rows that aren't. */
+    const items = createMemo<readonly (Unit | Gap)[]>(() => {
+        const list = units();
+        const segs = segments();
+        if (!segs) return list;
+        const out: (Unit | Gap)[] = [];
+        let at = 0;
+        for (const [a, b] of segs) {
+            if (a > at) out.push({ gap: true, from: at, to: a });
+            for (let i = a; i <= b; i++) out.push(list[i]!);
+            at = b + 1;
+        }
+        if (at < list.length) out.push({ gap: true, from: at, to: list.length });
+        return out;
+    });
+    const gapHeight = (g: Gap) => {
+        measured();
+        const h = heights();
+        return h.offset(g.to) - h.offset(g.from);
+    };
+    /** The widest lines, in a row of no height: the diff scrolls sideways as far as its widest line, drawn or not. */
+    const widestText = createMemo(() => (windowed && !p.split ? widest(rows().flatMap((r) => (r.kind === "line" ? [r.line.text] : []))).join("\n") : ""));
+
+    /** The boxes that clip the rows (the scroller among them), outermost last. */
+    let clips: HTMLElement[] = [];
+    const findClips = () => {
+        clips = [];
+        for (let e = rowsEl?.parentElement; e && e !== document.body; e = e.parentElement) {
+            const cs = getComputedStyle(e);
+            if (cs.overflowY !== "visible" || cs.overflowX !== "visible") clips.push(e);
+        }
+    };
+    /** The part of the rows in view: px from their top. */
+    const viewport = (): [number, number] | undefined => {
+        if (!rowsEl) return undefined;
+        const r = rowsEl.getBoundingClientRect();
+        let top = 0;
+        let bottom = window.innerHeight;
+        for (const c of clips) {
+            const b = c.getBoundingClientRect();
+            top = Math.max(top, b.top);
+            bottom = Math.min(bottom, b.bottom);
+        }
+        return [top - r.top, bottom - r.top];
+    };
+    const scroller = () => clips.find((c) => c.scrollHeight > c.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(c).overflowY));
+    const drawnRows = () => (rowsEl ? (Array.from(rowsEl.children) as HTMLElement[]) : []);
+    /** The first drawn row in view, and where it is: kept in place while spacers above it change. */
+    const anchorRow = () => {
+        const v = viewport();
+        if (!v || !rowsEl) return undefined;
+        const top = rowsEl.getBoundingClientRect().top + v[0];
+        for (const e of drawnRows()) {
+            if (e.dataset.u === undefined) continue;
+            const b = e.getBoundingClientRect();
+            if (b.bottom > top) return { e, top: b.top };
+        }
+        return undefined;
+    };
+    let width = 0;
+    /** The drawn rows' heights (with the comments under them): true when one changed. */
+    const measure = (): boolean => {
+        if (!rowsEl) return false;
+        const h = heights();
+        let changed = false;
+        const w = rowsEl.clientWidth;
+        // Side by side, lines wrap: a new width changes every row's height.
+        if (w !== width) {
+            width = w;
+            if (p.split) {
+                h.reset();
+                Object.assign(measuredLines, { sum: 0, n: 0, min: 0, empty: 0 });
+                typical.cols = 0;
+                changed = true;
+            }
+        }
+        const slots = { sum: 0, n: 0 };
+        let sep = 0;
+        let open: number | undefined;
+        let openTop = 0;
+        let openSep = false;
+        let openSlots = false;
+        let openEmpty = false;
+        const close = (y: number) => {
+            if (open === undefined) return;
+            const first = !h.measured(open);
+            if (h.set(open, y - openTop)) changed = true;
+            // A plain code line, measured for the first time: part of the average the guesses use.
+            if (first && !openSep && !openSlots && openEmpty) measuredLines.empty ||= y - openTop;
+            else if (first && !openSep && !openSlots) {
+                measuredLines.sum += y - openTop;
+                measuredLines.n++;
+                measuredLines.min = measuredLines.min ? Math.min(measuredLines.min, y - openTop) : y - openTop;
+            }
+            open = undefined;
+        };
+        for (const e of drawnRows()) {
+            const b = e.getBoundingClientRect();
+            if (e.dataset.slot !== undefined) {
+                slots.sum += b.height;
+                slots.n++;
+                openSlots = true;
+                continue;
+            }
+            close(b.top);
+            if (e.dataset.u === undefined) continue;
+            open = Number(e.dataset.u);
+            openTop = b.top;
+            openSep = e.classList.contains("sep");
+            openSlots = false;
+            openEmpty = !Array.from(e.querySelectorAll(".txt")).some((t) => t.textContent);
+            if (openSep) sep ||= b.height;
+        }
+        close(rowsEl.getBoundingClientRect().bottom);
+        // The guesses for rows not drawn yet, from what's drawn.
+        let guesses = false;
+        // Side by side, a line's own height (the guesses multiply it by its wraps); else the average row's.
+        const line = p.split ? measuredLines.min : measuredLines.n ? measuredLines.sum / measuredLines.n : 0;
+        if (line && Math.abs(line - typical.line) >= 0.01) {
+            typical.line = line;
+            guesses = true;
+        }
+        if (measuredLines.empty !== typical.empty) {
+            typical.empty = measuredLines.empty;
+            guesses = true;
+        }
+        // Any guess that changes changes the sums the spacers are drawn from.
+        const slot = slots.n ? slots.sum / slots.n : typical.slot;
+        if (Math.abs(slot - typical.slot) >= 0.01) {
+            typical.slot = slot;
+            guesses = true;
+        }
+        if (sep && !typical.sep) {
+            typical.sep = sep;
+            guesses = true;
+        }
+        if (p.split && !typical.cols) {
+            const txt = rowsEl.querySelector<HTMLElement>(".sl:not(.sep) > .txt");
+            if (txt) {
+                const cs = getComputedStyle(txt);
+                if (!typical.charW) {
+                    // In the rows' own font: a line of 100 characters, measured and taken away.
+                    const probe = document.createElement("span");
+                    probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre";
+                    probe.textContent = "0".repeat(100);
+                    txt.append(probe);
+                    typical.charW = probe.getBoundingClientRect().width / 100;
+                    probe.remove();
+                }
+                const inner = txt.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+                if (typical.charW > 0 && inner > 0) {
+                    typical.cols = Math.max(1, Math.floor(inner / typical.charW));
+                    guesses = true;
+                }
+            }
+        }
+        if (guesses) {
+            h.invalidate();
+            changed = true;
+        }
+        return changed;
+    };
+    let updating = false;
+    let guessed = true;
+    /** Measures what's drawn, keeps the row in view where it was, and draws the rows near the view. */
+    const update = () => {
+        if (!windowed || !rowsEl?.isConnected || updating) return;
+        updating = true;
+        try {
+            // Side by side at a new width, every line wraps anew: like rows drawn for the first time.
+            if (p.split && rowsEl.clientWidth !== width) guessed = true;
+            // The row in view, taken before anything changes and held where it is through every pass: rows drawn
+            // above it come in at their real heights (a tall comment under one), and the page moves to make up for it.
+            // Rows just drawn for the first time (another layout) are measured before anything is held in place:
+            // until then the spacers are guesses, and the page keeps its scroll position as it would drawn whole.
+            let anchor = guessed ? undefined : anchorRow();
+            for (let pass = 0; pass < 4; pass++) {
+                const changed = measure();
+                if (changed) setMeasured();
+                if (guessed) {
+                    guessed = false;
+                    anchor = anchorRow();
+                } else if (anchor?.e.isConnected) {
+                    const d = anchor.e.getBoundingClientRect().top - anchor.top;
+                    const sc = Math.abs(d) >= 0.5 ? scroller() : undefined;
+                    if (sc) sc.scrollTop += d;
+                }
+                const v = viewport();
+                if (!v) break;
+                const over = Math.max(400, v[1] - v[0]);
+                const h = heights();
+                const [lo, hi] = around();
+                const need = rowsIn(h, v[0], v[1], over / 2);
+                const want = rowsIn(h, v[0], v[1], over);
+                // Drawn again only when the view nears the end of what's drawn, not on every scroll event.
+                const covers = need[0] >= lo && need[1] <= hi && hi - lo <= 3 * (want[1] - want[0] + 1);
+                if (covers) {
+                    if (!changed) break;
+                    continue;
+                }
+                setAround(want);
+            }
+        } finally {
+            updating = false;
+        }
+    };
+    let frame = 0;
+    const later = () => {
+        if (!frame) frame = requestAnimationFrame(() => {
+            frame = 0;
+            update();
+        });
+    };
+    /** The row (by index into `units`) holding a node of the page: a comment under a row is that row's. */
+    const unitAt = (node: Node | null, offset = 0): number => {
+        const n = units().length;
+        if (!node || !rowsEl) return 0;
+        if (node === rowsEl) node = rowsEl.children[Math.min(offset, rowsEl.children.length - 1)] ?? rowsEl;
+        if (!rowsEl.contains(node) || node === rowsEl) return rowsEl.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING ? 0 : n - 1;
+        let e: Element | null = node instanceof Element ? node : node.parentElement;
+        while (e && e.parentElement !== rowsEl) e = e.parentElement;
+        for (let x = e as HTMLElement | null; x; x = x.previousElementSibling as HTMLElement | null) {
+            if (x.dataset.u !== undefined) return Number(x.dataset.u);
+            if (x.dataset.to !== undefined) return x === e ? Number(x.dataset.from) : Number(x.dataset.to) - 1;
+        }
+        return 0;
+    };
+    const onSelection = () => {
+        const s = document.getSelection();
+        if (!rowsEl || !s || !s.rangeCount || s.isCollapsed || !s.containsNode(rowsEl, true)) return setSelectionPin(undefined);
+        const a = unitAt(s.anchorNode, s.anchorOffset);
+        const b = unitAt(s.focusNode, s.focusOffset);
+        setSelectionPin([Math.min(a, b), Math.max(a, b)]);
+    };
+    /** Focus on something under a row (a comment's button, its box): that row stays drawn while it has it. */
+    const onFocusIn = (e: FocusEvent) => {
+        if (windowed && rowsEl && e.target !== rowsEl) setFocusPin(unitAt(e.target as Node));
+    };
+    const onFocusOut = (e: FocusEvent) => {
+        const next = e.relatedTarget as Node | null;
+        if (windowed && !(next && next !== rowsEl && rowsEl?.contains(next))) setFocusPin(undefined);
+    };
+    if (windowed) {
+        onMount(() => {
+            const onScroll = (e: Event) => {
+                if (rowsEl && (e.target === document || (e.target as Node).contains?.(rowsEl))) update();
+            };
+            document.addEventListener("scroll", onScroll, { capture: true, passive: true });
+            document.addEventListener("selectionchange", onSelection);
+            const ro = new ResizeObserver(later);
+            onCleanup(() => {
+                document.removeEventListener("scroll", onScroll, { capture: true });
+                document.removeEventListener("selectionchange", onSelection);
+                ro.disconnect();
+                cancelAnimationFrame(frame);
+            });
+            // The rows' box is a new one when the layout switches: watched again, with its clipping boxes.
+            createEffect(on(() => p.split, () => {
+                ro.disconnect();
+                findClips();
+                if (rowsEl) ro.observe(rowsEl);
+                for (const c of clips) ro.observe(c);
+                width = 0;
+            }));
+            // New rows (another diff, the other layout): measured and placed once drawn.
+            createEffect(on(units, () => {
+                guessed = true;
+                update();
+            }));
+        });
+    }
+    // Drawing other rows can move a kept one in the page (Solid's list puts a row back rather than insert many
+    // before it), which takes the focus from a comment box in it and loses a selection in it. Both are put back.
+    let held: { focus?: HTMLElement; caret?: [number, number, "forward" | "backward" | "none"]; sel?: [Node, number, Node, number] } | undefined;
+    createComputed(on(items, () => {
+        held = undefined;
+        if (!windowed || !rowsEl) return;
+        const active = document.activeElement as HTMLElement | null;
+        const s = document.getSelection();
+        held = {};
+        if (active && active !== rowsEl && rowsEl.contains(active)) {
+            held.focus = active;
+            if (active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement) held.caret = [active.selectionStart ?? 0, active.selectionEnd ?? 0, active.selectionDirection ?? "none"];
+        }
+        if (s?.rangeCount && !s.isCollapsed && s.anchorNode && s.focusNode && (rowsEl.contains(s.anchorNode) || rowsEl.contains(s.focusNode))) held.sel = [s.anchorNode, s.anchorOffset, s.focusNode, s.focusOffset];
+    }, { defer: true }));
+    createEffect(on(items, () => {
+        const h = held;
+        held = undefined;
+        if (!h) return;
+        if (h.focus?.isConnected && document.activeElement !== h.focus) {
+            h.focus.focus({ preventScroll: true });
+            if (h.caret && (h.focus instanceof HTMLTextAreaElement || h.focus instanceof HTMLInputElement)) h.focus.setSelectionRange(...h.caret);
+        }
+        const s = document.getSelection();
+        // Only ends inside a row's own text: an offset into the rows' box counts rows that have since changed.
+        const fits = (n: Node, o: number) => n !== rowsEl && n.isConnected && o <= (n.nodeType === Node.TEXT_NODE ? (n.nodeValue?.length ?? 0) : n.childNodes.length);
+        if (h.sel && s && fits(h.sel[0], h.sel[1]) && fits(h.sel[2], h.sel[3]) && (s.anchorNode !== h.sel[0] || s.anchorOffset !== h.sel[1] || s.focusNode !== h.sel[2] || s.focusOffset !== h.sel[3])) s.setBaseAndExtent(...h.sel);
+    }, { defer: true }));
+
+    /** Brings a row into view, drawing it first if it isn't. */
+    const revealRow = (idx: number) => {
+        const drawn = elementsFor(idx)[0];
+        if (drawn || !windowed) return drawn?.scrollIntoView({ block: "nearest" });
+        const u = unitOfRow().get(idx);
+        const sc = scroller();
+        if (u === undefined || !sc || !rowsEl) return;
+        const h = heights();
+        const base = rowsEl.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop;
+        const top = base + h.offset(u);
+        const bottom = base + h.offset(u + 1);
+        if (top < sc.scrollTop) sc.scrollTop = top;
+        else if (bottom > sc.scrollTop + sc.clientHeight) sc.scrollTop = bottom - sc.clientHeight;
+        update();
+        elementsFor(idx)[0]?.scrollIntoView({ block: "nearest" });
+    };
+
+    /** A line's code: set again only when its highlighting changes, not each time a part of the file's lands. */
+    const Code = (c: { class: string; row?: Line }) => {
+        const content = createMemo(() => (c.row ? html(c.row) : ""));
+        return <span class={c.class} innerHTML={content()} />;
+    };
+    /** Stands in for rows that aren't drawn, at their height. */
+    const Spacer = (s: { gap: Gap }) => <div class="dv-gap" aria-hidden="true" data-from={s.gap.from} data-to={s.gap.to} style={{ height: `${gapHeight(s.gap)}px` }} />;
+
     const rowsLabel = () => `Diff of ${p.diff.path}. Arrow keys move between lines, Home and End go to the first and last, Shift picks several, Enter comments.`;
 
     return (
@@ -445,25 +890,29 @@ function DiffViewContent(p: DiffProps) {
                         onKeyDown={onRowsKey}
                         onFocus={(e) => setFocused(e.target === e.currentTarget)}
                         onBlur={() => setFocused(false)}
+                        onFocusIn={onFocusIn}
+                        onFocusOut={onFocusOut}
                     >
-                        <For each={pairs()}>
+                        <For each={items()}>
                             {(r) =>
-                                r.kind === "sep" ? (
-                                    <div class="sl sep">
+                                "gap" in r ? (
+                                    <Spacer gap={r} />
+                                ) : r.kind === "sep" ? (
+                                    <div class="sl sep" data-u={windowed ? unitIndex().get(r) : undefined}>
                                         <span class="txt">{r.text}</span>
                                     </div>
-                                ) : (
+                                ) : r.kind === "pair" ? (
                                     <>
-                                        <div class="sl" data-l={r.left?.idx} data-r={r.right?.idx}>
+                                        <div class="sl" data-l={r.left?.idx} data-r={r.right?.idx} data-u={windowed ? unitIndex().get(r) : undefined}>
                                             <span class={`ln l ${r.left ? r.left.line.t : "none"}`} data-g={r.left?.idx}>{r.left?.line.a ?? ""}</span>
-                                            <span class={`txt ${r.left ? r.left.line.t : "none"}`} innerHTML={r.left ? html(r.left) : ""} />
+                                            <Code class={`txt ${r.left ? r.left.line.t : "none"}`} row={r.left} />
                                             <span class={`ln r ${r.right ? r.right.line.t : "none"}`} data-g={r.right?.idx}>{r.right?.line.b ?? ""}</span>
-                                            <span class={`txt ${r.right ? r.right.line.t : "none"}`} innerHTML={r.right ? html(r.right) : ""} />
+                                            <Code class={`txt ${r.right ? r.right.line.t : "none"}`} row={r.right} />
                                         </div>
                                         {commentable && r.left && hasSlot(r.left.idx) ? <Slot idx={r.left.idx} /> : undefined}
                                         {commentable && r.right && r.right !== r.left && hasSlot(r.right.idx) ? <Slot idx={r.right.idx} /> : undefined}
                                     </>
-                                )
+                                ) : undefined
                             }
                         </For>
                     </div>
@@ -481,27 +930,38 @@ function DiffViewContent(p: DiffProps) {
                         onKeyDown={onRowsKey}
                         onFocus={(e) => setFocused(e.target === e.currentTarget)}
                         onBlur={() => setFocused(false)}
+                        onFocusIn={onFocusIn}
+                        onFocusOut={onFocusOut}
                     >
-                        <For each={shown()}>
+                        <For each={items()}>
                             {(r) =>
-                                r.kind === "sep" ? (
-                                    <div class="dl sep">
+                                "gap" in r ? (
+                                    <Spacer gap={r} />
+                                ) : r.kind === "sep" ? (
+                                    <div class="dl sep" data-u={windowed ? unitIndex().get(r) : undefined}>
                                         <span class="ln" />
                                         <span class="ln" />
                                         <span class="txt">{r.text}</span>
                                     </div>
-                                ) : (
+                                ) : r.kind === "line" ? (
                                     <>
-                                        <div class={`dl ${r.line.t}`} data-i={r.idx}>
+                                        <div class={`dl ${r.line.t}`} data-i={r.idx} data-u={windowed ? unitIndex().get(r) : undefined}>
                                             <span class="ln" data-g={r.idx}>{r.line.a ?? ""}</span>
                                             <span class="ln" data-g={r.idx}>{r.line.b ?? ""}</span>
-                                            <span class="txt" innerHTML={html(r)} />
+                                            <Code class="txt" row={r} />
                                         </div>
                                         {commentable && hasSlot(r.idx) ? <Slot idx={r.idx} /> : undefined}
                                     </>
-                                )
+                                ) : undefined
                             }
                         </For>
+                        <Show when={widestText()}>
+                            <div class="dl dv-sizer" aria-hidden="true" data-find-skip>
+                                <span class="ln" />
+                                <span class="ln" />
+                                <span class="txt">{widestText()}</span>
+                            </div>
+                        </Show>
                     </div>
                 </div>
             </Show>

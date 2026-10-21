@@ -1,9 +1,26 @@
-import { highlight, highlightLines, warmUp } from "./highlight-core";
+import { highlight, highlightLineChunks, highlightLines, warmUp } from "./highlight-core";
 import type { HighlightRequest, HighlightResponse } from "./highlight";
+
+/** Streams under way, and those of them asked to stop. A cancel for one that's over is dropped: kept, it would never go. */
+const streaming = new Set<number>();
+const cancelled = new Set<number>();
 
 self.onmessage = async (event: MessageEvent<HighlightRequest>) => {
     const { id, kind, code = "", lang } = event.data;
+    if (kind === "cancel") {
+        if (streaming.has(id)) cancelled.add(id);
+        return;
+    }
     try {
+        if (kind === "stream") {
+            streaming.add(id);
+            const done = await highlightLineChunks(code, lang, (from, lines) => self.postMessage({ id, from, result: lines } satisfies HighlightResponse), () => cancelled.has(id)).finally(() => {
+                streaming.delete(id);
+                cancelled.delete(id);
+            });
+            self.postMessage({ id, done: true, plain: !done } satisfies HighlightResponse);
+            return;
+        }
         if (kind === "warm") warmUp();
         const result = kind === "warm" ? undefined : await (kind === "html" ? highlight(code, lang) : highlightLines(code, lang));
         self.postMessage({ id, result } satisfies HighlightResponse);
