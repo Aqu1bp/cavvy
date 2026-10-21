@@ -61,6 +61,7 @@ import { childEnv } from "../util/env";
 import { expandCommand, type CustomCommand } from "./custom";
 import { claudeCodeRuns, formatSkill, loadSkills, sameSkills, skillRoots, type Skill } from "../agent/skills";
 import { rewindCommand } from "./rewind";
+import { GoalController, goalSummary, parseGoalCommand } from "../agent/goal";
 import { checkAgentCli, vendorOf, type AgentCliStatus } from "../backends/index";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { account, addAccount, listAccounts } from "../providers/accounts";
@@ -1946,6 +1947,7 @@ const BUILTIN: Command[] = [
         whileBusy: true,
         run: async (app) => (app.lastResponse ? app.notice(`Copied the last response to the ${await copyToClipboard(app.lastResponse)}.`) : app.notice("Nothing to copy yet.")),
     },
+    { name: "goal", description: "Keep working until a condition holds (/goal clear stops)", args: "[condition]", whileBusy: true, noEcho: true, images: true, run: goalCommand },
     { name: "init", description: "Create a HARNESS.md with notes about this codebase", noEcho: true, images: true, run: (app, _args, draft) => app.startTurn(INIT_PROMPT, { display: "/init", kind: "command", draft }) },
     { name: "review", description: "Review the current changes (or a PR number) for bugs", args: "[pr-number|focus]", noEcho: true, images: true, run: (app, args, draft) => app.startTurn(reviewPrompt(args), { display: `/review${args ? " " + args : ""}`, kind: "command", draft }) },
     { name: "memory", description: "Edit memory files (HARNESS.md)", run: memoryCommand },
@@ -2071,6 +2073,8 @@ export async function runCommand(app: App, text: string, draft?: Draft): Promise
         app.editor.restore([draft]);
         return true;
     }
+    // A new goal waits its turn in the queue like a prompt (with its images); the rest of /goal answers at once.
+    if (app.busy && cmd.name === "goal" && parseGoalCommand(args).kind === "set") return false;
     if (app.busy && !cmd.whileBusy) {
         // Turn-starting commands queue like a prompt (by the caller); a bare /plan only switches mode, so it can't wait.
         if (cmd.custom || cmd.skill || cmd.name === "init" || cmd.name === "review" || (cmd.name === "plan" && args)) return false;
@@ -2086,6 +2090,68 @@ export async function runCommand(app: App, text: string, draft?: Draft): Promise
     }
     app.renderLive();
     return true;
+}
+
+/** /goal: set, show, pause, resume or clear the session's goal (src/agent/goal.ts). */
+async function goalCommand(app: App, args: string, draft?: Draft) {
+    const goal = app.goal;
+    if (!goal) return app.notice("No session yet.", "error");
+    const c = parseGoalCommand(args);
+    if (c.kind !== "set") app.print(["", theme.muted(`> /goal${args.trim() ? " " + args.trim() : ""}`)]);
+    if (draft?.attachments.size && c.kind !== "set") {
+        app.editor.restore([draft]);
+        return app.notice("Only /goal <condition> takes images.", "warn");
+    }
+    switch (c.kind) {
+        case "invalid":
+            return app.notice(c.message, "error");
+        case "status":
+            return app.print(() => goalStatusLines(goal));
+        case "clear": {
+            const was = goal.clear();
+            return app.notice(was ? `Goal cleared: ${was}` : "No goal set");
+        }
+        case "pause":
+            if (!goal.active) return app.notice("No goal set");
+            goal.pause("Paused with /goal pause. /goal resume continues it.");
+            return app.notice(app.busy ? "Goal paused: the current turn finishes, then it waits for you. /goal resume continues it." : "Goal paused. /goal resume continues it.");
+        case "resume":
+            if (!goal.active) return app.notice("No goal set. /goal <condition> sets one.");
+            goal.resume();
+            if (app.busy) app.notice("Goal resumed: it's checked when the current turn ends.");
+            return;
+        case "set": {
+            if (!app.agent) return app.notice("No model is selected. Pick one with /model (or add an API key with /login).", "error");
+            const { prompt, display } = goal.set(c.condition);
+            if (!app.helperAnswers()) app.notice(`No model besides ${app.model?.name ?? "this one"} can check the goal, so it reports for itself each turn. Set smallModel (/config) to another provider's model for an independent check.`, "info");
+            await app.startTurn(prompt, { display, kind: "command", draft, goal: true });
+            return;
+        }
+    }
+}
+
+function goalStatusLines(goal: GoalController): string[] {
+    const v = goal.view();
+    if (!v) {
+        const last = goal.last;
+        if (last && last.result !== "cleared") {
+            return ["", heading(last.result === "met" ? "Goal achieved" : "Goal stopped (judged impossible)"), kv("Condition", last.condition), kv("Took", goalSummary(last.turns, last.ms, last.tokens)), ...(last.reason ? [kv("Reason", last.reason)] : []), ""];
+        }
+        return ["", "No goal set.", theme.muted("  /goal <condition> keeps working, turn after turn, until the condition holds. A check after each turn decides."), theme.muted("  Example: /goal all tests in test/auth pass and the linter is clean"), ""];
+    }
+    const state = { active: "active", checking: "checking…", waiting: "waiting", paused: "paused" }[v.state];
+    return [
+        "",
+        heading("Goal"),
+        kv("Condition", v.condition),
+        kv("State", v.note ? `${state} · ${v.note}` : state),
+        kv("Running", `${formatDuration(Date.now() - v.since)}${v.tokens ? ` · ${formatTokens(v.tokens)} tokens` : ""}`),
+        kv("Turns checked", String(v.turns)),
+        kv("Checked by", v.judge === "model" ? "a separate model, after each turn" : "the working model's own report (no other model can answer one-off requests)"),
+        ...(v.lastReason ? [kv("Last check", v.lastReason)] : []),
+        theme.muted("  /goal clear removes it · /goal pause · /goal resume"),
+        "",
+    ];
 }
 
 function helpCommand(app: App) {

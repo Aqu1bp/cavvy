@@ -14,6 +14,7 @@ import { startRun } from "./RunSheet";
 import { ModePicker, nextMode } from "./ModePicker";
 import { InteractionTab } from "./InteractionDock";
 import { ScheduleTab } from "./ScheduleTab";
+import { GoalTab } from "./GoalTab";
 import { ComposerMeter } from "./ComposerMeter";
 import { AttachmentChips } from "./AttachmentChips";
 import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
@@ -457,6 +458,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 if (e.dataTransfer?.files) void addFiles(e.dataTransfer.files);
             }}
         >
+            <Show when={p.sessionId ? st()?.goal : undefined}>
+                {(goal) => <GoalTab sessionId={p.sessionId!} goal={goal()} />}
+            </Show>
             <Show when={p.sessionId && st()?.queued.length}>
                 <QueueTab sessionId={p.sessionId!} state={st()!} dequeue={(i, edit) => void dequeue(i, edit)} />
             </Show>

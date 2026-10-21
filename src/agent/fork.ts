@@ -45,6 +45,8 @@ const COPIED: Record<Line["t"], boolean> = {
     planLink: false,
     // A fork doesn't take the original's schedules: they'd run twice.
     schedules: false,
+    // A goal belongs to the run that set it: the fork starts without one.
+    goal: false,
 };
 
 const REMINDERS = /<system-reminder>[\s\S]*?<\/system-reminder>/g;

@@ -5,6 +5,7 @@
 
 import { NO_SCHEDULES, SessionSchedules, type ScheduleAction } from "../agent/schedule-host";
 import { CRON_TOOLS, jobLine } from "../agent/schedule-tools";
+import type { ScheduledJob } from "../agent/schedule";
 import { turnDuration } from "./duration";
 import { existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
@@ -12,6 +13,7 @@ import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse
 import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, rewindTargets, untrackedChangesNote, type RestoreItem } from "../agent/checkpoints";
 import { beforeFork, forkCut, forkTargets } from "../agent/fork";
 import { fireHooks, type HookEvent } from "../agent/hooks";
+import { backgroundWork, canAnswerOneOff, GoalController, parseGoalCommand, sessionTokens } from "../agent/goal";
 import { Session } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { INIT_PROMPT, reviewPrompt } from "../commands/index";
@@ -113,7 +115,7 @@ function steerable(q: Queued): boolean {
 }
 
 /** The slash commands the server runs itself (the GUI runs the others). */
-const SERVER_COMMANDS = new Set(["compact", "init", "review", "loop", "schedules"]);
+const SERVER_COMMANDS = new Set(["compact", "init", "review", "loop", "schedules", "goal"]);
 
 /** A session title as it's stored: one line, 120 characters at most ("" if there's nothing left). */
 export function cleanTitle(title: string): string {
@@ -179,6 +181,10 @@ export function modelSummary(m: ModelInfo): ModelSummary {
 
 export class Runtime {
     readonly session: Session;
+    /** The session's /goal (src/agent/goal.ts). */
+    readonly goal: GoalController;
+    /** A turn ended with something queued; if what was queued starts no turn, the goal goes on from that end (settleGoal). */
+    private goalOwed?: { reason: TurnEndReason; from: number; goal: boolean; startedAt: number };
     readonly toolState: ToolState;
     readonly checker: PermissionChecker;
     readonly classifier: AutoClassifier;
@@ -227,6 +233,8 @@ export class Runtime {
     readonly schedules: SessionSchedules;
     /** The next turn is a schedule's ("every 10m"), not the user's. */
     private scheduledLabel?: string;
+    /** The scheduled prompt starting is the resume after a usage limit (it picks a paused goal up again). */
+    private scheduledResume = false;
     /** The rewind last shown: restoring does what it showed, or nothing if the conversation moved on. */
     private rewindShown?: { id: string; index: number; message: Message; count: number; plan?: RestoreItem[] };
 
@@ -293,7 +301,7 @@ export class Runtime {
             session: () => this.session,
             settings: () => this.settings(),
             idle: () => this.schedulable(),
-            run: (prompt, _job, label) => this.runScheduled(prompt, label),
+            run: (prompt, job, label) => this.runScheduled(prompt, job, label),
             notice: (text, level) => this.notice(text, level),
             changed: () => {
                 if (this.view) this.setState({ schedules: this.schedules.scheduler.info() });
@@ -317,6 +325,25 @@ export class Runtime {
             this.queued = loadQueue(session.path, session.meta.id).map((q) => ({ ...q, id: ++this.queueSeq, held: true }));
             if (this.queued.length) Object.assign(this.view.state, this.queueState());
         }
+        this.goal = new GoalController({
+            session,
+            tokens: () => sessionTokens(session),
+            canJudge: () => this.helperAnswers(),
+            judge: (system, prompt, signal) => this.complete(system, prompt, signal),
+            backgroundRunning: () => backgroundWork(this.agent?.delegatedTasks, this.toolState.shells),
+            idle: () => !this.busy && !this.nextQueued() && !this.switching && !this.committing && !this.closed,
+            notice: (text, level) => {
+                this.session.recordNotice(level, text);
+                this.notice(text, level);
+            },
+            changed: () => this.goalChanged(),
+            alert: (kind, text) => this.engine.notify(this, kind, text.replace(/^[◎✓✗] /, "").split("\n")[0]!),
+            startTurn: (prompt, display) => void this.startTurn(prompt, { display, kind: "command", goal: true }).catch((e) => this.notice(redact((e as Error).message), "error")),
+        });
+        // A reopened session's goal waits, paused, for the user's next message (or /goal resume).
+        if (opts.resumed) this.goal.restore(session.goal);
+        this.view.state.goal = this.goal.view();
+        this.goalLive = true;
         this.ready = this.track(this.initModel());
         // Saved schedules come back once there's a model to run them with.
         void this.ready.then(() => !this.closed && this.schedules.restore(), () => undefined);
@@ -336,7 +363,8 @@ export class Runtime {
     }
 
     get sidebarTurnStartedAt(): number | undefined {
-        if (!this.busy) return undefined;
+        // Between a goal's turns it's working too: since the check (or wait) began.
+        if (!this.busy) return this.goalShowsRunning ? this.view.state.activity?.since : undefined;
         // Queued prompts can start a new visible turn within one agent.run().
         const turn = this.turnId ? findTurn(this.view, this.turnId) : undefined;
         return turn?.startedAt ?? this.view.state.activity?.since;
@@ -414,14 +442,19 @@ export class Runtime {
 
     /** A scheduled prompt may start now: nothing running, waiting on the user, or being set up. */
     private schedulable(): boolean {
-        return !this.closed && !this.busy && !this.pending.size && !this.switching && !this.committing && !this.queued.length && Boolean(this.agent);
+        // A goal between its turns (checking, retrying, waiting on background work) goes first: scheduled prompts wait for it.
+        return !this.closed && !this.busy && !this.pending.size && !this.switching && !this.committing && !this.queued.length && !this.goal.pending() && Boolean(this.agent);
     }
 
-    private runScheduled(prompt: string, label: string): Promise<unknown> {
+    private runScheduled(prompt: string, job: ScheduledJob, label: string): Promise<unknown> {
         this.scheduledLabel = label;
+        this.scheduledResume = job.kind === "resume";
         return this.dispatch(prompt)
             .catch((e) => this.notice(redact((e as Error).message), "error"))
-            .finally(() => (this.scheduledLabel = undefined));
+            .finally(() => {
+                this.scheduledLabel = undefined;
+                this.scheduledResume = false;
+            });
     }
 
     /** session.schedule: one of the composer's schedule buttons. */
@@ -840,6 +873,79 @@ export class Runtime {
             this.setState({ cost: this.session.cost, costUnknown: this.session.costUnknown, ...this.tokenTotals() });
         }
         return opts?.review ? reviewText(res) : textOf(res);
+    }
+
+    /** Whether one-off requests (the /goal check) have a model that answers them: not Claude Code or Codex, which run whole turns only. */
+    private helperAnswers(): boolean {
+        return canAnswerOneOff(this.settings().smallModel, this.model?.provider);
+    }
+
+    /** A goal check or retry is coming: the session isn't free for other automatic prompts (scheduled ones). */
+    goalPending(): boolean {
+        return this.goal.pending();
+    }
+
+    /** Set once the constructor is done: before, the state is built, not patched. */
+    private goalLive = false;
+
+    /** The sidebar says Working between a goal's turns (a check, a retry), not Done. */
+    private goalShowsRunning = false;
+
+    private goalChanged() {
+        if (this.closed || !this.goalLive) return;
+        const view = this.goal.view();
+        this.setState({ goal: view });
+        if (this.busy) {
+            this.goalShowsRunning = false;
+            return;
+        }
+        const label = view?.state === "checking" ? "Checking the goal" : view?.state === "waiting" ? (view.retryAt ? "Retrying after an error" : "Waiting for background tasks") : undefined;
+        if (label && this.goal.pending()) {
+            this.goalShowsRunning = true;
+            this.activity(label);
+            this.setStatus("running");
+        } else if (this.goalShowsRunning && !this.goal.pending()) {
+            this.goalShowsRunning = false;
+            this.setState({ activity: undefined });
+            this.setStatus("idle");
+        }
+    }
+
+    /** /goal: answered at once, even while a turn runs (it isn't queued). */
+    private async goalCommand(args: string, attachments?: AttachedPart[]) {
+        const c = parseGoalCommand(args);
+        if (c.kind !== "set" && attachments?.length) throw new RpcError("Only /goal <condition> takes attachments.");
+        switch (c.kind) {
+            case "invalid":
+                throw new RpcError(c.message, "invalid");
+            case "status": {
+                const v = this.goal.view();
+                const last = this.goal.last;
+                if (v) return this.notice(`◎ Goal (${v.state}): ${v.condition}${v.lastReason ? `\nLast check: ${v.lastReason}` : ""}`);
+                if (last && last.result !== "cleared") return this.notice(`${last.result === "met" ? "✓ Last goal achieved" : "✗ Last goal judged impossible"}: ${last.condition}`);
+                return this.notice("No goal set. /goal <condition> keeps working, turn after turn, until the condition holds.");
+            }
+            case "clear": {
+                const was = this.goal.clear();
+                return this.notice(was ? `Goal cleared: ${was}` : "No goal set");
+            }
+            case "pause":
+                if (!this.goal.active) return this.notice("No goal set");
+                this.goal.pause("Paused with /goal pause. /goal resume continues it.");
+                return;
+            case "resume":
+                if (!this.goal.active) return this.notice("No goal set. /goal <condition> sets one.");
+                this.goal.resume();
+                return;
+            case "set": {
+                if (!this.agent) await this.ready.catch(() => undefined);
+                if (!this.agent) throw new RpcError("No model is selected. Add an API key in Settings → Providers, then pick a model.");
+                const { prompt, display } = this.goal.set(c.condition);
+                if (!this.helperAnswers()) this.notice(`No model besides ${this.model?.name ?? "this one"} can check the goal, so it reports for itself each turn. Set a small model on another provider in Settings for an independent check.`);
+                void this.startTurn(prompt, { display, kind: "command", attachments, goal: true }).catch((e) => this.notice(redact((e as Error).message), "error"));
+                return;
+            }
+        }
     }
 
     /** Who answers one-off requests (titles, summaries): smallModel, else a small model of the session's provider, else its own. */
@@ -1826,6 +1932,12 @@ export class Runtime {
         // A mistyped command isn't sent to the model; the GUI offers to send it as a message.
         const unknown = literal ? undefined : this.unknownCommand(text);
         if (unknown) throw new RpcError(`Unknown command /${unknown}`, "unknown_command");
+        // /goal answers at once, even mid-turn; only a new goal waits its turn in the queue, with what's attached.
+        const goal = literal ? undefined : trimmed.match(/^\/goal(?:\s+([\s\S]*))?$/i);
+        if (goal && !(this.busy && parseGoalCommand(goal[1] ?? "").kind === "set")) {
+            await this.goalCommand(goal[1] ?? "", attachments);
+            return { queued: false };
+        }
         if (this.busy) {
             const q: Queued = { id: ++this.queueSeq, text, attachments, literal: literal || undefined, mode: mode ?? followUpDefault(this.settings().followUpBehavior) };
             this.queued.push(q);
@@ -1871,6 +1983,7 @@ export class Runtime {
                 const r = this.schedules.manage(args) ?? { text: this.scheduleList() };
                 return this.notice(r.text, r.level ?? "info");
             }
+            if (cmd === "goal") return this.goalCommand(args, attachments);
             if (cmd === "init") return this.startTurn(INIT_PROMPT, { display: "/init", kind: "command", attachments });
             if (cmd === "review") return this.startTurn(reviewPrompt(args.trim()), { display: `/review${args.trim() ? ` ${args.trim()}` : ""}`, kind: "command", attachments });
             const custom = this.ws.commands.find((c) => c.name === cmd);
@@ -1889,7 +2002,13 @@ export class Runtime {
 
     /** `about`: what to name the session after, when the text sent isn't the best guide (a skill's instructions). */
     /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files (a skill's instructions are sent as written). */
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string } = {}) {
+    /** `goal`: a turn the goal started (src/agent/goal.ts). */
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string; goal?: boolean } = {}) {
+        // The user's own turn overtakes a pending goal check, and a paused goal picks up after it. A scheduled prompt
+        // leaves a paused goal paused; the resume after a usage limit is the exception, as in Claude Code.
+        if (!opts.goal && (!this.scheduledLabel || this.scheduledResume)) this.goal.userTurn();
+        // This turn's end decides for the goal.
+        this.goalOwed = undefined;
         if (!this.agent) {
             await this.ready.catch(() => undefined);
             if (this.closed) return;
@@ -1936,7 +2055,8 @@ export class Runtime {
         this.setState({ busy: true, status: "running", activity: { label: "Thinking", since: this.turnStartedAt } });
         this.engine.sessionChanged(this);
         // A command's own text says more than "/init"; a greeting says nothing, so a later prompt names it.
-        const about = opts.about ?? (opts.kind === "command" ? text : display);
+        // A goal's turns are about its condition, not the instructions around it.
+        const about = opts.about ?? (opts.goal ? (this.goal.condition ?? display) : opts.kind === "command" ? text : display);
         if (!this.session.title && !this.titleAsked && this.titleTries < TITLE_TRIES && titleWorthy(about)) void this.generateTitle(about);
 
         let reason: TurnEndReason | undefined;
@@ -1988,12 +2108,31 @@ export class Runtime {
             settled();
         }
         const elapsed = Date.now() - this.turnStartedAt;
-        if (reason && reason !== "aborted" && (reason === "error" || elapsed >= notifyAfterMs(this.settings()))) {
-            this.engine.notify(this, reason === "error" ? "error" : "done", reason === "error" ? "Stopped with an error" : `Finished in ${turnDuration(elapsed)}`);
-        }
+        const notify = () => {
+            if (reason && reason !== "aborted" && (reason === "error" || elapsed >= notifyAfterMs(this.settings()))) {
+                this.engine.notify(this, reason === "error" ? "error" : "done", reason === "error" ? "Stopped with an error" : `Finished in ${turnDuration(elapsed)}`);
+            }
+        };
+        // While a goal keeps going its turns don't each notify: the goal says when it stops (GoalHost.alert).
+        if (!(this.goal.active && this.goal.view()?.state !== "paused")) notify();
         if (reason && !this.closed) this.schedules.turnEnded(reason, agent.limitStop);
+        const queued = Boolean(this.nextQueued());
+        if (ac.signal.aborted) void this.goal.afterTurn("aborted", index, Boolean(opts.goal));
+        // What was queued goes first. If none of it is a turn (a !command, /compact), the goal takes this turn's end after it.
+        else if (queued && reason) this.goalOwed = { reason, from: index, goal: Boolean(opts.goal), startedAt: this.turnStartedAt };
         await this.runQueued(ac.signal.aborted);
+        // Nothing the user sent is waiting: the goal decides whether another turn starts.
+        if (!ac.signal.aborted && !queued && reason && !this.closed) await this.goal.afterTurn(reason, index, Boolean(opts.goal), this.turnStartedAt);
         this.schedules.poke();
+    }
+
+    /** The queue ran dry without starting a turn: the goal goes on from the turn that ended before it (or pauses, if it was stopped). */
+    private async settleGoal(aborted: boolean) {
+        const owed = this.goalOwed;
+        if (!owed || this.busy || this.nextQueued() || this.closed) return;
+        this.goalOwed = undefined;
+        if (aborted) return this.goal.afterTurn("aborted", owed.from, owed.goal);
+        await this.goal.afterTurn(owed.reason, owed.from, owed.goal, owed.startedAt);
     }
 
     /** /schedules in the GUI: the composer shows them too, with buttons. */
@@ -2006,12 +2145,17 @@ export class Runtime {
     /** After a turn, a `!command` or a compaction: the next message sent meanwhile, or all of them back to the input box after an interrupt. */
     private async runQueued(aborted: boolean) {
         if (this.closed) return;
-        if (aborted) return this.returnQueued();
+        if (aborted) {
+            this.returnQueued();
+            return this.settleGoal(true);
+        }
         const next = this.nextQueued();
-        if (!next) return;
+        if (!next) return this.settleGoal(false);
         this.queued = this.queued.filter((q) => q !== next);
         this.queueUpdated();
         await this.dispatch(next.text, next.attachments, next.literal).catch((e) => this.notice(redact((e as Error).message), "error"));
+        // Something that failed before it could hand on to the queue.
+        await this.settleGoal(false);
     }
 
     /** After an interrupt, unsent messages go back to the input box instead of running. */
@@ -2100,7 +2244,11 @@ export class Runtime {
         if (this.abort) {
             this.abort.abort();
             this.activity("Interrupting");
-        } else this.returnQueued();
+        } else {
+            // Between goal turns (a check or a retry coming), stop pauses the goal.
+            if (this.goal.pending()) this.goal.pause("Stopped. It continues after your next message, or /goal resume.");
+            this.returnQueued();
+        }
     }
 
     private async freezeSystemPrompt(signal: AbortSignal) {
@@ -2575,7 +2723,7 @@ export class Runtime {
 
     /** Nothing running, waiting for the user, or still to be delivered to the model: closing it loses nothing. */
     get idle(): boolean {
-        if (this.busy || this.committing || this.nextQueued() || this.pending.size || this.switching) return false;
+        if (this.busy || this.committing || this.nextQueued() || this.pending.size || this.switching || this.goal.pending()) return false;
         if ([...this.toolState.shells.values()].some((s) => s.exitCode === null)) return false;
         return !(this.agent?.delegatedTasks ?? []).some((t) => t.status === "running" || !t.delivered);
     }
@@ -2589,6 +2737,7 @@ export class Runtime {
     /** SessionEnd hooks and background shells, when the server stops or the session is closed. */
     async close() {
         this.schedules.dispose();
+        this.goal.dispose();
         this.abort?.abort();
         this.commitAbort?.abort();
         this.cancelInteractions();

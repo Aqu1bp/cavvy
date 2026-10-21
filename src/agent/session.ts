@@ -9,6 +9,7 @@ import { randomBytes } from "crypto";
 import { ensureDir, paths, projectStateDir, APP_TITLE, APP_VERSION } from "../config/paths";
 import type { Message, Usage } from "../providers/types";
 import type { PlanLink } from "../server/protocol";
+import type { GoalRecord } from "./goal";
 import { textOf } from "../providers/types";
 import { redact, redactedJson } from "../util/redact";
 import { defaultAccount, validAccountId } from "../providers/accounts";
@@ -106,7 +107,9 @@ export type Line =
     /** A backend session or thread one of this session's sub-agents (Task, delegate) ran on. */
     | { t: "subagent"; provider: string; id: string }
     /** Its durable schedules as they are now (the last line wins). */
-    | { t: "schedules"; jobs: ScheduledJob[] };
+    | { t: "schedules"; jobs: ScheduledJob[] }
+    /** The /goal set in this session; null when it ended. Older versions skip these lines. */
+    | { t: "goal"; goal: GoalRecord | null };
 
 /**
  * Where an imported session came from. It stays in the file for good, so the
@@ -138,6 +141,12 @@ export interface PresentedPlan {
     id: string;
     text: string;
     at: number;
+}
+
+function validGoal(g: unknown): GoalRecord | undefined {
+    const x = g as Record<string, unknown> | null;
+    if (!x || typeof x.condition !== "string" || !x.condition.trim()) return undefined;
+    return { condition: x.condition, setAt: typeof x.setAt === "number" ? x.setAt : 0 };
 }
 
 function validLink(l: unknown): l is PlanLink {
@@ -206,6 +215,8 @@ export class Session {
     /** Durable schedules as last saved (src/agent/schedule.ts), for restoring when it's opened again. */
     schedules: ScheduledJob[] = [];
     private savedSchedules = "[]";
+    /** The /goal still set when the session was last written (src/agent/goal.ts). */
+    goal?: GoalRecord;
     /**
      * The session a sub-agent runs for. Its own isn't saved, so the backend
      * sessions it starts are recorded in that one: they're Harness's, not
@@ -360,6 +371,12 @@ export class Session {
         this.accounts[provider] = id;
         this.write({ t: "account", provider, id });
         return true;
+    }
+
+    setGoal(goal: GoalRecord | null) {
+        if (!goal && !this.goal) return;
+        this.goal = goal ?? undefined;
+        this.write({ t: "goal", goal });
     }
 
     setTitle(title: string) {
@@ -573,6 +590,7 @@ export class Session {
             else if (l.t === "model") s.model = l.model;
             else if (l.t === "fastMode" && typeof l.enabled === "boolean") s.fastMode = s.savedFastMode = l.enabled;
             else if (l.t === "title") s.title = l.title;
+            else if (l.t === "goal") s.goal = validGoal(l.goal);
             else if (l.t === "plan" && typeof l.id === "string" && typeof l.text === "string") s.plans = [...s.plans.filter((p) => p.id !== l.id), { id: l.id, text: l.text, at: typeof l.at === "number" ? l.at : 0 }].slice(-PLANS_KEPT);
             else if (l.t === "planLink" && validLink(l.link)) s.planLinks = [...s.planLinks, l.link].slice(-PLANS_KEPT);
             else if (l.t === "import" && typeof l.source === "string" && typeof l.id === "string") s.imported = { source: l.source, id: l.id, startedAt: l.startedAt, importedAt: l.importedAt, messages: l.messages, omitted: l.omitted };

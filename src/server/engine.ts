@@ -1648,6 +1648,7 @@ export class Engine {
             { name: "compact", description: "Summarize the conversation to free up context", args: "[instructions]" },
             { name: "init", description: "Create a HARNESS.md with notes about this codebase" },
             { name: "review", description: "Review the current changes (or a PR number) for bugs", args: "[pr|focus]" },
+            { name: "goal", description: "Keep working until a condition holds (/goal clear stops)", args: "[condition]" },
             { name: "model", description: "Switch the model" },
             { name: "mode", description: "Switch the permission mode" },
             { name: "rewind", description: "Go back to before an earlier prompt" },

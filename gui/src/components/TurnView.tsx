@@ -1,6 +1,6 @@
 import { RenderBoundary } from "./ui/ErrorBoundary";
 import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, Show, Switch } from "solid-js";
-import { AlertCircle, AlertTriangle, Brain, ChevronRight, Clock, FileDiff, FileText, GitFork, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
+import { AlertCircle, AlertTriangle, Brain, CircleCheck, CircleX, ChevronRight, Clock, FileDiff, FileText, GitFork, Goal, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
 import { duration, turnDuration, firstChangedLine, plural, stripAnsi } from "../lib/format";
 import { now } from "../lib/clock";
@@ -149,10 +149,24 @@ export function Narration(p: { block: TextBlock }) {
     );
 }
 
+/** A /goal verdict starts with its own mark (src/agent/goal.ts): shown as an icon instead. */
+const GOAL_MARK = /^([◎✓✗]) /;
+
 export function Notice(p: { block: NoticeBlock }) {
+    const mark = () => GOAL_MARK.exec(p.block.text)?.[1];
+    const text = () => (mark() ? p.block.text.slice(2) : p.block.text);
     return (
-        <div class={`notice ${p.block.level}`} data-find={p.block.id}>
+        <div class={`notice ${p.block.level}${mark() === "✓" ? " goal-met" : ""}`} data-find={p.block.id}>
             <Switch fallback={<Info size={14} />}>
+                <Match when={mark() === "◎"}>
+                    <Goal size={14} />
+                </Match>
+                <Match when={mark() === "✓"}>
+                    <CircleCheck size={14} />
+                </Match>
+                <Match when={mark() === "✗"}>
+                    <CircleX size={14} />
+                </Match>
                 <Match when={p.block.level === "error"}>
                     <AlertCircle size={14} />
                 </Match>
@@ -160,7 +174,7 @@ export function Notice(p: { block: NoticeBlock }) {
                     <AlertTriangle size={14} />
                 </Match>
             </Switch>
-            <span>{p.block.text}</span>
+            <span>{text()}</span>
         </div>
     );
 }
