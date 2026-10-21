@@ -95,13 +95,22 @@ export interface WorktreeOutcome {
  * count). Otherwise kept, for the user to look at and merge.
  */
 export async function finishAgentWorktree(w: AgentWorktree): Promise<WorktreeOutcome> {
-    const [status, commits] = await Promise.all([runGitAsync(w.path, [...NO_HOOKS, "status", "--porcelain=v1", "--untracked-files=normal"], GIT_TIMEOUT_MS), runGitAsync(w.path, ["rev-list", "--count", `${w.base}..HEAD`], GIT_TIMEOUT_MS)]);
-    if (status.code !== 0 || status.timedOut || commits.code !== 0 || commits.timedOut) return { removed: false, error: "Git couldn't tell whether it has changes, so it was kept." };
-    const changes = { uncommitted: status.stdout.split("\n").filter(Boolean).length, commits: Number(commits.stdout.trim()) || 0 };
+    // Commits count on its HEAD and on its branch: the agent may have committed and then moved HEAD away.
+    const [status, head, branch] = await Promise.all([
+        runGitAsync(w.path, [...NO_HOOKS, "status", "--porcelain=v1", "--untracked-files=normal"], GIT_TIMEOUT_MS),
+        runGitAsync(w.path, ["rev-list", "--count", `${w.base}..HEAD`], GIT_TIMEOUT_MS),
+        runGitAsync(w.main, ["rev-list", "--count", `${w.base}..refs/heads/${w.branch}`, "--"], GIT_TIMEOUT_MS),
+    ]);
+    if ([status, head].some((r) => r.code !== 0 || r.timedOut) || branch.timedOut) return { removed: false, error: "Git couldn't tell whether it has changes, so it was kept." };
+    // A branch that's gone (deleted or renamed) holds nothing; one Git can't read otherwise is kept.
+    const exists = branch.code === 0;
+    if (!exists && (await runGitAsync(w.main, ["show-ref", "--verify", "--quiet", `refs/heads/${w.branch}`], GIT_TIMEOUT_MS)).code !== 1) return { removed: false, error: "Git couldn't tell whether it has changes, so it was kept." };
+    const changes = { uncommitted: status.stdout.split("\n").filter(Boolean).length, commits: Math.max(Number(head.stdout.trim()) || 0, exists ? Number(branch.stdout.trim()) || 0 : 0) };
     if (changes.uncommitted || changes.commits) return { removed: false, changes };
     const removed = await runGitAsync(w.main, [...NO_HOOKS, "worktree", "remove", "--force", w.path], GIT_TIMEOUT_MS);
     if (removed.code !== 0 || removed.timedOut) return { removed: false, changes, error: "Git couldn't remove it." };
-    await runGitAsync(w.main, ["branch", "-D", w.branch], GIT_TIMEOUT_MS);
+    // Deleted only while it still points at the base, so nothing committed in between is lost.
+    if (exists) await runGitAsync(w.main, ["update-ref", "-d", `refs/heads/${w.branch}`, w.base], GIT_TIMEOUT_MS);
     return { removed: true };
 }
 

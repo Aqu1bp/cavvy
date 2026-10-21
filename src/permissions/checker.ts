@@ -20,7 +20,7 @@
 // failure) goes to the reviewer and runs unsandboxed if it's allowed. Without
 // a sandbox, read-only commands run and the rest go to the reviewer.
 
-import { existsSync, readdirSync, realpathSync, statSync } from "fs";
+import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, join, resolve } from "path";
 import type { HiddenReason, Tool } from "../tools/types";
@@ -92,11 +92,23 @@ function pathForms(p: string): string[] {
 /**
  * In a sub-agent's own memory folder, as written and where its symlinks lead:
  * notes it keeps for its own prompt, not configuration (for that agent alone).
+ * The folder and the agent-memory folder holding it must be real folders: a
+ * link there could make `.harness` itself (or its agents) the "memory".
  */
 function inMemory(p: string, dir: string): boolean {
-    const dirs = [resolve(dir), canonical(dir)];
+    const real = resolve(dir);
+    if ([real, dirname(real)].some(isLink)) return false;
+    const dirs = [real, canonical(real)];
     const inside = (x: string) => dirs.some((d) => x !== d && isInside(x, d));
-    return inside(resolve(p)) && inside(canonical(p)) && !/(^|\/)\.git(\/|$)/.test(p);
+    return inside(resolve(p)) && isInside(canonical(p), dirs[1]!) && canonical(p) !== dirs[1] && !/(^|\/)\.git(\/|$)/.test(p);
+}
+
+function isLink(p: string): boolean {
+    try {
+        return lstatSync(p).isSymbolicLink();
+    } catch {
+        return false;
+    }
 }
 
 /** What isHarnessConfig looks for in a path. */

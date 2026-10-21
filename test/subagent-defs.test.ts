@@ -16,7 +16,7 @@ const { PermissionChecker } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const trust = await import("../src/config/trust");
 const { parseAgentFile, loadAgents, agentMemoryDir, readAgentMemory, MEMORY_LINES } = await import("../src/agent/agents");
-const { childMode, withAgentHooks } = await import("../src/agent/subagent-setup");
+const { childMode, withAgentHooks, createAgentWorktree, finishAgentWorktree, worktreeNote } = await import("../src/agent/subagent-setup");
 const { stopServer } = await import("../src/mcp/server");
 
 type AgentEvent = import("../src/agent/agent").AgentEvent;
@@ -516,6 +516,29 @@ describe("isolation: worktree", () => {
         await git(cwd, "worktree", "remove", "--force", wt);
     });
 
+    test("cleanup keeps a branch with the agent's commits even when its HEAD went back to the start", async () => {
+        await initRepo();
+        const w = await createAgentWorktree({ cwd, projectRoot: cwd, agent: "worker" });
+        writeFileSync(join(w.path, "work.txt"), "work\n");
+        await git(w.path, "add", ".");
+        await git(w.path, "commit", "-qm", "work");
+        const tip = await git(w.path, "rev-parse", "HEAD");
+        // Back to where it started, detached (to compare with the old behavior, say).
+        await git(w.path, "checkout", "-q", "--detach", w.base);
+        const outcome = await finishAgentWorktree(w);
+        expect(outcome.removed).toBe(false);
+        expect(await git(cwd, "rev-parse", `refs/heads/${w.branch}`)).toBe(tip);
+        expect(worktreeNote(w, outcome)).toContain("1 commit");
+        await git(cwd, "worktree", "remove", "--force", w.path);
+    });
+
+    test("cleanup deletes the branch only while it's still at its starting commit", async () => {
+        await initRepo();
+        const w = await createAgentWorktree({ cwd, projectRoot: cwd, agent: "worker" });
+        expect((await finishAgentWorktree(w)).removed).toBe(true);
+        expect(await git(cwd, "branch", "--list", w.branch)).toBe("");
+    });
+
     test("outside a git repository the task fails with the reason", async () => {
         defineAgent("isolated", "isolation: worktree");
         mainCalls(["t1", "Task", task("isolated")]);
@@ -716,5 +739,23 @@ describe("checker", () => {
         const user = agentMemoryDir("user", "r", cwd);
         expect(decide(join(user, "MEMORY.md"), user).behavior).not.toBe("deny");
         expect(decide(join(user, "MEMORY.md"), null).behavior).toBe("ask");
+    });
+
+    test("a memory folder that is itself a link (or under one) is no exemption", () => {
+        const settings = {};
+        const checker = new PermissionChecker(() => settings, cwd);
+        const write = BUILTIN_TOOLS.find((t) => t.name === "Write")!;
+        const decide = (p: string, memoryDir: string) => checker.check(write, { file_path: p, content: "x" }, "acceptEdits", cwd, { memoryDir });
+        mkdirSync(join(cwd, ".harness", "agent-memory"), { recursive: true });
+        // worker -> .harness: its "settings.json" is the project's settings.
+        const worker = agentMemoryDir("project", "worker", cwd);
+        symlinkSync(join(cwd, ".harness"), worker);
+        const d = decide(join(worker, "settings.json"), worker);
+        expect(d.behavior).toBe("ask");
+        expect((d as any).config).toBe(true);
+        // agent-memory-local -> .harness: an agent named "agents" would write agent definitions.
+        symlinkSync(join(cwd, ".harness"), join(cwd, ".harness", "agent-memory-local"));
+        const agents = agentMemoryDir("local", "agents", cwd);
+        expect(decide(join(agents, "evil.md"), agents).behavior).toBe("ask");
     });
 });
