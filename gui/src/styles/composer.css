@@ -735,7 +735,7 @@
 }
 
 /* Context: a ring with its percentage inside. */
-.ctx {
+.ctx-btn {
     position: relative;
     display: grid;
     place-items: center;
@@ -748,7 +748,7 @@
     transition: transform 140ms;
 }
 
-.ctx > * {
+.ctx-btn > * {
     grid-area: 1 / 1;
 }
 
@@ -757,8 +757,8 @@
     display: block;
 }
 
-.ctx:hover,
-.ctx.open {
+.ctx-btn:hover,
+.ctx-btn.open {
     transform: scale(1.06);
 }
 
@@ -768,11 +768,11 @@
     color: var(--fg-2);
 }
 
-.ctx.tone-warning .ctx-num {
+.ctx-btn.tone-warning .ctx-num {
     color: var(--warn);
 }
 
-.ctx.tone-danger .ctx-num {
+.ctx-btn.tone-danger .ctx-num {
     color: var(--danger);
 }
 
@@ -2067,7 +2067,7 @@
         display: none;
     }
 
-    .composer .ctx {
+    .composer .ctx-btn {
         display: none;
     }
 }

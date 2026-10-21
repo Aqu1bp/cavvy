@@ -105,7 +105,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string }) {
             <button
                 ref={btn}
                 type="button"
-                class={`ctx tone-${tone()} ${open() ? "open" : ""}`}
+                class={`ctx-btn tone-${tone()} ${open() ? "open" : ""}`}
                 aria-haspopup="dialog"
                 aria-expanded={open()}
                 aria-controls={open() ? panelId : undefined}
