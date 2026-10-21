@@ -32,6 +32,7 @@ const { withoutActionsNote } = await import("../src/server/history");
 const { backgroundTiming } = await import("../src/backends/claude-code");
 const { forkSession, forkCut } = await import("../src/agent/fork");
 const { framedText, pdfPlaceholder } = await import("../src/providers/files");
+const { WakeQueue } = await import("../src/agent/wakes");
 
 type AgentEvent = import("../src/agent/agent").AgentEvent;
 type PermissionRequest = import("../src/agent/agent").PermissionRequest;
@@ -97,6 +98,8 @@ interface Opts {
     queued?: string[][];
     /** In place of queued: the messages waiting when the turn ends. */
     drainQueued?: () => string[];
+    /** A wake queue, as the TUI and the app give a session. */
+    wakes?: InstanceType<typeof WakeQueue>;
 }
 
 async function makeAgent(o: Opts) {
@@ -120,7 +123,7 @@ async function makeAgent(o: Opts) {
         checker,
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
-        toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() },
+        toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map(), ...(o.wakes ? { wakes: o.wakes, watchers: new Map() } : {}) },
         host: {
             drainQueued: o.drainQueued ?? (() => queued.shift() ?? []),
             emit: (e) => events.push(e),
@@ -2151,6 +2154,22 @@ describe("Claude Code turn reliability (#60, #61, #64)", () => {
         expect(starts()).toHaveLength(1);
     });
 
+    test("a wake that arrives while Claude Code works reaches the running turn as queued input does, not as the user's", async () => {
+        process.env.FAKE_SCENARIO = "steering";
+        const wakes = new WakeQueue({ coalesceMs: 60_000 });
+        wakes.push({ source: "pull-request", label: "PR #12: new comment", text: "- bob: \"please rename it\"" });
+        const a = await makeAgent({ provider: "claude-code", wakes });
+        expect(await a.run("start")).toBe("done");
+        const folded = logLines().find((l) => l.foldedBeforeResult)?.foldedBeforeResult as string[];
+        expect(folded).toHaveLength(1);
+        expect(folded[0]).toContain("please rename it");
+        expect(folded[0]).toContain("not the user");
+        expect(a.session.messages.find((m) => JSON.stringify(m.content).includes("please rename it"))?.meta?.kind).toBe("reminder");
+        expect(starts()).toHaveLength(1);
+        expect(wakes.size).toBe(0);
+        wakes.dispose();
+    });
+
     for (const version of ["2.1.200", "unknown"]) test(`${version}: unverified CLI versions retain between-turn delivery without losing queued input`, async () => {
         process.env.FAKE_CLAUDE_VERSION = version;
         process.env.FAKE_SCENARIO = "steering";
@@ -2461,6 +2480,28 @@ describe("Codex mid-turn steering", () => {
         expect(turnStarts()).toHaveLength(1);
         expect(transcript(a.session)).toEqual(["user: start", "assistant: Running it.", "user: also check y", "assistant: Heard: also check y"]);
         expect(a.session.messages[2]!.meta?.kind).toBe("prompt");
+    });
+
+    test("a wake while the turn runs steers it at once, marked as the harness's and not as a prompt", async () => {
+        process.env.FAKE_SCENARIO = "slow";
+        process.env.FAKE_STEER_WAKES = "1";
+        const wakes = new WakeQueue({ coalesceMs: 0 });
+        const a = await makeAgent({ provider: "codex", drainQueued: () => [], wakes });
+        const done = a.run("start");
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        await Bun.sleep(50);
+        wakes.push({ source: "pull-request", key: "pr:acme/app#12", label: "PR #12: checks failed", text: "- Checks failed: test" });
+        expect(await done).toBe("done");
+        expect(steers()).toHaveLength(1);
+        const sent = steers()[0]!.input[0].text as string;
+        expect(sent).toContain("- Checks failed: test");
+        expect(sent).toContain("not the user");
+        expect(turnStarts()).toHaveLength(1);
+        const m = a.session.messages.find((x) => JSON.stringify(x.content).includes("Checks failed: test"))!;
+        expect(m.meta?.kind).toBe("reminder");
+        expect(notices(a.events)).toContain("info: ↻ PR #12: checks failed");
+        expect(wakes.size).toBe(0);
+        wakes.dispose();
     });
 
     test("nothing waiting: a nudge takes nothing and sends nothing", async () => {

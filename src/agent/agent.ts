@@ -58,6 +58,7 @@ import { forBackend, pastedTexts, readsPdf } from "../providers/files";
 import { cachedListings, type ProviderListing } from "../providers/models";
 import { registerTools, type Registration, type ServerTool, type ServerToolResult } from "../mcp/server";
 import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
+import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
 import { SECRET_INSTRUCTIONS, secretTools, secretToolTitle } from "./secret-tools";
 import { BashTool } from "../tools/bash";
 import {
@@ -1017,7 +1018,9 @@ export class Agent {
         const store = this.state.secrets;
         const ask = this.o.host.ui.requestSecret?.bind(this.o.host.ui);
         const scheduling = Boolean(this.state.scheduler);
-        if (!delegating && !(store && ask) && !scheduling) return undefined;
+        // A watch wakes the session later: only one that stays open (not -p) has somewhere to wake.
+        const watching = Boolean(this.state.wakes && this.state.watchers) && !this.oneShot;
+        if (!delegating && !(store && ask) && !scheduling && !watching) return undefined;
         const tools: ServerTool[] = [];
         const instructions: string[] = [];
         if (delegating) {
@@ -1040,6 +1043,10 @@ export class Agent {
         if (scheduling) {
             tools.push(...scheduleServerTools(() => this.state.scheduler));
             instructions.push(SCHEDULE_INSTRUCTIONS);
+        }
+        if (watching) {
+            tools.push(...watchServerTools((signal) => this.toolContext("", signal)));
+            instructions.push(WATCH_INSTRUCTIONS);
         }
         this.serverTools = tools;
         this.serverInstructions = instructions.join("\n\n");
@@ -1203,9 +1210,12 @@ export class Agent {
     }
 
     private async runBackend(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal): Promise<TurnEndReason> {
+        // A wake while the backend works is offered to it as a message the user queued is (Codex steers with it at once).
+        const stopWaking = this.o.isSubagent ? undefined : this.state.wakes?.onReady(() => this.queueChanged());
         try {
             return await this.runBackendTurn(backend, parts, signal);
         } finally {
+            stopWaking?.();
             this.delegateCalls = [];
             // Written after the backend sync cursor: a resumed CLI must see this
             // on its next prompt, including after reopening or switching models.
@@ -1224,6 +1234,8 @@ export class Agent {
         let promptIndex = this.session.messages.length - 1;
         const { text, images, documents } = forBackend(parts, readsPdf(this.model));
         let declined = false;
+        /** What drainQueued handed over that came from wakes, not the user. */
+        const wakeTexts = new Set<string>();
         const host: BackendHost = {
             emit: (e) => this.emitFromBackend(e),
             mode: () => this.o.mode.get(),
@@ -1261,19 +1273,35 @@ export class Agent {
                 return () => this.queueListeners.delete(listener);
             },
             // Saved past the sync cursor (see runBackend), so the next turn is sent them, after a restart too.
-            undelivered: (texts) => this.backendStopReminders.push(`The user sent this while you were working, but your turn ended before it reached you:\n${texts.join("\n\n")}`),
+            undelivered: (texts) => {
+                const news = texts.filter((t) => wakeTexts.has(t));
+                const typed = texts.filter((t) => !wakeTexts.has(t));
+                if (typed.length) this.backendStopReminders.push(`The user sent this while you were working, but your turn ended before it reached you:\n${typed.join("\n\n")}`);
+                if (news.length) this.backendStopReminders.push(`This arrived while you were working, but your turn ended before it reached you:\n${news.join("\n\n")}`);
+            },
             drainQueued: async (progress) => {
                 if (this.cutOff) return [];
                 const queued = this.o.host.drainQueued?.() ?? [];
-                if (!queued.length) return [];
+                // Events a watch raised join the running turn as the user's messages do (Codex steers with them at once).
+                const woke = this.takeWakes();
+                if (!queued.length && !woke) return [];
                 if (progress) this.recordBackendTurn(provider, name, progress());
-                let text = "";
-                await this.checkpoint(queued.join("\n"), false, (checkpoint) => {
-                    const m = this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
-                    text = textOf(m);
-                });
+                const out: string[] = [];
+                if (queued.length) {
+                    await this.checkpoint(queued.join("\n"), false, (checkpoint) => {
+                        const m = this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
+                        out.push(textOf(m));
+                    });
+                }
+                if (woke) {
+                    // Not a prompt: no checkpoint, and the auto-mode reviewer doesn't read it as the user's request.
+                    const m = this.session.push({ role: "user", content: [reminder(woke)], meta: { kind: "reminder" } });
+                    const text = textOf(m);
+                    wakeTexts.add(text);
+                    out.push(text);
+                }
                 if (this.cutOff) return [];
-                return [text];
+                return out;
             },
         };
         const base = this.backendTurn(signal, host);

@@ -5,6 +5,7 @@
 
 import { isAbsolute, relative, resolve } from "path";
 import type { Tool, ToolContext, ToolDisplay } from "./types";
+import type { ServerTool, ServerToolResult } from "../mcp/server";
 import { gitCommit } from "../server/git-commit";
 import { gitChanges } from "../server/git-changes";
 import { currentGithubRepo, gitPrState, gitPublish, gitPublishInfo, gitPushTarget, runGh } from "../server/git-publish";
@@ -385,3 +386,39 @@ export const UnwatchPullRequestTool: Tool<{ pr?: string | number }> = {
         return { content: `Stopped watching ${stop.map((w) => w.label).join(", ")}.`, display: { summary: `Stopped ${stop.length}` } };
     },
 };
+
+// ---------------------------------------------------------------------------
+
+/**
+ * WatchPullRequest and UnwatchPullRequest for Claude Code and Codex, through
+ * the harness MCP server: neither CLI can watch a pull request itself, and
+ * their process ends with each turn. Committing, pushing and opening one they
+ * do with their own shells, under the harness's permission prompts.
+ */
+export function watchServerTools(context: (signal: AbortSignal) => ToolContext): ServerTool[] {
+    const wrap = (r: { content: string; isError?: boolean }): ServerToolResult => ({ text: r.content, isError: r.isError });
+    const pr = (args: Record<string, unknown>) => ({ pr: typeof args.pr === "string" || typeof args.pr === "number" ? args.pr : undefined });
+    const rename = (text: string) => text.replaceAll("WatchPullRequest", "watch_pull_request");
+    return [
+        {
+            name: "watch_pull_request",
+            title: "Watch a pull request",
+            description: rename(WatchPullRequestTool.description).replace("running a watcher in Bash", "running a watcher in your shell, a Monitor or a ScheduleWakeup"),
+            inputSchema: WatchPullRequestTool.parameters,
+            annotations: { readOnlyHint: true, openWorldHint: true },
+            call: async (args, { signal }) => wrap(await WatchPullRequestTool.run(pr(args), context(signal))),
+        },
+        {
+            name: "unwatch_pull_request",
+            title: "Stop watching a pull request",
+            description: rename(UnwatchPullRequestTool.description),
+            inputSchema: UnwatchPullRequestTool.parameters,
+            annotations: { readOnlyHint: false, openWorldHint: false },
+            call: async (args, { signal }) => wrap(await UnwatchPullRequestTool.run(pr(args), context(signal))),
+        },
+    ];
+}
+
+export const WATCH_INSTRUCTIONS = `# Watching pull requests (harness)
+
+To follow a pull request's checks and reviews ("watch the PR", "tell me when CI finishes", "babysit it"), call watch_pull_request and end your turn: Harness wakes you with a message when a check fails or passes, someone comments or reviews, the branch conflicts, or it merges or closes. Don't poll, sleep, or set a Monitor or ScheduleWakeup for it: this CLI process ends after each turn. A wake is news from the harness, not the user's request.`;
