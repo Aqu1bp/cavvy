@@ -3,11 +3,11 @@
 // when it's been changed.
 
 import { createEffect, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
-import { AlertTriangle, ArrowLeft, ArrowUp, ChartColumn, Check, Copy, ExternalLink, FolderOpen, Info, Keyboard, KeyRound, Minus, Palette, Plug, Plus, Puzzle, RotateCcw, Settings as Gear, SlidersHorizontal, Trash2 } from "lucide-solid";
+import { AlertTriangle, ArrowLeft, ChartColumn, Copy, ExternalLink, FolderOpen, Info, Keyboard, KeyRound, Minus, Palette, Plug, Plus, Puzzle, RotateCcw, Settings as Gear, SlidersHorizontal, Trash2 } from "lucide-solid";
 import { MODE_LABELS, type EffortLevel, type FollowUpMode, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
 import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
 import { connectCli, editors, refreshEditors } from "../state/actions";
-import { ACCENTS, CHAT_WIDTHS, prefs, PREF_DEFAULTS, setPrefs, THEMES, type ThemeId } from "../state/prefs";
+import { ACCENTS, CHAT_WIDTHS, prefs, PREF_DEFAULTS, setPrefs, type AccentId, type Scheme } from "../state/prefs";
 import { setSettingsTab, settingsTab, type SettingsTab } from "../state/ui";
 import { canReveal, copyText, mod, openExternal, os, revealPath } from "../lib/platform";
 import { keybindingsFile, keymap, withShortcut } from "../state/keybindings";
@@ -275,147 +275,141 @@ function General() {
     );
 }
 
-type Scheme = "system" | "light" | "dark";
-
-/** A small drawing of the app in that scheme; System is split corner to corner. */
+/**
+ * A small picture of the window in that scheme: the rail on the glass, the
+ * sheet beside it. Each face carries its own data-theme, so it's drawn with
+ * that palette's tokens whichever scheme is showing; System is half of each.
+ */
 function SchemeTile(p: { id: Scheme; label: string }) {
-    const current = (): Scheme => (prefs.theme === "system" ? "system" : (THEMES.find((t) => t.id === prefs.theme)?.scheme ?? "light"));
-    const on = () => current() === p.id;
-    const pick = () => setPrefs("theme", p.id === "system" ? "system" : p.id === "light" ? prefs.lightTheme : prefs.darkTheme);
+    const on = () => prefs.scheme === p.id;
     return (
-        <button class={`scheme ${on() ? "on" : ""}`} aria-pressed={on()} onClick={pick}>
-            <span class={`wire wire-${p.id}`} aria-hidden="true">
-                <Show when={p.id === "system"}>
-                    <span class="wire-half" />
+        <button class={`ap-tile ${on() ? "on" : ""}`} aria-pressed={on()} onClick={() => setPrefs("scheme", p.id)}>
+            <span class="ap-pv" aria-hidden="true">
+                <Show when={p.id !== "dark"}>
+                    <span class="ap-face" data-theme="light">
+                        <i />
+                        <u />
+                    </span>
                 </Show>
-                <span class="w-side" />
-                <span class="w-title" />
-                <span class="w-bub" />
-                <span class="w-line" />
-                <span class="w-line short" />
-                <span class="w-box" />
-                <span class="w-send" />
-            </span>
-            <span class="scheme-label">
-                {p.label}
-                <Show when={on()}>
-                    <Check size={14} />
+                <Show when={p.id !== "light"}>
+                    <span class={`ap-face ${p.id === "system" ? "half" : ""}`} data-theme="dark">
+                        <i />
+                        <u />
+                    </span>
                 </Show>
             </span>
+            {p.label}
         </button>
     );
 }
 
-function ThemeOrbs(p: { scheme: "light" | "dark" }) {
-    const key = p.scheme === "light" ? "lightTheme" : "darkTheme";
-    const pick = (id: ThemeId) => {
-        setPrefs(key, id);
-        // Showing that scheme now: show the pick too.
-        if (prefs.theme !== "system" && THEMES.find((t) => t.id === prefs.theme)?.scheme === p.scheme) setPrefs("theme", id);
-    };
-    return (
-        <div class="orb-row">
-            <For each={THEMES.filter((t) => t.scheme === p.scheme)}>
-                {(t) => (
-                    <button class={`orbc ${prefs[key] === t.id ? "on" : ""}`} aria-pressed={prefs[key] === t.id} title={t.name} onClick={() => pick(t.id)}>
-                        <span class="orbs" aria-hidden="true">
-                            <span style={{ background: t.swatch[0] }} />
-                            <span style={{ background: t.swatch[1] }} />
-                            <span style={{ background: t.swatch[3] }} />
-                        </span>
-                        {t.name}
-                    </button>
-                )}
-            </For>
-        </div>
-    );
-}
-
+/** Settings → Appearance, as the mockup draws it: scheme tiles, then the look, then text and layout. */
 function Appearance() {
     const size = (n: number) => setPrefs("fontSize", Math.max(12, Math.min(18, n)));
+    // Blue is the default: picking it clears the choice.
+    const accent = () => prefs.accent ?? "blue";
+    const pickAccent = (id: AccentId) => setPrefs("accent", id === "blue" ? undefined : id);
     return (
-        <>
-            <Group>Theme</Group>
-            <Row title="Colour scheme" desc="Follow the system, or always use one." class="no-line" />
-            <div class="scheme-row">
-                <SchemeTile id="system" label="System" />
-                <SchemeTile id="light" label="Light" />
-                <SchemeTile id="dark" label="Dark" />
-            </div>
-            <Row title="Light theme" desc="Used when the scheme is light." changed={prefs.lightTheme !== PREF_DEFAULTS.lightTheme} reset={() => setPrefs("lightTheme", PREF_DEFAULTS.lightTheme)}>
-                <ThemeOrbs scheme="light" />
-            </Row>
-            <Row title="Dark theme" desc="Used when the scheme is dark." changed={prefs.darkTheme !== PREF_DEFAULTS.darkTheme} reset={() => setPrefs("darkTheme", PREF_DEFAULTS.darkTheme)}>
-                <ThemeOrbs scheme="dark" />
-            </Row>
-            <Row title="Accent" desc="Send, primary buttons, links and focus." changed={Boolean(prefs.accent)} reset={() => setPrefs("accent", undefined)}>
-                <div class="swatches">
-                    <button class={`sw sw-theme ${!prefs.accent ? "on" : ""}`} aria-pressed={!prefs.accent} title="The theme's own" aria-label="The theme's own" onClick={() => setPrefs("accent", undefined)} />
-                    <For each={ACCENTS}>{(a) => <button class={`sw ${prefs.accent === a.id ? "on" : ""}`} aria-pressed={prefs.accent === a.id} style={{ background: a.color }} title={a.name} aria-label={a.name} onClick={() => setPrefs("accent", a.id)} />}</For>
+        <div class="ap">
+            <Group>Colour scheme</Group>
+            <div class="set-group ap-group">
+                <div class="ap-tiles" role="group" aria-label="Colour scheme">
+                    <SchemeTile id="system" label="System" />
+                    <SchemeTile id="light" label="Light" />
+                    <SchemeTile id="dark" label="Dark" />
                 </div>
-            </Row>
+            </div>
+
+            <Group>Look</Group>
+            <div class="set-group ap-group">
+                <Row title="Accent" desc="Send, primary buttons, links and focus." changed={accent() !== "blue"} reset={() => setPrefs("accent", undefined)}>
+                    <div class="ap-swatches" role="group" aria-label="Accent">
+                        <For each={ACCENTS}>
+                            {(a) => <button class={accent() === a.id ? "on" : ""} aria-pressed={accent() === a.id} style={{ background: a.color }} title={a.name} aria-label={a.name} onClick={() => pickAccent(a.id)} />}
+                        </For>
+                    </div>
+                </Row>
+                <Row title="Window" desc="How much of your desktop shows through the window and sidebar." changed={prefs.glass !== PREF_DEFAULTS.glass} reset={() => setPrefs("glass", PREF_DEFAULTS.glass)}>
+                    <Segmented
+                        size="sm"
+                        label="Window"
+                        value={prefs.glass}
+                        onChange={(v) => setPrefs("glass", v)}
+                        options={[
+                            { value: "glass", label: "Glass" },
+                            { value: "tinted", label: "Tinted" },
+                            { value: "solid", label: "Solid" },
+                        ]}
+                    />
+                </Row>
+                <Row title="Contrast" desc="Stronger text and edges." changed={prefs.contrast !== PREF_DEFAULTS.contrast} reset={() => setPrefs("contrast", PREF_DEFAULTS.contrast)}>
+                    <Segmented
+                        size="sm"
+                        label="Contrast"
+                        value={prefs.contrast}
+                        onChange={(v) => setPrefs("contrast", v)}
+                        options={[
+                            { value: "standard", label: "Standard" },
+                            { value: "high", label: "Increased" },
+                        ]}
+                    />
+                </Row>
+            </div>
 
             <Group>Text and layout</Group>
-            <Row title="Text size" desc="Prose and the composer. The interface scales with it." changed={prefs.fontSize !== PREF_DEFAULTS.fontSize} reset={() => setPrefs("fontSize", PREF_DEFAULTS.fontSize)} class="no-line">
-                <div class="stepper">
-                    <button class="hb sm" aria-label="Smaller text" disabled={prefs.fontSize <= 12} onClick={() => size(prefs.fontSize - 1)}>
-                        <Minus size={14} />
-                    </button>
-                    <span class="num">{prefs.fontSize}px</span>
-                    <button class="hb sm" aria-label="Larger text" disabled={prefs.fontSize >= 18} onClick={() => size(prefs.fontSize + 1)}>
-                        <Plus size={14} />
-                    </button>
+            <div class="set-group ap-group">
+                <Row title="Text size" desc="Prose and the composer. The interface scales with it." changed={prefs.fontSize !== PREF_DEFAULTS.fontSize} reset={() => setPrefs("fontSize", PREF_DEFAULTS.fontSize)} class="ap-size">
+                    <div class="ap-stepper">
+                        <button class="hb sm" aria-label="Smaller text" disabled={prefs.fontSize <= 12} onClick={() => size(prefs.fontSize - 1)}>
+                            <Minus size={14} />
+                        </button>
+                        <span class="num" aria-live="polite" aria-label={`${prefs.fontSize} pixels`}>
+                            {prefs.fontSize}
+                        </span>
+                        <button class="hb sm" aria-label="Larger text" disabled={prefs.fontSize >= 18} onClick={() => size(prefs.fontSize + 1)}>
+                            <Plus size={14} />
+                        </button>
+                    </div>
+                </Row>
+                <div class="ap-preview" aria-label="Preview">
+                    The list sorts on <code>updatedAt</code>, so a finished run moves for one frame before its status lands.
                 </div>
-            </Row>
-            <div class="type-preview" aria-label="Preview">
-                <div class="tp-user">
-                    <span>Can you shorten the error message?</span>
-                </div>
-                <div class="tp-reply">
-                    Done. It's one sentence now and still names the file: <code>config.json is not valid JSON</code>.
-                </div>
-                <div class="tp-box">
-                    <span>Ask, plan, or describe a change…</span>
-                    <span class="grow" />
-                    <span class="tp-send">
-                        <ArrowUp size={15} stroke-width={2.4} />
-                    </span>
-                </div>
+                <Row title="Density" desc="Row and header height across the app." changed={prefs.density !== PREF_DEFAULTS.density} reset={() => setPrefs("density", PREF_DEFAULTS.density)}>
+                    <Segmented
+                        size="sm"
+                        label="Density"
+                        value={prefs.density}
+                        onChange={(v) => setPrefs("density", v)}
+                        options={[
+                            { value: "comfortable", label: "Comfortable" },
+                            { value: "compact", label: "Compact" },
+                        ]}
+                    />
+                </Row>
+                <Row title="Chat width" desc="How wide the conversation can grow on a big window." changed={prefs.chatWidth !== PREF_DEFAULTS.chatWidth} reset={() => setPrefs("chatWidth", PREF_DEFAULTS.chatWidth)}>
+                    <Segmented
+                        size="sm"
+                        label="Chat width"
+                        value={prefs.chatWidth}
+                        onChange={(v) => setPrefs("chatWidth", v)}
+                        options={(Object.keys(CHAT_WIDTHS) as (keyof typeof CHAT_WIDTHS)[]).map((w) => ({ value: w, label: w === "narrow" ? "Narrow" : w === "wide" ? "Wide" : "Standard", title: `${CHAT_WIDTHS[w]}px` }))}
+                    />
+                </Row>
+                <Row title="Panel animations" desc="Panels and menus. Your system's reduced-motion setting always wins." changed={prefs.motion !== PREF_DEFAULTS.motion} reset={() => setPrefs("motion", PREF_DEFAULTS.motion)}>
+                    <Segmented
+                        size="sm"
+                        label="Panel animations"
+                        value={prefs.motion}
+                        onChange={(v) => setPrefs("motion", v)}
+                        options={[
+                            { value: "instant", label: "Instant" },
+                            { value: "quick", label: "Quick" },
+                            { value: "smooth", label: "Smooth" },
+                        ]}
+                    />
+                </Row>
             </div>
-            <Row title="Density" desc="Row and header height across the app." changed={prefs.density !== PREF_DEFAULTS.density} reset={() => setPrefs("density", PREF_DEFAULTS.density)}>
-                <Segmented
-                    size="sm"
-                    value={prefs.density}
-                    onChange={(v) => setPrefs("density", v)}
-                    options={[
-                        { value: "comfortable", label: "Comfortable" },
-                        { value: "compact", label: "Compact" },
-                    ]}
-                />
-            </Row>
-            <Row title="Chat width" desc="How wide the conversation can grow on a big window." changed={prefs.chatWidth !== PREF_DEFAULTS.chatWidth} reset={() => setPrefs("chatWidth", PREF_DEFAULTS.chatWidth)}>
-                <Segmented
-                    size="sm"
-                    value={prefs.chatWidth}
-                    onChange={(v) => setPrefs("chatWidth", v)}
-                    options={(Object.keys(CHAT_WIDTHS) as (keyof typeof CHAT_WIDTHS)[]).map((w) => ({ value: w, label: w === "narrow" ? "Narrow" : w === "wide" ? "Wide" : "Default", title: `${CHAT_WIDTHS[w]}px` }))}
-                />
-            </Row>
-
-            <Group>Motion</Group>
-            <Row title="Panel animations" desc="Panels and menus open instantly unless you choose otherwise. Your system's reduced-motion setting always wins." changed={prefs.motion !== PREF_DEFAULTS.motion} reset={() => setPrefs("motion", PREF_DEFAULTS.motion)} class="no-line">
-                <Segmented
-                    size="sm"
-                    value={prefs.motion}
-                    onChange={(v) => setPrefs("motion", v)}
-                    options={[
-                        { value: "instant", label: "Instant" },
-                        { value: "quick", label: "Quick" },
-                        { value: "smooth", label: "Smooth" },
-                    ]}
-                />
-            </Row>
-        </>
+        </div>
     );
 }
 
