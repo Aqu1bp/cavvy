@@ -47,6 +47,8 @@ import { configuredProviders, storageDescription } from "../auth/credentials";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { commandList, commandRefusesImages, runCommand } from "../commands/index";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
+import { loadSkills, skillMentions, withSkills, type Skill } from "../agent/skills";
+import { skillTool } from "../tools/skill-tool";
 import { displayPath } from "../util/files";
 import { redact } from "../util/redact";
 import { SecretStore, secretValueError } from "../agent/secrets";
@@ -107,6 +109,9 @@ export class App {
     session!: Session;
     toolState: ToolState;
     customCommands: CustomCommand[] = [];
+    skills: Skill[] = [];
+    /** The commands the session's agent CLI said it runs itself (Claude Code's skills and built-ins), by provider. */
+    cliCommands?: { provider: string; names: ReadonlySet<string> };
     verbose = false;
     lastResponse = "";
 
@@ -229,6 +234,7 @@ export class App {
         for (const sig of ["SIGTERM", "SIGHUP"] as const) process.on(sig, () => void this.exit(0));
 
         this.customCommands = loadCustomCommands(this.cwd, this.init.trusted);
+        this.skills = loadSkills(this.cwd, this.init.trusted);
         this.printWelcome();
         for (const n of this.init.startupNotes) this.notice(n, "warn");
 
@@ -519,7 +525,8 @@ export class App {
     tools(): Tool<any>[] {
         const native = this.nativeSearch();
         const builtin = BUILTIN_TOOLS.filter((t) => !(native && t.name === "WebSearch") && !(t.name === "WebSearch" && this.settings.webSearch === "off"));
-        return [...builtin, ...this.mcp.tools()];
+        const skill = skillTool(this.skills);
+        return [...builtin, ...(skill ? [skill] : []), ...this.mcp.tools()];
     }
 
     makeAgent() {
@@ -869,6 +876,9 @@ export class App {
                 this.thinkingNow = false;
                 this.receiving.clear();
                 this.status = `${e.reason.slice(0, 80)} · retrying in ${Math.ceil(e.delayMs / 1000)}s (attempt ${e.attempt})`;
+                break;
+            case "cli_commands":
+                this.cliCommands = { provider: e.provider, names: new Set(e.names) };
                 break;
             case "limits":
                 {
@@ -1505,6 +1515,16 @@ export class App {
             if (this.menuIndex >= items.length) this.menuIndex = 0;
             return { items };
         }
+        if (/^\$[a-zA-Z0-9:_-]*$/.test(tok.text) && !/[A-Z]/.test(tok.text)) {
+            const q = tok.text.slice(1);
+            const found = this.skills
+                .filter((s) => s.userInvocable && (s.name.startsWith(q) || (q.length > 1 && s.name.includes(q))))
+                .sort((a, b) => Number(!a.name.startsWith(q)) - Number(!b.name.startsWith(q)) || a.name.localeCompare(b.name))
+                .slice(0, 8);
+            if (found.length === 1 && found[0]!.name === q) return { items: [] };
+            if (this.menuIndex >= found.length) this.menuIndex = 0;
+            return { items: found.map((s) => ({ label: "$" + s.name, description: s.description, insert: `$${s.name} `, start: tok.start, end: e.cursor })) };
+        }
         if (tok.text.startsWith("@") && tok.text.length >= 1) {
             const q = tok.text.slice(1).replace(/^"/, "");
             const found = this.files.search(q, 8);
@@ -1576,7 +1596,8 @@ export class App {
     }
 
     /** `draft` carries the images typed with the prompt (or with the command that built it). */
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command"; draft?: Draft } = {}) {
+    /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files (a skill's instructions are sent as written). */
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command"; draft?: Draft; mentionsIn?: string } = {}) {
         if (!this.agent) {
             this.notice("No model is selected. Pick one with /model (or add an API key with /login).", "error");
             return;
@@ -1606,7 +1627,12 @@ export class App {
                 this.queued.unshift(opts.draft ?? { text: opts.kind === "command" ? (opts.display ?? text) : text, attachments: new Map() });
             } else {
                 const roots = [this.cwd, ...(this.settings.permissions?.additionalDirectories ?? [])];
-                const { parts, attached, notices } = await expandMentions(text, this.toolState, roots, this.checker, { prepare: this.imagePrep });
+                // $name brings that skill's instructions along; the transcript keeps what was typed.
+                const skills = opts.kind === "command" ? [] : skillMentions(text, this.skills);
+                const sent = skills.length ? withSkills(text, skills) : text;
+                const { parts, attached, notices } = await expandMentions(opts.mentionsIn ?? text, this.toolState, roots, this.checker, { prepare: this.imagePrep });
+                parts[0] = { type: "text", text: sent };
+                if (skills.length) this.notice(`Using ${skills.length === 1 ? "skill" : "skills"} ${skills.map((sk) => sk.name).join(", ")}`);
                 parts.push(...images.map((im) => im.part));
                 for (const n of notices) this.notice(n, "warn");
                 if (attached.length) this.notice(`Attached ${attached.join(", ")}`);

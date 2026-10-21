@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, Show, type JSX } from "solid-js";
-import { ArrowUp, FileText, Folder, ListEnd, Paperclip, Pencil, Slash, SquareTerminal, X } from "lucide-solid";
+import { ArrowUp, FileText, Folder, ListEnd, Paperclip, Pencil, Slash, Sparkles, SquareTerminal, X } from "lucide-solid";
 import type { CommandInfo, PermissionModeId } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
 import { interrupt, send, setMode } from "../state/actions";
@@ -18,8 +18,10 @@ import { createComposerDraft } from "../lib/composer-draft";
 
 import { composerStorage } from "../lib/drafts";
 import { composingKey, revealMenuOption } from "../lib/composer-menu";
+import { matchSkills, skillToken } from "../lib/commands";
 
-type MenuItem = { kind: "command"; cmd: CommandInfo } | { kind: "file"; path: string };
+/** `mention`: a skill picked from the $ menu, which goes in where the $ is. */
+type MenuItem = { kind: "command"; cmd: CommandInfo; mention?: boolean } | { kind: "file"; path: string };
 
 export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; /** Tucked under the card, like a drawer (Home's folder and branch). */ strip?: JSX.Element; /** Home: sending to several models at once. */ compare?: CompareOption }) {
     const whileMounted = createLifetimeGuard();
@@ -39,9 +41,13 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     let historyDraft = "";
     const menuId = `composer-menu-${createUniqueId()}`;
     let menuList: HTMLDivElement | undefined;
-    const [menuStatus, setMenuStatus] = createSignal<"loading" | "empty" | "error">();
+    const [menuStatus, setMenuStatus] = createSignal<"loading" | "empty" | "error" | "no-skills">();
     const menuOpen = () => menu().length > 0 || !!menuStatus();
     let commands: CommandInfo[] = [];
+    /** The list came back (not still loading, not failed), so an empty one means there are none. */
+    let commandsLoaded = false;
+    /** Asks for the commands again (a skill added since): set while the composer has a project. */
+    let refetchCommands: (() => void) | undefined;
 
     const h = () => handleFor(p.sessionId);
     const st = () => h()?.view.state;
@@ -102,13 +108,26 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 let current = true;
                 onCleanup(() => { current = false; });
                 commands = [];
+                commandsLoaded = false;
                 // A reply from the previous project or provider must not replace this menu.
-                if (cwd) void rpc.call("commands.list", { cwd, provider }).then((c) => { if (current) commands = c; }).catch(() => undefined);
+                const fetch = () => {
+                    if (cwd) void rpc.call("commands.list", { cwd, provider }).then((c) => {
+                        if (!current) return;
+                        commands = c;
+                        commandsLoaded = true;
+                        // Typed while it loaded: the open menu shows the new list.
+                        if (menuOpen() || /^\/\S*$/.test(text()) || skillAtCursor()) updateMenu(false);
+                    }).catch(() => undefined);
+                };
+                fetch();
+                refetchCommands = fetch;
+                onCleanup(() => { if (refetchCommands === fetch) refetchCommands = undefined; });
             },
         ),
     );
 
-    // ---- menus: /commands at the start, @files at the cursor
+    // ---- menus: /commands at the start, @files and $skills at the cursor
+    const skillAtCursor = () => (ta ? skillToken(text().slice(0, ta.selectionStart ?? text().length)) : undefined);
     const token = () => {
         if (!ta) return undefined;
         const upto = text().slice(0, ta.selectionStart ?? text().length);
@@ -123,16 +142,28 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         setMenu([]);
         setMenuStatus(undefined);
     };
-    const updateMenu = () => {
+    /** `refresh`: a menu that just opened asks the server again, which reads new skills. */
+    const updateMenu = (refresh = true) => {
         dismissMenu();
         const version = mentionVersion;
         const t = text();
         if (menuDismissedFor() === t) return setMenu([]);
+        const skill = skillAtCursor();
+        if (refresh && (t === "/" || (skill && !skill.query))) refetchCommands?.();
+        if (skill && !(/^\/\S*$/.test(t))) {
+            const items = matchSkills(commands, skill.query).map((cmd) => ({ kind: "command" as const, cmd, mention: true }));
+            setMenu(items.length === 1 && items[0]!.cmd.name === skill.query ? [] : items);
+            setMenuSel(0);
+            // A lone $ asks for skills; with none, say how to add one (a price like $5 just closes the menu).
+            if (!items.length && t.trim() === "$" && commandsLoaded && !commands.some((c) => c.skill)) setMenuStatus("no-skills");
+            return;
+        }
         if (/^\/\S*$/.test(t)) {
             const q = t.slice(1).toLowerCase();
             const items = commands
                 .filter((c) => c.name.startsWith(q) || (q.length > 1 && c.name.includes(q)))
-                .slice(0, 8)
+                // The menu scrolls: skills and custom commands after the built-ins stay reachable.
+                .slice(0, 100)
                 .map((cmd) => ({ kind: "command" as const, cmd }));
             setMenu(items.length === 1 && `/${items[0]!.cmd.name}` === t ? [] : items);
             setMenuSel(0);
@@ -160,7 +191,16 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     onCleanup(dismissMenu);
 
     const apply = (item: MenuItem, run: boolean) => {
-        if (item.kind === "command") {
+        if (item.kind === "command" && item.mention) {
+            const tok = skillAtCursor();
+            if (!tok || !ta) return;
+            const end = ta.selectionStart ?? text().length;
+            const ins = `$${item.cmd.name} `;
+            setText(text().slice(0, tok.start) + ins + text().slice(end));
+            const pos = tok.start + ins.length;
+            dismissMenu();
+            requestAnimationFrame(() => ta!.setSelectionRange(pos, pos));
+        } else if (item.kind === "command") {
             const next = `/${item.cmd.name}${item.cmd.args ? " " : ""}`;
             setText(next);
             dismissMenu();
@@ -332,7 +372,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const placeholder = () => {
         if (shell()) return "Run a shell command";
         if (busy()) return "Queue a message for the next step…";
-        return p.placeholder ?? "Ask, plan, or describe a change…  (@ for files, / for commands)";
+        return p.placeholder ?? "Ask, plan, or describe a change…  (@ files, / commands, $ skills)";
     };
     const hasContent = () => Boolean(text().trim() || attachments().length);
     const canSend = createMemo(() => hasContent() && !blocked());
@@ -418,12 +458,15 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                 >
                                     {(c) => (
                                         <>
-                                            <span class="cm-icon">
-                                                <Slash size={13} />
+                                            <span class={`cm-icon ${c().cmd.skill ? "skill" : ""}`}>
+                                                <Show when={c().cmd.skill} fallback={<Slash size={13} />}>
+                                                    <Sparkles size={13} />
+                                                </Show>
                                             </span>
                                             <span class="cm-name mono">
+                                                {c().mention ? "$" : ""}
                                                 {c().cmd.name}
-                                                <Show when={c().cmd.args}>
+                                                <Show when={c().cmd.args && !c().mention}>
                                                     <span class="cm-args"> {c().cmd.args}</span>
                                                 </Show>
                                             </span>
@@ -436,7 +479,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     </For>
                     <Show when={menuStatus()}>
                         <div class="cm-status" role="status">
-                            {menuStatus() === "loading" ? "Searching…" : menuStatus() === "empty" ? "No matching files" : "Could not search files"}
+                            {menuStatus() === "loading" ? "Searching…" : menuStatus() === "empty" ? "No matching files" : menuStatus() === "no-skills" ? (
+                                <>No skills yet. Add one as <span class="mono">&lt;name&gt;/SKILL.md</span> in <span class="mono">~/.harness/skills</span> or the project's <span class="mono">.harness/skills</span>.</>
+                            ) : "Could not search files"}
                         </div>
                     </Show>
                 </div>
@@ -469,7 +514,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                             if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key) && !composingKey(e)) updateMenu();
                         }}
                         onPaste={onPaste}
-                        onClick={updateMenu}
+                        onClick={() => updateMenu()}
                         aria-label="Message"
                         role="combobox"
                         aria-autocomplete="list"
