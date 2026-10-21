@@ -13,7 +13,7 @@ import { setDeleteRequest, setPaletteOpen, setSettingsTab } from "../state/ui";
 import { ago, monogram, projectColor, since } from "../lib/format";
 import { holdSidebar, sidebarEntries, sidebarIds, SESSION_PAGE, type SidebarEntry } from "../lib/session-order";
 import { sessionStatus } from "../lib/session-status";
-import { groupCounts, railFoot, railGlyph, type RailGlyph } from "../lib/rail";
+import { groupCounts, railFoot, railGlyph, type RailGlyph, type RailPlan } from "../lib/rail";
 import { setSidebarOrder } from "../state/sidebar";
 import { now } from "../lib/clock";
 import { isTauri, os } from "../lib/platform";
@@ -154,6 +154,11 @@ function RowEnd(p: { s: SessionSummary; unread: boolean }) {
             <span class="when">{p.s.status === "running" ? "now" : (now(), since(p.s.updatedAt))}</span>
         </Show>
     );
+}
+
+/** A plan's usage ring: empty until the plan has reported. */
+function PlanRing(p: { plan: RailPlan; small?: boolean }) {
+    return <span class={`meter tone-${p.plan.tone} ${p.small ? "sm" : ""} ${p.plan.pct === undefined ? "unknown" : ""} ${p.plan.stale ? "stale" : ""}`} style={{ "--v": p.plan.pct ?? 0 }} role="img" aria-label={`${p.plan.name}: ${p.plan.pct === undefined ? "usage not known yet" : `${p.plan.pct}% used`}${p.plan.stale ? " when last reported" : ""}`} />;
 }
 
 function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) => void; grouped: boolean }) {
@@ -343,11 +348,13 @@ export function Sidebar() {
     // Grouped by project, a row needn't name its project: the heading above it does.
     const grouped = () => prefs.groupBy === "project" && !showArchived();
     const settledCount = () => app.sessions.filter((s) => s.settled).length;
-    // The plan of the session in view (else the latest to report), or the connection when no plan has.
-    const foot = createMemo(() => {
+    // Providers by the sessions that used them, most recent first: the plan used last leads when no session is open.
+    const recent = createMemo(() => [...new Set([...app.sessions].sort((a, b) => b.updatedAt - a.updatedAt).map((s) => modelOf(s)?.split(":")[0]).filter((p): p is string => Boolean(p)))]);
+    // The signed-in plans (Claude Code, Codex): the session in view's first, else the one used last.
+    const plans = createMemo(() => {
         const st = handleFor(app.activeId)?.view.state;
         const provider = st?.model?.provider;
-        return railFoot({ conn: app.conn, limits: app.limits, providers: app.providers, provider, account: provider ? st?.accounts?.[provider] : undefined, now: now() });
+        return railFoot({ limits: app.limits, providers: app.providers, provider, account: provider ? st?.accounts?.[provider] : undefined, recent: recent(), now: now() });
     });
     const held = () => (hovered() && !manualLayout()) || locked().size > 0;
     const layout = createMemo<SidebarEntry[]>((previous) => {
@@ -504,17 +511,31 @@ export function Sidebar() {
                 </Show>
             </nav>
 
-            <div class="side-foot">
-                <Show when={foot().pct !== undefined} fallback={<span class="foot-mark"><span class={`conn conn-${app.conn}`} /></span>}>
-                    <span class={`meter tone-${foot().tone}`} style={{ "--v": foot().pct }} role="img" aria-label={`${foot().pct}% used`} />
+            <div class={`side-foot ${plans().length > 1 ? "two" : ""}`}>
+                <Show when={plans().length > 1} fallback={
+                    <Show when={plans()[0]} fallback={<span class="who" />}>{(plan) => (
+                        <>
+                            <PlanRing plan={plan()} />
+                            <span class="who" title={plan().detail}>
+                                <b>
+                                    <ProviderIcon id={plan().provider} size={13} />
+                                    <span class="truncate">{plan().name}</span>
+                                </b>
+                                <span class="truncate">{plan().line}</span>
+                            </span>
+                        </>
+                    )}</Show>
+                }>
+                    <span class="plans">
+                        <For each={plans()}>{(plan) => (
+                            <span class="plan" title={plan.detail}>
+                                <PlanRing plan={plan} small />
+                                <ProviderIcon id={plan.provider} name={plan.name} size={12} />
+                                <span class="truncate">{plan.brief}</span>
+                            </span>
+                        )}</For>
+                    </span>
                 </Show>
-                <span class="who" title={app.hello ? `${app.hello.user}@${app.hello.host}\n${app.hello.home}` : undefined}>
-                    <b>
-                        <Show when={foot().provider}>{(id) => <ProviderIcon id={id()} size={13} />}</Show>
-                        <span class="truncate">{foot().name}</span>
-                    </b>
-                    <span class="truncate">{foot().line}</span>
-                </span>
                 <button class="hb lg" title={withShortcut("Settings", "app:settings")} aria-label="Settings" onClick={() => setSettingsTab("general")}>
                     <Settings size={16} />
                 </button>

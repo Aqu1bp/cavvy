@@ -539,7 +539,9 @@
     outline: none;
 }
 
-/* ---- Footer: the plan's usage, and Settings ---------------------------- */
+/* ---- Footer: the plans' usage, and Settings ----------------------------
+   One plan: the mockup's ring and two lines. Claude Code and Codex both
+   signed in: a row each, in about the same height. */
 
 .side-foot {
     display: flex;
@@ -569,12 +571,16 @@
     --tone: var(--danger);
 }
 
-.foot-mark {
-    display: grid;
-    place-items: center;
-    width: 26px;
-    height: 26px;
-    flex: none;
+/* Not reported yet: the ring's track alone, with no share implied. */
+.sidebar .meter.unknown {
+    background: color-mix(in srgb, var(--rail-fg) 12%, transparent);
+}
+
+.sidebar .meter.sm {
+    width: 16px;
+    height: 16px;
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+    mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
 }
 
 .side-foot .who {
@@ -602,36 +608,38 @@
     color: var(--rail-fg-2);
 }
 
-/* The Settings rail's footer (Settings.tsx): where the server runs, its dot where the ring would be. */
-.side-foot-text {
+.side-foot .plans {
+    flex: 1;
     min-width: 0;
-    color: var(--rail-fg-2);
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
 }
 
-.side-foot > .conn {
-    margin: 0 9.5px;
+.side-foot .plan {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    line-height: 1.25;
 }
 
-.sidebar .conn {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--fg-4);
+.side-foot .plan .meter {
+    margin-right: 2px;
+}
+
+.side-foot .plan svg {
     flex: none;
 }
 
-.sidebar .conn-open {
-    background: var(--ok);
+.side-foot .plan > span:last-child {
+    font-size: 0.821rem;
+    color: var(--rail-fg-2);
 }
 
-.sidebar .conn-connecting,
-.sidebar .conn-reconnecting {
-    background: var(--warn);
-}
-
-.sidebar .conn-unauthorized,
-.sidebar .conn-unavailable {
-    background: var(--danger);
+/* Figures from a while ago (a row has no room to say "as of"; its tooltip does). */
+.side-foot .plan .meter.stale {
+    opacity: 0.55;
 }
 
 /* ---- Settings: its sections take the list's place ---------------------- */

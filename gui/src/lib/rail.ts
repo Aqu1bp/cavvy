@@ -1,11 +1,11 @@
 // What the session rail shows, as plain functions of the server's data (no DOM,
 // so they're tested from test/): a row's status glyph, the counts on its group
-// headings, and the plan line in its footer.
+// headings, and the plans in its footer.
 
 import type { PlanLimits, ProviderInfo, SessionSummary } from "@shared/protocol";
 import { planLimitKey } from "../../../src/server/protocol";
 import type { SidebarEntry } from "./session-order";
-import { meterOf } from "./limits";
+import { meterOf, resetLabel, windowLine } from "./limits";
 
 /** The glyph at the start of a row: working, waiting for you, finished since you looked, stopped, or quiet. */
 export type RailGlyph = "running" | "waiting" | "done" | "error" | "new" | "idle";
@@ -37,49 +37,80 @@ export function groupCounts(entries: readonly SidebarEntry[]): Map<string, numbe
     return counts;
 }
 
-export interface RailFoot {
+/** One plan in the rail's footer: a Claude Code or Codex subscription that's signed in. */
+export interface RailPlan {
     /** The plan's provider, for its mark. */
-    provider?: string;
-    /** 0-100 for the ring; undefined shows the connection dot instead. */
+    provider: string;
+    /** "Claude Code Max", "Codex Plus"; what the CLI calls its plan ("Claude subscription") when it hasn't said which. */
+    name: string;
+    /** 0-100 for the ring; undefined leaves it empty (nothing reported yet, or every window has reset since). */
     pct?: number;
     /** The ring's tint: a reached or nearly reached limit warns. */
     tone: "normal" | "warn" | "danger";
-    /** "Claude Code Max", "ChatGPT plan", or "This computer" when no plan has reported. */
-    name: string;
-    /** "62% of the 5-hour limit", "Limit reached", or the connection when no plan has reported. */
+    /**
+     * Short enough for the rail (about 24 characters): "62% of the 5-hour limit", "5-hour 62% as of 2:02 PM"
+     * (reported a while ago), "Reached, resets 4:40 PM", "Usage shows after a turn".
+     */
     line: string;
+    /** The line for a row beside another plan's, which has no room for the age: "62% of the 5-hour limit". */
+    brief: string;
+    /** Reported a while ago (or before a window reset): the figures may be out of date. */
+    stale: boolean;
+    /** The tooltip: the plan and account, then each window. */
+    detail: string;
 }
 
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /**
- * The plan to show: the session in view's own provider and account when it's on
- * a plan that has reported its limits, else the plan that reported most recently.
+ * The plans to show, the one that matters first: the open session's when it's
+ * on Claude Code or Codex, else the one used most recently. Only CLIs turned on
+ * and signed in to a plan count (an API key, or an API provider, has no plan
+ * limits); none gives an empty list.
  */
 export function railFoot(o: {
-    conn: string;
     limits: Record<string, PlanLimits>;
     providers: readonly ProviderInfo[];
     /** The open session's provider and account, if any. */
     provider?: string;
     account?: string;
+    /** Providers by the sessions that used them, most recent first. */
+    recent?: readonly string[];
     now: number;
-}): RailFoot {
-    const offline = o.conn !== "open";
-    const own = o.provider ? o.limits[planLimitKey(o.provider, o.account)] : undefined;
-    const latest = Object.values(o.limits).filter((l) => l.windows.length || l.reached).sort((a, b) => b.at - a.at)[0];
-    const limits = own && (own.windows.length || own.reached) ? own : latest;
-    const meter = meterOf(limits, o.now);
-    if (!limits || !meter) return { tone: "normal", name: "This computer", line: offline ? "Reconnecting…" : "Connected" };
-    const info = o.providers.find((p) => p.id === limits.provider);
-    const account = info?.agentCli?.accounts?.find((a) => a.id === (limits.accountId ?? info.agentCli?.defaultAccount ?? "default"));
-    const name = account?.plan ? `${info!.name} ${capital(account.plan)}` : info?.agentCli?.plan ?? info?.name ?? limits.provider;
-    // The window nearest its limit is the one that matters now; one that has reset since the report says nothing.
-    const reset = (i: number) => (limits.windows[i]?.resetsAt ?? Infinity) <= o.now;
-    const top = meter.windows.filter((w, i) => w.pct !== undefined && !reset(i)).sort((a, b) => b.pct! - a.pct!)[0];
-    const pct = meter.reached ? 100 : top?.pct;
-    const line = offline ? "Reconnecting…"
-        : meter.reached ? `Limit reached${meter.resets ? `, resets ${meter.resets}` : ""}`
-        : top ? `${top.pct}% of the ${top.label.toLowerCase()} limit${meter.asOf ? `, ${meter.asOf}` : ""}` : "Plan limits";
-    return { provider: limits.provider, pct, tone: meter.reached || (pct ?? 0) >= 85 ? "danger" : (pct ?? 0) >= 70 ? "warn" : "normal", name, line };
+}): RailPlan[] {
+    const rank = (id: string) => {
+        const i = o.recent?.indexOf(id) ?? -1;
+        return i < 0 ? Infinity : i;
+    };
+    const plans = o.providers.flatMap((info) => {
+        const cli = info.agentCli;
+        if (!cli || !info.configured || !cli.installed) return [];
+        const accountId = (info.id === o.provider ? o.account : undefined) ?? cli.defaultAccount ?? "default";
+        const account = cli.accounts?.find((a) => a.id === accountId);
+        if (account?.signedIn === false || account?.apiKey) return [];
+        return [{ info, account, limits: o.limits[planLimitKey(info.id, accountId)] }];
+    });
+    plans.sort((a, b) => Number(b.info.id === o.provider) - Number(a.info.id === o.provider) || rank(a.info.id) - rank(b.info.id) || (b.limits?.at ?? 0) - (a.limits?.at ?? 0));
+    return plans.map(({ info, account, limits }) => {
+        const plan = account?.plan ? capital(account.plan) : undefined;
+        const name = plan ? `${info.name} ${plan}` : info.agentCli!.plan;
+        const meter = meterOf(limits, o.now);
+        const many = (info.agentCli!.accounts?.length ?? 0) > 1;
+        const who = [many ? account?.name : undefined, account?.email].filter(Boolean).join(", ");
+        const head = who ? `${name} (${who})` : name;
+        if (!limits || !meter) return { provider: info.id, name, tone: "normal" as const, line: "Usage shows after a turn", brief: "Usage shows after a turn", stale: false, detail: `${head}\nNo usage reported yet: it shows after your first turn.` };
+        // The window nearest its limit is the one that matters now; one that has reset since the report says nothing.
+        const reset = (i: number) => (limits.windows[i]?.resetsAt ?? Infinity) <= o.now;
+        const top = meter.windows.filter((w, i) => w.pct !== undefined && !reset(i)).sort((a, b) => b.pct! - a.pct!)[0];
+        const pct = meter.reached ? 100 : top?.pct;
+        // When it was reported, and when a reached limit lifts, as briefly as can be: "2:02 PM", "Mon".
+        const reported = resetLabel(limits.at, o.now);
+        const lifts = meter.resets?.replace(/, in .*$/, "").replace(/^(.+?) \d{1,2}[:.]\d{2}.*$/, "$1");
+        const brief = meter.reached ? `Reached${lifts ? `, resets ${lifts}` : ""}`
+            : top ? `${top.pct}% of the ${top.label.toLowerCase()} limit`
+            : `Reset since ${reported}`;
+        const line = !meter.reached && top && meter.asOf ? `${top.label} ${top.pct}% as of ${reported}` : brief;
+        const detail = [head, ...meter.windows.map(windowLine), meter.asOf ? capital(meter.asOf) : undefined].filter(Boolean).join("\n");
+        return { provider: info.id, name, pct, tone: meter.reached || (pct ?? 0) >= 85 ? "danger" as const : (pct ?? 0) >= 70 ? "warn" as const : "normal" as const, line, brief, stale: Boolean(meter.asOf), detail };
+    });
 }

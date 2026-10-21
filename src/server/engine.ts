@@ -30,7 +30,8 @@ import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
 import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
-import { checkAgentCli, vendorOf } from "../backends/index";
+import { checkAgentPlan, vendorOf, type AgentCliStatus } from "../backends/index";
+import { loadPlanLimits, savePlanLimits } from "./limits-store";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
@@ -368,6 +369,8 @@ export class Engine {
 
     async start() {
         void this.firstListings();
+        this.loadLimits();
+        void this.checkPlans();
         // Every window applies a save of the keybindings file at once.
         this.stopKeybindings = watchKeybindings((r) => this.broadcast({ type: "keybindings.changed", keybindings: { path: keybindingsPath(), ...r } }));
         this.reopenScheduled();
@@ -399,6 +402,7 @@ export class Engine {
 
     async stop() {
         this.stopping = true;
+        this.planChecks.abort();
         for (const pending of this.openingTerminals.values()) pending.cancelled = true;
         const terminalsStopped = this.terminals.stop();
         clearInterval(this.purgeTimer);
@@ -408,6 +412,7 @@ export class Engine {
         await Promise.all([...this.runtimes.values()].map((r) => r.close().catch(() => undefined)).concat([...this.closing.values()]));
         await terminalsStopped;
         await Promise.race([Promise.all([...this.workspaces.values()].map((w) => w.mcp.closeAll().catch(() => undefined))), new Promise((r) => setTimeout(r, 1500))]);
+        await Promise.race([this.checkingPlans, new Promise((r) => setTimeout(r, 1500))]);
         this.unregisterAccountRoots();
     }
 
@@ -1432,10 +1437,70 @@ export class Engine {
         if (prev && prev.at > limits.at) return;
         const merged = mergeLimits(prev, limits, partial);
         this.limits.set(key, merged);
+        this.saveLimits();
         this.broadcast({ type: "limits", limits: merged });
     }
 
+    /** The limits saved when the server last ran, for accounts that still exist; shown with their age until a newer report. */
+    private loadLimits() {
+        for (const l of loadPlanLimits()) {
+            if (!(ACCOUNT_PROVIDERS as readonly string[]).includes(l.provider) || !listAccounts(l.provider).some((a) => a.id === (l.accountId ?? "default"))) continue;
+            const key = planLimitKey(l.provider, l.accountId);
+            const prev = this.limits.get(key);
+            if (!prev || prev.at < l.at) this.limits.set(key, l);
+        }
+    }
+
+    private saveLimits() {
+        try {
+            savePlanLimits([...this.limits.values()]);
+        } catch (e) {
+            this.log(`Couldn't save plan limits: ${(e as Error).message}`);
+        }
+    }
+
+    private readonly planChecks = new AbortController();
+    private checkingPlans: Promise<void> = Promise.resolve();
+
+    /**
+     * Without a turn: is each account of a CLI in use signed in, on what plan,
+     * and, for Codex on a ChatGPT plan, where its limits stand (Claude Code says
+     * only in a turn). At start; Settings' account checks and turning a CLI on
+     * ask the same (accountsList, connectCli).
+     */
+    private checkPlans(): Promise<void> {
+        const run = async () => {
+            const checks = ACCOUNT_PROVIDERS.filter((provider) => readAgentConfig(provider) && findCli(provider, provider === "codex" ? CODEX_CLI : CLAUDE_CLI))
+                .flatMap((provider) => listAccounts(provider).filter((a) => !a.invalid).map((a) => ({ provider, id: a.id })));
+            const changed = await Promise.all(checks.map(async ({ provider, id }) => {
+                if (this.stopping) return false;
+                try {
+                    const { status, limits } = await checkAgentPlan(provider, this.planChecks.signal, id);
+                    if (this.stopping) return false;
+                    if (limits) this.limitsReported(limits, false);
+                    return this.noteStatus(provider, id, status);
+                } catch {
+                    // Left as it was: Settings asks again.
+                    return false;
+                }
+            }));
+            if (changed.some(Boolean) && !this.stopping) this.broadcast({ type: "models.changed" });
+        };
+        const p = this.checkingPlans.then(run, run).catch(() => undefined);
+        this.checkingPlans = p;
+        return p;
+    }
+
     private accountStatus = new Map<string, Partial<AccountInfo>>();
+
+    /** What the CLI said of an account's sign-in; true when that's news. */
+    private noteStatus(provider: string, id: string, status: AgentCliStatus): boolean {
+        const key = `${provider}:${id}`;
+        const next: Partial<AccountInfo> = { signedIn: status.signedIn, description: status.description, email: status.email, plan: status.plan, apiKey: status.apiKey };
+        if (JSON.stringify(next) === JSON.stringify(this.accountStatus.get(key))) return false;
+        this.accountStatus.set(key, next);
+        return true;
+    }
 
     private accountProjects(): string[] {
         return [
@@ -1452,8 +1517,10 @@ export class Engine {
             const key = `${provider}:${a.id}`;
             if (refresh) {
                 try {
-                    const status = await checkAgentCli(provider, undefined, a.id);
-                    this.accountStatus.set(key, { signedIn: status.signedIn, description: status.description, email: status.email, plan: status.plan });
+                    // Codex on a plan says where its limits stand from the same app-server.
+                    const { status, limits } = await checkAgentPlan(provider, undefined, a.id);
+                    this.noteStatus(provider, a.id, status);
+                    if (limits) this.limitsReported(limits, false);
                 } catch (e) {
                     this.accountStatus.set(key, { description: redact((e as Error).message).slice(0, 400) });
                 }
@@ -1530,12 +1597,14 @@ export class Engine {
     private async connectCli(providerId: string): Promise<{ description: string; warning?: string; model?: string }> {
         const def = getProvider(providerId);
         if (def?.auth !== "cli") throw new RpcError(`${providerId} isn't used through a CLI`);
-        const st = await checkAgentCli(def.id);
+        const { status: st, limits } = await checkAgentPlan(def.id);
         if (!st.installed) throw new RpcError(`${def.name} isn't installed. ${st.installHint}, sign in with \`${st.signIn}\`, then try again.`, "not_installed");
         if (!st.signedIn) throw new RpcError(`${def.name} isn't signed in. Run \`${st.signIn}\` in a terminal (${vendorOf(def.id)}'s own sign-in), then try again.`, "not_signed_in");
         saveAgentConfig(def.id);
         forgetClient(def.id);
         await this.afterKeyChange(def.id);
+        this.noteStatus(def.id, "default", st);
+        if (limits) this.limitsReported(limits, false);
         return { description: st.description, warning: st.apiKey ? `${def.name} is signed in with an API key, so usage is billed to that key, not a subscription.` : undefined, model: this.adoptDefaultModel(def.id) };
     }
 
@@ -2199,6 +2268,7 @@ export class Engine {
                 removeAccount(provider, id, str(p.confirmedFolder, "confirmedFolder"), this.accountProjects());
                 this.accountStatus.delete(`${provider}:${id}`);
                 this.limits.delete(planLimitKey(provider, id));
+                this.saveLimits();
                 this.broadcast({ type: "limits", limits: { provider, accountId: id, windows: [], reached: false, at: Date.now() } });
                 this.broadcast({ type: "models.changed" });
                 return null;

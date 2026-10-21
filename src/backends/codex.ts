@@ -176,6 +176,28 @@ export async function codexAccount(providerId = "codex", signal?: AbortSignal, a
     }
 }
 
+/**
+ * How Codex is signed in and, on a ChatGPT plan, where its limits stand
+ * (account/read, then account/rateLimits/read), without a turn: one
+ * app-server, stopped once it has answered. An API key has no plan limits.
+ */
+export async function codexPlan(providerId = "codex", signal?: AbortSignal, accountId = "default"): Promise<{ account: CodexAccount; limits?: PlanLimits }> {
+    const rpc = await connect(providerId, homedir(), signal, accountId);
+    const kill = () => void rpc.proc.kill();
+    signal?.addEventListener("abort", kill, { once: true });
+    try {
+        const account = parseAccount(await withTimeout(rpc.request("account/read", {}), 20_000, "Codex didn't answer account/read"));
+        if (account.type !== "chatgpt") return { account };
+        const at = Date.now();
+        // An older CLI may have no read; its limits then come with its turns.
+        const report = await withTimeout(rpc.request("account/rateLimits/read", { excludeResetCreditDetails: true }), 10_000, "Codex did not report plan limits").catch(() => undefined);
+        return { account, limits: parseCodexRateLimits(report, { at, accountId })?.limits };
+    } finally {
+        signal?.removeEventListener("abort", kill);
+        void rpc.proc.kill();
+    }
+}
+
 function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
     let timer: ReturnType<typeof setTimeout>;
     return Promise.race([p, new Promise<T>((_, reject) => (timer = setTimeout(() => reject(new ProviderError(message)), ms)))]).finally(() => clearTimeout(timer));

@@ -4,7 +4,8 @@ import { accountEnv } from "../providers/accounts";
 import type { ProviderDef } from "../providers/registry";
 import type { AgentBackendClient } from "./types";
 import { ClaudeCodeBackend, claudeStatus, describeClaudeAuth } from "./claude-code";
-import { CodexBackend, codexAccount, describeCodexAuth } from "./codex";
+import { CodexBackend, codexAccount, codexPlan, describeCodexAuth, type CodexAccount } from "./codex";
+import type { PlanLimits } from "../server/protocol";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "./cli";
 
 export function createBackend(def: ProviderDef): AgentBackendClient {
@@ -43,17 +44,30 @@ export interface AgentCliStatus {
  * credential files.
  */
 export async function checkAgentCli(providerId: string, signal?: AbortSignal, accountId?: string): Promise<AgentCliStatus> {
+    return (await checkCli(providerId, signal, accountId, false)).status;
+}
+
+/**
+ * As checkAgentCli, and for Codex on a ChatGPT plan, where its limits stand
+ * (from the same app-server). Claude Code reports its limits only in a turn.
+ */
+export async function checkAgentPlan(providerId: string, signal?: AbortSignal, accountId?: string): Promise<{ status: AgentCliStatus; limits?: PlanLimits }> {
+    return checkCli(providerId, signal, accountId, true);
+}
+
+async function checkCli(providerId: string, signal: AbortSignal | undefined, accountId: string | undefined, limits: boolean): Promise<{ status: AgentCliStatus; limits?: PlanLimits }> {
     accountEnv(providerId, accountId);
     const cli = providerId === "codex" ? CODEX_CLI : CLAUDE_CLI;
     const base = { signIn: cli.signIn, signOut: providerId === "codex" ? "codex logout" : "claude auth logout", installHint: cli.install };
     const path = findCli(providerId, cli);
-    if (!path) return { ...base, installed: false, signedIn: false, description: "not installed" };
+    if (!path) return { status: { ...base, installed: false, signedIn: false, description: "not installed" } };
     if (providerId === "codex") {
-        const a = await codexAccount(providerId, signal, accountId);
-        return { ...base, installed: true, path, signedIn: Boolean(a.type) || !a.requiresAuth, description: describeCodexAuth(a), apiKey: a.type === "apiKey", email: a.email, plan: a.planType };
+        const plan: { account: CodexAccount; limits?: PlanLimits } = limits ? await codexPlan(providerId, signal, accountId) : { account: await codexAccount(providerId, signal, accountId) };
+        const a = plan.account;
+        return { status: { ...base, installed: true, path, signedIn: Boolean(a.type) || !a.requiresAuth, description: describeCodexAuth(a), apiKey: a.type === "apiKey", email: a.email, plan: a.planType }, limits: plan.limits };
     }
     const s = await claudeStatus(providerId, signal, accountId);
-    return { ...base, installed: true, path, signedIn: s.loggedIn, description: describeClaudeAuth(s), apiKey: s.authMethod === "api_key", email: s.email, plan: s.subscriptionType };
+    return { status: { ...base, installed: true, path, signedIn: s.loggedIn, description: describeClaudeAuth(s), apiKey: s.authMethod === "api_key", email: s.email, plan: s.subscriptionType } };
 }
 
 /** What a vendor's own sign-in is called, for messages. */
