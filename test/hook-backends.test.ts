@@ -110,7 +110,7 @@ describe("Claude Code runs the harness's tool hooks itself", () => {
         const { run, events, session } = await makeAgent("claude-code", settings);
         expect(await run("test it")).toBe("done");
         const init = received().find((m) => m.request?.subtype === "initialize")!.request;
-        expect(init.hooks).toEqual({ PreToolUse: [{ matcher: "Bash", hookCallbackIds: ["harness_0"], timeout: 60 }] });
+        expect(init.hooks).toEqual({ PreToolUse: [{ matcher: "Bash|Monitor", hookCallbackIds: ["harness_0"], timeout: 60 }] });
         expect(toolEnds(events)[0]!.result).toMatchObject({ isError: true, content: "no npm here" });
         // The handler saw Claude Code's input, under the harness's session id (Claude Code's is kept beside it).
         const [input] = jsonl(seen);
@@ -140,14 +140,14 @@ describe("Claude Code runs the harness's tool hooks itself", () => {
         const { run } = await makeAgent("claude-code", settings);
         expect(await run("test it")).toBe("done");
         const init = received().find((m) => m.request?.subtype === "initialize")!.request;
-        expect(init.hooks).toEqual({ PreToolUse: [{ matcher: "Bash", hookCallbackIds: ["harness_0"], timeout: 60 }] });
+        expect(init.hooks).toEqual({ PreToolUse: [{ matcher: "Bash|Monitor", hookCallbackIds: ["harness_0"], timeout: 60 }] });
         const argv = logLines()[0].argv as string[];
         const given = JSON.parse(argv[argv.indexOf("--settings") + 1]!);
         // A harness model reference (provider:model) is left to Claude Code's default.
         expect(given.hooks).toEqual({
             PreToolUse: [
-                { matcher: "Bash", hooks: [{ type: "prompt", prompt: "Refuse rm. $ARGUMENTS", timeout: 30, model: "haiku", if: "Bash(rm *)" }] },
-                { matcher: "Bash", hooks: [{ type: "prompt", prompt: "p2", timeout: 9 }] },
+                { matcher: "Bash|Monitor", hooks: [{ type: "prompt", prompt: "Refuse rm. $ARGUMENTS", timeout: 30, model: "haiku", if: "Bash(rm *)" }] },
+                { matcher: "Bash|Monitor", hooks: [{ type: "prompt", prompt: "p2", timeout: 9 }] },
             ],
         });
     });

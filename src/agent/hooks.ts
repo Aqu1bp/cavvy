@@ -156,6 +156,15 @@ function fileMatches(m: string, file: string): boolean {
     return names.some((n) => (isAbsolute(n) ? n === file : n.includes("/") ? file.endsWith(`/${n.replace(/^\.\//, "")}`) : n === basename(file)));
 }
 
+/**
+ * A tool event's matcher for a backend that matches hooks itself (Claude Code): one that covers Bash
+ * covers Monitor too, as hookApplies does, since a Monitor command runs like a Bash one.
+ */
+export function backendMatcher(event: string, m: string | undefined): string | undefined {
+    if (!m || MATCH_FIELD[event as HookEvent] !== "tool_name" || !matcherFn(m)("Bash") || matcherFn(m)("Monitor")) return m;
+    return /^[A-Za-z0-9_\-, |]+$/.test(m) ? `${m}|Monitor` : `(?:${m})|^Monitor$`;
+}
+
 /** Does this handler run for this occurrence of the event? */
 export function hookApplies(h: HookConfig, event: HookEvent, payload: Record<string, unknown>, cwd: string): boolean {
     const field = MATCH_FIELD[event];

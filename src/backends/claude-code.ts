@@ -26,7 +26,7 @@
 // the CLI's environment (childEnv), so it can't be pointed at one of those.
 
 import type { HookConfig } from "../config/settings";
-import { claudeCodeHookOutput, type HookEvent } from "../agent/hooks";
+import { backendMatcher, claudeCodeHookOutput, type HookEvent } from "../agent/hooks";
 import { homedir } from "os";
 import type { AssistantMessage, ChatRequest, ModelInfo, Usage } from "../providers/types";
 import { ONE_OFF_TIMEOUT_MS, oneOffAnswer, oneOffPrompt, oneOffRefusal } from "./one-off";
@@ -207,7 +207,7 @@ export function claudePromptHooks(hooks: BackendTurn["hooks"]): { hooks?: Record
         const groups = list
             .filter((h) => h.type === "prompt" && h.prompt)
             .map((h) => ({
-                ...(h.matcher ? { matcher: h.matcher } : {}),
+                ...(h.matcher ? { matcher: backendMatcher(event, h.matcher) } : {}),
                 hooks: [{ type: "prompt", prompt: h.prompt, timeout: h.timeout ?? 30, ...(h.model && !h.model.includes(":") ? { model: h.model } : {}), ...(h.if ? { if: h.if } : {}), ...(h.statusMessage ? { statusMessage: h.statusMessage } : {}) }],
             }));
         if (groups.length) out[event] = groups;
@@ -1335,7 +1335,7 @@ class ClaudeTurn {
             hooks[event] = called.map((hook) => {
                 const id = `harness_${n++}`;
                 this.hookCallbacks.set(id, { event, hook });
-                return { ...(hook.matcher ? { matcher: hook.matcher } : {}), hookCallbackIds: [id], timeout: hook.timeout ?? 60 };
+                return { ...(hook.matcher ? { matcher: backendMatcher(event, hook.matcher) } : {}), hookCallbackIds: [id], timeout: hook.timeout ?? 60 };
             });
         }
         return n ? { hooks } : {};

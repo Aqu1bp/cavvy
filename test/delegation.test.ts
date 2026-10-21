@@ -1387,7 +1387,8 @@ describe("Monitor for Codex (it has none of its own)", () => {
         process.env.FAKE_SCENARIO = "mcp";
         calls([{ tool: "monitor", args: { command: "touch started; tail -f app.log", description: "errors" } }]);
         const declined = await makeAgent({ provider: "codex", wakes: true, ask: () => ({ allow: false }) });
-        expect(await declined.run("watch")).toBe("done");
+        // The user said no: the turn ends there, as when they decline one of Codex's own commands.
+        expect(await declined.run("watch")).toBe("denied");
         expect(mcpResults()[0]).toMatchObject({ tool: "monitor", isError: true });
         expect(mcpResults()[0].text).toContain("declined");
         expect(monitors(declined.agent)).toHaveLength(0);
@@ -1453,6 +1454,32 @@ describe("Monitor for Codex (it has none of its own)", () => {
             expect(monitors(agent)).toHaveLength(1);
         } finally {
             stopWatchers(agent.state);
+        }
+    });
+
+    test("a stop from a hook on Codex's call ends Codex's turn, as on its own calls", async () => {
+        const say = (o: unknown) => `echo '${JSON.stringify(o)}'`;
+        const cases: [Record<string, unknown>, string][] = [
+            [{ PermissionRequest: [{ matcher: "Monitor", command: say({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "deny", message: "not now", interrupt: true } } }) }] }, "denied"],
+            [{ PreToolUse: [{ matcher: "Monitor", command: say({ continue: false, stopReason: "budget spent" }) }] }, "blocked"],
+            [{ PostToolUse: [{ matcher: "Monitor", command: say({ continue: false, stopReason: "budget spent" }) }] }, "blocked"],
+        ];
+        for (const [hooks, reason] of cases) {
+            process.env.FAKE_SCENARIO = "mcp";
+            rmSync(LOG, { force: true });
+            calls([
+                { tool: "monitor", args: { command: "touch started; sleep 30", description: "first" } },
+                { tool: "monitor", args: { command: "touch again; sleep 30", description: "second" } },
+            ]);
+            const { run, agent } = await makeAgent({ provider: "codex", wakes: true, settings: { hooks } });
+            try {
+                expect(await run("watch")).toBe(reason);
+                expect(received().some((m) => m.method === "turn/interrupt")).toBe(true);
+                // Codex made no second call.
+                expect(mcpResults()).toHaveLength(1);
+            } finally {
+                stopWatchers(agent.state);
+            }
         }
     });
 

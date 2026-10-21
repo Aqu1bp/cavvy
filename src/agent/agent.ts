@@ -1527,7 +1527,13 @@ export class Agent {
                 return out;
             },
         };
-        const base = this.backendTurn(signal, host);
+        // A stop from Harness's checks of a tool it serves the backend (a hook, a PermissionRequest interrupt) ends the backend's turn, as a stop on its own call does.
+        const stopper = new AbortController();
+        this.stopServedTurn = () => {
+            declined = true;
+            stopper.abort();
+        };
+        const base = this.backendTurn(AbortSignal.any([signal, stopper.signal]), host);
         let stopRounds = 0;
         // The user's own message, for the skills it names: its first part, not the files and notes after it.
         // A sub-agent's task is the parent model's words, not the user's: it runs no skill the model may not.
@@ -1564,6 +1570,12 @@ export class Agent {
             }
             this.recordBackendTurn(provider, name, result);
             if (result.reason === "aborted" || signal.aborted) {
+                if (this.hookStop && !signal.aborted) {
+                    this.endNotice("warn", `Stopped by a hook: ${this.hookStop}`);
+                    this.hookStop = undefined;
+                    this.syncBackend(provider);
+                    return this.endBackendTurn(provider, "blocked");
+                }
                 const r = declined ? this.endBackendTurn(provider, "denied") : this.interrupted(false);
                 this.syncBackend(provider);
                 return r;
@@ -1787,6 +1799,8 @@ export class Agent {
     }
 
     private servedCalls = 0;
+    /** Ends the backend's running turn: a served call's checks said stop. */
+    private stopServedTurn?: () => void;
 
     /**
      * One of Harness's own tools, called by a backend through the harness MCP server (Monitor for Codex). The CLI
@@ -1797,11 +1811,15 @@ export class Agent {
     private async runServed(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal, callId?: string): Promise<ServerToolResult> {
         const call: ToolCallPart = { type: "tool_call", id: callId ?? `served_${++this.servedCalls}`, name: tool.name, input };
         const prep = await this.prepare(call, signal, tool);
-        if ("result" in prep) return { text: prep.result.content, isError: true };
+        if ("result" in prep) {
+            if (prep.stop || this.hookStop) this.stopServedTurn?.();
+            return { text: prep.result.content, isError: true };
+        }
         // Cancelled while its checks ran (a hook, the reviewer): it doesn't start.
         if (signal.aborted) return { text: "Interrupted by user before this tool ran.", isError: true };
         const context: string[] = [];
         const r = await this.runTool(call, prep.tool, prep.input, signal, prep.auto, prep.sandbox, context);
+        if (this.hookStop) this.stopServedTurn?.();
         // What a PostToolUse hook adds goes with the result: it's the backend that reads it.
         return { text: [r.content, ...context].join("\n\n"), isError: r.isError };
     }

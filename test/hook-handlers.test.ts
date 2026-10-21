@@ -9,7 +9,7 @@ import { isolate, tempDir, FAKE } from "./helpers/isolate";
 
 const { cleanup } = isolate();
 const { normalizeHooks, normalizeHookList } = await import("../src/config/hook-config");
-const { runHooks, matcherFn, claudeCodeHookOutput, hooksFor, fileMatcherNames } = await import("../src/agent/hooks");
+const { runHooks, matcherFn, claudeCodeHookOutput, hooksFor, fileMatcherNames, backendMatcher } = await import("../src/agent/hooks");
 const { loadSettings, hookConfigWarnings } = await import("../src/config/settings");
 const { paths } = await import("../src/config/paths");
 
@@ -81,6 +81,22 @@ describe("matchers", () => {
         expect(matcherFn("^Notebook")("NotebookEdit")).toBe(true);
         expect(matcherFn("Edit.*")("MultiEdit")).toBe(true);
         expect(matcherFn("([")("x")).toBe(false);
+    });
+    test("a matcher that covers Bash covers Monitor, here and as given to a backend that matches hooks itself", () => {
+        const s = (matcher: string) => ({ hooks: { PreToolUse: [{ matcher, command: "c" }] } }) as any;
+        const runs = (matcher: string, tool: string) => hooksFor(s(matcher), "PreToolUse", { tool_name: tool, tool_input: { command: "ls" } }, "/").length === 1;
+        for (const m of ["Bash", "Edit|Bash", "^Bash$", "Ba.*"]) {
+            expect(runs(m, "Monitor")).toBe(true);
+            const given = backendMatcher("PreToolUse", m)!;
+            expect([matcherFn(given)("Bash"), matcherFn(given)("Monitor"), matcherFn(given)("Edit")]).toEqual([true, true, matcherFn(m)("Edit")]);
+        }
+        expect(runs("Edit", "Monitor")).toBe(false);
+        // Others as written: no Bash in them, Monitor already in them, no tool to match, or match everything.
+        expect(backendMatcher("PreToolUse", "Edit|Write")).toBe("Edit|Write");
+        expect(backendMatcher("PreToolUse", "Bash|Monitor")).toBe("Bash|Monitor");
+        expect(backendMatcher("SessionStart", "Bash")).toBe("Bash");
+        expect(backendMatcher("PostToolUse", undefined)).toBeUndefined();
+        expect(backendMatcher("PostToolUse", "*")).toBe("*");
     });
     test("each event matches its own field; events without one run every hook", () => {
         const s = { hooks: { SessionStart: [{ matcher: "resume", command: "a" }], Stop: [{ matcher: "nothing-matches", command: "b" }], FileChanged: [{ matcher: ".env|.envrc", command: "c" }] } } as any;
