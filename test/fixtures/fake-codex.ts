@@ -157,6 +157,7 @@ const goalOut = ({ turns: _turns, ...g }: Goal) => g;
 let lastPolicy: any = {};
 /** FAKE_GOAL_RACE refuses one turn/start, the first it can. */
 let racedOnce = false;
+let turnStarts = 0;
 /** A thread started or resumed with a policy: the goal's turns Codex starts itself run under it, until a turn/start gives another. */
 function threadPolicy(p: any) {
     const sandbox: Record<string, string> = { "danger-full-access": "dangerFullAccess", "workspace-write": "workspaceWrite", "read-only": "readOnly" };
@@ -532,6 +533,9 @@ async function handle(m: any) {
             const turnId = `turn-${++turnSeq}`;
             lastPolicy = p;
             if (process.env.FAKE_SLOW_TURN_START && turnSeq === 1) await Bun.sleep(Number(process.env.FAKE_SLOW_TURN_START));
+            // FAKE_SLOW_TURN_START_AT=n:ms: the nth turn/start answers that late.
+            const slowAt = process.env.FAKE_SLOW_TURN_START_AT?.split(":").map(Number);
+            if (slowAt && ++turnStarts === slowAt[0]) await Bun.sleep(slowAt[1]!);
             reply({ turn: { id: turnId, status: "inProgress" } });
             void runTurn(p.threadId, turnId, p);
             return;

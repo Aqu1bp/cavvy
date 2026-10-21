@@ -74,7 +74,13 @@ async function makeAgent(provider: "claude-code" | "codex", session = Session.cr
     const run = (text: string, signal = new AbortController().signal) => agent.run([{ type: "text", text }], { signal });
     const goals = () => events.flatMap((e) => (e.type === "goal" ? [e.goal] : []));
     const notices = () => events.flatMap((e) => (e.type === "notice" ? [e.message] : []));
-    return { agent, events, run, goals, notices, session, setMode: (m: typeof mode) => (mode = m) };
+    // setMode: the mode as the turn reads it next, with nothing told; switchMode: as the user switches it (the running turn is told).
+    const switchMode = (m: typeof mode) => {
+        const from = mode;
+        mode = m;
+        agent.noteModeChange(from, m);
+    };
+    return { agent, events, run, goals, notices, session, setMode: (m: typeof mode) => (mode = m), switchMode };
 }
 
 describe("parsing what the CLIs report", () => {
@@ -488,6 +494,63 @@ describe("Codex", () => {
         const restart = received().filter((m) => m.method === "turn/start").at(-1)!.params;
         expect(restart.sandboxPolicy.type).toBe("readOnly");
         expect(restart.input[0].text).toContain("also fix the links");
+        expect(a.goals().at(-1)).toMatchObject({ status: "complete" });
+    });
+
+    test("a mode switched between the goal's turns pauses the goal in Codex and stops its turn under the old policy", async () => {
+        process.env.FAKE_GOAL_TURNS = "3";
+        process.env.FAKE_TURN_MS = "150";
+        const queue: string[] = [];
+        const a = await makeAgent("codex", undefined, queue);
+        // Taking up Codex's next turn is slow (a long queue drain, say): the switch comes while no turn is waited on.
+        const proto = CodexTurn.prototype as any;
+        const original = proto.nextGoalTurn;
+        proto.nextGoalTurn = async function (...args: unknown[]) {
+            await Bun.sleep(400);
+            return original.apply(this, args);
+        };
+        try {
+            const done = a.run("/goal the docs build");
+            const until = Date.now() + 5000;
+            while (!a.goals().some((g) => g?.status === "active") && Date.now() < until) await Bun.sleep(2);
+            queue.push("also fix the links");
+            // The first turn has ended and Codex's own next one (turn-2, under bypass) is running.
+            await Bun.sleep(200);
+            a.switchMode("plan");
+            expect(await done).toBe("done");
+        } finally {
+            proto.nextGoalTurn = original;
+        }
+        const rpc = received().filter((m) => m.method);
+        expect(rpc.some((m) => m.method === "thread/goal/set" && m.params.status === "paused")).toBe(true);
+        expect(rpc.find((m) => m.method === "turn/interrupt")?.params.turnId).toBe("turn-2");
+        const starts = rpc.filter((m) => m.method === "turn/start").map((m) => m.params);
+        expect(starts.slice(1).every((p) => p.sandboxPolicy.type === "readOnly")).toBe(true);
+        expect(starts.at(-1)!.input[0].text).toContain("also fix the links");
+        // The goal went on (active again once the turn under plan mode had started), and the tab never showed it paused.
+        expect(a.goals().at(-1)).toMatchObject({ status: "complete" });
+        const statuses = a.goals().map((g) => g?.status);
+        expect(statuses.slice(statuses.indexOf("active")).includes("paused")).toBe(false);
+    });
+
+    test("a turn Codex starts while one is being started here is stopped once the answer says it wasn't this one", async () => {
+        process.env.FAKE_GOAL_TURNS = "3";
+        process.env.FAKE_TURN_MS = "150";
+        // Codex goes on by itself only after the turn for the message has been asked for, and that one answers late.
+        process.env.FAKE_GOAL_CONTINUE_MS = "1700";
+        process.env.FAKE_SLOW_TURN_START_AT = "2:700";
+        const queue: string[] = [];
+        const a = await makeAgent("codex", undefined, queue);
+        const done = a.run("/goal the docs build");
+        const until = Date.now() + 8000;
+        while (!a.goals().some((g) => g?.status === "active") && Date.now() < until) await Bun.sleep(2);
+        queue.push("also fix the links");
+        while (received().filter((m) => m.method === "turn/start").length < 2 && Date.now() < until) await Bun.sleep(5);
+        // Codex's own turn-3 has started meanwhile (under bypass); then the switch, while the answer is still coming.
+        await Bun.sleep(250);
+        a.switchMode("plan");
+        expect(await done).toBe("done");
+        expect(received().filter((m) => m.method === "turn/interrupt").map((m) => m.params.turnId)).toContain("turn-3");
         expect(a.goals().at(-1)).toMatchObject({ status: "complete" });
     });
 
