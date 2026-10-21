@@ -539,7 +539,9 @@
     outline: none;
 }
 
-/* ---- Footer: the plan's usage, and Settings ---------------------------- */
+/* ---- Footer: the plans' usage, and Settings ----------------------------
+   One plan: the mockup's ring and two lines. Claude Code and Codex both
+   signed in: a row each, in about the same height. */
 
 .side-foot {
     display: flex;
@@ -569,12 +571,16 @@
     --tone: var(--danger);
 }
 
-.foot-mark {
-    display: grid;
-    place-items: center;
-    width: 26px;
-    height: 26px;
-    flex: none;
+/* Not reported yet: the ring's track alone, with no share implied. */
+.sidebar .meter.unknown {
+    background: color-mix(in srgb, var(--rail-fg) 12%, transparent);
+}
+
+.sidebar .meter.sm {
+    width: 16px;
+    height: 16px;
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+    mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
 }
 
 .side-foot .who {
@@ -598,6 +604,40 @@
 }
 
 .side-foot .who > span {
+    font-size: 0.821rem;
+    color: var(--rail-fg-2);
+}
+
+.side-foot .plans {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.side-foot .plan {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    line-height: 1.25;
+}
+
+.side-foot .plan .meter {
+    margin-right: 2px;
+}
+
+.side-foot .plan svg {
+    flex: none;
+}
+
+.side-foot .plan b {
+    flex: none;
+    font-weight: 600;
+}
+
+.side-foot .plan > span:last-child {
     font-size: 0.821rem;
     color: var(--rail-fg-2);
 }

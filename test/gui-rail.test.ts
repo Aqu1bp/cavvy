@@ -36,52 +36,101 @@ const claude: ProviderInfo = {
     agentCli: { installed: true, signIn: "claude", install: "", plan: "Claude subscription", defaultAccount: "default", accounts: [{ id: "default", name: "Default", folder: "", managed: false, plan: "max" }] },
 };
 const codex: ProviderInfo = { id: "codex", name: "Codex", kind: "agent", configured: true, requiresKey: false, agentCli: { installed: true, signIn: "codex", install: "", plan: "ChatGPT plan" } };
+const anthropic: ProviderInfo = { id: "anthropic", name: "Anthropic", kind: "anthropic", configured: true, requiresKey: true, source: "keychain" };
 const limits = (provider: string, at: number, windows: PlanLimits["windows"], extra: Partial<PlanLimits> = {}): PlanLimits => ({ provider, at, windows, ...extra });
 const key = (provider: string, account = "default") => JSON.stringify([provider, account]);
+const withAccount = (p: ProviderInfo, account: Partial<NonNullable<NonNullable<ProviderInfo["agentCli"]>["accounts"]>[number]>): ProviderInfo =>
+    ({ ...p, agentCli: { ...p.agentCli!, accounts: [{ id: "default", name: "Default", folder: "", managed: false, ...account }] } });
+const lines = (plans: { provider: string; line: string }[]) => plans.map((p) => [p.provider, p.line]);
 
-test("the footer shows the connection until a plan reports its limits", () => {
-    expect(railFoot({ conn: "open", limits: {}, providers: [], now: NOW })).toEqual({ tone: "normal", name: "This computer", line: "Connected" });
-    expect(railFoot({ conn: "reconnecting", limits: {}, providers: [], now: NOW }).line).toBe("Reconnecting…");
-    // A report with nothing in it says nothing either.
-    expect(railFoot({ conn: "open", limits: { [key("codex")]: limits("codex", NOW, []) }, providers: [codex], now: NOW }).pct).toBeUndefined();
+test("the footer shows plans only: never the computer or the connection, never an API provider", () => {
+    // Nothing signed in to a plan: no footer but Settings.
+    expect(railFoot({ limits: {}, providers: [], now: NOW })).toEqual([]);
+    expect(railFoot({ limits: {}, providers: [anthropic], provider: "anthropic", now: NOW })).toEqual([]);
+    const foot = railFoot({ limits: {}, providers: [anthropic, claude], provider: "anthropic", now: NOW });
+    expect(foot.map((p) => p.provider)).toEqual(["claude-code"]);
+    expect(JSON.stringify(foot)).not.toMatch(/This computer|Connected|Reconnecting/);
 });
 
-test("the footer names the plan and its fullest window, preferring the session in view's own", () => {
+test("a plan that hasn't reported yet shows its name and an empty ring", () => {
+    const [plan] = railFoot({ limits: {}, providers: [claude], now: NOW });
+    expect(plan).toMatchObject({ provider: "claude-code", name: "Claude Code Max", short: "Max", tone: "normal", line: "Usage shows after your first turn" });
+    expect(plan!.pct).toBeUndefined();
+    // A report with nothing in it says nothing either.
+    const [empty] = railFoot({ limits: { [key("codex")]: limits("codex", NOW, []) }, providers: [codex], now: NOW });
+    expect(empty).toMatchObject({ name: "ChatGPT plan", short: "Codex", line: "Usage shows after your first turn" });
+    expect(empty!.pct).toBeUndefined();
+});
+
+test("only CLIs turned on, installed and signed in to a plan count", () => {
+    const off = { ...codex, configured: false };
+    const missing = { ...codex, agentCli: { ...codex.agentCli!, installed: false } };
+    const out = withAccount(codex, { signedIn: false });
+    const keyed = withAccount(claude, { signedIn: true, apiKey: true });
+    const reported = { [key("codex")]: limits("codex", NOW, [{ id: "codex:primary", label: "Weekly", usedPercent: 74 }]) };
+    for (const p of [off, missing, out, keyed]) expect(railFoot({ limits: reported, providers: [p], now: NOW })).toEqual([]);
+    // Not checked yet (signedIn unknown) but turned on: shown.
+    expect(railFoot({ limits: reported, providers: [codex], now: NOW }).map((p) => p.pct)).toEqual([74]);
+});
+
+test("both signed in: the session in view's plan first, else the one used last, else the latest report", () => {
     const all = {
         [key("claude-code")]: limits("claude-code", NOW - 5000, [{ id: "five_hour", label: "5-hour", usedPercent: 62 }, { id: "seven_day", label: "Weekly", usedPercent: 30 }]),
         [key("codex")]: limits("codex", NOW, [{ id: "codex:primary", label: "Weekly", usedPercent: 74 }]),
     };
-    // No session in view: the latest report.
-    expect(railFoot({ conn: "open", limits: all, providers: [claude, codex], now: NOW })).toEqual({ provider: "codex", pct: 74, tone: "warn", name: "ChatGPT plan", line: "74% of the weekly limit" });
-    // The session in view is on Claude Code: its plan, by the account's plan name.
-    expect(railFoot({ conn: "open", limits: all, providers: [claude, codex], provider: "claude-code", now: NOW })).toEqual({ provider: "claude-code", pct: 62, tone: "normal", name: "Claude Code Max", line: "62% of the 5-hour limit" });
-    // On a provider with no report: the latest one still shows.
-    expect(railFoot({ conn: "open", limits: all, providers: [claude, codex], provider: "anthropic", now: NOW }).provider).toBe("codex");
+    const providers = [claude, codex];
+    // No session in view and no sessions: the latest report first.
+    expect(railFoot({ limits: all, providers, now: NOW })).toEqual([
+        { provider: "codex", name: "ChatGPT plan", short: "Codex", pct: 74, tone: "warn", line: "74% of the weekly limit", detail: "ChatGPT plan\nWeekly 74%" },
+        { provider: "claude-code", name: "Claude Code Max", short: "Max", pct: 62, tone: "normal", line: "62% of the 5-hour limit", detail: "Claude Code Max\n5-hour 62%\nWeekly 30%" },
+    ]);
+    // The plan used last leads.
+    expect(railFoot({ limits: all, providers, recent: ["anthropic", "claude-code", "codex"], now: NOW }).map((p) => p.provider)).toEqual(["claude-code", "codex"]);
+    // The session in view's plan leads, whatever was used last.
+    expect(railFoot({ limits: all, providers, provider: "codex", recent: ["claude-code"], now: NOW }).map((p) => p.provider)).toEqual(["codex", "claude-code"]);
+    // On an API provider: as with no session.
+    expect(railFoot({ limits: all, providers, provider: "anthropic", recent: ["claude-code"], now: NOW }).map((p) => p.provider)).toEqual(["claude-code", "codex"]);
+});
+
+test("the session in view's account is the one shown, named when there are several", () => {
+    const two: ProviderInfo = { ...codex, agentCli: { ...codex.agentCli!, accounts: [{ id: "default", name: "Default", folder: "", managed: false, plan: "plus" }, { id: "work", name: "Work", folder: "", managed: true, plan: "pro", email: "me@work.example" }] } };
+    const all = {
+        [key("codex")]: limits("codex", NOW, [{ id: "codex:primary", label: "Weekly", usedPercent: 10 }]),
+        [key("codex", "work")]: limits("codex", NOW, [{ id: "codex:primary", label: "Weekly", usedPercent: 55 }]),
+    };
+    expect(railFoot({ limits: all, providers: [two], now: NOW })[0]).toMatchObject({ name: "Codex Plus", pct: 10 });
+    const [work] = railFoot({ limits: all, providers: [two], provider: "codex", account: "work", now: NOW });
+    expect(work).toMatchObject({ name: "Codex Pro", short: "Pro", pct: 55 });
+    expect(work!.detail.split("\n")[0]).toBe("Codex Pro (Work, me@work.example)");
 });
 
 test("a reached limit fills the ring and says when it resets", () => {
     const all = { [key("codex")]: limits("codex", NOW, [{ id: "codex:primary", label: "5-hour", usedPercent: 100, resetsAt: NOW + 2 * 3_600_000 }]) };
-    const foot = railFoot({ conn: "open", limits: all, providers: [codex], now: NOW });
-    expect(foot.pct).toBe(100);
-    expect(foot.tone).toBe("danger");
-    expect(foot.line).toMatch(/^Limit reached, resets .+, in 2h$/);
-    expect(railFoot({ conn: "reconnecting", limits: all, providers: [codex], now: NOW }).line).toBe("Reconnecting…");
+    const [foot] = railFoot({ limits: all, providers: [codex], now: NOW });
+    expect(foot!.pct).toBe(100);
+    expect(foot!.tone).toBe("danger");
+    expect(foot!.line).toMatch(/^Limit reached, resets .+, in 2h$/);
 });
 
-test("a report from before a window reset doesn't show its old use as current", () => {
-    // 100% of the 5-hour window, reported 6h ago; that window has reset since, the weekly one hasn't.
+test("limits saved before a restart show with their age; a window that has reset since shows nothing as current", () => {
+    // Saved 6h ago: 100% of the 5-hour window (reset since), 40% of the weekly one (still running).
     const at = NOW - 6 * 3_600_000;
     const all = { [key("codex")]: limits("codex", at, [
         { id: "codex:primary", label: "5-hour", usedPercent: 100, resetsAt: NOW - 3_600_000 },
         { id: "codex:secondary", label: "Weekly", usedPercent: 40, resetsAt: NOW + 3 * 86_400_000 },
     ]) };
-    const foot = railFoot({ conn: "open", limits: all, providers: [codex], now: NOW });
-    expect(foot.pct).toBe(40);
-    expect(foot.tone).toBe("normal");
-    expect(foot.line).toMatch(/^40% of the weekly limit, as of /);
+    const [foot] = railFoot({ limits: all, providers: [codex], now: NOW });
+    expect(foot!.pct).toBe(40);
+    expect(foot!.tone).toBe("normal");
+    expect(foot!.line).toMatch(/^40% of the weekly limit, as of /);
+    expect(foot!.detail).toMatch(/\nAs of /);
+    // Only old: an hour ago, nothing reset since.
+    const [hour] = railFoot({ limits: { [key("claude-code")]: limits("claude-code", NOW - 3_600_000, [{ id: "five_hour", label: "5-hour", usedPercent: 64, resetsAt: NOW + 3_600_000 }]) }, providers: [claude], now: NOW });
+    expect(hour!.line).toMatch(/^64% of the 5-hour limit, as of /);
+    expect(hour!.pct).toBe(64);
     // With every window reset, there's no figure to show.
     const gone = { [key("codex")]: limits("codex", at, [{ id: "codex:primary", label: "5-hour", usedPercent: 100, resetsAt: NOW - 3_600_000 }]) };
-    const old = railFoot({ conn: "open", limits: gone, providers: [codex], now: NOW });
-    expect(old.pct).toBeUndefined();
-    expect(old.line).toBe("Plan limits");
+    const [old] = railFoot({ limits: gone, providers: [codex], now: NOW });
+    expect(old!.pct).toBeUndefined();
+    expect(old!.line).toBe("Limits have reset since your last turn");
 });
