@@ -287,6 +287,26 @@
     color: var(--fg-3);
 }
 
+/* Reasoning effort: the level's name, then the composer's bars, smaller (mockup .set-effort). */
+.set-effort {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    flex: none;
+}
+
+.set-effort-l {
+    min-width: 70px;
+    text-align: right;
+    font-weight: 500;
+    color: var(--fg);
+    white-space: nowrap;
+}
+
+.set-effort .es {
+    width: 120px;
+}
+
 /* A native select drawn as a small raised button, with a glyph before its value. */
 .selbtn {
     position: relative;

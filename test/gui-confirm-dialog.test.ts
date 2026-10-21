@@ -39,7 +39,7 @@ const settingsSource = readFileSync(new URL("../gui/src/components/Settings.tsx"
 // Include module state as well as the component so remounts share real guards.
 const providerSource = settingsSource.slice(settingsSource.lastIndexOf("\n}\n", settingsSource.indexOf("function ProviderRow")) + 3, settingsSource.indexOf("function Providers"));
 const generalSource = settingsSource.slice(settingsSource.indexOf("async function update"), settingsSource.indexOf("function ModelSelect"))
-    + settingsSource.slice(settingsSource.indexOf("const EFFORT_LABELS"), settingsSource.indexOf("\n}\n", settingsSource.indexOf("function General")) + 3);
+    + settingsSource.slice(settingsSource.indexOf("const [enablingBypass"), settingsSource.indexOf("\n}\n", settingsSource.indexOf("function General")) + 3);
 
 function dialog(onConfirm: () => Promise<void>, busy: () => boolean = () => false) {
     let dialogProps: any;

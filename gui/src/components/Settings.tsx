@@ -4,7 +4,7 @@
 
 import { createEffect, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
 import { AlertTriangle, ArrowLeft, ChartColumn, ChevronDown, Copy, ExternalLink, FolderOpen, Info, Keyboard, Minus, Palette, Plug, Plus, Puzzle, RotateCcw, Settings as Gear, SlidersHorizontal, X } from "lucide-solid";
-import { MODE_LABELS, type EffortLevel, type FollowUpMode, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
+import { MODE_LABELS, type FollowUpMode, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
 import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
 import { connectCli, editors, refreshEditors } from "../state/actions";
 import { ACCENTS, CHAT_WIDTHS, prefs, PREF_DEFAULTS, setPrefs, type AccentId, type Scheme } from "../state/prefs";
@@ -16,6 +16,8 @@ import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { Accounts } from "./Accounts";
 import { ModeIcon, MODES } from "./ModePicker";
+import { EffortBars } from "./ModelPicker";
+import { effortLevels, effortOf } from "../lib/effort";
 import { SidebarFrame } from "./Sidebar";
 import { Segmented, Spinner, Toggle } from "./ui/bits";
 import { UsageView } from "./UsageView";
@@ -154,8 +156,6 @@ function ModelSelect(p: { value?: string; onChange: (v: string) => void; empty: 
     );
 }
 
-const EFFORT_LABELS: Record<EffortLevel, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
-
 // Confirmation can be dismissed and Settings remounted while the request runs.
 const [enablingBypass, setEnablingBypass] = createSignal(false);
 
@@ -201,18 +201,12 @@ function General() {
                         </select>
                     </SelectButton>
                 </Row>
-                {/* The composer's effort bars (area C's EffortBars) replace this select once they land. */}
-                <Row title="Reasoning effort">
-                    <SelectButton>
-                        <select class="select" aria-label="Reasoning effort" value={s().effort ?? ""} onChange={(e) => void update({ effort: e.currentTarget.value as EffortLevel })}>
-                            <Show when={!s().effort}>
-                                <option value="" disabled>
-                                    Provider's default
-                                </option>
-                            </Show>
-                            <For each={Object.keys(EFFORT_LABELS) as EffortLevel[]}>{(e) => <option value={e}>{EFFORT_LABELS[e]}</option>}</For>
-                        </select>
-                    </SelectButton>
+                {/* The composer's effort bars, smaller. Every level: it's where new sessions start, whatever their model. */}
+                <Row title="Reasoning effort" desc="Where new sessions start.">
+                    <span class="set-effort">
+                        <span class="set-effort-l">{effortOf(s().effort)?.label ?? "Provider's default"}</span>
+                        <EffortBars size="sm" levels={effortLevels(undefined)} value={s().effort} onChange={(v) => void update({ effort: v })} />
+                    </span>
                 </Row>
             </Section>
             <Section title="Conversation">
