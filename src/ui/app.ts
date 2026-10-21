@@ -1679,7 +1679,9 @@ export class App {
         }
         if (/^\$[a-zA-Z0-9:_-]*$/.test(tok.text) && !/[A-Z]/.test(tok.text)) {
             const q = tok.text.slice(1);
-            const found = this.skills
+            // Codex's own skills too, once it has listed them.
+            const cli = this.cliCommands?.provider === "codex" && this.model?.provider === "codex" ? [...this.cliCommands.names].filter((n) => !this.skills.some((s) => s.name === n)).map((n) => ({ name: n, description: "Codex's own skill", userInvocable: true })) : [];
+            const found = [...this.skills, ...cli]
                 .filter((s) => s.userInvocable && (s.name.startsWith(q) || (q.length > 1 && s.name.includes(q))))
                 .sort((a, b) => Number(!a.name.startsWith(q)) - Number(!b.name.startsWith(q)) || a.name.localeCompare(b.name))
                 .slice(0, 8);

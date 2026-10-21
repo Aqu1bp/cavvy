@@ -556,7 +556,7 @@ class CodexTurn {
                     const mode = this.host.mode();
                     const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly));
                     const note = modeNote(mode, Boolean(t.readOnly));
-                    const asked = skills ? codexInput(text, request, skills) : { text: pastedPrompt(text, request, t.skills ?? []), items: [] };
+                    const asked = skills ? codexInput(text, request, skills, t.skills) : { text: pastedPrompt(text, request, t.skills ?? []), items: [] };
                     const input = [...this.input(note ? `${note}\n\n${asked.text}` : asked.text, images), ...asked.items];
                     const effort = t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort)) ? t.effort : undefined;
                     this.turnMode = mode;
@@ -656,7 +656,8 @@ class CodexTurn {
      * this Codex can't take them (they're pasted in instead).
      */
     private async nativeSkills(t: BackendTurn): Promise<CodexSkill[] | undefined> {
-        const folder = skillFolder(t.skills ?? []);
+        // A project's own skills only where the user trusted it (the session's list may come from implicit trust): those are pasted in.
+        const folder = skillFolder((t.skills ?? []).filter((s) => t.trusted || s.source !== "project"));
         try {
             // Every turn, an empty list too: the harness's skills are the session's as they are now.
             await withTimeout(this.rpc.request("skills/extraRoots/set", { extraRoots: folder ? [join(folder, "skills")] : [] }), 10_000, "Codex didn't answer skills/extraRoots/set");

@@ -341,6 +341,21 @@ describe("in the TUI", () => {
         }
     });
 
+    test("on Codex, its own skills are in the $ menu once it has listed them", () => {
+        skill(userSkills, "deploy", "description: Ship it", "Deploy.");
+        const { app } = testApp();
+        app.model = { id: "default", provider: "codex" } as any;
+        app.cliCommands = { provider: "codex", names: new Set(["imagegen", "deploy"]) };
+        const labels = (text: string) => {
+            app.editor.set(text);
+            return ((app as any).completions()?.items ?? []).map((i: any) => i.label);
+        };
+        expect(labels("use $")).toEqual(expect.arrayContaining(["$deploy", "$imagegen"]));
+        expect(labels("use $").filter((l: string) => l === "$deploy")).toHaveLength(1);
+        app.model = { id: "m", provider: "anthropic" } as any;
+        expect(labels("use $")).not.toContain("$imagegen");
+    });
+
     test("on Claude Code, its own commands and skills go to it instead of being refused", async () => {
         skill(userSkills, "shared", "description: Both have it", "Harness body");
         const { app, turns, notices } = testApp();

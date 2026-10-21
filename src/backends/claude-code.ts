@@ -41,7 +41,7 @@ import { paths } from "../config/paths";
 import { redact } from "../util/redact";
 import { cliCommandNames } from "../commands/custom";
 import { formatSkill } from "../agent/skills";
-import { CLAUDE_PREFIX, claudePrompt, forClaudeCode, skillFolder } from "./native-skills";
+import { CLAUDE_PREFIX, claudeNames, claudePrompt, forClaudeCode, skillFolder } from "./native-skills";
 import { CLAUDE_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
 import { claudeMcpPolicy } from "./claude-mcp-policy";
 import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn } from "./types";
@@ -247,9 +247,11 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         const bin = requireCli(this.def.id, CLAUDE_CLI);
         const key = (id: string) => `${t.accountId ?? "default"}:${id}`;
         // The harness's skills Claude Code doesn't read itself come as a plugin of their own, so it runs them like its own.
-        const plugged = t.skills?.length ? forClaudeCode(t.skills, t.cwd, t.trusted, claudeConfigDir(this.def.id, t)) : [];
+        const configDir = t.skills?.length ? claudeConfigDir(this.def.id, t) : undefined;
+        const plugged = t.skills?.length ? forClaudeCode(t.skills, t.cwd, t.trusted, configDir) : [];
         const pluginDir = skillFolder(plugged, { plugin: true });
-        const names = new Set(pluginDir ? plugged.map((s) => s.name) : []);
+        // One it has under no name (the plugin couldn't be made, an untrusted project's) is pasted in, as for the harness's models.
+        const names = claudeNames(t.skills ?? [], pluginDir ? plugged : [], t.cwd, t.trusted, configDir);
         const prompt = claudePrompt(t.prompt, t.request, t.skills ?? [], names, formatSkill);
         const turn = new ClaudeTurn(this.def, bin, { ...t, prompt }, t.resumeId ? this.spent.get(key(t.resumeId)) : undefined, this.limitSeen);
         turn.pluginDir = pluginDir;

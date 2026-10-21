@@ -111,6 +111,22 @@ describe("the folder the CLIs are given", () => {
         expect(existsSync(join(native.skillFolder([s])!, "skills", "acme__lint", "SKILL.md"))).toBe(true);
     });
 
+    test("folders unused for a day are removed, without touching the skills they link to", () => {
+        const a = fake("alpha");
+        const c = fake("tools");
+        writeFileSync(c.file, "---\ndescription: x\n---\n${HARNESS_SKILL_DIR}/run.sh\n");
+        writeFileSync(join(c.dir, "run.sh"), "echo\n");
+        const old = native.skillFolder([a, c])!;
+        const recent = native.skillFolder([a])!;
+        const dayAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+        utimesSync(old, dayAgo, dayAgo);
+        native.skillFolder([c]);
+        expect(existsSync(old)).toBe(false);
+        expect(existsSync(recent)).toBe(true);
+        expect(readFileSync(a.file, "utf-8")).toContain("Body of alpha.");
+        expect(existsSync(join(c.dir, "run.sh"))).toBe(true);
+    });
+
     test("a skill whose SKILL.md is gone is left out, the rest are there", () => {
         const a = fake("alpha");
         const gone = fake("gone");
@@ -129,10 +145,13 @@ describe("Claude Code", () => {
         const plugin = { ...fake("x"), name: "acme:x", source: "plugin" as const };
         const all = [project, mine, ccOwn, ccProject, plugin];
         expect(native.forClaudeCode(all, cwd, true).map((s) => s.name)).toEqual(["p1", "u1"]);
-        // Untrusted, it doesn't read the project's .claude/skills (the loader wouldn't have them either).
-        expect(native.forClaudeCode(all, cwd, false).map((s) => s.name)).toEqual(["p1", "u1", "c2"]);
+        // Untrusted (by the user, the session's list may come from implicit trust), a project's skills aren't put in.
+        expect(native.forClaudeCode(all, cwd, false).map((s) => s.name)).toEqual(["u1"]);
         // Another account's config folder: ~/.claude/skills isn't its own.
         expect(native.forClaudeCode(all, cwd, true, tempDir("other-account-")).map((s) => s.name)).toEqual(["p1", "u1", "c1"]);
+        // What it calls each: its own as they are, ours as harness:<name>; a plugin's and an untrusted project's it doesn't have.
+        expect([...native.claudeNames(all, [project, mine], cwd, true)]).toEqual([["c1", "c1"], ["c2", "c2"], ["p1", "harness:p1"], ["u1", "harness:u1"]]);
+        expect([...native.claudeNames(all, [mine], cwd, false)]).toEqual([["c1", "c1"], ["u1", "harness:u1"]]);
     });
 
     const format = (s: Skill, args: string) => `<skill ${s.name}${args ? ` ${args}` : ""}>`;
@@ -140,7 +159,7 @@ describe("Claude Code", () => {
     const theirs = { ...fake("review"), dir: join(claudeRoot(), "review") };
     const quiet = fake("secret", { modelInvocable: false });
     const skills = [ours, theirs, quiet];
-    const plugged = new Set(["deploy", "secret"]);
+    const plugged = new Map([["deploy", "harness:deploy"], ["secret", "harness:secret"], ["review", "review"]]);
 
     test("/name runs one of ours as /harness:name, its own as typed", () => {
         expect(native.claudePrompt("/deploy prod now", "/deploy prod now", skills, plugged, format)).toBe("/harness:deploy prod now");
@@ -163,6 +182,12 @@ describe("Claude Code", () => {
         expect(native.claudePrompt("costs $5, see $HOME", "costs $5, see $HOME", skills, plugged, format)).toBe("costs $5, see $HOME");
     });
 
+    test("one it doesn't have (the plugin couldn't be made, an untrusted project's) goes in as text", () => {
+        const none = new Map<string, string>();
+        expect(native.claudePrompt("/deploy prod", "/deploy prod", skills, none, format)).toBe("<skill deploy prod>");
+        expect(native.claudePrompt("try $deploy", "try $deploy", skills, none, format)).toBe("try $deploy\n\n<skill deploy>");
+    });
+
     test("without the user's message (a hook's follow-up), the prompt is left alone", () => {
         expect(native.claudePrompt("/deploy", undefined, skills, plugged, format)).toBe("/deploy");
         expect(native.claudePrompt("/deploy", "something else", skills, plugged, format)).toBe("/deploy");
@@ -183,6 +208,15 @@ describe("Codex", () => {
         const skills = [{ ...own, enabled: false }, { name: "deploy", path: "/h/deploy/SKILL.md" }];
         expect(native.codexInput("earlier\n\n/deploy", "/deploy", skills).text).toBe("earlier\n\n$deploy");
         expect(native.codexInput("$imagegen", "$imagegen", skills).items).toEqual([]);
+    });
+
+    test("one of ours Codex didn't list (it skipped it, or it isn't registered) goes in as text", () => {
+        const s = fake("nofront");
+        writeFileSync(s.file, "Just do $ARGUMENTS.\n");
+        expect(native.codexInput("/nofront it", "/nofront it", [own], [s])).toEqual({ text: "<skill name=\"nofront\">\nBase directory for this skill: " + s.dir + "\n\nJust do it.\n</skill>", items: [] });
+        const mixed = native.codexInput("x $nofront and $imagegen", "x $nofront and $imagegen", [own], [s]);
+        expect(mixed.items.map((i) => i.name)).toEqual(["imagegen"]);
+        expect(mixed.text).toStartWith("x $nofront and $imagegen\n\n<skill name=\"nofront\">");
     });
 
     test("one of ours goes by its harness name too; Codex's own are listed for the menus", () => {
@@ -208,7 +242,7 @@ describe("Codex", () => {
     });
 });
 
-async function runTurn(provider: "claude-code" | "codex", text: string, opts: { trusted?: boolean } = {}) {
+async function runTurn(provider: "claude-code" | "codex", text: string, opts: { trusted?: boolean; skills?: () => Skill[] } = {}) {
     if (opts.trusted) trust.trustFolder(cwd);
     else trust.trustForSession(cwd);
     const events: AgentEvent[] = [];
@@ -219,7 +253,7 @@ async function runTurn(provider: "claude-code" | "codex", text: string, opts: { 
         model: { provider, id: "default" } as any,
         client: await clientFor(provider),
         settings: () => settings,
-        skills: () => loadSkills(cwd, trust.isTrusted(cwd)),
+        skills: opts.skills ?? (() => loadSkills(cwd, trust.isTrusted(cwd))),
         checker: new PermissionChecker(() => settings, cwd),
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
@@ -255,6 +289,20 @@ describe("a whole turn", () => {
         const dir = argv[argv.indexOf("--plugin-dir") + 1]!;
         expect(existsSync(join(dir, "skills", "mine"))).toBe(true);
         expect(existsSync(join(dir, "skills", "repo"))).toBe(false);
+    });
+
+    test("a project's skill under trust for this session only isn't registered, and still runs: its text is sent", async () => {
+        // The session's list has it (the folder had nothing to protect when it was opened).
+        skill(join(cwd, ".harness", "skills"), "repo", "description: The repo's", "Repo steps for $ARGUMENTS.");
+        const skills = () => loadSkills(cwd, true);
+        await runTurn("claude-code", "/repo now", { skills });
+        expect(received().filter((m) => m.type === "user").map((m) => m.message.content[0].text)).toEqual(["Repo steps for now."].map((t) => expect.stringContaining(t)) as any);
+        expect(logLines().some((l) => l.argv?.includes("--plugin-dir"))).toBe(false);
+        rmSync(LOG, { force: true });
+        await runTurn("codex", "/repo now", { skills });
+        const roots = received().find((m) => m.method === "skills/extraRoots/set")!.params.extraRoots;
+        expect(roots).toEqual([]);
+        expect(received().find((m) => m.method === "turn/start")!.params.input[0].text).toContain("Repo steps for now.");
     });
 
     test("Claude Code with no skills of ours gets no plugin", async () => {

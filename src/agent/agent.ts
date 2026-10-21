@@ -945,8 +945,8 @@ export class Agent {
             backgroundWaitSec: s.claudeCode?.backgroundWaitSec,
             additionalDirectories: s.permissions?.additionalDirectories ?? [],
             trusted,
-            // A project's own skills only where the user trusted it (the list may come from implicit trust).
-            skills: (this.o.skills?.() ?? []).filter((sk) => trusted || sk.source !== "project"),
+            // The backend registers a project's own only where the user trusted it (the list may come from implicit trust).
+            skills: this.o.skills?.() ?? [],
             approvedMcpServers,
             rules: { deny: s.permissions?.deny ?? [], ask: s.permissions?.ask ?? [], root: this.state.projectRoot },
             maxTurns: this.o.maxTurns,
