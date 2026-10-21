@@ -11,7 +11,7 @@ import { WakeQueue, WatcherMap, formatWakes, stopWatchers, wakeDisplay, type Wak
 import { turnDuration } from "./duration";
 import { existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
-import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
+import { Agent, type Admission, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
 import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, rewindTargets, untrackedChangesNote, type RestoreItem } from "../agent/checkpoints";
 import { beforeFork, forkCut, forkTargets } from "../agent/fork";
 import { fireHooks, type HookEvent } from "../agent/hooks";
@@ -2088,25 +2088,22 @@ export class Runtime {
      * attached. Commands and `!commands` wait: the server runs them (a custom command expands, /compact
      * compacts), and only once the run is over. Held ones wait for the user.
      */
-    private async drainWaiting(steps: { record(): void; admit(parts: UserContent[]): Promise<boolean> }): Promise<{ parts: UserContent[]; display: string } | undefined> {
+    private async drainWaiting(steps: { record(): void; admit(parts: UserContent[], display: string): Promise<Admission> }): Promise<{ parts: UserContent[]; display: string } | undefined> {
         const q = this.queued.find((x) => !x.held && !isCommand(x));
         if (!q) return undefined;
-        const at = this.queued.indexOf(q);
-        this.queued = this.queued.filter((x) => x !== q);
-        this.queueUpdated();
-        // Prepared as a sent prompt is (startTurn); what it uses and attaches is said in its turn, once it has one.
+        // It stays in the queue (on disk too) while it's prepared, its hooks run and its start snapshot is
+        // taken: an interrupt meanwhile hands it back to the composer as it is, attachments and place included.
         const signal = this.abort?.signal ?? new AbortController().signal;
+        // Prepared as a sent prompt is (startTurn); what it uses and attaches is said in its turn, once it has one.
         const said: [string, "info" | "warn"][] = [];
         const parts = await this.preparePrompt(q.text, { attachments: q.attachments }, signal, (text, level) => void said.push([text, level]));
-        const admitted = !signal.aborted && (await steps.admit(parts));
-        if (signal.aborted) {
-            // Stopped before it went: back in the queue as it was, so the interrupt hands it back to the composer.
-            this.queued.splice(Math.min(at, this.queued.length), 0, q);
-            this.queueUpdated();
-            return undefined;
-        }
+        const admitted = signal.aborted ? "stopped" : await steps.admit(parts, q.text);
+        // Stopped, or the user took it out or held it meanwhile: it doesn't go, and the queue is as they left it.
+        if (admitted === "stopped" || signal.aborted || q.held || !this.queued.includes(q)) return undefined;
+        this.queued = this.queued.filter((x) => x !== q);
+        this.queueUpdated();
         // A hook blocked it (the hook's warning says so): the turn that's waiting stays the one its output goes to.
-        if (!admitted) return undefined;
+        if (admitted === "blocked") return undefined;
         // What the CLI said before it goes first, so the prompt's place in the session is where it lands.
         steps.record();
         const turn = this.drainedTurn(q.text, q.attachments, true);

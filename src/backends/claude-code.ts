@@ -715,7 +715,8 @@ class ClaudeTurn {
         const p = await this.host.drainWaiting(() => this.progress());
         if (!p) return false;
         if (this.aborted || this.finishing) {
-            // Stopped after it was recorded (its start snapshot was being taken): the next turn is told of it.
+            // Not expected: nothing is awaited between its "go" (see AgentHost.drainWaiting) and here. Should
+            // a stop land anyway, the next turn is told of it rather than it vanishing.
             this.host.undelivered?.([p.text]);
             return false;
         }

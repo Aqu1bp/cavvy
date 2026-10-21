@@ -175,10 +175,14 @@ export interface AgentHost {
      * message that can go now, as a prompt of its own, whatever its mode, prepared as a sent one is (its
      * attachments, @mentions and $skills). Not commands or `!commands`, nor held ones. `record` runs once one
      * is taken, before its turn starts, so the output before it is recorded first; `admit` runs the prompt's
-     * hooks, and false (a hook blocked it) means it doesn't go.
+     * hooks and takes its start snapshot: "blocked" (a hook blocked it) means it's dropped, "stopped" (the
+     * turn was interrupted) that it stays queued, "go" that it goes, with nothing awaited before it's stored.
      */
-    drainWaiting?(steps: { record(): void; admit(parts: UserContent[]): Promise<boolean> }): Promise<{ parts: UserContent[]; display: string } | undefined>;
+    drainWaiting?(steps: { record(): void; admit(parts: UserContent[], display: string): Promise<Admission> }): Promise<{ parts: UserContent[]; display: string } | undefined>;
 }
+
+/** What a queued message's hooks and start snapshot decided (AgentHost.drainWaiting). */
+export type Admission = "go" | "blocked" | "stopped";
 
 export interface Helpers {
     /** One-shot completion on a cheap model (classifier, summaries). */
@@ -1630,6 +1634,7 @@ export class Agent {
             drainWaiting: async (progress) => {
                 if (this.cutOff || !this.o.host.drainWaiting) return undefined;
                 let context: string | undefined;
+                let checkpoint: number | undefined;
                 let taken: { parts: UserContent[]; display: string } | undefined;
                 // One its hooks block doesn't go; the next does, in order and through its own hooks.
                 for (let blocked = true; blocked && !taken; ) {
@@ -1638,23 +1643,26 @@ export class Agent {
                         record: () => {
                             if (progress) this.recordBackendTurn(provider, name, progress());
                         },
-                        // Its hooks, as for a prompt sent on its own (runInner): one can block it.
-                        admit: async (parts) => {
+                        // Its hooks, as for a prompt sent on its own (runInner): one can block it. Then its start
+                        // snapshot, before it's stored: stopped while that's taken, it's still in the queue.
+                        admit: async (parts, display) => {
                             const h = await this.promptHooks(promptTextOf(parts), signal);
                             context = h.context;
-                            blocked = Boolean(h.blocked);
-                            return !h.blocked && !this.cutOff && !signal.aborted;
+                            if (h.blocked) {
+                                blocked = true;
+                                return "blocked";
+                            }
+                            if (this.cutOff || signal.aborted) return "stopped";
+                            checkpoint = await this.checkpoint(display);
+                            return this.cutOff || signal.aborted ? "stopped" : "go";
                         },
                     });
                     if (this.cutOff || signal.aborted) blocked = false;
                 }
                 if (!taken) return undefined;
-                // Stored as a prompt sent then would be, with what a hook adds after it.
-                let content: UserContent[] = [];
-                await this.checkpoint(taken.display, false, (checkpoint) => {
-                    content = this.session.push({ role: "user", content: [...taken.parts, ...(context ? [reminder(context)] : [])], meta: { kind: "prompt", display: taken.display, checkpoint } }).content;
-                });
-                if (this.cutOff) return undefined;
+                // Stored as a prompt sent then would be, with what a hook adds after it. Nothing is awaited from
+                // "go" to here, nor from here to the backend sending it: an interrupt can't fall in between.
+                const content = this.session.push({ role: "user", content: [...taken.parts, ...(context ? [reminder(context)] : [])], meta: { kind: "prompt", display: taken.display, checkpoint } }).content;
                 const prompt = forBackend(content, readsPdf(this.model));
                 // The user's own words, for the skills they name ($name), as for a turn's prompt (runBackendTurn).
                 const first = content[0]?.type === "text" && prompt.text.startsWith(content[0].text) ? content[0].text : undefined;

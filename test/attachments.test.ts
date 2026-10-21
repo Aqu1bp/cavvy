@@ -79,7 +79,7 @@ function lastPromptSent(): string {
 /** The runtime's queue drains, as the agent calls them. */
 type Waiting = {
     drainQueued(): string[];
-    drainWaiting(steps: { record(): void; admit(parts: unknown[]): Promise<boolean> }): Promise<{ parts: unknown[]; display: string } | undefined>;
+    drainWaiting(steps: { record(): void; admit(parts: unknown[], display: string): Promise<"go" | "blocked" | "stopped"> }): Promise<{ parts: unknown[]; display: string } | undefined>;
 };
 
 const userPrompts = (messages: Message[]) => messages.filter((m): m is UserMessage => m.role === "user" && m.meta?.kind === "prompt");
@@ -546,7 +546,7 @@ describe("nothing gets lost", () => {
             // Mid-step, as before: only steer-mode text.
             expect(inner.drainQueued()).toEqual(["steer text"]);
             let recorded = 0;
-            const record = { record: () => void recorded++, admit: async () => true };
+            const record = { record: () => void recorded++, admit: async () => "go" as const };
             const first = await inner.drainWaiting(record);
             expect(first?.display).toBe("look at this");
             expect(first?.parts).toEqual([{ type: "text", text: "look at this" }, { type: "image", ...image }]);
@@ -575,7 +575,7 @@ describe("nothing gets lost", () => {
             await engine.handle(c, "session.send", { id, text: "blocked one", mode: "queue" });
             const inner = rt as unknown as Waiting;
             const seen: string[] = [];
-            const steps = { record: () => {}, admit: async (parts: unknown[]) => (seen.push(JSON.stringify(parts)), !JSON.stringify(parts).includes("blocked one")) };
+            const steps = { record: () => {}, admit: async (parts: unknown[]) => (seen.push(JSON.stringify(parts)), JSON.stringify(parts).includes("blocked one") ? ("blocked" as const) : ("go" as const)) };
             const first = await inner.drainWaiting(steps);
             expect(first?.display).toBe("what does @README.md say?");
             // The file's contents, as startTurn attaches them; its hooks saw them too.
@@ -589,6 +589,37 @@ describe("nothing gets lost", () => {
             expect(rt.snapshot().turns).toHaveLength(before);
             expect(rt.snapshot().turns.some((t) => t.prompt?.text === "blocked one")).toBe(false);
             expect(rt.snapshot().state.queued).toEqual([]);
+        } finally {
+            await engine.handle(c, "session.interrupt", { id }).catch(() => undefined);
+            await engine.stop();
+        }
+    });
+
+    test("one stopped while it's prepared stays in the queue where it was, whatever else the user took out meanwhile", async () => {
+        const { engine, c, id, rt } = await busySession();
+        try {
+            for (const text of ["A", "B", "C"]) await engine.handle(c, "session.send", { id, text, mode: "queue" });
+            const inner = rt as unknown as Waiting & { queued: { text: string; held?: boolean }[]; abort?: AbortController };
+            inner.queued[0]!.held = true;
+            const [a] = rt.snapshot().state.queueIds;
+            // The drain's own stop, apart from the running demo turn's.
+            const turnAbort = inner.abort;
+            const stop = (inner.abort = new AbortController());
+            try {
+                const taken = await inner.drainWaiting({
+                    record: () => {},
+                    admit: async () => {
+                        // While B's hooks run, the user removes A and then stops the turn.
+                        await engine.handle(c, "session.dequeue", { id, queueId: a });
+                        stop.abort();
+                        return "go" as const;
+                    },
+                });
+                expect(taken).toBeUndefined();
+                expect(rt.snapshot().state.queued).toEqual(["B", "C"]);
+            } finally {
+                inner.abort = turnAbort;
+            }
         } finally {
             await engine.handle(c, "session.interrupt", { id }).catch(() => undefined);
             await engine.stop();

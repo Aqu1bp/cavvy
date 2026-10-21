@@ -723,13 +723,17 @@ describe("Claude Code's background work (live test findings)", () => {
                 items,
                 waits,
                 drainQueued: () => take((q) => q.mode === "steer" && !q.held && !q.images?.length && !command(q.text)).map((q) => q.text),
-                drainWaiting: async (steps: { record(): void; admit(parts: import("../src/providers/types").UserContent[]): Promise<boolean> }) => {
+                drainWaiting: async (steps: any) => {
                     const q = items.find((x) => !x.held && !command(x.text));
                     if (!q) return undefined;
+                    const at = items.indexOf(q);
                     take((x) => x === q);
-                    steps.record();
                     const parts = [{ type: "text" as const, text: q.text }, ...(q.images ?? [])];
-                    if (!(await steps.admit(parts))) return undefined;
+                    const admitted: unknown = await steps.admit(parts, q.text);
+                    // Stopped before it went: back where it was, as the runtime puts it.
+                    if (admitted === "stopped") items.splice(at, 0, q);
+                    if (admitted !== "go" && admitted !== true) return undefined;
+                    steps.record();
                     waits.push(q.text);
                     return { parts, display: q.text };
                 },
@@ -743,13 +747,14 @@ describe("Claude Code's background work (live test findings)", () => {
             while (!ok() && !over) await Bun.sleep(10);
             return ok();
         }
-        async function waiting(o: { items?: Item[]; settings?: any; skills?: () => import("../src/agent/skills").Skill[] } = {}) {
+        async function waiting(o: { items?: Item[]; settings?: any; skills?: () => import("../src/agent/skills").Skill[]; session?: InstanceType<typeof Session>; signal?: AbortSignal; prepare?: (a: Awaited<ReturnType<typeof makeAgent>>) => void } = {}) {
             process.env.FAKE_SCENARIO = "agent-background";
             process.env.FAKE_SECOND_SCENARIO = "none";
             process.env.FAKE_BACKGROUND_MS = "2000";
             const q = queue(o.items);
-            const a = await makeAgent({ provider: "claude-code", settings: o.settings, skills: o.skills, drainQueued: q.drainQueued, drainWaiting: q.drainWaiting });
-            const done = a.run("map the auth module");
+            const a = await makeAgent({ provider: "claude-code", settings: o.settings, skills: o.skills, session: o.session, drainQueued: q.drainQueued, drainWaiting: q.drainWaiting });
+            o.prepare?.(a);
+            const done = a.run("map the auth module", o.signal);
             while (!notices(a.events).some((n) => n.includes("Waiting for"))) await Bun.sleep(10);
             return { a, q, done };
         }
@@ -823,6 +828,44 @@ describe("Claude Code's background work (live test findings)", () => {
             expect(userTexts().slice(-1)).toEqual(["B fine"]);
             expect(q.waits).toEqual(["B fine"]);
             expect(q.items).toEqual([]);
+        }, 20_000);
+
+        test("one interrupted while its start snapshot is taken goes back whole, image included, and isn't recorded or sent", async () => {
+            const session = Session.create(cwd, { system: "test" });
+            const ac = new AbortController();
+            let capturing = false;
+            let release!: () => void;
+            const capture = new Promise<void>((r) => (release = r));
+            const { a, q, done } = await waiting({
+                session,
+                signal: ac.signal,
+                prepare: (a) => {
+                    a.agent.options.trusted = () => true;
+                    a.agent.turnSnapshots!.begin = async (_id, prompt) => {
+                        if (!prompt.includes("look at this")) return;
+                        capturing = true;
+                        await capture;
+                    };
+                },
+            });
+            try {
+                const image = { type: "image" as const, mediaType: "image/png", data: PNG };
+                q.items.push({ text: "look at this", mode: "queue", images: [image] });
+                while (!capturing) await Bun.sleep(10);
+                ac.abort();
+                await Bun.sleep(100);
+                release();
+                expect(await done).toBe("aborted");
+                // Back in the queue as it was, its image too: the interrupt hands it to the composer.
+                expect(q.items).toEqual([{ text: "look at this", mode: "queue", images: [image] }]);
+                expect(JSON.stringify(a.session.messages)).not.toContain("look at this");
+                expect(userSent("look at this")).toBeUndefined();
+            } finally {
+                release();
+                ac.abort();
+                await done;
+                session.release();
+            }
         }, 20_000);
 
         test("what a UserPromptSubmit hook adds goes with it", async () => {
