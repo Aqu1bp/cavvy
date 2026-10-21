@@ -4,7 +4,7 @@
 // permissions, custom tools, resume, and concurrent queries.
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -741,6 +741,62 @@ describe("trusted: false in a folder the user trusted", () => {
         requests.length = 0;
         await collect(query({ prompt: "hello", options: { cwd, model: MODEL, persistSession: false, permissionMode: "bypassPermissions" } }));
         expect(JSON.stringify(requests[0]!.messages)).toContain("REPO-MEMORY-MARKER");
+    });
+});
+
+describe("SDK integration with skills and subagent definitions", () => {
+    test("explicit distrust also excludes project skills and memory preloaded by a user agent", async () => {
+        const { trustFolder } = await import("../src/config/trust");
+        const cwd = project();
+        const definition = join(HARNESS_HOME, "agents", "sdk-reader.md");
+        const write = (file: string, body: string) => {
+            mkdirSync(file.slice(0, file.lastIndexOf("/")), { recursive: true });
+            writeFileSync(file, body);
+        };
+        write(definition, "---\nname: sdk-reader\ndescription: reader\nskills: [sdk-project-skill]\nmemory: project\n---\nUSER-AGENT-MARKER");
+        write(join(cwd, ".harness", "skills", "sdk-project-skill", "SKILL.md"), "---\ndescription: project skill\n---\nPROJECT-SKILL-MARKER");
+        write(join(cwd, ".harness", "agent-memory", "sdk-reader", "MEMORY.md"), "PROJECT-AGENT-MEMORY-MARKER");
+        trustFolder(cwd);
+        try {
+            for (const trusted of [false, true]) {
+                requests.length = 0;
+                script = (_req, n) => n === 1 ? { calls: [{ id: "task", name: "Task", args: { description: "read", prompt: "review", subagent_type: "sdk-reader" } }] } : { text: "done" };
+                const ms = await collect(query({ prompt: "delegate", options: { cwd, model: MODEL, trusted, persistSession: false, permissionMode: "bypassPermissions" } }));
+                expect(results(ms)[0]!.subtype).toBe("success");
+                const child = requests.find((r) => JSON.stringify(r.messages).includes("USER-AGENT-MARKER"));
+                expect(child).toBeDefined();
+                const sent = JSON.stringify(child!.messages);
+                expect(sent.includes("PROJECT-SKILL-MARKER")).toBe(trusted);
+                expect(sent.includes("PROJECT-AGENT-MEMORY-MARKER")).toBe(trusted);
+                expect(requests[0]!.tools?.some((t) => t.function.name === "Skill")).toBe(trusted);
+            }
+        } finally {
+            rmSync(definition, { force: true });
+        }
+    });
+
+    test("headless keeps slash and dollar skill expansion and exposes the Skill tool", async () => {
+        const cwd = project();
+        const skillDir = join(cwd, ".harness", "skills", "sdk-explain");
+        mkdirSync(skillDir, { recursive: true });
+        writeFileSync(join(skillDir, "SKILL.md"), "---\ndescription: explain\n---\nSKILL-BODY-MARKER $ARGUMENTS @nonexistent.txt");
+        const { runHeadless } = await import("../src/headless");
+        const realWrite = process.stdout.write;
+        try {
+            for (const prompt of ["/sdk-explain topic", "use $sdk-explain please"]) {
+                requests.length = 0;
+                let out = "";
+                process.stdout.write = ((s: string) => ((out += s), true)) as any;
+                const code = await runHeadless({ cwd, prompt, trusted: true, modelRef: MODEL, mode: "default", outputFormat: "stream-json", verbose: false, allowedTools: [], disallowedTools: [], addDirs: [], startupNotes: [] });
+                expect(code).toBe(0);
+                expect(JSON.stringify(requests[0]!.messages)).toContain("SKILL-BODY-MARKER");
+                expect(JSON.stringify(requests[0]!.messages)).toContain("@nonexistent.txt");
+                expect(requests[0]!.tools?.some((t) => t.function.name === "Skill")).toBe(true);
+                expect(JSON.parse(out.split("\n")[0]!).tools).toContain("Skill");
+            }
+        } finally {
+            process.stdout.write = realWrite;
+        }
     });
 });
 
