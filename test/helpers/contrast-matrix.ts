@@ -1,6 +1,9 @@
 // Actual text/surface combinations used by the GUI. Keep layers bottom first:
 // palette rows sit on dialogs, MCP cards on elevated surfaces, and Changes
 // selections/hover states on the sidebar rather than on the window canvas.
+// The older token names (--bg, --fg-muted, ...) point at the redesign's
+// palette and are still measured where they're used, until the last area moves
+// to the new names (SHEET and GLASS below).
 import { cascade, contrast, parseRules, resolveColor, stack, type Root } from "./contrast";
 
 export const AA = 4.5;
@@ -23,6 +26,23 @@ const diff = (kind: "add" | "del") => [
     `--bg-panel > --bg-code > --${kind}-bg`,
     `--bg-panel > --bg-code > color-mix(in srgb, var(--${kind}-bg-strong) 70%, var(--bg-code))`,
 ];
+/** The redesign's sheet and what sits on it. Glass controls and menus (--ctl, --ctl-strong) are measured over the sheet. */
+export const SHEET = [
+    "--sheet", "--sheet-2", "--insp-bg", "--term-bg", "--group", "--seg-on",
+    "--sheet > --hover", "--sheet-2 > --hover", "--group > --hover", "--insp-bg > --hover",
+    "--sheet > --ctl", "--sheet > --ctl-strong", "--sheet > --ctl-strong > --hover", "--sheet-2 > --ctl-strong",
+];
+/**
+ * The rail sits on the window glass, not the sheet: --win-tint over whatever
+ * the desktop shows through. There is no single worst case for a translucent
+ * tint (white behind it hurts light text, black hurts dark text), so the
+ * reference desktop is a mid grey, #808080.
+ */
+export const GLASS = [
+    "#808080 > --win-tint", "#808080 > --win-tint > --rail-hover", "#808080 > --win-tint > --rail-sel",
+    "#808080 > --rail-float", "#808080 > --rail-float > --rail-hover", "#808080 > --rail-float > --rail-sel",
+];
+const SHEET_CODE = ["--sheet", "--sheet-2", "--insp-bg", "--term-bg", "--sheet > --add-bg", "--sheet > --del-bg", "--term-bg > --add-bg", "--term-bg > --del-bg"];
 const SHIKI = ["foreground", "token-keyword", "token-string", "token-string-expression", "token-comment", "token-function", "token-constant", "token-parameter", "token-punctuation", "token-link"];
 
 /** Token/expression and the opaque surface or composited layers behind it. */
@@ -43,7 +63,21 @@ export const TEXT: [string, string[]][] = [
     ["--auto", ["--bg", "--bg > --auto-soft"]],
     ["--add-fg", diff("add")],
     ["--del-fg", diff("del")],
-    ...SHIKI.map((name): [string, string[]] => [`--shiki-${name}`, DIFF_CODE]),
+    ...SHIKI.map((name): [string, string[]] => [`--shiki-${name}`, [...DIFF_CODE, ...SHEET_CODE]]),
+
+    // The redesign's names.
+    ["--fg", [...SHEET, "--sheet > --press", "--sheet > --find", "--sheet-2 > --find", "--sheet > --find-cur"]],
+    ["--fg-2", SHEET],
+    ["--fg-3", SHEET],
+    ["--accent-text", SHEET],
+    ["--accent-ink", ["--accent", "--accent-hover"]],
+    ["--rail-fg", GLASS],
+    ["--rail-fg-2", GLASS],
+    ["--ok", [...SHEET, "--sheet > color-mix(in srgb, var(--ok) 12%, transparent)"]],
+    ["--warn", [...SHEET, "--sheet > --warn-bg", "--sheet-2 > --warn-bg"]],
+    ["--danger", [...SHEET, "--sheet > color-mix(in srgb, var(--danger) 12%, transparent)"]],
+    ["--add-fg", ["--sheet > --add-bg", "--sheet-2 > --add-bg", "--term-bg > --add-bg", "--sheet > --add-bg-strong"]],
+    ["--del-fg", ["--sheet > --del-bg", "--sheet-2 > --del-bg", "--term-bg > --del-bg", "--sheet > --del-bg-strong"]],
 ];
 
 /** Every declared theme and its actual light/dark scheme. */
@@ -55,15 +89,28 @@ export function themes(css: string): Root[] {
     });
 }
 
-/** Include the default and every custom accent declared for each theme's scheme. */
+/** Values a token file declares for one attribute, e.g. every [data-glass="…"]. */
+function declared(selectors: string[], attr: string): string[] {
+    return [...new Set(selectors.flatMap((s) => [...s.matchAll(new RegExp(`\\[data-${attr}="([^"]+)"\\]`, "g"))].map((m) => m[1]!)))];
+}
+
+/**
+ * Each theme as the app sets it up (glass window, standard contrast), then
+ * with every Window and Contrast setting the file declares, and with every
+ * custom accent declared for its scheme.
+ */
 export function configurations(css: string): Root[] {
     const selectors = parseRules(css).flatMap((r) => r.selectors);
-    return themes(css).flatMap((root) => {
+    const glasses = ["glass", ...declared(selectors, "glass").filter((g) => g !== "glass")];
+    const contrasts = ["standard", ...declared(selectors, "contrast").filter((c) => c !== "standard")];
+    return themes(css).flatMap((theme) => {
+        const root: Root = { ...theme, glass: "glass", contrast: "standard" };
         const accents = new Set(selectors.flatMap((s) => {
             const match = /^\[data-scheme="([^"]+)"\]\[data-accent="([^"]+)"\]$/.exec(s);
             return match?.[1] === root.scheme ? [match[2]!] : [];
         }));
-        return [root, ...[...accents].map((accent) => ({ ...root, accent }))];
+        const looks = glasses.flatMap((glass) => contrasts.map((contrast) => ({ ...root, glass, contrast })));
+        return [...looks, ...[...accents].map((accent) => ({ ...root, accent }))];
     });
 }
 

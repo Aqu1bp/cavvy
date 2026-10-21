@@ -1,6 +1,7 @@
-// Every GUI theme's text colors must reach WCAG AA (4.5:1) on the surfaces
-// that text sits on. Ratios are computed from tokens.css itself, so a new
-// theme, or a token nudged back toward the background, fails here.
+// Every GUI palette's text colors must reach WCAG AA (4.5:1) on the surfaces
+// that text sits on, with every Window (glass, tinted, solid), Contrast and
+// accent setting. Ratios are computed from tokens.css itself, so a new
+// palette, or a token nudged back toward the background, fails here.
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
@@ -10,20 +11,33 @@ import { AA, configurations, failures, measure, themes } from "./helpers/contras
 
 const CSS = readFileSync(resolve(import.meta.dir, "../gui/src/styles/tokens.css"), "utf8");
 describe("WCAG contrast of GUI text tokens", () => {
-    test("finds all six themes with their schemes", () => {
-        expect(themes(CSS).map((t) => `${t.theme}/${t.scheme}`)).toEqual(["light/light", "paper/light", "dark/dark", "midnight/dark", "dusk/dark", "contrast/dark"]);
+    test("finds the two palettes with their schemes", () => {
+        expect(themes(CSS).map((t) => `${t.theme}/${t.scheme}`)).toEqual(["light/light", "dark/dark"]);
     });
 
     test("includes custom accents in both schemes", () => {
         for (const theme of ["light", "dark"]) {
-            expect(configurations(CSS).filter((c) => c.theme === theme).map((c) => c.accent)).toEqual([
+            expect(configurations(CSS).filter((c) => c.theme === theme && c.glass === "glass" && c.contrast === "standard").map((c) => c.accent)).toEqual([
                 undefined, "blue", "indigo", "violet", "pink", "red", "orange", "green", "teal", "graphite",
             ]);
         }
     });
 
+    test("includes every Window and Contrast setting in both schemes", () => {
+        for (const theme of ["light", "dark"]) {
+            expect(configurations(CSS).filter((c) => c.theme === theme && !c.accent).map((c) => `${c.glass}/${c.contrast}`)).toEqual([
+                "glass/standard", "glass/high", "tinted/standard", "tinted/high", "solid/standard", "solid/high",
+            ]);
+        }
+    });
+
+    test("measures the rail over the window tint on a mid-grey desktop", () => {
+        const rail = measure(CSS, { theme: "dark", scheme: "dark", glass: "glass", contrast: "standard" }).filter((m) => m.token === "--rail-fg-2");
+        expect(rail.map((m) => m.surface)).toContain("#808080 > --win-tint");
+    });
+
     for (const root of configurations(CSS)) {
-        test(`${root.theme}/${root.accent ?? "default"}: text reaches ${AA}:1 on its surfaces`, () => {
+        test(`${root.theme}/${root.glass}/${root.contrast}/${root.accent ?? "default"}: text reaches ${AA}:1 on its surfaces`, () => {
             expect(failures(CSS, root)).toEqual([]);
         });
     }
@@ -32,7 +46,7 @@ describe("WCAG contrast of GUI text tokens", () => {
         // The pre-fix light --fg-subtle, appended so it wins the cascade.
         const lowered = `${CSS}\n[data-theme="light"] { --fg-subtle: #a1a1a6; }`;
         const result = measure(lowered, { theme: "light", scheme: "light" }).find((m) => m.token === "--fg-subtle" && m.surface === "--bg");
-        expect(result?.ratio).toBeCloseTo(2.57, 2);
+        expect(result?.ratio).toBeCloseTo(2.51, 2);
         expect(failures(lowered, { theme: "light", scheme: "light" }).some((f) => f.startsWith("--fg-subtle on "))).toBe(true);
     });
 
