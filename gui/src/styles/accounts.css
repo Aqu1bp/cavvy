@@ -1,28 +1,34 @@
-.accounts { margin-top: 12px; display: grid; gap: 10px; min-width: 0; }
+/* Accounts under a CLI provider (Settings → Providers): indented under its
+   name, a toolbar, then the accounts as a small inset list on the sheet. */
+.accounts { display: grid; gap: 10px; min-width: 0; padding: 0 14px 14px 54px; }
 .account-toolbar, .account-actions, .account-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.account-toolbar { justify-content: space-between; }
-.account-help summary, .account-advanced summary { cursor: pointer; width: fit-content; }
+.account-toolbar { justify-content: space-between; color: var(--fg-3); }
+.account-help { color: var(--fg-3); }
+.account-help summary, .account-advanced summary { cursor: default; width: fit-content; color: var(--fg-2); font-weight: 500; }
+.account-help summary:hover, .account-advanced summary:hover { color: var(--fg); }
 .account-help p { margin: 8px 0 0; line-height: 1.5; }
-.account-form { display: grid; gap: 8px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; }
-.account-form label { font-size: 12px; font-weight: 500; }
+.account-form { display: grid; gap: 8px; padding: 12px 14px; border-radius: 12px; background: var(--sheet); box-shadow: inset 0 0 0 0.5px var(--line); }
+.account-form label { font-size: 0.857rem; font-weight: 600; color: var(--fg-2); }
 .account-form .input { width: 100%; min-width: 0; }
-.account-advanced { font-size: 12px; }
+.account-advanced { font-size: 0.857rem; }
 .account-advanced label, .account-advanced .small, .account-advanced .account-error { display: block; margin-top: 8px; }
 .account-advanced input { margin-top: 6px; }
-.account-list { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.account-list { border-radius: 12px; background: var(--sheet); box-shadow: inset 0 0 0 0.5px var(--line); overflow: hidden; }
 .account-list:empty { display: none; }
-.account-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 12px; }
-.account-row + .account-row { border-top: 1px solid var(--border); }
+.account-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 12px; }
+.account-row + .account-row { border-top: 0.5px solid var(--line); }
 .account-identity { flex: 1; min-width: 0; }
-.account-title strong { font-size: 13px; overflow-wrap: anywhere; }
-.account-status { margin-top: 4px; overflow-wrap: anywhere; }
+.account-title strong { font-size: 0.929rem; font-weight: 500; overflow-wrap: anywhere; }
+.account-title .chip { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
+.account-status { margin-top: 2px; color: var(--fg-3); overflow-wrap: anywhere; }
 .account-path { overflow-wrap: anywhere; }
 .account-rename { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .account-rename .input { flex: 1 1 160px; min-width: 0; }
-.account-error { color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
+.account-error { color: var(--danger); font-size: 0.857rem; overflow-wrap: anywhere; }
 .account-rename .account-error { flex-basis: 100%; }
-.accounts summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
-@media (max-width: 480px) {
+.accounts summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+@container main (max-width: 520px) {
+    .accounts { padding-left: 14px; }
     .account-toolbar { align-items: flex-start; }
     .account-form { padding: 10px; }
     .account-title { align-items: flex-start; flex-direction: column; gap: 4px; }
