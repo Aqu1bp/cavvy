@@ -2360,7 +2360,11 @@ export class Agent {
         try {
             const starting = await this.hooks("SubagentStart", { agent_id: session.meta.id, agent_type: type, description: req.description }, signal);
             if (starting?.additionalContext) child.addReminder(`Context from a SubagentStart hook:\n${starting.additionalContext}`);
-            reason = await child.run([{ type: "text", text: req.prompt }], { signal });
+            // continue: false: it doesn't start at all (and the parent's turn ends too).
+            if (starting?.stop) {
+                lastError = `Stopped by SubagentStart hook: ${starting.stop}`;
+                reason = "blocked";
+            } else reason = await child.run([{ type: "text", text: req.prompt }], { signal });
         } catch (e) {
             reason = signal.aborted ? "aborted" : "error";
             lastError ??= redact((e as Error).message ?? String(e));

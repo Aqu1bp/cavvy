@@ -459,6 +459,16 @@ describe("Codex's items run the harness's hooks", () => {
             expect(jsonl(stops).map((l) => l.agent_type)).toEqual(["codex"]);
         });
 
+        test("a deny that also says continue:false refuses the command and ends the turn", async () => {
+            const stop = say({ continue: false, stopReason: "enough for today", hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "no" } });
+            const a = await makeAgent("codex", { hooks: { PreToolUse: [{ command: stop }] } }, "default", () => ({ allow: true }));
+            await a.run("make x");
+            // Codex's "cancel" refuses the call and ends its turn; a plain decline would let it go on.
+            expect(decision()).toBe("cancel");
+            expect(ranLine()).toMatchObject({ ran: false });
+            expect(a.asked).toEqual([]);
+        });
+
         test("a hook that says nothing lets the command run as bypass would; a rewrite is refused", async () => {
             const a = await makeAgent("codex", { hooks: { PreToolUse: [{ command: "true" }] } }, "bypassPermissions", () => ({ allow: false, message: "no", stop: false }));
             expect(await a.run("make x")).toBe("done");
@@ -506,6 +516,18 @@ describe("Codex's items run the harness's hooks", () => {
         const turns = received().filter((m) => m.method === "turn/start");
         expect(turns).toHaveLength(2);
         expect(turns[1].params.input[0].text).toContain("x is generated");
+    });
+
+    test("context from several PostToolUse hooks that finish after the turn all comes in the next turn", async () => {
+        process.env.FAKE_SCENARIO = "steps";
+        process.env.FAKE_STEER_FAIL = "1";
+        // One per command (ls 1, ls 2), once each, so the next turn's commands add nothing.
+        const hook = `n=$(grep -o 'ls [0-9]' | head -1 | tr -d ' '); sleep 0.3; [ -f '${cwd}/'$n ] || { touch '${cwd}/'$n; echo '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"saw '$n'"}}'; }`;
+        const { run } = await makeAgent("codex", { hooks: { PostToolUse: [{ matcher: "Bash", command: hook }] } });
+        expect(await run("check")).toBe("done");
+        const next = received().filter((m) => m.method === "turn/start")[1]?.params.input[0].text;
+        expect(next).toContain("saw ls1");
+        expect(next).toContain("saw ls2");
     });
 
     test("a declined command doesn't run PostToolUse or PostToolUseFailure", async () => {

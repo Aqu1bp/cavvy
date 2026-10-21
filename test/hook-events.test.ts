@@ -238,6 +238,18 @@ describe("SessionStart and SessionEnd", () => {
         ]);
     });
 
+    test("after /clear, a prompt waits for SessionStart even while SessionEnd still runs", async () => {
+        const proj = tempDir();
+        mkdirSync(join(proj, ".harness"), { recursive: true });
+        writeFileSync(join(proj, ".harness", "settings.json"), JSON.stringify({ hooks: { SessionEnd: [{ command: "sleep 0.3" }], SessionStart: [{ command: `echo '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"codename OSPREY"}}'` }] } }));
+        const app = testApp(proj);
+        app.newSession();
+        const starting = app.session.hooksStarting;
+        expect(starting).toBeDefined();
+        await starting;
+        expect(app.session.hookContext.join("\n")).toContain("codename OSPREY");
+    });
+
     describe("in -p mode", () => {
         const realWrite = process.stdout.write;
         afterEach(() => {

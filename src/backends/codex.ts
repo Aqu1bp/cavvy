@@ -1373,9 +1373,10 @@ class CodexTurn {
             return this.host.permission(said ? { ...req, hookDecision: said } : req);
         }
         const h = await this.host.hooks!("PreToolUse", { tool_name: req.toolName, tool_input: req.input, ...(req.callId ? { tool_use_id: req.callId } : {}) });
+        // continue: false first, so a deny that also says it ends the turn.
+        if (h?.stop) return { allow: false, message: `Stopped by PreToolUse hook: ${h.stop}`, stop: true };
         if (h?.blocked) return { allow: false, message: `Blocked by PreToolUse hook: ${h.blocked}`, stop: false };
         if (h?.decision === "deny") return { allow: false, message: `Denied by PreToolUse hook${h.reason ? `: ${h.reason}` : ""}`, stop: false };
-        if (h?.stop) return { allow: false, message: `Stopped by PreToolUse hook: ${h.stop}`, stop: true };
         if (h?.updatedInput) return { allow: false, message: CANT_REWRITE, stop: false };
         const hookDecision = h?.decision === "allow" || h?.decision === "ask" ? h.decision : undefined;
         return this.host.permission({ ...req, hookDecision, hooksOnly: (this.turnMode ?? this.host.mode()) === "bypassPermissions" });
@@ -1644,6 +1645,11 @@ class CodexTurn {
         }).catch(() => {});
     }
 
+    /** Several hooks finishing after the turn all reach the next one. */
+    private addFollowUp(text: string) {
+        this.followUp = this.followUp ? `${this.followUp}\n\n${text}` : text;
+    }
+
     /**
      * Add text to the running turn (turn/steer). The user's words start the
      * next turn if that fails; the harness's own notes (followUp false) don't.
@@ -1657,14 +1663,14 @@ class CodexTurn {
         }
         // The turn is over (a hook finishing after it): the next one takes it.
         if (!this.threadId || !this.turnId || this.status !== undefined) {
-            if (followUp) this.followUp = text;
+            if (followUp) this.addFollowUp(text);
             return;
         }
         // In the steering chain, so a turn that ends meanwhile waits to see whether Codex took it.
         const sent = this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: this.turnId, input: this.input(text, []) }).then(
             () => {},
             () => {
-                if (followUp) this.followUp = text;
+                if (followUp) this.addFollowUp(text);
             },
         );
         this.steering = this.steering.then(() => sent);

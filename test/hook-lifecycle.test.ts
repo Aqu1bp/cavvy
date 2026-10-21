@@ -226,6 +226,15 @@ describe("SubagentStart", () => {
         const child = requests.find((r) => r.system !== "PARENT")!;
         expect(JSON.stringify(child.messages[0].content)).toContain("Context from a SubagentStart hook:\\nuse pnpm");
     });
+    test("continue:false keeps the sub-agent from starting, and ends the parent's turn", async () => {
+        const proj = tempDir();
+        const settings = { autoCompact: false, hooks: { SubagentStart: [{ command: `echo '{"continue":false,"stopReason":"no sub-agents today"}'` }] } };
+        const { agent, requests } = agentFor(proj, settings, (req) => (req.system !== "PARENT" ? toolCall("w", "Write", { file_path: join(proj, "child-wrote"), content: "x" }) : afterTools(req) ? text("parent done") : toolCall("t1", "Task", { description: "Greet", prompt: "Say hi", subagent_type: "general-purpose" })), [TaskTool]);
+        await run(agent, "delegate");
+        expect(requests.some((r) => r.system !== "PARENT")).toBe(false);
+        expect(existsSync(join(proj, "child-wrote"))).toBe(false);
+        expect(requests.filter((r) => r.system === "PARENT")).toHaveLength(1);
+    });
 });
 
 describe("Stop and StopFailure", () => {
@@ -405,6 +414,23 @@ describe("SessionStart and InstructionsLoaded hooks get what other events' do (r
         await until(() => session.hookContext.some((c) => c.includes("from the background")));
         await run(agent, "hi");
         expect(JSON.stringify(requests[0]!.messages.at(-1).content)).toContain("from the background");
+    });
+});
+
+describe("SessionStart mcp_tool hooks at startup", () => {
+    test("wait for MCP servers still connecting, rather than calling the tool missing", async () => {
+        const proj = tempDir();
+        const calls: unknown[] = [];
+        const mcpTool = { name: "mcp__notes__log", category: "mcp", run: async (input: any) => (calls.push(input), { content: "logged" }) };
+        let tools: any[] = [];
+        const ready = Bun.sleep(100).then(() => (tools = [mcpTool]));
+        const settings = { autoCompact: false, hooks: { SessionStart: [{ type: "mcp_tool", server: "notes", tool: "log", input: { source: "${source}" } }] } };
+        const session = Session.create(proj, { persist: false });
+        const warnings: string[] = [];
+        const warn = (m: string) => void warnings.push(m);
+        await sessionStartHooks(settings as any, session, "startup", proj, warn, sessionHookServices({ session: () => session, warn, mcpTools: () => tools, mcpReady: () => ready }));
+        expect(warnings).toEqual([]);
+        expect(calls).toEqual([{ source: "startup" }]);
     });
 });
 

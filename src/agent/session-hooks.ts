@@ -38,12 +38,18 @@ export async function instructionsLoadedHooks(settings: Settings, session: Sessi
  * turn: the small model, the session's MCP tools, and the session for what an
  * async hook sends back (it goes with the next prompt).
  */
-export function sessionHookServices(o: { session: () => Session; warn: HookNotice; complete?: (system: string, prompt: string, signal?: AbortSignal) => Promise<string>; mcpTools?: () => Tool<any>[] }): HookServices {
+export function sessionHookServices(o: { session: () => Session; warn: HookNotice; complete?: (system: string, prompt: string, signal?: AbortSignal) => Promise<string>; mcpTools?: () => Tool<any>[]; mcpReady?: () => Promise<unknown> }): HookServices {
     return {
         complete: o.complete ? (system, prompt, signal) => o.complete!(system, prompt, signal) : undefined,
         callTool: o.mcpTools
             ? async (server, name, input, signal) => {
-                  const tool = o.mcpTools!().find((t) => t.category === "mcp" && t.name === toolNameFor(server, name));
+                  const find = () => o.mcpTools!().find((t) => t.category === "mcp" && t.name === toolNameFor(server, name));
+                  // At startup the servers may still be connecting: wait for them before calling it missing.
+                  let tool = find();
+                  if (!tool && o.mcpReady) {
+                      await o.mcpReady();
+                      tool = find();
+                  }
                   if (!tool) throw new Error(`no tool ${name} on a connected MCP server "${server}"`);
                   const r = await tool.run(input, { signal } as any);
                   return { text: r.content, isError: Boolean(r.isError) };
