@@ -426,6 +426,44 @@ describe("on exit", () => {
         expect(wt.cwd).toBe(wt.path);
     });
 
+    test("trust doesn't carry over through a committed link that stands for the worktree root", async () => {
+        const { trustFolder, isTrusted, forgetTrustInside } = await import("../src/config/trust");
+        const { carryTrust } = await import("../src/ui/worktree");
+        // Launched through a link to the root: trusted by that path, it's still the whole checkout.
+        const main = repo();
+        symlinkSync(".", join(main, "up"));
+        git(main, "add", "up");
+        git(main, "commit", "-qm", "up");
+        trustFolder(join(main, "up"));
+        // Or a folder that's real here but a link to the root in the commit.
+        symlinkSync(".", join(main, "down"));
+        git(main, "add", "down");
+        git(main, "commit", "-qm", "down");
+        rmSync(join(main, "down"));
+        mkdirSync(join(main, "down"));
+        trustFolder(join(main, "down"));
+        try {
+            for (const [from, name] of [["up", "via-up"], ["down", "via-down"]] as const) {
+                const wt = await W.enterSessionWorktree({ cwd: join(main, from), name });
+                carryTrust(join(main, from), wt, "head");
+                expect(isTrusted(wt.path)).toBe(false);
+            }
+        } finally {
+            forgetTrustInside(main);
+        }
+    });
+
+    test("a folder whose name starts with .. is still the same subfolder", async () => {
+        const main = repo();
+        mkdirSync(join(main, "..app"));
+        writeFileSync(join(main, "..app", "x.ts"), "x\n");
+        git(main, "add", "-A");
+        git(main, "commit", "-qm", "dots");
+        const wt = await W.enterSessionWorktree({ cwd: join(main, "..app"), name: "dots" });
+        expect(wt.cwd).toBe(join(wt.path, "..app"));
+        expect(wt.sameFolder).toBe(true);
+    });
+
     test("removing a worktree forgets trust saved for it, and only for it", async () => {
         const { trustFolder, trustedByUser } = await import("../src/config/trust");
         const { main, wt } = await fresh();

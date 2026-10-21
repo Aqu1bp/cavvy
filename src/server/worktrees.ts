@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "bun";
 import { createHash } from "crypto";
 import { appendFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { gitArgv, gitEnv } from "../util/git";
 import { isInside } from "../util/files";
 import { trustedByUser } from "../config/trust";
@@ -603,9 +603,11 @@ export async function unpushedReason(o: { path: string; worktree: string }): Pro
  * deleted when `deleteIgnored` is the token for exactly the list the user saw.
  * A folder that's already gone loses only its own record.
  */
-export async function runRemoval(plan: Removal, o: { deleteIgnored?: string } = {}, log?: Log): Promise<RemoveWorktreeResult> {
+export async function runRemoval(plan: Removal, o: { deleteIgnored?: string; inUse?: (path: string) => boolean } = {}, log?: Log): Promise<RemoveWorktreeResult> {
     const waiting = await ignoredWaiting(plan, o.deleteIgnored, log);
     if (waiting) return waiting;
+    // Asked again after the awaits above: a session may have opened there since the plan.
+    if (plan.exists && o.inUse?.(plan.path)) throw new RpcError(`A Harness session is open in ${plan.path} (in this app, or in another process such as a terminal). Close it first.`, "in_use");
     // Untracked files count even where the user's config hides them from status.
     const r = await runGitAsync(plan.main, [...NO_HOOKS, "-c", "status.showUntrackedFiles=normal", "worktree", "remove", plan.exists ? canonical(plan.path) : plan.path], REMOVE_TIMEOUT_MS);
     if (r.timedOut) {
@@ -779,11 +781,15 @@ function sameSubfolder(cwd: string, worktree: string): { cwd: string; matched: b
     if (!top) return { cwd: worktree, matched: false };
     const rel = relative(canonical(top), canonical(cwd));
     if (!rel) return { cwd: worktree, matched: true };
-    if (rel.startsWith("..") || isAbsolute(rel)) return { cwd: worktree, matched: false };
+    if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return { cwd: worktree, matched: false };
     const there = join(worktree, rel);
+    if (!isDir(there)) return { cwd: worktree, matched: false };
     // Still inside the worktree once links are followed: a linked src/ could lead back into the main checkout.
     const real = canonical(worktree);
-    return isDir(there) && isInside(canonical(there), real) ? { cwd: there, matched: true } : { cwd: worktree, matched: false };
+    const resolved = canonical(there);
+    if (!isInside(resolved, real)) return { cwd: worktree, matched: false };
+    // The same folder only when no link is on the way: a link could stand for the root, or any folder above.
+    return { cwd: there, matched: resolved === join(real, rel) };
 }
 
 /**
