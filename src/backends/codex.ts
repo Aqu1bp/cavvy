@@ -213,7 +213,7 @@ function codexPolicyKey(m: PermissionMode, readOnly: boolean): string {
     return `${p.approvalPolicy}|${p.sandbox}|${p.approvalsReviewer}`;
 }
 
-/** A one-off's thread: only the question, so no shell, web search, sub-agents, goals, apps or memories. */
+/** A one-off's thread: only the question, so no shell, web search, sub-agents, goals, apps or memories (and no MCP servers: stream()). */
 const ONE_OFF_CONFIG = { web_search: "disabled", "features.multi_agent": false, "features.goals": false, "features.apps": false, "features.memories": false, "features.shell_tool": false, "features.unified_exec": false };
 
 /** Our name to Codex: it records it as the originator of the threads we start. */
@@ -310,7 +310,9 @@ export class CodexBackend implements AgentBackendClient {
         try {
             await withTimeout(handshake(rpc), 30_000, "Codex didn't start (no answer to initialize)");
             const model = req.model.id === "default" ? undefined : req.model.id;
-            const r: any = await rpc.request("thread/start", { cwd: homedir(), model, ephemeral: true, approvalPolicy: "never", sandbox: "read-only", baseInstructions: req.system, config: ONE_OFF_CONFIG });
+            // No MCP servers either: every one Codex has is turned off, as for a read-only agent (an unreadable config refuses).
+            const servers = codexMcpOverrides(await rpc.request("config/read", { cwd: homedir(), includeLayers: true }), true).config;
+            const r: any = await rpc.request("thread/start", { cwd: homedir(), model, ephemeral: true, approvalPolicy: "never", sandbox: "read-only", baseInstructions: req.system, config: { ...ONE_OFF_CONFIG, ...servers } });
             threadId = r?.thread?.id;
             if (!threadId) throw new ProviderError("Codex didn't start a thread");
             const t: any = await rpc.request("turn/start", { threadId, input: [{ type: "text", text: oneOffPrompt(req), text_elements: [] }] });
