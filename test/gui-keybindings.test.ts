@@ -52,8 +52,21 @@ describe("the window's keymap", () => {
         expect(kb.actionOf(ev("Enter", "Enter"), ["Chat", "Global"])).toBe("chat:submit");
         expect(kb.actionOf(ev("Enter", "Enter", { shiftKey: true }), ["Chat", "Global"])).toBe("chat:newline");
         expect(kb.actionOf(ev("Tab", "Tab", { shiftKey: true }), ["Chat", "Global"])).toBe("chat:cycleMode");
+        // Mid-turn, steer or queue the other way; the composer asks for it.
+        expect(kb.actionOf(ev("Enter", "Enter", { ...MOD, shiftKey: true }), ["Chat", "Global"])).toBe("chat:submitOtherWay");
+        expect(kb.shortcut("chat:submitOtherWay")).toBe(os === "macos" ? "⇧+⌘+Enter" : "Ctrl+Shift+Enter");
         // Exact: a shifted Mod+K isn't the palette.
         expect(kb.actionOf(ev("K", "KeyK", { ...MOD, shiftKey: true }), ["Global"])).toBeUndefined();
+    });
+
+    test("the steer-or-queue key can be moved or taken away", () => {
+        kb.applyKeybindingsFile(fileOf([{ context: "Chat", bindings: { "mod+shift+enter": null, "alt+enter": "chat:submitOtherWay" } }]));
+        expect(kb.actionOf(ev("Enter", "Enter", { ...MOD, shiftKey: true }), ["Chat", "Global"])).toBeUndefined();
+        expect(kb.actionOf(ev("Enter", "Enter", { altKey: true }), ["Chat", "Global"])).toBe("chat:submitOtherWay");
+        expect(kb.shortcut("chat:submitOtherWay")).toBe(os === "macos" ? "⌥+Enter" : "Alt+Enter");
+        kb.applyKeybindingsFile(fileOf([{ context: "Global", bindings: { "mod+shift+enter": null } }]));
+        expect(kb.shortcut("chat:submitOtherWay")).toBeUndefined();
+        kb.applyKeybindingsFile({ path: "/k.json" });
     });
 
     test("one answer per event, however many handlers ask", () => {

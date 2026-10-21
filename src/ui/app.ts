@@ -9,7 +9,7 @@ import { Screen, type Entry, type Printable } from "./screen";
 import { Editor, imagesIn, plainText, withoutImage, type Draft } from "./editor";
 import { followUpDefault, loadQueue, saveQueue, type FollowUp, type StoredQueued } from "../agent/queue-store";
 import type { Key } from "./keys";
-import { CHORD_TIMEOUT_MS, type Keymap } from "../keybindings/core";
+import { CHORD_TIMEOUT_MS, strokeId, type Keymap } from "../keybindings/core";
 import { TuiKeybindings, tuiStroke } from "../keybindings/tui";
 import { bold, dim, italic, strike, stripAnsi, theme, truncate, width, wrapLine, termCols, termRows, padEnd, sanitizeLine } from "./ansi";
 import { inline, MarkdownStream, renderMarkdown } from "./markdown";
@@ -1321,7 +1321,7 @@ export class App {
         const r = this.keys.matcher.match(stroke, menu?.items.length ? ["Autocomplete", "Chat", "Global"] : ["Chat", "Global"]);
         if (r.kind === "pending") {
             // A new chord after one that went nowhere: the old one's keys first.
-            if (r.abandoned) for (const h of this.chordHeld.splice(0)) this.fixedKey(h, menu);
+            if (r.abandoned) for (const h of this.chordHeld.splice(0)) this.replayKey(h, menu);
             this.chordHeld.push(k);
             this.flash = { text: `${r.keys.replace(/ctrl\+enter/g, "ctrl+j")} … (waiting for the next key)`, until: Date.now() + CHORD_TIMEOUT_MS };
             const token = ++this.chordToken;
@@ -1337,7 +1337,7 @@ export class App {
         }
         const held = this.chordHeld.splice(0);
         if (held.length) this.flash = undefined;
-        if (r.abandoned) for (const h of held) this.fixedKey(h, menu);
+        if (r.abandoned) for (const h of held) this.replayKey(h, menu);
         if (r.kind === "action") return this.runKeyAction(r.action, k, this.completions());
         // Unbinding takes away an action, not the key's editing meaning (a GUI-only null can't break the prompt).
         return this.fixedKey(k, held.length ? this.completions() : menu, r.kind === "none" && r.unbound);
@@ -1349,7 +1349,20 @@ export class App {
         this.keys.matcher.reset();
         this.chordToken++;
         if (held.length && this.flash?.text.endsWith("(waiting for the next key)")) this.flash = undefined;
-        for (const h of held) this.fixedKey(h, menu);
+        for (const h of held) this.replayKey(h, menu);
+    }
+
+    /**
+     * A key of a chord that went nowhere, on its own: its editing meaning, and
+     * the steer-or-queue key still sends (as it did before it was bindable), unless unbound.
+     */
+    private replayKey(k: Key, menu: ReturnType<App["completions"]>) {
+        const stroke = tuiStroke(k);
+        const contexts = menu?.items.length ? (["Autocomplete", "Chat", "Global"] as const) : (["Chat", "Global"] as const);
+        const id = stroke && strokeId(stroke);
+        const own = id ? contexts.map((c) => this.keys.keymap.table.get(c)?.get(id)).find((a) => a !== undefined) : undefined;
+        if (own === "chat:submitOtherWay") return this.runKeyAction(own, k, menu);
+        return this.fixedKey(k, menu, own === null);
     }
 
     private dropChord() {
@@ -1383,6 +1396,10 @@ export class App {
                 return void this.submit();
             case "chat:newline":
                 return e.insert("\n");
+            case "chat:submitOtherWay":
+                // Only while a turn runs, for a prompt with something in it; otherwise the key is as if unbound.
+                if (this.busy && this.inputMode === "prompt" && e.text.trim()) return void this.submit(true);
+                return this.fixedKey(k, menu);
             case "chat:cancel":
                 return this.escapeKey();
             case "chat:cycleMode":
@@ -1443,13 +1460,6 @@ export class App {
     private fixedKey(k: Key, menu: ReturnType<App["completions"]>, unbound = false) {
         const e = this.editor;
         const n = k.name;
-        // Tab keeps the mid-turn shortcut unless a binding, chord, or explicit unbinding claims it.
-        if (!unbound && n === "tab" && !k.shift && !k.ctrl && !k.meta && this.busy && this.inputMode === "prompt" && e.text.trim()) {
-            const contexts = menu?.items.length ? ["Autocomplete", "Chat", "Global"] as const : ["Chat", "Global"] as const;
-            // A held chord prefix also comes here on timeout; preserve an explicit null then too.
-            const binding = contexts.map((context) => this.keys.keymap.table.get(context)?.get("tab")).find((value) => value !== undefined);
-            if (binding !== null) return void this.submit(true);
-        }
         if (n === "enter" && menu?.items.length && !k.shift && !k.meta && !k.ctrl) return this.applyCompletion(menu, true);
         // Any other modified Enter nobody unbound adds a line, in terminals that tell them apart.
         if (n === "enter" && (k.shift || k.meta || k.ctrl)) return unbound ? undefined : e.insert("\n");
@@ -1695,7 +1705,7 @@ export class App {
     // -----------------------------------------------------------------------
     // Submitting
 
-    /** `opposite`: Tab while working, the other of steer and queue for this message. */
+    /** `opposite`: the steer-or-queue key (Tab) while working, the other of steer and queue for this message. */
     private async submit(opposite = false) {
         if (this.pendingSubmit) {
             this.flash = { text: "Still preparing images for the last prompt (esc cancels it)", until: Date.now() + 2000 };
@@ -2209,11 +2219,17 @@ export class App {
         return { flow: out, status };
     }
 
+    private followUpPlaceholder(): string {
+        const k = this.keys.label("chat:submitOtherWay");
+        const send = this.keys.label("chat:submit") ?? "enter";
+        return this.followUp() === "steer" ? `Steer the current turn (${send})${k ? ` · ${k} to queue it for after` : ""}` : `Queue a message for after this turn (${send})${k ? ` · ${k} to steer now` : ""}`;
+    }
+
     private renderInput(cols: number): string[] {
         const color = this.inputMode === "bash" ? theme.bashMode : this.inputMode === "memory" ? theme.memoryMode : this.mode === "plan" ? theme.planMode : theme.subtle;
         const symbol = this.inputMode === "bash" ? "!" : this.inputMode === "memory" ? "#" : ">";
         const rule = color("─".repeat(Math.max(10, cols - 1)));
-        const placeholder = this.inputMode === "bash" ? "Run a shell command" : this.inputMode === "memory" ? "Add to memory" : this.busy ? (this.followUp() === "steer" ? "Steer the current turn (enter) · tab to queue it for after" : "Queue a message for after this turn (enter) · tab to steer now") : 'Try "explain this codebase" or "fix the failing test"';
+        const placeholder = this.inputMode === "bash" ? "Run a shell command" : this.inputMode === "memory" ? "Add to memory" : this.busy ? this.followUpPlaceholder() : 'Try "explain this codebase" or "fix the failing test"';
         const r = this.editor.render(cols - 2, color(symbol) + " ", "  ", { showCursor: true, placeholder });
         const maxInput = Math.max(3, termRows() - 12);
         let inputLines = r.lines;
@@ -2373,7 +2389,7 @@ function shortcutHelp(cols: number, keys: TuiKeybindings): string[] {
         ["/ for commands", hint("chat:externalEditor", (k) => `${k} to edit in $EDITOR`), hint("app:toggleTranscript", (k) => `${k} for verbose output`)],
         ["@ for file paths", `\\⏎${newline.length ? ` or ${newline[newline.length - 1]}` : ""} for newline`, hint("app:toggleTodos", (k) => `${k} to toggle todos`)],
         ["# to memorize", hint("chat:cancel", (k) => `${k} to interrupt (queued first)`), "ctrl+c twice to exit"],
-        ["tab: steer or queue the other way", "/queue to manage queued messages", ""],
+        [hint("chat:submitOtherWay", (k) => `${k}: steer or queue the other way`), "/queue to manage queued messages", ""],
     ];
     const w = Math.floor((cols - 4) / 3);
     return [
