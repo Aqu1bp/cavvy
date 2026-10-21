@@ -26,7 +26,7 @@ import { gitRoot } from "../util/git";
 import { canonical, expandPath, isInside } from "../util/files";
 import { CODEX_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, stopTiming } from "./cli";
 import { codexMcpOverrides } from "./codex-mcp";
-import { CODEX_HOOK_SERVER, CODEX_HOOK_TOOL, codexHookArgs, codexHookFailed, codexHookTaken, nativeCall, preToolUseAnswer } from "./codex-hooks";
+import { CODEX_HOOK_EVENTS, CODEX_HOOK_SERVER, type CodexHookEvent, codexHookArgs, codexHookFailed, codexHookTaken, codexHookTool, nativeCall, preToolUseAnswer, subagentAnswer } from "./codex-hooks";
 import { registerTools, type Registration, type ServerTool } from "../mcp/server";
 import { accountEnv, defaultAccount } from "../providers/accounts";
 import { accountPermissionConfig, accountPermissionProfile, watchAccountFolders } from "./account-permissions";
@@ -108,9 +108,9 @@ export function untrustedArgs(cwd: string): string[] {
 }
 
 /** Start app-server (no handshake yet). */
-function spawnRpc(providerId: string, cwd: string, onNotification: (method: string, params: any) => void, onRequest: (method: string, params: any) => Promise<unknown>, opts: { trusted?: boolean; accountId?: string; hooks?: boolean } = {}): Rpc {
+function spawnRpc(providerId: string, cwd: string, onNotification: (method: string, params: any) => void, onRequest: (method: string, params: any) => Promise<unknown>, opts: { trusted?: boolean; accountId?: string; hooks?: CodexHookEvent[] } = {}): Rpc {
     const bin = requireCli(providerId, CODEX_CLI);
-    const args = ["app-server", ...extraArgs(providerId), ...(opts.trusted === false ? untrustedArgs(cwd) : []), ...(opts.hooks ? codexHookArgs() : [])];
+    const args = ["app-server", ...extraArgs(providerId), ...(opts.trusted === false ? untrustedArgs(cwd) : []), ...(opts.hooks?.length ? codexHookArgs(opts.hooks) : [])];
     return new Rpc(new JsonLinesProcess(bin, args, { cwd, env: accountEnv(providerId, opts.accountId, cwd) }), onNotification, onRequest);
 }
 
@@ -401,7 +401,9 @@ class CodexTurn {
     private hookRuns = new Set<Promise<void>>();
     /** Codex runs the harness's PreToolUse hooks itself, calling back to this server; without it, they see only what Codex asks about. */
     private hookServer?: Registration;
+    /** Codex runs the harness's hooks for these events itself (they're given to it, and it took them). */
     private nativeHooks = false;
+    private nativeEvents: CodexHookEvent[] = [];
     /** What PreToolUse hooks (or the user, asked from one) already said of a call, for when Codex then asks about it. */
     private hookAnswers = new Map<string, "allow">();
     private streamed = new Set<string>();
@@ -479,9 +481,10 @@ class CodexTurn {
         const t = this.t;
         if (t.signal.aborted) return { reason: "aborted", text: "", actions: [] };
         const accountPermissions = accountPermissionConfig(t.additionalDirectories);
-        // PreToolUse hooks go to Codex as one of its own, calling back to the harness, which runs them.
-        if (this.hooked("PreToolUse")) this.hookServer = registerTools([this.hookTool()]);
-        this.rpc = spawnRpc(this.def.id, t.cwd, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p), { trusted: t.trusted, accountId: t.accountId, hooks: Boolean(this.hookServer) });
+        // PreToolUse and sub-agent hooks go to Codex as its own, calling back to the harness, which runs them.
+        this.nativeEvents = CODEX_HOOK_EVENTS.filter((e) => this.hooked(e));
+        if (this.nativeEvents.length) this.hookServer = registerTools(this.nativeEvents.map((e) => this.hookTool(e)));
+        this.rpc = spawnRpc(this.def.id, t.cwd, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p), { trusted: t.trusted, accountId: t.accountId, hooks: this.nativeEvents });
         const stopAccountWatch = watchAccountFolders(() => {
             this.failure = "Account folders changed while Codex was running. Send again to apply their updated protections.";
             void this.rpc.proc.kill();
@@ -514,7 +517,7 @@ class CodexTurn {
             if (typeof overrides === "string") return { reason: "error", text: "", actions: [], error: overrides };
             const off = overrides.config;
             if (overrides.collisions.includes(CODEX_HOOK_SERVER)) {
-                this.host.emit({ type: "notice", level: "warn", message: `Codex already has a server named ${CODEX_HOOK_SERVER}; it is disabled, and Codex asks about every command this turn so your PreToolUse hooks see them.` });
+                this.host.emit({ type: "notice", level: "warn", message: `Codex already has a server named ${CODEX_HOOK_SERVER}; it is disabled, and ${APP_TITLE} runs your hooks the older way this turn${this.nativeEvents.includes("PreToolUse") ? ", asking about every command so your PreToolUse hooks see them" : ""}.` });
                 this.nativeHooks = false;
             }
             const policy = codexPolicy(this.host.mode(), t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks);
@@ -965,7 +968,7 @@ class CodexTurn {
         const said = turnId !== undefined && sub.answer.turn === turnId ? answerOf(sub.answer) : "";
         sub.turnId = undefined;
         if (sub.nested) return;
-        if (reason === "done" && this.hooked("SubagentStop")) {
+        if (reason === "done" && this.hooked("SubagentStop") && !this.nativeHooks) {
             const thread = [...this.subs].find(([, s]) => s === sub)?.[0];
             void this.host.hooks!("SubagentStop", { agent_id: thread, agent_type: "codex", description: sub.label, stop_hook_active: false, last_assistant_message: said });
         }
@@ -1118,7 +1121,7 @@ class CodexTurn {
                     this.endItem(id, open, failed ? "Codex couldn't start the sub-agent." : "The sub-agent started; what it does shows under it.", failed);
                     if (!failed) {
                         this.claimThreads(threads, id, String(open.input.description ?? "sub-agent"), sub);
-                        if (!sub && this.hooked("SubagentStart")) for (const thread of Array.isArray(threads) ? threads : []) void this.host.hooks!("SubagentStart", { agent_id: String(thread), agent_type: "codex", description: String(open.input.description ?? "") });
+                        if (!sub && this.hooked("SubagentStart") && !this.nativeHooks) for (const thread of Array.isArray(threads) ? threads : []) void this.host.hooks!("SubagentStart", { agent_id: String(thread), agent_type: "codex", description: String(open.input.description ?? "") });
                     }
                     break;
                 }
@@ -1185,11 +1188,11 @@ class CodexTurn {
     /** Codex took the harness's PreToolUse hook, trusted (an older Codex doesn't list hooks, or doesn't run them). */
     private async hooksTaken(cwd: string): Promise<boolean> {
         try {
-            if (codexHookTaken(await withTimeout(this.rpc.request("hooks/list", { cwds: [cwd] }), 20_000, "Codex didn't list its hooks"))) return true;
+            if (codexHookTaken(await withTimeout(this.rpc.request("hooks/list", { cwds: [cwd] }), 20_000, "Codex didn't list its hooks"), this.nativeEvents)) return true;
         } catch (e) {
             if (this.aborted) throw e;
         }
-        if (!saidNoNativeHooks) this.host.emit({ type: "notice", level: "info", message: `This Codex doesn't run ${APP_TITLE}'s hooks itself, so it asks about every command and your PreToolUse hooks see only those. Codex 0.160 or later runs them before every tool call.` });
+        if (!saidNoNativeHooks) this.host.emit({ type: "notice", level: "info", message: this.nativeEvents.includes("PreToolUse") ? `This Codex doesn't run ${APP_TITLE}'s hooks itself, so it asks about every command and your PreToolUse hooks see only those. Codex 0.160 or later runs them before every tool call.` : `This Codex doesn't run ${APP_TITLE}'s hooks itself, so your SubagentStart and SubagentStop hooks can't add context or keep a sub-agent going. Codex 0.160 or later can.` });
         saidNoNativeHooks = true;
         return false;
     }
@@ -1206,22 +1209,46 @@ class CodexTurn {
         }
     }
 
-    /** The tool Codex's PreToolUse hook calls. Hidden from the model (MCP Apps visibility), so only the hook calls it. */
-    private hookTool(): ServerTool {
+    /** The tool one of Codex's hooks calls. Hidden from the model (MCP Apps visibility), so only the hook calls it. */
+    private hookTool(event: CodexHookEvent): ServerTool {
+        const pre = event === "PreToolUse";
         return {
-            name: CODEX_HOOK_TOOL,
-            description: `Runs ${APP_TITLE}'s PreToolUse hooks for a tool call Codex is about to make.`,
-            inputSchema: { type: "object", properties: { tool_name: { type: "string" }, tool_input: {}, tool_use_id: { type: "string" } }, required: ["tool_name"] },
+            name: codexHookTool(event),
+            description: `Runs ${APP_TITLE}'s ${event} hooks for Codex.`,
+            inputSchema: pre ? { type: "object", properties: { tool_name: { type: "string" }, tool_input: {}, tool_use_id: { type: "string" } }, required: ["tool_name"] } : { type: "object", properties: { agent_id: { type: "string" } } },
             meta: { ui: { visibility: ["app"] } },
             call: async (args, { meta }) => {
                 try {
-                    return { text: await this.nativePreToolUse(args, meta) };
+                    return { text: pre ? await this.nativePreToolUse(args, meta) : await this.nativeSubagent(event as "SubagentStart" | "SubagentStop", args, meta) };
                 } catch (e) {
                     // Refused rather than let through: Codex goes on with a call whose hook failed.
-                    return { text: preToolUseAnswer({ deny: `PreToolUse hooks couldn't run: ${redact((e as Error).message)}` }) };
+                    if (pre) return { text: preToolUseAnswer({ deny: `PreToolUse hooks couldn't run: ${redact((e as Error).message)}` }) };
+                    this.host.emit({ type: "notice", level: "warn", message: `${event} hooks couldn't run: ${redact((e as Error).message)}` });
+                    return { text: "" };
                 }
             },
         };
+    }
+
+    /**
+     * Codex starts or finishes a sub-agent: the harness's hooks run, and what
+     * they say goes back as Codex's own answer. SubagentStart's context is
+     * given to the sub-agent; a SubagentStop block keeps it going, with the
+     * reason as what to do next.
+     */
+    private async nativeSubagent(event: "SubagentStart" | "SubagentStop", args: Record<string, unknown>, meta: Record<string, unknown>): Promise<string> {
+        if (this.aborted) return "";
+        const agentId = typeof args.agent_id === "string" ? args.agent_id : "";
+        const description = this.subs.get(agentId)?.label ?? this.labels.get(agentId) ?? "";
+        const said = typeof args.last_assistant_message === "string" ? args.last_assistant_message : "";
+        const input = event === "SubagentStart" ? { agent_id: agentId, agent_type: "codex", description } : { agent_id: agentId, agent_type: "codex", description, stop_hook_active: args.stop_hook_active === true, last_assistant_message: said };
+        const h = await this.host.hooks!(event, input);
+        if (h?.stop) {
+            this.host.emit({ type: "notice", level: "warn", message: `Stopped by a hook: ${h.stop}` });
+            this.interrupt(this.origin({ threadId: meta.threadId }));
+            return "";
+        }
+        return subagentAnswer(event, { context: h?.additionalContext, block: event === "SubagentStop" ? h?.blocked : undefined });
     }
 
     /**

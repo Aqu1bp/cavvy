@@ -326,6 +326,29 @@ describe("Codex's items run the harness's hooks", () => {
         expect(a.events.some((e) => e.type === "notice" && e.level === "error" && e.message.includes("couldn't run"))).toBe(true);
     });
 
+    test("Codex runs SubagentStart and SubagentStop as its own: the context reaches the sub-agent, a block keeps it going", async () => {
+        process.env.FAKE_SCENARIO = "subagent";
+        const starts = join(cwd, "start.jsonl");
+        const stops = join(cwd, "stop.jsonl");
+        const settings = {
+            hooks: {
+                SubagentStart: [{ command: `${record(starts)}; ${say({ hookSpecificOutput: { hookEventName: "SubagentStart", additionalContext: "use the fast path" } })}` }],
+                SubagentStop: [{ command: `${record(stops)}; [ -f '${stops}.once' ] || { touch '${stops}.once'; echo 'check the tests too' >&2; exit 2; }` }],
+            },
+        };
+        const { run } = await makeAgent("codex", settings);
+        expect(await run("count")).toBe("done");
+        expect(hookArg()).toContain('"SubagentStart"=[{"hooks"=[{"type"="mcp_tool"');
+        expect(logLines().find((l) => l.subagentContext)?.subagentContext).toEqual(["use the fast path"]);
+        expect(logLines().find((l) => l.subagentKeptGoing)?.subagentKeptGoing).toBe("check the tests too");
+        expect(jsonl(starts)).toEqual([expect.objectContaining({ hook_event_name: "SubagentStart", agent_id: "thr-child", agent_type: "codex" })]);
+        // Once with its answer, then again (stop_hook_active) after it kept going; the harness doesn't run them a third time.
+        expect(jsonl(stops).map((l) => [l.agent_type, l.stop_hook_active, l.last_assistant_message])).toEqual([
+            ["codex", false, "CHILD_REPORT: 2 files."],
+            ["codex", true, "CHILD_REPORT: checked again."],
+        ]);
+    });
+
     describe("a Codex that doesn't run the harness's hooks itself (before 0.160)", () => {
         beforeEach(() => (process.env.FAKE_NO_HOOKS = "1"));
 
@@ -341,6 +364,18 @@ describe("Codex's items run the harness's hooks", () => {
             expect(jsonl(seen)[0]).toMatchObject({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "touch x" } });
             expect(toolEnds(events)[0]!.result).toMatchObject({ isError: true, content: expect.stringContaining("touching is banned") });
             expect(ranLine()).toMatchObject({ ran: false });
+        });
+
+        test("sub-agent hooks run in the harness, once each, and can't add context or keep it going", async () => {
+            process.env.FAKE_SCENARIO = "subagent";
+            const stops = join(cwd, "stop.jsonl");
+            const settings = { hooks: { SubagentStart: [{ command: say({ hookSpecificOutput: { hookEventName: "SubagentStart", additionalContext: "ctx" } }) }], SubagentStop: [{ command: `${record(stops)}; echo 'more' >&2; exit 2` }] } };
+            const { run } = await makeAgent("codex", settings);
+            expect(await run("count")).toBe("done");
+            expect(hookArg()).toContain("SubagentStop");
+            expect(logLines().some((l) => l.subagentContext || l.subagentKeptGoing)).toBe(false);
+            await Bun.sleep(100);
+            expect(jsonl(stops).map((l) => l.agent_type)).toEqual(["codex"]);
         });
 
         test("a hook that says nothing lets the command run as bypass would; a rewrite is refused", async () => {

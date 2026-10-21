@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { CODEX_HOOK_SERVER, codexHookArgs, codexHookFailed, codexHookHash, codexHookTaken, nativeCall, preToolUseAnswer } from "../src/backends/codex-hooks";
+import { CODEX_HOOK_SERVER, codexHookArgs, codexHookFailed, codexHookHash, codexHookTaken, nativeCall, preToolUseAnswer, subagentAnswer } from "../src/backends/codex-hooks";
 import { registerTools } from "../src/mcp/server";
 
 describe("the harness's PreToolUse hook as one of Codex's", () => {
@@ -23,6 +23,19 @@ describe("the harness's PreToolUse hook as one of Codex's", () => {
         expect(codexHookTaken({ data: [{ cwd: "/p", hooks: [ours] }] })).toBe(true);
         for (const h of [{ ...ours, trustStatus: "untrusted" }, { ...ours, trustStatus: "modified" }, { ...ours, enabled: false }, { ...ours, server: "other" }, { handlerType: "command", command: "x", trustStatus: "trusted" }]) expect(codexHookTaken({ data: [{ hooks: [h] }] })).toBe(false);
         for (const r of [undefined, null, {}, { data: "x" }, { data: [{}] }]) expect(codexHookTaken(r)).toBe(false);
+    });
+
+    test("sub-agent hooks: each event its own trusted hook, and all must be taken", () => {
+        const arg = codexHookArgs(["SubagentStart", "SubagentStop"])[1]!;
+        expect(arg).not.toContain("PreToolUse");
+        expect(arg).toContain('"tool"="subagent_start","input"={"agent_id"="${agent_id}"}');
+        expect(arg).toContain('"/<session-flags>/config.toml:subagent_stop:0:0"={"trusted_hash"="sha256:');
+        const h = (tool: string) => ({ handlerType: "mcpTool", server: CODEX_HOOK_SERVER, tool, trustStatus: "trusted", enabled: true });
+        expect(codexHookTaken({ data: [{ hooks: [h("subagent_start"), h("subagent_stop")] }] }, ["SubagentStart", "SubagentStop"])).toBe(true);
+        expect(codexHookTaken({ data: [{ hooks: [h("subagent_start")] }] }, ["SubagentStart", "SubagentStop"])).toBe(false);
+        expect(JSON.parse(subagentAnswer("SubagentStop", { block: "more" }))).toEqual({ decision: "block", reason: "more" });
+        expect(subagentAnswer("SubagentStop", { context: "ignored" })).toBe("");
+        expect(JSON.parse(subagentAnswer("SubagentStart", { context: "c" }))).toEqual({ hookSpecificOutput: { hookEventName: "SubagentStart", additionalContext: "c" } });
     });
 
     test("a failed run is only the harness's PreToolUse hook failing", () => {
