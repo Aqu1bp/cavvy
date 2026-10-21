@@ -1,6 +1,6 @@
 import { RenderBoundary } from "./ui/ErrorBoundary";
 import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, Show, Switch } from "solid-js";
-import { AlertCircle, AlertTriangle, BellRing, Brain, CircleCheck, CircleX, ChevronRight, Clock, FileDiff, FileText, GitFork, Goal, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
+import { AlertCircle, AlertTriangle, BellRing, Check, CircleCheck, CircleStop, CircleX, ChevronRight, Clock, FileDiff, FileText, GitFork, Goal, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
 import { duration, turnDuration, firstChangedLine, plural, stripAnsi } from "../lib/format";
 import { now } from "../lib/clock";
@@ -65,15 +65,15 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
     }
     return (
         <div class="user-row">
-            <div class="user-actions">
-                <CopyButton text={raw} label="Copy prompt" />
-                <Show when={p.turn.prompt?.index != null && p.onRewind && !p.turn.archived}>
-                    <button class="icon-btn" title="Rewind to before this prompt" aria-label="Rewind to before this prompt" onClick={() => p.onRewind!(p.turn.prompt!.index!)}>
-                        <RotateCcw size={14} />
-                    </button>
-                </Show>
-            </div>
             <div class={`user-bubble ${p.turn.prompt?.command ? "command" : ""} ${shell() ? "shell" : ""} ${long() && !expanded() ? "clamped" : ""}`} data-find="prompt">
+                <span class="user-actions" data-find-skip>
+                    <CopyButton text={raw} label="Copy prompt" />
+                    <Show when={p.turn.prompt?.index != null && p.onRewind && !p.turn.archived}>
+                        <button class="icon-btn" title="Rewind to before this prompt" aria-label="Rewind to before this prompt" onClick={() => p.onRewind!(p.turn.prompt!.index!)}>
+                            <RotateCcw size={14} />
+                        </button>
+                    </Show>
+                </span>
                 <Show when={p.turn.prompt?.scheduled}>
                     {(label) => (
                         <span class="prompt-scheduled" data-find-skip>
@@ -132,15 +132,10 @@ export function Thinking(p: { block: ThinkingBlock; live: boolean }) {
     const preview = () => p.block.text.trim().split("\n").filter(Boolean).slice(-2).join(" ");
     return (
         <Show when={prefs.showThinking || p.live}>
-            <div class={`wgroup ${open() ? "open" : ""}`}>
-                <button class="wrow" onClick={() => setOpen(!open())} aria-expanded={open()}>
-                    <span class="slot">
-                        <Brain size={16} />
-                    </span>
+            <div class={`wgroup thinking ${open() ? "open" : ""} ${p.live ? "live" : ""}`}>
+                <button class="acts-h wrow" onClick={() => setOpen(!open())} aria-expanded={open()}>
+                    <ChevronRight size={14} class="chev" />
                     <span class={`wtext ${p.live ? "shimmer" : ""}`}>{label()}</span>
-                    <span class="end">
-                        <ChevronRight size={14} class="chev" />
-                    </span>
                 </button>
                 <Show when={open()} fallback={<Show when={p.live && preview()}><div class="thinking-peek">{preview()}</div></Show>}>
                     <div class="thinking-text">{p.block.text.trim()}</div>
@@ -157,15 +152,10 @@ export function Narration(p: { block: TextBlock }) {
     createEffect(on(findReveal, (r) => r?.part === p.block.id && setOpen(true)));
     return (
         <div class={`wgroup ${open() ? "open" : ""}`} data-find={p.block.id}>
-            <button class="wrow" onClick={() => setOpen(!open())} aria-expanded={open()}>
-                <span class="slot">
-                    <MessageSquareText size={16} />
-                </span>
+            <button class="acts-h wrow" onClick={() => setOpen(!open())} aria-expanded={open()}>
+                <ChevronRight size={14} class="chev" />
                 <span class="wtext truncate" data-find-skip>
                     “{line()}”
-                </span>
-                <span class="end">
-                    <ChevronRight size={14} class="chev" />
                 </span>
             </button>
             <Show when={open()}>
@@ -251,18 +241,34 @@ function Compacted(p: { block: CompactBlock }) {
     );
 }
 
+/** A command you ran yourself ("!cmd"): a command card, marked as yours. */
 function Shell(p: { block: ShellBlock }) {
     return (
-        <div class={`shell-block ${findReveal()?.part === p.block.id ? "found" : ""}`} data-find={p.block.id}>
-            <div class="shell-head">
-                <SquareTerminal size={13} />
-                <code class="truncate">{p.block.command}</code>
-                <Show when={p.block.running} fallback={<span class={`chip tiny ${p.block.exitCode ? "err" : "ok"}`} data-find-skip>exit {p.block.exitCode ?? "?"}</span>}>
-                    <Spinner size={12} />
+        <div class={`tcard cmd-card you-ran shell-block ${findReveal()?.part === p.block.id ? "found" : ""}`} data-find={p.block.id}>
+            <div class="tcard-h shell-head">
+                <span class="tcard-ic">
+                    <SquareTerminal size={14} />
+                </span>
+                <span class="tcard-who" data-find-skip>You ran</span>
+                <code class="tcard-p truncate" title={p.block.command}>{p.block.command}</code>
+                <span class="grow" />
+                <Show
+                    when={p.block.running}
+                    fallback={
+                        <span class={`tpill ${p.block.exitCode ? "fail" : "ok"}`} data-find-skip>
+                            {p.block.exitCode ? <X size={12} /> : <Check size={12} />} Exit {p.block.exitCode ?? "?"}
+                        </span>
+                    }
+                >
+                    <span class="tpill run" data-find-skip>
+                        <Spinner size={11} /> Running
+                    </span>
                 </Show>
             </div>
             <Show when={p.block.output}>
-                <pre class="term">{stripAnsi(p.block.output)}</pre>
+                <div class="tcard-body">
+                    <pre class="tcard-out">{stripAnsi(p.block.output)}</pre>
+                </div>
             </Show>
         </div>
     );
@@ -276,7 +282,11 @@ export function specialActivity(label: string): boolean {
 /** Labels that say more than "Working": the turn is in a special state. */
 const SPECIAL = /^(Retrying|Compacting|Interrupting|Connecting|Waiting for background)/;
 
-/** One live head: above streaming output, or compactly at the tail during pauses. */
+/**
+ * One live head: above streaming output, or at the tail during pauses. How to
+ * stop a turn is the composer's status row's to say; `hint` says what the user
+ * can do about something that isn't a turn (idle compaction).
+ */
 export function LiveHead(p: { state: SessionState; since?: number; waiting?: boolean; tail?: boolean; /** Said beside it: what the user can do. */ hint?: string }) {
     const elapsed = () => duration(Math.max(0, now() - (p.since ?? p.state.activity?.since ?? now()))).replace(/^(\d+)ms$/, "0s");
     const activity = () => (p.state.activity && (p.tail || SPECIAL.test(p.state.activity.label)) ? p.state.activity : undefined);
@@ -303,16 +313,7 @@ export function LiveHead(p: { state: SessionState; since?: number; waiting?: boo
                         )}
                     </Show>
                 </Show>
-                <Show when={!p.tail}>
-                    <span class="grow" />
-                </Show>
-                <Show when={!p.tail && (p.waiting || !p.state.activity?.label.startsWith("Waiting for background"))}>
-                    <span class="live-hint">
-                        <kbd>Esc</kbd> to interrupt
-                    </span>
-                </Show>
             </div>
-            <Show when={!p.tail}><div class="rule" /></Show>
         </>
     );
 }
@@ -367,8 +368,11 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
     const [all, setAll] = createSignal(false);
     return (
         <Show when={files().length || (captured() && recorded()?.incomplete)}>
-            <div class="files-card" data-find-skip>
-                <div class="files-head">
+            <div class="tcard files-card" data-find-skip>
+                <div class="tcard-h files-head">
+                    <span class="tcard-ic">
+                        <FileDiff size={14} />
+                    </span>
                     <span class="files-title">{!snapshotDiff() && !files().length ? "Turn snapshot incomplete" : plural(files().length + (snapshotDiff() ? recorded()?.more ?? 0 : 0), "changed file")}</span>
                     <Show when={files().length}>
                         <span class="stat">
@@ -378,10 +382,11 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                     </Show>
                     <span class="grow" />
                     {/* Keep recorded changes tied to this turn, even after later edits. */}
-                    <button class="ghost-btn" onClick={() => captured() ? openReview(undefined, "turn", p.turn.snapshotId) : reviewChanges(files()[0]?.path)}>
-                        <FileDiff size={14} /> Review changes
+                    <button class="tbtn" onClick={() => captured() ? openReview(undefined, "turn", p.turn.snapshotId) : reviewChanges(files()[0]?.path)}>
+                        Review changes
                     </button>
                 </div>
+                <div class="files-rows">
                 <Show when={captured() && recorded()?.incomplete}><div class="review-note">{"This turn’s snapshot is incomplete. " + (recorded()?.notes?.join(" ") ?? "")}</div></Show>
                 <For each={all() ? files() : files().slice(0, FILES_SHOWN)}>
                     {(f) => (
@@ -409,13 +414,14 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                         {plural(files().length - FILES_SHOWN, "more file")}
                     </button>
                 </Show>
+                </div>
             </div>
         </Show>
     );
 }
 
 const END_TEXT: Partial<Record<Turn["status"], string>> = {
-    aborted: "Interrupted",
+    aborted: "Stopped. Nothing after this point ran.",
     error: "Stopped with an error",
     denied: "Stopped after a declined tool call",
     max_turns: "Stopped at the turn limit",
@@ -516,7 +522,7 @@ function TurnViewContent(p: TurnViewProps) {
     const renderItem = (it: () => Item) => (
         <Switch>
             <Match when={it().kind === "activity" && (it() as Extract<Item, { kind: "activity" }>)}>
-                {(g) => <ActivityGroup tools={g().tools} steps={g().steps} turnRunning={running()} keepTail={items().at(-1) === g()} agents={p.agents} />}
+                {(g) => <ActivityGroup tools={g().tools} steps={g().steps} card={g().card} turnRunning={running()} keepTail={items().at(-1) === g()} agents={p.agents} />}
             </Match>
             <Match when={it().kind === "block" && (it() as { block: Block }).block}>
                 {(b) => (
@@ -548,21 +554,20 @@ function TurnViewContent(p: TurnViewProps) {
                         <LiveHead state={p.state} since={p.turn.startedAt} waiting={waitingOnUser()} />
                     </Show>
                     <Show when={!running() && hasWork()}>
-                        <button class="fold" aria-expanded={unfolded()} onClick={(event) => {
+                        <button class="fold acts-h" aria-expanded={unfolded()} onClick={(event) => {
                             const toggle = () => unfold(!unfolded());
                             if (p.onToggleWork) p.onToggleWork(event.currentTarget, toggle);
                             else toggle();
                         }}>
+                            <ChevronRight size={14} class="chev" />
                             {worked() ? (
-                                <>
+                                <span>
                                     Worked for <span class="num">{worked()}</span>
-                                </>
+                                </span>
                             ) : (
                                 "Work log"
                             )}
-                            <ChevronRight size={14} class="chev" />
                         </button>
-                        <div class="rule" />
                     </Show>
                     <Index each={segs()}>
                         {(seg) => (
@@ -586,10 +591,13 @@ function TurnViewContent(p: TurnViewProps) {
                         <ChangesCard turn={p.turn} cwd={p.state.cwd} sessionId={p.state.id} busy={p.state.busy} />
                     </Show>
                     <Show when={!running() && p.turn.prompt}>
+                        <Show when={END_TEXT[p.turn.status]}>
+                            <div class={`notice end-note end-${p.turn.status}`} data-find-skip>
+                                {p.turn.status === "aborted" ? <CircleStop size={14} /> : p.turn.status === "error" || p.turn.status === "blocked" ? <AlertCircle size={14} /> : <AlertTriangle size={14} />}
+                                <span>{END_TEXT[p.turn.status]}</span>
+                            </div>
+                        </Show>
                         <div class="turn-foot">
-                            <Show when={END_TEXT[p.turn.status]}>
-                                <span class={`end-${p.turn.status}`}>{END_TEXT[p.turn.status]}</span>
-                            </Show>
                             <Show when={reply().trim()}>
                                 <CopyButton text={reply} label="Copy response" class="foot-btn" />
                             </Show>

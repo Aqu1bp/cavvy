@@ -59,7 +59,7 @@ function Log(p: { agent: AgentRun; agents: AgentRun[]; items: Item[]; lastText?:
         <Index each={p.items}>
             {(it) => (
                 <Switch>
-                    <Match when={it().kind === "activity" && (it() as Extract<Item, { kind: "activity" }>)}>{(g) => <ActivityGroup tools={g().tools} steps={g().steps} turnRunning={running()} agents={own()} />}</Match>
+                    <Match when={it().kind === "activity" && (it() as Extract<Item, { kind: "activity" }>)}>{(g) => <ActivityGroup tools={g().tools} steps={g().steps} card={g().card} turnRunning={running()} agents={own()} />}</Match>
                     <Match when={it().kind === "block" && (it() as { block: Block }).block}>
                         {(b) => (
                             <Switch>
