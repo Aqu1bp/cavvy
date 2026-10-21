@@ -7,7 +7,7 @@
 // in the folder, whoever made it; Harness edits shows only what the edit tools
 // did, and is all there is outside a Git repository.
 
-import { createEffect, createMemo, createResource, createSignal, For, on, Show } from "solid-js";
+import { createEffect, createMemo, createResource, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { ChevronLeft, FolderOpen, GitBranch, GitCommitHorizontal, GitPullRequestArrow, MessageSquare, RefreshCw, SquareArrowOutUpRight, X } from "lucide-solid";
 import type { FileDiff, GitFileDiff, GitScope } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
@@ -100,26 +100,31 @@ function ReviewResizer() {
     const [dragging, setDragging] = createSignal(false);
     const shown = () => shellLayout().inspector.width;
     const set = (w: number) => setPrefs("reviewWidth", w);
+    /** Ends the drag under way, if any: on release, and when the reader closes in the middle of one (Esc). */
+    let stop: (() => void) | undefined;
+    onCleanup(() => stop?.());
     const start = (e: PointerEvent) => {
         if (e.button !== 0) return;
         e.preventDefault();
-        const target = e.currentTarget as HTMLElement;
-        target.setPointerCapture?.(e.pointerId);
+        stop?.();
         const x = e.clientX;
         const from = shown();
         setDragging(true);
         document.body.classList.add("resizing");
+        // On the window, not the handle: the handle can go away mid-drag, and its listeners with it.
         const move = (ev: PointerEvent) => set(reviewDragWidth(from, ev.clientX - x));
         const end = () => {
+            stop = undefined;
             setDragging(false);
             document.body.classList.remove("resizing");
-            target.removeEventListener("pointermove", move);
-            target.removeEventListener("pointerup", end);
-            target.removeEventListener("lostpointercapture", end);
+            window.removeEventListener("pointermove", move);
+            window.removeEventListener("pointerup", end);
+            window.removeEventListener("pointercancel", end);
         };
-        target.addEventListener("pointermove", move);
-        target.addEventListener("pointerup", end);
-        target.addEventListener("lostpointercapture", end);
+        stop = end;
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", end);
+        window.addEventListener("pointercancel", end);
     };
     return (
         <div

@@ -11,12 +11,13 @@ const panel = readFileSync(new URL("../../gui/src/components/RightPanel.tsx", im
 const between = (source: string, from: string, to: string) => source.slice(source.indexOf(from), source.indexOf(to));
 
 test("the reader's handle starts from the width shown, not the saved one, and takes arrow keys and a double-click", () => {
+    const world = dragWorld();
     const Resizer = component(between(review, "function ReviewResizer(", "export function ReviewPane("), "ReviewResizer", {
         // Saved at 420; the layout shows it at 640 (55% of the sheet).
         shellLayout: () => ({ inspector: { mode: "dock", width: 640 } }),
         setPrefs: (key: string, value: number) => saved.push([key, value]),
         reviewDragWidth, REVIEW_DEFAULT, REVIEW_STEP,
-        document: { body: { classList: { add() {}, remove() {} } } },
+        window: world.window, document: world.document,
     });
     const saved: [string, number][] = [];
     const root = node("root");
@@ -25,16 +26,18 @@ test("the reader's handle starts from the width shown, not the saved one, and ta
         const handle = all(root).find((n) => String(n.props.class).includes("rv-resizer"))!;
         expect(handle.props.role).toBe("separator");
         expect(handle.props["aria-valuenow"]).toBe(640);
-        const listeners: Record<string, (e: any) => void> = {};
-        const target = { setPointerCapture() {}, addEventListener: (type: string, fn: any) => (listeners[type] = fn), removeEventListener: (type: string) => delete listeners[type] };
+        const listeners = world.listeners;
+        const target = {};
         handle.props.onPointerDown({ button: 0, clientX: 500, pointerId: 1, preventDefault() {}, currentTarget: target });
         // Ten pixels left widens it from 640, at once: no dead zone up to the width shown.
         listeners.pointermove!({ clientX: 490 });
         expect(saved.at(-1)).toEqual(["reviewWidth", 650]);
         listeners.pointermove!({ clientX: 530 });
         expect(saved.at(-1)).toEqual(["reviewWidth", 610]);
+        expect(world.classes.has("resizing")).toBe(true);
         listeners.pointerup!({});
         expect(listeners.pointermove).toBeUndefined();
+        expect(world.classes.has("resizing")).toBe(false);
         // Only the main button drags.
         const before = saved.length;
         handle.props.onPointerDown({ button: 2, clientX: 500, preventDefault() {}, currentTarget: target });
@@ -56,6 +59,38 @@ test("the reader's handle starts from the width shown, not the saved one, and ta
     } finally {
         dispose();
     }
+});
+
+/** A stand-in for `window` and `document.body`: the listeners a drag adds, and the body's classes. */
+function dragWorld() {
+    const listeners: Record<string, ((e: any) => void) | undefined> = {};
+    const classes = new Set<string>();
+    return {
+        listeners,
+        classes,
+        window: { addEventListener: (type: string, fn: any) => (listeners[type] = fn), removeEventListener: (type: string, fn: any) => listeners[type] === fn && delete listeners[type] },
+        document: { body: { classList: { add: (c: string) => classes.add(c), remove: (c: string) => classes.delete(c) } } },
+    };
+}
+
+test("closing the reader in the middle of a drag ends it: no resizing class or listeners left behind", () => {
+    const world = dragWorld();
+    const Resizer = component(between(review, "function ReviewResizer(", "export function ReviewPane("), "ReviewResizer", {
+        shellLayout: () => ({ sheet: { w: 1400 }, inspector: { mode: "dock", width: 640 } }),
+        setPrefs() {},
+        reviewDragWidth, REVIEW_DEFAULT, REVIEW_STEP,
+        window: world.window, document: world.document,
+    });
+    const root = node("root");
+    const dispose = renderer.render(() => Resizer({}), root);
+    const handle = all(root).find((n) => String(n.props.class).includes("rv-resizer"))!;
+    const el = { setPointerCapture() {}, addEventListener() {}, removeEventListener() {} };
+    handle.props.onPointerDown({ button: 0, clientX: 500, pointerId: 1, preventDefault() {}, currentTarget: el });
+    expect(world.classes.has("resizing")).toBe(true);
+    // Esc closes the reader while the button is still down: the handle goes away.
+    dispose();
+    expect(world.classes.has("resizing")).toBe(false);
+    expect(Object.keys(world.listeners).filter((k) => world.listeners[k])).toEqual([]);
 });
 
 test("Unified | Split sets the shared split signal the layout widens the inspector for", () => {
