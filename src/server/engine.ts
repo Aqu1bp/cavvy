@@ -1468,9 +1468,9 @@ export class Engine {
      * only in a turn). At start; Settings' account checks and turning a CLI on
      * ask the same (accountsList, connectCli).
      */
-    private checkPlans(only?: string): Promise<void> {
+    private checkPlans(): Promise<void> {
         const run = async () => {
-            const checks = ACCOUNT_PROVIDERS.filter((provider) => (!only || provider === only) && readAgentConfig(provider) && findCli(provider, provider === "codex" ? CODEX_CLI : CLAUDE_CLI))
+            const checks = ACCOUNT_PROVIDERS.filter((provider) => readAgentConfig(provider) && findCli(provider, provider === "codex" ? CODEX_CLI : CLAUDE_CLI))
                 .flatMap((provider) => listAccounts(provider).filter((a) => !a.invalid).map((a) => ({ provider, id: a.id })));
             const changed = await Promise.all(checks.map(async ({ provider, id }) => {
                 if (this.stopping) return false;
