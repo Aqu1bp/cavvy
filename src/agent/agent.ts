@@ -1233,6 +1233,9 @@ export class Agent {
         };
         const base = this.backendTurn(signal, host);
         let stopRounds = 0;
+        // The user's own message, for the skills it names: its first part, not the files and notes after it.
+        const first = parts[0]?.type === "text" && text.startsWith(parts[0].text) ? parts[0].text : undefined;
+        const asked = { request: first, requestAfter: first === undefined ? undefined : text.slice(first.length) };
         let prompt = text;
         let promptImages = images;
         let promptDocuments = documents;
@@ -1242,12 +1245,12 @@ export class Agent {
             let result: BackendResult;
             try {
                 // A sub-agent kept going (a Stop hook) takes up a speed change since.
-                result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex, resume), request: prompt, images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork });
+                result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex, resume), ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork });
                 if (result.resumeFailed) {
                     // Gone, or made in another folder: start a new one with this conversation as context.
                     this.session.forgetBackendSession(provider);
                     this.emit({ type: "notice", level: "warn", message: `${redact(result.error ?? `Couldn't continue the earlier ${name} session`)}. Starting a new one with this conversation as context.` });
-                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex), request: prompt, images: promptImages, documents: promptDocuments, resumeId: undefined });
+                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), prompt: this.backendPrompt(prompt, promptIndex), ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: undefined });
                 }
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);

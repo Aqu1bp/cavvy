@@ -252,7 +252,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         const pluginDir = skillFolder(plugged, { plugin: true });
         // One it has under no name (the plugin couldn't be made, an untrusted project's) is pasted in, as for the harness's models.
         const names = claudeNames(t.skills ?? [], pluginDir ? plugged : [], t.cwd, t.trusted, configDir);
-        const prompt = claudePrompt(t.prompt, t.request, t.skills ?? [], names, formatSkill);
+        const prompt = claudePrompt(t.prompt, t.request, t.skills ?? [], names, formatSkill, t.requestAfter);
         const turn = new ClaudeTurn(this.def, bin, { ...t, prompt }, t.resumeId ? this.spent.get(key(t.resumeId)) : undefined, this.limitSeen);
         turn.pluginDir = pluginDir;
         this.turns.add(turn);

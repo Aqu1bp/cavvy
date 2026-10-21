@@ -548,15 +548,16 @@ class CodexTurn {
                 await this.waitFor(() => this.rpc.request("thread/compact/start", { threadId: this.threadId }));
             } else {
                 let text = t.prompt;
-                /** What the user typed, which `text` ends with: its /name and $name are skills to run. */
+                /** What the user typed, which `text` ends with (then `after`): its /name and $name are skills to run. */
                 let request = t.request;
+                let after = t.requestAfter ?? "";
                 let images = t.images;
                 while (true) {
                     // The policy for the mode as it is now: it may have changed since the last turn.
                     const mode = this.host.mode();
                     const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly));
                     const note = modeNote(mode, Boolean(t.readOnly));
-                    const asked = skills ? codexInput(text, request, skills, t.skills) : { text: pastedPrompt(text, request, t.skills ?? []), items: [] };
+                    const asked = skills ? codexInput(text, request, skills, t.skills, after) : { text: pastedPrompt(text, request, t.skills ?? [], after), items: [] };
                     const input = [...this.input(note ? `${note}\n\n${asked.text}` : asked.text, images), ...asked.items];
                     const effort = t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort)) ? t.effort : undefined;
                     this.turnMode = mode;
@@ -579,6 +580,7 @@ class CodexTurn {
                     const restart = this.restartFor;
                     this.restartFor = undefined;
                     request = undefined;
+                    after = "";
                     if (restart) {
                         text = `<system-reminder>\nThe user switched the permission mode to ${restart === "plan" ? "plan mode" : `"${restart}"`} while you were working, so your turn was stopped and resumes under it. Continue from where you were, within the new mode.\n</system-reminder>`;
                         // A steer the interrupt beat goes in with it, not after the restarted turn.

@@ -98,7 +98,7 @@ function addSkill(at: string, s: Skill) {
     if (!DIR_VAR.test(text)) return link(s.dir, at);
     DIR_VAR.lastIndex = 0;
     mkdirSync(at);
-    writeFileSync(join(at, "SKILL.md"), text.replace(DIR_VAR, s.dir));
+    writeFileSync(join(at, "SKILL.md"), text.replace(DIR_VAR, () => s.dir));
     for (const entry of readdirSync(s.dir)) if (entry !== "SKILL.md") link(join(s.dir, entry), join(at, entry));
 }
 
@@ -181,24 +181,39 @@ function claudeRoots(cwd: string, trusted: boolean, configDir?: string): Set<str
  * doesn't have it, the message isn't at the start of the prompt, or the model
  * may not load it), the skill's text goes in the prompt, as for the harness's models.
  */
-export function claudePrompt(prompt: string, request: string | undefined, skills: readonly Skill[], names: ReadonlyMap<string, string>, format: (s: Skill, args: string) => string | undefined): string {
-    if (!request || !prompt.endsWith(request)) return prompt;
-    const head = prompt.slice(0, prompt.length - request.length);
-    const slash = request.match(/^\/([a-z0-9][a-z0-9:_-]*)(?:\s+([\s\S]*))?$/i);
-    const named = slash && skills.find((s) => s.userInvocable && s.name === slash[1]!.toLowerCase());
+export function claudePrompt(prompt: string, request: string | undefined, skills: readonly Skill[], names: ReadonlyMap<string, string>, format: (s: Skill, args: string) => string | undefined, after = ""): string {
+    const head = headOf(prompt, request, after);
+    if (head === undefined) return prompt;
+    const { named, args } = slashSkill(request!, skills);
+    let text = request!;
     if (named) {
-        const args = (slash![2] ?? "").trim();
         const name = runnable(named, names);
-        if (name && !head) return `/${name}${args ? ` ${args}` : ""}`;
-        return head + (format(named, args) ?? request);
+        // Run as a command only as the whole prompt: what comes after it would be the skill's arguments.
+        text = name && !head && !after ? `/${name}${args ? ` ${args}` : ""}` : (format(named, args) ?? request!);
     }
-    const mentioned = skillMentions(request, skills);
-    if (!mentioned.length) return prompt;
-    const notes = mentioned.map((s) => {
-        const name = runnable(s, names);
-        return name && s.modelInvocable ? `Load the "${name}" skill with the Skill tool and follow it.` : format(s, "");
-    });
-    return `${prompt}\n\n${notes.filter(Boolean).join("\n\n")}`;
+    // $names after a /name too (its arguments).
+    const notes = skillMentions(named ? args : request!, skills)
+        .filter((s) => s !== named)
+        .map((s) => {
+            const name = runnable(s, names);
+            return name && s.modelInvocable ? `Load the "${name}" skill with the Skill tool and follow it.` : format(s, "");
+        })
+        .filter(Boolean);
+    if (!named && !notes.length) return prompt;
+    return head + text + after + (notes.length ? `\n\n${notes.join("\n\n")}` : "");
+}
+
+/** The prompt before the user's message, if it is `head + request + after`. */
+function headOf(prompt: string, request: string | undefined, after: string): string | undefined {
+    if (!request || !prompt.endsWith(request + after)) return undefined;
+    return prompt.slice(0, prompt.length - request.length - after.length);
+}
+
+/** The skill a `/name args` message runs, and its arguments. */
+function slashSkill(request: string, skills: readonly Skill[]): { named?: Skill; args: string } {
+    const slash = request.match(/^\/([a-z0-9][a-z0-9:_-]*)(?:\s+([\s\S]*))?$/i);
+    const named = slash ? skills.find((s) => s.userInvocable && s.name === slash[1]!.toLowerCase()) : undefined;
+    return { named, args: named ? (slash![2] ?? "").trim() : "" };
 }
 
 /**
@@ -234,9 +249,9 @@ export interface CodexSkill {
  * by a $name mention) is sent as a skill item, which has Codex load it. One
  * of the harness's (`harness`) that Codex didn't list goes in as text.
  */
-export function codexInput(prompt: string, request: string | undefined, skills: readonly CodexSkill[], harness: readonly Skill[] = []): { text: string; items: { type: "skill"; name: string; path: string }[] } {
-    if (!request || !prompt.endsWith(request)) return { text: prompt, items: [] };
-    const head = prompt.slice(0, prompt.length - request.length);
+export function codexInput(prompt: string, request: string | undefined, skills: readonly CodexSkill[], harness: readonly Skill[] = [], after = ""): { text: string; items: { type: "skill"; name: string; path: string }[] } {
+    const head = headOf(prompt, request, after);
+    if (head === undefined) return { text: prompt, items: [] };
     // A name the harness has is the harness's skill, as in its menus, even where Codex has one of its own by that name;
     // and one the user can't run (user-invocable: false) isn't a skill to run.
     const ours = new Map(harness.map((s) => [s.name, s]));
@@ -244,17 +259,25 @@ export function codexInput(prompt: string, request: string | undefined, skills: 
     for (const s of skills) if (s.enabled !== false && !s.harness && !ours.has(s.name.toLowerCase())) byName.set(s.name.toLowerCase(), s);
     for (const s of skills) if (s.enabled !== false && s.harness && ours.get(s.harness)?.userInvocable) byName.set(s.harness, s);
     const missing = harness.filter((s) => s.userInvocable && !byName.has(s.name));
-    let text = request;
-    const slash = request.match(/^\/([a-z0-9][a-z0-9:_-]*)(?=\s|$)/i);
-    if (slash && byName.has(slash[1]!.toLowerCase())) text = `$${slash[1]}${request.slice(slash[0].length)}`;
-    else if (slash && missing.some((s) => s.name === slash[1]!.toLowerCase())) return { text: pastedPrompt(prompt, request, missing), items: [] };
+    let text = request!;
+    // Where $names are looked for: the message, or a pasted /name's arguments.
+    let scan = text;
+    const slash = text.match(/^\/([a-z0-9][a-z0-9:_-]*)(?=\s|$)/i);
+    const key = slash?.[1]!.toLowerCase();
+    const pasted = key && !byName.has(key) ? slashSkill(text, missing) : { args: "" };
+    // By the name as listed: Codex reads $DEPLOY as text, not a skill.
+    if (key && byName.has(key)) scan = text = `$${key}${text.slice(slash![0].length)}`;
+    else if (pasted.named) {
+        text = formatSkill(pasted.named, pasted.args) ?? text;
+        scan = pasted.args;
+    }
     const items: { type: "skill"; name: string; path: string }[] = [];
-    for (const name of mentionNames(text)) {
+    for (const name of mentionNames(scan)) {
         const s = byName.get(name);
         if (s && !items.some((i) => i.path === s.path)) items.push({ type: "skill", name: s.codexName ?? s.name, path: s.path });
     }
-    const pasted = skillMentions(text, missing);
-    return { text: head + (pasted.length ? withSkills(text, pasted) : text), items };
+    const mentioned = skillMentions(scan, missing).filter((s) => s !== pasted.named);
+    return { text: head + (mentioned.length ? withSkills(text + after, mentioned) : text + after), items };
 }
 
 /**
@@ -287,12 +310,12 @@ function real(p: string): string {
 }
 
 /** Where the CLI can't take them itself (an older Codex): the skills /name and $name ask for, pasted in as for the harness's models. */
-export function pastedPrompt(prompt: string, request: string | undefined, skills: readonly Skill[]): string {
-    if (!request || !prompt.endsWith(request) || !skills.length) return prompt;
-    const head = prompt.slice(0, prompt.length - request.length);
-    const slash = request.match(/^\/([a-z0-9][a-z0-9:_-]*)(?:\s+([\s\S]*))?$/i);
-    const named = slash && skills.find((s) => s.userInvocable && s.name === slash[1]!.toLowerCase());
-    if (named) return head + (formatSkill(named, (slash![2] ?? "").trim()) ?? request);
-    const mentioned = skillMentions(request, skills);
-    return mentioned.length ? head + withSkills(request, mentioned) : prompt;
+export function pastedPrompt(prompt: string, request: string | undefined, skills: readonly Skill[], after = ""): string {
+    const head = headOf(prompt, request, after);
+    if (head === undefined || !skills.length) return prompt;
+    const { named, args } = slashSkill(request!, skills);
+    const text = named ? (formatSkill(named, args) ?? request!) : request!;
+    const mentioned = skillMentions(named ? args : request!, skills).filter((s) => s !== named);
+    if (!named && !mentioned.length) return prompt;
+    return head + (mentioned.length ? withSkills(text + after, mentioned) : text + after);
 }

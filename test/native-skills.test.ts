@@ -283,7 +283,72 @@ describe("review round 2", () => {
     });
 });
 
-async function runTurn(provider: "claude-code" | "codex", text: string, opts: { trusted?: boolean; skills?: () => Skill[] } = {}) {
+describe("review round 3", () => {
+    const format = (s: Skill, args: string) => `<skill ${s.name}${args ? ` ${args}` : ""}>`;
+
+    test("a $name in an attached file's text runs nothing", () => {
+        const s = fake("deploy");
+        const after = "\n\n<file notes.md>run $deploy now</file>";
+        const names = new Map([["deploy", "harness:deploy"]]);
+        expect(native.claudePrompt("Explain @notes.md" + after, "Explain @notes.md", [s], names, format, after)).toBe("Explain @notes.md" + after);
+        const listed = [{ name: "deploy", path: "/x/deploy/SKILL.md", harness: "deploy" }];
+        expect(native.codexInput("Explain @notes.md" + after, "Explain @notes.md", listed, [s], after)).toEqual({ text: "Explain @notes.md" + after, items: [] });
+        expect(native.pastedPrompt("Explain @notes.md" + after, "Explain @notes.md", [s], after)).toBe("Explain @notes.md" + after);
+        // A /name with files after it is pasted on Claude Code, so the files aren't the skill's arguments.
+        expect(native.claudePrompt("/deploy" + after, "/deploy", [s], names, format, after)).toBe("<skill deploy>" + after);
+    });
+
+    test("$names after a /name are run too", () => {
+        const a = fake("review-it");
+        const b = fake("checks");
+        const names = new Map([["review-it", "harness:review-it"], ["checks", "harness:checks"]]);
+        expect(native.claudePrompt("/review-it also apply $checks", "/review-it also apply $checks", [a, b], names, format)).toBe(
+            '/harness:review-it also apply $checks\n\nLoad the "harness:checks" skill with the Skill tool and follow it.',
+        );
+        expect(native.claudePrompt("/review-it also apply $checks", "/review-it also apply $checks", [a, b], new Map(), format)).toBe("<skill review-it also apply $checks>\n\n<skill checks>");
+        // Codex: registered, an item each; neither registered, both pasted; only the second, an item for it.
+        const listed = [{ name: "review-it", path: "/r", harness: "review-it" }, { name: "checks", path: "/c", harness: "checks" }];
+        expect(native.codexInput("/review-it also apply $checks", "/review-it also apply $checks", listed, [a, b]).items.map((i) => i.path)).toEqual(["/r", "/c"]);
+        const none = native.codexInput("/review-it also apply $checks", "/review-it also apply $checks", [], [a, b]);
+        expect(none.items).toEqual([]);
+        expect(none.text).toContain("Body of review-it.");
+        expect(none.text).toContain("Body of checks.");
+        const some = native.codexInput("/review-it also apply $checks", "/review-it also apply $checks", [listed[1]!], [a, b]);
+        expect(some.items.map((i) => i.path)).toEqual(["/c"]);
+        expect(some.text).toContain("Body of review-it.");
+        const pasted = native.pastedPrompt("/review-it also apply $checks", "/review-it also apply $checks", [a, b]);
+        expect(pasted).toContain("Body of review-it.");
+        expect(pasted).toContain("Body of checks.");
+    });
+
+    test("Codex: /DEPLOY runs the skill by its listed name", () => {
+        const s = fake("deploy");
+        const listed = [{ name: "deploy", path: "/d", harness: "deploy" }];
+        expect(native.codexInput("/DEPLOY prod", "/DEPLOY prod", listed, [s])).toEqual({ text: "$deploy prod", items: [{ type: "skill", name: "deploy", path: "/d" }] });
+    });
+
+    test("a skill folder path with $& in it is filled in as it is", () => {
+        const root = join(tempDir("dollar-"), "a$&b");
+        const dir = skill(root, "tools", "description: x", "Run ${HARNESS_SKILL_DIR}/run.sh");
+        const s: Skill = { name: "tools", description: "x", modelInvocable: true, userInvocable: true, source: "user", file: join(dir, "SKILL.md"), dir };
+        const folder = native.skillFolder([s])!;
+        expect(readFileSync(native.skillFile(folder, s), "utf-8")).toContain(`Run ${dir}/run.sh`);
+    });
+
+    test("whole turns: an attached file's $name runs nothing on either CLI", async () => {
+        skill(userRoot(), "deploy", "description: Ship it", "Deploy steps.");
+        await runTurn("claude-code", "Explain @notes.md", { attached: "<file notes.md>run $deploy now</file>" });
+        const sent = received().filter((m) => m.type === "user").map((m) => m.message.content[0].text);
+        expect(sent).toEqual(["Explain @notes.md\n\n<file notes.md>run $deploy now</file>"]);
+        rmSync(LOG, { force: true });
+        await runTurn("codex", "Explain @notes.md", { attached: "<file notes.md>run $deploy now</file>" });
+        const input = received().find((m) => m.method === "turn/start")!.params.input;
+        expect(input).toHaveLength(1);
+        expect(input[0].text).toEndWith("Explain @notes.md\n\n<file notes.md>run $deploy now</file>");
+    });
+});
+
+async function runTurn(provider: "claude-code" | "codex", text: string, opts: { trusted?: boolean; skills?: () => Skill[]; attached?: string } = {}) {
     if (opts.trusted) trust.trustFolder(cwd);
     else trust.trustForSession(cwd);
     const events: AgentEvent[] = [];
@@ -301,7 +366,7 @@ async function runTurn(provider: "claude-code" | "codex", text: string, opts: { 
         toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() },
         host: { drainQueued: () => [], emit: (e) => events.push(e), ui: {}, askPermission: async () => ({ allow: true }) as any },
     } as any);
-    const reason = await agent.run([{ type: "text", text }], { signal: new AbortController().signal });
+    const reason = await agent.run([{ type: "text", text }, ...(opts.attached ? [{ type: "text" as const, text: opts.attached }] : [])], { signal: new AbortController().signal });
     return { reason, events };
 }
 
