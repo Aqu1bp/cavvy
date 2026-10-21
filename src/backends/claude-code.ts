@@ -1281,7 +1281,7 @@ class ClaudeTurn {
         }
         // The harness's own tools: what a delegated agent does is checked when it does it, and run_with_secrets checks its command itself.
         const own = this.t.orchestrator;
-        if (own && String(req.tool_name ?? "").startsWith(`mcp__${own.name}__`)) return { behavior: "allow", updatedInput: raw };
+        if (own && own.tools.some((t) => req.tool_name === `mcp__${own.name}__${t}`)) return { behavior: "allow", updatedInput: raw };
         const { name, input } = toHarness(String(req.tool_name ?? ""), raw);
         const reason = typeof req.decision_reason === "string" && req.decision_reason.trim() ? req.decision_reason : undefined;
         const agentType = typeof req.agent_id === "string" ? this.agentTypes.get(req.agent_id) : undefined;

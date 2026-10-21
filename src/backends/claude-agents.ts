@@ -13,6 +13,8 @@ import { serverSegment } from "../mcp/manager";
 import type { PermissionMode } from "../permissions/modes";
 import { parseModelRef } from "../providers/types";
 import { findSkill, type AgentDef } from "../agent/agents";
+import { MCP_SERVER_NAME } from "../agent/delegation";
+import { childMode } from "../agent/subagent-setup";
 
 /** One entry of --agents: the fields Claude Code reads from a sub-agent file, plus its prompt. */
 export interface ClaudeAgentDefinition {
@@ -97,7 +99,10 @@ function claudeAgent(def: AgentDef, model: string, o: ClaudeAgentsOptions): Clau
         model,
     };
     if (def.tools?.length) a.tools = def.tools;
-    if (def.disallowedTools?.length) a.disallowedTools = def.disallowedTools;
+    // The harness's own tools (delegate, secrets, schedules) run under the session's mode, which Claude Code
+    // approves without asking: an agent whose own mode differs (a plan agent in an acceptEdits session) doesn't get them.
+    const disallowed = [...(def.disallowedTools ?? []), ...(def.permissionMode && childMode(o.mode, def.permissionMode) !== o.mode ? [`mcp__${MCP_SERVER_NAME}`] : [])];
+    if (disallowed.length) a.disallowedTools = disallowed;
     if (def.effort) a.effort = def.effort;
     if (def.permissionMode && !["plan", "auto", "bypassPermissions"].includes(o.mode)) a.permissionMode = CLAUDE_MODES[def.permissionMode];
     if (def.maxTurns) a.maxTurns = def.maxTurns;
@@ -133,7 +138,8 @@ function claudeHooks(def: AgentDef): ClaudeAgentDefinition["hooks"] {
  */
 function claudeServers(def: AgentDef, o: ClaudeAgentsOptions): NonNullable<ClaudeAgentDefinition["mcpServers"]> {
     const out: NonNullable<ClaudeAgentDefinition["mcpServers"]> = [];
-    const configured = [...Object.keys(o.settings.mcpServers ?? {}), ...(o.trusted ? projectServers(o.projectRoot) : [])];
+    // The harness's own server among them: its tools are approved by their names.
+    const configured = [MCP_SERVER_NAME, ...Object.keys(o.settings.mcpServers ?? {}), ...(o.trusted ? projectServers(o.projectRoot) : [])];
     for (const s of def.mcpServers ?? []) {
         if (!s.config) {
             out.push(s.name);

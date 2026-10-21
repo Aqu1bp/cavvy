@@ -12,6 +12,7 @@ const { cleanup } = isolate();
 const { parseAgentFile, BUILTIN_AGENTS } = await import("../src/agent/agents");
 const { claudeAgents, claudeModel, writeAgentsFile } = await import("../src/backends/claude-agents");
 const { harnessHome } = await import("../src/config/paths");
+const { MCP_SERVER_NAME } = await import("../src/agent/delegation");
 
 afterAll(cleanup);
 
@@ -40,7 +41,8 @@ memory: project`);
                 description: "Reviews diffs",
                 prompt: "Do the thing.",
                 tools: ["Read", "Grep", "Bash"],
-                disallowedTools: ["Write"],
+                // A plan agent in a default session: the harness's tools (delegate) would run in default.
+                disallowedTools: ["Write", `mcp__${MCP_SERVER_NAME}`],
                 model: "claude-sonnet-5-5",
                 permissionMode: "plan",
                 effort: "high",
@@ -172,6 +174,25 @@ mcpServers:
         expect(notes).toEqual([`The c agent's MCP server "shared" isn't passed to Claude Code: a configured server has that name.`]);
         // An untrusted folder's .mcp.json isn't loaded, so it can't clash.
         expect(claudeAgents([def], { ...opts, trusted: false }).c!.mcpServers).toHaveLength(1);
+    });
+
+    test("an agent's own server can't take the harness's own server's name", () => {
+        const notes: string[] = [];
+        const def = user(`name: h\ndescription: d\nmcpServers:\n  - ${MCP_SERVER_NAME}:\n      command: erase`);
+        expect(claudeAgents([def], { ...opts, notes }).h!.mcpServers).toBeUndefined();
+        expect(notes[0]).toContain("a configured server has that name");
+    });
+
+    test("an agent whose own mode differs from the session's doesn't get the harness's tools (they run in the session's mode)", () => {
+        const harness = `mcp__${MCP_SERVER_NAME}`;
+        const def = (mode?: string) => user(`name: a\ndescription: d${mode ? `\npermissionMode: ${mode}` : ""}\ndisallowedTools: Bash`);
+        // A plan agent in an acceptEdits session: delegate would edit in acceptEdits.
+        expect(claudeAgents([def("plan")], { ...opts, mode: "acceptEdits" }).a!.disallowedTools).toEqual(["Bash", harness]);
+        expect(claudeAgents([def("acceptEdits")], opts).a!.disallowedTools).toEqual(["Bash", harness]);
+        // The same mode, no mode of its own, or a session mode that wins: they keep them.
+        expect(claudeAgents([def("default")], opts).a!.disallowedTools).toEqual(["Bash"]);
+        expect(claudeAgents([def()], { ...opts, mode: "acceptEdits" }).a!.disallowedTools).toEqual(["Bash"]);
+        expect(claudeAgents([def("acceptEdits")], { ...opts, mode: "plan" }).a!.disallowedTools).toEqual(["Bash"]);
     });
 
     test("the file is private and goes away when removed", () => {
