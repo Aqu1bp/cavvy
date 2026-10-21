@@ -3,7 +3,7 @@ import { RenderBoundary } from "../ui/ErrorBoundary";
 // one line ("Read 3 files, searched 2 patterns · +13 −1"), which opens into
 // a row per call, which opens into the call's details.
 
-import { createEffect, createMemo, createSignal, For, Match, on, Show, Switch, type JSX } from "solid-js";
+import { createContext, createEffect, createMemo, createSignal, For, Match, on, Show, Switch, useContext, type JSX, type Signal } from "solid-js";
 import {
     AlertTriangle,
     Bot,
@@ -858,20 +858,79 @@ function EditCardContent(p: { tool: ToolBlock }) {
 /** The last lines of a running command's output; the whole of it once it's done. */
 const LIVE_LINES = 40;
 
-/** A command: what ran, how it went, and what it printed. */
+/** Which command cards the reader opened (or folded again), by call id. */
+type CardFolds = { get(id: string): boolean | undefined; set(id: string, open: boolean): void };
+
+function cardFolds(): CardFolds {
+    const open = new Map<string, Signal<boolean | undefined>>();
+    const of = (id: string) => {
+        let s = open.get(id);
+        if (!s) open.set(id, (s = createSignal<boolean>()));
+        return s;
+    };
+    return { get: (id) => of(id)[0](), set: (id, value) => of(id)[1](value) };
+}
+
+/** Each session's, kept while the app runs: a card drawn again (the work log folded and opened, another session and back) is as it was left. */
+const sessionFolds = new Map<string, CardFolds>();
+function foldsOf(sessionId: string): CardFolds {
+    let folds = sessionFolds.get(sessionId);
+    if (!folds) {
+        sessionFolds.set(sessionId, (folds = cardFolds()));
+        if (sessionFolds.size > 100) sessionFolds.delete(sessionFolds.keys().next().value!);
+    }
+    return folds;
+}
+
+/** Outside a session's views (a test, a preview), the cards share one set. */
+const CardFoldsContext = createContext<CardFolds>(cardFolds());
+
+/** The command cards under it keep their open state in `sessionId`'s set. */
+export function CardFoldsProvider(p: { sessionId: string; children: JSX.Element }) {
+    const folds: CardFolds = { get: (id) => foldsOf(p.sessionId).get(id), set: (id, open) => foldsOf(p.sessionId).set(id, open) };
+    return <CardFoldsContext.Provider value={folds}>{p.children}</CardFoldsContext.Provider>;
+}
+
+/**
+ * The last line a command printed: the latest of its live output, or of its output once it failed,
+ * passing over the exit code the tool adds at the end ("Exit code: 1"), which the pill already says.
+ */
+function lastLine(text: string | undefined): string | undefined {
+    if (!text) return undefined;
+    // Only the end is wanted: don't clean a long output to read one line of it.
+    const lines = stripAnsi(text.slice(-4096)).split(/\r\n|\r|\n/);
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i]!.trim();
+        if (line && !/^Exit code:? -?\d+\b/.test(line)) return line;
+    }
+    return undefined;
+}
+
+/**
+ * A command: what ran and how it went, on one line; what it printed (and the whole command, when it
+ * has more than one line) when the reader opens it. Folded, a running command shows the last line it
+ * printed, and a failed one the last line of its output.
+ */
 export function CommandCard(p: { tool: ToolBlock }) {
     return <RenderBoundary raw={() => p.tool}><CommandCardContent {...p} /></RenderBoundary>;
 }
 
 function CommandCardContent(p: { tool: ToolBlock }) {
+    const folds = useContext(CardFoldsContext);
     const t = () => p.tool;
     const label = createMemo(() => toolLabel(t()));
     const live = () => isLive(t());
     const command = () => String(t().input?.command ?? "").trim();
     const multiline = () => command().includes("\n");
     const meta = () => (t().status === "denied" ? undefined : t().summary);
-    const progress = () => (t().status === "running" && t().progress ? stripAnsi(t().progress!).trimEnd().split("\n").slice(-LIVE_LINES).join("\n") : "");
-    const hasBody = () => multiline() || Boolean(progress() || (!live() && t().output?.trim()));
+    // Folded until the reader opens it (or asked for activity open in Settings); find opens it on a match.
+    const open = () => folds.get(t().id) ?? prefs.expandActivity;
+    const setOpen = (value: boolean) => folds.set(t().id, value);
+    createEffect(on(findReveal, (r) => r?.part === p.tool.id && setOpen(true)));
+    const running = () => t().status === "running";
+    const progress = () => (open() && running() && t().progress ? stripAnsi(t().progress!).trimEnd().split("\n").slice(-LIVE_LINES).join("\n") : "");
+    const hasBody = () => multiline() || Boolean((running() && t().progress?.trim()) || (!live() && t().output?.trim()));
+    const tail = createMemo(() => (open() ? undefined : running() ? lastLine(t().progress) : t().status === "error" ? lastLine(t().output) : undefined));
     let out: HTMLPreElement | undefined;
     // Follow the output while it runs, unless the reader has scrolled up in it. Whether they're at
     // the end is taken as they scroll: measured after new lines arrive, a burst would look like a scroll away.
@@ -883,8 +942,8 @@ function CommandCardContent(p: { tool: ToolBlock }) {
         if (out && atEnd) out.scrollTop = out.scrollHeight;
     }));
     return (
-        <div class={`tcard cmd-card st-${t().status} ${findReveal()?.part === t().id ? "found" : ""}`} data-find={t().id}>
-            <div class="tcard-h">
+        <div class={`tcard cmd-card st-${t().status} ${open() && hasBody() ? "open" : ""} ${findReveal()?.part === t().id ? "found" : ""}`} data-find={t().id}>
+            <button class={`tcard-h cmd-h ${tail() ? "has-tail" : ""}`} disabled={!hasBody()} aria-expanded={hasBody() ? open() : undefined} onClick={() => setOpen(!open())}>
                 <span class="tcard-ic">
                     <SquareTerminal size={14} />
                 </span>
@@ -897,6 +956,10 @@ function CommandCardContent(p: { tool: ToolBlock }) {
                 </Show>
                 <Show when={meta()}>
                     <span class="tcard-dim truncate" data-find-skip={live() || undefined}>{meta()}</span>
+                </Show>
+                {/* A glimpse of the output, which find counts in the body it opens. */}
+                <Show when={tail()}>
+                    <span class={`tcard-tail truncate ${t().status === "error" ? "err" : ""}`} title={tail()} data-find-skip>{tail()}</span>
                 </Show>
                 <span class="grow" />
                 <Show when={t().sandboxed}>
@@ -912,11 +975,19 @@ function CommandCardContent(p: { tool: ToolBlock }) {
                     {(time) => <span class="tcard-dim num" data-find-skip>{time()}</span>}
                 </Show>
                 <StatusPill tool={t()} done={okLabel(t())} />
-            </div>
-            <Show when={hasBody()}>
-                <div class="tcard-body" data-find-skip>
+                <span class="tcard-chev" aria-hidden="true">
+                    <Show when={hasBody()}>
+                        <ChevronRight size={14} class="chev" />
+                    </Show>
+                </span>
+            </button>
+            <Show when={open() && hasBody()}>
+                {/* Find counts a finished command's body (see blockText): a line between it and the header, as there. */}
+                {"\n"}
+                <div class="tcard-body" data-find-skip={live() || undefined}>
                     <Show when={multiline()}>
                         <pre class="tcard-out cmd">{command()}</pre>
+                        {"\n"}
                     </Show>
                     <Show when={live()} fallback={<Output tool={t()} bare />}>
                         <Show when={progress()}>
@@ -974,7 +1045,7 @@ function Output(p: { tool: ToolBlock; bare?: boolean }) {
             >
                 <pre class={`tcard-out ${p.tool.status === "error" ? "err" : ""}`}>{text()}</pre>
                 <Show when={p.tool.outputTruncated && !full()}>
-                    <div class="tcard-more">{more()}</div>
+                    <div class="tcard-more" data-find-skip>{more()}</div>
                 </Show>
             </Show>
         </Show>

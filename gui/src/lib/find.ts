@@ -33,7 +33,10 @@ function plain(md: string): string {
     return text;
 }
 
-/** What a block shows, as find sees it. Thinking isn't searched; a tool row is its title and summary, not its output. */
+/**
+ * What a block shows, as find sees it. Thinking isn't searched; a tool row is its title and summary, not its
+ * output (its details are for reading, not searching); a finished command's card is its output too.
+ */
 function blockText(b: Block): string | undefined {
     switch (b.t) {
         case "text":
@@ -48,7 +51,12 @@ function blockText(b: Block): string | undefined {
             // As the row reads, a space between each part (ToolRow puts one there): verb, argument, summary.
             // A card (an edit, a command) doesn't show its verb: it's there for the screen reader only.
             const meta = b.status === "denied" ? "Declined" : b.diff && b.status === "ok" ? undefined : b.summary;
-            return [cardOf(b) ? undefined : l.verb, l.arg, meta].filter(Boolean).join(" ");
+            const head = [cardOf(b) ? undefined : l.verb, l.arg, meta].filter(Boolean).join(" ");
+            if (cardOf(b) !== "command") return head;
+            // A finished command's card opens on what it ran (all of it, when it's more than one line) and what it printed.
+            const command = String(b.input?.command ?? "").trim();
+            const output = stripAnsi(b.output ?? "");
+            return [head, command.includes("\n") ? command : undefined, output.trim() ? output : undefined].filter(Boolean).join("\n");
         }
         case "notice":
             return b.text;
