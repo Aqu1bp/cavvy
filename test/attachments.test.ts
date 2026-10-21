@@ -393,6 +393,11 @@ describe("review comments and @mentions", () => {
         // Typed by the user, they attach as always.
         const typed = await expand(withComments("See @wanted.txt", [comment("Like @noted.txt says", "x @private.txt")]));
         expect(typed.attached.sort()).toEqual(["noted.txt", "wanted.txt"]);
+        // A diff the user wrote in their comment doesn't hide a mention after it; the quoted code is still skipped.
+        const example = "Compare this example:\n\n```diff\n-old\n+new\n```\n\nPlease read @wanted.txt";
+        const fenced = await expand(withComments("Look", [comment(example, "see @private.txt"), comment("And @noted.txt $& $1", "``` @private.txt")]));
+        expect(fenced.attached.sort()).toEqual(["noted.txt", "wanted.txt"]);
+        expect(JSON.stringify(fenced.parts)).not.toContain("PRIVATE CONTENTS");
         // A message that only looks like one is read as typed.
         expect((await expand("<review_comment> @wanted.txt")).attached).toEqual(["wanted.txt"]);
     });

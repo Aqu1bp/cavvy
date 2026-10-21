@@ -287,7 +287,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         const ok = picks ? await startRun({ path: app.homeCwd!, models: [...picks], text: t, attachments: atts, mode: mode() }) : await send(message, atts, { followUp: busy() ? followUp(opposite) : undefined, sent, accepted: (id) => {
             if (!wasDeleted(id) && t.trim()) composerStorage.remember(id, t);
             // Sent: out of the box and the diff. Ones added meanwhile stay for the next message.
-            if (sentComments.length) reviewComments.remove(id, sentComments.map((c) => c.id));
+            if (sentComments.length) reviewComments.removeSent(id, sentComments);
         } });
         if (ok) {
             if (picks) {

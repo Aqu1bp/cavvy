@@ -134,7 +134,7 @@ export function createReviewCommentStore(storage: () => Storage | undefined, now
         };
         load();
 
-        return {
+        const api = {
             list: (id: string | undefined): readonly ReviewComment[] => (id ? (all().get(id) ?? EMPTY) : EMPTY),
             add(id: string, c: ReviewComment) {
                 put(id, [c]);
@@ -169,11 +169,21 @@ export function createReviewCommentStore(storage: () => Storage | undefined, now
                 });
                 changed();
             },
+            /** Takes out comments that went with a message, unless they've changed since: an edit made meanwhile wasn't sent. */
+            removeSent(id: string, sent: readonly ReviewComment[]) {
+                const current = new Map((all().get(id) ?? EMPTY).map((c) => [c.id, c]));
+                const same = sent.filter((c) => {
+                    const now = current.get(c.id);
+                    return now && now.text === c.text && now.snippet === c.snippet && now.path === c.path;
+                });
+                if (same.length) api.remove(id, same.map((c) => c.id));
+            },
             load,
             /** Another window wrote: take its version, keeping this one's changes still to be written. */
             refresh: load,
             flush,
         };
+        return api;
     });
 }
 

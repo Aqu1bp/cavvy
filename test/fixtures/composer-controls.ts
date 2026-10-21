@@ -60,6 +60,8 @@ const runSheet = createRunSheet({
 const replies: ReturnType<typeof Promise.withResolvers<string[]>>[] = [];
 let sends = 0;
 let commandLists = 0;
+let holdSend: Promise<void> | undefined;
+const commentStore = createReviewCommentStore(() => undefined);
 const noop = () => undefined;
 const components = Object.fromEntries(["ArrowUp", "CornerDownRight", "QueueTab", "GoalTab", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "Sparkles", "SquareTerminal", "X", "ModelPicker", "FastModeToggle", "EffortMenu", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring", "ReviewCommentChips"].map((key) => [key, noop]));
 const [working, setWorking] = solid.createSignal(false);
@@ -72,7 +74,7 @@ const appState = { conn: "open", homeCwd: "/workspace", settings: {} as { follow
 const deps = { ...solid, ...components, renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, firstSendable, followUpFor, otherFollowUp, canStop, keymap, matchKey, withShortcut, shortcut, eventStrokes,
     comparePicks, setComparePicks, startRun: runSheet.startRun,
     splitComments, takesComments, withComments, plural, setReview: noop,
-    reviewComments: createReviewCommentStore(() => undefined), newCommentId: () => crypto.randomUUID(),
+    reviewComments: commentStore, newCommentId: () => crypto.randomUUID(),
     createLifetimeGuard: () => (fn: any) => fn, wasDeleted: () => false,
     app: appState,
     handleFor: () => ({ view: { state: sessionState }, draft: noop }),
@@ -80,7 +82,7 @@ const deps = { ...solid, ...components, renderer, createComposerDraft, composerS
     focusComposer: () => 0, modelPickerOpen: () => false, modePickerOpen: () => false,
     setModelPickerOpen: noop, setModePickerOpen: noop, blockedBy: () => false,
     prefs: { enterSends: true }, mod: "⌘", isMod: (e: any) => e.metaKey, interrupt: () => void interrupts++,
-    send: async (text: string, _attachments: unknown[], opts: { accepted: (id: string) => void; followUp?: string }) => { sends++; sent.push({ text, followUp: opts.followUp }); opts.accepted(session()); return true; }, toast: noop, reportError: noop,
+    send: async (text: string, _attachments: unknown[], opts: { accepted: (id: string) => void; followUp?: string }) => { sends++; sent.push({ text, followUp: opts.followUp }); if (holdSend) await holdSend; opts.accepted(session()); return true; }, toast: noop, reportError: noop,
     rpc: { call: async (method: string, params: any) => { calls.push({ method, params }); if (method === "commands.list") { commandLists++; return [{ name: "help", description: "Help" }, { name: "pdf", description: "Read PDFs", skill: true }]; } const reply = Promise.withResolvers<string[]>(); replies.push(reply); return reply.promise; } },
     window: { innerHeight: 800, matchMedia: () => ({ matches: narrow }) },
     document: { get activeElement() { return focused; }, querySelector: () => modal ? {} : undefined },
@@ -328,5 +330,27 @@ revealMenuOption(list as any, { getBoundingClientRect: () => ({ top: 190, bottom
 assert.equal(list.scrollTop, 40);
 revealMenuOption(list as any, { getBoundingClientRect: () => ({ top: 80, bottom: 110 }) } as any);
 assert.equal(list.scrollTop, 20);
+// A comment edited (here or in another window) while its message is on the way keeps the new text.
+{
+    setComparePicks(undefined);
+    setSession("c");
+    await Bun.sleep(0);
+    const id = "c";
+    const comment = (cid: string, text: string) => ({ id: cid, path: "a.ts", start: { side: "new" as const, line: 1 }, end: { side: "new" as const, line: 1 }, text, snippet: "@@ -1,1 +1,1 @@\n+x", created: 1 });
+    commentStore.add(id, comment("sent", "Original text"));
+    commentStore.add(id, comment("unchanged", "Also sent"));
+    const gate = Promise.withResolvers<void>();
+    holdSend = gate.promise;
+    input("With comments");
+    key("Enter");
+    await Bun.sleep(0);
+    assert.ok(sent.at(-1)!.text.includes("Original text") && sent.at(-1)!.text.includes("Also sent"));
+    commentStore.edit(id, "sent", "NEW UNSENT TEXT");
+    commentStore.add(id, comment("later", "Added meanwhile"));
+    gate.resolve();
+    holdSend = undefined;
+    await Bun.sleep(0);
+    assert.deepEqual(commentStore.list(id).map((c) => [c.id, c.text]), [["sent", "NEW UNSENT TEXT"], ["later", "Added meanwhile"]]);
+}
 dispose();
 composerStorage.flush();

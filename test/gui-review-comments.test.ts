@@ -296,6 +296,23 @@ describe("keeping comments between reloads", () => {
         expect(store.list("s1").map((x) => x.id)).toEqual(["theirs", "mine"]);
     });
 
+    test("a sent message takes out the comments as sent, not ones edited since", () => {
+        const s = memory();
+        const a = createReviewCommentStore(() => s, () => 2000);
+        a.add("s1", c("edited"));
+        a.add("s1", c("same"));
+        a.flush();
+        const sent = [...a.list("s1")];
+        const b = createReviewCommentStore(() => s, () => 2000);
+        b.edit("s1", "edited", "newer, unsent");
+        b.flush();
+        a.refresh(); // both re-read from storage: "same" is a new object with the same content
+        a.removeSent("s1", sent);
+        a.flush();
+        b.refresh();
+        for (const st of [a, b]) expect(st.list("s1").map((x) => [x.id, x.text])).toEqual([["edited", "newer, unsent"]]);
+    });
+
     test("two windows adding to the same session before either writes keep both", () => {
         const s = memory();
         const a = createReviewCommentStore(() => s, () => 2000);
