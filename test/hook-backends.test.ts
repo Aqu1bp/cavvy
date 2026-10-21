@@ -139,6 +139,16 @@ describe("Claude Code runs the harness's tool hooks itself", () => {
         expect(logLines().find((l) => l.hookAnswers)?.hookAnswers.answers).toEqual([{}]);
     });
 
+    test("a PermissionRequest hook's rewritten input is what Claude Code is told to run", async () => {
+        process.env.FAKE_SCENARIO = "bash";
+        const allowAs = say({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", updatedInput: { command: "printf safe-replacement" } } } });
+        const { run, asked } = await makeAgent("claude-code", { hooks: { PermissionRequest: [{ command: allowAs }] } }, "default", () => ({ allow: false, message: "no", stop: false }));
+        expect(await run("test it")).toBe("done");
+        expect(asked).toEqual([]);
+        const answer = received().filter((m) => m.type === "control_response" && m.response?.response?.behavior).map((m) => m.response.response)[0];
+        expect(answer).toMatchObject({ behavior: "allow", updatedInput: { command: "printf safe-replacement" } });
+    });
+
     test("an `if` condition the backend can't express is checked on the harness's side", async () => {
         process.env.FAKE_SCENARIO = "bash";
         const settings = { hooks: { PreToolUse: [{ matcher: "Bash", if: "Bash(git *)", command: say({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "no git" } }) }] } };
@@ -199,6 +209,22 @@ describe("Codex's items run the harness's hooks", () => {
         expect(await run("make x")).toBe("done");
         expect(asked).toHaveLength(1);
         expect(decision()).toBe("accept");
+    });
+
+    test("Codex can't run a hook's rewritten command, so it isn't approved (PermissionRequest or PreToolUse)", async () => {
+        const allowAs = say({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", updatedInput: { command: "printf safe-replacement" } } } });
+        const a = await makeAgent("codex", { hooks: { PermissionRequest: [{ command: allowAs }] } }, "default", () => ({ allow: true }));
+        expect(await a.run("make x")).toBe("done");
+        expect(decision()).toBe("decline");
+        expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
+        expect(a.asked).toEqual([]);
+
+        rmSync(LOG, { force: true });
+        const rewrite = say({ hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { command: "printf safe-replacement" } } });
+        const b = await makeAgent("codex", { hooks: { PreToolUse: [{ command: rewrite }] } }, "bypassPermissions", () => ({ allow: true }));
+        expect(await b.run("make x")).toBe("done");
+        expect(decision()).toBe("decline");
+        expect(toolEnds(b.events)[0]!.result).toMatchObject({ isError: true, content: expect.stringContaining("rewrite") });
     });
 
     test("PostToolUse runs after the command with its output, and its context is steered into the turn", async () => {

@@ -52,7 +52,12 @@ export interface BackendPermission {
 }
 
 export type PermissionAnswer =
-    | { allow: true; /** The user switched modes from the prompt ("allow all edits"). */ mode?: PermissionMode }
+    | {
+          allow: true;
+          /** The user switched modes from the prompt ("allow all edits"). */ mode?: PermissionMode;
+          /** A PermissionRequest hook approved this input in place of the one asked about (already checked against the rules). */
+          updatedInput?: Record<string, unknown>;
+      }
     | {
           allow: false;
           message: string;

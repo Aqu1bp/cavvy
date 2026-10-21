@@ -4,7 +4,7 @@
 // and a hook that ends the turn (continue: false).
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -34,7 +34,7 @@ const afterTools = (req: ChatRequest) => (req.messages.at(-1) as any)?.meta?.kin
 
 const tool = (name: string, run: (input: any) => any, extra: any = {}) => ({ name, category: "meta", readOnly: true, description: name, title: () => name, parameters: { type: "object", properties: { x: { type: "string" } } }, run: async (input: any) => run(input), ...extra });
 
-function agentFor(proj: string, settings: any, answer: (req: ChatRequest, n: number) => any, tools: any[] = [], o: { mode?: string; ask?: (req: any) => any; helpers?: any } = {}) {
+function agentFor(proj: string, settings: any, answer: (req: ChatRequest, n: number) => any, tools: any[] = [], o: { mode?: string; ask?: (req: any) => any; helpers?: any; readOnly?: boolean } = {}) {
     const requests: { system: string; messages: any[] }[] = [];
     const notices: string[] = [];
     const asked: any[] = [];
@@ -56,12 +56,46 @@ function agentFor(proj: string, settings: any, answer: (req: ChatRequest, n: num
         mode: { get: () => (o.mode ?? "bypassPermissions") as any, set() {} },
         toolState: { cwd: proj, projectRoot: proj, fileState: new Map(), todos: [], shells: new Map() } as any,
         helpers: o.helpers,
+        readOnly: o.readOnly,
         host: { emit: (e: any) => e.type === "notice" && notices.push(e.message), ui: {}, ...(o.ask ? { askPermission: async (req: any) => (asked.push(req), o.ask!(req)) } : {}) } as any,
     });
     return { agent, session, requests, notices, asked };
 }
 const run = (agent: any, prompt: string, signal = new AbortController().signal) => agent.run([{ type: "text", text: prompt }], { signal });
 const resultsOf = (req: { messages: any[] }) => req.messages.at(-1).content;
+
+describe("hook answers the rest of the turn respects (review of #173)", () => {
+    test("a read-only agent refuses a write a PreToolUse hook rewrote a read into", async () => {
+        const proj = tempDir();
+        const rewrite = `echo '${JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { command: "touch rewritten-write" } } })}'`;
+        const { agent, requests } = agentFor(proj, { autoCompact: false, hooks: { PreToolUse: [{ command: rewrite }] } }, (req) => (afterTools(req) ? text("ok") : toolCall("c", "Bash", { command: "pwd" })), [BashTool], { readOnly: true });
+        await run(agent, "go");
+        expect(existsSync(join(proj, "rewritten-write"))).toBe(false);
+        expect(resultsOf(requests[1]!)[0].isError).toBe(true);
+    });
+    test("a read-only agent refuses a write a PermissionRequest hook rewrote a call into", async () => {
+        const proj = tempDir();
+        const allowAs = `echo '${JSON.stringify({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", updatedInput: { command: "touch rewritten-write" } } } })}'`;
+        // Reading a secret asks, even in a read-only agent; the hook answers with a write.
+        writeFileSync(join(proj, ".env"), "KEY=1\n");
+        const out = join(proj, "asked.jsonl");
+        const { agent } = agentFor(proj, { autoCompact: false, hooks: { PermissionRequest: [{ command: `cat > '${out}'; ${allowAs}` }] } }, (req) => (afterTools(req) ? text("ok") : toolCall("c", "Bash", { command: "cat .env" })), [BashTool], { readOnly: true, mode: "default", ask: () => ({ allow: false }) });
+        await run(agent, "go");
+        // The hook was asked (so the test reaches the rewrite), and its write didn't run.
+        expect(existsSync(out)).toBe(true);
+        expect(existsSync(join(proj, "rewritten-write"))).toBe(false);
+    });
+    test("continue: false stops the later calls of the same response, not just the next response", async () => {
+        const proj = tempDir();
+        const stop = { matcher: "Bash", command: `echo '{"continue":false,"stopReason":"enough"}'` };
+        const reply2 = reply([{ type: "tool_call", id: "a", name: "Bash", input: { command: "touch first" } }, { type: "tool_call", id: "b", name: "Bash", input: { command: "touch second" } }], "tool_use");
+        const { agent, notices } = agentFor(proj, { autoCompact: false, hooks: { PostToolUse: [stop] } }, (req) => (afterTools(req) ? text("ok") : reply2), [BashTool]);
+        await run(agent, "go");
+        expect(existsSync(join(proj, "first"))).toBe(true);
+        expect(existsSync(join(proj, "second"))).toBe(false);
+        expect(notices.some((n) => n.includes("enough"))).toBe(true);
+    });
+});
 
 describe("PostToolUse and PostToolUseFailure", () => {
     test("a tool that fails runs PostToolUseFailure (with the error), not PostToolUse", async () => {
@@ -251,7 +285,8 @@ describe("PreCompact and PostCompact", () => {
 
 describe("CwdChanged and FileChanged", () => {
     test("Bash cd runs CwdChanged with both folders", async () => {
-        const proj = tempDir();
+        // Canonical, as the shell reports its folder (macOS's /var is /private/var).
+        const proj = realpathSync(tempDir());
         mkdirSync(join(proj, "sub"));
         const out = join(proj, "cwd.jsonl");
         const { agent } = agentFor(proj, { autoCompact: false, hooks: { CwdChanged: [record(out)] } }, (req) => (afterTools(req) ? text("ok") : toolCall("c", "Bash", { command: "cd sub" })), [BashTool]);

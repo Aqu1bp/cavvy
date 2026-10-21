@@ -1635,6 +1635,24 @@ export class Agent {
      * or a read-only agent asking because of the harness's own rule. There a
      * read-only command the harness would run for its own models runs.
      */
+    /**
+     * A PermissionRequest hook approved other input than the backend asked about: it goes back to the
+     * backend to run (Claude Code takes it; Codex refuses it), once it passes what the original had to.
+     */
+    private rewrittenByHook(tool: Tool<any>, raw: Record<string, unknown>, mode: PermissionMode, cwd: string): PermissionAnswer {
+        const own = this.findTool(tool.name);
+        const input = own ? coerceInput(own, raw) : raw;
+        const invalid = own ? validateInput(own, input) : undefined;
+        if (invalid) return { allow: false, message: `A PermissionRequest hook changed the input to something invalid: ${invalid}`, stop: false };
+        if (this.o.readOnly) {
+            const reads = tool.category === "read" || tool.category === "network" || (tool.name === "Bash" && isReadOnlyCommand(String(input.command ?? "")));
+            if (!reads) return { allow: false, message: readOnlyRefusal(tool.name, String(input.command ?? "")), stop: false };
+        }
+        const d = this.o.checker.check(tool, input, mode, cwd);
+        if (d.behavior === "deny") return { allow: false, message: d.reason ?? "Denied by a permission rule.", stop: false };
+        return { allow: true, updatedInput: input };
+    }
+
     private async backendPermission(req: BackendPermission, signal: AbortSignal): Promise<PermissionAnswer> {
         const tool = this.findTool(req.toolName) ?? backendTool(req.toolName, req.title);
         const input = req.input;
@@ -1692,7 +1710,7 @@ export class Agent {
         if (req.hookDecision === "allow" && !decision.dangerous) return { allow: true };
         if (this.o.settings().hooks?.PermissionRequest?.length) {
             const h = await this.hooks("PermissionRequest", { tool_name: tool.name, tool_input: input, ...(tool.category === "mcp" ? { mcp_server: mcpServerOf(tool.name) } : {}) }, signal);
-            if (h?.permission?.behavior === "allow") return { allow: true };
+            if (h?.permission?.behavior === "allow") return h.updatedInput ? this.rewrittenByHook(tool, h.updatedInput, mode, cwd) : { allow: true };
             if (h?.permission?.behavior === "deny") return { allow: false, message: h.permission.message || "Denied by a PermissionRequest hook.", stop: Boolean(h.permission.interrupt) };
         }
         if (!this.o.host.askPermission) {
@@ -1794,7 +1812,8 @@ export class Agent {
 
             const approved: { call: ToolCallPart; tool: Tool<any>; input: any; auto?: string; sandbox?: boolean }[] = [];
             for (const call of batch) {
-                if (denied || signal.aborted) break;
+                // A hook's continue:false ends the turn here, so later calls in the reply don't run.
+                if (denied || signal.aborted || this.hookStop) break;
                 const prep = await this.prepare(call, signal);
                 if ("result" in prep) {
                     results.set(call.id, prep.result);
@@ -1803,7 +1822,7 @@ export class Agent {
             }
             if (signal.aborted) break;
             await Promise.all(approved.map(async (a) => results.set(a.call.id, await this.runTool(a.call, a.tool, a.input, signal, a.auto, a.sandbox))));
-            if (denied || signal.aborted) break;
+            if (denied || signal.aborted || this.hookStop) break;
         }
         const out: ToolResultPart[] = calls.map(
             (c) =>
@@ -1811,7 +1830,11 @@ export class Agent {
                     type: "tool_result",
                     toolCallId: c.id,
                     toolName: c.name,
-                    content: signal.aborted ? "Interrupted by user before this tool ran." : "Not run: the user rejected an earlier tool call in this batch.",
+                    content: signal.aborted
+                        ? "Interrupted by user before this tool ran."
+                        : this.hookStop
+                          ? `Not run: a hook stopped the turn (${this.hookStop}).`
+                          : "Not run: the user rejected an earlier tool call in this batch.",
                     isError: true,
                 },
         );
@@ -1853,11 +1876,9 @@ export class Agent {
             return { result: this.errorResult(call, `Validation failed: ${(e as Error).message}`) };
         }
 
-        // Read-only agents (explore) never change anything.
-        if (this.o.readOnly) {
-            const writes = tool.category === "edit" || (tool.name === "Bash" && !isReadOnlyCommand(String(input.command ?? ""))) || tool.category === "mcp" && !isReadOnly(tool, input);
-            if (writes) return { result: this.errorResult(call, readOnlyRefusal(tool.name, String(input.command ?? ""))) };
-        }
+        // Read-only agents (explore) never change anything, whatever a hook later rewrites the call into.
+        const writes = (input: any) => this.o.readOnly && (tool.category === "edit" || (tool.name === "Bash" && !isReadOnlyCommand(String(input.command ?? ""))) || (tool.category === "mcp" && !isReadOnly(tool, input)));
+        if (writes(input)) return { result: this.errorResult(call, readOnlyRefusal(tool.name, String(input.command ?? ""))) };
 
         const settings = this.o.settings();
         let hookDecision: "allow" | "deny" | "ask" | undefined;
@@ -1872,6 +1893,7 @@ export class Agent {
                 input = coerceInput(tool, h.updatedInput);
                 const err = validateInput(tool, input);
                 if (err) return { result: this.errorResult(call, `A PreToolUse hook changed the input to something invalid: ${err}`) };
+                if (writes(input)) return { result: this.errorResult(call, readOnlyRefusal(tool.name, String(input.command ?? ""))) };
             }
         }
 
@@ -1914,6 +1936,7 @@ export class Agent {
                 const err = h.updatedInput ? validateInput(tool, approvedInput) : undefined;
                 if (err) return { result: this.errorResult(call, `A PermissionRequest hook changed the input to something invalid: ${err}`) };
                 if (!h.updatedInput) return { tool, input, sandbox, auto: "hook" };
+                if (writes(approvedInput)) return { result: this.errorResult(call, readOnlyRefusal(tool.name, String(approvedInput.command ?? ""))) };
                 // The hook answers for you, but not past a deny rule, and the new command gets its own sandbox.
                 const again = this.o.checker.check(tool, approvedInput, mode, this.state.cwd);
                 if (again.behavior === "deny") return { result: this.errorResult(call, again.reason ?? "Permission denied") };

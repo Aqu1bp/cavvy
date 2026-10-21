@@ -232,6 +232,9 @@ function modeNote(mode: PermissionMode, readOnly: boolean): string | undefined {
     return undefined;
 }
 
+/** A hook rewrote a call Codex asked about: Codex can only run what it asked, so the call is refused. */
+const CANT_REWRITE = "A hook rewrote this call, and Codex can only run the call as it asked, so neither the rewrite nor the original ran.";
+
 /** Codex's fast service tiers: "priority" in its catalog (0.163), "fast" in older ones. */
 const FAST_TIERS = new Set(["fast", "priority"]);
 
@@ -1146,6 +1149,7 @@ class CodexTurn {
         if (h?.blocked) return { allow: false, message: `Blocked by PreToolUse hook: ${h.blocked}`, stop: false };
         if (h?.decision === "deny") return { allow: false, message: `Denied by PreToolUse hook${h.reason ? `: ${h.reason}` : ""}`, stop: false };
         if (h?.stop) return { allow: false, message: `Stopped by PreToolUse hook: ${h.stop}`, stop: true };
+        if (h?.updatedInput) return { allow: false, message: CANT_REWRITE, stop: false };
         const hookDecision = h?.decision === "allow" || h?.decision === "ask" ? h.decision : undefined;
         return this.host.permission({ ...req, hookDecision, hooksOnly: (this.turnMode ?? this.host.mode()) === "bypassPermissions" });
     }
@@ -1371,6 +1375,8 @@ class CodexTurn {
      * A sub-agent's turn gets what's said about its own requests.
      */
     private decision(a: PermissionAnswer, itemId: unknown, from: Origin | undefined): string {
+        // Codex runs what it asked about: a hook's replacement can't be run, and the original wasn't approved.
+        if (a.allow && a.updatedInput) a = { allow: false, message: CANT_REWRITE, stop: false };
         if (a.allow) return "accept";
         if (typeof itemId === "string" && itemId) this.refusals.set(itemId, a.message);
         if (a.stop) return "cancel";
