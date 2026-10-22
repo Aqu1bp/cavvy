@@ -335,7 +335,7 @@ describe("MCP tool names stay with their tools", () => {
         mgr.load();
         const st = mgr.servers.get("s")!;
         st.status = "connected";
-        st.client = {} as any;
+        st.client = { offers: () => false } as any;
         st.tools = tools.map((name) => ({ name, inputSchema: { type: "object" } }) as any);
         return mgr;
     };
