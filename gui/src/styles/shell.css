@@ -12,7 +12,8 @@
                data-inspshort, data-term, data-tmax, data-settings
      .win-rail the rail column (Sidebar, or SettingsNav in Settings)
      .sheet    the sheet's grid
-     .main     the conversation column: container `main` (size)
+     .main     the conversation column. data-narrow, data-short: the widths
+               and heights it's within (lib/layout.ts, COLUMN_NARROW/SHORT)
      .insp     the inspector column (RightPanel, or ReviewPane)
      .terminal-panel  the bottom row
    Variables: --rail-w, --bar-h, --insp-w, --insp-col, --insp-bottom, --term-h.
@@ -225,7 +226,12 @@
     transition: grid-template-columns var(--dur-panel) var(--ease), grid-template-rows var(--dur-panel) var(--ease);
 }
 
-/* The conversation column. Other areas size their parts with `@container main (…)`. */
+/* The conversation column. Not a query container: WebKit restyles everything in one each time its size
+   changes, which with a long conversation took 300ms or more (a panel opening, a window resize). Other
+   areas size their parts by the steps its size is within, which App.tsx sets from lib/layout.ts:
+   `:where(.main[data-narrow~="600"]) { .x {…} }` is what `@container main (max-width: 600px)` was, and
+   adds no specificity either. Its height, which `cqh` measured, is --column-h on the boxes that use it
+   (state/ui.ts columnHeight). */
 .main {
     grid-row: 1;
     grid-column: 1;
@@ -236,7 +242,7 @@
     flex-direction: column;
     position: relative;
     overflow: hidden;
-    container: main / size;
+    contain: size;
     /* Its layers (title bar, dock, pills) stay under a floating inspector and the terminal. */
     isolation: isolate;
 }

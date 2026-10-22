@@ -5,11 +5,11 @@ import { Toasts } from "./components/Toasts";
 import { activate, app, attentionCount, handleFor, restoreActiveSession, rpc, type SessionHandle } from "./state/app";
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
-import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, reviewSplit, setAgentFocus, setDockHeight, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown } from "./state/ui";
+import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, reviewSplit, setAgentFocus, setDockHeight, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold } from "./state/ui";
 import { isTauri, os } from "./lib/platform";
 import { canStop } from "./lib/session-status";
 import { actionOf, setEnterSends } from "./state/keybindings";
-import { clampInspectorWidth, closesOnShrink, requestCloses, INSPECTOR_DEFAULT, windowLayout } from "./lib/layout";
+import { clampInspectorWidth, closesOnShrink, columnSteps, heldSizes, requestCloses, tracks, COLUMN_NARROW, COLUMN_SHORT, INSPECTOR_DEFAULT, windowLayout } from "./lib/layout";
 import { warmUp } from "./lib/highlight";
 import { frameDrag } from "./lib/drag";
 import { skipCovered } from "./lib/cover";
@@ -163,6 +163,12 @@ function InspectorResizer() {
 
 const INSPECTOR_KEY = "harness.inspectorWidth";
 
+/** The window's tracks sliding now (shell.css): none when an edge is dragged, motion is off, or nothing changed. */
+function slides(): Animation[] {
+    return [".win", ".sheet"].flatMap((s) => document.querySelector(s)?.getAnimations() ?? [])
+        .filter((a) => a instanceof CSSTransition && a.transitionProperty.startsWith("grid-template"));
+}
+
 /**
  * Keeps the window's layout (lib/layout.ts) for the window's size and what's open: the rail docked
  * or a drawer, the inspector docked or floating, the terminal's row. Draws nothing.
@@ -202,6 +208,29 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
     }));
 
     createEffect(() => setShellLayout(layout()));
+
+    // Opening or closing a panel slides the window's tracks (shell.css). Meanwhile the conversation and
+    // the terminal hold one size (lib/layout.ts heldSizes): they're laid out as the slide starts and as it
+    // ends, not on every frame of it.
+    let slide = 0;
+    createEffect(on(layout, (to, from) => {
+        if (!from || tracks(to) === tracks(from)) {
+            const held = panelHold();
+            // The window resizing meanwhile: the slide goes on, to the new sizes.
+            if (from && held) setPanelHold({ ...heldSizes(held, from, to), from: held.from, slide: held.slide });
+            return;
+        }
+        const now = ++slide;
+        // Once the tracks' new sizes are in the DOM (this update's render), their transitions have begun.
+        queueMicrotask(() => {
+            if (slide !== now) return;
+            const sliding = slides();
+            if (!sliding.length) return setPanelHold(undefined);
+            setPanelHold({ ...heldSizes(panelHold(), from, to), slide: sliding[0]! });
+            // A slide cut short by another one hands the hold on to it.
+            void Promise.allSettled(sliding.map((a) => a.finished)).then(() => { if (slide === now) setPanelHold(undefined); });
+        });
+    }));
 
     // Shrinking the window past the docking point closes a docked inspector (the diff reader floats instead).
     createEffect(on(() => layout().inspector.mode, (mode, from) => {
@@ -383,6 +412,9 @@ export function App() {
     // shell.css registers them as not inherited, and nothing takes one with `inherit` (WebKit keeps a
     // stale value there): each element that reads a size has it set here, on itself.
     const railWidth = () => railDrag() ?? prefs.sidebarWidth;
+    // The steps of the column's size that its contents' styles read (shell.css .main); none until it's measured.
+    const narrow = createMemo(() => (layout().sheet.w ? columnSteps(layout().column.w, COLUMN_NARROW) : undefined));
+    const short = createMemo(() => (layout().sheet.h ? columnSteps(layout().column.h, COLUMN_SHORT) : undefined));
 
     return (
         <div
@@ -425,7 +457,7 @@ export function App() {
                             "--term-h": `${layout().terminal.height}px`,
                         }}
                     >
-                        <main class="main">
+                        <main class="main" data-narrow={narrow()} data-short={short()}>
                             <Reconnecting />
                             {/* In a box of its own: adding or removing it beside the session would restyle all of it. */}
                             <div class="settings-host">

@@ -3,7 +3,7 @@
 import { createSignal } from "solid-js";
 import type { ArchiveOffer } from "@shared/protocol";
 import type { ReviewScope } from "./changes";
-import { INSPECTOR_DEFAULT, type WindowLayout } from "../lib/layout";
+import { INSPECTOR_DEFAULT, type Held, type WindowLayout } from "../lib/layout";
 
 export type SettingsTab = "general" | "appearance" | "providers" | "plugins" | "usage" | "shortcuts" | "about";
 
@@ -98,6 +98,16 @@ export const [shellLayout, setShellLayout] = createSignal<WindowLayout>({
     railMode: "dock",
     railShown: true,
     sheet: { w: 0, h: 0 },
+    column: { w: 0, h: 0 },
     inspector: { open: false, mode: "dock", width: INSPECTOR_DEFAULT, short: false, bottom: 0 },
     terminal: { shown: false, height: 0, maximized: false, most: 0 },
 });
+
+/** The sizes held while the panels slide open or shut (lib/layout.ts heldSizes), and the slide; undefined at rest. */
+export const [panelHold, setPanelHold] = createSignal<Held & { slide: Animation }>();
+
+/**
+ * The conversation column's height as --column-h, for the few boxes sized by it (what `cqh` measured when
+ * the column was a query container: shell.css). Set on each of them, not inherited from the column.
+ */
+export const columnHeight = () => (shellLayout().column.h ? `${shellLayout().column.h}px` : undefined);

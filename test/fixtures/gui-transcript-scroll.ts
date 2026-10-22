@@ -49,9 +49,15 @@ const matches = (n: Node, selector: string) => selector.split(", ").some((s) => 
 /** The column's glides (Transcript.tsx pin): where each starts, and the translate a running one is at now. */
 const glides: { from: number; duration: number; anim: { playState: string; cancel(): void } }[] = [];
 let shiftNow = 0;
+/** The conversation's moves while the panels slide (Transcript.tsx hold): what each translates from, and its timing. */
+const slides: { from: string; options: { duration: number; easing?: string }; anim: { playState: string; startTime?: number } }[] = [];
 const decorate = (n: Node): any => Object.assign(n, {
-    animate: (keyframes: { transform: string }[], options: { duration: number }) => {
-        const anim = { playState: "running", cancel() { anim.playState = "idle"; } };
+    animate: (keyframes: { transform: string }[], options: { duration: number; easing?: string }) => {
+        const anim = { playState: "running", startTime: undefined as number | undefined, cancel() { anim.playState = "idle"; } };
+        if (keyframes[0]!.transform.startsWith("translate(")) {
+            slides.push({ from: keyframes[0]!.transform, options, anim });
+            return anim;
+        }
         glides.push({ from: Number(/translateY\((-?[\d.]+)px\)/.exec(keyframes[0]!.transform)?.[1]), duration: options.duration, anim });
         return anim;
     },
@@ -72,6 +78,7 @@ const create = (tag: string): any => {
 };
 const [jump, setJump] = solid.createSignal<any>();
 const [findShown, setFindShown] = solid.createSignal(false);
+const [panelHold, setPanelHold] = solid.createSignal<any>();
 let findProps: any;
 const scope = {
     renderer: { ...solid, ...renderer, createElement: create },
@@ -95,7 +102,7 @@ const scope = {
         disconnect() { observers.delete(this.cb); }
     },
     matchMedia: () => ({ matches: reduced }), CSS: { escape: (s: string) => s },
-    jumpTarget: jump, setJumpTarget: setJump, findOpen: findShown,
+    jumpTarget: jump, setJumpTarget: setJump, findOpen: findShown, panelHold,
     openFind() {}, setFindQuery() {}, toast() { throw new Error("unexpected toast"); },
     turnAt: (turns: any[], _seg: number, index: number) => turns[index], BAR_ROOM: 48,
     rewindTarget: { set() {} }, setRewindOpen() {}, ArrowDown: () => node("icon"), FindBar: (p: any) => { findProps = p; return node("find"); }, CardFoldsProvider: (p: any) => p.children,
@@ -390,4 +397,40 @@ try {
     setDockH(undefined);
     assert.equal(dockOf(box("transcript-end")), undefined, "unmeasured, the end has --dock-h's initial value");
     setFindShown(false);
+
+    // While the panels slide open or shut (App.tsx), the conversation keeps one size, placed where it ends up and
+    // drawn from where it was by a translate in step with the slide: laid out as the slide starts and as it ends,
+    // and on the frames between only the compositor moves it. Its box sizes with properties that don't inherit.
+    dispose(); dispose = mount(a);
+    const hold = () => all(root).find((n) => has(n, "transcript-hold"))!;
+    assert.equal(scroller().parent, hold(), "the scroller is in the box that holds its size");
+    assert.equal(hold().props.style, undefined, "at rest the box fills the column");
+    const slide = { effect: { getTiming: () => ({ duration: 160, easing: "cubic-bezier(0.22, 1, 0.36, 1)" }) }, ready: Promise.resolve(), startTime: 1234 };
+    // The inspector opening: 1092px of column to 732.
+    setPanelHold({ column: { w: 732, h: 864 }, from: { w: 1092, h: 864 }, to: { w: 732, h: 864 }, sheetWidth: 1092, terminal: 0, slide });
+    assert.deepEqual(hold().props.style, { width: "732px", height: "864px", top: "0px" }, "held at the width it ends at");
+    assert.equal(slides.length, 1, "one move for the whole slide");
+    assert.deepEqual({ from: slides[0]!.from, ...slides[0]!.options }, { from: "translate(180px, 0px)", duration: 160, easing: "cubic-bezier(0.22, 1, 0.36, 1)" }, "drawn from the old column's centre, with the slide's timing");
+    await Promise.resolve(); await Promise.resolve();
+    assert.equal(slides[0]!.anim.startTime, 1234, "started with the slide");
+    for (let i = 0; i < 10; i++) flush();
+    assert.equal(slides.length, 1, "no layout or move of its own on the slide's frames");
+    setPanelHold(undefined);
+    assert.equal(hold().props.style, undefined, "back to filling the column as the slide ends");
+    assert.equal(slides[0]!.anim.playState, "idle");
+    button("jump")?.props.onClick(); flush();
+    assert.equal(button("jump"), undefined, "following the end");
+    // The terminal opening under a conversation following its end: as tall as it was, bottom on the column's new end,
+    // drawn from the old end.
+    setPanelHold({ column: { w: 1092, h: 864 }, from: { w: 1092, h: 864 }, to: { w: 1092, h: 604 }, sheetWidth: 1092, terminal: 260, slide: { ...slide } });
+    assert.deepEqual(hold().props.style, { width: "1092px", height: "864px", top: "-260px" });
+    assert.equal(slides.at(-1)!.from, "translate(0px, 260px)");
+    setPanelHold(undefined);
+    // Read further up, it stays where it is: from the top, nothing to move.
+    scroll(1200); scroll(1100);
+    assert.ok(button("jump"), "not following the end");
+    setPanelHold({ column: { w: 1092, h: 864 }, from: { w: 1092, h: 864 }, to: { w: 1092, h: 604 }, sheetWidth: 1092, terminal: 260, slide: { ...slide } });
+    assert.deepEqual(hold().props.style, { width: "1092px", height: "864px", top: "0px" });
+    assert.equal(slides.length, 2, "nothing to move");
+    setPanelHold(undefined);
 } finally { dispose(); }

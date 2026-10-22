@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { Socket } from "../helpers/gui-socket";
 import { readFileSync } from "node:fs";
 import { all, component, node, renderer, text } from "../helpers/gui-render";
+import { columnSteps, COLUMN_NARROW, COLUMN_SHORT } from "../../gui/src/lib/layout";
 
 const mode = process.argv[2];
 const key = "harness.navigation";
@@ -79,7 +80,7 @@ const App = component(appSource.slice(appSource.indexOf("export function App")),
     ...Object.fromEntries(widgets.map((tag) => [tag, () => node(tag)])),
     RenderBoundary: boundary(), Spinner: () => node("Spinner"), activate: second.activate, app: second.app, handleFor: second.handleFor, restoreActiveSession: second.restoreActiveSession,
     prefs: { sidebar: false }, isTauri: mode === "desktop", os: "other", setEnterSends() {}, actionOf: () => undefined, skipCovered() {},
-    railDrag: () => undefined, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }), settingsTab: () => undefined, agentFocus: () => undefined, review: () => undefined,
+    railDrag: () => undefined, columnSteps, COLUMN_NARROW, COLUMN_SHORT, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, column: { w: 1100, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }), settingsTab: () => undefined, agentFocus: () => undefined, review: () => undefined,
     attentionCount: () => 0, setAgentFocus() {}, setReview() {}, onMount() {},
 });
 const root = node("root");

@@ -833,7 +833,7 @@
     margin-bottom: 2px;
 }
 
-@container main (max-width: 600px) {
+:where(.main[data-narrow~="600"]) {
     .plg-row {
         flex-direction: column;
     }

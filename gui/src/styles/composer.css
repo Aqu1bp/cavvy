@@ -765,7 +765,7 @@
     flex: 1;
     width: 100%;
     min-height: 44px;
-    max-height: 30cqh;
+    max-height: calc(var(--column-h, 100vh) * 0.3);
     padding: 2px 0 0;
     border: 0;
     resize: none;
@@ -1023,7 +1023,7 @@
     flex-direction: column;
     flex: 0 1 auto;
     min-height: 0;
-    max-height: min(46cqh, 560px);
+    max-height: min(calc(var(--column-h, 100vh) * 0.46), 560px);
     padding: 14px 14px 12px 16px;
     border-radius: 20px;
     box-shadow:
@@ -2197,7 +2197,7 @@
 
 /* ---- A narrow conversation column: labels give way to glyphs, rows stack ----- */
 
-@container main (max-width: 600px) {
+:where(.main[data-narrow~="600"]) {
     /* Out of sight, still named for assistive tech. */
     .composer .pick .lbl {
         position: absolute;
@@ -2256,7 +2256,7 @@
     }
 }
 
-@container main (max-width: 440px) {
+:where(.main[data-narrow~="440"]) {
     .composer .pick .chev {
         display: none;
     }
@@ -2268,7 +2268,7 @@
 
 /* ---- A short column: request cards compact ------------------------------------- */
 
-@container main (max-height: 560px) {
+:where(.main[data-short~="560"]) {
     .ask.glass {
         padding: 10px 12px 10px 14px;
     }

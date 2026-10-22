@@ -21,6 +21,19 @@
     pointer-events: none;
 }
 
+/* While the panels slide, the conversation keeps one size (its width at the end, the taller height), where
+   it ends up, and a translate takes it there from where it was (Transcript.tsx): it's laid out as the slide
+   starts and as it ends, and on the frames between only the compositor moves it. */
+.transcript-hold {
+    position: absolute;
+    inset: 0;
+}
+
+.transcript-hold.held {
+    inset: auto;
+    left: 0;
+}
+
 .transcript {
     position: absolute;
     inset: 0;
@@ -135,7 +148,7 @@
 }
 
 /* Too short to spare the room: the end is a scroll away anyway. */
-@container main (max-height: 360px) {
+:where(.main[data-short~="360"]) {
     .jump {
         display: none;
     }
