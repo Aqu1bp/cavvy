@@ -113,8 +113,16 @@ function readCache(): CacheFile {
         if (getProvider(provider)?.kind !== "anthropic") continue;
         for (const model of entry.models) {
             const t = anthropicTraits(model.id);
-            if ((model.adaptiveThinking ?? t.adaptive) || !(model.budgetThinking ?? t.budget)) continue;
             model.nativeEffortLevels ??= model.effortLevels ?? t.effort;
+            // Before budget support was explicit, unknown ids were marked true.
+            // Never promote that guess into a thinking control, even if a newer
+            // table now recognizes the id as adaptive.
+            if (!t.budget && model.budgetThinking && !(model.adaptiveThinking ?? t.adaptive)) {
+                model.effortLevels = model.nativeEffortLevels;
+                model.supportsReasoning = false;
+            }
+            model.budgetThinking = !!t.budget && model.budgetThinking !== false;
+            if ((model.adaptiveThinking ?? t.adaptive) || !model.budgetThinking) continue;
             model.effortLevels = ANTHROPIC_BUDGET_EFFORTS;
             model.supportsReasoning = true;
         }

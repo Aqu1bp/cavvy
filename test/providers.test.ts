@@ -1028,6 +1028,17 @@ describe("Anthropic budget thinking", () => {
         });
     }
 
+    test("lightweight helpers preserve their full output cap without budget thinking", async () => {
+        for (const id of models) {
+            for (const maxTokens of [100, 500, 1024, 1100, 2048]) {
+                const { body, headers } = await ask(provider().staticInfo(id), { effort: "low", lightweight: true, maxTokens, tools: [] });
+                expect(body.max_tokens).toBe(maxTokens);
+                expect(body.thinking).toBeUndefined();
+                expect(headers["anthropic-beta"] ?? "").not.toContain("interleaved-thinking");
+            }
+        }
+    });
+
     test("budget respects request and model output caps, including the minimum boundary", async () => {
         const model = provider().staticInfo("claude-opus-4-5");
         for (const [cap, budget] of [[4096, 3072], [4000, 2976], [1025, 1024]] as const) {
@@ -1050,7 +1061,28 @@ describe("Anthropic budget thinking", () => {
     test("explicit capabilities override static budget support; unknown models stay conservative", async () => {
         expect((await ask({ ...provider().staticInfo("claude-haiku-4-5"), budgetThinking: false }, { effort: "high" })).body.thinking).toBeUndefined();
         expect((await ask(provider().staticInfo("unknown"), { effort: "high" })).body.thinking).toBeUndefined();
-        expect((await ask({ provider: "anthropic", id: "custom", adaptiveThinking: false, budgetThinking: true }, { effort: "high" })).body.thinking).toEqual({ type: "enabled", budget_tokens: 8192 });
+        for (const id of ["custom", "claude-3-5-haiku-20241022", "claude-haiku-5-5"]) {
+            // Old metadata guessed enabled support for every then-unknown model.
+            const { body } = await ask({ provider: "anthropic", id, adaptiveThinking: false, budgetThinking: true, effortLevels: levels, nativeEffortLevels: [] }, { effort: "high" });
+            expect(body.thinking).toBeUndefined();
+            expect(body.output_config).toBeUndefined();
+        }
+    });
+
+    test("unknown discovered models do not advertise manual thinking controls", async () => {
+        respond = () => Response.json({ data: [{
+            id: "custom", display_name: "Custom", type: "model", created_at: "2025-01-01T00:00:00Z",
+            capabilities: {
+                image_input: { supported: true },
+                thinking: { supported: true, types: { adaptive: { supported: false }, enabled: { supported: true } } },
+                effort: { supported: false },
+            },
+        }], has_more: false });
+        const [model] = await provider().listModels();
+        expect(model!.budgetThinking).toBe(false);
+        expect(model!.supportsReasoning).toBe(false);
+        expect(model!.effortLevels).toEqual([]);
+        expect((await ask(model!, { effort: "high" })).body.thinking).toBeUndefined();
     });
 
     test("discovered native effort support stays separate from the budget controls", async () => {
@@ -1092,9 +1124,16 @@ describe("Anthropic budget thinking", () => {
             provider: "anthropic", id, supportsReasoning: false, adaptiveThinking: false, budgetThinking: true,
             effortLevels: id === "claude-opus-4-5" ? ["low", "medium", "high"] : [],
         }));
+        const unsupported: ModelInfo[] = ["custom", "claude-3-5-haiku-20241022", "claude-haiku-5-5"].map((id) => ({
+            provider: "anthropic", id, supportsReasoning: false, adaptiveThinking: false, budgetThinking: true, effortLevels: [],
+        }));
+        // PR #279 may already have rewritten a guessed flag into mapped controls.
+        unsupported.push({ provider: "anthropic", id: "custom-promoted", supportsReasoning: true, adaptiveThinking: false, budgetThinking: true, effortLevels: levels, nativeEffortLevels: [] });
+        unsupported.push({ provider: "anthropic", id: "claude-opus-4-5-20251101", supportsReasoning: false, adaptiveThinking: false, budgetThinking: false, effortLevels: [] });
+        const nativeOnly: ModelInfo = { provider: "anthropic", id: "custom-native-effort", adaptiveThinking: false, budgetThinking: true, effortLevels: ["low", "high"] };
         const unrelated = { provider: "openai", id: "cached-fixture", supportsReasoning: true, effortLevels: ["low"] };
         await Bun.write(path, JSON.stringify({ version: 3, providers: {
-            anthropic: { fetchedAt: Date.now(), fp: "fixture", models: oldModels },
+            anthropic: { fetchedAt: Date.now(), fp: "fixture", models: [...oldModels, ...unsupported, nativeOnly] },
             openai: { fetchedAt: Date.now(), fp: "fixture", models: [unrelated] },
         } }));
         try {
@@ -1107,6 +1146,20 @@ describe("Anthropic budget thinking", () => {
                 expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 24576 });
                 expect(body.output_config).toEqual(old.id === "claude-opus-4-5" ? { effort: "high" } : undefined);
             }
+            for (const old of unsupported) {
+                const model = resolveModelInfo(`anthropic:${old.id}`)!;
+                expect(model.budgetThinking).toBe(false);
+                expect(model.supportsReasoning).toBe(false);
+                expect(model.effortLevels).toEqual([]);
+                const { body } = await ask(model, { effort: "max" });
+                expect(body.thinking).toBeUndefined();
+                expect(body.output_config).toBeUndefined();
+            }
+            const native = resolveModelInfo("anthropic:custom-native-effort")!;
+            expect(native.effortLevels).toEqual(["low", "high"]);
+            const { body } = await ask(native, { effort: "high" });
+            expect(body.thinking).toBeUndefined();
+            expect(body.output_config).toEqual({ effort: "high" });
             expect(resolveModelInfo("openai:cached-fixture")).toEqual(unrelated);
         } finally {
             rmSync(path, { force: true });

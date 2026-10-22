@@ -1,6 +1,6 @@
 import { afterAll, expect, test } from "bun:test";
 import { isolate } from "./helpers/isolate";
-import type { Message } from "../src/providers/types";
+import type { AssistantMessage, ChatRequest, Message } from "../src/providers/types";
 
 const iso = isolate();
 const { compactTranscriptText, handoffTranscript } = await import("../src/agent/compact");
@@ -159,3 +159,45 @@ test("a later message too big for what's left is cut to it, keeping its head and
         expect(r.text).toContain(" TAIL");
     }
 });
+
+for (const effort of ["xhigh", "max"] as const) {
+    for (const fallback of [false, true]) {
+        test(`compaction preserves the answer budget at ${effort} effort (fallback=${fallback})`, async () => {
+            const { Session } = await import("../src/agent/session");
+            const { PermissionChecker } = await import("../src/permissions/checker");
+            const { AnthropicProvider } = await import("../src/providers/anthropic");
+            const { BUILTIN_PROVIDERS } = await import("../src/providers/registry");
+            const provider = new AnthropicProvider(BUILTIN_PROVIDERS.find((p) => p.id === "anthropic")!, "fake-key");
+            const model = provider.staticInfo("claude-sonnet-4-5");
+            const session = Session.create(iso.home, { system: "test system" });
+            session.messages.push(user("Keep the original task"), assistant("Working on it"));
+            const requests: ChatRequest[] = [];
+            const settings = { effort };
+            const agent = new Agent({
+                session, model,
+                client: {
+                    async stream(req) {
+                        requests.push(req);
+                        const { params } = (provider as any).buildParams(req, false);
+                        expect(params.thinking).toBeUndefined();
+                        expect(params.max_tokens).toBe(16000);
+                        return { role: "assistant", provider: "anthropic", model: model.id, stopReason: "end_turn", content: [{ type: "text", text: fallback && requests.length === 1 ? "" : "Complete summary" }] } as AssistantMessage;
+                    },
+                    async listModels() { return []; },
+                },
+                settings: () => settings,
+                checker: new PermissionChecker(() => settings, iso.home),
+                tools: [],
+                mode: { get: () => "default", set: () => {} },
+                toolState: { cwd: iso.home, projectRoot: iso.home, fileState: new Map(), todos: [], shells: new Map() },
+                host: { emit: () => {}, ui: {} },
+                isSubagent: true,
+            });
+            expect(await agent.compact({ auto: false, signal: new AbortController().signal })).toBe(true);
+            expect(requests).toHaveLength(fallback ? 2 : 1);
+            expect(session.messages[0]!.content).toEqual([{ type: "text", text: expect.stringContaining("Complete summary") }]);
+            // Compaction overrides do not change the main turn's effort setting.
+            expect(settings.effort).toBe(effort);
+        });
+    }
+}

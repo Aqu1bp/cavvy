@@ -75,7 +75,7 @@ export class AnthropicProvider implements ProviderClient {
                     }
                 }
                 const adaptive = caps ? caps.thinking.types.adaptive.supported : t.adaptive;
-                const budget = caps ? caps.thinking.types.enabled.supported : !!t.budget;
+                const budget = !!t.budget && (caps ? caps.thinking.types.enabled.supported : true);
                 out.push({
                     provider: this.def.id,
                     id: m.id,
@@ -86,7 +86,7 @@ export class AnthropicProvider implements ProviderClient {
                     ...apiFastModeInfo(this.def.id, m.id, resolveBaseUrl(this.def)),
                     supportsTools: true,
                     supportsImages: caps ? caps.image_input.supported : true,
-                    supportsReasoning: caps ? caps.thinking.supported : t.adaptive || !!t.budget,
+                    supportsReasoning: adaptive || budget,
                     adaptiveThinking: adaptive,
                     budgetThinking: budget,
                     effortLevels: !adaptive && budget ? ANTHROPIC_BUDGET_EFFORTS : caps ? effortLevels : t.effort,
@@ -167,9 +167,11 @@ export class AnthropicProvider implements ProviderClient {
         const m = req.model;
         const t = anthropicTraits(m.id);
         const adaptive = m.adaptiveThinking ?? t.adaptive;
-        const budget = !adaptive && (m.budgetThinking ?? t.budget);
+        // Old caches guessed budget support for every unknown model. Only known
+        // manual-thinking models may enable it; an explicit denial still wins.
+        const budget = !adaptive && t.budget && m.budgetThinking !== false;
         // Manual models expose our budget levels to the UI, not native API effort.
-        const effortLevels = budget ? m.nativeEffortLevels ?? t.effort : m.effortLevels ?? t.effort;
+        const effortLevels = adaptive ? m.effortLevels ?? t.effort : m.nativeEffortLevels ?? t.effort;
         const betas: string[] = [];
         const features: string[] = [];
         const use = (f: string) => !disabledFeatures.has(f) && (features.push(f), true);
@@ -214,7 +216,7 @@ export class AnthropicProvider implements ProviderClient {
                 betas.push("thinking-binding-controls-2026-08-01");
             }
             params.thinking = thinking;
-        } else if (budget && req.effort && !req.noThinking) {
+        } else if (budget && req.effort && !req.noThinking && !req.lightweight) {
             if (maxOut < 1025) throw new ProviderError("Extended thinking requires max_tokens of at least 1025. Increase the output limit or turn effort off.");
             // Keep the 1024-token minimum and reserve 1024 answer tokens where
             // the output cap permits it, without raising an explicit limit.

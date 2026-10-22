@@ -1143,7 +1143,8 @@ export class Agent {
         let summary = "";
         try {
             // Same system prompt and tools as the session, so the cached prefix is reused.
-            const res = await this.client.stream(this.request(req, opts.signal, { maxTokens: 16_000 }), () => {});
+            // Reserve the output budget for the summary instead of manual thinking.
+            const res = await this.client.stream(this.request(req, opts.signal, { maxTokens: 16_000, noThinking: true }), () => {});
             summary = textOf(res);
             if (res.usage) {
                 const cost = costOf(res.usage, this.model);
@@ -1166,6 +1167,7 @@ export class Agent {
                 system: "You summarize conversations between a user and an AI coding assistant so the work can continue in a fresh context.",
                 tools: [],
                 maxTokens: maxOut,
+                noThinking: true,
                 lightweight: true,
             });
             const res = await this.client.stream(req, () => {});
