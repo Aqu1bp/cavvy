@@ -11,6 +11,7 @@ const { stall } = await import("../src/providers/sse");
 const { costOf, promptTokens, usageCostParts } = await import("../src/providers/pricing");
 import type { ProviderDef } from "../src/providers/registry";
 import type { AssistantMessage, ChatRequest, Message, ModelInfo, StreamEvent } from "../src/providers/types";
+import { SESSION_CONTEXT_HEADING } from "../src/providers/types";
 
 type Json = Record<string, any>;
 
@@ -160,8 +161,8 @@ describe("Chat Completions: message conversion", () => {
             },
             { role: "tool", tool_call_id: "toolu_01", content: "file body\n[1 image(s) attached in the next message]" },
             { role: "tool", tool_call_id: "toolu_02", content: "Error: not found" },
-            { role: "user", content: [{ type: "text", text: "Images returned by the tool calls above:" }, { type: "image_url", image_url: { url: `data:image/png;base64,${PNG}` } }] },
-            { role: "user", content: "Thanks" },
+            // The message after them joins the tool calls' images: roles alternate, as strict chat templates want.
+            { role: "user", content: [{ type: "text", text: "Images returned by the tool calls above:" }, { type: "image_url", image_url: { url: `data:image/png;base64,${PNG}` } }, { type: "text", text: "Thanks" }] },
         ]);
     });
 
@@ -427,6 +428,20 @@ describe("Chat Completions: streaming", () => {
         await p.stream(req(m, HISTORY, { ...flags, system: "", tools: [] }), () => {});
         expect(seen[1]!.body.messages).toEqual(toOpenAIMessages("", HISTORY, builtin("openrouter")));
         expect(seen[1]!.body.tools).toBeUndefined();
+    });
+
+    test("openrouter: the Claude system breakpoint stops before the session context, so sessions share the prefix", async () => {
+        respond = () => sse([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]);
+        const m: ModelInfo = { provider: "openrouter", id: "anthropic/claude-sonnet-4.6" };
+        const system = (date: string) => `You are a test.\n\n${SESSION_CONTEXT_HEADING}\nToday's date: ${date}`;
+        const p = new OpenAICompatProvider(builtin("openrouter"), FAKE.openrouter);
+        for (const date of ["2026-10-21", "2026-10-22"]) await p.stream(req(m, HISTORY, { cacheSystem: true, system: system(date) }), () => {});
+        const [a, b] = [seen[0]!.body.messages[0].content, seen[1]!.body.messages[0].content];
+        expect(a[0]).toEqual({ type: "text", text: "You are a test.", cache_control: { type: "ephemeral" } });
+        expect(b[0]).toEqual(a[0]);
+        expect(a[1].text).toContain("2026-10-21");
+        expect(b[1].text).toContain("2026-10-22");
+        expect(a[1].cache_control).toBeUndefined();
     });
 
     test.each([
@@ -1278,6 +1293,22 @@ describe("quick requests (the auto-mode reviewer's first step)", () => {
         const plain = await ask("claude-sonnet-5-5", {});
         expect(plain.system).toEqual([{ type: "text", text: "You are a test." }]);
         expect(plain.cache_control).toBeUndefined();
+    });
+
+    test("an agent request caches the system prompt up to its session context, and the conversation after it", async () => {
+        const system = "You are a test.\n\n# Notes\nShared.\n\n# Session context\nToday's date: 2026-10-22\n\nAppended.";
+        const agent = await ask("claude-sonnet-5-5", { system, cacheSystem: true, lightweight: false });
+        expect(agent.system).toEqual([
+            { type: "text", text: "You are a test.\n\n# Notes\nShared.", cache_control: { type: "ephemeral" } },
+            { type: "text", text: "# Session context\nToday's date: 2026-10-22\n\nAppended." },
+        ]);
+        expect(agent.cache_control).toEqual({ type: "ephemeral" });
+        // A prompt frozen before it had the section: cached whole.
+        const older = await ask("claude-sonnet-5-5", { system: "You are a test.\n\n# Environment\nToday's date: 2026-10-22", cacheSystem: true, lightweight: false });
+        expect(older.system).toEqual([{ type: "text", text: "You are a test.\n\n# Environment\nToday's date: 2026-10-22", cache_control: { type: "ephemeral" } }]);
+        // Not cached on its own: sent as it is.
+        const uncached = await ask("claude-sonnet-5-5", { system, lightweight: false });
+        expect(uncached.system).toEqual([{ type: "text", text: system }]);
     });
 });
 

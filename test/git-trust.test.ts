@@ -11,7 +11,7 @@ for (const key of Object.keys(inheritedGitConfig)) delete process.env[key];
 process.env.GIT_CONFIG_NOSYSTEM = "1";
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
 const { gitBranch, gitListFiles, gitSnapshot } = await import("../src/util/git");
-const { environmentBlock } = await import("../src/agent/system-prompt");
+const { sessionContextBlock } = await import("../src/agent/system-prompt");
 const { trustFolder, trustForSession } = await import("../src/config/trust");
 const { Engine } = await import("../src/server/engine");
 const repo = tempDir("hostile-git-");
@@ -83,7 +83,7 @@ test("opening an implicitly trusted repo never executes its filters or signature
         const runtime = await engine.createSession(repo);
         expect(runtime.snapshot().state.branch).toBe("main");
         untouched();
-        expect(environmentBlock(repo, { provider: "test", id: "test" }, true)).toContain("not read: repository filter configuration requires user trust");
+        expect(sessionContextBlock(repo, true)).toContain("not read: repository filter configuration requires user trust");
         untouched();
     } finally {
         await engine.stop();
@@ -186,7 +186,7 @@ for (const kind of ["clean", "process", "include", "worktree", "conditional-work
         expect(snapshot.statusSkipped).toBe(`repository ${section} configuration requires user trust`);
         expect(snapshot.recentCommits).toContain("fixture");
         expect(existsSync(marker)).toBe(false);
-        const prompt = environmentBlock(dir, { provider: "test", id: "test" });
+        const prompt = sessionContextBlock(dir);
         expect(prompt).toContain(`Git status was not read: repository ${section} configuration requires user trust.`);
         expect(prompt).not.toContain(script);
     });

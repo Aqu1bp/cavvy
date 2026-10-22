@@ -376,6 +376,37 @@ describe("review round 4", () => {
         wakes.dispose();
     });
 
+    // #222: steered messages go through UserPromptSubmit hooks, whose context follows the user's words.
+    test("Codex: what a UserPromptSubmit hook adds to the user's queued words runs no skill; their words still do", async () => {
+        skill(userRoot(), "deploy", "description: Ship it", "Deploy steps.");
+        skill(userRoot(), "lint", "description: Check it", "Lint steps.");
+        const settings = { hooks: { UserPromptSubmit: [{ command: "echo 'Do not invoke $deploy.'" }] } };
+        await runTurn("codex", "start", { settings, queued: ["thanks, now $lint"] });
+        const starts = received().filter((m) => m.method === "turn/start");
+        expect(starts).toHaveLength(2);
+        const input = starts[1]!.params.input;
+        expect(input[0].text).toContain("thanks, now $lint");
+        expect(input[0].text).toContain("Do not invoke $deploy.");
+        expect(input.slice(1).map((i: any) => i.name)).toEqual(["lint"]);
+    });
+
+    test("Codex: a queued message with a secret in it still runs the skill it names", async () => {
+        const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+        const secret = "FAKE_SECRET_FOR_STEER_SKILL_0123";
+        registerSecret(secret, "review");
+        try {
+            skill(userRoot(), "lint", "description: Check it", "Lint steps.");
+            await runTurn("codex", "start", { queued: [`please $lint ${secret}`] });
+            const starts = received().filter((m) => m.method === "turn/start");
+            expect(starts).toHaveLength(2);
+            const input = starts[1]!.params.input;
+            expect(input[0].text).not.toContain(secret);
+            expect(input.slice(1).map((i: any) => i.name)).toEqual(["lint"]);
+        } finally {
+            unregisterSecret(secret);
+        }
+    });
+
     test("Codex: a refused steer keeps the user's words and a wake apart, so the next turn runs only the user's skill", async () => {
         process.env.FAKE_SCENARIO = "slow";
         process.env.FAKE_STEER_FAIL = "1";
@@ -438,12 +469,12 @@ describe("review round 4", () => {
     });
 });
 
-async function runTurn(provider: "claude-code" | "codex", text: string, opts: { trusted?: boolean; skills?: () => Skill[]; attached?: string; subagent?: boolean; wake?: boolean; wakes?: InstanceType<typeof WakeQueue>; queued?: string[]; during?: () => Promise<void> } = {}) {
+async function runTurn(provider: "claude-code" | "codex", text: string, opts: { trusted?: boolean; skills?: () => Skill[]; attached?: string; subagent?: boolean; wake?: boolean; wakes?: InstanceType<typeof WakeQueue>; queued?: string[]; during?: () => Promise<void>; settings?: object } = {}) {
     if (opts.trusted) trust.trustFolder(cwd);
     else trust.trustForSession(cwd);
     const events: AgentEvent[] = [];
     let mode: any = "default";
-    const settings = {};
+    const settings = opts.settings ?? {};
     const agent = new Agent({
         session: Session.create(cwd, { persist: false }),
         model: { provider, id: "default" } as any,

@@ -182,10 +182,12 @@ export function loadMemory(cwd: string, trusted?: boolean): MemoryFile[] {
 
 export function formatMemory(files: MemoryFile[], cwd: string): string {
     if (!files.length) return "";
-    const shown = (p: string) => (p.startsWith(cwd) ? relative(cwd, p) : p.replace(homedir(), "~"));
+    // A project's files lie between its repository root and cwd: named from cwd (../AGENTS.md), so that
+    // a worktree's prompt doesn't carry its own path and every worktree of the project shares it.
+    const shown = (p: string, scope: MemoryFile["scope"]) => (scope !== "user" || p.startsWith(cwd) ? relative(cwd, p) : p.replace(homedir(), "~"));
     const parts = files.map((f) => {
         const label = f.scope === "user" ? "user's personal instructions (all projects)" : f.scope === "local" ? "user's private project instructions" : "project instructions, checked into the codebase";
-        return `Contents of ${shown(f.path)} (${label}${f.importedBy ? `; imported by ${shown(f.importedBy)}` : ""}):\n\n${redact(f.content.trim())}`;
+        return `Contents of ${shown(f.path, f.scope)} (${label}${f.importedBy ? `; imported by ${shown(f.importedBy, f.scope)}` : ""}):\n\n${redact(f.content.trim())}`;
     });
     return `# Instructions from memory files\nThese instructions come from the user and the project. Follow them; they override default behavior where they conflict.\n\n${parts.join("\n\n---\n\n")}`;
 }

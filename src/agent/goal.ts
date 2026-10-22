@@ -577,7 +577,9 @@ export function usedTools(messages: Message[]): boolean {
  */
 export function classifyError(text: string): "fatal" | "limit" | "transient" {
     const t = text.toLowerCase();
-    if (/credit balance|insufficient[_ ]quota|billing|payment required|\b402\b/.test(t)) return "fatal";
+    // Respect a provider's wait even when a 503 or Gemini's billing wording accompanies it.
+    if (/provider requested retry after|retryinfo|please retry in|quotaid[^,}]*per(?:minute|day)/.test(t)) return "limit";
+    if (/credit balance|insufficient[_ ]quota|usage limit \/ billing|billing_disabled|requires billing to be enabled|no billing account|payment required|\b402\b/.test(t)) return "fatal";
     if (/rate[_ -]?limit|usage limit|\b429\b|limit (is )?(reached|exceeded)|resets? (at|in)|too many requests|quota/.test(t)) return "limit";
     if (/invalid (x-)?api[_ -]?key|unauthori[sz]ed|authenticat|\b401\b|\b403\b|forbidden|not (signed|logged) in|log ?in again|permission denied/.test(t)) return "fatal";
     if (/context (window|length)|prompt is too long|too many tokens|maximum context|exceeded the model's context/.test(t)) return "fatal";
