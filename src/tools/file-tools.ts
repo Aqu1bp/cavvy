@@ -206,7 +206,10 @@ async function streamLines(abs: string, start: number, limit: number, signal: Ab
         if (!why && !isUtf8(b)) why = "not_utf8";
         const text = b.toString("utf-8");
         const shown = b.length > MAX_LINE_BYTES ? b.subarray(0, wholeChars(b.subarray(0, MAX_LINE_BYTES))).toString("utf-8").length : text.length;
-        const line = redactPrefix(text, shown);
+        // A run cut short may go on as a secret, and a pattern that ends at a word
+        // boundary won't match the part kept: end it on a character every pattern's
+        // run takes, as if it ended there. Only what starts before the cut is shown.
+        const line = redactPrefix(lineBytes > b.length ? text + "A" : text, shown);
         if (line !== text.slice(0, shown)) redacted = true;
         lines.push(line);
         kept += Math.min(b.length, MAX_LINE_BYTES) + 8; // and the line number and tab numberLines adds

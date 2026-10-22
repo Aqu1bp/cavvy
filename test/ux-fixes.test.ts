@@ -170,6 +170,31 @@ describe("Read of a text file over 10 MiB", () => {
         expect(lineOne(result.content)).toBe(lineOne(expected.content));
     });
 
+    test("a pattern secret that runs past what's kept of the line is redacted, as in a small file", async () => {
+        // The Slack and Tavily patterns end at a word boundary, which a kept part ending in hyphens doesn't have.
+        for (const [first, label] of [
+            ["xoxb-" + "-".repeat(20_000) + "Q", "slack-token"],
+            ["tvly-" + "-".repeat(20_000) + "Q", "tavily-key"],
+            ["xoxb-QQQQQQQQQ" + "-".repeat(20_000) + "Q", "slack-token"],
+        ] as const) {
+            const { result, expected } = await firstLine(first, `${label}.log`);
+            expect(result.isError).toBeFalsy();
+            expect(lineOne(result.content)).toBe(`     1\t[REDACTED ${label}]`);
+            expect(lineOne(result.content)).toBe(lineOne(expected.content));
+            expect(result.content).toContain("Some secrets in this file were redacted");
+        }
+        // Read ends a line it cut with "A", as every pattern's run of key characters takes it.
+        const { SECRET_PATTERNS } = await import("../src/util/secret-patterns");
+        for (const [pattern] of SECRET_PATTERNS) {
+            const run = pattern.source.match(/\[[^\]]+\](?=\{\d+,?\d*\}[^[]*$)/)?.[0];
+            expect(run && new RegExp(run).test("A"), pattern.source).toBe(true);
+        }
+        // A long line that isn't a secret still shows.
+        const { result } = await firstLine("-".repeat(20_000) + "Q", "ruler.log");
+        expect(lineOne(result.content)).toBe(`     1\t${"-".repeat(2000)}… [line truncated]`);
+        expect(result.content).not.toContain("REDACTED");
+    });
+
     test("a registered secret longer than the cut's lookahead is still redacted whole", async () => {
         const { registerSecret } = await import("../src/util/redact");
         const secret = "s3cr3t-" + "k".repeat(20_000);
