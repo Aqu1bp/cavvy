@@ -2036,7 +2036,11 @@ export class Agent {
             sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length, folder, this.adoptedUnsent?.provider === provider ? this.adoptedUnsent.text : undefined),
             limits: (limits, partial) => this.emitFromBackend({ type: "limits", limits, partial }),
             emitSession: (e) => this.sessionEvent(e),
-            onWake: (w) => this.o.host.wake?.(w),
+            // Not once disposed: a wake its backend reports late (its label was still being read) isn't the session's
+            // that took its place (the TUI's /new keeps the same host).
+            onWake: (w) => {
+                if (!this.disposed) this.o.host.wake?.(w);
+            },
         };
         const sink: TurnSink = {
             emit: (e) => this.emitFromBackend(e),

@@ -63,6 +63,10 @@
 // FAKE_STEER_MS       turn/steer is answered that many ms late (refused with FAKE_STEER_FAIL)
 // FAKE_STEER_DELAY_MS  milliseconds before answering turn/steer (refused then, with FAKE_STEER_FAIL)
 // FAKE_FAIL_TURN_START_AT=n  the nth turn/start fails (no turn starts)
+// FAKE_TERMINATE_LATE  1: a terminated command had finished by itself (terminated: false); fail: failed by itself;
+//                     after: not terminated, gone from the list, and its own end (a failure) comes after the answer
+// FAKE_WHOLE_TURN_AT=n  the nth turn/start's turn runs to its end before turn/start answers
+// FAKE_CHILD_REPORT   a bgagent sub-agent's last answer, said as it ends
 // FAKE_STARTED_FIRST=1  a turn's turn/started goes out before turn/start's answer
 // FAKE_STEER_WAKES=1  turn/steer is refused unless its expectedTurnId is the turn running now; in the "slow"
 //                     scenario a steer ends the first turn's wait, and its answer repeats what was steered
@@ -319,6 +323,7 @@ let racedOnce = false;
 let turnStarts = 0;
 let refusals = 0;
 let startFailures = 0;
+let wholeTurns = 0;
 /** Turns whose turn/started went out before turn/start answered (FAKE_STARTED_FIRST). */
 const startedEarly = new Set<string>();
 /** A thread started or resumed with a policy: the goal's turns Codex starts itself run under it, until a turn/start gives another. */
@@ -408,6 +413,8 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             if (!childTurns.delete(child)) return;
             if (timer) clearTimeout(timer);
             log({ childEnded: { thread: child, status } });
+            // FAKE_CHILD_REPORT: what it says last (its answer), as it ends.
+            if (process.env.FAKE_CHILD_REPORT && status === "completed") notify("item/completed", { threadId: child, turnId: childTurn, item: { type: "agentMessage", id: `c-end-${childTurn}`, text: process.env.FAKE_CHILD_REPORT, phase: "final_answer" } });
             notify("turn/completed", { threadId: child, turn: { id: childTurn, rootTurnId: turnId, status, error: null } });
         };
         childTurns.set(child, { turnId: childTurn, stop });
@@ -856,6 +863,11 @@ async function handle(m: any) {
                 startedEarly.add(turnId);
                 notify("turn/started", { threadId: p.threadId, turn: { id: turnId, status: "inProgress" } });
             }
+            // FAKE_WHOLE_TURN_AT=n: the nth turn/start's turn runs to its end before turn/start answers.
+            if (process.env.FAKE_WHOLE_TURN_AT && ++wholeTurns === Number(process.env.FAKE_WHOLE_TURN_AT)) {
+                await runTurn(p.threadId, turnId, p);
+                return reply({ turn: { id: turnId, status: "inProgress" } });
+            }
             reply({ turn: { id: turnId, status: "inProgress" } });
             void runTurn(p.threadId, turnId, p);
             return;
@@ -875,10 +887,22 @@ async function handle(m: any) {
             const pid = String(p.processId);
             if (!terminals.has(pid)) return reply({ terminated: false });
             log({ terminated: pid });
-            // It had just finished by itself.
-            if (process.env.FAKE_TERMINATE_LATE === "1") {
-                endTerminal(pid, "completed", 0, "finished first\n");
+            // It had just finished by itself (=fail: failed by itself, exit code 1).
+            if (process.env.FAKE_TERMINATE_LATE === "1" || process.env.FAKE_TERMINATE_LATE === "fail") {
+                const failed = process.env.FAKE_TERMINATE_LATE === "fail";
+                endTerminal(pid, failed ? "failed" : "completed", failed ? 1 : 0, failed ? "boom\n" : "finished first\n");
                 return reply({ terminated: false });
+            }
+            // =after: it's ending by itself: not terminated, gone from the list, and its end comes a moment later.
+            if (process.env.FAKE_TERMINATE_LATE === "after") {
+                const t = terminals.get(pid)!;
+                terminals.delete(pid);
+                reply({ terminated: false });
+                setTimeout(() => {
+                    terminals.set(pid, t);
+                    endTerminal(pid, "failed", 1, "boom\n");
+                }, 150);
+                return;
             }
             reply({ terminated: true });
             return endTerminal(pid, "failed", -1, "");

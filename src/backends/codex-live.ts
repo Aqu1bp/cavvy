@@ -67,6 +67,8 @@ const NOTE_SETTLE_MS = 50;
 const UNLISTED_MS = 1000;
 /** Output of a finished background command that goes to Codex, at most. */
 const NOTE_OUTPUT_CHARS = 4000;
+/** A stop Codex refused (the command ended, or is ending, by itself): how long its own end may take to come. */
+const REFUSED_END_WAIT_MS = 2000;
 
 const clip = (s: string, n = 120) => {
     const one = s.trim().split("\n")[0]!;
@@ -100,6 +102,9 @@ interface Segment {
 interface LiveOutput extends TurnOutput {
     failure?: string;
 }
+
+/** Text for a label or note, cut to `max`: redacted whole first, so a secret the cut would split is still caught. */
+const shown = (text: string, max: number): string => clip(redact(text), max);
 
 const newOutput = (): LiveOutput => ({ texts: [], actions: [], answer: { parts: [], last: "" } });
 
@@ -138,6 +143,12 @@ interface Terminal {
     ended?: boolean;
     /** The user asked for it to stop. */
     stopping?: boolean;
+    /** How Codex answered the stop: it terminated the command, or not (it had ended, or is ending, by itself). */
+    answer?: "terminated" | "refused";
+    /** Its end, said before Codex answered the stop: whether the stop ended it waits for the answer. */
+    heldEnd?: any;
+    /** Called at its end (a refused stop waits a moment for it). */
+    onEnd?: () => void;
     unlisted?: ReturnType<typeof setTimeout>;
 }
 
@@ -172,6 +183,10 @@ export class CodexLiveConnection extends CodexTurn {
     private flights = new Set<Promise<void>>();
     /** Main-thread turns that started while a turn/start of ours was unanswered: whose they are waits for its answer. */
     private undecided: string[] = [];
+    /** Their events meanwhile (an answer, their end): the session takes them once it knows the turn (decideStarted). */
+    private undecidedEvents: CliEvent[] = [];
+    /** Where events go, past the hold for undecided turns. */
+    private readonly emitEvent: CliEventSink;
     /** Turns started here to tell Codex something (host wakes), with what the wake row says. */
     private hostTurns = new Map<string, string>();
     private hostStarting = false;
@@ -206,6 +221,12 @@ export class CodexLiveConnection extends CodexTurn {
         limits: LimitOrdering,
     ) {
         super(def, t, labels, limits);
+        this.emitEvent = events;
+        // A turn's events wait while whose it is isn't known: before it's announced, the session would drop them.
+        this.events = (e) => {
+            if ((e.t === "turn_event" || e.t === "turn_ended") && e.ref !== undefined && this.undecided.includes(e.ref)) return void this.undecidedEvents.push(e);
+            this.emitEvent(e);
+        };
         this.rpc = new Rpc(proc, (m, p) => this.notified(m, p), (m, p) => this.onRequest(m, p), liveDebugOn() ? (dir, m) => this.debugRpc(dir, m) : undefined);
         this.done = this.rpc.done;
         void this.rpc.done.then(() => this.gone());
@@ -282,7 +303,9 @@ export class CodexLiveConnection extends CodexTurn {
         const run = this.liveRun ?? this.adapter.run;
         if (run) return run.t.sink.emit(e);
         if (e.type === "notice") return this.host.emitSession?.({ type: "notice", level: e.level, message: e.message });
-        liveDebug("codex", "event dropped (no turn)", { type: e.type });
+        // No turn: the session's (a background sub-agent's steps and report, shown under its call).
+        liveDebug("codex", "event outside a turn", { type: e.type });
+        this.host.emitSession?.({ type: "event", event: e });
     }
 
     private outFor(id: string): LiveOutput {
@@ -464,18 +487,32 @@ export class CodexLiveConnection extends CodexTurn {
         const term = this.terminals.get(id);
         if (term && !term.ended) {
             term.stopping = true;
+            term.answer = undefined;
             let r: any;
             try {
                 r = await this.rpc.request("thread/backgroundTerminals/terminate", { threadId: term.threadId, processId: term.processId });
             } catch (e) {
+                // Not asked after all: an end said meanwhile is its own.
                 term.stopping = false;
+                this.releaseEnd(term, false);
                 if (/experimentalApi/i.test((e as Error).message)) this.terminalsApi = false;
                 throw e;
             }
-            // Not terminated, having ended by itself first: the stop didn't end it (BackgroundStop "ended").
-            if (term.ended && r?.terminated === false) throw new Error("The command had already ended");
+            const took = r?.terminated !== false;
+            term.answer = took ? "terminated" : "refused";
+            // An end said before the answer: the stop's (terminated), or its own (refused).
+            this.releaseEnd(term, took);
+            if (!took) {
+                // Ended or ending by itself: its own end is how it ended (a moment for it to come), and the stop
+                // didn't end it (BackgroundStop "ended" once that end is in).
+                if (!term.ended) await new Promise<void>((resolve) => {
+                    const timer = setTimeout(resolve, REFUSED_END_WAIT_MS);
+                    term.onEnd = () => (clearTimeout(timer), resolve());
+                });
+                throw new Error("Codex didn't terminate the command: it had ended, or was ending, by itself");
+            }
             if (term.ended) return;
-            // Terminated, or it had ended: the list says which once its end hasn't come.
+            // Terminated: its end comes, or (if the list no longer has it) it's gone without one.
             const listed = await this.listTerminals(term.threadId);
             if (!term.ended && listed && !listed.has(term.processId)) this.terminalGone(term, "stopped");
             return;
@@ -654,7 +691,7 @@ export class CodexLiveConnection extends CodexTurn {
         const host = this.hostTurns.get(ref);
         if (host) return host;
         const g = this.goal;
-        return g?.status === "active" ? `Codex went on with the goal: ${clip(g.condition, 80)}` : "Codex started a turn of its own";
+        return g?.status === "active" ? `Codex went on with the goal: ${shown(g.condition, 80)}` : "Codex started a turn of its own";
     }
 
     /** Background terminals and sub-agents running now. */
@@ -886,7 +923,10 @@ export class CodexLiveConnection extends CodexTurn {
 
     /** The turn/start is answered (or failed, or its turn claimed): the turns that started meanwhile are told as whose they are. */
     private decideStarted() {
-        for (const id of this.undecided.splice(0)) this.announce(id);
+        const ids = this.undecided.splice(0);
+        for (const id of ids) this.announce(id);
+        const held = this.undecidedEvents.splice(0);
+        for (const e of held) this.emitEvent(e);
     }
 
     private mainCompleted(p: any) {
@@ -943,7 +983,7 @@ export class CodexLiveConnection extends CodexTurn {
     }
 
     private reportTerminal(term: Terminal, status: BackgroundTaskInfo["status"]) {
-        this.events({ t: "task", task: { id: term.itemId, provider: this.def.id, kind: "shell", label: clip(term.command, 200) || `process ${term.processId}`, toolUseId: term.itemId, startedAt: term.startedAt, status, stoppable: this.terminalsApi } });
+        this.events({ t: "task", task: { id: term.itemId, provider: this.def.id, kind: "shell", label: shown(term.command, 200) || `process ${term.processId}`, toolUseId: term.itemId, startedAt: term.startedAt, status, stoppable: this.terminalsApi } });
     }
 
     /** Terminals the list doesn't have (they ended with their turn, unannounced): gone, once their end hasn't come. */
@@ -972,23 +1012,44 @@ export class CodexLiveConnection extends CodexTurn {
 
     /** A background command ended (its item completed): the task says how, and Codex hears of it. */
     private terminalEnded(term: Terminal, item: any) {
+        if (term.ended || term.heldEnd) return;
+        // A stop not answered yet: whether it ended the command is Codex's answer to say (stopTask).
+        if (term.stopping && term.answer === undefined) {
+            term.heldEnd = item;
+            return;
+        }
+        this.endTerminal(term, item, term.stopping === true && term.answer === "terminated");
+    }
+
+    /** The end held for a stop's answer, now that it's known: `stopped`, the stop ended it. */
+    private releaseEnd(term: Terminal, stopped: boolean) {
+        const item = term.heldEnd;
+        if (item === undefined) return;
+        term.heldEnd = undefined;
+        this.endTerminal(term, item, stopped);
+    }
+
+    /** `byStop`: the user's stop ended it (Codex terminated it); otherwise it ended by itself. */
+    private endTerminal(term: Terminal, item: any, byStop: boolean) {
         if (term.ended) return;
         term.ended = true;
         if (term.unlisted) clearTimeout(term.unlisted);
+        term.onEnd?.();
         const code = typeof item?.exitCode === "number" ? item.exitCode : undefined;
         const ok = item?.status === "completed" && (code ?? 0) === 0;
-        // Asked to stop, it ended: stopped, unless it had finished by itself first.
-        const status = ok ? "done" : term.stopping ? "stopped" : "failed";
+        // Stopped, unless it had finished by itself first.
+        const status = ok ? "done" : byStop ? "stopped" : "failed";
         this.reportTerminal(term, status);
         const out = typeof item?.aggregatedOutput === "string" ? item.aggregatedOutput : "";
         const tail = out.length > NOTE_OUTPUT_CHARS ? `…${out.slice(-NOTE_OUTPUT_CHARS)}` : out;
-        const what = `\`${clip(term.command, 300)}\``;
-        const text = term.stopping && !ok
+        const what = `\`${shown(term.command, 300)}\``;
+        const text = byStop && !ok
             ? `The user stopped the background command ${what} (process ${term.processId}).`
             : `The background command ${what} you started earlier (process ${term.processId}) has finished${code !== undefined ? ` with exit code ${code}` : item?.status === "failed" ? " (it failed)" : ""}.${tail.trim() ? ` The end of its output:\n${tail}` : " It printed nothing."}`;
-        liveDebug("codex", "background terminal ended", { thread: this.threadId, item: term.itemId, status, stopping: Boolean(term.stopping) });
-        // The user asked for it to stop: Codex hears with the next turn, and nothing starts one for it.
-        this.addNote({ text: redact(text), label: `Background command finished: ${clip(term.command, 60)}`, wake: !term.stopping });
+        liveDebug("codex", "background terminal ended", { thread: this.threadId, item: term.itemId, status, byStop });
+        // The user asked for it to stop (whether or not that's what ended it): Codex hears with the next turn, and
+        // nothing starts one for it.
+        this.addNote({ text: redact(text), label: `Background command finished: ${shown(term.command, 60)}`, wake: !term.stopping });
     }
 
     /** A terminal that's gone without an end of its own. */

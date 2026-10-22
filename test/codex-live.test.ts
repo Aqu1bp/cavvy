@@ -676,3 +676,92 @@ describe("review round 1 (#293)", () => {
         expect(pids()).toHaveLength(1);
     });
 });
+
+describe("review round 2 (#293)", () => {
+    test("a wake's label and the task's name are redacted whole, before they're cut short", async () => {
+        const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+        const short = "sk-shortsecret-0123456789";
+        const long = "zz-longsecret-abcdefghijklmnopqrstuvwxyz0123456789";
+        registerSecret(short);
+        registerSecret(long);
+        try {
+            process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
+            process.env.FAKE_BG_MS = "100";
+            // The long one crosses the label's 60-character cut.
+            process.env.FAKE_BG_COMMAND = `curl -H ${short} https://example.invalid/x && echo ${long}`;
+            const a = await makeAgent();
+            expect(await a.run("start it")).toBe("done");
+            const w = await a.nextWake();
+            for (const shown of [w.label ?? "", a.task("exec-turn-1-1")?.label ?? ""]) {
+                expect(shown).not.toContain("sk-shortsecret");
+                expect(shown).not.toContain("zz-longsecret");
+            }
+            expect(w.label).toContain("[REDACTED");
+        } finally {
+            unregisterSecret(short);
+            unregisterSecret(long);
+        }
+    });
+
+    test("a host wake whose turn ends before its turn/start answers: the wake is over, and adopting it ends", async () => {
+        process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
+        process.env.FAKE_BG_MS = "100";
+        process.env.FAKE_WHOLE_TURN_AT = "2";
+        const a = await makeAgent();
+        expect(await a.run("start it")).toBe("done");
+        const w = await a.nextWake();
+        const adopted = await Promise.race([a.adopt(w), Bun.sleep(3000).then(() => "hung")]);
+        expect(adopted).toBe("done");
+        expect(a.wakes).toEqual([]);
+    });
+
+    test("a stop Codex refuses because the command failed by itself first: its failure and output stand, not a user stop", async () => {
+        process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
+        process.env.FAKE_BG_MS = "never";
+        process.env.FAKE_TERMINATE_LATE = "fail";
+        const a = await makeAgent();
+        expect(await a.run("start it")).toBe("done");
+        expect(await a.agent.stopBackground(["exec-turn-1-1"])).toEqual({ "exec-turn-1-1": "ended" });
+        expect(a.task("exec-turn-1-1")?.status).toBe("failed");
+        expect(await a.run("next")).toBe("done");
+        expect(turnTexts().at(-1)).toContain("has finished with exit code 1. The end of its output:\nboom");
+        expect(turnTexts().at(-1)).not.toContain("The user stopped");
+    });
+
+    test("a stop Codex refuses for a command already leaving its list: the end that comes after is how it ended", async () => {
+        process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
+        process.env.FAKE_BG_MS = "never";
+        process.env.FAKE_TERMINATE_LATE = "after";
+        const a = await makeAgent();
+        expect(await a.run("start it")).toBe("done");
+        expect(await a.agent.stopBackground(["exec-turn-1-1"])).toEqual({ "exec-turn-1-1": "ended" });
+        expect(a.task("exec-turn-1-1")?.status).toBe("failed");
+        expect(await a.run("next")).toBe("done");
+        expect(turnTexts().at(-1)).toContain("has finished with exit code 1. The end of its output:\nboom");
+    });
+
+    test("a background sub-agent's report while no turn runs reaches the session (under its call)", async () => {
+        process.env.FAKE_CODEX_SCENARIOS = "bgagent,cmd";
+        process.env.FAKE_BG_MS = "300";
+        process.env.FAKE_CHILD_REPORT = "Tests failed; do not deploy";
+        const a = await makeAgent();
+        expect(await a.run("watch the build")).toBe("done");
+        const before = a.events.length;
+        await until(() => a.task("thr-bg-1")?.status === "done", "the sub-agent's end");
+        await until(() => JSON.stringify(a.events.slice(before)).includes("Tests failed; do not deploy"), "its report");
+    });
+
+    test("a disposed agent passes on no wake its backend still reports (a new session took its place)", async () => {
+        process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
+        process.env.FAKE_BG_MS = "never";
+        const a = await makeAgent();
+        expect(await a.run("start it")).toBe("done");
+        const { codexLive } = await import("../src/backends/codex-live");
+        const live = codexLive((await clientFor("codex")) as any);
+        const host = (live.pool.get(a.session.meta.id, "codex")!.adapter as any).t.session;
+        agents.splice(agents.indexOf(a.agent), 1);
+        await a.agent.dispose(500);
+        host.onWake?.({ provider: "codex", ref: "turn-late", label: "late" });
+        expect(a.wakes).toEqual([]);
+    });
+});
