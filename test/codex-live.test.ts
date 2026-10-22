@@ -765,3 +765,16 @@ describe("review round 2 (#293)", () => {
         expect(a.wakes).toEqual([]);
     });
 });
+
+describe("review round 2 (#293), from #295's", () => {
+    test("live sessions turned off with a wake waiting: adopting it still takes it on the live app-server", async () => {
+        process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
+        process.env.FAKE_BG_MS = "100";
+        const a = await makeAgent();
+        expect(await a.run("start it")).toBe("done");
+        const w = await a.nextWake();
+        a.settings.agentCli = { liveSessions: false };
+        expect(await a.adopt(w)).toBe("done");
+        expect(pids()).toHaveLength(1);
+    });
+});
