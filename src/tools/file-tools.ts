@@ -1,11 +1,11 @@
 import { mkdir, readFile, stat } from "fs/promises";
-import { existsSync } from "fs";
+import { createReadStream, existsSync } from "fs";
 import { isUtf8 } from "buffer";
 import { randomBytes } from "crypto";
 import { dirname, isAbsolute } from "path";
 import type { Tool, ToolContext, ToolResult } from "./types";
 import { displayPath, expandPath, imageMediaType, looksBinary, numberLines, sniffImage } from "../util/files";
-import { redact } from "../util/redact";
+import { knownSecrets, redact, redactPrefix } from "../util/redact";
 import { diffLines, diffStats } from "../util/diff";
 import { writeTracked } from "../agent/checkpoints";
 
@@ -13,6 +13,10 @@ const MAX_LINES = 2000;
 /** Larger images are read and scaled down to what providers take (src/providers/images.ts) on their way to the model. */
 const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
 const MAX_TEXT_BYTES = 10 * 1024 * 1024;
+/** Per line kept when streaming a range: more than 2000 characters of any UTF-8, which numberLines then cuts to 2000. */
+const MAX_LINE_BYTES = 8 * 1024;
+/** Output kept when streaming a range of a file over MAX_TEXT_BYTES. */
+const MAX_RANGE_BYTES = 256 * 1024;
 
 function rel(p: string, ctx: ToolContext) {
     return displayPath(p, ctx.state.projectRoot);
@@ -84,6 +88,7 @@ export const ReadTool: Tool<{ file_path: string; offset?: number; limit?: number
 Usage:
 - file_path may be absolute or relative to the working directory.
 - By default reads up to ${MAX_LINES} lines from the start. For long files pass offset (1-based line number) and limit.
+- A text file over 10 MiB can't be read whole: read it in parts with offset and limit (up to 256 KB of output per call), or search it with Grep.
 - Lines longer than 2000 characters are truncated.
 - Images (PNG, JPG, GIF, WEBP) are returned as images you can see.
 - Jupyter notebooks (.ipynb) are rendered as cells with their outputs.
@@ -120,8 +125,14 @@ Usage:
                 display: { summary: `Read image (${Math.round(st.size / 1024)} KB)` },
             };
         }
-        if (st.size > MAX_TEXT_BYTES && !input.offset && !input.limit) {
-            return { content: `File is large (${st.size} bytes). Use offset and limit to read it in parts, or Grep to search it.`, isError: true };
+        if (st.size > MAX_TEXT_BYTES) {
+            if (abs.endsWith(".ipynb")) {
+                return { content: `Notebook is too large (${st.size} bytes, max ${MAX_TEXT_BYTES} bytes). Extract the cells you need with a shell command (jq, for one) and read that.`, isError: true };
+            }
+            if (input.offset == null && input.limit == null) {
+                return { content: `File is too large to read whole (${st.size} bytes, max ${MAX_TEXT_BYTES} bytes). Read it in parts with offset and limit, or search it with Grep.`, isError: true };
+            }
+            return readLargeRange(abs, st.size, input, ctx);
         }
         const buf = await readFile(abs);
         if (abs.endsWith(".ipynb")) {
@@ -159,6 +170,135 @@ Usage:
         return { content: out, display: { summary: `Read ${slice.length} line${slice.length === 1 ? "" : "s"}${partial ? ` (of ${all.length})` : ""}` } };
     },
 };
+
+interface LineRange {
+    /** The lines from offset on, each cut to MAX_LINE_BYTES and redacted. */
+    lines: string[];
+    /** A secret was redacted from one of them. */
+    redacted: boolean;
+    /** The file's line count, when the read reached its end. */
+    total?: number;
+    /** Stopped at MAX_RANGE_BYTES before the limit. */
+    capped: boolean;
+    binary: boolean;
+    why?: keyof typeof NOT_TEXT;
+}
+
+/**
+ * Lines start..start+limit-1 (1-based) of a file too big to load, streamed.
+ * Lines before the range are only counted, so a deep offset costs time, not
+ * memory: what's kept is at most MAX_RANGE_BYTES plus one line.
+ */
+async function streamLines(abs: string, start: number, limit: number, signal: AbortSignal): Promise<LineRange | undefined> {
+    const lines: string[] = [];
+    const end = start - 1 + limit; // 0-based index of the first line not wanted
+    let line = 0; // 0-based index of the line being read
+    let lineBytes = 0; // bytes seen of that line
+    // A line in range is kept past MAX_LINE_BYTES, by the longest secret it could
+    // hold, so a secret across the cut is still recognised and redacted whole.
+    const keepBytes = MAX_LINE_BYTES + knownSecrets().reduce((n, s) => Math.max(n, Buffer.byteLength(s)), MAX_LINE_BYTES);
+    let head: Buffer[] = []; // its first keepBytes, when it's in range
+    let headBytes = 0;
+    let kept = 0;
+    let first = true;
+    let redacted = false;
+    let why: LineRange["why"];
+    const keep = () => {
+        let b = Buffer.concat(head);
+        // A character the cut split isn't an encoding error.
+        if (lineBytes > b.length) b = b.subarray(0, wholeChars(b));
+        if (!why && !isUtf8(b)) why = "not_utf8";
+        const text = b.toString("utf-8");
+        const shown = b.length > MAX_LINE_BYTES ? b.subarray(0, wholeChars(b.subarray(0, MAX_LINE_BYTES))).toString("utf-8").length : text.length;
+        // A run cut short may go on as a secret, and a pattern that ends at a word
+        // boundary won't match the part kept: end it on a character every pattern's
+        // run takes, as if it ended there. Only what starts before the cut is shown.
+        const line = redactPrefix(lineBytes > b.length ? text + "A" : text, shown);
+        if (line !== text.slice(0, shown)) redacted = true;
+        lines.push(line);
+        kept += Math.min(b.length, MAX_LINE_BYTES) + 8; // and the line number and tab numberLines adds
+        head = [];
+        headBytes = 0;
+    };
+    const stream = createReadStream(abs, { highWaterMark: 64 * 1024 });
+    try {
+        for await (const chunk of stream as AsyncIterable<Buffer>) {
+            if (signal.aborted) return undefined;
+            if (first) {
+                first = false;
+                if (looksBinary(chunk)) return { lines: [], redacted: false, capped: false, binary: true };
+                if ((chunk[0] === 0xff && chunk[1] === 0xfe) || (chunk[0] === 0xfe && chunk[1] === 0xff)) why = "utf16";
+            }
+            let pos = 0;
+            while (pos < chunk.length) {
+                const nl = chunk.indexOf(10, pos);
+                const stop = nl === -1 ? chunk.length : nl;
+                lineBytes += stop - pos;
+                if (line >= start - 1 && headBytes < keepBytes) {
+                    const take = chunk.subarray(pos, Math.min(stop, pos + keepBytes - headBytes));
+                    head.push(Buffer.from(take));
+                    headBytes += take.length;
+                }
+                if (nl === -1) break;
+                if (line >= start - 1) keep();
+                line++;
+                lineBytes = 0;
+                pos = nl + 1;
+                if (line >= end) return { lines, redacted, capped: false, binary: false, why };
+                if (kept >= MAX_RANGE_BYTES && lines.length) return { lines, redacted, capped: true, binary: false, why };
+            }
+        }
+    } finally {
+        stream.destroy();
+    }
+    if (signal.aborted) return undefined;
+    // A last line without a newline is still a line.
+    if (lineBytes > 0) {
+        if (line >= start - 1) keep();
+        line++;
+    }
+    return { lines, redacted, total: line, capped: false, binary: false, why };
+}
+
+/** The length of b without a last character it cuts short. */
+function wholeChars(b: Buffer): number {
+    let i = b.length - 1;
+    while (i >= 0 && i > b.length - 4 && (b[i]! & 0xc0) === 0x80) i--; // back over continuation bytes to the lead
+    if (i < 0) return b.length;
+    const lead = b[i]!;
+    const size = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1;
+    return i + size > b.length ? i : b.length;
+}
+
+/** An offset/limit Read of a text file over MAX_TEXT_BYTES, without loading it. */
+async function readLargeRange(abs: string, size: number, input: { offset?: number; limit?: number }, ctx: ToolContext): Promise<ToolResult> {
+    const start = Math.max(1, Math.floor(input.offset ?? 1));
+    const limit = Math.max(1, Math.floor(input.limit ?? MAX_LINES));
+    let r: LineRange | undefined;
+    try {
+        r = await streamLines(abs, start, limit, ctx.signal);
+    } catch (e) {
+        return { content: `Couldn't read ${abs}: ${(e as Error).message}`, isError: true };
+    }
+    if (!r) return { content: "Read was interrupted.", isError: true };
+    if (r.binary) return { content: `${abs} appears to be a binary file and cannot be displayed as text.`, isError: true };
+    if (r.total !== undefined && start > r.total) {
+        return { content: `offset ${start} is past the end of the file (${r.total} lines).`, isError: true };
+    }
+    const shownEnd = start - 1 + r.lines.length;
+    const partial = start > 1 || r.total === undefined || shownEnd < r.total;
+    await recordRead(ctx, abs, partial);
+    let out = numberLines(r.lines, start);
+    const of = r.total !== undefined ? ` of ${r.total}` : "";
+    if (r.capped) out += `\n\n(Output capped at ${MAX_RANGE_BYTES / 1024} KB: showing lines ${start}-${shownEnd}${of}. Use offset ${shownEnd + 1} to read on.)`;
+    else if (partial && (r.total === undefined || shownEnd < r.total)) out += `\n\n(Showing lines ${start}-${shownEnd}${of}. Use offset/limit to read more.)`;
+    if (r.redacted) out += "\n\n<system-reminder>Some secrets in this file were redacted.</system-reminder>";
+    if (r.why) {
+        const shown = r.why === "not_utf8" ? " Its undecodable bytes show above as U+FFFD (\uFFFD)." : "";
+        out += `\n\n<system-reminder>This file ${NOT_TEXT[r.why]}.${shown} Edit and Write will refuse it: change it with a shell command that keeps its encoding, or ask the user whether to convert it to UTF-8.</system-reminder>`;
+    }
+    return { content: out, display: { summary: `Read ${r.lines.length} line${r.lines.length === 1 ? "" : "s"} (of a ${Math.round(size / (1024 * 1024))} MB file)` } };
+}
 
 function renderNotebook(json: string, abs: string): ToolResult {
     try {

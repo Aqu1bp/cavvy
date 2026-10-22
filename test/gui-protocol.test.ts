@@ -403,6 +403,30 @@ describe("replay", () => {
         ui.close();
     });
 
+    test("a notice's details are kept with it and shown under it when the session is opened again (#300)", () => {
+        const session = Session.create(join(tempDir(), "proj-notice-details"));
+        try {
+            session.push(user("wait for checks"));
+            session.recordNotice("warn", "Stopped 2 background tasks", ["Wait for checks", "bun test ./test/a.test.ts…"]);
+            session.recordNotice("info", "Plain");
+            session.release();
+            const reopened = Session.load(session.file);
+            try {
+                expect(reopened.notices.map((n) => [n.text, n.details])).toEqual([
+                    ["Stopped 2 background tasks", ["Wait for checks", "bun test ./test/a.test.ts…"]],
+                    ["Plain", undefined],
+                ]);
+                let n = 0;
+                const turns = replay({ segments: [{ messages: reopened.messages }], current: reopened.messages, currentNotices: reopened.notices, ui: new UiLog(join(tempDir(), "notice-details.jsonl"), "notice-details", false), meta: (c) => ({ title: c.name }), newId: () => `nd${++n}` });
+                const notices = turns.flatMap((t) => t.blocks).filter((b) => b.t === "notice");
+                expect(notices).toEqual([
+                    { t: "notice", id: expect.any(String), level: "warn", text: "Stopped 2 background tasks", details: ["Wait for checks", "bun test ./test/a.test.ts…"] },
+                    { t: "notice", id: expect.any(String), level: "info", text: "Plain" },
+                ]);
+            } finally { reopened.release(); }
+        } finally { session.release(); }
+    });
+
     test("a backend's note of what it did stays in history but not in the transcript", () => {
         const note = "[Claude Code used: Bash(bun test), Edit(src/a.ts)]";
         const segs = [

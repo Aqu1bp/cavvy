@@ -50,7 +50,7 @@ import { maskKey, redact } from "../util/redact";
 import { listSessions, findSession, type Session } from "../agent/session";
 import { forkSession, forkTargets } from "../agent/fork";
 import { forkUiLog } from "../server/history";
-import { loadMemory } from "../agent/memory";
+import { budgetNotice, loadMemory } from "../agent/memory";
 import { BUILTIN_AGENTS, loadAgents } from "../agent/agents";
 import { claudeModel } from "../backends/claude-agents";
 import { agentTraits } from "../agent/delegation";
@@ -1698,7 +1698,7 @@ async function memoryCommand(app: App) {
     ] as const) {
         if (!files.some((f) => f.path === p)) candidates.push({ label: theme.muted(`+ ${label}`), value: p, description: "create" });
     }
-    const pick = (await app.showDialog(new SelectDialog<string>({ title: "Memory files", header: [theme.muted("Loaded into the system prompt at the start of a session. Select one to edit in $EDITOR.")], items: candidates, numbers: true }))) as string | undefined;
+    const pick = (await app.showDialog(new SelectDialog<string>({ title: "Memory files", header: [theme.muted("Loaded into the system prompt at the start of a session. Select one to edit in $EDITOR."), ...(files.budget ? [theme.warning(budgetNotice(files, (p) => displayPath(p, app.cwd)))] : [])], items: candidates, numbers: true }))) as string | undefined;
     if (!pick) return;
     const before = existsSync(pick) ? readFileSync(pick, "utf-8") : "";
     const editor = process.env.VISUAL || process.env.EDITOR || "vi";

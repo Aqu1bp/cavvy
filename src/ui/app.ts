@@ -1078,6 +1078,8 @@ export class App {
                     const n = notices[next]!;
                     const color = n.level === "error" ? theme.error : n.level === "warn" ? theme.warning : theme.muted;
                     out.push(...wrapLine(n.text, cols - 6).map((l, i) => (i === 0 ? `  ⎿  ` : "     ") + color(l)));
+                    // Its details (the background tasks it stopped): a short line each, under it.
+                    for (const d of n.details ?? []) out.push(`     ${theme.muted(truncate(`· ${d}`, cols - 6))}`);
                 }
             };
             tail.forEach((m, i) => {

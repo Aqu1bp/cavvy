@@ -83,6 +83,8 @@ export interface TurnNotice {
     level: "info" | "warn" | "error";
     text: string;
     at: number;
+    /** What it's about, one short line each (the background tasks Harness stopped): shown folded under the text. */
+    details?: string[];
 }
 
 export type Line =
@@ -422,8 +424,8 @@ export class Session {
     }
 
     /** Keep a note of how the current turn ended (redacted, like everything written). */
-    recordNotice(level: TurnNotice["level"], text: string) {
-        const n: TurnNotice = { index: this.messages.length, level, text: redact(text), at: Date.now() };
+    recordNotice(level: TurnNotice["level"], text: string, details?: string[]) {
+        const n: TurnNotice = { index: this.messages.length, level, text: redact(text), at: Date.now(), ...(details?.length ? { details: details.map((d) => redact(d)) } : {}) };
         this.notices.push(n);
         this.write({ t: "notice", ...n });
     }
@@ -721,7 +723,8 @@ function markRefused(m: Message, model: string) {
 export function turnNotice(l: Partial<TurnNotice>): TurnNotice | undefined {
     if (typeof l.text !== "string" || typeof l.index !== "number") return undefined;
     const level = l.level === "error" || l.level === "warn" ? l.level : "info";
-    return { index: l.index, level, text: l.text, at: typeof l.at === "number" ? l.at : 0 };
+    const details = Array.isArray(l.details) ? l.details.filter((d): d is string => typeof d === "string") : [];
+    return { index: l.index, level, text: l.text, at: typeof l.at === "number" ? l.at : 0, ...(details.length ? { details } : {}) };
 }
 
 /** The notices of the turns a rewind to `count` messages keeps. */

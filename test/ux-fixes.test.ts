@@ -4,7 +4,8 @@
 // that ignore SIGTERM, compaction of an oversized history, and the TUI's
 // input handling (queued messages, ! commands, paste, key changes).
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
+import * as fsPromises from "fs/promises";
 import { spawn } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
@@ -45,6 +46,193 @@ afterAll(() => {
 const ROOT = resolve(import.meta.dir, "..");
 const toolState = (cwd: string) => ({ cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() }) as any;
 const toolCtx = (cwd: string) => ({ state: toolState(cwd), settings: {}, signal: new AbortController().signal }) as any;
+
+describe("Read of a text file over 10 MiB", () => {
+    // Spying on readFile shows the file is never loaded whole (#261): ranges are streamed.
+    async function withoutReadFile<T>(fn: () => Promise<T>): Promise<T> {
+        const read = spyOn(fsPromises, "readFile");
+        try {
+            const result = await fn();
+            expect(read).not.toHaveBeenCalled();
+            return result;
+        } finally {
+            read.mockRestore();
+        }
+    }
+    const big = (name: string, body: string | Buffer) => {
+        const file_path = join(tempDir(), name);
+        writeFileSync(file_path, body);
+        return file_path;
+    };
+
+    test("whole-file reads and notebooks are refused, pointing at offset/limit", async () => {
+        const log = big("large.log", "x\n".repeat(5 * 1024 * 1024 + 1));
+        const ctx = toolCtx(dirname(log));
+        await withoutReadFile(async () => {
+            const result = await ReadTool.run({ file_path: log }, ctx);
+            expect(result.isError).toBe(true);
+            expect(result.content).toContain("too large to read whole");
+            expect(result.content).toContain("max 10485760 bytes");
+            expect(result.content).toContain("offset and limit");
+            expect(ctx.state.fileState.has(log)).toBe(false);
+        });
+        const nb = big("large.ipynb", "x\n".repeat(5 * 1024 * 1024 + 1));
+        await withoutReadFile(async () => {
+            for (const range of [{}, { offset: 1, limit: 1 }]) {
+                const result = await ReadTool.run({ file_path: nb, ...range }, ctx);
+                expect(result.isError).toBe(true);
+                expect(result.content).toContain("Notebook is too large");
+            }
+        });
+    });
+
+    test("an offset/limit read streams the requested lines, however deep", async () => {
+        const secret = "sk-ant-api03-" + "Q".repeat(40);
+        const file_path = big("big.log", "first\n" + "y\n".repeat(5_300_000) + `token ${secret}\nlast`);
+        const ctx = toolCtx(dirname(file_path));
+        await withoutReadFile(async () => {
+            for (const range of [{ offset: 1, limit: 1 }, { limit: 1 }]) {
+                const head = await ReadTool.run({ file_path, ...range }, ctx);
+                expect(head.isError).toBeFalsy();
+                expect(head.content).toStartWith("     1\tfirst\n\n(Showing lines 1-1. Use offset/limit to read more.)");
+                expect(ctx.state.fileState.get(file_path).partial).toBe(true);
+            }
+            const tail = await ReadTool.run({ file_path, offset: 5_300_001, limit: 10 }, ctx);
+            expect(tail.isError).toBeFalsy();
+            expect(tail.content).toContain("5300001\ty\n5300002\ttoken [REDACTED");
+            expect(tail.content).toContain("5300003\tlast");
+            expect(tail.content).not.toContain(secret);
+            expect(tail.content).toContain("Some secrets in this file were redacted");
+            expect(tail.content).not.toContain("Showing lines");
+            const past = await ReadTool.run({ file_path, offset: 5_300_004 }, ctx);
+            expect(past.isError).toBe(true);
+            expect(past.content).toBe("offset 5300004 is past the end of the file (5300003 lines).");
+        });
+    }, 30_000);
+
+    test("long lines and the output are capped", async () => {
+        const oneLine = big("one-line.json", "z".repeat(11 * 1024 * 1024));
+        const ctx = toolCtx(dirname(oneLine));
+        await withoutReadFile(async () => {
+            const result = await ReadTool.run({ file_path: oneLine, offset: 1, limit: 1 }, ctx);
+            expect(result.isError).toBeFalsy();
+            expect(result.content).toBe(`     1\t${"z".repeat(2000)}… [line truncated]`);
+            expect(ctx.state.fileState.get(oneLine).partial).toBe(false);
+        });
+        const wide = big("wide.log", ("w".repeat(999) + "\n").repeat(11 * 1024));
+        await withoutReadFile(async () => {
+            const result = await ReadTool.run({ file_path: wide, offset: 1, limit: 100_000 }, ctx);
+            expect(result.isError).toBeFalsy();
+            expect(result.content.length).toBeLessThan(300 * 1024);
+            expect(result.content).toMatch(/\(Output capped at 256 KB: showing lines 1-\d+\. Use offset \d+ to read on\.\)$/);
+        });
+    });
+
+    test("binary and non-UTF-8 files are handled as for small ones", async () => {
+        const bin = big("big.bin", Buffer.alloc(11 * 1024 * 1024));
+        const ctx = toolCtx(dirname(bin));
+        await withoutReadFile(async () => {
+            const result = await ReadTool.run({ file_path: bin, offset: 1, limit: 1 }, ctx);
+            expect(result.isError).toBe(true);
+            expect(result.content).toContain("appears to be a binary file");
+        });
+        const latin1 = big("latin1.log", Buffer.concat([Buffer.from("caf\xe9\n", "latin1"), Buffer.from("x\n".repeat(5 * 1024 * 1024 + 1))]));
+        await withoutReadFile(async () => {
+            const result = await ReadTool.run({ file_path: latin1, offset: 1, limit: 1 }, ctx);
+            expect(result.isError).toBeFalsy();
+            expect(result.content).toContain("caf\uFFFD");
+            expect(result.content).toContain("is not valid UTF-8");
+        });
+    });
+
+    // A first line, read from a file over 10 MiB and as a small file shows it.
+    async function firstLine(first: string, name: string) {
+        const ctx = toolCtx(tempDir());
+        const small = join(ctx.state.cwd, `small-${name}`);
+        writeFileSync(small, first + "\nx\n");
+        const expected = await ReadTool.run({ file_path: small, offset: 1, limit: 1 }, ctx);
+        const file_path = big(name, first + "\n" + "x\n".repeat(5 * 1024 * 1024 + 1));
+        const result = await withoutReadFile(() => ReadTool.run({ file_path, offset: 1, limit: 1 }, toolCtx(dirname(file_path))));
+        return { result, expected };
+    }
+    const lineOne = (content: string) => content.split("\n")[0]!;
+
+    test("a secret across the 8 KiB line cut is redacted whole, as in a small file", async () => {
+        // The Google-format key starts at byte 8154: cut at 8192, it loses its last character and no pattern matches it.
+        const key = "AIza" + "Z".repeat(35);
+        const first = ("sk-ant-api03-" + "Q".repeat(249) + " ").repeat(31) + " " + key;
+        expect(Buffer.byteLength(first.slice(0, first.indexOf(key)))).toBe(8154);
+        const { result, expected } = await firstLine(first, "secret-at-cut.log");
+        expect(result.isError).toBeFalsy();
+        expect(result.content).not.toContain("AIzaZ");
+        expect(result.content).toContain("[REDACTED google-key]");
+        expect(result.content).toContain("Some secrets in this file were redacted");
+        expect(lineOne(result.content)).toBe(lineOne(expected.content));
+    });
+
+    test("a pattern secret that runs past what's kept of the line is redacted, as in a small file", async () => {
+        // The Slack and Tavily patterns end at a word boundary, which a kept part ending in hyphens doesn't have.
+        for (const [first, label] of [
+            ["xoxb-" + "-".repeat(20_000) + "Q", "slack-token"],
+            ["tvly-" + "-".repeat(20_000) + "Q", "tavily-key"],
+            ["xoxb-QQQQQQQQQ" + "-".repeat(20_000) + "Q", "slack-token"],
+        ] as const) {
+            const { result, expected } = await firstLine(first, `${label}.log`);
+            expect(result.isError).toBeFalsy();
+            expect(lineOne(result.content)).toBe(`     1\t[REDACTED ${label}]`);
+            expect(lineOne(result.content)).toBe(lineOne(expected.content));
+            expect(result.content).toContain("Some secrets in this file were redacted");
+        }
+        // Read ends a line it cut with "A", as every pattern's run of key characters takes it.
+        const { SECRET_PATTERNS } = await import("../src/util/secret-patterns");
+        for (const [pattern] of SECRET_PATTERNS) {
+            const run = pattern.source.match(/\[[^\]]+\](?=\{\d+,?\d*\}[^[]*$)/)?.[0];
+            expect(run && new RegExp(run).test("A"), pattern.source).toBe(true);
+        }
+        // A long line that isn't a secret still shows.
+        const { result } = await firstLine("-".repeat(20_000) + "Q", "ruler.log");
+        expect(lineOne(result.content)).toBe(`     1\t${"-".repeat(2000)}… [line truncated]`);
+        expect(result.content).not.toContain("REDACTED");
+    });
+
+    test("a registered secret longer than the cut's lookahead is still redacted whole", async () => {
+        const { registerSecret } = await import("../src/util/redact");
+        const secret = "s3cr3t-" + "k".repeat(20_000);
+        registerSecret(secret, "long-token");
+        // Starts at byte 7890, before the cut, and runs past 16 KiB; the redacted keys before it leave it in the 2000 characters shown.
+        const { result } = await firstLine(("sk-ant-api03-" + "Q".repeat(249) + " ").repeat(30) + secret, "long-secret.log");
+        expect(result.isError).toBeFalsy();
+        expect(result.content).not.toContain("s3cr3t");
+        expect(result.content).not.toContain("kkkk");
+        expect(result.content).toContain("[REDACTED long-token]");
+    });
+
+    test("a long line of valid UTF-8 cut mid-character isn't called non-UTF-8", async () => {
+        for (const n of [3000, 30_000]) {
+            // 8192 isn't a multiple of 3: the cut splits a "€".
+            const { result } = await firstLine("€".repeat(n), `euro-${n}.log`);
+            expect(result.isError).toBeFalsy();
+            expect(result.content).not.toContain("UTF-8");
+            expect(result.content).not.toContain("�");
+            expect(result.content).toBe(`     1\t${"€".repeat(2000)}… [line truncated]\n\n(Showing lines 1-1. Use offset/limit to read more.)`);
+        }
+        // Invalid bytes before the cut are still reported.
+        const bad = Buffer.concat([Buffer.from("€".repeat(100)), Buffer.from([0xff]), Buffer.from("€".repeat(3000) + "\n"), Buffer.from("x\n".repeat(5 * 1024 * 1024 + 1))]);
+        const file_path = big("euro-bad.log", bad);
+        const result = await withoutReadFile(() => ReadTool.run({ file_path, offset: 1, limit: 1 }, toolCtx(dirname(file_path))));
+        expect(result.content).toContain("is not valid UTF-8");
+    });
+
+    test("small files still read ranges in memory", async () => {
+        const file_path = big("small.log", "first\nsecond\nthird\n");
+        const ctx = toolCtx(dirname(file_path));
+        const result = await ReadTool.run({ file_path, offset: 2, limit: 1 }, ctx);
+        expect(result.isError).toBeFalsy();
+        expect(result.content).toContain("2\tsecond");
+        expect(result.content).not.toContain("first");
+        expect(ctx.state.fileState.get(file_path).partial).toBe(true);
+    });
+});
 
 describe("Write re-checks the file after approval", () => {
     test("a change saved while the prompt was open isn't overwritten", async () => {
@@ -466,7 +654,52 @@ describe("Grep without ripgrep", () => {
         writeFileSync(join(proj, "z/late.ts"), "needle\n");
         Bun.spawnSync(["git", "init", "-q"], { cwd: proj }); // git lists paths sorted, so z/ comes last
         expect(await grepWithoutRg({ pattern: "needle", glob: "*.ts", output_mode: "count" }, proj)).toBe("z/late.ts:1");
+        const broad = await grepWithoutRg({ pattern: "needle" }, proj);
+        expect(broad).toContain("Search incomplete");
+        expect(broad).toContain("20,000");
+        expect(broad).toContain("Narrow");
+        expect(broad).not.toContain("No matches found");
+        writeFileSync(join(proj, "a/f0.js"), "needle\n");
+        for (const output_mode of ["files_with_matches", "count", "content"]) {
+            const result = await grepWithoutRg({ pattern: "needle", output_mode, head_limit: 1 }, proj);
+            expect(result).toContain("a/f0.js");
+            expect(result).toContain("Search incomplete");
+        }
+        // Without git, enumeration must also disclose the cap.
+        const prev = process.env.PATH;
+        process.env.PATH = "";
+        try {
+            const result = await GrepTool.run({ pattern: "absent" }, toolCtx(proj));
+            expect(result.content).toContain("Search incomplete");
+            expect(result.content).not.toContain("No matches found");
+            expect(result.display?.summary).toContain("incomplete");
+        } finally {
+            process.env.PATH = prev;
+        }
     }, 30_000);
+    test("files over 5 MB are reported as skipped, not as a miss", async () => {
+        const proj = tempDir();
+        writeFileSync(join(proj, "big.log"), "x".repeat(5_000_001) + "\nneedle\n");
+        writeFileSync(join(proj, "small.txt"), "hay\n");
+        const read = spyOn(fsPromises, "readFile");
+        try {
+            const miss = await grepWithoutRg({ pattern: "needle" }, proj);
+            expect(miss).not.toBe("No matches found");
+            expect(miss).toContain("No matches in the scanned files.");
+            expect(miss).toContain("skipped 1 file over 5 MB");
+            expect(miss).toContain("(big.log)");
+            expect(read.mock.calls.map((c) => String(c[0]))).not.toContain(join(proj, "big.log"));
+        } finally {
+            read.mockRestore();
+        }
+        writeFileSync(join(proj, "small.txt"), "needle\n");
+        const hit = await grepWithoutRg({ pattern: "needle" }, proj);
+        expect(hit).toContain("small.txt");
+        expect(hit).toContain("(Search incomplete: skipped 1 file over 5 MB");
+        const file = await grepWithoutRg({ pattern: "needle", path: join(proj, "big.log") }, proj);
+        expect(file).toContain("skipped 1 file over 5 MB");
+    });
+
     test("multiline counts are matches, as with ripgrep, when a match crosses lines", async () => {
         const proj = tempDir();
         writeFileSync(join(proj, "imports.ts"), "import a\nimport b\nimport c\nimport d\nx\nimport e\nimport f\n");

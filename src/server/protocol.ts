@@ -207,6 +207,8 @@ export interface NoticeBlock {
     id: string;
     level: "info" | "warn" | "error";
     text: string;
+    /** One short line each, folded under the text (TurnNotice.details). */
+    details?: string[];
 }
 
 export interface CompactBlock {
