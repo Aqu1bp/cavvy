@@ -71,7 +71,7 @@ test("backend queued prompts wait for start snapshots before backend work resume
         runTurn: async (turn: BackendTurn) => {
             events.push("backend:first");
             const queued = await turn.host.drainQueued();
-            events.push(`backend:${queued.join()}`);
+            events.push(`backend:${queued.map((m) => m.text).join()}`);
             return { reason: "done" as const, text: "done", actions: [] };
         },
     };

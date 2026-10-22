@@ -3242,6 +3242,151 @@ describe("Codex mid-turn steering", () => {
         expect(turnStarts()[2].input).not.toContainEqual(imageItem);
     });
 
+    // Review of e47c004c, finding 1: an image sent with no words was a steer with nothing in it.
+    test("an image steered with no words: turn/steer carries the image alone", async () => {
+        process.env.FAKE_SCENARIO = "slow";
+        process.env.FAKE_STEER_WAKES = "1";
+        const host: ReturnType<typeof withImage>[] = [];
+        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
+        const done = a.run("start");
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        await Bun.sleep(50);
+        host.push(withImage(""));
+        a.agent.queueChanged();
+        expect(await done).toBe("done");
+        expect(steers()).toHaveLength(1);
+        expect(steers()[0]!.input).toEqual([imageItem]);
+    });
+
+    test("an image with no words Codex refuses (its turn just ended) starts the next turn with the image", async () => {
+        process.env.FAKE_SCENARIO = "steps";
+        process.env.FAKE_STEER_FAIL = "1";
+        process.env.FAKE_SLOW_TURN_START = "200";
+        const host: ReturnType<typeof withImage>[] = [];
+        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
+        const done = a.run("start");
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        host.push(withImage(""));
+        a.agent.queueChanged();
+        expect(await done).toBe("done");
+        expect(steers()).toHaveLength(1);
+        expect(steers()[0]!.input).toEqual([imageItem]);
+        expect(turnStarts()).toHaveLength(2);
+        expect(turnStarts()[1].input).toContainEqual(imageItem);
+    });
+
+    // Finding 2: what's attached belongs to one message, not to every message with the same words.
+    const OTHER = Buffer.from("another picture").toString("base64");
+    const otherItem = { type: "image", url: `data:image/png;base64,${OTHER}` };
+    const withOther = (text: string) => ({ text, admission: "go" as const, attachments: [{ type: "image" as const, mediaType: "image/png", data: OTHER }] });
+
+    test("the same words steered again without an image don't send the first one's image again", async () => {
+        // The turn goes on after each steer (no FAKE_STEER_WAKES), so both go into it.
+        process.env.FAKE_SCENARIO = "slow";
+        const host: (string | ReturnType<typeof withImage>)[] = [];
+        const ac = new AbortController();
+        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
+        const done = a.run("start", ac.signal);
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        await Bun.sleep(50);
+        host.push(withImage("check this"));
+        a.agent.queueChanged();
+        await until(() => steers().length === 1);
+        host.push("check this");
+        a.agent.queueChanged();
+        await until(() => steers().length === 2);
+        ac.abort();
+        expect(await done).toBe("aborted");
+        expect(steers()[0]!.input).toEqual([{ type: "text", text: "check this", text_elements: [] }, imageItem]);
+        expect(steers()[1]!.input).toEqual([{ type: "text", text: "check this", text_elements: [] }]);
+    });
+
+    test("two refused steers with the same words and different images: the next turn gets each image once", async () => {
+        process.env.FAKE_SCENARIO = "slow";
+        process.env.FAKE_STEER_FAIL = "1";
+        const host: ReturnType<typeof withImage>[] = [];
+        const ac = new AbortController();
+        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
+        const done = a.run("start", ac.signal);
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        await Bun.sleep(50);
+        host.push(withImage("check this"));
+        a.agent.queueChanged();
+        await until(() => steers().length === 1);
+        host.push(withOther("check this"));
+        a.agent.queueChanged();
+        await until(() => steers().length === 2);
+        expect(steers()[1]!.input).toContainEqual(otherItem);
+        expect(steers()[1]!.input).not.toContainEqual(imageItem);
+        await Bun.sleep(20);
+        ac.abort();
+        expect(await done).toBe("aborted");
+        delete process.env.FAKE_SCENARIO;
+        expect(await a.run("next")).toBe("done");
+        const images = turnStarts()[1].input.filter((i: any) => i.type === "image");
+        expect(images).toEqual([imageItem, otherItem]);
+        expect(turnStarts()[1].input.find((i: any) => i.type === "text").text).toContain("with 2 attachments");
+    });
+
+    // Finding 3: the reminder says an image goes with it; after a restart, it still does.
+    test("a refused steer's image reaches Codex after Harness restarts, as its words do", async () => {
+        process.env.FAKE_SCENARIO = "slow";
+        process.env.FAKE_STEER_FAIL = "1";
+        const host: ReturnType<typeof withImage>[] = [];
+        const ac = new AbortController();
+        const session = Session.create(cwd, { persist: true });
+        const a = await makeAgent({ provider: "codex", session, drainQueued: () => host.splice(0) });
+        const done = a.run("start", ac.signal);
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        await Bun.sleep(50);
+        host.push(withImage("refused before restart"));
+        a.agent.queueChanged();
+        await until(() => steers().length === 1);
+        await Bun.sleep(20);
+        ac.abort();
+        expect(await done).toBe("aborted");
+        const path = session.path;
+        session.release();
+        forgetClient("codex");
+        delete process.env.FAKE_SCENARIO;
+        const b = await makeAgent({ provider: "codex", session: Session.load(path) });
+        expect(await b.run("next")).toBe("done");
+        expect(turnStarts()).toHaveLength(2);
+        const text = turnStarts()[1].input.find((i: any) => i.type === "text").text;
+        expect(text).toContain("with an attachment, sent with this message");
+        expect(turnStarts()[1].input.filter((i: any) => i.type === "image")).toEqual([imageItem]);
+        // And once only.
+        expect(await b.run("after")).toBe("done");
+        expect(turnStarts()[2].input).not.toContainEqual(imageItem);
+    });
+
+    // Finding 4: rewound away, it's gone: not sent with an unrelated prompt, nor twice with the draft sent again.
+    test("a refused steer's image rewound away isn't sent with the next prompt; the restored draft sends it once", async () => {
+        process.env.FAKE_SCENARIO = "slow";
+        process.env.FAKE_STEER_FAIL = "1";
+        const host: ReturnType<typeof withImage>[] = [];
+        const ac = new AbortController();
+        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
+        const done = a.run("start", ac.signal);
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        await Bun.sleep(50);
+        host.push(withImage("refused words"));
+        a.agent.queueChanged();
+        await until(() => steers().length === 1);
+        await Bun.sleep(20);
+        ac.abort();
+        expect(await done).toBe("aborted");
+        delete process.env.FAKE_SCENARIO;
+        const at = a.session.messages.findIndex((m) => m.role === "user" && m.meta?.kind === "prompt" && JSON.stringify(m.content).includes("refused words"));
+        expect(at).toBeGreaterThan(0);
+        a.agent.rewind(at);
+        expect(await a.run("unrelated")).toBe("done");
+        expect(turnStarts()[1].input).not.toContainEqual(imageItem);
+        // The draft sent again: its image goes once.
+        expect(await a.agent.run([{ type: "text", text: "refused words" }, { type: "image", mediaType: "image/png", data: PIXEL }], { signal: new AbortController().signal })).toBe("done");
+        expect(turnStarts()[2].input.filter((i: any) => i.type === "image")).toEqual([imageItem]);
+    });
+
     test("a wake while the turn runs steers it at once, marked as the harness's and not as a prompt", async () => {
         process.env.FAKE_SCENARIO = "slow";
         process.env.FAKE_STEER_WAKES = "1";

@@ -106,6 +106,27 @@ describe("steering a running Claude Code turn with an image", () => {
     }, 30_000);
 });
 
+// Review of e47c004c, finding 2: what's attached goes with its own message, not with every message in the same words.
+describe("steering a running Claude Code turn twice in the same words", () => {
+    test("the image goes once, with the message it was attached to", async () => {
+        // steering-many: a tool round after each steer, so the second can join the same turn on its own.
+        const { engine, c, id, rt } = await claudeSession("steering-many", { FAKE_SECOND_SCENARIO: "silent" });
+        try {
+            expect(await until(() => rt.busy)).toBe(true);
+            await engine.handle(c, "session.send", { id, text: "check this", images: [{ mediaType: "image/png", data: PNG }], mode: "steer" });
+            // The second once the first has gone: a drain of its own.
+            expect(await until(() => received().length === 2)).toBe(true);
+            await engine.handle(c, "session.send", { id, text: "check this", mode: "steer" });
+            expect(await until(() => !rt.busy && !rt.snapshot().state.queued.length)).toBe(true);
+            const steered = received().slice(1);
+            expect(steered.map((m) => m.content.find((b) => b.type === "text")?.text)).toEqual(["check this", "check this"]);
+            expect(steered.flatMap((m) => images(m))).toEqual([{ type: "image", source: { type: "base64", media_type: "image/png", data: PNG } }]);
+        } finally {
+            await cleanup(engine);
+        }
+    }, 30_000);
+});
+
 const PDF = Buffer.from("%PDF-1.4\n% a test document\n%%EOF\n").toString("base64");
 const log = () => (existsSync(process.env.FAKE_LOG!) ? readFileSync(process.env.FAKE_LOG!, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
 

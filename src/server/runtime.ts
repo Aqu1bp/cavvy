@@ -2112,7 +2112,7 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Prompts
 
-    private drainQueued(record?: () => void, admit?: (text: string) => Promise<Admitted>): (string | Admitted)[] | Promise<Admitted[]> {
+    private drainQueued(record?: () => void, admit?: (text: string, attachments?: readonly AttachedPart[]) => Promise<Admitted>): (string | Admitted)[] | Promise<Admitted[]> {
         // Messages to steer with; queued ones, held ones, commands, and those with images or files where the turn can't take them wait for their own turn.
         const steering = () => this.queued.filter((q) => q.mode === "steer" && !q.held && !this.waits(q));
         const take = steering();
@@ -2125,11 +2125,12 @@ export class Runtime {
      * them back to the composer. One a hook blocks goes back to the composer now, to change or drop (the hook's
      * warning says why); the rest go.
      */
-    private async admitQueued(take: Queued[], admit: (text: string) => Promise<Admitted>, steering: () => Queued[], record?: () => void): Promise<Admitted[]> {
+    private async admitQueued(take: Queued[], admit: (text: string, attachments?: readonly AttachedPart[]) => Promise<Admitted>, steering: () => Queued[], record?: () => void): Promise<Admitted[]> {
         const blocked: Queued[] = [];
         const admitted = new Map<Queued, Admitted>();
         for (const q of take) {
-            const a = await admit(q.text);
+            // With what's attached: its hooks read a long paste as what the user wrote, as a prompt's do.
+            const a = await admit(q.text, q.attachments);
             if (a.admission === "stopped") return [];
             if (a.admission === "blocked") blocked.push(q);
             else admitted.set(q, a);

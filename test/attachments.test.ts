@@ -34,7 +34,7 @@ const { stripAnsi } = await import("../src/ui/ansi");
 const { expandMentions } = await import("../src/ui/mentions");
 const gui = await import("../gui/src/lib/attachments");
 import type { Admitted } from "../src/agent/agent";
-import type { FilePart, Message, ToolResultPart, UserMessage } from "../src/providers/types";
+import type { AttachedPart, FilePart, Message, ToolResultPart, UserMessage } from "../src/providers/types";
 import type { ServerEvent, SessionSnapshot } from "../src/server/protocol";
 
 const mock = startMockLlm({ delayMs: 0 });
@@ -671,6 +671,21 @@ describe("nothing gets lost", () => {
             await engine.handle(c, "session.send", { id, text: "and this one", images: [{ mediaType: "image/png", data: PNG }], mode: "steer" });
             const drained = await inner.drainQueued(undefined, async (text) => ({ text, admission: "go", context: "ctx" }));
             expect(drained).toEqual([{ text: "and this one", admission: "go", context: "ctx", attachments: [{ type: "image", mediaType: "image/png", data: PNG }] }]);
+        } finally {
+            await engine.handle(c, "session.interrupt", { id }).catch(() => undefined);
+            await engine.stop();
+        }
+    });
+
+    // Review of e47c004c, finding 5: its hooks read a long paste as part of what the user wrote, as a prompt's do.
+    test("a message with a long paste hands what's attached to its hooks' admit, so they read the paste", async () => {
+        const { engine, c, id, rt } = await busySession();
+        try {
+            const inner = rt as unknown as { drainQueued(record?: () => void, admit?: (text: string, attachments?: readonly AttachedPart[]) => Promise<Admitted>): Promise<Admitted[]> };
+            await engine.handle(c, "session.send", { id, text: "and this", files: [{ name: "Pasted text", data: b64("the pasted words\n".repeat(100)), pasted: true }], mode: "steer" });
+            const given: (readonly AttachedPart[] | undefined)[] = [];
+            await inner.drainQueued(undefined, async (text, attachments) => (given.push(attachments), { text, admission: "go" }));
+            expect(given).toEqual([[expect.objectContaining({ type: "file", kind: "text", pasted: true, text: "the pasted words\n".repeat(100) })]]);
         } finally {
             await engine.handle(c, "session.interrupt", { id }).catch(() => undefined);
             await engine.stop();

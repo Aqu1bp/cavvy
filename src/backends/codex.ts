@@ -34,7 +34,7 @@ import { codexInput, codexSkills, pastedPrompt, skillFolder, type CodexSkill } f
 import { accountEnv, defaultAccount } from "../providers/accounts";
 import { accountPermissionConfig, accountPermissionProfile, watchAccountFolders } from "./account-permissions";
 import { askForm } from "../mcp/elicitation";
-import { backendModel, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendQuestion, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "./types";
+import { backendModel, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendQuestion, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer, type SteerMessage } from "./types";
 import type { HookEvent } from "../agent/hooks";
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
 import { parseGoalCommand, type GoalCommand, type NativeGoal } from "../agent/goal";
@@ -424,6 +424,16 @@ function modeSwitched(m: PermissionMode): string {
     return `<system-reminder>\nThe user switched the permission mode to ${m === "plan" ? "plan mode" : `"${m}"`} while you were working, so your turn was stopped and resumes under it. Continue from where you were, within the new mode.\n</system-reminder>`;
 }
 
+/** Drained messages as one text: one with only an image (no words) adds none. */
+function joined(messages: readonly SteerMessage[]): string {
+    return messages.map((m) => m.text).filter(Boolean).join("\n\n");
+}
+
+/** The images attached to drained messages, each message's own; Codex takes no PDFs (they're a note in the text). */
+function imagesOf(messages: readonly SteerMessage[] | undefined): ImagePart[] {
+    return (messages ?? []).flatMap((m) => m.images);
+}
+
 /** How much a mode lets Codex do on its own; switching to a higher one mid-turn can't wait for the next turn. */
 const STRICTNESS: Record<PermissionMode, number> = { bypassPermissions: 0, auto: 1, acceptEdits: 2, default: 3, plan: 4 };
 
@@ -536,10 +546,8 @@ export class CodexTurn {
     private followUps = 0;
     /** Messages the user steered with, one after another (each waits for the one before). */
     private steering: Promise<void> = Promise.resolve();
-    /** Steered messages the turn ended before taking: they start the next. */
-    private unsteered: string[] = [];
-    /** Drained messages joined into one text (a steer, a turn's prompt), by that text: each is still known as it was drained. */
-    private joinedFrom = new Map<string, string[]>();
+    /** Steered messages the turn ended before taking, each with what's attached to it: they start the next. */
+    private unsteered: SteerMessage[] = [];
     /** One came while no turn was running (it was starting): steered once it is. */
     private steerWaiting = false;
     /** Why an approval was refused, by item, for the item's result. */
@@ -836,9 +844,9 @@ export class CodexTurn {
                 /** A turn Codex started itself for the goal: waited on instead of starting one. */
                 let adopt: string | undefined;
                 /** The user's messages for the turn adopted: they go into it (turn/steer). */
-                let pending: string | undefined;
+                let pending: SteerMessage[] | undefined;
                 /** The user's queued messages that `text` carries (not the prompt itself, which the session keeps). */
-                let queued: string | undefined;
+                let queued: SteerMessage[] | undefined;
                 while (true) {
                     // Paused in Codex for a mode change: active again once this turn (under the mode) has started.
                     if (this.goalPausedForMode && !adopt) activate = true;
@@ -883,13 +891,13 @@ export class CodexTurn {
                                 const id = this.goal?.status === "active" && !activate ? await this.nextGoalTurn(GOAL_TURN_GRACE_MS, false) : undefined;
                                 if (!id) {
                                     // The messages this turn was for aren't lost with it: saved for the next turn.
-                                    if (queued) this.unsteered.push(queued);
+                                    if (queued) this.unsteered.push(...queued);
                                     throw e;
                                 }
                                 // Under the thread's policy, as any turn Codex starts itself, not this one's mode.
                                 this.turnMode = this.running.get(id) ?? this.threadMode;
                                 this.adopted = true;
-                                return this.adoptTurn(id, text);
+                                return this.adoptTurn(id, [{ text, images, documents: [] }]);
                             }
                         }
                         this.turnId = r?.turn?.id;
@@ -928,16 +936,16 @@ export class CodexTurn {
                         text = modeSwitched(restart);
                         // A steer the interrupt beat goes in with it, not after the restarted turn.
                         await this.steering;
-                        queued = this.unsteered.length ? this.join(this.unsteered.splice(0)) : undefined;
-                        if (queued) text = [text, queued].join("\n\n");
-                        images = this.imagesOf(queued);
+                        queued = this.unsteered.length ? this.unsteered.splice(0) : undefined;
+                        if (queued) text = [text, joined(queued)].filter(Boolean).join("\n\n");
+                        images = imagesOf(queued);
                         continue;
                     }
                     // A steer on its way when the turn ended: whether Codex took it decides what's next.
                     await this.steering;
                     const followUp = this.followUp && this.followUps++ < 5 ? this.followUp : undefined;
                     this.followUp = undefined;
-                    const next = followUp ? [followUp] : this.unsteered.length ? this.unsteered.splice(0) : await this.host.drainQueued(() => this.progress());
+                    const next: SteerMessage[] = followUp ? [{ text: followUp, images: [], documents: [] }] : this.unsteered.length ? this.unsteered.splice(0) : await this.host.drainQueued(() => this.progress());
                     if (!next.length) {
                         // The goal still active: Codex goes on with it in a turn of its own, which this run waits for.
                         if (this.goal?.status === "active") adopt = await this.nextGoalTurn();
@@ -951,14 +959,17 @@ export class CodexTurn {
                         break;
                     }
                     // The user's words name skills; a watch's events (others' words, such as a PR comment) come after and don't.
-                    const typed = next.filter((x) => !this.host.fromWake?.(x));
-                    const woke = next.filter((x) => this.host.fromWake?.(x));
-                    text = queued = this.join([...typed, ...woke]);
+                    const typed = next.filter((x) => !this.host.fromWake?.(x.text));
+                    const woke = next.filter((x) => this.host.fromWake?.(x.text));
+                    queued = [...typed, ...woke];
+                    text = joined(queued);
                     // What was attached to the user's messages goes with them.
-                    images = this.imagesOf(queued);
+                    images = imagesOf(queued);
                     // Nor does what a UserPromptSubmit hook added after them: what's scanned ends before the first.
-                    const cut = typed.findIndex((x) => (this.host.requestOf?.(x) ?? x) !== x);
-                    const words = cut < 0 ? typed : [...typed.slice(0, cut), this.host.requestOf!(typed[cut]!)!];
+                    // (One with only an image has no words: joined leaves it out of the text, so it's left out here too.)
+                    const said = typed.map((x) => x.text).filter(Boolean);
+                    const cut = said.findIndex((x) => (this.host.requestOf?.(x) ?? x) !== x);
+                    const words = cut < 0 ? said : [...said.slice(0, cut), this.host.requestOf!(said[cut]!)!];
                     request = words.length ? words.join("\n\n") : undefined;
                     after = request === undefined ? "" : text.slice(request.length);
                     // The goal active: Codex starts its next turn as this one ends, and the messages go into that one
@@ -966,7 +977,7 @@ export class CodexTurn {
                     const own = this.goal?.status === "active" ? await this.nextGoalTurn(GOAL_TURN_GRACE_MS, false) : undefined;
                     if (own) {
                         adopt = own;
-                        pending = text;
+                        pending = queued;
                     }
                 }
             }
@@ -994,7 +1005,7 @@ export class CodexTurn {
             // Settled once Codex is gone (its pending requests fail): nothing records a prompt after the turn's end.
             await this.steering;
             // Recorded as sent but never taken (the turn failed or was stopped): saved for the next turn.
-            if (this.unsteered.length) this.host.undelivered?.(this.unsteered.splice(0).flatMap((t) => this.partsOf(t)));
+            if (this.unsteered.length) this.host.undelivered?.(this.unsteered.splice(0));
         }
         for (const [id, it] of this.items) this.endItem(id, it, this.aborted ? "Interrupted by user" : it.sub ? "Stopped with the sub-agent." : "Codex stopped before this finished.", true);
         // Sub-agents still working stopped with Codex.
@@ -1056,7 +1067,9 @@ export class CodexTurn {
     }
 
     /** Wait on a turn Codex started itself (it may have ended already: as it ended then), with the user's messages put into it. */
-    private async adoptTurn(id: string, text?: string) {
+    private async adoptTurn(id: string, messages?: SteerMessage[]) {
+        // Words or an image to put in (a turn/steer with neither would be empty).
+        const some = Boolean(messages?.some((m) => m.text || m.images.length));
         this.turnId = id;
         const ended = this.completedTurns.get(id);
         const stopped = this.stoppedForMode.delete(id);
@@ -1065,23 +1078,23 @@ export class CodexTurn {
             this.status = ended.status;
             this.restartFor = this.host.mode();
             this.goalOnRestart = this.goal?.status === "active";
-            if (text) this.unsteered.push(text);
+            if (some) this.unsteered.push(...messages!);
             this.turnDone?.();
             return;
         }
         if (ended !== undefined) {
             this.status = ended.status;
             if (ended.status === "failed") this.fail(ended.error, "Codex reported a failed turn");
-            if (text) this.unsteered.push(text);
+            if (some) this.unsteered.push(...messages!);
             this.turnDone?.();
             return;
         }
         // Started under the thread's policy: stale for the mode now, the messages go into its restart instead.
         if (this.restartIfStale()) {
-            if (text) this.unsteered.push(text);
+            if (some) this.unsteered.push(...messages!);
             return;
         }
-        if (text) await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: id, input: this.input(text, this.imagesOf(text)) }).catch(() => this.unsteered.push(text));
+        if (some) await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: id, input: this.input(joined(messages!), imagesOf(messages!)) }).catch(() => this.unsteered.push(...messages!));
         // Sent while no turn was running (waiting for this one): it can take them now.
         if (this.steerWaiting) this.steerQueued();
     }
@@ -1157,23 +1170,6 @@ export class CodexTurn {
             if (this.aborted) throw e;
             return t.skills?.length ? undefined : [];
         }
-    }
-
-    /** Drained messages as one text, which stays known as them (partsOf). */
-    private join(texts: readonly string[]): string {
-        const text = texts.join("\n\n");
-        if (texts.length > 1) this.joinedFrom.set(text, texts.flatMap((t) => this.partsOf(t)));
-        return text;
-    }
-
-    /** The drained messages a text is (one, or several joined). */
-    private partsOf(text: string): string[] {
-        return this.joinedFrom.get(text) ?? [text];
-    }
-
-    /** The images attached to the user's messages in a text (BackendHost.mediaOf); Codex takes no PDFs. */
-    private imagesOf(text: string | undefined): ImagePart[] {
-        return text ? this.partsOf(text).flatMap((t) => this.host.mediaOf?.(t)?.images ?? []) : [];
     }
 
     private input(text: string, images: BackendTurn["images"]): unknown[] {
@@ -2080,21 +2076,20 @@ export class CodexTurn {
             const turnId = this.turnId;
             this.steerWaiting = !turnId;
             if (this.aborted || !this.threadId || !turnId) return;
-            const texts = await this.host.drainQueued(() => this.progress());
-            if (!texts.length) return;
-            const text = this.join(texts);
+            const messages = await this.host.drainQueued(() => this.progress());
+            if (!messages.length) return;
             // Into a turn that runs as the mode says, or into its restart (also when it changed while draining).
             if (this.turnId !== turnId || this.restartIfStale()) {
-                // Each as it was queued, so the user's words, a hook's additions and a watch's events stay told apart.
-                this.unsteered.push(...texts);
+                // Each as it was queued, with what's attached to it, so the user's words, a hook's additions and a watch's events stay told apart.
+                this.unsteered.push(...messages);
                 return;
             }
             try {
-                // With what's attached to them: turn/steer takes the same input items as turn/start.
-                await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: turnId, input: this.input(text, this.imagesOf(text)) });
+                // With what's attached to them: turn/steer takes the same input items as turn/start (an image alone too).
+                await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: turnId, input: this.input(joined(messages), imagesOf(messages)) });
             } catch {
-                // Each as it was queued, so the user's words and a watch's events stay told apart.
-                this.unsteered.push(...texts);
+                // Each as it was queued, with what's attached to it, so the user's words and a watch's events stay told apart.
+                this.unsteered.push(...messages);
             }
         }).catch(() => {});
     }
