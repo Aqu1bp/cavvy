@@ -189,6 +189,8 @@ export class CodexLiveConnection extends CodexTurn {
     private readonly emitEvent: CliEventSink;
     /** Turns started here to tell Codex something (host wakes), with what the wake row says. */
     private hostTurns = new Map<string, string>();
+    /** What a host wake told Codex (its notes: finished commands and their output), by turn. */
+    private hostReports = new Map<string, string>();
     private hostStarting = false;
     private hostFailures = 0;
     private terminals = new Map<string, Terminal>();
@@ -694,6 +696,12 @@ export class CodexLiveConnection extends CodexTurn {
         return g?.status === "active" ? `Codex went on with the goal: ${shown(g.condition, 80)}` : "Codex started a turn of its own";
     }
 
+    /** What a wake's turn tells Codex about its background work (a host wake's notes), once its turn/start has answered. */
+    async wakeReport(ref: string): Promise<string | undefined> {
+        await Promise.all([...this.flights]);
+        return this.hostReports.get(ref);
+    }
+
     /** Background terminals and sub-agents running now. */
     runningTasks(): number {
         return [...this.terminals.values()].filter((t) => !t.ended).length + this.bgSubs.size;
@@ -1173,6 +1181,8 @@ export class CodexLiveConnection extends CodexTurn {
             this.settleStarted(id, mode);
             this.hostTurns.set(id, label);
             if (this.hostTurns.size > 32) this.hostTurns.delete(this.hostTurns.keys().next().value!);
+            if (notes.length) this.hostReports.set(id, notes.map((n) => n.text).join("\n\n"));
+            if (this.hostReports.size > 32) this.hostReports.delete(this.hostReports.keys().next().value!);
             this.decideStarted();
             liveDebug("codex", "host wake: turn started", { thread: this.threadId, turn: id });
             if (goalGoesOn) {
@@ -1307,10 +1317,11 @@ export class CodexLiveAdapter implements AgentCliAdapter {
     /** A wake the session holds goes to the host, labelled, to be adopted. */
     async forwardWake(w: LiveWake) {
         const label = (await this.conn?.wakeLabel(w.ref).catch(() => undefined)) ?? "Codex started a turn of its own";
+        const report = await this.conn?.wakeReport(w.ref).catch(() => undefined);
         const host = this.t?.session;
         // Not the label: it has a command's text, or a goal's (the log keeps methods, ids and statuses only).
         liveDebug("codex", "wake", { ref: w.ref, origin: w.origin, adoptable: Boolean(host?.onWake) });
-        host?.onWake?.({ provider: this.live.providerDef.id, ref: w.ref, label });
+        host?.onWake?.({ provider: this.live.providerDef.id, ref: w.ref, label, ...(report ? { report } : {}) });
     }
 }
 

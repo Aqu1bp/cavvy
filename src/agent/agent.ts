@@ -401,6 +401,9 @@ function readOnlyRefusal(toolName: string, command?: string, why?: string): stri
     return `This is a read-only agent, and ${what ?? "this command isn't read-only"}. Only read-only commands run: plain commands such as cat, rg, wc or git log, and pipes of them, with no loops, subshells, $(…) or > redirects. Tests, builds and scripts don't run either. Leave out or replace just that part, or report what should be run or changed instead.`;
 }
 
+/** How much of a wake's report is shown and told when the session can't take the wake over (#305). */
+const WAKE_REPORT_CHARS = 4000;
+
 /** For a backend whose last turn was stopped without its knowing (Harness was closed or died while it worked). */
 const BACKEND_CUT_OFF = "Your last turn in this session was cut off: Harness stopped while you were working (it was closed, or it crashed), so that turn may not have finished what it set out to do.";
 
@@ -1741,10 +1744,16 @@ export class Agent {
         if (left) this.emit({ type: "notice", level: "info", message: `${left} background task${left === 1 ? " keeps" : "s keep"} running (/tasks stop stops ${left === 1 ? "it" : "them"}).` });
     }
 
-    /** A wake turn to adopt, on a model that can't take one (another provider's now, or one that runs no CLI). */
+    /** A wake turn to adopt, on a model that can't take one (another provider's now, or one that runs no CLI). Its report is shown, and told to the model. */
     private cannotAdopt(w: BackendWake): TurnEndReason {
         const name = getProvider(w.provider)?.name ?? w.provider;
-        this.endNotice("warn", `${name} started a turn of its own, but this session can't take it over now${this.model.provider === w.provider ? "" : ` (it's on ${this.model.name ?? this.model.id})`}.`);
+        const on = this.model.provider === w.provider ? "" : ` (it's on ${this.model.name ?? this.model.id})`;
+        // What its background work reported isn't lost with the turn (#305): shown here, and told to the model now.
+        const said = w.report?.trim() ? redact(w.report.trim()) : undefined;
+        const report = said && said.length > WAKE_REPORT_CHARS ? `${said.slice(0, WAKE_REPORT_CHARS)}…` : said;
+        const about = w.label?.trim() ? ` (${w.label.trim()})` : "";
+        this.endNotice("warn", `${name} started a turn of its own, but this session can't take it over now${on}.${report ? ` What it reported${about}:\n${report}` : ""}`);
+        if (report) this.addReminder(`${name}, which this session ran on earlier, reported on background work it was doing${about}:\n${report}`);
         this.emit({ type: "turn_end", reason: "error" });
         return "error";
     }

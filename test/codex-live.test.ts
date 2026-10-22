@@ -778,3 +778,21 @@ describe("review round 2 (#293), from #295's", () => {
         expect(pids()).toHaveLength(1);
     });
 });
+
+describe("#305: a wake the session can't take over (it's on another model)", () => {
+    test("its report shows in the transcript, and the session's model is told with its next prompt", async () => {
+        process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
+        process.env.FAKE_BG_MS = "100";
+        const a = await makeAgent();
+        expect(await a.run("start it")).toBe("done");
+        const w = await a.nextWake();
+        expect(w.report).toContain("bg 1 done");
+        // Another provider's model now: the wake can't be adopted.
+        a.agent.setModel({ provider: "openai", id: "gpt-x", name: "GPT X" } as any, {} as any);
+        expect(await a.adopt(w)).toBe("error");
+        const notice = a.notices().find((n) => n.includes("can't take it over now"));
+        expect(notice).toContain("bg 1 done");
+        const reminders: string[] = ((a.agent as any).pendingReminders as { text: string }[]).map((r) => r.text);
+        expect(reminders.some((r) => r.includes("bg 1 done") && r.includes("Codex"))).toBe(true);
+    });
+});

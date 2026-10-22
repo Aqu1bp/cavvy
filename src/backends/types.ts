@@ -128,6 +128,11 @@ export interface BackendWake {
      * the turn it stopped. Recorded as their prompt, not as a wake.
      */
     prompt?: boolean;
+    /**
+     * What the background work it reports said (a finished command's output, a sub-agent's report), redacted:
+     * shown, and told to the session's model, when the session can't take the turn over (it's on another model).
+     */
+    report?: string;
 }
 
 /**
