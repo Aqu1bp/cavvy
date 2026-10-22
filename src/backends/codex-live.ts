@@ -616,7 +616,7 @@ export class CodexLiveConnection extends CodexTurn {
             // A steer the interrupt beat goes in with it, not after the restarted turn.
             await this.steering;
             const queued = this.unsteered.length ? this.unsteered.splice(0).join("\n\n") : undefined;
-            return { kind: "prompt", text: [modeSwitched(restart), queued].filter(Boolean).join("\n\n"), images: [], after: "", activate, queued, why: "mode-restart" };
+            return { kind: "prompt", text: [modeSwitched(restart), queued].filter(Boolean).join("\n\n"), images: this.unsteeredImages.splice(0), after: "", activate, queued, why: "mode-restart" };
         }
         // A steer on its way when the turn ended: whether Codex took it decides what's next.
         await this.steering;
@@ -624,8 +624,10 @@ export class CodexLiveConnection extends CodexTurn {
         if (this.aborted || run.aborted) return undefined;
         const followUp = this.followUp && this.followUps++ < 5 ? this.followUp : undefined;
         this.followUp = undefined;
-        const why = followUp ? "follow-up" : this.unsteered.length ? "unsent" : "queued";
-        const next = followUp ? [followUp] : this.unsteered.length ? this.unsteered.splice(0) : await run.t.sink.drainQueued(() => this.progress());
+        const why = followUp ? "follow-up" : this.unsteered.length || this.unsteeredImages.length ? "unsent" : "queued";
+        const images = followUp ? [] : this.unsteeredImages.splice(0);
+        const next = followUp ? [followUp] : this.unsteered.length || images.length ? this.unsteered.splice(0) : await run.t.sink.drainQueued(() => this.progress());
+        if (!next.length && images.length) return { kind: "prompt", text: "", images, after: "", why };
         if (!next.length) {
             // Paused for a mode change (before or while it ran): it goes on here, under the mode.
             if (this.goalPausedForMode && !this.aborted) return { kind: "prompt", text: modeSwitched(this.host.mode()), images: [], after: "", activate: true, why: "goal-under-mode" };
@@ -639,7 +641,7 @@ export class CodexLiveConnection extends CodexTurn {
         const cut = typed.findIndex((x) => (run.t.sink.requestOf?.(x) ?? x) !== x);
         const words = cut < 0 ? typed : [...typed.slice(0, cut), run.t.sink.requestOf!(typed[cut]!)!];
         const request = words.length ? words.join("\n\n") : undefined;
-        return { kind: "prompt", text, images: [], request, after: request === undefined ? "" : text.slice(request.length), queued: text, why };
+        return { kind: "prompt", text, images, request, after: request === undefined ? "" : text.slice(request.length), queued: text, why };
     }
 
     /** How the run went, as a BackendResult. */
@@ -678,6 +680,7 @@ export class CodexLiveConnection extends CodexTurn {
         await this.steering;
         // Recorded as sent but never taken (the turn failed or was stopped): saved for the next turn.
         if (this.unsteered.length) run.t.sink.undelivered?.(this.unsteered.splice(0));
+        this.unsteeredImages = [];
         this.liveRun = undefined;
         this.aborted = false;
         this.failure = undefined;
@@ -779,7 +782,7 @@ export class CodexLiveConnection extends CodexTurn {
                 const raced = flight.find((id) => !run.turns.has(id) && !this.ownTurns.has(id));
                 if (raced) {
                     liveDebug("codex", "turn/start refused: Codex's own turn takes the prompt", { thread: this.threadId, turn: raced });
-                    return this.claim(run, raced, text);
+                    return this.claim(run, raced, text, seg.images);
                 }
                 // Those that started meanwhile were Codex's own.
                 this.decideStarted();
@@ -827,8 +830,20 @@ export class CodexLiveConnection extends CodexTurn {
         return { ref: id };
     }
 
-    /** Codex's turn that refused the prompt's becomes the run's, with the prompt's words steered into it. */
-    private async claim(run: LiveRun, id: string, text: string): Promise<{ ref: string }> {
+    /**
+     * The images of messages kept for the next turn (unsteered): a prompt Codex's own turn took, and couldn't be
+     * steered into it, keeps them (#304 on the live path). Gone with the run (its words go back undelivered).
+     */
+    private unsteeredImages: BackendTurn["images"] = [];
+
+    /** A message for the next turn, with its images. */
+    private keepForNext(text: string, images: BackendTurn["images"]) {
+        if (text) this.unsteered.push(text);
+        this.unsteeredImages.push(...images);
+    }
+
+    /** Codex's turn that refused the prompt's becomes the run's, with the prompt's words and images steered into it. */
+    private async claim(run: LiveRun, id: string, text: string, images: BackendTurn["images"] = []): Promise<{ ref: string }> {
         this.turnId = id;
         this.absorb(run, id);
         this.decideStarted();
@@ -841,14 +856,14 @@ export class CodexLiveConnection extends CodexTurn {
                 this.restartFor = this.host.mode();
                 this.goalOnRestart = this.goal?.status === "active";
             }
-            if (text) this.unsteered.push(text);
+            this.keepForNext(text, images);
             return { ref: id };
         }
         if (this.restartIfStale()) {
-            if (text) this.unsteered.push(text);
+            this.keepForNext(text, images);
             return { ref: id };
         }
-        if (text) await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: id, input: this.input(text, []) }).catch(() => this.unsteered.push(text));
+        if (text || images.length) await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: id, input: this.input(text, images) }).catch(() => this.keepForNext(text, images));
         if (this.steerWaiting) this.steerQueued();
         return { ref: id };
     }

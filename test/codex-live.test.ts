@@ -259,6 +259,21 @@ describe("background terminals", () => {
     });
 });
 
+describe("final review, blocker 2: a prompt Codex's own turn takes keeps its images", () => {
+    test("refused because Codex started a turn of its own: the words and the image go into that turn", async () => {
+        process.env.FAKE_REFUSE_TURN_START_AT = "2";
+        const a = await makeAgent();
+        expect(await a.run("one")).toBe("done");
+        fakeEnv.write();
+        const r = await a.agent.run([{ type: "text", text: "match this mockup" }, { type: "image", mediaType: "image/png", data: "iVBORw0KGgo=" }], { signal: new AbortController().signal });
+        expect(r).toBe("done");
+        // Refused (it carried the image), then steered into Codex's own turn: that steer has the image too.
+        const steer = calls("turn/steer").find((p) => p.expectedTurnId === "turn-2");
+        expect(steer?.input).toContainEqual(expect.objectContaining({ type: "text", text: "match this mockup" }));
+        expect(steer?.input).toContainEqual({ type: "image", url: "data:image/png;base64,iVBORw0KGgo=" });
+    });
+});
+
 describe("#310: a sub-agent's prompt is its own, not the turn's that started it", () => {
     /** The host's prompts: a sub-agent's answered when the test says, the turn's own approved at once. */
     function prompts() {
