@@ -7,7 +7,7 @@ Fixture format: one JSON object per line, `{"t": ms since spawn, "dir": "in"|"ou
 | # | Question | Answer |
 |---|---|---|
 | 1 | Process stays alive and idle after a `result`; second user message is a second turn on the same pid | YES |
-| 2 | Background tasks survive `interrupt` | PARTIAL: Bash and Monitor survive, background Agent (sub-agent) does NOT |
+| 2 | Background tasks survive `interrupt` | PARTIAL: Bash and Monitor survive, background Agent (sub-agent) does NOT. Follow-up: `interrupt {send_now:true, message_uuid:<queued msg>}` stops the turn and keeps the Agent (see "Q2 follow-up") |
 | 3 | Frames when a background task ends while idle | Recorded (a self-started wake turn, `result.origin.kind = "task-notification"`) |
 | 4 | `set_model`, `apply_flag_settings`, `stop_task`, `background_tasks`, `get_context_usage` between turns | All answered `success`; `stop_task` does produce a `task_notification` (status `stopped`) |
 | 5 | Two `turn/start`s on one thread, one connection | YES, thread stays loaded |
@@ -57,7 +57,48 @@ What it means for the design (§4):
 4. `priority:"now"` is not a substitute for `interrupt` in `-p` mode on this version; do not use it as the steer path without re-probing (this contradicts the t3code assumption in §0). Unverified: whether it behaves differently in a TTY session or a newer version.
 5. A sub-agent killed by the interrupt is idle-surfaced as a `task_notification` with `status:"stopped"`; the live layer should map that to a stopped (not failed) task.
 
-Caveat: all sub-agents in these runs were busy in a foreground Bash call when interrupted. A sub-agent between tool calls was not probed separately.
+Caveat: all sub-agents in these runs were busy in a foreground Bash call when interrupted. A sub-agent generating text was probed in the follow-up below (also killed). The follow-up also found the way to stop only the foreground turn.
+
+### Q2 follow-up: stopping the foreground turn while keeping background Agents (2.1.304)
+
+Question: is there ANY way, in `-p` stream-json mode, to stop the foreground turn and keep `run_in_background` Agents alive?
+
+**Answer: YES, but not with a plain `interrupt`.** Send a user message first (it queues behind the running turn), wait for its `command_lifecycle {state:"queued"}`, then send `{"subtype":"interrupt","send_now":true,"message_uuid":"<that message's uuid>"}`. The response is `{"still_queued":["<uuid>"],"send_now":"stopped"}`. The running turn is aborted (a foreground Bash dies, a streaming response is cut), the turn's `result` is `error_during_execution` (`terminal_reason` `aborted_tools` or `aborted_streaming`), the background Agent (and the shells it owns) keep running and finish normally (`task_notification status:"completed"`, marker file written), and the queued message becomes the next turn. Reproduced for a turn waiting on a foreground Bash, a turn streaming text, and with the carrier being a slash command (`/cost`, answered by a `<synthetic>` assistant message, no model call, same `total_cost_usd`). Not repeated for flakiness (one run per carrier kind, two for the Bash case).
+
+The second way is a user message with `"priority":"now"` while the model is STREAMING TEXT: it cuts the response (`result` `subtype:"success"`, `terminal_reason:"aborted_streaming"`, partial text kept, the original prompt gets `command_lifecycle cancelled`), runs the new message, and the Agent survives. It does not help while a foreground Bash runs (see `claude-steer-now-background.jsonl`: `now` waited for the 127 s Bash). It also needs a message to send, so it fits "the user types a new message and sends it", not a bare Esc.
+
+Everything else probed kills the Agent exactly like the plain interrupt. Recorded as `claude-q2-<variant>.jsonl` (probe `claude-interrupt-variants.ts`, `PROBE_VARIANT=<variant>`; setup: a `run_in_background` Agent whose Bash runs `python3 sleep(45); touch marker`, plus a main-turn foreground `python3 sleep(121)` or a long text, `--include-partial-messages`, `--permission-mode bypassPermissions`; only the first 4 `stream_event` frames are kept per fixture):
+
+| Variant | What was sent | Control response | Foreground turn | Background Agent |
+|---|---|---|---|---|
+| `base` | `interrupt` | `{still_queued:[]}` | `error_during_execution`/`aborted_tools` in 10 ms | KILLED (`task_notification stopped`, no marker) |
+| `a-uuid` | `interrupt {message_uuid:<running prompt uuid>}` | `{still_queued:[]}` | same | KILLED (the field is read only beside `send_now`) |
+| `a-uuid-sendnow` | `interrupt {send_now:true, message_uuid:<running prompt uuid>}` | `{still_queued:[], send_now:"nothing_waiting"}` | NOT stopped (no-op: a message the turn already took in is "being answered") | survived |
+| `b-noqueue` | `interrupt {cancel_queued:false}` | `{still_queued:[]}` | same as base | KILLED |
+| `b-sendnow-empty` | `interrupt {send_now:true}`, nothing queued | `{still_queued:[], send_now:"nothing_waiting"}` | NOT stopped (no-op) | survived |
+| `b-sendnow-bash` | queued 2nd message, then `interrupt {send_now:true, message_uuid:<2nd>}`, turn waiting on a foreground Bash | `{still_queued:[<2nd>], send_now:"stopped"}` | stopped: Bash killed (only that `local_bash` task got `stopped`), `error_during_execution`/`aborted_tools`, 2nd message ran as the next turn | SURVIVED, `completed`, marker written |
+| `b-sendnow-text` | same, turn streaming 2500 numbers | `send_now:"stopped"` | cut, `error_during_execution`/`aborted_streaming` | SURVIVED |
+| `b-sendnow-slash` | same, carrier `/cost`, turn waiting on Bash | `send_now:"stopped"` | stopped, carrier answered by a synthetic message | SURVIVED |
+| `c-agent-text` | `interrupt` while the Agent was generating text (no tool inside it; 700 numbers) | `{still_queued:[]}` | stopped | KILLED (`stopped`) |
+| `d-moved` | `background_tasks {tool_use_id:<Agent's>}` x6 over 9 s, then `interrupt` | `{backgrounded:false}` every time | stopped | KILLED. In `-p` mode the "foreground" Agent call came back as "Async agent launched" (the model said step 1 "didn't run in the foreground"); `background_tasks` is wired to shell commands only (the CLI's own name for it is `task_local_shell_background_all`). So there is no foreground Agent to move |
+| `e-now-text` | user message `priority:"now"` while the turn streams text | none (no control request) | cut in 6 ms: `result success`/`aborted_streaming`; steered message ran | SURVIVED |
+| `e-now-slash` | same, message `/cost` | none | cut, carrier answered | SURVIVED |
+| `f-spared` | `interrupt {for_user_message_uuids:[<unrelated uuid>]}` | `{still_queued:[], turn:"spared"}` | NOT stopped (the stop is addressed to other messages) | survived |
+| `f-reason` | `interrupt {reason:"user-cancel"}` | `{still_queued:[]}` | stopped | KILLED |
+| `entry-desktop` | `interrupt`, process started with `CLAUDE_CODE_ENTRYPOINT=claude-desktop` | `{still_queued:[]}` | stopped | KILLED |
+| `entry-local-agent` | `interrupt`, `CLAUDE_CODE_ENTRYPOINT=local-agent` | `{still_queued:[]}` | stopped | KILLED |
+
+(The parent shell had `CLAUDE_CODE_ENTRYPOINT=sdk-cli`, which the other runs and Q2 inherited.)
+
+Options for Harness's Esc on Claude Code (the Agent is only preserved by 1):
+
+1. Preferred, when `system/init` `capabilities` contains `interrupt_send_now_v1`: Esc with an active Harness turn = send a cheap carrier user message (`/cost` made no model call; any slash command that answers locally should do; a plain "." would cost one tiny model turn), wait for its `command_lifecycle queued` (the message must already be at the CLI, otherwise `nothing_waiting`), send `interrupt {send_now:true, message_uuid:<carrier>}`, treat the old turn's `result` as stopped, treat the carrier's `command_lifecycle started` ... `result` as an internal turn and drop its output. If the user is already typing a follow-up, use that message as the carrier. Handle `send_now:"delivering"` (the CLI moved the wait to the background instead of stopping; the turn then takes the message in and goes on) and `"nothing_waiting"` (nothing happened: fall back to 2 or 3). Only observed on 2.1.304 and documented `@internal` in the schema: re-probe on upgrade.
+2. If the capability is missing or the carrier path fails: plain `interrupt`, and tell the user that it stops sub-agents too (they end as `task_notification status:"stopped"`, show them as stopped, not failed). Background Bash and Monitor survive either way.
+3. Do not forward Esc while background Agents run, and only stop displaying the turn: the model keeps running tools and spending, so this is not a real stop. Not recommended.
+4. Never send `interrupt` when no Harness turn is active (it kills the Agents with no turn to stop, see the first-attempt fixture). Esc while idle is a no-op.
+5. Stopping one Agent on purpose is `stop_task {task_id}`; confirm by its `task_notification`, as in Q4.
+
+Caveat: the Agent's survival was checked for the Agent's own Bash command (and text-only generation for the kill case). An Agent that was between tool calls when `send_now` arrived was not probed; the plain `interrupt` kill of a text-generating Agent (`c-agent-text`) shows that state is not special for that path. Each variant is one run.
 
 ### Q3: frames when a background task finishes while idle
 
@@ -132,6 +173,22 @@ Design meaning: limits can be updated per turn from the notification, but showin
 | `claude-interrupt-monitor.jsonl` | `claude-interrupt-monitor.ts` | Q2 (Monitor) |
 | `claude-steer-now-background.jsonl` | `PROBE_ACTION=now claude-interrupt.ts` | `priority:"now"` |
 | `claude-wake-and-stop-task.jsonl` | `claude-wake.ts` | Q3, Q4 |
+| `claude-q2-base.jsonl` | `PROBE_VARIANT=base claude-interrupt-variants.ts` | Q2 follow-up |
+| `claude-q2-a-uuid.jsonl` | `PROBE_VARIANT=a-uuid claude-interrupt-variants.ts` | Q2 follow-up |
+| `claude-q2-a-uuid-sendnow.jsonl` | `PROBE_VARIANT=a-uuid-sendnow claude-interrupt-variants.ts` | Q2 follow-up |
+| `claude-q2-b-noqueue.jsonl` | `PROBE_VARIANT=b-noqueue claude-interrupt-variants.ts` | Q2 follow-up |
+| `claude-q2-b-sendnow-empty.jsonl` | `PROBE_VARIANT=b-sendnow-empty claude-interrupt-variants.ts` | Q2 follow-up |
+| `claude-q2-b-sendnow-bash.jsonl` | `PROBE_VARIANT=b-sendnow-bash claude-interrupt-variants.ts` | Q2 follow-up |
+| `claude-q2-b-sendnow-text.jsonl` | `PROBE_VARIANT=b-sendnow-text claude-interrupt-variants.ts` | Q2 follow-up |
+| `claude-q2-b-sendnow-slash.jsonl` | `PROBE_VARIANT=b-sendnow-slash claude-interrupt-variants.ts` | Q2 follow-up |
+| `claude-q2-c-agent-text.jsonl` | `PROBE_VARIANT=c-agent-text claude-interrupt-variants.ts` | Q2 follow-up |
+| `claude-q2-d-moved.jsonl` | `PROBE_VARIANT=d-moved claude-interrupt-variants.ts` | Q2 follow-up |
+| `claude-q2-e-now-text.jsonl` | `PROBE_VARIANT=e-now-text claude-interrupt-variants.ts` | Q2 follow-up |
+| `claude-q2-e-now-slash.jsonl` | `PROBE_VARIANT=e-now-slash claude-interrupt-variants.ts` | Q2 follow-up |
+| `claude-q2-f-spared.jsonl` | `PROBE_VARIANT=f-spared claude-interrupt-variants.ts` | Q2 follow-up |
+| `claude-q2-f-reason.jsonl` | `PROBE_VARIANT=f-reason claude-interrupt-variants.ts` | Q2 follow-up |
+| `claude-q2-entry-desktop.jsonl` | `PROBE_VARIANT=entry-desktop claude-interrupt-variants.ts` | Q2 follow-up |
+| `claude-q2-entry-local-agent.jsonl` | `PROBE_VARIANT=entry-local-agent claude-interrupt-variants.ts` | Q2 follow-up |
 | `codex-two-turns-one-connection.jsonl` | `codex-live.ts` | Q5, Q7 |
 | `codex-background-terminal-experimental.jsonl` | `codex-background-terminal.ts` | Q6 |
 | `codex-background-terminal-no-capability.jsonl` | `codex-background-terminal.ts` | Q6 |
