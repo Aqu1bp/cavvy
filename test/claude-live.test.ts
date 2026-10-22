@@ -466,6 +466,8 @@ describe("background work across turns", () => {
         expect(await run("start it")).toBe("done");
         await until(() => logLines().some((l) => l.backgroundAsk), 5000, "the sub-agent's ask");
         expect(asked.map((r) => r.tool.name)).toEqual(["Bash"]);
+        // A background sub-agent's: the turn's end or Esc doesn't withdraw it (#295 review, P1-1).
+        expect(asked[0]!.background).toBe(true);
         expect(logLines().find((l) => l.backgroundAsk).backgroundAsk).toBe("allow");
         await until(() => wakes.length > 0, 5000, "its report");
     });
@@ -487,6 +489,8 @@ describe("background work across turns", () => {
         await until(() => logLines().some((l) => l.backgroundAsk), 5000, "the sub-agent's ask");
         // Asked of the user, not refused because the turn that started the sub-agent was stopped.
         expect(asked.map((r) => r.tool.name)).toEqual(["Bash"]);
+        // A background sub-agent's: the turn's end or Esc doesn't withdraw it (#295 review, P1-1).
+        expect(asked[0]!.background).toBe(true);
         expect(logLines().find((l) => l.backgroundAsk).backgroundAsk).toBe("allow");
         await until(() => wakes.length > 0, 5000, "its report");
     });
