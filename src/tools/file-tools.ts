@@ -53,7 +53,12 @@ function notText(buf: Uint8Array): keyof typeof NOT_TEXT | undefined {
 
 /** A file's text for Edit and Write, or why they refuse it: decoding it and writing it back as UTF-8 would change bytes outside the edit. */
 async function readEditable(abs: string, label: string): Promise<{ text: string } | { error: string }> {
-    const buf = await readFile(abs);
+    let buf: Buffer;
+    try {
+        buf = await readFile(abs);
+    } catch (e) {
+        return { error: `Couldn't read ${label} to check its encoding (${(e as Error).message}), so nothing was written.` };
+    }
     const why = notText(buf);
     if (!why) return { text: buf.toString("utf-8") };
     return {
@@ -169,6 +174,16 @@ function renderNotebook(json: string, abs: string): ToolResult {
     }
 }
 
+/** What Write puts in a file: an existing one keeps its CRLF line breaks and byte-order mark. The preview shows the same. */
+async function prepareWrite(abs: string, content: string, label: string): Promise<{ existed: boolean; before: string; content: string } | { error: string }> {
+    if (!existsSync(abs)) return { existed: false, before: "", content };
+    const r = await readEditable(abs, label);
+    if ("error" in r) return r;
+    if (usesCrlf(r.text)) content = content.replace(/\r?\n/g, "\r\n");
+    if (r.text.startsWith("\uFEFF") && content && !content.startsWith("\uFEFF")) content = "\uFEFF" + content;
+    return { existed: true, before: r.text, content };
+}
+
 // ---------------------------------------------------------------------------
 
 export const WriteTool: Tool<{ file_path: string; content: string }> = {
@@ -195,31 +210,23 @@ Usage:
         const abs = expandPath(input.file_path, ctx.state.cwd);
         const stale = await checkFresh(ctx, abs);
         if (stale || !existsSync(abs)) return stale;
-        const r = await readEditable(abs, rel(abs, ctx)).catch(() => ({ text: "" }));
+        const r = await readEditable(abs, rel(abs, ctx));
         return "error" in r ? r.error : undefined;
     },
     async preview(input, ctx) {
         const abs = expandPath(input.file_path, ctx.state.cwd);
-        const before = existsSync(abs) ? await readFile(abs, "utf-8").catch(() => "") : "";
-        return { diff: { path: rel(abs, ctx), before, after: input.content } };
+        const w = await prepareWrite(abs, input.content, rel(abs, ctx));
+        if ("error" in w) return undefined;
+        return { diff: { path: rel(abs, ctx), before: w.before, after: w.content } };
     },
     async run(input, ctx) {
         const abs = expandPath(input.file_path, ctx.state.cwd);
         // Again: the user may have saved the file while the approval prompt was open.
         const stale = await checkFresh(ctx, abs);
         if (stale) return { content: stale, isError: true };
-        const existed = existsSync(abs);
-        let before = "";
-        let content = input.content;
-        if (existed) {
-            // A file it can't read is overwritten as before.
-            const r = await readEditable(abs, rel(abs, ctx)).catch(() => ({ text: "" }));
-            if ("error" in r) return { content: r.error, isError: true };
-            before = r.text;
-            // A rewrite keeps the file's CRLF line breaks and its byte-order mark.
-            if (usesCrlf(before)) content = content.replace(/\r?\n/g, "\r\n");
-            if (before.startsWith("\uFEFF") && content && !content.startsWith("\uFEFF")) content = "\uFEFF" + content;
-        }
+        const w = await prepareWrite(abs, input.content, rel(abs, ctx));
+        if ("error" in w) return { content: w.error, isError: true };
+        const { existed, before, content } = w;
         await mkdir(dirname(abs), { recursive: true });
         await writeTracked(ctx.state, abs, content);
         await recordRead(ctx, abs, false);
@@ -260,8 +267,6 @@ export function applyEdit(text: string, e: EditSpec, label: string): { text: str
             count = c2;
         }
     }
-    // Lines the edit adds end like the file's, even when old_string is a single line.
-    if (crlf) newS = newS.replace(/\r?\n/g, "\r\n");
     if (count === 0) {
         const hint = /^\s*\d+\t/m.test(oldS) ? " It looks like old_string contains line-number prefixes from Read output; remove them." : "";
         return { error: `old_string was not found in ${label}. It must match the file exactly, including whitespace and indentation.${hint} Read the file again if unsure.` };
@@ -269,9 +274,27 @@ export function applyEdit(text: string, e: EditSpec, label: string): { text: str
     if (count > 1 && !e.replace_all) {
         return { error: `old_string appears ${count} times in ${label}. Add more surrounding context to make it unique, or set replace_all to true to change every occurrence.` };
     }
-    if (e.replace_all) return { text: text.split(oldS).join(newS) };
-    const idx = text.indexOf(oldS);
-    return { text: text.slice(0, idx) + newS + text.slice(idx + oldS.length) };
+    let out = "";
+    let at = 0;
+    for (let idx = text.indexOf(oldS); idx !== -1; idx = e.replace_all ? text.indexOf(oldS, at) : -1) {
+        let start = idx;
+        let end = idx + oldS.length;
+        let rep = newS;
+        // A match that starts or ends inside a CRLF ("\nb" in "a\r\nb") takes the whole line break, so no lone or doubled CR is left.
+        if (oldS.startsWith("\n") && text[start - 1] === "\r") {
+            start--;
+            if (rep.startsWith("\n")) rep = "\r" + rep;
+        }
+        if (oldS.endsWith("\r") && text[end] === "\n") {
+            end++;
+            if (rep.endsWith("\r")) rep += "\n";
+        }
+        // Lines the edit adds end like the file's, even when old_string is a single line.
+        if (crlf) rep = rep.replace(/\r?\n/g, "\r\n");
+        out += text.slice(at, start) + rep;
+        at = end;
+    }
+    return { text: out + text.slice(at) };
 }
 
 function countOccurrences(text: string, sub: string): number {
@@ -417,7 +440,7 @@ Same rules as Edit: Read the file first, match text exactly, make each old_strin
     },
     async preview(input, ctx) {
         const abs = expandPath(input.file_path, ctx.state.cwd);
-        const file = await readEditable(abs, rel(abs, ctx)).catch(() => ({ text: "" }));
+        const file = await readEditable(abs, rel(abs, ctx));
         if ("error" in file) return undefined;
         const before = file.text;
         let text = before;

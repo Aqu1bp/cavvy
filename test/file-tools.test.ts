@@ -2,9 +2,10 @@
 // that isn't UTF-8 is refused before anything is written (#258), and the line
 // breaks an edit adds follow the file's CRLF convention and byte-order mark (#262).
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { readFileSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
+import * as fsPromises from "fs/promises";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
@@ -85,6 +86,24 @@ describe("a file that isn't UTF-8 is refused, not corrupted", () => {
         }
     });
 
+    test("Write refuses an existing file it can't read, since it can't check the encoding", async () => {
+        const { file_path, ctx } = await readFixture("latin1.txt", LATIN1);
+        // Made write-only after Read: its mtime and size stay the same.
+        const spy = spyOn(fsPromises, "readFile").mockImplementation((async () => {
+            throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+        }) as any);
+        try {
+            const input = { file_path, content: "caf\uFFFD\nnew\n" };
+            expect(await WriteTool.validate!(input, ctx)).toContain("EACCES");
+            const r = await WriteTool.run(input, ctx);
+            expect(r.isError).toBe(true);
+            expect(r.content).toContain("nothing was written");
+        } finally {
+            spy.mockRestore();
+        }
+        expect(hex(file_path)).toBe(LATIN1.toString("hex"));
+    });
+
     test("an edit to a UTF-8 file leaves its other non-ASCII bytes alone", async () => {
         const before = "café — naïve 日本\nold\n";
         const { file_path, ctx } = await readFixture("utf8.txt", before);
@@ -110,6 +129,17 @@ describe("line endings and the byte-order mark", () => {
         expect(applyEdit("k\r\nk\r\n", { old_string: "k", new_string: "k\nk2", replace_all: true }, "x")).toEqual({ text: "k\r\nk2\r\nk\r\nk2\r\n" });
         // new_string that already has CRLF isn't doubled.
         expect(applyEdit("one\r\ntwo\r\n", { old_string: "one", new_string: "one\r\nzero" }, "x")).toEqual({ text: "one\r\nzero\r\ntwo\r\n" });
+    });
+
+    test("a match that starts or ends inside a CRLF takes the whole line break", () => {
+        expect(applyEdit("a\r\nb\r\n", { old_string: "\nb", new_string: "\nx\nb" }, "x")).toEqual({ text: "a\r\nx\r\nb\r\n" });
+        // Joining lines leaves no lone CR.
+        expect(applyEdit("a\r\nb\r\n", { old_string: "\nb", new_string: "b" }, "x")).toEqual({ text: "ab\r\n" });
+        expect(applyEdit("a\r\nb\r\n", { old_string: "a\r", new_string: "x\r" }, "x")).toEqual({ text: "x\r\nb\r\n" });
+        expect(applyEdit("a\r\nb\r\n", { old_string: "a\r", new_string: "x" }, "x")).toEqual({ text: "xb\r\n" });
+        // Every replace_all occurrence, also in a mostly-LF file.
+        expect(applyEdit("a\r\nb\r\nc", { old_string: "\n", new_string: "\n\n", replace_all: true }, "x")).toEqual({ text: "a\r\n\r\nb\r\n\r\nc" });
+        expect(applyEdit("a\r\nb\nc\nd\n", { old_string: "\n", new_string: " ", replace_all: true }, "x")).toEqual({ text: "a b c d " });
     });
 
     test("the dominant ending wins, and lines outside the edit keep theirs", () => {
@@ -141,6 +171,15 @@ describe("line endings and the byte-order mark", () => {
         const r = await WriteTool.run({ file_path, content: "new\nlines\n" }, ctx);
         expect(r.isError).toBeFalsy();
         expect(readFileSync(file_path, "utf-8")).toBe("﻿new\r\nlines\r\n");
+    });
+
+    test("Write's preview shows what it writes", async () => {
+        const { file_path, ctx } = await readFixture("preview.txt", "\uFEFFold\r\nlines\r\n");
+        const input = { file_path, content: "new\nlines\n" };
+        const preview = await WriteTool.preview!(input, ctx);
+        await WriteTool.run(input, ctx);
+        expect(preview?.diff?.after).toBe(readFileSync(file_path, "utf-8"));
+        expect(preview?.diff?.before).toBe("\uFEFFold\r\nlines\r\n");
     });
 
     test("Write leaves an LF file's and a new file's content as given", async () => {
