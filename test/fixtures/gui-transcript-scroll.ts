@@ -39,6 +39,11 @@ const skippedAt = new Map<string, number>();
 let omitPromptPart = false;
 const has = (n: Node, cls: string) => n.props.class?.split(" ").includes(cls);
 const height = (n: Node): number => n.props["data-turn"] ? (n.props["data-far"] !== undefined ? skippedAt.get(n.props["data-turn"]) : undefined) ?? turnHeights.get(n.props["data-turn"]) ?? 200 : has(n, "earlier") ? 50 : has(n, "transcript-end") ? 500 : n.children.reduce((sum, child) => sum + height(child), 0);
+/** Where a running glide draws a row of the column (and what's in it): shiftNow down, if it's one the glide moves. */
+const drawn = (n: Node): number => {
+    for (let x: Node | undefined = n; x && !has(x, "transcript-col"); x = x.parent) if (glides.some((g) => g.el === x && g.anim.playState === "running")) return shiftNow;
+    return 0;
+};
 const absolute = (n: Node): number => {
     if (!n.parent || has(n, "transcript-col")) return 0;
     return absolute(n.parent) + n.parent.children.slice(0, n.parent.children.indexOf(n)).reduce((sum, child) => sum + height(child), 0);
@@ -65,7 +70,7 @@ const decorate = (n: Node): any => Object.assign(n, {
         glides.push({ el: n, from: Number(/translateY\((-?[\d.]+)px\)/.exec(keyframes[0]!.transform)?.[1]), duration: options.duration, anim });
         return anim;
     },
-    getBoundingClientRect: () => ({ top: has(n, "transcript") ? 0 : absolute(n) - top, bottom: absolute(n) - top + height(n), height: height(n) }),
+    getBoundingClientRect: () => ({ top: has(n, "transcript") ? 0 : absolute(n) - top + drawn(n), bottom: absolute(n) - top + drawn(n) + height(n), height: height(n) }),
     querySelectorAll: (selector: string) => all(n).slice(1).filter((child) => matches(child, selector)),
     querySelector: (selector: string) => all(n).slice(1).find((child) => matches(child, selector)),
     scrollTo: (options: any) => { scrollBehavior = options.behavior; scrollTarget = Math.max(0, Math.min(options.top, height(n) - viewportHeight)); if (!deferSmooth || options.behavior !== "smooth") (n as any).scrollTop = options.top; },
@@ -130,7 +135,7 @@ const scope = {
         p.onElement?.(n);
         if (omitPromptPart && p.turn.id === "turn-5") return n;
         const part = create("div"); part.props["data-find"] = "prompt";
-        part.getBoundingClientRect = () => ({ top: absolute(n) - top + partShift, bottom: absolute(n) - top + height(n), height: height(n) - partShift });
+        part.getBoundingClientRect = () => ({ top: absolute(n) - top + drawn(n) + partShift, bottom: absolute(n) - top + drawn(n) + height(n), height: height(n) - partShift });
         renderer.insert(n, part);
         return n;
     },
@@ -300,6 +305,27 @@ try {
     const count = glides.length;
     resize(); flush();
     assert.deepEqual([scrollWrites, glides.length], [glideWrites, count], "unchanged, nothing is written and nothing glides");
+    // Scrolled away while a glide runs (Home, the scrollbar): the turn read there isn't gliding, so where it's
+    // drawn is where it is, and when the glide ends nothing moves.
+    turnHeights.set("turn-44", 1700); resize(); flush();
+    assert.equal(glides.at(-1)!.anim.playState, "running");
+    shiftNow = 100;
+    scroller().props.onKeyDown({ key: "Home" });
+    scroll(0);
+    shiftNow = 0; glides.forEach((g) => g.anim.cancel());
+    resize();
+    assert.equal(top, 0, "a reading taken away from a running glide doesn't move when it ends");
+    // And read within the glide's rows, its translate isn't taken for the reader's place.
+    scroll(bottom()); resize(); flush(); scroller().props.onScroll();
+    turnHeights.set("turn-44", 1800); resize(); flush();
+    shiftNow = 60;
+    scroller().props.onWheel({ deltaY: -3 });
+    scroll(bottom() - 300);
+    const gliding = turn("turn-44").getBoundingClientRect().top;
+    shiftNow = 0; glides.forEach((g) => g.anim.cancel());
+    resize();
+    assert.equal(turn("turn-44").getBoundingClientRect().top, gliding - 60, "a turn read mid-glide stays where it is once the glide ends");
+    scroll(bottom()); scroller().props.onScroll();
     // The reader scrolling up, however little, unpins it at once; growth below then leaves them where they are.
     scroller().props.onWheel({ deltaY: -3 });
     assert.ok(button("jump"), "a scroll up, however small, unpins it");

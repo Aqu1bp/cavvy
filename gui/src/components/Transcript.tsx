@@ -153,18 +153,21 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         });
     };
 
+    /** How far a running glide draws this row of the column from its place: rows out of its reach don't move. */
+    const shiftOf = (row: Element) => (glides.some((g) => g.el === row) ? shift() : 0);
     const capture = (): ScrollAnchor | undefined => {
         if (!scroller || !content) return;
-        // Where things are, not where a running glide draws them.
-        const top = scroller.getBoundingClientRect().top + shift();
-        const turn = [...content.querySelectorAll<HTMLElement>("[data-turn]")].find((el) => el.getBoundingClientRect().bottom > top);
+        // Where things are, not where a running glide draws them (the reader may have scrolled away from it).
+        const top = scroller.getBoundingClientRect().top;
+        const turn = [...content.querySelectorAll<HTMLElement>("[data-turn]")].find((el) => el.getBoundingClientRect().bottom - shiftOf(el) > top);
         if (!turn) return;
+        const moved = shiftOf(turn);
         // A block anchor also survives replacing the live head with a work-log toggle.
-        const part = [...turn.querySelectorAll<HTMLElement>("[data-find], .worklog")].find((el) => el.getBoundingClientRect().bottom > top);
+        const part = [...turn.querySelectorAll<HTMLElement>("[data-find], .worklog")].find((el) => el.getBoundingClientRect().bottom - moved > top);
         return {
-            turnId: turn.dataset.turn!, offset: turn.getBoundingClientRect().top - top,
+            turnId: turn.dataset.turn!, offset: turn.getBoundingClientRect().top - moved - top,
             part: part?.dataset.find ?? (part ? `worklog:${[...turn.querySelectorAll(".worklog")].indexOf(part)}` : undefined),
-            partOffset: part ? part.getBoundingClientRect().top - top : undefined,
+            partOffset: part ? part.getBoundingClientRect().top - moved - top : undefined,
         };
     };
     const restore = () => {
@@ -180,7 +183,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         // A remounted prompt may be clamped again. If the saved reading point
         // no longer fits, show this anchor's top instead of skipping past it.
         const offset = savedOffset <= -box.height ? 0 : savedOffset;
-        const next = anchoredTop(scroller.scrollTop, box.top - shift() - scroller.getBoundingClientRect().top, offset);
+        const next = anchoredTop(scroller.scrollTop, box.top - shiftOf(turn) - scroller.getBoundingClientRect().top, offset);
         // A no-op write would cancel an in-flight smooth Jump to latest.
         if (Math.abs(next - scroller.scrollTop) > 0.5) scroller.scrollTop = next;
         wrote();
