@@ -222,10 +222,16 @@ export interface BackendTurn {
     /** With a /goal command as the prompt: what Harness would have put before it (the conversation so far), kept apart. */
     goalContext?: string;
     /**
-     * The prompt isn't only the user's own words (an event a watch raised, or what the harness adds before
-     * them): Claude Code reads it as written, with no @mention expansion or slash command.
+     * The prompt isn't the user's at all (a turn for wakes: an event a watch raised, others' words): Claude Code
+     * reads it as written, with no @mention expansion or slash command, and records it as not the user's.
      */
     synthetic?: boolean;
+    /**
+     * What Harness put before the user's words at the start of `prompt` (the conversation so far, its notes to the
+     * model). A backend that sends blocks sends it as one of its own before theirs: Claude Code reads only the last
+     * text block as what the user typed (a /command), so others' words in it aren't taken as the user's.
+     */
+    preamble?: string;
     images: ImagePart[];
     /** PDFs, for a backend that reads them (Claude Code); others get a note in the prompt instead. */
     documents?: PdfPart[];

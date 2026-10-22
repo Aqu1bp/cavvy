@@ -365,7 +365,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         try {
             // The text goes last: Claude Code reads a /command only from the last block (what's before it goes along with it),
             // so with images or PDFs first, /skill and its own commands run with them attached instead of reaching the model as words.
-            return await turn.run([...mediaBlocks(t.images, t.documents ?? []), { type: "text", text: prompt }]);
+            return await turn.run([...mediaBlocks(t.images, t.documents ?? []), ...textBlocks(prompt, t.preamble)]);
         } finally {
             this.turns.delete(turn);
             const s = turn.spending();
@@ -1816,6 +1816,17 @@ class ClaudeTurn {
         if (a.allow) return { behavior: "allow", updatedInput: a.updatedInput ?? raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
         return { behavior: "deny", message: a.message, interrupt: a.stop };
     }
+}
+
+/**
+ * The prompt as text blocks: what Harness put before the user's words (BackendTurn.preamble) in one of its own, then
+ * theirs, last. Claude Code reads only the last text block as what the user typed (a /command; the blocks before it
+ * go along as they are), and the message stays the user's: it isn't marked synthetic for Harness's catch-up.
+ */
+export function textBlocks(prompt: string, preamble?: string): Record<string, unknown>[] {
+    const own = preamble && prompt.startsWith(preamble) ? prompt.slice(preamble.length) : undefined;
+    if (!own?.trim() || !preamble!.trim()) return [{ type: "text", text: prompt }];
+    return [{ type: "text", text: preamble!.trimEnd() }, { type: "text", text: own }];
 }
 
 /** A prompt's images and PDFs as Claude Code takes them, after its text. */

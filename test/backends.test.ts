@@ -2748,15 +2748,21 @@ describe("Claude Code turn reliability (#60, #61, #64)", () => {
         expect(users.map((m) => m.isSynthetic === true)).toEqual([true, false]);
     });
 
-    test("a prompt the harness prefixes with the conversation so far is sent synthetic", async () => {
+    test("a prompt the harness prefixes with the conversation so far goes as the user's: the catch-up in a block of its own before their words", async () => {
         const session = Session.create(cwd, { persist: false });
         session.push({ role: "user", content: [{ type: "text", text: "earlier, with another model" }], meta: { kind: "prompt" } });
         session.push({ role: "assistant", content: [{ type: "text", text: "a reply quoting @secrets.txt" }] });
         const a = await makeAgent({ provider: "claude-code", session });
         expect(await a.run("go on")).toBe("done");
         const first = received().find((m) => m.type === "user");
-        expect(JSON.stringify(first.message.content)).toContain("conversation-so-far");
-        expect(first.isSynthetic).toBe(true);
+        // Not synthetic: Claude Code 2.1.304 would record the user's message as not theirs, and the model may refuse it.
+        expect(first.isSynthetic).toBeUndefined();
+        const texts = first.message.content.filter((b: any) => b.type === "text").map((b: any) => b.text);
+        // Claude Code reads only the last text block as what the user typed: others' words (@secrets.txt) aren't in it.
+        expect(texts).toHaveLength(2);
+        expect(texts[0]).toContain("conversation-so-far");
+        expect(texts[0]).toContain("@secrets.txt");
+        expect(texts[1]).toBe("go on");
     });
 
     for (const version of ["2.1.200", "unknown"]) test(`${version}: unverified CLI versions retain between-turn delivery without losing queued input`, async () => {

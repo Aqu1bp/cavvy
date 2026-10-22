@@ -1947,6 +1947,15 @@ export class Agent {
         return `<conversation-so-far>\n${intro}${shortened}\n\n${transcript}\n</conversation-so-far>\n\n${text}`;
     }
 
+    /**
+     * What Harness put before the user's words in a backend prompt (the conversation so far, its notes): kept apart
+     * (BackendTurn.preamble), so the prompt still goes as the user's own message. Marked synthetic, Claude Code 2.1.304
+     * records it as not the user's ("[MESSAGE FROM NON-USER SOURCE …]"), and the model may refuse what they asked.
+     */
+    private preamble(sent: string, own: string): Pick<BackendTurn, "preamble"> {
+        return sent !== own && sent.endsWith(own) && sent.length > own.length ? { preamble: sent.slice(0, sent.length - own.length) } : {};
+    }
+
     /** `woken`: the turn is for wakes, so its prompt carries others' words (see BackendTurn.synthetic). */
     private async runBackend(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal, woken = false, adopt?: BackendWake): Promise<TurnEndReason> {
         if (adopt && (!backend.adoptsTurns || adopt.provider !== this.model.provider)) return this.cannotAdopt(adopt);
@@ -2220,7 +2229,7 @@ export class Agent {
                 if (adopting) this.adoptedUnsent = { provider, text: unsent };
                 this.modelTookPrompt = false;
                 try {
-                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...sent, synthetic: woken || sent.prompt !== prompt, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork, ...(adopting ? { adopt } : {}) });
+                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...sent, ...this.preamble(sent.prompt, prompt), synthetic: woken, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork, ...(adopting ? { adopt } : {}) });
                     returned = result;
                 } finally {
                     this.adoptedUnsent = undefined;
@@ -2241,7 +2250,7 @@ export class Agent {
                     this.session.forgetBackendSession(provider);
                     this.emit({ type: "notice", level: "warn", message: `${redact(result.error ?? `Couldn't continue the earlier ${name} session`)}. Starting a new one with this conversation as context.` });
                     const fresh = toSend();
-                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...fresh, synthetic: woken || fresh.prompt !== prompt, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: undefined });
+                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...fresh, ...this.preamble(fresh.prompt, prompt), synthetic: woken, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: undefined });
                 }
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);
