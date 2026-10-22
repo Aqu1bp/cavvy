@@ -48,13 +48,15 @@
     transform: scale(0.94);
 }
 
-/* Level with the traffic lights; the buttons end at the rail's far edge. */
+/* On the window's top line (--top-line, tokens.css) with the traffic lights
+   and the title bar: the rail starts --win-pad down, so this row is twice the
+   rest of the way tall. The buttons end at the rail's far edge. */
 .side-top {
     display: flex;
     align-items: center;
     gap: 2px;
-    height: 38px;
-    margin-bottom: 14px;
+    height: calc(2 * (var(--top-line) - var(--win-pad, 8px)));
+    margin-bottom: 6px;
     padding-right: 4px;
     flex: none;
 }

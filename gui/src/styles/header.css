@@ -3,6 +3,10 @@
    The conversation scrolls under a soft blurred edge, like macOS's scroll
    edge effect. (Where the bar sits in the sheet is the shell's.) */
 
+/* Its content sits on the window's top line (--top-line, tokens.css), level
+   with the traffic lights and the rail's buttons. The bar starts --win-pad
+   down the window, so its centre is on the line at the default height; a
+   shorter bar (compact density) pads its top by the difference instead. */
 .header {
     position: relative;
     z-index: 5;
@@ -10,7 +14,7 @@
     align-items: center;
     gap: 12px;
     height: var(--header-h);
-    padding: 0 9px 0 20px;
+    padding: max(0px, 2 * (var(--top-line) - var(--win-pad, 8px)) - var(--header-h)) 9px 0 20px;
     flex: none;
     min-width: 0;
     user-select: none;
@@ -31,12 +35,21 @@
     mask-image: linear-gradient(#000 55%, transparent);
 }
 
-/* The rail's two buttons, here while it's hidden or floating; clear of the traffic lights (macOS). */
+/* The rail's two buttons, here while it's hidden or floating: on the lights'
+   line, a fixed gap after them (macOS), then a hairline before the title. */
 .bar-rail {
     display: none;
     align-items: center;
     gap: 2px;
-    margin-right: 4px;
+    flex: none;
+}
+
+.bar-rail::after {
+    content: "";
+    width: 1px;
+    height: 16px;
+    margin: 0 6px;
+    background: var(--line-strong);
     flex: none;
 }
 
@@ -45,9 +58,11 @@
     padding-left: 12px;
 }
 
+/* The lights end 78px from the window's left (x 18, three 14px buttons 23px apart, measured in
+   the app); the sheet starts 8px in, so the buttons start 14px after them, as in the mockup. */
 .header.traffic.rail-off,
 [data-rail="overlay"] .header.traffic {
-    padding-left: 72px;
+    padding-left: 84px;
 }
 
 .header.rail-off .bar-rail,

@@ -33,7 +33,8 @@
 .toasts {
     position: fixed;
     z-index: 80;
-    top: calc(var(--bar-top, 8px) + (var(--header-h) - 36px) / 2);
+    /* Centred on the title bar's content, which sits on the window's top line (header.css). */
+    top: calc(var(--bar-top, 8px) + var(--top-line) - var(--win-pad, 8px) - 18px);
     left: var(--bar-start, calc(var(--sidebar-w) + 8px));
     right: max(8px, min(calc(var(--bar-end, 190px) + 8px), calc(100vw - var(--bar-start, calc(var(--sidebar-w) + 8px)) - 240px)));
     display: flex;

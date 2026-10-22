@@ -47,6 +47,11 @@
     --review-w: 720px;
     --column-w: 736px;
     --header-h: 52px;
+    /* One centre line across the top of the window, from its top edge: the
+       traffic lights (desktop/src-tauri/tauri.conf.json, trafficLightPosition),
+       the rail's two buttons and the title bar all sit on it. Fixed: the
+       lights don't move with the density, so a shorter title bar keeps it too. */
+    --top-line: 34px;
     --row-h: 34px;
     --gap: 1;
 
