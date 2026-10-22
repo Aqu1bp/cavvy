@@ -42,7 +42,7 @@ import type { PermissionMode } from "../permissions/modes";
 import type { ToolDisplay } from "../tools/types";
 import { diffLines, diffStats } from "../util/diff";
 import { parseRule, pathPattern } from "../permissions/rules";
-import { paths } from "../config/paths";
+import { APP_TITLE, paths } from "../config/paths";
 import { redact } from "../util/redact";
 import { cliCommandNames } from "../commands/custom";
 import { formatSkill } from "../agent/skills";
@@ -578,7 +578,7 @@ class ClaudeTurn {
                 const w = left.find((t) => t.toolUseId === id || t.id === id);
                 if (!w) out[id] = this.reportedBackground.has(id) ? "stopped" : "unknown";
                 else if (!w.id || this.finishing) out[id] = "not_stoppable";
-                else out[id] = await this.stopTask(w, "stopped by the user", true);
+                else out[id] = await this.stopTask(w, "", true);
             }),
         );
         return out;
@@ -735,7 +735,7 @@ class ClaudeTurn {
         const left = this.inBackground();
         // Only Harness's own stops end the run when they go unanswered; the user's never do.
         if (this.stopFailed || [...this.pendingStops.values()].some((p) => !p.byUser && Date.now() - p.since >= backgroundTiming.stopTimeoutMs)) {
-            this.noteStopped(left, "Claude Code did not confirm a task stop; ending its process");
+            this.noteStopped(left, "harness", "because Claude Code did not confirm a task stop, so its process was ended");
             this.toldStopped = true;
             return true;
         }
@@ -752,15 +752,15 @@ class ClaudeTurn {
             const id = task.id!;
             if (!this.commandWaitingSince.has(id)) this.commandWaitingSince.set(id, now);
             const until = ownDeadline(task);
-            if (task.command && longLivedClaudeCommand(task.command)) stopping.push({ task, why: "recognized long-lived server/watcher" });
+            if (task.command && longLivedClaudeCommand(task.command)) stopping.push({ task, why: "without waiting: a recognized long-lived server/watcher" });
             // One with a timeout of its own runs until it's up, as in Claude Code; the setting changes only the default.
             else if (until !== undefined) {
-                if (now >= until) stopping.push({ task, why: `its background timeout of ${span(until - task.started!)} ran out` });
-            } else if (now - this.commandWaitingSince.get(id)! >= grace) stopping.push({ task, why: `background grace expired after ${grace / 1000}s` });
+                if (now >= until) stopping.push({ task, why: `when its background timeout of ${span(until - task.started!)} ran out` });
+            } else if (now - this.commandWaitingSince.get(id)! >= grace) stopping.push({ task, why: `when its background grace expired after ${grace / 1000}s` });
         }
         if (stopping.length) {
             if (stopping.length === left.length) {
-                for (const { task, why } of stopping) this.noteStopped([task], why);
+                for (const { task, why } of stopping) this.noteStopped([task], "harness", why);
                 this.toldStopped = true;
                 return true;
             }
@@ -786,12 +786,12 @@ class ClaudeTurn {
             const ms = Math.min(...over.map(capOf));
             // So too while a finished command's report is still due: stop the rest by task id and let that turn come.
             if (over.length < left.length || (this.reportsDue && over.every((t) => t.id))) {
-                for (const task of over) this.stopTask(task, `waited ${span(ms)}, the limit for background work`);
+                for (const task of over) this.stopTask(task, `after waiting ${span(ms)}, its limit for background work`);
                 return false;
             }
             this.toldStopped = true;
             this.rememberStopped(left);
-            this.sink.emit({ type: "notice", level: "warn", message: `Stopped waiting for ${describeBackground(left)} after ${span(ms)}. ${left.length === 1 ? "It was" : "They were"} stopped with Claude Code, so ${left.length === 1 ? "its report" : "their reports"} won't come.` });
+            this.sink.emit({ type: "notice", level: "warn", message: `${APP_TITLE} stopped ${describeBackground(left)} after waiting ${span(ms)}, its limit for background work, and Claude Code with ${left.length === 1 ? "it" : "them"}. ${left.length === 1 ? "It won't" : "They won't"} report back.` });
             return true;
         }
         this.stopWaiting();
@@ -874,10 +874,16 @@ class ClaudeTurn {
         for (const t of tasks) this.stoppedBackground.add(`${t.agent ? "sub-agent" : t.monitor ? "background monitor" : t.commandTask ? "background command" : "background task"}: ${t.label}`);
     }
 
-    private noteStopped(tasks: BackgroundWork[], why: string) {
+    /**
+     * Say that background tasks were stopped, and by whom (#285): Harness (`why`: at a limit, or a command's own
+     * timeout), the user (their Stop, or Esc), or the process ending under them.
+     */
+    private noteStopped(tasks: BackgroundWork[], by: "harness" | "user" | "esc" | "process", why = "") {
         if (!tasks.length) return;
         this.rememberStopped(tasks);
-        this.sink.emit({ type: "notice", level: "warn", message: `Stopped ${describeBackground(tasks)} (${why}). They will not produce further results.` });
+        const what = describeBackground(tasks);
+        const said = by === "harness" ? `${APP_TITLE} stopped ${what}${why ? ` ${why}` : ""}.` : by === "user" ? `You stopped ${what}.` : by === "esc" ? `Stopped ${what} when you pressed Esc.` : `Claude Code's process ended, and with it ${what}.`;
+        this.sink.emit({ type: "notice", level: by === "user" ? "info" : "warn", message: `${said} ${tasks.length === 1 ? "It won't" : "They won't"} report back.` });
     }
 
     /**
@@ -914,7 +920,7 @@ class ClaudeTurn {
                 this.stoppedTaskIds.add(id);
                 // A sub-agent stopped (at the overall cap, or by the user): over, without a report.
                 if (task.toolUseId) this.endAgent(task.toolUseId, "aborted");
-                this.noteStopped([task], why);
+                this.noteStopped([task], byUser ? "user" : "harness", why);
                 this.syncBackground();
                 resolve("stopped");
             });
@@ -1088,7 +1094,7 @@ class ClaudeTurn {
             this.sink.emit({ type: "notice", level: "warn", message: `${what} stopped with Claude Code before reporting back.` });
         }
         const remaining = this.inBackground().filter((t) => !t.agent);
-        if (remaining.length && !this.toldStopped) this.noteStopped(remaining, this.aborted ? "interrupted by user" : "Claude Code process ended");
+        if (remaining.length && !this.toldStopped) this.noteStopped(remaining, this.aborted ? "esc" : "process");
         const backgroundStopped = this.stoppedBackground.size ? [...this.stoppedBackground] : undefined;
         // Whatever still ran in the background stopped with the process.
         this.syncBackground(true);

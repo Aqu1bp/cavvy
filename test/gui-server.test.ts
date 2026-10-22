@@ -2453,7 +2453,7 @@ describe("sub-agents", () => {
             const v = await claudeCodeTurn("agent-background-stuck");
             expect(v.agents.map((a) => [a.status, a.report])).toEqual([["stopped", undefined]]);
             const notices = lastTurn(v).blocks.flatMap((b) => (b.t === "notice" ? [b.text] : []));
-            expect(notices.some((n) => /^Stopped waiting for 1 background sub-agent/.test(n))).toBe(true);
+            expect(notices.some((n) => /^Harness stopped 1 background sub-agent \(Map auth\) after waiting/.test(n))).toBe(true);
         } finally {
             Object.assign(backgroundTiming, saved);
         }

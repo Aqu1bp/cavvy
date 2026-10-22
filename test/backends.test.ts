@@ -615,7 +615,7 @@ describe("Claude Code's background work (live test findings)", () => {
             expect(await run("map the auth module")).toBe("done");
             expect(subEnds(events)).toEqual(["aborted"]);
             expect(taskEnd(events).result.isError).toBe(true);
-            expect(notices(events).join("\n")).toMatch(/^warn: Stopped waiting for 1 background sub-agent \(Map auth\)/m);
+            expect(notices(events).join("\n")).toMatch(/^warn: Harness stopped 1 background sub-agent \(Map auth\) after waiting 1s, its limit for background work, and Claude Code with it\. It won't report back\./m);
         } finally {
             Object.assign(backgroundTiming, saved);
         }
@@ -2742,7 +2742,7 @@ describe("Claude Code turn reliability (#60, #61, #64)", () => {
         expect(received().filter((m) => m.request?.subtype === "stop_task").map((m) => m.request.task_id)).toEqual(["background-1"]);
         expect(await done).toBe("done");
         expect(a.agent.backgroundTasks().find((t) => t.id === "background-1")?.status).toBe("stopped");
-        expect(notices(a.events).join("\n")).toContain("stopped by the user");
+        expect(notices(a.events).join("\n")).toContain("info: You stopped 1 background task (Wait for checks). It won't report back.");
         // With its run over, there's nothing left to stop.
         expect(await a.agent.stopBackground(["background-1"])).toEqual({ "background-1": "stopped" });
         expect(await a.agent.stopBackground(["nope"])).toEqual({ nope: "unknown" });
@@ -2799,7 +2799,7 @@ describe("Claude Code turn reliability (#60, #61, #64)", () => {
         try {
             const a = await makeAgent({ provider: "claude-code" });
             expect(await a.run("run checks and wait")).toBe("done");
-            expect(notices(a.events).join("\n")).toMatch(/warn: Stopped 1 background/);
+            expect(notices(a.events).join("\n")).toMatch(/warn: Harness stopped 1 background task \(Wait for checks\) when its background grace expired after 0\.1s\. It won't report back\./);
             const args = starts()[0].argv;
             expect(args[args.indexOf("--append-system-prompt") + 1]).toContain("Background commands and monitors");
         } finally { Object.assign(backgroundTiming, saved); }
@@ -2860,7 +2860,7 @@ describe("Claude Code background grace (#60 follow-up)", () => {
             const start = Date.now();
             expect(await a.run("wait for checks")).toBe("done");
             expect(Date.now() - start).toBeLessThan(3000);
-            expect(notices(a.events).join("\n")).toMatch(/Stopped.*Wait for checks.*grace expired/);
+            expect(notices(a.events).join("\n")).toMatch(/Harness stopped.*Wait for checks.*when its background grace expired/);
             expect(JSON.stringify(session.messages)).toContain("Waiting for checks.");
             const label = `Waiting for background ${scenario.startsWith("shell") ? "command" : "monitor"}: Wait for checks · Esc to stop it`;
             expect(a.events.some((e) => e.type === "activity" && e.text === label)).toBe(true);
@@ -2911,7 +2911,7 @@ describe("Claude Code background grace (#60 follow-up)", () => {
         expect(await done).toBe("aborted");
         expect(Date.now() - start).toBeLessThan(1500);
         expect(JSON.stringify(a.session.messages)).toContain("Waiting for checks.");
-        expect(notices(a.events).join("\n")).toContain("interrupted by user");
+        expect(notices(a.events).join("\n")).toMatch(/Stopped 1 background task \(Wait for checks\) when you pressed Esc\. It won't report back\./);
         process.env.FAKE_SCENARIO = "none";
         expect(await a.run("continue")).toBe("done");
         expect(userTexts().at(-1)).toContain("background command: Wait for checks");
@@ -3017,7 +3017,7 @@ describe("Claude Code background commands' own timeouts (#193)", () => {
             const took = Date.now() - start;
             expect(took).toBeGreaterThanOrEqual(400);
             expect(took).toBeLessThan(3000);
-            expect(notices(a.events).join("\n")).toMatch(/Stopped 1 background task \(Wait for checks\) \(its background timeout of 1s ran out\)/);
+            expect(notices(a.events).join("\n")).toMatch(/Harness stopped 1 background task \(Wait for checks\) when its background timeout of 1s ran out\. It won't report back\./);
             expect(notices(a.events).join("\n")).not.toContain("Stopped waiting for");
         } finally { restore(); }
     });
@@ -3078,8 +3078,8 @@ describe("Claude Code background commands' own timeouts (#193)", () => {
             expect(await a.run("start both")).toBe("done");
             expect(Date.now() - start).toBeLessThan(5000);
             expect(stops()).toEqual(["agent-1"]);
-            expect(notices(a.events).join("\n")).toMatch(/Stopped 1 background sub-agent \(Map auth\) \(waited 1s, the limit for background work\)/);
-            expect(notices(a.events).some((n) => /Stopped.*Wait for checks/.test(n))).toBe(false);
+            expect(notices(a.events).join("\n")).toMatch(/Harness stopped 1 background sub-agent \(Map auth\) after waiting 1s, its limit for background work\. It won't report back\./);
+            expect(notices(a.events).some((n) => /stopped.*Wait for checks/i.test(n))).toBe(false);
             expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
             expect(a.events.some((e) => e.type === "subagent" && e.event.type === "turn_end" && e.event.reason === "aborted")).toBe(true);
             expect(JSON.stringify(a.session.messages.at(-1))).toContain("sub-agent: Map auth");
@@ -3099,7 +3099,7 @@ describe("Claude Code background commands' own timeouts (#193)", () => {
             expect(Date.now() - start).toBeLessThan(5000);
             // The command ran to its end and reported; only then was the sub-agent, now past the cap, stopped.
             expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
-            expect(notices(a.events).some((n) => /Stopped.*Wait for checks/.test(n))).toBe(false);
+            expect(notices(a.events).some((n) => /stopped.*Wait for checks/i.test(n))).toBe(false);
             expect(stops()).toEqual(["agent-1"]);
         } finally { restore(); }
     });
@@ -3127,7 +3127,7 @@ describe("Claude Code background commands' own timeouts (#193)", () => {
         ac.abort();
         expect(await done).toBe("aborted");
         expect(Date.now() - start).toBeLessThan(1500);
-        expect(notices(a.events).join("\n")).toContain("interrupted by user");
+        expect(notices(a.events).join("\n")).toMatch(/Stopped 1 background task \(Wait for checks\) when you pressed Esc\. It won't report back\./);
     });
 });
 
@@ -3144,7 +3144,7 @@ describe("Claude Code reviewed grace fixes", () => {
             const outcome = await a.run("monitor checks", abort.signal);
             expect(outcome).toBe("done");
             expect(JSON.stringify(a.session.messages)).toContain("Monitor notification 2.");
-            expect(notices(a.events).join("\n")).toMatch(/Stopped waiting for.*Watch checks.*after 1s/);
+            expect(notices(a.events).join("\n")).toMatch(/Harness stopped 1 background task \(Watch checks\) after waiting 1s, its limit for background work, and Claude Code with it\./);
             expect(notices(a.events).join("\n")).not.toContain("grace expired");
             expect(a.session.messages.at(-1)).toMatchObject({ role: "user", meta: { kind: "reminder" } });
             expect(JSON.stringify(a.session.messages.at(-1))).toContain("background monitor: Watch checks");
