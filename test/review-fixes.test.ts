@@ -6,7 +6,7 @@
 // git running a repository's fsmonitor.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { basename, dirname, join } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
 
@@ -16,8 +16,9 @@ const { bashRuleMatches, mcpToolMatches } = await import("../src/permissions/rul
 const { PermissionChecker } = await import("../src/permissions/checker");
 const await_import_search = await import("../src/tools/search-tools");
 const { filterRgOutput, searchFilter } = await_import_search;
-const { loadMemory, formatMemory } = await import("../src/agent/memory");
-const { trustForSession } = await import("../src/config/trust");
+const { loadMemory, formatMemory, readHooks, MAX_FILES, MAX_TOTAL_BYTES } = await import("../src/agent/memory");
+const { trustForSession, trustUntilExit, projectConfigSummary } = await import("../src/config/trust");
+const { CASE_INSENSITIVE_FS } = await import("../src/util/files");
 const { Session, redactMessage, redactedJson } = await import("../src/agent/session");
 const { registerSecret, unregisterSecret } = await import("../src/util/redact");
 const { runHooks } = await import("../src/agent/hooks");
@@ -240,6 +241,13 @@ describe("Claude Code's and Codex's global instructions, and @imports (#246)", (
         trustForSession(p);
         return p;
     };
+    /** A project the user trusted themselves (not just for having nothing to protect). */
+    const trusted = () => {
+        const p = tempDir();
+        mkdirSync(join(p, ".git"));
+        trustUntilExit(p);
+        return p;
+    };
     const text = (p: string) => loadMemory(p).map((f) => f.content).join("\n");
 
     test("the user's Claude Code and Codex files load, user before project, rules sorted, path-scoped rules left out", () => {
@@ -294,11 +302,11 @@ describe("Claude Code's and Codex's global instructions, and @imports (#246)", (
         expect(prompt).toContain("Contents of docs/conventions.md (project instructions, checked into the codebase; imported by CLAUDE.md)");
         expect(prompt).not.toContain("WRONG-BASE");
     });
-    test("~ imports, imports outside the project, escaped spaces and trailing punctuation", () => {
+    test("~ imports, imports outside the project in a folder the user trusted, escaped spaces and trailing punctuation", () => {
         write(join(home, "notes", "personal.md"), "HOME-IMPORT");
         write(join(home, "shared", "Design Docs", "api.md"), "SPACED-IMPORT");
         write(join(claude, "CLAUDE.md"), "GLOBAL-CLAUDE-RULE\n- @~/notes/personal.md");
-        const p = project();
+        const p = trusted();
         const outside = `${p}-outside.md`;
         writeFileSync(outside, "OUTSIDE-PROJECT");
         writeFileSync(join(p, "AGENTS.md"), `Shared: @~/shared/Design\\ Docs/api.md. Also @../${basename(outside)}`);
@@ -307,9 +315,35 @@ describe("Claude Code's and Codex's global instructions, and @imports (#246)", (
             expect(t).toContain("HOME-IMPORT");
             expect(t).toContain("SPACED-IMPORT");
             expect(t).toContain("OUTSIDE-PROJECT");
+            // Named by its own path, not from the project as if it were in it.
+            expect(formatMemory(loadMemory(p), p)).toContain(`Contents of ${outside} (project instructions, checked into the codebase; imported by AGENTS.md)`);
         } finally {
             rmSync(outside);
         }
+    });
+    test("a project's imports stay inside it until the user trusts the folder, and the trust question names them (review of #246)", () => {
+        write(join(home, "Documents", "private.md"), "PRIVATE-DOCUMENT");
+        const p = tempDir();
+        mkdirSync(join(p, ".git"));
+        writeFileSync(join(p, "CLAUDE.md"), "@~/Documents/private.md @docs/a.md @link.md");
+        write(join(p, "docs", "a.md"), "IN-PROJECT @~/Documents/private.md");
+        symlinkSync(join(home, "Documents", "private.md"), join(p, "link.md"));
+        // A folder whose only configuration is a memory file that imports from outside isn't "nothing to protect".
+        expect(projectConfigSummary(p)).toEqual(["CLAUDE.md imports ~/Documents/private.md", "docs/a.md imports ~/Documents/private.md"]);
+        // Trusted for the session anyway (a run that decided so): its own files and imports load, nothing outside.
+        trustForSession(p);
+        expect(text(p)).toContain("IN-PROJECT");
+        expect(text(p)).not.toContain("PRIVATE-DOCUMENT");
+        expect(loadMemory(p, true).map((f) => f.content).join("\n")).not.toContain("PRIVATE-DOCUMENT");
+        // The user's say-so lets them out; a run that keeps the folder untrusted still reads nothing of it.
+        trustUntilExit(p);
+        expect(text(p)).toContain("PRIVATE-DOCUMENT");
+        expect(loadMemory(p, false).map((f) => f.content).join("\n")).not.toContain("PRIVATE-DOCUMENT");
+        // Imports that stay inside don't count as configuration.
+        const q = tempDir();
+        writeFileSync(join(q, "CLAUDE.md"), "@docs/b.md");
+        write(join(q, "docs", "b.md"), "INSIDE");
+        expect(projectConfigSummary(q)).toEqual([]);
     });
     test("a path in a code span, a code block or quotes isn't imported, nor is an email address", () => {
         const p = project();
@@ -341,7 +375,7 @@ describe("Claude Code's and Codex's global instructions, and @imports (#246)", (
         write(join(home, ".ssh", "notes.md"), "SSH-NOTES");
         write(join(home, ".aws", "credentials"), "AWS-SECRET");
         write(join(HARNESS_HOME, "providers.json"), JSON.stringify({ note: "PROVIDERS-FILE" }));
-        const p = project();
+        const p = trusted();
         writeFileSync(join(p, ".env"), "DOTENV-SECRET");
         symlinkSync(join(home, ".aws", "credentials"), join(p, "aws.md"));
         writeFileSync(join(p, "CLAUDE.md"), `@~/.ssh/id_ed25519 @~/.ssh/notes.md @~/.aws/credentials @${join(HARNESS_HOME, "providers.json")} @${join(HARNESS_HOME, "credentials.json")} @.env @aws.md`);
@@ -349,6 +383,147 @@ describe("Claude Code's and Codex's global instructions, and @imports (#246)", (
         writeFileSync(join(claude, ".credentials.json"), "CLAUDE-OAUTH-TOKEN");
         const t = text(p);
         for (const s of ["SSH-PRIVATE-KEY", "SSH-NOTES", "AWS-SECRET", "PROVIDERS-FILE", "DOTENV-SECRET", "CLAUDE-OAUTH-TOKEN", FAKE.openai]) expect(t).not.toContain(s);
+    });
+    test("a credential folder reached through a link, or spelled in another case, is still refused (review of #246)", () => {
+        const h = tempDir();
+        const vault = tempDir();
+        write(join(vault, "ssh", "notes.md"), "VAULT-SSH-NOTES");
+        symlinkSync(join(vault, "ssh"), join(h, ".ssh"));
+        symlinkSync(join(vault, "ssh", "notes.md"), join(h, "notes.md"));
+        write(join(h, ".AWS", "notes.md"), "UPPER-AWS-NOTES");
+        write(join(h, "fine.md"), "FINE-NOTES");
+        const was = process.env.HOME;
+        process.env.HOME = h;
+        try {
+            write(join(claude, "CLAUDE.md"), "@~/.ssh/notes.md @~/notes.md @~/.AWS/notes.md @~/fine.md");
+            const t = text(trusted());
+            expect(t).toContain("FINE-NOTES");
+            expect(t).not.toContain("VAULT-SSH-NOTES");
+            // Only a volume that ignores case opens ~/.AWS as ~/.aws (macOS, Windows).
+            if (CASE_INSENSITIVE_FS) expect(t).not.toContain("UPPER-AWS-NOTES");
+        } finally {
+            process.env.HOME = was;
+            rmSync(join(claude, "CLAUDE.md"));
+        }
+    });
+    test("imports in nested code (a block quote's fence, a list item's fence, indented code) aren't followed (review of #246)", () => {
+        const p = project();
+        writeFileSync(
+            join(p, "CLAUDE.md"),
+            [
+                "    @indented.md",
+                "",
+                "# Notes",
+                "",
+                "    @indented2.md",
+                "",
+                "> ~~~",
+                "> @quoted.md",
+                "> ~~~",
+                "",
+                "- item",
+                "  ```",
+                "  @listed.md",
+                "  ```",
+                "",
+                "  Still the item: @ok-item.md",
+                "",
+                "> ```",
+                "> @quoted2.md",
+                "Out of the quote, so out of its fence: @ok-after-quote.md",
+                "",
+                "A paragraph",
+                "    @ok-continued.md",
+                "",
+                "\t@tabbed.md",
+            ].join("\n"),
+        );
+        const names = ["indented", "indented2", "quoted", "listed", "quoted2", "tabbed", "ok-item", "ok-after-quote", "ok-continued"];
+        for (const n of names) writeFileSync(join(p, `${n}.md`), `FILE-${n}`);
+        const t = text(p);
+        for (const n of names.filter((n) => !n.startsWith("ok-"))) expect(t).not.toContain(`FILE-${n}`);
+        for (const n of names.filter((n) => n.startsWith("ok-"))) expect(t).toContain(`FILE-${n}`);
+    });
+    test("a file reached first at the last hop is followed further when a shorter route reaches it (review of #246)", () => {
+        const p = project();
+        writeFileSync(join(p, "CLAUDE.md"), "@a.md @d.md");
+        writeFileSync(join(p, "a.md"), "A @b.md");
+        writeFileSync(join(p, "b.md"), "B @c.md");
+        writeFileSync(join(p, "c.md"), "C @d.md");
+        writeFileSync(join(p, "d.md"), "D @e.md");
+        writeFileSync(join(p, "e.md"), "E-TWO-HOPS-AWAY");
+        const files = loadMemory(p);
+        expect(files.map((f) => f.content)).toContain("E-TWO-HOPS-AWAY");
+        expect(files.filter((f) => f.path === join(p, "d.md"))).toHaveLength(1);
+    });
+    test("memory files share a budget of files and bytes, cut in order, with a notice (review of #246)", () => {
+        const p = project();
+        writeFileSync(join(p, "CLAUDE.md"), Array.from({ length: 400 }, (_, i) => `@f${String(i).padStart(3, "0")}.md`).join("\n"));
+        for (let i = 0; i < 400; i++) writeFileSync(join(p, `f${String(i).padStart(3, "0")}.md`), `F${i} ` + "y".repeat(3_000));
+        const files = loadMemory(p);
+        expect(files.length).toBeLessThanOrEqual(MAX_FILES);
+        expect(files.reduce((n, f) => n + Buffer.byteLength(f.content), 0)).toBeLessThan(MAX_TOTAL_BYTES + 1_000);
+        // In order: the importing file first (it's read before what it imports), then the imports as written.
+        expect(files.some((f) => f.path === join(p, "CLAUDE.md"))).toBe(true);
+        expect(files.some((f) => f.path === join(p, "f000.md"))).toBe(true);
+        expect(files.some((f) => f.path === join(p, "f399.md"))).toBe(false);
+        expect(loadMemory(p).map((f) => f.path)).toEqual(files.map((f) => f.path));
+        const prompt = formatMemory(files, p);
+        expect(prompt.length).toBeLessThan(MAX_TOTAL_BYTES + 50_000);
+        expect(prompt).toContain(`Memory files are limited to ${MAX_FILES} files and ${MAX_TOTAL_BYTES / 1000} KB together`);
+        expect(prompt).toMatch(/Left out: .*f\d{3}\.md/);
+    });
+    test("a rules folder's walk is bounded: folders visited and depth (review of #246)", () => {
+        const rules = join(claude, "rules");
+        const made: string[] = [];
+        try {
+            for (let i = 0; i < 150; i++) {
+                mkdirSync(join(rules, `empty-${String(i).padStart(3, "0")}`), { recursive: true });
+                made.push(join(rules, `empty-${String(i).padStart(3, "0")}`));
+            }
+            write(join(rules, "zz", "late.md"), "LATE-RULE");
+            made.push(join(rules, "zz"));
+            const deep = join(rules, "aa", ...Array.from({ length: 12 }, (_, i) => `d${i}`));
+            write(join(deep, "deep.md"), "DEEP-RULE");
+            made.push(join(rules, "aa"));
+            const t = text(project());
+            expect(t).not.toContain("LATE-RULE");
+            expect(t).not.toContain("DEEP-RULE");
+            expect(t).toContain("GLOBAL-RULES-B");
+        } finally {
+            for (const d of made) rmSync(d, { recursive: true, force: true });
+        }
+    });
+    test("a file's cap is in bytes and doesn't split a character (review of #246)", () => {
+        const p = project();
+        writeFileSync(join(p, "CLAUDE.md"), "@cjk.md");
+        writeFileSync(join(p, "cjk.md"), "漢".repeat(40_000));
+        const cjk = loadMemory(p).find((f) => f.path === join(p, "cjk.md"))!;
+        expect(Buffer.byteLength(cjk.content)).toBeLessThan(40_100);
+        expect(cjk.content).toEndWith("…(truncated)");
+        expect(cjk.content).not.toContain("\uFFFD");
+    });
+    test("a path changed between its checks and its read isn't read (review of #246)", () => {
+        // Imports stay inside this project; the swap points one outside it after it was checked.
+        const p = project();
+        const secret = tempDir();
+        write(join(secret, "notes.md"), "SWAPPED-IN-SECRET");
+        write(join(p, "docs", "notes.md"), "ORIGINAL");
+        writeFileSync(join(p, "CLAUDE.md"), "@docs/notes.md");
+        let swapped = false;
+        readHooks.beforeOpen = (real) => {
+            if (swapped || !real.endsWith(join("docs", "notes.md"))) return;
+            swapped = true;
+            renameSync(join(p, "docs"), join(p, "docs-old"));
+            symlinkSync(secret, join(p, "docs"));
+        };
+        try {
+            const t = loadMemory(p).map((f) => f.content).join("\n");
+            expect(swapped).toBe(true);
+            expect(t).not.toContain("SWAPPED-IN-SECRET");
+        } finally {
+            readHooks.beforeOpen = undefined;
+        }
     });
 });
 

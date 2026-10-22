@@ -365,7 +365,8 @@ describe("SessionStart context and InstructionsLoaded", () => {
         writeFileSync(join(proj, "docs", "style.md"), "Use tabs.\n");
         trust.trustFolder(proj);
         const out = join(proj, "loaded.jsonl");
-        const settings = { autoCompact: false, hooks: { InstructionsLoaded: [record(out)] } };
+        // The two hooks run at once: each appends its line in one write, so they can't interleave.
+        const settings = { autoCompact: false, hooks: { InstructionsLoaded: [{ command: `line=$(cat); printf '%s\\n' "$line" >> '${out}'` }] } };
         const { session } = agentFor(proj, settings, () => text("ok"));
         await sessionStartHooks(settings as any, session, "startup", proj, () => {});
         const got = lines(out);
