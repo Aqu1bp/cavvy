@@ -5,9 +5,10 @@
 
 import { randomBytes } from "crypto";
 import { lstatSync, realpathSync, statSync } from "fs";
-import { join, relative } from "path";
+import { isAbsolute, join, relative, resolve, sep } from "path";
 import { getKey } from "../auth/credentials";
 import { projectConfigSummary, trustedByUser } from "../config/trust";
+import { committedExternalImports, type TreeFile } from "../agent/memory";
 import { PERMISSION_MODES } from "../permissions/modes";
 import { clientFor, type ProviderListing } from "../providers/models";
 import { formatPrice } from "../providers/pricing";
@@ -207,16 +208,103 @@ async function headCommit(path: string): Promise<string> {
     return commit;
 }
 
-/** The project configuration a checkout of `commit` will have, read from its tree (no file contents). */
-async function committedConfig(main: string, commit: string): Promise<string[]> {
-    const r = await runGitAsync(main, ["ls-tree", "-r", "-t", "-z", commit, "--", ".harness", ".mcp.json", ".claude", ".codex"], GIT_READ_MS);
+async function readGit(main: string, args: string[]): Promise<string> {
+    const r = await runGitAsync(main, args, GIT_READ_MS);
     if (r.code !== 0 || r.timedOut) throw new RpcError("Git couldn't read this repository's HEAD, so nothing was created.", "git_failed");
-    const records = r.stdout.split("\0").filter(Boolean);
+    return r.stdout;
+}
+
+/**
+ * The project configuration a checkout of `commit` will have, read from its
+ * tree: which configuration files there are, and what its memory files, as
+ * committed, import from outside it (the working copy's may say otherwise).
+ */
+async function committedConfig(main: string, commit: string): Promise<string[]> {
+    const records = (await readGit(main, ["ls-tree", "-r", "-t", "-z", commit, "--", ".harness", ".mcp.json", ".claude", ".codex"])).split("\0").filter(Boolean);
     const entries = new Set(records.map((r) => r.slice(r.indexOf("\t") + 1)));
     // A committed config directory can be a symlink. Its targets aren't
     // beneath that name in the tree, but checkout will expose them there.
     const linked = records.filter((r) => r.startsWith("120000 ")).map((r) => r.slice(r.indexOf("\t") + 1)).filter((p) => [".harness", ".claude", ".codex"].includes(p));
-    return [...projectConfigSummary(main, (path) => entries.has(relative(main, path))), ...linked];
+    // Where the worktrees go; their names aren't known yet.
+    const top = join(main, WORKTREES_DIR, "new-worktree");
+    const imports = await committedExternalImports(top, treeReader(main, commit, top));
+    return [...projectConfigSummary(main, (path) => entries.has(relative(main, path))), ...linked, ...imports];
+}
+
+/** Links followed in a path before it's given up on, as the system does (ELOOP). */
+const MAX_LINK_HOPS = 40;
+
+/**
+ * Opens paths in `commit`'s tree as a checkout of it at `top` would have
+ * them: links followed, through the tree or out of it (then `real` is where
+ * the link leads, outside `top`), and a file's text. Undefined: not there, or
+ * not a file (a folder, a submodule).
+ */
+function treeReader(main: string, commit: string, top: string): (path: string) => Promise<TreeFile | undefined> {
+    const listings = new Map<string, Promise<Map<string, { mode: string; oid: string }>>>();
+    const list = (tree: string) => {
+        let l = listings.get(tree);
+        if (!l) {
+            l = readGit(main, ["ls-tree", "-z", tree]).then((out) => {
+                const m = new Map<string, { mode: string; oid: string }>();
+                for (const rec of out.split("\0").filter(Boolean)) {
+                    const [meta, name] = [rec.slice(0, rec.indexOf("\t")), rec.slice(rec.indexOf("\t") + 1)];
+                    const [mode, , oid] = meta.split(" ");
+                    m.set(name, { mode: mode!, oid: oid! });
+                }
+                return m;
+            });
+            listings.set(tree, l);
+        }
+        return l;
+    };
+    // Each object read once, however many spellings of a path reach it.
+    const blobs = new Map<string, Promise<string>>();
+    const blob = (oid: string) => {
+        let b = blobs.get(oid);
+        if (!b) blobs.set(oid, (b = readGit(main, ["cat-file", "blob", oid])));
+        return b;
+    };
+    const root = `${commit}^{tree}`;
+    return async (path) => {
+        if (!isInside(path, top)) return undefined;
+        let pending = relative(top, path).split(sep).filter(Boolean);
+        // The folders the path is in so far, by name and tree.
+        let names: string[] = [];
+        let trees = [root];
+        for (let hops = 0; pending.length; ) {
+            const c = pending.shift()!;
+            if (c === ".") continue;
+            if (c === "..") {
+                if (!names.length) return { real: resolve(top, "..", ...pending) };
+                names.pop();
+                trees.pop();
+                continue;
+            }
+            const entry = (await list(trees.at(-1)!)).get(c);
+            if (!entry) return undefined;
+            if (entry.mode === "120000") {
+                if (++hops > MAX_LINK_HOPS) return undefined;
+                const target = await blob(entry.oid);
+                if (isAbsolute(target)) {
+                    const to = resolve(target, ...pending);
+                    if (!isInside(to, top)) return { real: to };
+                    pending = relative(top, to).split(sep).filter(Boolean);
+                    names = [];
+                    trees = [root];
+                } else pending = [...target.split("/").filter(Boolean), ...pending];
+                continue;
+            }
+            if (entry.mode === "040000") {
+                names.push(c);
+                trees.push(entry.oid);
+                continue;
+            }
+            if (pending.length || !entry.mode.startsWith("100")) return undefined;
+            return { real: join(top, ...names, c), text: await blob(entry.oid) };
+        }
+        return undefined;
+    };
 }
 
 /**

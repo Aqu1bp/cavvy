@@ -219,6 +219,30 @@ describe("runs.start", () => {
         }
     });
 
+    test("a committed memory file that imports from outside the project asks first, though the working copy dropped the import (review 2 of #246)", async () => {
+        const outside = realpathSync(tempDir("harness-run-outside-"));
+        writeFileSync(join(outside, "private.md"), "PRIVATE NOTES\n");
+        // Through a link committed in the tree too: docs -> notes, whose file imports outside.
+        const main = repo({ "CLAUDE.md": "@docs/more.md\n", "notes/more.md": `@${join(outside, "private.md")}\n` });
+        git(main, "rm", "-q", "-r", "--cached", "notes");
+        Bun.spawnSync(["ln", "-s", "notes", join(main, "docs")]);
+        git(main, "add", "docs", "notes");
+        git(main, "commit", "-q", "-m", "Link");
+        // The working copy no longer imports anything; HEAD still does.
+        writeFileSync(join(main, "CLAUDE.md"), "# nothing to import\n");
+        const err = await c.call("runs.start", { path: main, models: ["mock:mock-opus", "mock:mock-sonnet"], text: "look around" }).catch((e) => e);
+        expect(err).toMatchObject({ code: "needs_project_trust", folder: main });
+        expect(err.message).toContain(`notes/more.md imports ${join(outside, "private.md")}`);
+        expect(existsSync(join(main, ".claude"))).toBe(false);
+        expect(branchesOf(main)).toEqual(["main"]);
+    });
+
+    test("a committed memory file that imports only inside the project doesn't ask (review 2 of #246)", async () => {
+        const main = repo({ "CLAUDE.md": "@docs/more.md @missing.md\n", "docs/more.md": "@../AGENTS.md\n", "AGENTS.md": "agents\n" });
+        const r = await c.call<{ results: RunResult[] }>("runs.start", { path: main, models: ["mock:mock-opus", "mock:mock-sonnet"], text: "look inside" });
+        expect(r.results.every((x) => x.ok)).toBe(true);
+    });
+
     test("trusting the main worktree covers the run's worktrees inside it", async () => {
         const main = repo({ ".mcp.json": JSON.stringify({ mcpServers: {} }) });
         await c.call("projects.trust", { path: main, trust: true });

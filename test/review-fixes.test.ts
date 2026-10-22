@@ -6,7 +6,8 @@
 // git running a repository's fsmonitor.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { homedir } from "os";
 import { basename, dirname, join } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
 
@@ -16,7 +17,7 @@ const { bashRuleMatches, mcpToolMatches } = await import("../src/permissions/rul
 const { PermissionChecker } = await import("../src/permissions/checker");
 const await_import_search = await import("../src/tools/search-tools");
 const { filterRgOutput, searchFilter } = await_import_search;
-const { loadMemory, formatMemory, readHooks, MAX_FILES, MAX_TOTAL_BYTES } = await import("../src/agent/memory");
+const { loadMemory, formatMemory, openedPath, readHooks, MAX_FILES, MAX_TOTAL_BYTES } = await import("../src/agent/memory");
 const { trustForSession, trustUntilExit, projectConfigSummary } = await import("../src/config/trust");
 const { CASE_INSENSITIVE_FS } = await import("../src/util/files");
 const { Session, redactMessage, redactedJson } = await import("../src/agent/session");
@@ -524,6 +525,96 @@ describe("Claude Code's and Codex's global instructions, and @imports (#246)", (
         } finally {
             readHooks.beforeOpen = undefined;
         }
+    });
+    test("a folder swapped for a link while a file opens, and back before it's checked, isn't read (review 2 of #246)", () => {
+        const p = project();
+        const secret = tempDir();
+        write(join(secret, "notes.md"), "SWAPPED-BACK-SECRET");
+        write(join(p, "docs", "notes.md"), "ORIGINAL");
+        writeFileSync(join(p, "CLAUDE.md"), "@docs/notes.md");
+        let swaps = 0;
+        readHooks.beforeOpen = (real) => {
+            if (swaps || !real.endsWith(join("docs", "notes.md"))) return;
+            swaps++;
+            renameSync(join(p, "docs"), join(p, "docs-old"));
+            symlinkSync(secret, join(p, "docs"));
+        };
+        readHooks.afterOpen = () => {
+            if (swaps !== 1) return;
+            swaps++;
+            rmSync(join(p, "docs"));
+            renameSync(join(p, "docs-old"), join(p, "docs"));
+        };
+        try {
+            const t = loadMemory(p).map((f) => f.content).join("\n");
+            expect(swaps).toBe(2);
+            expect(t).not.toContain("SWAPPED-BACK-SECRET");
+        } finally {
+            readHooks.beforeOpen = undefined;
+            readHooks.afterOpen = undefined;
+        }
+    });
+    test.if(process.platform === "darwin" || process.platform === "linux")("an open file is named by where it is, not by the path it was opened through (review 2 of #246)", () => {
+        const p = tempDir();
+        const secret = tempDir();
+        write(join(secret, "notes.md"), "x");
+        symlinkSync(secret, join(p, "docs"));
+        const fd = openSync(join(p, "docs", "notes.md"), "r");
+        try {
+            expect(openedPath(fd)).toBe(realpathSync(join(secret, "notes.md")));
+        } finally {
+            closeSync(fd);
+        }
+    });
+    test("fenced code in a block quote in a list item isn't an import; a heading ends a code span's search (review 2 of #246)", () => {
+        const p = project();
+        writeFileSync(join(p, "CLAUDE.md"), "- > ~~~\n  > @secret.md\n  > ~~~\n\nLiteral ` in heading\n---\n@real.md\nAnother ` here\n");
+        writeFileSync(join(p, "secret.md"), "FENCED-IN-QUOTE-IN-LIST");
+        writeFileSync(join(p, "real.md"), "AFTER-SETEXT-HEADING");
+        const t = text(p);
+        expect(t).not.toContain("FENCED-IN-QUOTE-IN-LIST");
+        expect(t).toContain("AFTER-SETEXT-HEADING");
+    });
+    test("HTML blocks and comments aren't imports; tight list items, table cells and emphasis are prose (review 2 of #246)", () => {
+        const p = project();
+        writeFileSync(join(p, "CLAUDE.md"), "<!--\n@hidden-block.md\n-->\n\nSee <!-- @hidden-inline.md --> this.\n\n- one @li1.md\n- two @li2.md\n\n| a | b |\n|---|---|\n| @cell.md | `@cellcode.md` |\n\n*@em.md*\n");
+        for (const n of ["hidden-block", "hidden-inline", "li1", "li2", "cell", "cellcode", "em"]) writeFileSync(join(p, `${n}.md`), `FILE-${n}`);
+        const t = text(p);
+        for (const n of ["hidden-block", "hidden-inline", "cellcode"]) expect(t).not.toContain(`FILE-${n}`);
+        for (const n of ["li1", "li2", "cell", "em"]) expect(t).toContain(`FILE-${n}`);
+    });
+    test("a rules folder with more entries than the walk reads is left out whole, with a notice, whatever order the system lists it in (review 2 of #246)", () => {
+        const big = join(claude, "rules", "big");
+        mkdirSync(big, { recursive: true });
+        try {
+            for (let i = 0; i <= 2_000; i++) writeFileSync(join(big, `f${String(i).padStart(4, "0")}.md`), `BIG-RULE-${i}`);
+            const p = project();
+            const files = loadMemory(p);
+            const t = files.map((f) => f.content).join("\n");
+            expect(t).not.toContain("BIG-RULE-");
+            expect(t).toContain("GLOBAL-RULES-A-NESTED");
+            expect(formatMemory(files, p)).toContain(`${big.replace(homedir(), "~")} has more entries`);
+        } finally {
+            rmSync(big, { recursive: true, force: true });
+        }
+    });
+    test("imports come before their importer even when a shorter route reaches one again (review 2 of #246)", () => {
+        const p = project();
+        writeFileSync(join(p, "CLAUDE.md"), "@a.md @d.md");
+        for (const [n, next] of [["a", "b"], ["b", "c"], ["c", "d"], ["d", "e"], ["e", ""]]) writeFileSync(join(p, `${n}.md`), `${n!.toUpperCase()}${next ? ` @${next}.md` : ""}`);
+        const order = loadMemory(p).filter((f) => dirname(f.path) === p).map((f) => basename(f.path));
+        const at = (n: string) => order.indexOf(`${n}.md`);
+        expect(order).toHaveLength(6);
+        for (const [importer, imported] of [["CLAUDE", "a"], ["CLAUDE", "d"], ["a", "b"], ["b", "c"], ["c", "d"], ["d", "e"]]) expect(at(imported!)).toBeLessThan(at(importer!));
+    });
+    test("the file cap holds with one file importing more than it (review 2 of #246)", () => {
+        const p = project();
+        writeFileSync(join(p, "CLAUDE.md"), Array.from({ length: 205 }, (_, i) => `@g${i}.md`).join("\n"));
+        for (let i = 0; i < 205; i++) writeFileSync(join(p, `g${i}.md`), `G${i}`);
+        const files = loadMemory(p);
+        expect(files.length).toBe(MAX_FILES);
+        expect(files.some((f) => f.path === join(p, "CLAUDE.md"))).toBe(true);
+        expect(files.budget?.omitted.length).toBeGreaterThan(0);
     });
 });
 
