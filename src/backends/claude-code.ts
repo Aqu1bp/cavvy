@@ -50,7 +50,7 @@ import { CLAUDE_PREFIX, claudeNames, claudePrompt, forClaudeCode, skillFolder } 
 import { CLAUDE_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
 import { claudeMcpPolicy } from "./claude-mcp-policy";
 import { writeAgentsFile } from "./claude-agents";
-import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn } from "./types";
+import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn, type SteerMessage } from "./types";
 import type { TurnEndReason } from "../agent/agent";
 import type { NativeGoal } from "../agent/goal";
 import { ClaudeGoalWatch, claudeTranscriptFile } from "./claude-goal";
@@ -547,8 +547,10 @@ class ClaudeTurn {
     }
 
     /** `synthetic`: not the user's own words (see BackendTurn.synthetic), so Claude Code expands no @mentions in it. */
-    private sendUser(content: unknown[], synthetic = false) {
-        if (this.aborted || this.finishing) return;
+    /** False when it didn't go: stopping, or Claude Code's stdin is gone. */
+    private sendUser(content: unknown[], synthetic = false): boolean {
+        if (this.aborted || this.finishing) return false;
+        const wasBusy = this.busy;
         this.prompted = true;
         this.busy = true;
         this.commandWaitingSince.clear();
@@ -558,7 +560,13 @@ class ClaudeTurn {
         this.settleTimer = undefined;
         const uuid = crypto.randomUUID();
         this.unanswered.add(uuid);
-        this.proc.send({ type: "user", uuid, message: { role: "user", content }, parent_tool_use_id: null, session_id: this.sessionId ?? "", ...(synthetic ? { isSynthetic: true } : {}) });
+        const sent = this.proc.send({ type: "user", uuid, message: { role: "user", content }, parent_tool_use_id: null, session_id: this.sessionId ?? "", ...(synthetic ? { isSynthetic: true } : {}) });
+        // Not written: no answer to wait for.
+        if (!sent) {
+            this.unanswered.delete(uuid);
+            this.busy = wasBusy;
+        }
+        return sent;
     }
 
     /**
@@ -764,17 +772,21 @@ class ClaudeTurn {
         }
         this.reason = undefined;
         // The user's messages as they typed them; a watch's events (others' words) apart, read as written.
-        const typed = queued.filter((m) => !this.host.fromWake?.(m.text));
-        const woke = queued.filter((m) => this.host.fromWake?.(m.text));
+        // One with attachments (settle) is the user's, whatever its words.
+        const fromWake = (m: SteerMessage) => !m.settle && Boolean(this.host.fromWake?.(m.text));
+        const typed = queued.filter((m) => !fromWake(m));
+        const woke = queued.filter(fromWake);
         // Their images and PDFs first, as a prompt's (runTurn); the text last.
         const media = typed.flatMap((m) => mediaBlocks(m.images, m.documents));
         // One with only images or files has no text block (the API refuses an empty one).
         const words = typed.map((m) => m.text).filter((t) => t).join("\n\n");
-        if (typed.length) this.sendUser([...media, ...(words ? [{ type: "text", text: words }] : [])]);
-        if (woke.length) this.sendUser([{ type: "text", text: woke.map((m) => m.text).join("\n\n") }], true);
-        // Written to its stdin, as text steers are: one with attachments is the host's to record now.
-        for (const m of typed) await m.settle?.(true);
-        return true;
+        const sent = typed.length ? this.sendUser([...media, ...(words ? [{ type: "text", text: words }] : [])]) : false;
+        const told = woke.length ? this.sendUser([{ type: "text", text: woke.map((m) => m.text).join("\n\n") }], true) : false;
+        // Written to its stdin, as text steers are: one with attachments is the host's to record now (and if the
+        // write failed, Claude Code is gone: it stays queued).
+        for (const m of typed) await m.settle?.(sent);
+        // Nothing written: nothing to wait for.
+        return sent || told;
     }
 
     private rememberStopped(tasks: BackgroundWork[]) {

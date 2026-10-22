@@ -627,7 +627,8 @@ export class Agent {
     // -----------------------------------------------------------------------
 
     /** Run one user turn to completion. */
-    async run(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" | "wake" }): Promise<TurnEndReason> {
+    /** `admitted`: its UserPromptSubmit hooks went already (when it was queued to steer), with what they added. */
+    async run(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" | "wake"; admitted?: { context?: string } }): Promise<TurnEndReason> {
         if (this.running) throw new Error("Agent is already running");
         this.running = true;
         this.prompted = false;
@@ -667,15 +668,17 @@ export class Agent {
         }
     }
 
-    private async runInner(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" | "wake" }): Promise<TurnEndReason> {
+    private async runInner(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" | "wake"; admitted?: { context?: string } }): Promise<TurnEndReason> {
         const { signal } = opts;
         const settings = this.hookSettings();
         const promptText = promptTextOf(content);
         const checkpoint = await this.checkpoint(opts.display ?? promptText);
         if (this.cutOff) return "aborted";
 
-        // A wake isn't something the user typed.
-        if (opts.kind !== "wake") {
+        // A wake isn't something the user typed. One whose hooks went when it was queued to steer: what they added.
+        if (opts.admitted) {
+            if (opts.admitted.context) this.addReminder(opts.admitted.context);
+        } else if (opts.kind !== "wake") {
             const h = await this.promptHooks(promptText, signal);
             if (h.blocked) {
                 this.emit({ type: "turn_end", reason: "blocked" });

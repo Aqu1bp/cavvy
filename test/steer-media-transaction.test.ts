@@ -156,4 +156,85 @@ describe("a steer with an image to Codex is the queue's until Codex accepts it",
             await cleanup(again);
         }
     }, 40_000);
+    // Round 4 of the review.
+    test("while its turn/steer is unanswered it can't be edited or removed; once Codex accepts it, it's recorded once", async () => {
+        const { engine, c, id, rt } = await codexSession("slow", { FAKE_STEER_MS: "1200" });
+        try {
+            expect(await until(() => rt.busy && turnStarts().length === 1)).toBe(true);
+            await engine.handle(c as never, "session.send", { id, text: "look at this", images: [{ mediaType: "image/png", data: PNG }], mode: "steer" });
+            expect(await until(() => steers().length === 1)).toBe(true);
+            const [queueId] = rt.snapshot().state.queueIds;
+            await expect(engine.handle(c as never, "session.dequeue", { id, queueId, edit: true })).rejects.toThrow(/going into the running turn/);
+            await expect(engine.handle(c as never, "session.dequeue", { id, queueId })).rejects.toThrow(/going into the running turn/);
+            expect(rt.snapshot().state.queued).toEqual(["look at this"]);
+            // Accepted: out of the queue, and in the history once.
+            expect(await until(() => !rt.snapshot().state.queued.length)).toBe(true);
+            expect(imagesInHistory(rt)).toBe(1);
+            expect(steers().flatMap((s) => imagesIn(s.input))).toEqual([imageItem]);
+            await engine.handle(c as never, "session.interrupt", { id });
+        } finally {
+            await cleanup(engine);
+        }
+    }, 30_000);
+
+    test("words sent after an image don't overtake it: they go once Codex has the image", async () => {
+        const { engine, c, id, rt } = await codexSession("slow", { FAKE_STEER_MS: "800" });
+        try {
+            expect(await until(() => rt.busy && turnStarts().length === 1)).toBe(true);
+            await engine.handle(c as never, "session.send", { id, text: "look at this", images: [{ mediaType: "image/png", data: PNG }], mode: "steer" });
+            expect(await until(() => steers().length === 1)).toBe(true);
+            await engine.handle(c as never, "session.send", { id, text: "use the image above", mode: "steer" });
+            await Bun.sleep(300);
+            // Still on its way: the words wait behind it.
+            expect(steers()).toHaveLength(1);
+            expect(await until(() => steers().length === 2)).toBe(true);
+            expect(steers()[1]!.input).toEqual([expect.objectContaining({ type: "text", text: "use the image above" })]);
+            const texts = rt.session.messages.map((m) => JSON.stringify(m.content));
+            expect(texts.findIndex((t) => t.includes("look at this"))).toBeLessThan(texts.findIndex((t) => t.includes("use the image above")));
+            await engine.handle(c as never, "session.interrupt", { id });
+        } finally {
+            await cleanup(engine);
+        }
+    }, 30_000);
+
+    test("drained in the queue's order: words queued after an image wait for it, rather than going first", async () => {
+        const { engine, rt } = await codexSession("slow");
+        try {
+            expect(await until(() => rt.busy && turnStarts().length === 1)).toBe(true);
+            const inner = rt as unknown as { queued: unknown[]; drainQueued(): Promise<any[]> | any[] };
+            inner.queued = [
+                { id: 901, text: "look at this", attachments: [{ type: "image", mediaType: "image/png", data: PNG }], mode: "steer" },
+                { id: 902, text: "use the image above", mode: "steer" },
+            ];
+            const drained = await inner.drainQueued();
+            expect(drained).toEqual([expect.objectContaining({ text: "look at this", transaction: expect.anything() })]);
+            drained[0].transaction.refused();
+            expect((inner.queued as { text: string; sending?: boolean }[]).map((q) => [q.text, Boolean(q.sending)])).toEqual([["look at this", false], ["use the image above", false]]);
+            inner.queued = [];
+        } finally {
+            await cleanup(engine);
+        }
+    }, 30_000);
+
+    test("its UserPromptSubmit hooks run once, refused and then sent as a prompt of its own", async () => {
+        const seen = join(tempDir("steer-tx-hook-"), "seen.jsonl");
+        writeFileSync(join(iso.home, "settings.json"), JSON.stringify({ hooks: { UserPromptSubmit: [{ command: `cat >> '${seen}'; echo >> '${seen}'` }] } }));
+        try {
+            // Its turn/steer refused while the turn goes on (about 5 s), then the turn ends and the run with it.
+            const { engine, c, id, rt } = await codexSession("slow", { FAKE_STEER_FAIL: "1" });
+            try {
+                expect(await until(() => rt.busy && turnStarts().length === 1)).toBe(true);
+                await engine.handle(c as never, "session.send", { id, text: "look at this", images: [{ mediaType: "image/png", data: PNG }], mode: "steer" });
+                expect(await until(() => steers().length === 1)).toBe(true);
+                expect(await until(() => !rt.busy && !rt.snapshot().state.queued.length && turnStarts().length === 2, 20_000)).toBe(true);
+                expect(deliveredByTurns()).toEqual([imageItem]);
+                const runs = readFileSync(seen, "utf-8").split("\n").filter((l) => l.includes("look at this"));
+                expect(runs).toHaveLength(1);
+            } finally {
+                await cleanup(engine);
+            }
+        } finally {
+            writeFileSync(join(iso.home, "settings.json"), JSON.stringify({}));
+        }
+    }, 30_000);
 });

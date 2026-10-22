@@ -136,13 +136,16 @@ export class JsonLinesProcess {
         return redact(this.err);
     }
 
-    send(obj: unknown) {
-        if (this.closed) return;
+    /** Write one line to its stdin: false when it couldn't be (closed, or the process is gone: EPIPE). */
+    send(obj: unknown): boolean {
+        if (this.closed || this.gone) return false;
         try {
             this.proc.stdin.write(JSON.stringify(obj) + "\n");
             this.proc.stdin.flush();
+            return true;
         } catch {
             // it exited; reading its output says why
+            return false;
         }
     }
 

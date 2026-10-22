@@ -3555,6 +3555,76 @@ describe("Codex mid-turn steering", () => {
     });
 });
 
+// Round 4 of #299's review: a steer with attachments to Claude Code is the queue's until it's written to its stdin.
+describe("Claude Code: a steer with attachments", () => {
+    const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const image = { type: "image" as const, mediaType: "image/png", data: PNG };
+    /** The runtime's queue, handing over one message with an image as a transaction (Admitted.transaction). */
+    function attached(text: () => string) {
+        const queue = { offered: 0, accepted: 0, refused: 0, left: true };
+        const drainQueued = async () => {
+            if (!queue.left) return [];
+            queue.offered++;
+            let open = true;
+            const transaction = {
+                accepted: () => (open ? ((open = false), (queue.left = false), queue.accepted++, true) : false),
+                refused: () => void (open && ((open = false), queue.refused++)),
+            };
+            return [{ text: text(), admission: "go" as const, attachments: [image], transaction }];
+        };
+        return { queue, drainQueued };
+    }
+    const sentImages = () => received().filter((m) => m.type === "user").flatMap((m) => (Array.isArray(m.message?.content) ? m.message.content.filter((b: any) => b.type === "image") : []));
+
+    test("JsonLinesProcess.send says when a line couldn't be written: the process is gone", async () => {
+        const { JsonLinesProcess } = await import("../src/backends/cli");
+        const p = new JsonLinesProcess("/bin/sh", ["-c", "exit 0"], { cwd, env: process.env as Record<string, string> });
+        await p.exited;
+        await Bun.sleep(20);
+        expect(p.send({ type: "user" })).toBe(false);
+    });
+
+    test("one whose write to stdin fails (Claude Code went away: EPIPE) isn't accepted: it stays queued, nothing recorded", async () => {
+        process.env.FAKE_SCENARIO = "steering";
+        const { JsonLinesProcess } = await import("../src/backends/cli");
+        const send = JsonLinesProcess.prototype.send;
+        // As stdin throwing EPIPE: the line with the image isn't written.
+        JsonLinesProcess.prototype.send = function (this: InstanceType<typeof JsonLinesProcess>, obj: any) {
+            return obj?.type === "user" && JSON.stringify(obj).includes('"type":"image"') ? false : send.call(this, obj);
+        } as typeof send;
+        try {
+            const q = attached(() => "look at this");
+            const a = await makeAgent({ provider: "claude-code", drainQueued: q.drainQueued });
+            expect(await a.run("start")).toBe("done");
+            expect(q.queue.offered).toBeGreaterThan(0);
+            expect(q.queue.accepted).toBe(0);
+            expect(q.queue.left).toBe(true);
+            expect(a.session.messages.some((m) => m.content.some((p) => p.type === "image"))).toBe(false);
+        } finally {
+            JsonLinesProcess.prototype.send = send;
+        }
+    });
+
+    test("one in the very words of a wake the turn took is still the user's: its image goes, and it's accepted", async () => {
+        process.env.FAKE_SCENARIO = "steering-many";
+        const wakes = new WakeQueue({ coalesceMs: 60_000 });
+        wakes.push({ source: "pull-request", label: "PR #12: new comment", text: "- bob: \"please rename it\"" });
+        let a!: Awaited<ReturnType<typeof makeAgent>>;
+        // Offered once the wake is in: its text, word for word.
+        const wakeText = () => {
+            const m = a.session.messages.find((x) => x.role === "user" && x.meta?.kind === "reminder" && JSON.stringify(x.content).includes("please rename it"));
+            return m ? (m.content[0] as { text: string }).text : "";
+        };
+        const q = attached(wakeText);
+        const drain = q.drainQueued;
+        a = await makeAgent({ provider: "claude-code", wakes, drainQueued: async () => (wakeText() ? drain() : []) });
+        expect(await a.run("start")).toBe("done");
+        expect(q.queue.accepted).toBe(1);
+        expect(sentImages()).toEqual([{ type: "image", source: { type: "base64", media_type: "image/png", data: PNG } }]);
+        wakes.dispose();
+    });
+});
+
 const { paths } = await import("../src/config/paths");
 describe("the harness's agents on Claude Code", () => {
     const agentLogs = () => logLines().filter((l) => "agents" in l);

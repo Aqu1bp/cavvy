@@ -121,6 +121,8 @@ interface Queued {
     held?: boolean;
     /** With attachments, on its way into the running turn: it stays queued until that has it (steerAttached). */
     sending?: boolean;
+    /** Its UserPromptSubmit hooks went ("go"), with what they added: not run again, should it go as a prompt of its own. */
+    admitted?: { context?: string };
 }
 
 const ALL_KINDS: readonly AttachmentKind[] = ["image", "text", "pdf"];
@@ -2160,12 +2162,22 @@ export class Runtime {
             if (!take.length) return [];
             return admit ? this.admitQueued(take, admit, steering, record) : this.steerWith(take, record);
         }
-        // An agent CLI's: those with only words as they always have; one with attachments alone, once they've gone.
-        const words = () => steering().filter((q) => !q.attachments?.length);
-        const take = words();
-        if (take.length) return admit ? this.admitQueued(take, admit, words, record) : this.steerWith(take, record);
-        const attached = steering()[0];
-        return attached ? this.steerAttached(attached, record, admit) : [];
+        // An agent CLI's, in the queue's order: those with only words as they always have, up to one with attachments,
+        // which goes alone once they've gone. Nothing passes one on its way (Queued.sending).
+        const inOrder = () => {
+            const out: Queued[] = [];
+            for (const q of this.queued) {
+                if (q.sending) break;
+                if (q.mode !== "steer" || q.held || this.waits(q)) continue;
+                if (q.attachments?.length) return out.length ? out : [q];
+                out.push(q);
+            }
+            return out;
+        };
+        const take = inOrder();
+        if (!take.length) return [];
+        if (take[0]!.attachments?.length) return this.steerAttached(take[0]!, record, admit);
+        return admit ? this.admitQueued(take, admit, inOrder, record) : this.steerWith(take, record);
     }
 
     /**
@@ -2177,7 +2189,9 @@ export class Runtime {
      */
     private async steerAttached(q: Queued, record?: () => void, admit?: (text: string, attachments?: readonly AttachedPart[]) => Promise<Admitted>): Promise<Admitted[]> {
         q.sending = true;
-        const a: Admitted = admit ? await admit(q.text, q.attachments) : { text: q.text, admission: "go" };
+        // Its hooks run once: a second try (refused the first time) goes on what they said then.
+        const a: Admitted = q.admitted ? { text: q.text, admission: "go", ...q.admitted } : admit ? await admit(q.text, q.attachments) : { text: q.text, admission: "go" };
+        if (admit && a.admission === "go") q.admitted = a.context ? { context: a.context } : {};
         if (a.admission !== "go" || !this.queued.includes(q) || q.held) {
             q.sending = undefined;
             // One a hook blocked goes back to the composer, to change or drop (the hook's warning says why).
@@ -2197,6 +2211,8 @@ export class Runtime {
                 // The session is being let go of: it stays queued (on disk), to go once it's reopened.
                 if (this.closed) return false;
                 this.steerWith([q], record);
+                // What waited behind it can go now.
+                if (this.queued.some((x) => x.mode === "steer" && !x.held && !this.waits(x))) queueMicrotask(() => this.agent?.queueChanged());
                 return true;
             },
             refused: () => {
@@ -2387,8 +2403,9 @@ export class Runtime {
         this.notice(trustedByUser(cwd) ? `Trusted ${cwd}. Diagnostics after edits are on for it.` : `Trusted ${cwd} for this run only.`, trustedByUser(cwd) ? "info" : "warn");
     }
 
-    private async dispatch(text: string, attachments?: AttachedPart[], literal = false) {
-        if (literal) return this.startTurn(text, { attachments });
+    /** `admitted`: its UserPromptSubmit hooks went already, with what they added (Queued.admitted). */
+    private async dispatch(text: string, attachments?: AttachedPart[], literal = false, admitted?: { context?: string }) {
+        if (literal) return this.startTurn(text, { attachments, admitted });
         const trimmed = text.trim();
         if (trimmed.startsWith("!") && !attachments?.length) return this.runUserShell(trimmed.slice(1).trim());
         if (trimmed.startsWith("/") && !trimmed.startsWith("//")) {
@@ -2424,7 +2441,7 @@ export class Runtime {
             }
             if (cmd.startsWith("mcp__") && this.ws.mcp.promptCommands().some((p) => p.command === cmd)) return this.runMcpPrompt(cmd, args, trimmed, attachments);
         }
-        return this.startTurn(text, { attachments });
+        return this.startTurn(text, { attachments, admitted });
     }
 
     /** An MCP server's prompt as a slash command: fetched (it may ask the user something first), then sent as the prompt. */
@@ -2460,7 +2477,7 @@ export class Runtime {
     /** `about`: what to name the session after, when the text sent isn't the best guide (a skill's instructions). */
     /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files and MCP resources (a skill's or an MCP prompt's text is sent as written). */
     /** `goal`: a turn the goal started (src/agent/goal.ts). */
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string; wakes?: Wake[]; goal?: boolean } = {}) {
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string; wakes?: Wake[]; goal?: boolean; admitted?: { context?: string } } = {}) {
         // The user's own turn overtakes a pending goal check, and a paused goal picks up after it. A scheduled prompt
         // leaves a paused goal paused; the resume after a usage limit is the exception, as in Claude Code.
         // A watch's events don't either: they aren't the user's.
@@ -2533,7 +2550,7 @@ export class Runtime {
                 const images = parts.filter((p): p is AttachedPart => p.type === "image");
                 this.pendingPrompt = { seg: this.segment, index, attachments: images };
                 if (images.length) this.op({ op: "turn.patch", turnId: turn.id, patch: { prompt: { ...turn.prompt!, ...attachedPrompt(images) } } });
-                reason = await agent.run(parts, { signal: ac.signal, display, kind: opts.kind });
+                reason = await agent.run(parts, { signal: ac.signal, display, kind: opts.kind, admitted: opts.admitted });
             }
         } catch (e) {
             const message = `Unexpected error: ${redact((e as Error).message)}`;
@@ -2648,7 +2665,7 @@ export class Runtime {
         }
         this.queued = this.queued.filter((q) => q !== next);
         this.queueUpdated();
-        await this.dispatch(next.text, next.attachments, next.literal).catch((e) => this.notice(redact((e as Error).message), "error"));
+        await this.dispatch(next.text, next.attachments, next.literal, next.admitted).catch((e) => this.notice(redact((e as Error).message), "error"));
         // Something that failed before it could hand on to the queue.
         await this.settleGoal(false);
     }
@@ -2700,7 +2717,7 @@ export class Runtime {
             this.checkPdfs(q.attachments);
             this.queued = this.queued.filter((x) => x !== q);
             this.queueUpdated();
-            void this.dispatch(q.text, q.attachments, q.literal).catch((e) => this.notice(redact((e as Error).message), "error"));
+            void this.dispatch(q.text, q.attachments, q.literal, q.admitted).catch((e) => this.notice(redact((e as Error).message), "error"));
             return { sent: true, started: true };
         }
         const why = this.waits(q);
@@ -2731,6 +2748,8 @@ export class Runtime {
     dequeue(queueId: number): Queued | undefined {
         const i = this.queued.findIndex((q) => q.id === queueId);
         if (i < 0) return undefined;
+        // On its way into the turn: whether it goes is the CLI's to say, in a moment (taken out then, or left here).
+        if (this.queued[i]!.sending) throw new RpcError("This message is going into the running turn right now. Edit or remove it once it has gone in, or comes back.", "sending");
         const [q] = this.queued.splice(i, 1);
         this.queueUpdated();
         return q;
