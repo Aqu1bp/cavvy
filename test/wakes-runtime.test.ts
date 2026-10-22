@@ -3,7 +3,7 @@
 // as a prompt; outside text in them attaches nothing; after an interrupt
 // they wait for the user; and the Watching panel's stop button.
 
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
@@ -219,4 +219,131 @@ test("an adopted wake sends nothing, so Harness's notes and what the CLI wasn't 
     } finally {
         await engine.stop();
     }
+});
+
+// #282 review round 3 (D2, D3): what an adopted turn's CLI wasn't sent goes with its next prompt once, whatever
+// becomes of the adopted turn, and is never part of the history (another model would be sent it twice).
+describe("an adopted turn's unsent context (#282 review round 3)", () => {
+    const TOKEN = "zebra-pancake-71";
+    const NOTE = "Delegated task task-1 finished: r3-note-42.";
+    const count = (s: string, sub: string) => s.split(sub).length - 1;
+
+    /** A CLI backend: each turn says its session id (its place moves to the turn's end), then an adopted one does `onAdopt`. */
+    function backend(turns: BackendTurn[], onAdopt: (t: BackendTurn) => Promise<any>) {
+        return {
+            agentBackend: true as const,
+            adoptsTurns: true,
+            setMode() {},
+            listModels: async () => [],
+            stream: async () => {
+                throw new Error("not used");
+            },
+            compact: async () => ({ reason: "done" as const, text: "", actions: [] }),
+            runTurn: async (t: BackendTurn) => {
+                turns.push(t);
+                t.session.sessionId("cli-session-1");
+                if (t.adopt) return onAdopt(t);
+                return { reason: "done" as const, text: "ok.", actions: [] };
+            },
+        };
+    }
+
+    async function setup(onAdopt: (t: BackendTurn) => Promise<any> = async () => ({ reason: "done", text: "Auth is mapped.", actions: [] }), settings?: Record<string, unknown>) {
+        const s = await session();
+        await s.rt.ready;
+        // A turn on another model first: the CLI hasn't seen it.
+        await s.engine.handle(s.c, "session.send", { id: s.id, text: `hello ${TOKEN}` });
+        await until(() => s.rt.idle && s.rt.session.messages.some((m) => m.role === "assistant"));
+        const realModel = s.rt.agent!.model;
+        const realClient = s.rt.agent!.client;
+        const turns: BackendTurn[] = [];
+        s.rt.agent!.setModel(backendModel("fake-cli", "x"), backend(turns, onAdopt) as never);
+        if (settings) {
+            const o = (s.rt.agent as any).o;
+            const orig = o.settings;
+            o.settings = () => ({ ...orig(), ...settings });
+        }
+        s.rt.agent!.addReminder(NOTE);
+        return { ...s, turns, realModel, realClient };
+    }
+
+    /** The prompts the CLI was sent (an adopted turn is sent nothing). */
+    const sent = (turns: BackendTurn[]) => turns.filter((t) => !t.adopt).map((t) => t.prompt).join("\n");
+
+    for (const how of ["throws", "throws an abort"] as const) {
+        test(`an adopted turn that ${how} after the CLI said its session id: what it wasn't sent still goes with the next prompt, once (D2)`, async () => {
+            const { engine, c, id, rt, turns } = await setup(async (t) => {
+                if (how === "throws") throw new Error("host went away");
+                await new Promise<void>((r) => (t.signal.aborted ? r() : t.signal.addEventListener("abort", () => r(), { once: true })));
+                throw new DOMException("The operation was aborted.", "AbortError");
+            });
+            try {
+                rt.adoptWake({ provider: "fake-cli", ref: "turn-8", label: "Background task finished: Map auth" });
+                await until(() => turns.length === 1 && (how === "throws" ? rt.idle : rt.busy));
+                if (how !== "throws") {
+                    rt.interrupt();
+                    await until(() => rt.idle);
+                }
+                await engine.handle(c, "session.send", { id, text: "and now?" });
+                await until(() => turns.length === 2 && rt.idle);
+                expect(count(sent(turns), TOKEN)).toBe(1);
+                expect(count(sent(turns), NOTE)).toBe(1);
+            } finally {
+                await engine.stop();
+            }
+        });
+    }
+
+    test("two adopted wakes, then a prompt: the earlier turn goes to the CLI once, and the session keeps no copy of it (D3)", async () => {
+        const { engine, c, id, rt, turns } = await setup();
+        try {
+            rt.adoptWake({ provider: "fake-cli", ref: "turn-8", label: "Background task finished: Map auth" });
+            await until(() => turns.length === 1 && rt.idle);
+            rt.adoptWake({ provider: "fake-cli", ref: "turn-9", label: "Background task finished: Write docs" });
+            await until(() => turns.length === 2 && rt.idle);
+            await engine.handle(c, "session.send", { id, text: "and now?" });
+            await until(() => turns.length === 3 && rt.idle);
+            expect(count(sent(turns), TOKEN)).toBe(1);
+            expect(count(sent(turns), NOTE)).toBe(1);
+            // The user's own message is the only copy in the history (no reminder carries the transcript).
+            expect(rt.session.messages.filter((m) => m.role === "user" && JSON.stringify(m).includes(TOKEN)).map((m) => m.meta?.kind)).toEqual(["prompt"]);
+            // Sent: nothing waits any more.
+            expect(rt.session.backends.get("fake-cli")?.unsent).toBeUndefined();
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("after an adopted wake, back on an API model: its request has the earlier turn once (D3)", async () => {
+        const { engine, c, id, rt, turns, realModel, realClient } = await setup();
+        try {
+            rt.adoptWake({ provider: "fake-cli", ref: "turn-8", label: "Background task finished: Map auth" });
+            await until(() => turns.length === 1 && rt.idle);
+            rt.agent!.setModel(realModel, realClient);
+            const before = mock.bodies.length;
+            await engine.handle(c, "session.send", { id, text: "and now, api?" });
+            await until(() => rt.idle && mock.bodies.length > before);
+            expect(count(lastTurnRequest(), TOKEN)).toBe(1);
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("an adopted wake a Stop hook keeps going: the hook's round carries what the CLI wasn't sent, once", async () => {
+        const flag = join(tempDir("r3-flag-"), "once");
+        const { engine, c, id, rt, turns } = await setup(undefined, { hooks: { Stop: [{ command: `[ -f '${flag}' ] || { touch '${flag}'; echo 'keep going r3' >&2; exit 2; }` }] } });
+        try {
+            rt.adoptWake({ provider: "fake-cli", ref: "turn-8", label: "Background task finished: Map auth" });
+            await until(() => turns.length >= 2 && rt.idle);
+            await engine.handle(c, "session.send", { id, text: "and now?" });
+            await until(() => turns.length === 3 && rt.idle);
+            expect(turns[0]!.adopt).toBe("turn-8");
+            expect(turns[1]!.prompt).toContain("keep going r3");
+            expect(turns[1]!.prompt).toContain(TOKEN);
+            expect(count(sent(turns), TOKEN)).toBe(1);
+            expect(count(sent(turns), NOTE)).toBe(1);
+        } finally {
+            await engine.stop();
+        }
+    });
 });

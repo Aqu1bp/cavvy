@@ -215,7 +215,7 @@ export function forkSession(original: Session, o: ForkOptions): Session {
         ...(model ? [{ t: "model" as const, model }] : []),
         ...(original.fastMode !== undefined ? [{ t: "fastMode" as const, enabled: original.fastMode }] : []),
         ...Object.entries(original.accounts).map(([provider, id]) => ({ t: "account" as const, provider, id })),
-        ...shared.map(([provider, b]) => ({ t: "backend" as const, provider, id: b.id, synced: b.synced, fork: true, folder: original.backendFolder(provider) })),
+        ...shared.map(([provider, b]) => ({ t: "backend" as const, provider, id: b.id, synced: b.synced, fork: true, ...(b.unsent ? { unsent: b.unsent } : {}), folder: original.backendFolder(provider) })),
     ];
 
     // Claimed before it exists, so no other process opens it half way.

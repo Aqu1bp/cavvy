@@ -136,6 +136,28 @@ describe("Session persistence", () => {
         expect(bg.shown().map((x) => [x.id, x.status])).toEqual([["cli-1", "failed"]]);
     });
 
+    test("what an adopted turn's CLI wasn't sent is kept with its backend session: through a reload, a cursor move and a fork; a new session id drops it (#282 review round 3, D3)", () => {
+        const s = Session.create(project());
+        s.push(user("hi"));
+        s.setBackendSession("claude-code", "cli-1", 1);
+        s.setBackendUnsent("claude-code", "<conversation-so-far>earlier</conversation-so-far>");
+        s.push(user("more"));
+        s.setBackendSession("claude-code", "cli-1", 2);
+        expect(s.backends.get("claude-code")).toEqual({ id: "cli-1", synced: 2, unsent: "<conversation-so-far>earlier</conversation-so-far>" });
+        const back = Session.load(s.path);
+        expect(back.backends.get("claude-code")?.unsent).toBe("<conversation-so-far>earlier</conversation-so-far>");
+        // Never part of the history other models see.
+        expect(JSON.stringify(back.messages)).not.toContain("earlier");
+        const fork = back.fork({ persist: false, shareBackends: true });
+        expect(fork.backends.get("claude-code")?.unsent).toBe("<conversation-so-far>earlier</conversation-so-far>");
+        back.setBackendUnsent("claude-code", undefined);
+        expect(Session.load(s.path).backends.get("claude-code")).toEqual({ id: "cli-1", synced: 2 });
+        back.setBackendUnsent("claude-code", "again");
+        back.setBackendSession("claude-code", "cli-2", 2);
+        expect(Session.load(s.path).backends.get("claude-code")).toEqual({ id: "cli-2", synced: 2 });
+        back.release();
+    });
+
     test("a SessionBackground made from the log has its running tasks as stopped when Harness quit, until they're told", async () => {
         const { SessionBackground, lostNote } = await import("../src/agent/background");
         const s = Session.create(project());

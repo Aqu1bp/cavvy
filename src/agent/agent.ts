@@ -1725,7 +1725,13 @@ export class Agent {
      * conversation so far (it may have started on another model); a resumed
      * one gets what other models said since its last turn.
      */
-    private backendPrompt(text: string, promptIndex: number, resume?: { synced: number }): string {
+    private backendPrompt(text: string, promptIndex: number, resume?: { synced: number; unsent?: string }): string {
+        // What it wasn't sent before its place (an adopted turn moved it past that): first, as it happened first.
+        const body = this.missedPrompt(text, promptIndex, resume);
+        return resume?.unsent ? `${resume.unsent}\n\n${body}` : body;
+    }
+
+    private missedPrompt(text: string, promptIndex: number, resume?: { synced: number }): string {
         const missed = this.session.messages.slice(resume ? resume.synced : 0, promptIndex).map(withoutStateNotes);
         // Only that its last turn was stopped, which it never heard (Harness stopped or died part way), and
         // Harness's notes to it since (a message that missed that turn): said plainly, not as another model's turn.
@@ -1953,7 +1959,7 @@ export class Agent {
         let prompt = text;
         // The conversation so far goes beside a /goal (goalContext), so the command stays the whole prompt.
         const goalCommand = GOAL_COMMAND.test(text);
-        const toSend = (r?: { synced: number }) =>
+        const toSend = (r?: { synced: number; unsent?: string }) =>
             goalCommand && prompt === text ? { prompt, goalContext: this.backendPrompt("", promptIndex, r).trim() || undefined } : { prompt: this.backendPrompt(prompt, promptIndex, r) };
         let promptImages = images;
         let promptDocuments = documents;
@@ -1970,9 +1976,20 @@ export class Agent {
                 // turns, Harness's notes): nothing goes with that turn, so if it moves the CLI's place past them
                 // (sessionId), they go with the next prompt.
                 const unsent = adopting ? this.backendPrompt("", promptIndex, resume).trim() : "";
-                result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...sent, synthetic: woken || sent.prompt !== prompt, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork, ...(adopting ? { adopt } : {}) });
-                // The turn's end moves the CLI's place to here (endBackendTurn): what it wasn't sent goes after it.
-                if (unsent && this.session.backends.has(provider)) this.backendStopReminders.push(unsent);
+                const placed = this.session.backends.get(provider);
+                let returned = false;
+                try {
+                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...sent, synthetic: woken || sent.prompt !== prompt, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork, ...(adopting ? { adopt } : {}) });
+                    returned = true;
+                } finally {
+                    // Its place moved (it said its session id), the turn ending well or not. An adopted turn was sent
+                    // nothing: what it wasn't sent goes with the next prompt (kept with its session, out of the history
+                    // other models see). A prompt of ours carried what was waiting: that's sent.
+                    const now = this.session.backends.get(provider);
+                    const moved = now !== undefined && (now.id !== placed?.id || now.synced !== placed?.synced);
+                    if (moved && adopting) this.session.setBackendUnsent(provider, unsent || undefined);
+                    else if (!adopting && resume?.unsent && now?.id === resume.id && (moved || returned)) this.session.setBackendUnsent(provider, undefined);
+                }
                 if (result.resumeFailed && !adopting) {
                     // Gone, or made in another folder: start a new one with this conversation as context.
                     this.session.forgetBackendSession(provider);

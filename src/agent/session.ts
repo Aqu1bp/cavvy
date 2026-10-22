@@ -99,7 +99,7 @@ export type Line =
     | { t: "usage"; usage: Usage; cost: number; model: string; unknown?: true; at?: number }
     | ({ t: "notice" } & TurnNotice)
     /** An agent backend's own session (Claude Code) or thread (Codex); id null forgets it. */
-    | { t: "backend"; provider: string; id: string | null; synced?: number; fork?: boolean; folder?: string }
+    | { t: "backend"; provider: string; id: string | null; synced?: number; fork?: boolean; folder?: string; unsent?: string }
     /** A plan the agent presented (ExitPlanMode), kept so it can be saved or taken elsewhere later: Claude Code's never reach the messages. */
     | { t: "plan"; id: string; text: string; at: number }
     /** A plan taken to a new worktree: where it came from, or where it went. Older versions skip these lines. */
@@ -168,6 +168,11 @@ export interface BackendSession {
     synced: number;
     /** Shared with a fork: never continued in place, only forked (the next turn gets a new id). */
     fork?: boolean;
+    /**
+     * What it wasn't sent of the conversation before its place: a turn its CLI started by itself (adopted, a wake)
+     * moved its place past messages it never saw. Goes with its next prompt; never part of the history other models see.
+     */
+    unsent?: string;
 }
 
 export interface SessionSummary {
@@ -269,9 +274,10 @@ export class Session {
         for (const message of this.messages) copy.push(structuredClone(message));
         if (opts.shareBackends) for (const [provider, b] of this.backends) {
             const folder = this.backendFolders.get(provider);
-            copy.backends.set(provider, { id: b.id, synced: b.synced, fork: true });
+            const unsent = b.unsent ? { unsent: b.unsent } : {};
+            copy.backends.set(provider, { id: b.id, synced: b.synced, fork: true, ...unsent });
             if (folder) copy.backendFolders.set(provider, folder);
-            copy.write({ t: "backend", provider, id: b.id, synced: b.synced, fork: true, ...(folder ? { folder } : {}) });
+            copy.write({ t: "backend", provider, id: b.id, synced: b.synced, fork: true, ...unsent, ...(folder ? { folder } : {}) });
         }
         for (const notice of this.notices) {
             copy.notices.push({ ...notice });
@@ -469,9 +475,22 @@ export class Session {
         if (cur?.id !== id) this.runsFor?.recordSubagentRun(provider, id);
         // Still the shared one (the backend never answered with its fork): it stays shared.
         const fork = cur?.id === id && cur.fork ? { fork: true } : {};
-        this.backends.set(provider, { id, synced, ...fork });
+        // What it wasn't sent stays with the same session until a prompt takes it (setBackendUnsent); a new one is sent everything.
+        const unsent = cur?.id === id && cur.unsent ? { unsent: cur.unsent } : {};
+        this.backends.set(provider, { id, synced, ...fork, ...unsent });
         if (folder) this.backendFolders.set(provider, folder);
-        this.write({ t: "backend", provider, id, synced, ...fork, ...(folder ? { folder } : {}) });
+        this.write({ t: "backend", provider, id, synced, ...fork, ...unsent, ...(folder ? { folder } : {}) });
+    }
+
+    /** What the backend session wasn't sent of the conversation before its place (BackendSession.unsent); none: it was sent. */
+    setBackendUnsent(provider: string, unsent: string | undefined) {
+        const cur = this.backends.get(provider);
+        if (!cur || (cur.unsent ?? "") === (unsent ?? "")) return;
+        const { unsent: _, ...rest } = cur;
+        const next = unsent ? { ...rest, unsent } : rest;
+        this.backends.set(provider, next);
+        const folder = this.backendFolders.get(provider);
+        this.write({ t: "backend", provider, ...next, ...(folder ? { folder } : {}) });
     }
 
     /** A fork is to share this backend session: from now on it's only forked, never continued in place. False if that couldn't be saved. */
@@ -480,7 +499,7 @@ export class Session {
         if (!cur) return false;
         this.backends.set(provider, { ...cur, fork: true });
         const folder = this.backendFolders.get(provider);
-        return this.write({ t: "backend", provider, id: cur.id, synced: cur.synced, fork: true, ...(folder ? { folder } : {}) });
+        return this.write({ t: "backend", provider, id: cur.id, synced: cur.synced, fork: true, ...(cur.unsent ? { unsent: cur.unsent } : {}), ...(folder ? { folder } : {}) });
     }
 
     addPlan(id: string, text: string): PresentedPlan {
@@ -605,7 +624,7 @@ export class Session {
             }
             else if (l.t === "backend") {
                 if (typeof l.provider !== "string") continue;
-                if (typeof l.id === "string" && l.id) s.backends.set(l.provider, { id: l.id, synced: typeof l.synced === "number" ? l.synced : s.messages.length, ...(l.fork === true ? { fork: true } : {}) });
+                if (typeof l.id === "string" && l.id) s.backends.set(l.provider, { id: l.id, synced: typeof l.synced === "number" ? l.synced : s.messages.length, ...(l.fork === true ? { fork: true } : {}), ...(typeof l.unsent === "string" && l.unsent ? { unsent: l.unsent } : {}) });
                 else s.backends.delete(l.provider);
                 if (l.id && typeof l.folder === "string") s.backendFolders.set(l.provider, l.folder);
                 else s.backendFolders.delete(l.provider);
