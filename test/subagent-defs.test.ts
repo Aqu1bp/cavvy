@@ -524,8 +524,17 @@ describe("isolation: worktree", () => {
         expect(result("t1")!.content).toContain("It made no changes, so its worktree was removed.");
     });
 
-    test("two runs of a worktree agent send the same cached prefix: each one's worktree is named after it (#255)", async () => {
+    test.each([".", "src"])("two runs of a worktree agent send the same cached prefix: each one's worktree is named after it (#255; session in %s)", async (dir) => {
         await initRepo();
+        // The project's instructions at the repository root, an ancestor of a session opened in src/.
+        mkdirSync(join(cwd, "src"));
+        writeFileSync(join(cwd, "AGENTS.md"), "Run the linter before committing.\n");
+        writeFileSync(join(cwd, "src", "main.ts"), "\n");
+        await git(cwd, "add", ".");
+        await git(cwd, "commit", "-qm", "layout");
+        // Trusted by the user, so the worktrees inside it read the project's files.
+        trust.trustFolder(cwd);
+        cwd = join(cwd, dir === "." ? "" : dir);
         defineAgent("isolated", "isolation: worktree");
         childScript = () => say("looked around");
         mainCalls(["t1", "Task", task("isolated")], ["t2", "Task", task("isolated")]);
@@ -546,6 +555,8 @@ describe("isolation: worktree", () => {
             expect(p.system[0].text).toContain(`Project: ${cwd} (you work in a git worktree of it`);
             expect(p.system[0].text).not.toContain(".claude/worktrees");
             expect(p.system[0].text).not.toContain("agent/isolated-");
+            // Read from the worktree, named from where the session is.
+            expect(p.system[0].text).toContain(`Contents of ${dir === "." ? "AGENTS.md" : "../AGENTS.md"} (project instructions, checked into the codebase):\n\nRun the linter before committing.`);
             expect(p.system[1].text).toContain(`Working directory: ${where[i]![1]}`);
             expect(p.system[1].text).toContain(where[i]![2]);
         });
