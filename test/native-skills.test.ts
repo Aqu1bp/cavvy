@@ -390,6 +390,23 @@ describe("review round 4", () => {
         expect(input.slice(1).map((i: any) => i.name)).toEqual(["lint"]);
     });
 
+    test("Codex: a queued message with a secret in it still runs the skill it names", async () => {
+        const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+        const secret = "FAKE_SECRET_FOR_STEER_SKILL_0123";
+        registerSecret(secret, "review");
+        try {
+            skill(userRoot(), "lint", "description: Check it", "Lint steps.");
+            await runTurn("codex", "start", { queued: [`please $lint ${secret}`] });
+            const starts = received().filter((m) => m.method === "turn/start");
+            expect(starts).toHaveLength(2);
+            const input = starts[1]!.params.input;
+            expect(input[0].text).not.toContain(secret);
+            expect(input.slice(1).map((i: any) => i.name)).toEqual(["lint"]);
+        } finally {
+            unregisterSecret(secret);
+        }
+    });
+
     test("Codex: a refused steer keeps the user's words and a wake apart, so the next turn runs only the user's skill", async () => {
         process.env.FAKE_SCENARIO = "slow";
         process.env.FAKE_STEER_FAIL = "1";

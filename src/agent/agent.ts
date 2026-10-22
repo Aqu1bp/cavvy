@@ -1682,7 +1682,9 @@ export class Agent {
                         const m = this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }, ...steer.context.map(reminder)], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
                         // With what hooks add after it, apart, as a prompt sent on its own is (forBackend).
                         const text = forBackend(m.content, false).text;
-                        typed.set(text, queued.join("\n\n"));
+                        // The stored (redacted) text, so the request stays a prefix of what the backend gets.
+                        const first = m.content[0];
+                        typed.set(text, first?.type === "text" ? first.text : queued.join("\n\n"));
                         out.push(text);
                     });
                 }
