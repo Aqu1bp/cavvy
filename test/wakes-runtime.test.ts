@@ -13,6 +13,7 @@ const { Engine } = await import("../src/server/engine");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 import type { ServerEvent, SessionSnapshot } from "../src/server/protocol";
+import { backendModel, type BackendTurn } from "../src/backends/types";
 
 const mock = startMockLlm({ delayMs: 0 });
 writeFileSync(join(iso.home, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: mock.url, requiresKey: false }] }));
@@ -103,6 +104,67 @@ test("watches are listed for the panel, keep the session loaded, and the panel's
         await engine.handle(c, "session.send", { id, text: "hello" });
         await until(() => rt.idle && rt.session.messages.some((m) => m.role === "assistant"));
         expect(JSON.stringify(rt.session.messages[0])).toContain("The user stopped watching PR #12 in acme/app");
+    } finally {
+        await engine.stop();
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Wake adoption (#219 §2): a turn an agent CLI started by itself (a background
+// task's report) becomes a wake turn of the session's, which sends nothing and
+// takes the CLI's events. No backend starts one yet; a fake one stands in.
+
+function adoptingBackend(turns: BackendTurn[]) {
+    return {
+        agentBackend: true as const,
+        adoptsTurns: true,
+        setMode() {},
+        listModels: async () => [],
+        stream: async () => {
+            throw new Error("not used");
+        },
+        compact: async () => ({ reason: "done" as const, text: "", actions: [] }),
+        runTurn: async (t: BackendTurn) => {
+            turns.push(t);
+            t.sink.emit({ type: "text", text: "Auth is mapped." });
+            return { reason: "done" as const, text: "Auth is mapped.", actions: [] };
+        },
+    };
+}
+
+test("a turn an agent CLI started by itself becomes a wake turn that adopts it: nothing is sent, and it waits for a running turn", async () => {
+    const { engine, c, id, rt } = await session();
+    try {
+        await rt.ready;
+        // Busy with the user's turn first: the CLI's turn waits for it.
+        await engine.handle(c, "session.send", { id, text: "hangforever" });
+        await until(() => rt.busy);
+        const turns: BackendTurn[] = [];
+        const realModel = rt.agent!.model;
+        const realClient = rt.agent!.client;
+        rt.agent!.options.host.wake!({ provider: "fake-cli", ref: "turn-7", label: "Background task finished: Map auth" });
+        await Bun.sleep(100);
+        expect(rt.session.messages.some((m) => m.meta?.kind === "wake")).toBe(false);
+        rt.interrupt();
+        await until(() => !rt.busy);
+        // (The model is switched only now, so the user's turn ran on the mock one.)
+        expect(rt.agent!.model).toBe(realModel);
+        expect(rt.agent!.client).toBe(realClient);
+        rt.agent!.setModel(backendModel("fake-cli", "x"), adoptingBackend(turns) as never);
+        rt.adoptWake({ provider: "fake-cli", ref: "turn-8", label: "Background task finished: Write docs" });
+        await until(() => turns.length >= 1 && rt.idle);
+        // The first one was taken once the user's turn ended (on the model then: the mock's, which can't).
+        expect(turns.map((t) => t.adopt)).toEqual(["turn-8"]);
+        expect(turns[0]!.sessionKey).toBe(rt.session.meta.id);
+        const wakes = rt.session.messages.filter((m) => m.meta?.kind === "wake");
+        expect(wakes.map((m) => m.meta?.display)).toEqual(["Background task finished: Map auth", "Background task finished: Write docs"]);
+        expect(rt.snapshot().turns.filter((t) => t.prompt?.wake).map((t) => t.prompt)).toEqual([
+            { text: "Background task finished: Map auth", wake: true },
+            { text: "Background task finished: Write docs", wake: true },
+        ]);
+        // The one on a model that can't take it says so; the adopted one has the CLI's answer.
+        expect(rt.session.notices.some((n) => n.text.includes("fake-cli started a turn of its own, but this session can't take it over now"))).toBe(true);
+        expect(JSON.stringify(rt.session.messages.at(-1))).toContain("Auth is mapped.");
     } finally {
         await engine.stop();
     }

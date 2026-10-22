@@ -36,6 +36,44 @@ function lines(file: string): any[] {
 }
 
 describe("Session persistence", () => {
+    test("background tasks are kept as bgtask lines: the last for an id wins, bad ones are skipped, and a fork doesn't take them", () => {
+        const s = Session.create(project());
+        s.push(user("hi"));
+        const task = { id: "task-1", provider: "claude-code", kind: "agent" as const, label: "Map auth", toolUseId: "toolu_1", startedAt: 5, status: "running" as const, stoppable: true };
+        s.recordBackgroundTask(task);
+        s.recordBackgroundTask({ id: "bash_1", provider: "harness", kind: "shell", label: "npm run dev", startedAt: 6, status: "running", stoppable: true });
+        s.recordBackgroundTask({ ...task, status: "done", endedAt: 9 });
+        appendFileSync(s.path, JSON.stringify({ t: "bgtask", task: { id: "bad", kind: "nonsense" } }) + "\n");
+        expect(lines(s.path).filter((l) => l.t === "bgtask")).toHaveLength(4);
+        const back = Session.load(s.path);
+        expect([...back.backgroundTasks.values()]).toEqual([
+            { ...task, status: "done", endedAt: 9 },
+            { id: "bash_1", provider: "harness", kind: "shell", label: "npm run dev", startedAt: 6, status: "running", stoppable: true },
+        ]);
+        const fork = back.fork({ persist: false });
+        expect(fork.backgroundTasks.size).toBe(0);
+        back.release();
+    });
+
+    test("a SessionBackground made from the log has its running tasks as stopped when Harness quit, until they're told", async () => {
+        const { SessionBackground, lostNote } = await import("../src/agent/background");
+        const s = Session.create(project());
+        s.push(user("hi"));
+        s.recordBackgroundTask({ id: "bash_1", provider: "harness", kind: "shell", label: "npm run dev", startedAt: 6, status: "running", stoppable: true });
+        s.recordBackgroundTask({ id: "task-1", provider: "gemini", kind: "agent", label: "Review", startedAt: 7, status: "done", endedAt: 8, stoppable: true });
+        const back = Session.load(s.path);
+        const bg = new SessionBackground(back, () => 100);
+        expect(bg.shown()).toEqual([{ id: "bash_1", provider: "harness", kind: "shell", label: "npm run dev", startedAt: 6, status: "stopped", endedAt: 100, lost: true, stoppable: true }]);
+        const lost = bg.takeLost();
+        expect(lostNote(lost)).toBe("These background tasks stopped when Harness quit: background command: npm run dev (bash_1). They are no longer running and will not produce further results. Restart them only if still needed; do not wait for their old task IDs.");
+        expect(bg.shown()).toEqual([]);
+        expect(bg.takeLost()).toEqual([]);
+        // Written stopped: opened again, there's nothing to tell.
+        expect(back.backgroundTasks.get("bash_1")).toMatchObject({ status: "stopped", lost: true });
+        expect(new SessionBackground(Session.load(s.path)).shown()).toEqual([]);
+        back.release();
+    });
+
     test("account selections survive reopen and invalidate only their provider's native thread", () => {
         const s = Session.create(project());
         s.setModel("codex:default");

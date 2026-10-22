@@ -2237,6 +2237,8 @@ export class App {
             const after = this.afterStop;
             this.afterStop = undefined;
             if (after) return void (await this.submitText(after));
+            // A turn its agent CLI started by itself runs whatever the user stopped: it's taken now.
+            if (this.adopts.length) this.wake();
             return this.schedules.poke();
         }
         const next = this.nextQueued();

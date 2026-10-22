@@ -33,6 +33,8 @@ const { backgroundTiming } = await import("../src/backends/claude-code");
 const { forkSession, forkCut } = await import("../src/agent/fork");
 const { framedText, pdfPlaceholder } = await import("../src/providers/files");
 const { WakeQueue } = await import("../src/agent/wakes");
+const { SessionBackground } = await import("../src/agent/background");
+type BackgroundTaskInfo = import("../src/backends/live/info").BackgroundTaskInfo;
 
 type AgentEvent = import("../src/agent/agent").AgentEvent;
 type PermissionRequest = import("../src/agent/agent").PermissionRequest;
@@ -2643,6 +2645,36 @@ describe("Claude Code turn reliability (#60, #61, #64)", () => {
         expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
         expect(notices(a.events).join("\n")).toContain("Waiting for 1 background");
         expect(notices(a.events).join("\n")).not.toContain("stopped with Claude Code");
+    });
+
+    test("Claude Code's background tasks reach the session's background list as they start and end (#219 PR 2)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background";
+        const a = await makeAgent({ provider: "claude-code" });
+        const reported: BackgroundTaskInfo[] = [];
+        a.agent.state.background = new SessionBackground();
+        a.agent.state.background.onChange(() => reported.push(...a.agent.state.background!.list().filter((t) => !reported.some((r) => JSON.stringify(r) === JSON.stringify(t)))));
+        expect(await a.run("run checks and wait")).toBe("done");
+        expect(reported.map((t) => [t.id, t.provider, t.kind, t.status])).toEqual([
+            ["background-1", "claude-code", "shell", "running"],
+            ["background-1", "claude-code", "shell", "done"],
+        ]);
+        expect(reported[0]!.stoppable).toBe(true);
+    });
+
+    test("the user's stop of a Claude Code background task goes to it as stop_task while its run goes on, and the turn ends", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        const a = await makeAgent({ provider: "claude-code" });
+        a.agent.state.background = new SessionBackground();
+        const done = a.run("run checks and wait");
+        for (let i = 0; i < 500 && !a.agent.backgroundTasks().some((t) => t.id === "background-1" && t.status === "running"); i++) await Bun.sleep(20);
+        expect(await a.agent.stopBackground(["background-1"])).toEqual({ "background-1": "stopped" });
+        expect(received().filter((m) => m.request?.subtype === "stop_task").map((m) => m.request.task_id)).toEqual(["background-1"]);
+        expect(await done).toBe("done");
+        expect(a.agent.backgroundTasks().find((t) => t.id === "background-1")?.status).toBe("stopped");
+        expect(notices(a.events).join("\n")).toContain("stopped by the user");
+        // With its run over, there's nothing left to stop.
+        expect(await a.agent.stopBackground(["background-1"])).toEqual({ "background-1": "stopped" });
+        expect(await a.agent.stopBackground(["nope"])).toEqual({ nope: "unknown" });
     });
 
     test("a never-ending shell has a bounded wait and the model knows its lifetime", async () => {

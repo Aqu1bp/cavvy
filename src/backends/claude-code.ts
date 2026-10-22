@@ -536,7 +536,8 @@ class ClaudeTurn {
             const taskId = t.toolUseId ? this.agentTasks.get(t.toolUseId) : id;
             const said = taskId ? this.taskEnds.get(taskId) : undefined;
             const launch = t.toolUseId ? this.closedLaunches.get(t.toolUseId)?.reason : undefined;
-            const stopped = (taskId && this.stoppedTaskIds.has(taskId)) || said === "stopped" || launch === "aborted";
+            // One being stopped leaves Claude Code's list before its stop is answered.
+            const stopped = (taskId !== undefined && (this.stoppedTaskIds.has(taskId) || this.pendingStops.has(taskId))) || said === "stopped" || launch === "aborted";
             const status: BackgroundTaskInfo["status"] = gone && !stopped && !said && !launch ? "stopped" : stopped ? "stopped" : said === "failed" || launch === "error" ? "failed" : "done";
             emit({ type: "background_task", task: { ...t, status, endedAt: Date.now(), ...(gone && !stopped && !said && !launch ? { lost: true } : {}) } });
         }

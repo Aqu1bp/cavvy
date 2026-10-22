@@ -24,6 +24,8 @@ const { loadSettings } = await import("../src/config/settings");
 const { redact } = await import("../src/util/redact");
 const { DELEGATE_TOOL, DELEGATION_LIMITS, Delegations, MCP_SERVER_NAME, delegationAvailable, nativeModel, orchestratorTools } = await import("../src/agent/delegation");
 const { App } = await import("../src/ui/app");
+const { runCommand } = await import("../src/commands/index");
+const { stripAnsi } = await import("../src/ui/ansi");
 const { attachTiming } = await import("../src/backends/claude-code");
 const { SecretStore } = await import("../src/agent/secrets");
 
@@ -1700,6 +1702,45 @@ describe("harness models", () => {
 });
 
 describe("the app", () => {
+    test("/tasks lists the session's background work beside its delegated tasks, and /tasks stop <id|all> stops it", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "delegate", args: { task: "Review", description: "Review the diff", model: "gemini:gemini-test", agent: "explore", wait: false } }]);
+        script = async (req) => {
+            await gate().wait(req.signal);
+            return say("never");
+        };
+        const { run, agent } = await makeAgent({ provider: "claude-code" });
+        expect(await run("start it")).toBe("done");
+        let killed = 0;
+        const sh = { id: "bash_1", command: "npm run dev", startedAt: Date.now(), output: "", readOffset: 0, exitCode: null as number | null, kill: async () => ((killed++, (sh.exitCode = 143)), "stopped" as const) };
+        agent.state.shells.set(sh.id, sh);
+        const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
+        const printed: string[] = [];
+        const notes: string[] = [];
+        (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true };
+        app.session = Session.create(cwd, { persist: false });
+        app.agent = agent;
+        app.print = (lines: any) => void printed.push(...(Array.isArray(lines) ? lines : [lines]).map((l: unknown) => stripAnsi(String(l))));
+        app.notice = (m: string, level = "info") => void notes.push(`${level}: ${m}`);
+        await runCommand(app, "/tasks");
+        const listing = printed.join("\n");
+        expect(listing).toContain("task-1");
+        expect(listing).toContain("Review the diff");
+        expect(listing).toContain("bash_1");
+        expect(listing).toContain("background command: npm run dev");
+        expect(listing).toContain("/tasks stop all stops them all");
+        await runCommand(app, "/tasks stop bash_1");
+        expect(killed).toBe(1);
+        expect(notes.at(-1)).toBe("info: Stopping 1 background task.");
+        await runCommand(app, "/tasks stop nope");
+        expect(notes.at(-1)).toBe("error: No running background task nope. /tasks lists them.");
+        await runCommand(app, "/tasks stop all");
+        await agent.delegatedTasks[0]!.settled;
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["cancelled"]);
+        await runCommand(app, "/tasks stop");
+        expect(notes.at(-1)).toBe("info: No background tasks are running.");
+    });
+
     test("a stopped sub-agent's prompt is withdrawn, and one still queued isn't shown", async () => {
         const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
         (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true };

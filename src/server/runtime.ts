@@ -2472,6 +2472,8 @@ export class Runtime {
             const after = this.afterStop;
             this.afterStop = undefined;
             if (after) await this.dispatch(after).catch((e) => this.notice(redact((e as Error).message), "error"));
+            // A turn its agent CLI started by itself runs whatever the user stopped: it's taken now.
+            if (this.adopts.length) this.wake();
             return;
         }
         const next = this.nextQueued();
