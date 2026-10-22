@@ -22,6 +22,8 @@ const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const trust = await import("../src/config/trust");
 
 type AgentEvent = import("../src/agent/agent").AgentEvent;
+type PermissionRequest = import("../src/agent/agent").PermissionRequest;
+type PermissionResponse = import("../src/agent/agent").PermissionResponse;
 type BackendWake = import("../src/backends/types").BackendWake;
 type Session = InstanceType<typeof Session>;
 
@@ -77,7 +79,7 @@ async function until(ok: () => boolean, what: string, ms = 5000) {
     }
 }
 
-async function makeAgent(o: { session?: Session; settings?: Record<string, unknown>; queue?: string[] } = {}) {
+async function makeAgent(o: { session?: Session; settings?: Record<string, unknown>; queue?: string[]; mode?: import("../src/permissions/modes").PermissionMode; ask?: (req: PermissionRequest) => Promise<PermissionResponse> } = {}) {
     const settings = { agentCli: { liveSessions: true }, ...o.settings } as any;
     const session = o.session ?? Session.create(cwd, { persist: false });
     const wakes: BackendWake[] = [];
@@ -85,7 +87,7 @@ async function makeAgent(o: { session?: Session; settings?: Record<string, unkno
     const queue = o.queue ?? [];
     trust.trustForSession(cwd);
     const background = new SessionBackground(session);
-    let mode: import("../src/permissions/modes").PermissionMode = "bypassPermissions";
+    let mode: import("../src/permissions/modes").PermissionMode = o.mode ?? "bypassPermissions";
     const agent = new Agent({
         session,
         model: { provider: "codex", id: "default" } as any,
@@ -96,7 +98,7 @@ async function makeAgent(o: { session?: Session; settings?: Record<string, unkno
         mode: { get: () => mode, set: (m) => (mode = m) },
         toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map(), background },
         // As the runtime does: the list is kept in the session log as it changes.
-        host: { drainQueued: () => queue.splice(0), emit: (e) => events.push(e), ui: {}, wake: (w) => void wakes.push(w), backgroundChanged: () => background.persist() },
+        host: { drainQueued: () => queue.splice(0), emit: (e) => events.push(e), ui: {}, wake: (w) => void wakes.push(w), backgroundChanged: () => background.persist(), ...(o.ask ? { askPermission: o.ask } : {}) },
     });
     agents.push(agent);
     const run = (text: string, signal = new AbortController().signal) => {
@@ -234,6 +236,60 @@ describe("background terminals", () => {
         expect(calls("turn/interrupt")).toEqual([{ threadId: "thr-bg-1", turnId: "turn-bg-1" }]);
         expect(a.task("thr-bg-1")?.status).toBe("stopped");
         expect(pids()).toHaveLength(1);
+    });
+});
+
+describe("#310: a sub-agent's prompt is its own, not the turn's that started it", () => {
+    /** The host's prompts: a sub-agent's answered when the test says, the turn's own approved at once. */
+    function prompts() {
+        const asked: { req: PermissionRequest; answer: (r: PermissionResponse) => void }[] = [];
+        const ask = (req: PermissionRequest) => (req.agentLabel ? new Promise<PermissionResponse>((answer) => asked.push({ req, answer })) : Promise.resolve({ allow: true }));
+        return { asked, ask };
+    }
+
+    test("asked once its turn is over, it outlives later turns and their Esc; the answer reaches Codex", async () => {
+        process.env.FAKE_CODEX_SCENARIOS = "bgagent,cmd,hang";
+        process.env.FAKE_BG_MS = "never";
+        process.env.FAKE_CHILD_ASK = "1";
+        const p = prompts();
+        const a = await makeAgent({ mode: "default", ask: p.ask });
+        expect(await a.run("spawn a sub-agent and end the turn")).toBe("done");
+        await until(() => p.asked.length === 1, "the sub-agent's prompt");
+        const [asked] = p.asked;
+        expect(asked!.req).toMatchObject({ background: true, agentLabel: expect.any(String) });
+        expect(asked!.req.signal?.aborted).toBe(false);
+        // Another turn ends, and one is stopped with Esc: the prompt stays, and Codex hasn't had an answer.
+        expect(await a.run("reply TWO")).toBe("done");
+        const stop = new AbortController();
+        const hanging = a.run("go", stop.signal);
+        await until(() => calls("turn/start").length === 3, "the third turn");
+        await Bun.sleep(50);
+        stop.abort();
+        expect(await hanging).toBe("aborted");
+        await Bun.sleep(50);
+        expect(asked!.req.signal?.aborted).toBe(false);
+        expect(logLines().some((l) => l.childAsked)).toBe(false);
+        expect(calls("turn/interrupt").map((c) => c.threadId)).toEqual(["thr-new"]);
+        asked!.answer({ allow: true });
+        await until(() => logLines().some((l) => l.childAsked), "Codex to have the answer");
+        expect(logLines().find((l) => l.childAsked)?.childAsked).toEqual({ thread: "thr-bg-1", decision: "accept" });
+    });
+
+    test("Esc of the turn that runs the sub-agent stops it, and withdraws its prompt", async () => {
+        process.env.FAKE_SCENARIO = "bgagent";
+        process.env.FAKE_AGENT_PARENT = "hang";
+        process.env.FAKE_BG_MS = "never";
+        process.env.FAKE_CHILD_ASK = "1";
+        const p = prompts();
+        const a = await makeAgent({ mode: "default", ask: p.ask });
+        const stop = new AbortController();
+        const running = a.run("spawn a sub-agent", stop.signal);
+        await until(() => p.asked.length === 1, "the sub-agent's prompt");
+        expect(p.asked[0]!.req.signal?.aborted).toBe(false);
+        stop.abort();
+        expect(await running).toBe("aborted");
+        await until(() => p.asked[0]!.req.signal?.aborted === true, "the prompt withdrawn");
+        expect(calls("turn/interrupt")).toContainEqual({ threadId: "thr-bg-1", turnId: "turn-bg-1" });
     });
 });
 

@@ -19,6 +19,13 @@ import type { BackgroundTaskInfo } from "./live/info";
 
 /** A permission prompt raised by the backend's own permission system. */
 export interface BackendPermission {
+    /**
+     * Asked by a background sub-agent of the CLI's (its work outlives the turn): the turn's end or Esc doesn't
+     * withdraw it; the session's end does.
+     */
+    background?: boolean;
+    /** With background: aborts when the request no longer matters (its sub-agent's turn ended), withdrawing the prompt. */
+    signal?: AbortSignal;
     /** The harness tool whose rules apply: Bash, Edit, Write, Read, WebFetch, mcp__server__tool, or the backend's own name. */
     toolName: string;
     /** Input in that tool's shape (command, file_path, url, …). */

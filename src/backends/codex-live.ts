@@ -35,7 +35,7 @@ import { spawnFingerprint, type LiveCliSession, type LiveTurnResult, type LiveWa
 import type { AgentCliAdapter, CliConnection, CliEvent, CliEventSink, LiveSettings, SpawnConfig, SpawnSpec } from "./live/types";
 import type { BackgroundTaskInfo } from "./live/info";
 import { liveDebug, liveDebugOn } from "./live/debug";
-import type { BackendResult, BackendTurn, BackgroundStop, SessionHost, TurnSink } from "./types";
+import type { BackendPermission, BackendResult, BackendTurn, BackgroundStop, SessionHost, TurnSink } from "./types";
 import type { AgentCliStatus } from "./index";
 import {
     CODEX_CLIENT_NAME,
@@ -57,6 +57,7 @@ import {
     type CodexBackend,
     type LimitOrdering,
     type OpenItem,
+    type Origin,
     type SubAgent,
     type TurnOutput,
 } from "./codex";
@@ -196,6 +197,11 @@ export class CodexLiveConnection extends CodexTurn {
     private terminals = new Map<string, Terminal>();
     /** Sub-agent threads still working after their turn ended. */
     private bgSubs = new Map<string, { stopping?: boolean }>();
+    /**
+     * What a sub-agent asks, by its thread: withdrawn once that thread's turn ends (Esc interrupted it, or it ended
+     * otherwise: Codex answered for it) or the app-server goes. Not by the turn of the session's that started it.
+     */
+    private subAsks = new Map<string, AbortController>();
     /** Each sub-agent thread's root turn on the main thread. */
     private subRoots = new Map<string, string>();
     private notes: Note[] = [];
@@ -898,6 +904,7 @@ export class CodexLiveConnection extends CodexTurn {
             return w(ref);
         }
         this.onNotification(method, p);
+        if (method === "turn/completed" && thread && !main) this.withdrawAsks(thread);
         if (method === "turn/completed" && thread && !main && this.bgSubs.has(thread)) this.subEnded(thread, p.turn?.status);
     }
 
@@ -1218,9 +1225,30 @@ export class CodexLiveConnection extends CodexTurn {
         }
     }
 
+    /**
+     * A sub-agent's prompt goes on past the turn of the session's that started it (#310): Codex's sub-agent keeps
+     * working, and waits for the answer, after that turn ends. Its own turn's end withdraws it.
+     */
+    protected override subAsk(from: Origin | undefined): Pick<BackendPermission, "background" | "signal"> {
+        if (!from) return {};
+        let asks = this.subAsks.get(from.thread);
+        if (!asks || asks.signal.aborted) this.subAsks.set(from.thread, (asks = new AbortController()));
+        return { background: true, signal: asks.signal };
+    }
+
+    /** A sub-agent's turn ended (or the app-server went): what it was asking no longer matters. */
+    private withdrawAsks(thread?: string) {
+        for (const [t, asks] of [...this.subAsks]) {
+            if (thread !== undefined && t !== thread) continue;
+            asks.abort();
+            this.subAsks.delete(t);
+        }
+    }
+
     /** The app-server's output ended. */
     private gone() {
         this.closing = true;
+        this.withdrawAsks();
         // What Codex hasn't been told yet (a command that finished, with no wake for it): the next app-server's first prompt.
         this.keepNotes(this.notes.splice(0));
         liveCodexRpcs.delete(this);

@@ -31,7 +31,10 @@
 //                     the command finished by itself just before the terminate (it answers terminated: false)
 // FAKE_SCENARIO=bgagent  the turn spawns a sub-agent (thread thr-bg-n) whose turn keeps working after the turn: until
 //                     turn/interrupt names its thread, or FAKE_BG_MS (default 300; "never"); FAKE_AGENT_PARENT=hang: the
-//                     turn itself works on too, until interrupted
+//                     turn itself works on too, until interrupted; FAKE_CHILD_ASK=1: the sub-agent asks to run a command
+//                     FAKE_CHILD_ASK_MS (default 50) in, after its parent's turn is over unless that hangs (as 0.163's
+//                     did, #310); the answer is logged (childAsked), and it ends the sub-agent's turn: completed once
+//                     approved, else interrupted (as Codex does)
 // FAKE_SCENARIO=hang   the turn runs a foreground command (FAKE_HANG_PHASE=tool, default) or streams text
 //                     (FAKE_HANG_PHASE=stream) until interrupted (or FAKE_HANG_MS, default 10000)
 // FAKE_ENV_FILE       a JSON file of FAKE_* settings, read again with every message: a test changes them between
@@ -420,6 +423,14 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         childTurns.set(child, { turnId: childTurn, stop });
         log({ childStarted: { thread: child, turn: childTurn } });
         if (process.env.FAKE_BG_MS !== "never") timer = setTimeout(() => stop("completed"), Number(process.env.FAKE_BG_MS ?? 300));
+        if (process.env.FAKE_CHILD_ASK === "1")
+            setTimeout(async () => {
+                if (!childTurns.has(child)) return;
+                const command = "touch probe-A.txt";
+                const r = await serverRequest("item/commandExecution/requestApproval", { threadId: child, turnId: childTurn, itemId: `ask-${childTurn}`, command, cwd, commandActions: [{ type: "unknown", command }], availableDecisions: ["accept", "decline", "cancel"] });
+                log({ childAsked: { thread: child, decision: r?.decision } });
+                stop(r?.decision === "accept" ? "completed" : "interrupted");
+            }, Number(process.env.FAKE_CHILD_ASK_MS ?? 50));
         if (process.env.FAKE_AGENT_PARENT === "hang") {
             await new Promise<void>((r) => (t.wake = r));
             return finish(t.interrupted ? "interrupted" : "completed");

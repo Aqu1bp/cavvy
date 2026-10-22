@@ -1882,7 +1882,7 @@ export class CodexTurn {
             // asks gets the user now, since Codex may not ask (bypass never does). Either way a PermissionRequest
             // hook may answer, and may rewrite it again: what it approved is what runs.
             const input = h?.updatedInput ?? call.input;
-            const a = await this.cliSession.permission({ toolName: call.toolName, input, callId: id, hookDecision, hooksOnly: h?.updatedInput ? bypass : undefined, agentLabel });
+            const a = await this.cliSession.permission({ toolName: call.toolName, input, callId: id, hookDecision, hooksOnly: h?.updatedInput ? bypass : undefined, agentLabel, ...this.subAsk(from) });
             if (!a.allow) {
                 if (a.stop) this.interrupt(from);
                 return deny(a.message || "Denied.");
@@ -1894,6 +1894,14 @@ export class CodexTurn {
         }
         if (hookDecision && id) this.hookAnswers.set(id, "allow");
         return preToolUseAnswer({ context });
+    }
+
+    /**
+     * What a request of one of Codex's sub-agents says besides its label. Here nothing: the process ends with the
+     * turn, and its prompts with it. The live app-server's sub-agents go on past the turn (CodexLiveConnection).
+     */
+    protected subAsk(_from: Origin | undefined): Pick<BackendPermission, "background" | "signal"> {
+        return {};
     }
 
     /**
@@ -1971,7 +1979,7 @@ export class CodexTurn {
                 // network says something. One in another folder is checked as `cd <folder> && …`, where it runs,
                 // and only inside the workspace: a search there (`rg --hidden .`) reads what the checker can't see.
                 const asksAlways = !net && insideWorkspace(dir, this.t.cwd, this.t.additionalDirectories) && codexPolicy(this.turnMode ?? this.cliSession.mode(), [], Boolean(this.t.readOnly)).approvalPolicy === "untrusted";
-                const a = await this.ask({ toolName: "Bash", input: { command, description: typeof p.reason === "string" ? p.reason : undefined }, reason: `${typeof p.reason === "string" ? p.reason : ""}${net}`.trim() || undefined, asksAlways, agentLabel, callId: typeof p.itemId === "string" ? p.itemId : undefined });
+                const a = await this.ask({ toolName: "Bash", input: { command, description: typeof p.reason === "string" ? p.reason : undefined }, reason: `${typeof p.reason === "string" ? p.reason : ""}${net}`.trim() || undefined, asksAlways, agentLabel, ...this.subAsk(from), callId: typeof p.itemId === "string" ? p.itemId : undefined });
                 return { decision: this.decision(a, p.itemId, from) };
             }
             case "item/fileChange/requestApproval": {
@@ -1979,7 +1987,7 @@ export class CodexTurn {
                 // A sub-agent's change Codex asks about before saying whose thread it is: the change as it was announced.
                 const changes = open?.changes ?? this.unclaimedChanges(p.threadId, p.itemId);
                 if (!changes.length && typeof p.grantRoot === "string") {
-                    const a = await this.cliSession.permission({ toolName: "Edit", input: { file_path: join(p.grantRoot, "*") }, title: `Write access to ${p.grantRoot}`, reason: p.reason ?? undefined, agentLabel });
+                    const a = await this.cliSession.permission({ toolName: "Edit", input: { file_path: join(p.grantRoot, "*") }, title: `Write access to ${p.grantRoot}`, reason: p.reason ?? undefined, agentLabel, ...this.subAsk(from) });
                     return { decision: this.decision(a, p.itemId, from) };
                 }
                 if (!changes.length) {
@@ -2001,6 +2009,7 @@ export class CodexTurn {
                     preview: first ? changePreview(first, this.t.cwd) : undefined,
                     otherPaths: others,
                     agentLabel,
+                    ...this.subAsk(from),
                 });
                 return { decision: this.decision(a, p.itemId, from) };
             }
@@ -2019,6 +2028,7 @@ export class CodexTurn {
                     reason: [typeof p.reason === "string" ? p.reason : "", `It wants: ${asks.join(", ")}.`].filter(Boolean).join(" "),
                     widens: { read: want.read, write: want.write },
                     agentLabel,
+                    ...this.subAsk(from),
                 });
                 // Codex grants exactly what it asked for, so a hook's rewrite of the request can't be granted; nothing is.
                 if (a.allow && a.updatedInput) {
@@ -2061,8 +2071,8 @@ export class CodexTurn {
             const call = meta.codex_approval_kind === "mcp_tool_call" ? this.mcpCall(server, meta.tool_params, message, from) : undefined;
             const a = await this.cliSession.permission(
                 call
-                    ? { toolName: call.name, input: call.input, title: call.title, reason: message || undefined, agentLabel }
-                    : { toolName: "Codex approval", input: { server, kind: meta.codex_approval_kind, message }, title: message || `Codex asks for approval (${String(meta.codex_approval_kind)})`, agentLabel },
+                    ? { toolName: call.name, input: call.input, title: call.title, reason: message || undefined, agentLabel, ...this.subAsk(from) }
+                    : { toolName: "Codex approval", input: { server, kind: meta.codex_approval_kind, message }, title: message || `Codex asks for approval (${String(meta.codex_approval_kind)})`, agentLabel, ...this.subAsk(from) },
             );
             const d = this.decision(a, call?.id, from);
             const asked = call?.id ? this.items.get(call.id) : undefined;
@@ -2235,7 +2245,7 @@ export class CodexTurn {
 }
 
 /** A request from a thread other than the main one. */
-interface Origin {
+export interface Origin {
     thread: string;
     turnId?: string;
     sub?: SubAgent;

@@ -147,6 +147,8 @@ export interface PermissionRequest {
     summary?: string;
     /** Ends when the request no longer matters (its sub-agent was stopped): the prompt is withdrawn. */
     signal?: AbortSignal;
+    /** A background sub-agent's (BackendPermission.background): not the turn's, so its end or Esc leaves it. */
+    background?: boolean;
     /** run_with_secrets: the secrets the command gets in its environment, by name. Prompts show them. */
     secrets?: string[];
 }
@@ -1854,12 +1856,16 @@ export class Agent {
         return id ? Number(this.delegations.cancel(id)) : this.delegations.cancelAll();
     }
 
+    /** Aborted when the agent is disposed: a background sub-agent's prompt (BackendPermission.background) waits until then. */
+    private lifetime = new AbortController();
+
     /**
      * The session is done with this agent: stop its delegated tasks (waiting a moment for them), let go of the
      * CLI processes its backends keep for the session (releaseBackends), and revoke its MCP token.
      */
     async dispose(graceMs = 3000): Promise<void> {
         this.disposed = true;
+        this.lifetime.abort();
         const released = this.releaseBackends();
         this.fileWatch?.close();
         this.fileWatch = undefined;
@@ -2015,7 +2021,9 @@ export class Agent {
             mode: () => this.o.mode.get(),
             fastMode: () => this.fastMode(),
             permission: async (req) => {
-                const a = await this.backendPermission(req, signal);
+                // A background sub-agent's goes on past the turn (and Esc): only the session's end, or the backend
+                // saying it no longer matters (req.signal: its sub-agent's turn ended), withdraws it.
+                const a = await this.backendPermission(req, req.background ? (req.signal ? AbortSignal.any([this.lifetime.signal, req.signal]) : this.lifetime.signal) : signal);
                 // A no to one of the backend's own sub-agents stops that one (the backend says so to it), not this turn.
                 if (!a.allow && a.stop && !req.agentLabel) declined = true;
                 return a;
@@ -2702,7 +2710,7 @@ export class Agent {
             sandbox: undefined,
             needsClassifier: undefined,
         };
-        const answer = await this.o.host.askPermission({ tool, input, title, decision: ask, preview, ...(req.agentLabel ? { agentLabel: req.agentLabel } : {}), ...(req.callId ? { callId: req.callId } : {}) });
+        const answer = await this.o.host.askPermission({ tool, input, title, decision: ask, preview, ...(req.agentLabel ? { agentLabel: req.agentLabel } : {}), ...(req.callId ? { callId: req.callId } : {}), ...(req.background ? { background: true, signal } : {}) });
         if (signal.aborted) return { allow: false, message: "Interrupted by user", stop: true };
         if (answer.setMode) this.o.mode.set(answer.setMode);
         if (answer.rules?.length) {
