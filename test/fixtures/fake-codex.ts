@@ -61,6 +61,9 @@
 // FAKE_SLOW_RESUME, FAKE_SLOW_TURN_START  milliseconds before answering thread/resume, turn/start
 // FAKE_TURN_MS        how long every turn works before it answers
 // FAKE_STEER_MS       turn/steer is answered that many ms late (refused with FAKE_STEER_FAIL)
+// FAKE_STEER_DELAY_MS  milliseconds before answering turn/steer (refused then, with FAKE_STEER_FAIL)
+// FAKE_FAIL_TURN_START_AT=n  the nth turn/start fails (no turn starts)
+// FAKE_STARTED_FIRST=1  a turn's turn/started goes out before turn/start's answer
 // FAKE_STEER_WAKES=1  turn/steer is refused unless its expectedTurnId is the turn running now; in the "slow"
 //                     scenario a steer ends the first turn's wait, and its answer repeats what was steered
 // FAKE_MCP_CALLS      the "mcp" scenario's calls to servers from the thread's config: [{ server?, tool, args }]
@@ -315,6 +318,9 @@ let lastPolicy: any = {};
 let racedOnce = false;
 let turnStarts = 0;
 let refusals = 0;
+let startFailures = 0;
+/** Turns whose turn/started went out before turn/start answered (FAKE_STARTED_FIRST). */
+const startedEarly = new Set<string>();
 /** A thread started or resumed with a policy: the goal's turns Codex starts itself run under it, until a turn/start gives another. */
 function threadPolicy(p: any) {
     const sandbox: Record<string, string> = { "danger-full-access": "dangerFullAccess", "workspace-write": "workspaceWrite", "read-only": "readOnly" };
@@ -345,7 +351,7 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         // FAKE_GOAL_CONTINUE_MS: how soon (default 5; 0: at once, before anything else is read).
         if (going && g.status === "active") process.env.FAKE_GOAL_CONTINUE_MS === "0" ? goOn() : setTimeout(goOn, Number(process.env.FAKE_GOAL_CONTINUE_MS ?? 5));
     };
-    notify("turn/started", { threadId, turn: { id: turnId, status: "inProgress" } });
+    if (!startedEarly.delete(turnId)) notify("turn/started", { threadId, turn: { id: turnId, status: "inProgress" } });
     for (let i = 0; process.env.FAKE_LIMIT_UPDATE && i < Number(process.env.FAKE_LIMIT_REPEAT ?? 1); i++) notify("account/rateLimits/updated", JSON.parse(readFileSync(process.env.FAKE_LIMIT_UPDATE, "utf-8")));
     // Answer an earlier read after the push, before completing the turn.
     delayedLimits?.();
@@ -821,6 +827,8 @@ async function handle(m: any) {
                 notify("turn/completed", { threadId: "thr-oneoff", turn: { id: "turn-oneoff", status: fail ? "failed" : "completed", error: fail ? { message: fail } : null } });
                 break;
             }
+            // FAKE_FAIL_TURN_START_AT=n: the nth turn/start fails, and nothing starts.
+            if (process.env.FAKE_FAIL_TURN_START_AT && ++startFailures === Number(process.env.FAKE_FAIL_TURN_START_AT)) return fail("Codex couldn't start the turn");
             // FAKE_ONE_TURN=1: one turn at a time, as a thread runs them; another turn/start meanwhile is refused.
             if (process.env.FAKE_ONE_TURN === "1" && current && !current.done && current.threadId === p.threadId) return fail("a turn is already running");
             // FAKE_GOAL_RACE=1: with the goal active, Codex has just started its own next turn, and refuses this one.
@@ -843,6 +851,11 @@ async function handle(m: any) {
             // FAKE_SLOW_TURN_START_AT=n:ms: the nth turn/start answers that late.
             const slowAt = process.env.FAKE_SLOW_TURN_START_AT?.split(":").map(Number);
             if (slowAt && ++turnStarts === slowAt[0]) await Bun.sleep(slowAt[1]!);
+            // FAKE_STARTED_FIRST=1: the turn's turn/started goes out before turn/start's answer.
+            if (process.env.FAKE_STARTED_FIRST === "1") {
+                startedEarly.add(turnId);
+                notify("turn/started", { threadId: p.threadId, turn: { id: turnId, status: "inProgress" } });
+            }
             reply({ turn: { id: turnId, status: "inProgress" } });
             void runTurn(p.threadId, turnId, p);
             return;
@@ -890,6 +903,8 @@ async function handle(m: any) {
                 setTimeout(() => (process.env.FAKE_STEER_FAIL ? fail("no active turn to steer") : reply({ turnId: p.expectedTurnId })), Number(process.env.FAKE_STEER_MS));
                 return;
             }
+            // FAKE_STEER_DELAY_MS: answered this late (refused then, with FAKE_STEER_FAIL).
+            if (process.env.FAKE_STEER_DELAY_MS) await Bun.sleep(Number(process.env.FAKE_STEER_DELAY_MS));
             // FAKE_STEER_FAIL: the turn has already ended.
             if (process.env.FAKE_STEER_FAIL) return fail("no active turn to steer");
             if (process.env.FAKE_STEER_WAKES === "1") {

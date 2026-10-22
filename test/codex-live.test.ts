@@ -111,7 +111,7 @@ async function makeAgent(o: { session?: Session; settings?: Record<string, unkno
     const adopt = (w: BackendWake, signal = new AbortController().signal) => agent.run([{ type: "text", text: w.label ?? "" }], { signal, kind: "wake", display: w.label, adopt: w });
     const task = (id: string) => agent.backgroundTasks().find((t) => t.id === id);
     const notices = () => events.flatMap((e) => (e.type === "notice" ? [e.message] : []));
-    return { agent, session, events, run, wakes, nextWake, adopt, task, notices, queue, background };
+    return { agent, session, events, run, wakes, nextWake, adopt, task, notices, queue, background, settings };
 }
 
 describe("one app-server per session", () => {
@@ -579,5 +579,99 @@ describe("forks, rewinds and compactions across a wake", () => {
         expect(pids()).toHaveLength(1);
         fork.release();
         session.release();
+    });
+});
+
+describe("review round 1 (#293)", () => {
+    test("Esc while a steer sent as the turn ended is unanswered, and Codex refuses it: the message reaches Codex with the next prompt", async () => {
+        process.env.FAKE_SCENARIO = "hang";
+        process.env.FAKE_HANG_MS = "300";
+        process.env.FAKE_STEER_DELAY_MS = "800";
+        process.env.FAKE_STEER_FAIL = "1";
+        const a = await makeAgent();
+        const esc = new AbortController();
+        const running = a.run("go", esc.signal);
+        await until(() => JSON.stringify(a.events).includes("sleep 60"), "the command");
+        a.queue.push("and check the logs");
+        a.agent.queueChanged();
+        await until(() => calls("turn/steer").length > 0, "the steer");
+        await until(() => logLines().some((l) => l.hangEnded), "the turn's end");
+        await Bun.sleep(100);
+        esc.abort();
+        expect(await running).toBe("aborted");
+        for (const k of ["FAKE_STEER_DELAY_MS", "FAKE_STEER_FAIL", "FAKE_HANG_MS"]) delete process.env[k];
+        process.env.FAKE_SCENARIO = "cmd";
+        expect(await a.run("next")).toBe("done");
+        expect(turnTexts().at(-1)).toContain("and check the logs");
+    });
+
+    test("live sessions turned off with an app-server running: it goes (its background command reported stopped with it) before the per-turn app-server runs", async () => {
+        process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
+        process.env.FAKE_BG_MS = "never";
+        const a = await makeAgent();
+        expect(await a.run("start it")).toBe("done");
+        const [pid] = pids();
+        a.settings.agentCli = { liveSessions: false };
+        expect(await a.run("again")).toBe("done");
+        expect(alive(pid!)).toBe(false);
+        expect(a.task("exec-turn-1-1")?.status).toBe("stopped");
+        expect(a.task("exec-turn-1-1")?.withProcess).toBe(true);
+        expect(a.notices().join("\n")).toContain("background task");
+    });
+
+    test("HARNESS_DEBUG: a wake's label (a command, perhaps with a credential in it) isn't logged", async () => {
+        const file = join(bin, "live-cli.log");
+        rmSync(file, { force: true });
+        process.env.HARNESS_DEBUG = "1";
+        process.env.HARNESS_DEBUG_FILE = file;
+        try {
+            process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
+            process.env.FAKE_BG_MS = "100";
+            process.env.FAKE_BG_COMMAND = "curl -u alice:private-password https://example.invalid";
+            const a = await makeAgent();
+            expect(await a.run("start it")).toBe("done");
+            await a.nextWake();
+            await until(() => existsSync(file) && readFileSync(file, "utf-8").includes('"what":"wake"'), "the wake's line");
+            expect(readFileSync(file, "utf-8")).not.toContain("private-password");
+        } finally {
+            delete process.env.HARNESS_DEBUG;
+            delete process.env.HARNESS_DEBUG_FILE;
+        }
+    });
+
+    test("a finished command's note (no wake for it) survives the app-server's crash: Codex hears with the next prompt", async () => {
+        process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
+        process.env.FAKE_BG_MS = "100";
+        const a = await makeAgent({ settings: { codex: { wakeOnBackgroundCommand: false } } });
+        expect(await a.run("start it")).toBe("done");
+        await until(() => a.task("exec-turn-1-1")?.status === "done", "the command's end");
+        const [pid] = pids();
+        writeFileSync(CRASH, "");
+        await until(() => !alive(pid!), "the crash");
+        rmSync(CRASH, { force: true });
+        expect(await a.run("is it done?")).toBe("done");
+        expect(turnTexts().at(-1)).toMatch(/background command `sleep 1; echo bg 1` you started earlier[\s\S]*has finished[\s\S]*is it done\?/);
+    });
+
+    test("a turn/start Codex refuses doesn't use up the notes it carried: the next prompt has them", async () => {
+        process.env.FAKE_CODEX_SCENARIOS = "bg,cmd,cmd";
+        process.env.FAKE_BG_MS = "100";
+        process.env.FAKE_FAIL_TURN_START_AT = "2";
+        const a = await makeAgent({ settings: { codex: { wakeOnBackgroundCommand: false } } });
+        expect(await a.run("start it")).toBe("done");
+        await until(() => a.task("exec-turn-1-1")?.status === "done", "the command's end");
+        expect(await a.run("refused")).toBe("error");
+        expect(await a.run("is it done?")).toBe("done");
+        expect(turnTexts().at(-1)).toMatch(/you started earlier[\s\S]*has finished[\s\S]*is it done\?/);
+    });
+
+    test("turn/started before turn/start's answer: the turn is the prompt's, and no wake is made of it", async () => {
+        process.env.FAKE_STARTED_FIRST = "1";
+        const a = await makeAgent();
+        expect(await a.run("one")).toBe("done");
+        expect(await a.run("two")).toBe("done");
+        await Bun.sleep(200);
+        expect(a.wakes).toEqual([]);
+        expect(pids()).toHaveLength(1);
     });
 });

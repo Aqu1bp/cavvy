@@ -7,21 +7,26 @@ import { appendFileSync, mkdirSync } from "fs";
 import { dirname, join } from "path";
 import { paths } from "../../config/paths";
 
-let file: string | undefined | null = null;
+/** The file for the settings it was worked out for (HARNESS_DEBUG, HARNESS_DEBUG_FILE): again when they change. */
+let cached: { env: string; file: string | undefined } | undefined;
 
 function target(): string | undefined {
-    if (file !== null) return file;
-    if (!process.env.HARNESS_DEBUG) return (file = undefined);
-    file = process.env.HARNESS_DEBUG_FILE || join(paths.logs(), "live-cli.log");
-    try {
-        mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-    } catch {
-        file = undefined;
+    const on = process.env.HARNESS_DEBUG;
+    const env = `${on ?? ""}\0${process.env.HARNESS_DEBUG_FILE ?? ""}`;
+    if (cached?.env === env) return cached.file;
+    let file: string | undefined = on ? process.env.HARNESS_DEBUG_FILE || join(paths.logs(), "live-cli.log") : undefined;
+    if (file) {
+        try {
+            mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+        } catch {
+            file = undefined;
+        }
     }
+    cached = { env, file };
     return file;
 }
 
-/** Whether HARNESS_DEBUG is on (read once). */
+/** Whether HARNESS_DEBUG is on. */
 export function liveDebugOn(): boolean {
     return target() !== undefined;
 }

@@ -87,6 +87,11 @@ interface Segment {
     queued?: string;
     /** The harness turn's first: its skills and a /goal command are read here. */
     first?: boolean;
+    /**
+     * turn/start is under way: from here its failure keeps `queued` (startSegment); before, the run does if the
+     * segment never goes out (stopped first: LiveCliSession sends nothing once the signal is aborted).
+     */
+    started?: boolean;
     /** Why it's sent (HARNESS_DEBUG). */
     why: "prompt" | "compact" | "mode-restart" | "follow-up" | "unsent" | "queued" | "goal-under-mode";
 }
@@ -165,6 +170,8 @@ export class CodexLiveConnection extends CodexTurn {
     private promptFlight?: string[];
     /** turn/starts of ours on their way: a wake's label waits for them. */
     private flights = new Set<Promise<void>>();
+    /** Main-thread turns that started while a turn/start of ours was unanswered: whose they are waits for its answer. */
+    private undecided: string[] = [];
     /** Turns started here to tell Codex something (host wakes), with what the wake row says. */
     private hostTurns = new Map<string, string>();
     private hostStarting = false;
@@ -565,6 +572,8 @@ export class CodexLiveConnection extends CodexTurn {
         }
         // A steer on its way when the turn ended: whether Codex took it decides what's next.
         await this.steering;
+        // Stopped meanwhile: one Codex refused stays unsent (detach saves it for the next turn), and the queue stays.
+        if (this.aborted || run.aborted) return undefined;
         const followUp = this.followUp && this.followUps++ < 5 ? this.followUp : undefined;
         this.followUp = undefined;
         const why = followUp ? "follow-up" : this.unsteered.length ? "unsent" : "queued";
@@ -597,6 +606,11 @@ export class CodexLiveConnection extends CodexTurn {
         run.failure = failure;
         if (failure) return { reason: "error", text, answer, actions, error: this.limitHit ? `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached. ${resetSentence(this.limits?.resetsAt, "Codex")} Choose another account with /account or the plan meter, then send again.` : failure, ...(this.limitHit ? { limit: { resetsAt: this.limits?.resetsAt } } : {}) };
         return { reason: "done", text, answer, actions };
+    }
+
+    /** A segment's messages that never went out (the run was stopped before): saved for the next turn at detach. */
+    keepUnsent(text: string) {
+        this.unsteered.push(text);
     }
 
     /** The run is over: what it left goes to the next (messages it never sent), and finished commands may start a turn now. */
@@ -674,9 +688,9 @@ export class CodexLiveConnection extends CodexTurn {
                 activate = true;
             } else void this.readGoal();
         }
-        // What Codex should hear that no turn of its own told it (finished commands, stops).
-        const notes = this.takeNotes();
-        if (notes) text = text ? `${notes}\n\n${text}` : notes;
+        // What Codex should hear that no turn of its own told it (finished commands, stops): put back if no turn takes them.
+        const taken = this.takeNotes();
+        if (taken.text) text = text ? `${taken.text}\n\n${text}` : taken.text;
         // Paused in Codex for a mode change: active again once this turn (under the mode) has started.
         if (this.goalPausedForMode) activate = true;
         const mode = this.host.mode();
@@ -691,6 +705,7 @@ export class CodexLiveConnection extends CodexTurn {
         // Queued and restarted turns explicitly request this model again, even after a reroute.
         if (model) this.threadModels.set(this.threadId!, model);
         let r: any;
+        seg.started = true;
         for (let attempt = 0; ; attempt++) {
             // Not beside a turn of Codex's that was stopped for the mode and hasn't ended yet.
             await this.stoppedEnded();
@@ -712,6 +727,8 @@ export class CodexLiveConnection extends CodexTurn {
                     liveDebug("codex", "turn/start refused: Codex's own turn takes the prompt", { thread: this.threadId, turn: raced });
                     return this.claim(run, raced, text);
                 }
+                // Those that started meanwhile were Codex's own.
+                this.decideStarted();
                 // A turn of Codex's that started before (a wake): the message goes into it.
                 const other = this.mainTurn && !run.turns.has(this.mainTurn) ? this.mainTurn : undefined;
                 if (other && attempt < 2) {
@@ -726,8 +743,9 @@ export class CodexLiveConnection extends CodexTurn {
                         continue;
                     }
                 }
-                // The messages this turn was for aren't lost with it: saved for the next turn.
+                // The messages this turn was for aren't lost with it: saved for the next turn, and the notes for the next prompt.
                 if (seg.queued) this.unsteered.push(seg.queued);
+                this.putBackNotes(taken);
                 throw e;
             }
         }
@@ -742,6 +760,7 @@ export class CodexLiveConnection extends CodexTurn {
         this.turnsSeen.add(id);
         this.ownTurns.add(id);
         this.absorb(run, id);
+        this.decideStarted();
         // The mode changed while it was starting: restarted under it, before anything goes into it.
         if (this.restartIfStale()) return { ref: id };
         // Sent while the turn was starting: it can take them now.
@@ -758,6 +777,7 @@ export class CodexLiveConnection extends CodexTurn {
     private async claim(run: LiveRun, id: string, text: string): Promise<{ ref: string }> {
         this.turnId = id;
         this.absorb(run, id);
+        this.decideStarted();
         this.turnMode = this.running.get(id) ?? this.threadMode;
         this.adopted = true;
         const ended = this.completedTurns.get(id);
@@ -845,10 +865,25 @@ export class CodexLiveConnection extends CodexTurn {
             w(id);
         }
         const mine = this.liveRun?.turns.has(id) ?? false;
-        const origin = mine ? "user" : this.hostTurns.has(id) ? "wake" : "goal";
+        // A turn/start of ours not answered yet: this may be its turn (Codex can announce it first), or one of
+        // Codex's own. Told once the answer says, or the session would take the prompt's turn for a wake.
+        if (this.starting && !mine) {
+            this.undecided.push(id);
+            liveDebug("codex", "turn started before turn/start answered", { thread: this.threadId, turn: id });
+        } else this.announce(id);
+        this.onNotification("turn/started", p);
+    }
+
+    /** A main-thread turn started: the run's, a host wake's, or Codex's own (a goal's). */
+    private announce(id: string) {
+        const origin = this.liveRun?.turns.has(id) ? "user" : this.hostTurns.has(id) ? "wake" : "goal";
         liveDebug("codex", "turn started", { thread: this.threadId, turn: id, origin, starting: this.starting });
         this.events({ t: "turn_started", ref: id, origin });
-        this.onNotification("turn/started", p);
+    }
+
+    /** The turn/start is answered (or failed, or its turn claimed): the turns that started meanwhile are told as whose they are. */
+    private decideStarted() {
+        for (const id of this.undecided.splice(0)) this.announce(id);
     }
 
     private mainCompleted(p: any) {
@@ -977,12 +1012,26 @@ export class CodexLiveConnection extends CodexTurn {
         this.flushNotesSoon();
     }
 
-    /** Notes for the next prompt, as one reminder. */
-    private takeNotes(): string | undefined {
+    /** Notes for the next prompt, as one reminder (`text`), with what was taken for it, to put back if it isn't sent. */
+    private takeNotes(): { text?: string; carried: string[]; notes: Note[] } {
         // What an earlier app-server of the session's left untold (its background work stopped with it) goes first.
-        const texts = [...this.adapter.carried.splice(0), ...this.notes.splice(0).map((n) => n.text)];
-        if (!texts.length) return undefined;
-        return `<system-reminder>\n${texts.join("\n\n")}\n</system-reminder>`;
+        const carried = this.adapter.carried.splice(0);
+        const notes = this.notes.splice(0);
+        const texts = [...carried, ...notes.map((n) => n.text)];
+        return { carried, notes, ...(texts.length ? { text: `<system-reminder>\n${texts.join("\n\n")}\n</system-reminder>` } : {}) };
+    }
+
+    /** Notes taken for a prompt that no turn took. */
+    private putBackNotes(taken: { carried: string[]; notes: Note[] }) {
+        this.adapter.carried.unshift(...taken.carried);
+        this.keepNotes(taken.notes);
+    }
+
+    /** Notes not told after all: for this app-server's next turn, or, once it's going, the session's next one (carried). */
+    private keepNotes(notes: Note[]) {
+        if (!notes.length) return;
+        if (this.closing) this.adapter.carried.push(...notes.map((n) => n.text));
+        else this.notes.unshift(...notes);
     }
 
     private flushNotesSoon() {
@@ -1010,7 +1059,7 @@ export class CodexLiveConnection extends CodexTurn {
                 await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: turn, input: this.input(text, []) });
                 liveDebug("codex", "notes steered into the running turn", { thread: this.threadId, turn, notes: notes.length });
             } catch {
-                this.notes.unshift(...notes);
+                this.keepNotes(notes);
                 this.flushNotesSoon();
             }
             return;
@@ -1060,6 +1109,7 @@ export class CodexLiveConnection extends CodexTurn {
             this.settleStarted(id, mode);
             this.hostTurns.set(id, label);
             if (this.hostTurns.size > 32) this.hostTurns.delete(this.hostTurns.keys().next().value!);
+            this.decideStarted();
             liveDebug("codex", "host wake: turn started", { thread: this.threadId, turn: id });
             if (goalGoesOn) {
                 const g = (await this.rpc.request("thread/goal/set", { threadId: this.threadId, status: "active" }).catch(() => undefined))?.goal;
@@ -1069,9 +1119,10 @@ export class CodexLiveConnection extends CodexTurn {
         } catch (e) {
             this.starting = false;
             this.settleStarted(undefined);
+            this.decideStarted();
             this.hostFailures++;
             // Refused (a turn of Codex's started first, say): the notes go into it, or with the next prompt.
-            this.notes.unshift(...notes);
+            this.keepNotes(notes);
             liveDebug("codex", "host wake: turn/start failed", { thread: this.threadId, error: redact((e as Error).message) });
             if (this.mainTurn) this.flushNotesSoon();
         } finally {
@@ -1096,6 +1147,8 @@ export class CodexLiveConnection extends CodexTurn {
     /** The app-server's output ended. */
     private gone() {
         this.closing = true;
+        // What Codex hasn't been told yet (a command that finished, with no wake for it): the next app-server's first prompt.
+        this.keepNotes(this.notes.splice(0));
         liveCodexRpcs.delete(this);
         if (this.noteTimer) clearTimeout(this.noteTimer);
         for (const term of this.terminals.values()) if (term.unlisted) clearTimeout(term.unlisted);
@@ -1191,7 +1244,8 @@ export class CodexLiveAdapter implements AgentCliAdapter {
     async forwardWake(w: LiveWake) {
         const label = (await this.conn?.wakeLabel(w.ref).catch(() => undefined)) ?? "Codex started a turn of its own";
         const host = this.t?.session;
-        liveDebug("codex", "wake", { ref: w.ref, origin: w.origin, label, adoptable: Boolean(host?.onWake) });
+        // Not the label: it has a command's text, or a goal's (the log keeps methods, ids and statuses only).
+        liveDebug("codex", "wake", { ref: w.ref, origin: w.origin, adoptable: Boolean(host?.onWake) });
         host?.onWake?.({ provider: this.live.providerDef.id, ref: w.ref, label });
     }
 }
@@ -1374,6 +1428,8 @@ export class CodexLive {
             } else {
                 const settings: LiveSettings = { model: t.model, mode: t.mode, effort: t.effort, fastMode: t.fastMode };
                 r = await s.runTurn({ text: run.next.text, images: run.next.images }, t.sink, t.signal, { spawn: t, settings, host: t.session });
+                // Never sent (stopped first): the messages it carried go to the next turn.
+                if (!run.next.started && run.next.queued) run.conn?.keepUnsent(run.next.queued);
             }
             first = false;
             if (r.deferred && !run.saidDeferred) {
@@ -1420,6 +1476,19 @@ export class CodexLive {
 
     release(key: string): Promise<void> {
         return this.drop(key);
+    }
+
+    /**
+     * Live sessions turned off (agentCli.liveSessions) while an app-server is kept for the session: it goes before a
+     * per-turn one runs, or it would go on beside it on the same thread (a finished command starting a turn there).
+     */
+    async leave(t: Pick<BackendTurn, "sessionKey" | "sink">): Promise<void> {
+        const s = this.pool.get(t.sessionKey, this.providerDef.id);
+        if (!s) return;
+        const running = s.tasks.running().length;
+        liveDebug("codex", "live sessions off: releasing the app-server", { session: t.sessionKey, tasks: running });
+        await this.drop(t.sessionKey);
+        if (running) t.sink.emit({ type: "notice", level: "warn", message: `Live sessions are off (agentCli.liveSessions), so Codex's app-server for this session was stopped, and ${running === 1 ? "its background task" : `its ${running} background tasks`} with it.` });
     }
 
     /** The user changed the mode: every live connection checks its turns against it. */

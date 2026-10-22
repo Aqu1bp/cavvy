@@ -436,6 +436,8 @@ export class CodexBackend implements AgentBackendClient {
     async runTurn(t: BackendTurn): Promise<BackendResult> {
         // One app-server per session, kept across turns (#219); agentCli.liveSessions false: one per turn, as before.
         if (t.liveSessions !== false) return (await this.liveSessions()).runTurn(t);
+        // Turned off with an app-server still kept for the session: it goes first.
+        await (await this.liveSessions()).leave(t);
         if (t.adopt) return { reason: "error", text: "", actions: [], error: "Codex's live sessions are off (agentCli.liveSessions), so its turn can't be taken over." };
         const turn = new CodexTurn(this.def, t, this.labels, this.limitOrdering(t.accountId));
         this.turns.add(turn);
@@ -450,6 +452,7 @@ export class CodexBackend implements AgentBackendClient {
     async compact(t: Omit<BackendTurn, "prompt" | "images"> & { instructions?: string }): Promise<BackendResult> {
         if (!t.resumeId) return { reason: "done", text: "", actions: [] };
         if (t.liveSessions !== false) return (await this.liveSessions()).compact({ ...t, prompt: "", images: [] });
+        await (await this.liveSessions()).leave(t);
         return new CodexTurn(this.def, { ...t, prompt: "", images: [] }, this.labels, this.limitOrdering(t.accountId)).run({ compact: true });
     }
 
