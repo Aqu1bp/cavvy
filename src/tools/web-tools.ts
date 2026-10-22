@@ -17,15 +17,27 @@ async function readBody(res: Response, limit: number): Promise<{ text: string; b
     const decoder = new TextDecoder();
     const parts: string[] = [];
     let bytes = 0;
+    let limited = false;
     try {
         while (bytes < limit) {
             const { done, value } = await reader.read();
             if (done) break;
             const chunk = value.subarray(0, limit - bytes);
+            if (chunk.byteLength < value.byteLength) limited = true;
             bytes += chunk.byteLength;
             parts.push(decoder.decode(chunk, { stream: true }));
         }
-        const limited = bytes === limit;
+        // A body exactly at the limit isn't truncated: only data after it means that.
+        if (bytes === limit && !limited) {
+            for (;;) {
+                const next = await reader.read();
+                if (next.done) break;
+                if (next.value.byteLength) {
+                    limited = true;
+                    break;
+                }
+            }
+        }
         if (limited) await reader.cancel();
         else parts.push(decoder.decode());
         return { text: parts.join(""), bytes, limited };

@@ -26,7 +26,8 @@ for (const status of [200, 500]) {
         try {
             const result = await WebFetchTool.run({ url: "https://example.com" }, ctx);
             expect(cancelled).toBe(true);
-            expect(consumed).toBeLessThanOrEqual(status === 200 ? MAX_BYTES : chunk.length);
+            // One chunk past the limit: reading it is how a body exactly at the limit is told from a longer one.
+            expect(consumed).toBeLessThanOrEqual((status === 200 ? MAX_BYTES : chunk.length) + chunk.length);
             expect(result.content).toContain("may be truncated");
             expect(result.content).toContain(`${status === 200 ? MAX_BYTES : 500}-byte limit`);
             expect(result.display?.summary).toContain("byte limit reached");
@@ -119,3 +120,42 @@ test("WebFetch stops a chunked HTTP server at its byte limits", async () => {
         server.stop(true);
     }
 });
+
+for (const [status, limit] of [[200, MAX_BYTES], [500, 500]] as const) {
+    test(`WebFetch: an HTTP ${status} body exactly at the ${limit}-byte limit is not called truncated`, async () => {
+        for (const chunks of [[limit], [limit - 1, 1], [limit, 0]]) {
+            const body = new ReadableStream<Uint8Array>({
+                start(controller) {
+                    for (const n of chunks) controller.enqueue(new Uint8Array(n).fill(0x65));
+                    controller.close();
+                },
+            });
+            const fetch = spyOn(globalThis, "fetch").mockResolvedValue(new Response(body, { status, headers: { "content-type": "text/plain" } }));
+            try {
+                const result = await WebFetchTool.run({ url: "https://example.com" }, ctx);
+                expect(result.content).not.toContain("may be truncated");
+                expect(result.display?.summary ?? "").not.toContain("byte limit");
+            } finally {
+                fetch.mockRestore();
+            }
+        }
+    });
+
+    test(`WebFetch: an HTTP ${status} body one byte over the limit is called truncated`, async () => {
+        for (const chunks of [[limit + 1], [limit, 1], [limit, 0, 1]]) {
+            const body = new ReadableStream<Uint8Array>({
+                start(controller) {
+                    for (const n of chunks) controller.enqueue(new Uint8Array(n).fill(0x65));
+                    controller.close();
+                },
+            });
+            const fetch = spyOn(globalThis, "fetch").mockResolvedValue(new Response(body, { status, headers: { "content-type": "text/plain" } }));
+            try {
+                const result = await WebFetchTool.run({ url: "https://example.com" }, ctx);
+                expect(result.content).toContain(`may be truncated: stopped at the ${limit}-byte limit`);
+            } finally {
+                fetch.mockRestore();
+            }
+        }
+    });
+}
