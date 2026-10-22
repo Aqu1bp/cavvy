@@ -547,8 +547,8 @@ class ClaudeTurn {
     }
 
     /** `synthetic`: not the user's own words (see BackendTurn.synthetic), so Claude Code expands no @mentions in it. */
-    /** False when it didn't go: stopping, or Claude Code's stdin is gone. */
-    private sendUser(content: unknown[], synthetic = false): boolean {
+    /** False when it didn't go: stopping, or Claude Code's stdin is gone (known once the write is done: JsonLinesProcess.send). */
+    private async sendUser(content: unknown[], synthetic = false): Promise<boolean> {
         if (this.aborted || this.finishing) return false;
         const wasBusy = this.busy;
         this.prompted = true;
@@ -560,7 +560,7 @@ class ClaudeTurn {
         this.settleTimer = undefined;
         const uuid = crypto.randomUUID();
         this.unanswered.add(uuid);
-        const sent = this.proc.send({ type: "user", uuid, message: { role: "user", content }, parent_tool_use_id: null, session_id: this.sessionId ?? "", ...(synthetic ? { isSynthetic: true } : {}) });
+        const sent = await this.proc.send({ type: "user", uuid, message: { role: "user", content }, parent_tool_use_id: null, session_id: this.sessionId ?? "", ...(synthetic ? { isSynthetic: true } : {}) });
         // Not written: no answer to wait for.
         if (!sent) {
             this.unanswered.delete(uuid);
@@ -780,10 +780,12 @@ class ClaudeTurn {
         const media = typed.flatMap((m) => mediaBlocks(m.images, m.documents));
         // One with only images or files has no text block (the API refuses an empty one).
         const words = typed.map((m) => m.text).filter((t) => t).join("\n\n");
-        const sent = typed.length ? this.sendUser([...media, ...(words ? [{ type: "text", text: words }] : [])]) : false;
-        const told = woke.length ? this.sendUser([{ type: "text", text: woke.map((m) => m.text).join("\n\n") }], true) : false;
-        // Written to its stdin, as text steers are: one with attachments is the host's to record now (and if the
-        // write failed, Claude Code is gone: it stays queued).
+        // Both buffered in order now; each known written (or not) once its write is done.
+        const sending = typed.length ? this.sendUser([...media, ...(words ? [{ type: "text", text: words }] : [])]) : Promise.resolve(false);
+        const telling = woke.length ? this.sendUser([{ type: "text", text: woke.map((m) => m.text).join("\n\n") }], true) : Promise.resolve(false);
+        const [sent, told] = await Promise.all([sending, telling]);
+        // Written whole to its stdin, as text steers are: one with attachments is the host's to record now (and if
+        // the write failed, Claude Code went away before taking it: it stays queued).
         for (const m of typed) await m.settle?.(sent);
         // Nothing written: nothing to wait for.
         return sent || told;

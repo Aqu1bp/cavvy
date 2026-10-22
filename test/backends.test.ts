@@ -3621,7 +3621,26 @@ describe("Claude Code: a steer with attachments", () => {
         const p = new JsonLinesProcess("/bin/sh", ["-c", "exit 0"], { cwd, env: process.env as Record<string, string> });
         await p.exited;
         await Bun.sleep(20);
-        expect(p.send({ type: "user" })).toBe(false);
+        expect(await p.send({ type: "user" })).toBe(false);
+    });
+
+    // A real pipe: a line bigger than it holds (a 2 MB image) is written only once the reader has taken it all.
+    const big = { type: "user", message: { content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "x".repeat(2 * 1024 * 1024) } }] } };
+    test("JsonLinesProcess.send of a 2 MB line to a process that exits without reading it: false, once that's known", async () => {
+        const { JsonLinesProcess } = await import("../src/backends/cli");
+        const p = new JsonLinesProcess("/bin/sh", ["-c", "sleep 0.3"], { cwd, env: process.env as Record<string, string> });
+        expect(await p.send(big)).toBe(false);
+        await p.exited;
+    });
+
+    test("JsonLinesProcess.send of a 2 MB line to a process that reads it: true, and it got all of it", async () => {
+        const { JsonLinesProcess } = await import("../src/backends/cli");
+        const out = join(tempDir(), "got");
+        const p = new JsonLinesProcess("/bin/sh", ["-c", `cat > '${out}'`], { cwd, env: process.env as Record<string, string> });
+        expect(await p.send(big)).toBe(true);
+        p.end();
+        await p.exited;
+        expect(readFileSync(out, "utf-8")).toBe(JSON.stringify(big) + "\n");
     });
 
     test("one whose write to stdin fails (Claude Code went away: EPIPE) isn't accepted: it stays queued, nothing recorded", async () => {
@@ -3629,9 +3648,9 @@ describe("Claude Code: a steer with attachments", () => {
         const { JsonLinesProcess } = await import("../src/backends/cli");
         const send = JsonLinesProcess.prototype.send;
         // As stdin throwing EPIPE: the line with the image isn't written.
-        JsonLinesProcess.prototype.send = function (this: InstanceType<typeof JsonLinesProcess>, obj: any) {
+        JsonLinesProcess.prototype.send = async function (this: InstanceType<typeof JsonLinesProcess>, obj: any) {
             return obj?.type === "user" && JSON.stringify(obj).includes('"type":"image"') ? false : send.call(this, obj);
-        } as typeof send;
+        };
         try {
             const q = attached(() => "look at this");
             const a = await makeAgent({ provider: "claude-code", drainQueued: q.drainQueued });
