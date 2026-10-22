@@ -596,6 +596,28 @@ describe("the process: crashes, restarts, settings", () => {
         expect(notices(events).join("\n")).not.toMatch(/error/);
     });
 
+    test("review #295 P1-4: a wake left unadopted, then a crash: the new process's first wake is a wake of its own", async () => {
+        process.env.FAKE_SCENARIO = "agent-background";
+        process.env.FAKE_BACKGROUND_MS = "200";
+        const { run, wakes, adopt } = await makeAgent();
+        expect(await run("map auth")).toBe("done");
+        await until(() => wakes.length === 1, 5000, "the first wake");
+        const pid = starts()[0].pid as number;
+        process.kill(pid, "SIGKILL");
+        await until(() => {
+            try {
+                process.kill(pid, 0);
+                return false;
+            } catch {
+                return true;
+            }
+        }, 5000, "the crash");
+        expect(await run("map auth again")).toBe("done");
+        await until(() => wakes.length === 2, 5000, "the new process's wake");
+        expect(wakes[1]!.ref).not.toBe(wakes[0]!.ref);
+        expect(await adopt(wakes[1]!)).toBe("done");
+    });
+
     test("Harness quitting with background work: it stops with the process; the next run resumes the session", async () => {
         process.env.FAKE_SCENARIO = "two-shells";
         process.env.FAKE_SHELL_MS = "60000";

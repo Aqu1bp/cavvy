@@ -95,6 +95,9 @@ export const liveTiming = {
     stopConfirmMs: 5000,
 };
 
+/** Wake refs, unique in the harness process: a session keeps an unadopted wake across a restart of its CLI process. */
+let wakeRefs = 0;
+
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
 /** The harness's agents for --agents, in a file named by what's in it: the same agents, the same arguments (and spawn fingerprint). */
@@ -178,7 +181,6 @@ export class ClaudeConnection implements CliConnection {
     private cur?: CliTurn;
     /** The prompt command_lifecycle said started, before its system/init. */
     private startedUuid?: string;
-    private wakeSeq = 0;
     /** What each wake is about, for its row; and whether it answers a message of the user's. */
     readonly wakeInfo = new Map<string, { label?: string; prompt?: boolean }>();
     /** A report Claude Code will start a turn for, said by a task_notification while no turn ran. */
@@ -573,7 +575,7 @@ export class ClaudeConnection implements CliConnection {
             }
             return;
         }
-        this.startWake(`wake-${++this.wakeSeq}`, { label: this.dues[0]?.label });
+        this.startWake(`wake-${++wakeRefs}`, { label: this.dues[0]?.label });
     }
 
     private startWake(ref: string, info: { label?: string; prompt?: boolean }) {
