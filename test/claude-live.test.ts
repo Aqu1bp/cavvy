@@ -351,6 +351,23 @@ describe("Esc stops only the answer", () => {
         expect(await done).toBe("aborted");
     });
 
+    test("review #295 P2-8: a background sub-agent that ends during Esc's hidden carrier turn: its report and end still reach the session", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-hang";
+        process.env.FAKE_BACKGROUND_MS = "60000";
+        process.env.FAKE_CARRIER_AGENT_ENDS = "1";
+        const { run, events, agent } = await makeAgent();
+        const { ac, done } = await startHanging(run, events);
+        const before = events.length;
+        ac.abort();
+        expect(await done).toBe("aborted");
+        await until(() => agent.backgroundTasks().find((t) => t.kind === "agent")?.status === "done", 5000, "the sub-agent's end");
+        await Bun.sleep(100);
+        const after = events.slice(before);
+        expect(after.some((e) => e.type === "subagent" && e.event.type === "text" && e.event.text.includes("sign-in strategies"))).toBe(true);
+        expect(after.some((e) => e.type === "subagent" && e.event.type === "turn_end")).toBe(true);
+        expect(after.some((e) => e.type === "tool_end" && e.call.id === "toolu_agent")).toBe(true);
+    });
+
     test("an interrupt Claude Code doesn't answer ends the turn here, keeps the process, and says how to restart it", async () => {
         process.env.FAKE_SCENARIO = "hang";
         process.env.FAKE_IGNORE_INTERRUPT = "1";

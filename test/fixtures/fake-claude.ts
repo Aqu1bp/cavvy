@@ -32,6 +32,7 @@
 // FAKE_COMMAND      the "bash" scenario's command (default: npm test)
 // FAKE_TIMEOUT      shell-background*: the background Bash call's timeout (ms; default none)
 // FAKE_SHELL_STATUS shell-background*: how its task_notification says it ended (default completed; after it left the list)
+// FAKE_CARRIER_AGENT_ENDS=1  the background sub-agent ends while a hidden /effort carrier's turn runs
 // FAKE_STOP_TASK    hang: stop_task unanswered; reject: refused; complete-reject: the task completes, then the stop is refused;
 //                   fail-first: the task fails by itself, then the stop is answered success;
 //                   late: the first stop of a task goes through FAKE_STOP_MS later (default 300), and a second asked
@@ -642,6 +643,8 @@ async function turn(content: any[], uuid?: string) {
     // Commands it answers itself: a synthetic message, no model call, nothing spent.
     const said = String(content.find((c) => c?.type === "text")?.text ?? "");
     if (/^\/(effort|cost)\s*$/.test(said)) {
+        // FAKE_CARRIER_AGENT_ENDS=1: the background sub-agent ends (and reports) while this turn runs.
+        if (process.env.FAKE_CARRIER_AGENT_ENDS === "1" && bgTasks.has("agent-1")) await backgroundAgentEnds("toolu_agent");
         const reply = said.startsWith("/effort") ? "Usage: /effort <low|medium|high|xhigh|max|auto>" : "Total cost: $0.00";
         out({ type: "assistant", message: { role: "assistant", model: "<synthetic>", content: [{ type: "text", text: reply }], usage: { input_tokens: 0, output_tokens: 0 } }, parent_tool_use_id: null, session_id: sessionId });
         out({ type: "result", subtype: "success", is_error: false, session_id: sessionId, total_cost_usd: spent, num_turns: 0, result: reply, user_message_uuid: uuid ?? null, user_message_uuids: uuid ? [uuid] : [], usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });

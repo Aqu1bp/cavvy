@@ -959,8 +959,19 @@ export class ClaudeConnection implements CliConnection {
 
     /** An event of the turn running now (a hidden one shows nothing); between turns, the session's. */
     private emit(e: AgentEvent) {
-        if (this.cur?.kind === "hidden") return;
+        if (this.cur?.kind === "hidden") {
+            // The carrier's own steps show nothing. Background work's (a sub-agent's steps, report and end, its launch
+            // call's end) isn't the carrier's: the session's, as between turns.
+            if (this.ofBackground(e)) this.events({ t: "turn_event", event: e });
+            return;
+        }
         this.events({ t: "turn_event", ...(this.cur ? { ref: this.cur.ref } : {}), event: e });
+    }
+
+    /** A sub-agent's event, or one of the call that launched it. */
+    private ofBackground(e: AgentEvent): boolean {
+        if (e.type === "subagent") return true;
+        return (e.type === "tool_start" || e.type === "tool_end") && (this.agentLabels.has(e.call.id) || this.closedLaunches.has(e.call.id));
     }
 
     private onStreamEvent(e: Record<string, any>) {
