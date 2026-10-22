@@ -91,7 +91,9 @@ export function formatMemory(files: MemoryFile[], cwd: string): string {
     if (!files.length) return "";
     const parts = files.map((f) => {
         const label = f.scope === "user" ? "user's personal instructions (all projects)" : f.scope === "local" ? "user's private project instructions" : "project instructions, checked into the codebase";
-        const shown = f.path.startsWith(cwd) ? relative(cwd, f.path) : f.path.replace(homedir(), "~");
+        // A project's files lie between its repository root and cwd: named from cwd (../AGENTS.md), so that
+        // a worktree's prompt doesn't carry its own path and every worktree of the project shares it.
+        const shown = f.scope !== "user" || f.path.startsWith(cwd) ? relative(cwd, f.path) : f.path.replace(homedir(), "~");
         return `Contents of ${shown} (${label}):\n\n${redact(f.content.trim())}`;
     });
     return `# Instructions from memory files\nThese instructions come from the user and the project. Follow them; they override default behavior where they conflict.\n\n${parts.join("\n\n---\n\n")}`;

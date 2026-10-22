@@ -113,10 +113,11 @@ export type AgentEvent =
     | { type: "tool_end"; call: ToolCallPart; result: ToolResult; durationMs: number; /** Its title now, when what it did was only known at its end (a backend's web search). */ title?: string }
     | { type: "notice"; level: "info" | "warn" | "error"; message: string }
     | { type: "retry"; attempt: number; delayMs: number; reason: string }
-    | { type: "usage"; usage: Usage; cost: CostEstimate; contextTokens: number }
+    | { type: "usage"; usage: Usage; cost: CostEstimate; contextTokens: number; /** Already accounted for by the backend; only updates a sub-agent's display. */ displayOnly?: boolean }
     /** `idle`: compacting a conversation left idle, before its prompt cache expires. */
     | { type: "compact_start"; auto: boolean; idle?: boolean }
-    | { type: "compact_end"; summary: string; idle?: boolean }
+    /** `kept`: the message waiting for an answer went on after the summary, the same message (it moved, it wasn't sent again). */
+    | { type: "compact_end"; summary: string; idle?: boolean; kept?: boolean }
     | { type: "subagent"; parentId: string; label: string; event: AgentEvent }
     /** An agent CLI reported the user's plan limits (`partial`: earlier windows it left out still stand). */
     | { type: "limits"; limits: PlanLimits; partial: boolean }
@@ -168,8 +169,13 @@ export interface AgentHost {
     /**
      * Messages the user typed while the agent was busy, to steer the running turn with. `record`, when
      * given, is run once some are taken and before their turn starts, so the output before them is recorded first.
+     * `admit`, when given, runs one's UserPromptSubmit hooks, while the host still has it queued: "blocked" (a
+     * hook blocked it, and the user is told) means it doesn't go and goes back to the user, "stopped" (the turn
+     * was interrupted, or the backend can't take it) that none go and they stay queued, "go" that it goes: the
+     * host hands back what admit gave for each that goes, in order. Those handed over without it (as strings)
+     * have their hooks run after.
      */
-    drainQueued?(record?: () => void): string[];
+    drainQueued?(record?: () => void, admit?: (text: string) => Promise<Admitted>): string[] | Promise<string[] | Admitted[]>;
     /**
      * For a backend's CLI that's between its turns, waiting only on its background work: the first queued
      * message that can go now, as a prompt of its own, whatever its mode, prepared as a sent one is (its
@@ -184,6 +190,13 @@ export interface AgentHost {
 
 /** What a queued message's hooks, and whether it can still go, decided (AgentHost.drainWaiting). */
 export type Admission = "go" | "blocked" | "stopped";
+
+/** A message to steer with, through its hooks (AgentHost.drainQueued): whether it goes, and what they add if it does. */
+export interface Admitted {
+    text: string;
+    admission: Admission;
+    context?: string;
+}
 
 export interface Helpers {
     /** One-shot completion on a cheap model (classifier, summaries). */
@@ -254,6 +267,7 @@ export interface AgentOptions {
 }
 
 const MAX_RETRIES = 10;
+const MAX_RETRY_AFTER_MS = 5 * 60_000;
 /** Requests that got nothing back for minutes (sse.ts) are tried this many more times. */
 const MAX_STALL_RETRIES = 2;
 /** After the results of tools a turn was stopped in. */
@@ -548,6 +562,8 @@ export class Agent {
             showThinking: s.showThinking,
             signal,
             webSearch: this.o.nativeWebSearch,
+            // The tools and instructions are the same in each session (and sub-agent of a type) in the project: cached once for all of them.
+            cacheSystem: true,
             cacheKey: this.session.meta.id,
             ...extra,
         };
@@ -631,7 +647,23 @@ export class Agent {
         let maxTokenStrikes = 0;
         let pauses = 0;
         let stopHookRounds = 0;
-        let overflowCompacted = false;
+        /** Compactions since the model last answered: the first keeps a message waiting for that answer out of the summary; after two, this turn stops compacting. */
+        let compactions = 0;
+        /** A compaction didn't shrink the history: compacting again won't help until the model has added to it. */
+        let unshrinkable = false;
+        /** Compacts in this turn: true when that shrank the history, or kept a message the next one can fold in. */
+        const compactInTurn = async (): Promise<boolean> => {
+            // The history alone, estimated the same way on both sides: the system prompt and tools don't change.
+            const before = estimateTokens(this.session.messages);
+            if (!(await this.compact({ auto: true, signal, continuing: true, keepLast: compactions === 0 }))) return false;
+            compactions++;
+            if (estimateTokens(this.session.messages) < before) return true;
+            // A message kept after the summary may be what's too big.
+            const last = this.session.messages.at(-1);
+            if (last?.role === "user" && last.meta?.kind !== "summary") return true;
+            unshrinkable = true;
+            return false;
+        };
         /** The model has said or done something this turn. */
         let answered = false;
         const maxTurns = this.o.maxTurns ?? Infinity;
@@ -645,16 +677,14 @@ export class Agent {
             }
 
             // A PreCompact hook that refused once this turn isn't asked again on every request.
-            if (!this.autoCompactBlocked && this.shouldAutoCompact()) {
-                let ok = false;
+            if (!this.autoCompactBlocked && !unshrinkable && !compactions && this.shouldAutoCompact()) {
                 try {
-                    ok = await this.compact({ auto: true, signal, continuing: true });
+                    await compactInTurn();
                 } catch (e) {
                     // Stopped while compacting: an interrupt like any other, not an unexpected error.
                     if (isAbort(e, signal)) return this.interrupted(false);
                     this.emit({ type: "notice", level: "warn", message: `Auto-compact failed: ${(e as Error).message}` });
                 }
-                if (ok) overflowCompacted = true;
             }
 
             let msg: AssistantMessage;
@@ -662,11 +692,12 @@ export class Agent {
                 msg = await this.callModel(signal);
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);
-                if (isContextOverflow(e) && !overflowCompacted) {
-                    overflowCompacted = true;
+                // As often as the model answers in between, and once more straight after a compaction (which folds in
+                // the message the first kept); never again after one that didn't shrink the history.
+                if (isContextOverflow(e) && !unshrinkable && compactions < 2) {
                     this.emit({ type: "notice", level: "warn", message: "The conversation exceeded the model's context window; compacting and retrying." });
                     try {
-                        if (await this.compact({ auto: true, signal, continuing: true })) continue;
+                        if (await compactInTurn()) continue;
                     } catch (ce) {
                         if (isAbort(ce, signal)) return this.interrupted(false);
                     }
@@ -679,6 +710,8 @@ export class Agent {
             // A provider that returns (rather than throws) after an abort hands
             // back a cut-off response; drop it like any other partial response.
             if (signal.aborted) return this.interrupted(false);
+            compactions = 0;
+            unshrinkable = false;
 
             // From here on, the redacted copy: it's what gets shown and what tools run with.
             msg = this.session.push(msg);
@@ -725,10 +758,13 @@ export class Agent {
                 else if (!answered && !textOf(msg).trim()) this.endNotice("warn", `${this.model.name ?? this.model.id} sent back an empty response${msg.stopReason === "end_turn" ? "" : ` (stop reason: ${msg.stopReason})`}. Try again, or another model.`);
 
                 // Messages typed while the model was answering: deliver them now.
-                const queued = this.o.host.drainQueued?.() ?? [];
+                const steer = await this.drainSteering(signal);
+                const queued = steer.texts;
+                // Stopped while their hooks ran: they stay queued.
+                if (signal.aborted && !queued.length) return this.interrupted(false);
                 if (queued.length) {
                     await this.checkpoint(queued.join("\n"), false, (checkpoint) => {
-                        this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
+                        this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }, ...steer.context.map(reminder)], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
                     });
                     if (this.cutOff) return "aborted";
                     continue;
@@ -778,10 +814,11 @@ export class Agent {
                 recorded = true;
             };
             if (!signal.aborted) {
-                const queued = this.o.host.drainQueued?.() ?? [];
+                const steer = await this.drainSteering(signal);
+                const queued = steer.texts;
                 // Not into a round the user denied: that ends the turn, and the wake would go unanswered.
                 const woke = denied ? undefined : this.takeWakes();
-                if (queued.length) extra.push({ type: "text", text: `${STEERING}${queued.join("\n\n")}` });
+                if (queued.length) extra.push({ type: "text", text: `${STEERING}${queued.join("\n\n")}` }, ...steer.context.map(reminder));
                 if (woke) extra.push(reminder(woke));
                 // Steering's checkpoint records the results: everything to go with them is in by then.
                 if (queued.length) await this.checkpoint(queued.join("\n"), true, record);
@@ -850,6 +887,47 @@ export class Agent {
             return { blocked: true };
         }
         return h?.additionalContext ? { context: `Context from a UserPromptSubmit hook:\n${h.additionalContext}` } : {};
+    }
+
+    /**
+     * Messages the user sent to steer the running turn (AgentHost.drainQueued), each through its
+     * UserPromptSubmit hooks as a prompt sent on its own is (runInner): one a hook blocks doesn't join the
+     * turn, and what they add goes with them. `live`: whether the backend can still take them.
+     */
+    private async drainSteering(signal: AbortSignal, record?: () => void, live?: () => boolean): Promise<{ texts: string[]; context: string[] }> {
+        const hooked = !this.o.isSubagent && Boolean(this.hookSettings().hooks?.UserPromptSubmit?.length);
+        const stopped = () => this.cutOff || signal.aborted || live?.() === false;
+        const admit = async (text: string): Promise<Admitted> => {
+            const h = await this.promptHooks(text, signal);
+            if (stopped()) return { text, admission: "stopped" };
+            return h.blocked ? { text, admission: "blocked" } : { text, admission: "go", context: h.context };
+        };
+        const drained = (await this.o.host.drainQueued?.(record, hooked ? admit : undefined)) ?? [];
+        const texts: string[] = [];
+        const context: string[] = [];
+        const lost: string[] = [];
+        for (const d of drained) {
+            if (typeof d !== "string") {
+                if (d.admission !== "go") continue;
+                texts.push(d.text);
+                if (d.context) context.push(d.context);
+                continue;
+            }
+            // From a host that hands them over without running them (a script's steering): they run now. Those
+            // stopped meanwhile can't go back to it, nor go unchecked: the user is told.
+            if (!hooked) {
+                texts.push(d);
+                continue;
+            }
+            const h = lost.length ? undefined : await this.promptHooks(d, signal);
+            if (!h || stopped()) lost.push(d);
+            else if (!h.blocked) {
+                texts.push(d);
+                if (h.context) context.push(h.context);
+            }
+        }
+        if (lost.length) this.emit({ type: "notice", level: "warn", message: `Not sent (stopped while its UserPromptSubmit hooks ran): ${lost.join("\n\n")}` });
+        return { texts, context };
     }
 
     private async checkpoint(prompt: string, snapshotOnly = false, record?: (checkpoint: number | undefined) => void): Promise<number | undefined> {
@@ -985,6 +1063,7 @@ export class Agent {
                       if (res.usage) {
                           const cost = costOf(res.usage, r.model);
                           this.session.recordUsage(modelRef(r.model), res.usage, cost.usd, cost.unknown);
+                          this.emit({ type: "usage", usage: res.usage, cost, contextTokens: this.contextTokens });
                       }
                       return textOf(res);
                   }
@@ -1063,38 +1142,74 @@ export class Agent {
 
     private shouldAutoCompact(): boolean {
         const s = this.o.settings();
-        if (s.autoCompact === false || this.o.isSubagent) return false;
+        if (s.autoCompact === false) return false;
         // Agent backends manage their own context.
         if (isAgentBackend(this.client)) return false;
         const window = this.model.contextWindow;
         if (!window) return false;
-        const reserve = Math.min(this.model.maxOutput ?? 32_000, 32_000);
         const threshold = s.autoCompactThreshold ?? 0.92;
-        return this.session.messages.length > 4 && this.estimatedContext() > (window - reserve) * threshold;
+        return this.session.messages.length > 4 && this.estimatedContext() > (window - this.outputReserve(window)) * threshold;
+    }
+
+    /**
+     * Room for the answer that auto-compaction keeps free below the window: the
+     * model's max output, at most 32K, and never more than a quarter of the window.
+     * A model that can write about its whole window would otherwise compact with
+     * next to nothing in it; its requests ask for less output instead (turnMaxTokens).
+     */
+    private outputReserve(window: number): number {
+        return Math.min(this.model.maxOutput ?? 32_000, 32_000, Math.floor(window / 4));
+    }
+
+    /**
+     * A turn request's max output: as set, unless the window cut the reserve
+     * short. Then it's what fits beside the context (an estimate, with a margin),
+     * never less than the reserve.
+     */
+    private turnMaxTokens(): number | undefined {
+        const asked = this.o.settings().maxOutputTokens;
+        const window = this.model.contextWindow;
+        // With no known output limit, a guessed one could exceed what the model allows.
+        const most = Math.min(asked ?? Infinity, this.model.maxOutput ?? Infinity);
+        if (!window || !Number.isFinite(most)) return asked;
+        const reserve = this.outputReserve(window);
+        if (most <= reserve || reserve === Math.min(this.model.maxOutput ?? 32_000, 32_000)) return asked;
+        return Math.min(most, Math.max(reserve, window - Math.ceil(this.estimatedContext() * 1.2)));
     }
 
     // -----------------------------------------------------------------------
     // Model calls with retries
 
-    private async callModel(signal: AbortSignal, extra: Partial<ChatRequest> = {}, messages?: Message[]): Promise<AssistantMessage> {
+    private callModel(signal: AbortSignal, extra: Partial<ChatRequest> = {}, messages?: Message[]): Promise<AssistantMessage> {
+        return this.withRetries(signal, () => {
+            this.emit({ type: "request_start" });
+            // After any retries: the cache dates from the request that was answered.
+            this.sentAt = Date.now();
+            this.idleTried = false;
+            return this.client.stream(this.request(messages ?? this.session.messages, signal, { maxTokens: this.turnMaxTokens(), ...extra }), (e: StreamEvent) => this.forward(e));
+        });
+    }
+
+    /** A request (a turn's, a compaction's), sent again after a transient error: with backoff, or when the provider says to. */
+    private async withRetries(signal: AbortSignal, send: () => Promise<AssistantMessage>): Promise<AssistantMessage> {
         let stalls = 0;
         this.retrying = undefined;
         try {
             for (let attempt = 1; ; attempt++) {
-                this.emit({ type: "request_start" });
                 try {
-                    // After any retries: the cache dates from the request that was answered.
-                    this.sentAt = Date.now();
-                    this.idleTried = false;
-                    return await this.client.stream(this.request(messages ?? this.session.messages, signal, extra), (e: StreamEvent) => this.forward(e));
+                    return await send();
                 } catch (e) {
                     if (isAbort(e, signal)) throw new ProviderError("aborted");
                     const pe = e instanceof ProviderError ? e : new ProviderError((e as Error)?.message ?? String(e), undefined, false);
                     // Each stall waits minutes for a byte: after a few, the provider is down, and the turn says so.
                     if (pe.stalled && ++stalls > MAX_STALL_RETRIES) throw pe;
-                    if (!pe.retryable || attempt >= MAX_RETRIES) throw pe;
+                    if (!pe.retryable) throw pe;
+                    if (pe.retryAfterMs !== undefined && pe.retryAfterMs > MAX_RETRY_AFTER_MS) {
+                        throw new ProviderError(`${pe.message}. Provider requested retry after ${Math.ceil(pe.retryAfterMs / 1000)}s; automatic retries stop above ${MAX_RETRY_AFTER_MS / 1000}s. Try again after that wait.`, pe.status, false, pe.retryAfterMs, pe.body);
+                    }
+                    if (attempt >= MAX_RETRIES) throw pe;
                     const base = Math.min(32_000, 1000 * 2 ** (attempt - 1));
-                    const delay = Math.min(60_000, pe.retryAfterMs ?? Math.round(base * (0.75 + Math.random() * 0.5)));
+                    const delay = pe.retryAfterMs ?? Math.round(base * (0.75 + Math.random() * 0.5));
                     const reason = redact(pe.message);
                     this.retrying = `${reason} (attempt ${attempt})`;
                     this.emit({ type: "retry", attempt, delayMs: delay, reason });
@@ -1130,26 +1245,42 @@ export class Agent {
     // -----------------------------------------------------------------------
     // Compaction
 
-    /** Summarize the history and replace it. Returns false if there was nothing to do. */
-    async compact(opts: { auto: boolean; signal: AbortSignal; instructions?: string; continuing?: boolean; idle?: boolean }): Promise<boolean> {
+    /**
+     * Summarize the history and replace it. Returns false if there was nothing to do.
+     * `keepLast`: a user message still waiting for its answer (a turn's prompt, with its
+     * attachments) isn't summarized: it stays after the summary as it is.
+     */
+    async compact(opts: { auto: boolean; signal: AbortSignal; instructions?: string; continuing?: boolean; idle?: boolean; keepLast?: boolean }): Promise<boolean> {
         // Until a request of the conversation's own: usage a cancelled backend compaction reports doesn't count.
         if (opts.idle) this.idleTried = true;
         if (isAgentBackend(this.client)) return this.compactBackend(this.client, opts);
-        const history = this.session.messages;
+        let history = this.session.messages;
+        const last = history.at(-1);
+        const kept = opts.keepLast && history.length > 2 && last?.role === "user" && !last.content.some((p) => p.type === "tool_result") ? last : undefined;
+        if (kept) history = history.slice(0, -1);
         if (history.length < 2) return false;
         if (!(await this.preCompact(opts))) return false;
         this.emit({ type: "compact_start", auto: opts.auto, ...(opts.idle ? { idle: true } : {}) });
         const req = [...history, compactRequestMessage(opts.instructions)];
+        // Each summary request (the transcript fallback's too) is retried like a turn's, and its spend recorded.
+        // An idle compaction is worth it only before the cache expires, so it gets one try.
+        const send = async (r: ChatRequest) => {
+            const res = await (opts.idle ? this.client.stream(r, () => {}) : this.withRetries(opts.signal, () => this.client.stream(r, () => {})));
+            if (res.usage) {
+                const cost = costOf(res.usage, this.model);
+                this.session.recordUsage(modelRef(this.model), res.usage, cost.usd, cost.unknown);
+                this.emit({ type: "usage", usage: res.usage, cost, contextTokens: this.contextTokens });
+            }
+            return res;
+        };
+        const window = this.model.contextWindow;
+        // A small window keeps room for the history beside the summary.
+        const maxOut = window ? Math.min(16_000, Math.floor(window / 4)) : 16_000;
         let summary = "";
         try {
             // Same system prompt and tools as the session, so the cached prefix is reused.
             // Reserve the output budget for the summary instead of manual thinking.
-            const res = await this.client.stream(this.request(req, opts.signal, { maxTokens: 16_000, noThinking: true }), () => {});
-            summary = textOf(res);
-            if (res.usage) {
-                const cost = costOf(res.usage, this.model);
-                this.session.recordUsage(modelRef(this.model), res.usage, cost.usd, cost.unknown);
-            }
+            summary = textOf(await send(this.request(req, opts.signal, { maxTokens: maxOut, noThinking: true })));
         } catch (e) {
             if (isAbort(e, opts.signal)) throw e;
             if (!isContextOverflow(e)) throw e;
@@ -1157,8 +1288,6 @@ export class Agent {
         if (!summary.trim()) {
             // Too long even to summarize, or the model only called tools:
             // summarize a condensed text transcript instead, without tools.
-            const window = this.model.contextWindow;
-            const maxOut = window ? Math.min(16_000, Math.floor(window / 4)) : 16_000;
             // ~2.5 characters per token leaves room for code and JSON.
             const maxChars = window ? Math.max(2_000, Math.min(400_000, Math.floor((window - maxOut - 2_000) * 2.5))) : 100_000;
             const transcript = compactTranscriptText(history, maxChars);
@@ -1170,17 +1299,17 @@ export class Agent {
                 noThinking: true,
                 lightweight: true,
             });
-            const res = await this.client.stream(req, () => {});
-            summary = textOf(res);
+            summary = textOf(await send(req));
         }
         if (!summary.trim()) throw new Error("The model returned an empty summary");
-        const keep: Message[] = [summaryMessage(summary, Boolean(opts.continuing))];
-        this.session.compact(summary, keep, opts.idle);
+        // The kept message says what comes next.
+        const keep: Message[] = kept ? [summaryMessage(summary, false, this.state), kept] : [summaryMessage(summary, Boolean(opts.continuing), this.state)];
+        this.session.compact(summary, keep, opts.idle, Boolean(kept));
         this.contextTokens = 0;
         this.lastUsageTotal = 0;
         this.cache = undefined;
         this.state.fileState.clear();
-        this.emit({ type: "compact_end", summary, ...(opts.idle ? { idle: true } : {}) });
+        this.emit({ type: "compact_end", summary, ...(opts.idle ? { idle: true } : {}), ...(kept ? { kept: true } : {}) });
         if (!this.o.isSubagent) void this.hooks("PostCompact", { trigger: opts.auto ? "auto" : "manual", compact_summary: summary }).then(() => this.compacted());
         return true;
     }
@@ -1557,6 +1686,8 @@ export class Agent {
         let declined = false;
         /** What drainQueued handed over that came from wakes, not the user. */
         const wakeTexts = new Set<string>();
+        /** What drainQueued handed over from the user, to the words they typed (what hooks added follows). */
+        const typed = new Map<string, string>();
         const host: BackendHost = {
             ...this.backendHooks(signal),
             emit: (e) => this.emitFromBackend(e),
@@ -1603,7 +1734,8 @@ export class Agent {
                 if (news.length) this.backendStopReminders.push(`This arrived while you were working, but your turn ended before it reached you:\n${news.join("\n\n")}`);
             },
             fromWake: (text) => wakeTexts.has(text),
-            drainQueued: async (progress) => {
+            requestOf: (text) => typed.get(text),
+            drainQueued: async (progress, live) => {
                 if (this.cutOff) return [];
                 // What the backend said before them goes first: the host places their turn after it.
                 let recorded = false;
@@ -1612,7 +1744,8 @@ export class Agent {
                     recorded = true;
                     this.recordBackendTurn(provider, name, progress());
                 };
-                const queued = this.o.host.drainQueued?.(record) ?? [];
+                const steer = await this.drainSteering(signal, record, live);
+                const queued = steer.texts;
                 // Events a watch raised join the running turn as the user's messages do (Codex steers with them at once).
                 const woke = this.takeWakes();
                 if (!queued.length && !woke) return [];
@@ -1620,8 +1753,13 @@ export class Agent {
                 const out: string[] = [];
                 if (queued.length) {
                     await this.checkpoint(queued.join("\n"), false, (checkpoint) => {
-                        const m = this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
-                        out.push(textOf(m));
+                        const m = this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }, ...steer.context.map(reminder)], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
+                        // With what hooks add after it, apart, as a prompt sent on its own is (forBackend).
+                        const text = forBackend(m.content, false).text;
+                        // The stored (redacted) text, so the request stays a prefix of what the backend gets.
+                        const first = m.content[0];
+                        typed.set(text, first?.type === "text" ? first.text : queued.join("\n\n"));
+                        out.push(text);
                     });
                 }
                 if (woke) {
@@ -2720,8 +2858,9 @@ export class Agent {
             extra.push(agentMemoryPrompt(def.memory, dir, readable ? readAgentMemory(dir) : undefined));
         }
         if (servers?.instructions) extra.push(servers.instructions);
-        if (worktree) extra.push(`# Your worktree\nYou work in a git worktree of your own, ${worktree.path}, on branch ${worktree.branch} (from ${worktree.base.slice(0, 12)}). Make your changes there. When you're done, commit them on that branch; the main agent will review and merge it. If you change nothing, the worktree is removed.`);
         const own = [def.prompt, ...extra].filter(Boolean).join("\n\n");
+        // Each worktree's path and branch are new: they come after what every agent of the type shares (and caches).
+        const checkout = worktree && `# Your worktree\nYou work in a git worktree of your own, ${worktree.path}, on branch ${worktree.branch} (from ${worktree.base.slice(0, 12)}). Make your changes there. When you're done, commit them on that branch; the main agent will review and merge it. If you change nothing, the worktree is removed.`;
 
         const system = buildSystemPrompt({
             cwd: projectRoot,
@@ -2730,6 +2869,7 @@ export class Agent {
             append: def.readOnly ? EXPLORE_APPEND : undefined,
             includeGit: false,
             projectFiles: this.projectTrusted(),
+            ...(checkout ? { checkout: { project: this.state.projectRoot, note: checkout } } : {}),
         });
         const session = Session.create(projectRoot, { persist: false, system });
         // Not saved itself: a Claude Code or Codex session it runs on is recorded in this one.
@@ -2773,7 +2913,7 @@ export class Agent {
             memoryDir,
             maxTurns,
             // Claude Code and Codex use their own system prompts: this goes on top.
-            appendSystemPrompt: backend ? [BACKEND_SUBAGENT, own, def.readOnly ? BACKEND_READ_ONLY : ""].filter(Boolean).join("\n\n") : undefined,
+            appendSystemPrompt: backend ? [BACKEND_SUBAGENT, own, checkout, def.readOnly ? BACKEND_READ_ONLY : ""].filter(Boolean).join("\n\n") : undefined,
             nativeWebSearch: this.o.nativeWebSearch && model.provider === this.model.provider,
             toolState: {
                 cwd,

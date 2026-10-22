@@ -1,10 +1,20 @@
-import { afterAll, expect, test } from "bun:test";
-import { isolate } from "./helpers/isolate";
-import type { AssistantMessage, ChatRequest, Message } from "../src/providers/types";
+import { afterAll, describe, expect, test } from "bun:test";
+import { readFileSync } from "fs";
+import { isolate, tempDir } from "./helpers/isolate";
+import type { AgentEvent } from "../src/agent/agent";
+import type { AssistantMessage, ChatRequest, Message, Usage } from "../src/providers/types";
 
 const iso = isolate();
 const { compactTranscriptText, handoffTranscript } = await import("../src/agent/compact");
 const { Agent } = await import("../src/agent/agent");
+const { Session } = await import("../src/agent/session");
+const { PermissionChecker } = await import("../src/permissions/checker");
+const { ProviderError } = await import("../src/providers/types");
+const { TodoWriteTool } = await import("../src/tools/meta-tools");
+const { toAnthropicMessages } = await import("../src/providers/anthropic");
+const { toOpenAIMessages } = await import("../src/providers/openai-compat");
+const { toResponsesInput } = await import("../src/providers/openai-responses");
+const { getProvider } = await import("../src/providers/registry");
 afterAll(() => iso.cleanup());
 
 const user = (text: string): Message => ({ role: "user", content: [{ type: "text", text }] });
@@ -201,3 +211,343 @@ for (const effort of ["xhigh", "max"] as const) {
         });
     }
 }
+
+// The agent's own compaction (API providers), against a scripted fake client.
+describe("the agent loop's compaction", () => {
+    type Script = (req: ChatRequest, n: number) => AssistantMessage;
+    const MODEL = { provider: "anthropic", id: "claude-x", contextWindow: 200_000, maxOutput: 32_000, pricing: { input: 3, output: 15 } };
+
+    function setup(script: Script, o: { model?: Record<string, unknown>; subagent?: boolean; settings?: Record<string, unknown> } = {}) {
+        const proj = tempDir("compact-agent-");
+        const session = Session.create(proj, { system: "sys" });
+        const settings = { ...o.settings } as any;
+        const events: AgentEvent[] = [];
+        const requests: ChatRequest[] = [];
+        const agent = new Agent({
+            session,
+            model: (o.model ?? MODEL) as any,
+            client: {
+                async stream(req: ChatRequest) {
+                    requests.push({ ...req, messages: structuredClone(req.messages) });
+                    return script(req, requests.length);
+                },
+                async listModels() {
+                    return [];
+                },
+            } as any,
+            settings: () => settings,
+            checker: new PermissionChecker(() => settings, proj),
+            tools: [TodoWriteTool],
+            mode: { get: () => "bypassPermissions", set: () => {} },
+            toolState: { cwd: proj, projectRoot: proj, fileState: new Map(), todos: [], shells: new Map() } as any,
+            isSubagent: o.subagent,
+            host: { emit: (e: AgentEvent) => void events.push(e), ui: {} } as any,
+        });
+        const run = (content: any[], signal = new AbortController().signal) => agent.run(content, { signal, display: "p" });
+        const compactions = () => events.filter((e) => e.type === "compact_start").length;
+        return { agent, session, events, requests, run, compactions };
+    }
+
+    const usage = (inputTokens: number, outputTokens = 10): Usage => ({ inputTokens, outputTokens });
+    const say = (text: string, u = usage(100)): AssistantMessage => ({ role: "assistant", content: text ? [{ type: "text", text }] : [], provider: "anthropic", model: "claude-x", stopReason: "end_turn", usage: u });
+    const todo = (id: string, u = usage(100)): AssistantMessage => ({ role: "assistant", content: [{ type: "tool_call", id, name: "TodoWrite", input: { todos: [{ content: id, status: "pending", activeForm: id }] } }], provider: "anthropic", model: "claude-x", stopReason: "tool_use", usage: u });
+    const isSummary = (req: ChatRequest) => JSON.stringify(req.messages.at(-1)).includes("write a detailed summary");
+    const twoMessages = (session: InstanceType<typeof Session>) => {
+        session.push({ role: "user", content: [{ type: "text", text: "hello" }] });
+        session.push(say("hi"));
+    };
+
+    test("a compaction request is retried after a transient error, as the provider's retry-after says", async () => {
+        const { agent, session, requests, events } = setup((_req, n) => {
+            if (n === 1) throw new ProviderError("Anthropic API is overloaded", 529, true, 1);
+            return say("SUMMARY");
+        });
+        twoMessages(session);
+        expect(await agent.compact({ auto: false, signal: new AbortController().signal })).toBe(true);
+        expect(requests.length).toBe(2);
+        expect(events.filter((e) => e.type === "retry")).toMatchObject([{ attempt: 1, delayMs: 1 }]);
+        expect(session.summary).toBe("SUMMARY");
+    });
+
+    test("the fallback (transcript) compaction request is retried too", async () => {
+        const { agent, session, requests } = setup((_req, n) => {
+            // The first summary answers with tool calls only: the transcript fallback runs.
+            if (n === 1) return todo("t1");
+            if (n === 2) throw new ProviderError("rate limited", 429, true, 1);
+            return say("SUMMARY");
+        });
+        twoMessages(session);
+        expect(await agent.compact({ auto: false, signal: new AbortController().signal })).toBe(true);
+        expect(requests.length).toBe(3);
+        expect(requests[2]!.tools).toEqual([]);
+    });
+
+    test("a compaction stops retrying when it's interrupted", async () => {
+        const ctrl = new AbortController();
+        const { agent, session, requests } = setup(() => {
+            setTimeout(() => ctrl.abort(), 10);
+            throw new ProviderError("Anthropic API is overloaded", 529, true, 60_000);
+        });
+        twoMessages(session);
+        const started = Date.now();
+        await expect(agent.compact({ auto: false, signal: ctrl.signal })).rejects.toThrow("aborted");
+        expect(Date.now() - started).toBeLessThan(5_000);
+        expect(requests.length).toBe(1);
+        expect(session.messages.length).toBe(2);
+    });
+
+    test("both summary requests' spend is recorded: the first, and the transcript fallback's", async () => {
+        const { agent, session } = setup((_req, n) => {
+            // The summary request answers with a tool call only: the transcript fallback runs.
+            if (n === 1) return todo("t1", usage(1000, 100));
+            return say("SUMMARY", usage(2000, 500));
+        });
+        twoMessages(session);
+        const before = session.cost;
+        expect(await agent.compact({ auto: false, signal: new AbortController().signal })).toBe(true);
+        // (1000 * 3 + 100 * 15) / 1e6, then (2000 * 3 + 500 * 15) / 1e6.
+        expect(session.cost - before).toBeCloseTo(0.0045 + 0.0135, 9);
+        expect(session.usageByModel.get("anthropic:claude-x")?.usage).toMatchObject({ inputTokens: 3000, outputTokens: 600 });
+    });
+
+    test("a small window whose model can write about all of it keeps a sane input budget, and asks for what output fits", async () => {
+        const SMALL = { provider: "openrouter", id: "some/32k-model", contextWindow: 32_768, maxOutput: 32_768 };
+        let i = 0;
+        const { run, requests, compactions } = setup(
+            (req) => {
+                if (isSummary(req)) return say("SUMMARY", usage(3000, 50));
+                return ++i <= 6 ? todo(`c${i}`, usage(3000, 50)) : say("done", usage(3000, 50));
+            },
+            { model: SMALL },
+        );
+        // About 3K tokens in context, for seven requests: before, the threshold was about 700 tokens and this compacted three times.
+        expect(await run([{ type: "text", text: "go" }])).toBe("done");
+        expect(compactions()).toBe(0);
+        expect(requests.length).toBe(7);
+        // Each request asks for no more output than fits beside its context, and for more than the reserve (a quarter of the window) here.
+        for (const r of requests.slice(1)) {
+            expect(r.maxTokens).toBeGreaterThan(8192);
+            expect(r.maxTokens! + 3000).toBeLessThan(32_768);
+        }
+
+        // Past the threshold, (32768 - 8192) * 0.92 ≈ 22.6K, it compacts; until then, the output asked for shrinks, to no less than the reserve.
+        let j = 0;
+        const big = setup(
+            (req) => {
+                if (isSummary(req)) return say("SUMMARY", usage(1000, 50));
+                j++;
+                return j <= 4 ? todo(`c${j}`, usage(8000 * j, 50)) : say("done", usage(1000, 50));
+            },
+            { model: SMALL },
+        );
+        expect(await big.run([{ type: "text", text: "go" }])).toBe("done");
+        expect(big.compactions()).toBe(1);
+        const turns = big.requests.filter((r) => !isSummary(r));
+        const asked = turns.map((r) => r.maxTokens!);
+        for (const n of asked) expect(n).toBeGreaterThanOrEqual(8192);
+        // 8K, then 16K tokens in context: what fits shrinks with it.
+        expect(asked[1]!).toBeLessThan(asked[0]!);
+        expect(asked[1]! + 8000).toBeLessThan(32_768);
+        expect(asked[2]!).toBeLessThan(asked[1]!);
+        expect(asked[2]! + 16_000).toBeLessThan(32_768);
+        // After the compaction, room again; a context that leaves less than the reserve still gets the reserve.
+        expect(asked[3]!).toBeGreaterThan(asked[2]!);
+        expect(asked.at(-1)).toBe(8192);
+        // The summary request leaves the history room too.
+        expect(big.requests.find(isSummary)!.maxTokens).toBe(8192);
+    });
+
+    test("a large window's requests ask for the output as set", async () => {
+        const { run, requests } = setup(() => say("done"));
+        expect(await run([{ type: "text", text: "go" }])).toBe("done");
+        expect(requests[0]!.maxTokens).toBeUndefined();
+        const set = setup(() => say("done"), { settings: { maxOutputTokens: 20_000 } });
+        expect(await set.run([{ type: "text", text: "go" }])).toBe("done");
+        expect(set.requests[0]!.maxTokens).toBe(20_000);
+    });
+
+    test("auto-compacting at the start of a turn keeps the new prompt, with its image, after the summary", async () => {
+        const { run, requests, session, events } = setup((req, n) => {
+            if (n === 1) return say("first answer", usage(160_000));
+            if (isSummary(req)) return say("SUMMARY: earlier work");
+            return say("final");
+        });
+        await run([{ type: "text", text: "start" }]);
+        session.push({ role: "user", content: [{ type: "text", text: "more" }] });
+        session.push(say("ok"));
+        const img = { type: "image" as const, mediaType: "image/png", data: "iVBORw0KGgo=" };
+        // 160K tokens in context, over (200K - 32K) * 0.92: this turn compacts before its first request.
+        expect(await run([{ type: "text", text: "What is wrong in this screenshot?" }, img])).toBe("done");
+        expect(events.filter((e) => e.type === "compact_start").length).toBe(1);
+        // The summary covers what came before; the prompt isn't in it.
+        const summaryReq = requests.find(isSummary)!;
+        expect(JSON.stringify(summaryReq.messages)).not.toContain("What is wrong in this screenshot?");
+        // The answer's request: the summary, then the prompt as sent.
+        const answer = requests.at(-1)!;
+        expect(answer.messages.length).toBe(2);
+        expect(answer.messages[0]!.meta?.kind).toBe("summary");
+        const summaryText = (answer.messages[0]!.content[0] as { text: string }).text;
+        expect(summaryText).toContain("SUMMARY: earlier work");
+        // Not told to carry on regardless: the prompt says what's next.
+        expect(summaryText).not.toContain("without asking the user any further questions");
+        expect(answer.messages[1]).toMatchObject({ role: "user", meta: { kind: "prompt" }, content: [{ type: "text", text: "What is wrong in this screenshot?" }, img] });
+        expect(session.messages.map((m) => m.meta?.kind ?? m.role)).toEqual(["summary", "prompt", "assistant"]);
+
+        // On the wire: Anthropic gets one user turn (the two merged), then alternation; OpenAI's formats keep the image.
+        const sent = answer.messages;
+        expect(toAnthropicMessages([...sent, say("final")]).map((m) => m.role)).toEqual(["user", "assistant"]);
+        expect(JSON.stringify(toAnthropicMessages(sent))).toContain('"type":"image"');
+        expect(JSON.stringify(toOpenAIMessages("sys", sent, getProvider("openai")!))).toContain("image_url");
+        expect(JSON.stringify(toResponsesInput(sent, getProvider("openai")!, "gpt-x"))).toContain("input_image");
+        // Chat Completions too: one user message (strict templates refuse two in a row), the summary, the prompt, then its image.
+        const chat = toOpenAIMessages("sys", [...sent, say("final")], getProvider("mistral")!);
+        expect(chat.map((m) => m.role)).toEqual(["system", "user", "assistant"]);
+        expect(chat[1]!.content.map((p: { type: string; text?: string }) => p.type === "text" ? p.text!.slice(0, 20) : p.type)).toEqual([summaryText.slice(0, 20), "What is wrong in thi", "image_url"]);
+
+        // The move is on record (the GUI shows the prompt once, where it went), and said when it happens.
+        expect(events.find((e) => e.type === "compact_end")).toMatchObject({ kept: true });
+        const record = readFileSync(session.path, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((l) => l.t === "compact");
+        expect(record).toMatchObject({ t: "compact", kept: true });
+    });
+
+    test("consecutive text-only user messages go to Chat Completions as one, in order", () => {
+        const chat = toOpenAIMessages("", [user("[Request interrupted by user]"), user("try again"), assistant("ok"), user("next")], getProvider("openai")!);
+        expect(chat).toEqual([
+            { role: "user", content: "[Request interrupted by user]\n\ntry again" },
+            { role: "assistant", content: "ok" },
+            { role: "user", content: "next" },
+        ]);
+    });
+
+    test("a mid-turn compaction (after tool results) summarizes everything, and the work carries on", async () => {
+        let i = 0;
+        const { run, requests, session } = setup((req) => {
+            if (isSummary(req)) return say("SUMMARY");
+            return ++i === 1 ? todo("c1", usage(160_000)) : say("done");
+        });
+        session.push({ role: "user", content: [{ type: "text", text: "a" }] });
+        session.push(say("b"));
+        session.push({ role: "user", content: [{ type: "text", text: "c" }] });
+        session.push(say("d"));
+        expect(await run([{ type: "text", text: "go" }])).toBe("done");
+        const answer = requests.at(-1)!;
+        expect(answer.messages.length).toBe(1);
+        expect((answer.messages[0]!.content[0] as { text: string }).text).toContain("without asking the user any further questions");
+    });
+
+    test("/compact summarizes everything, a prompt left unanswered too", async () => {
+        const { agent, session, requests } = setup(() => say("SUMMARY"));
+        twoMessages(session);
+        session.push({ role: "user", content: [{ type: "text", text: "interrupted prompt" }], meta: { kind: "prompt" } });
+        expect(await agent.compact({ auto: false, signal: new AbortController().signal })).toBe(true);
+        expect(JSON.stringify(requests[0]!.messages)).toContain("interrupted prompt");
+        expect(session.messages.length).toBe(1);
+    });
+
+    const overflow = () => new ProviderError("prompt is too long: 210000 tokens > 200000 maximum", 400, false);
+
+    test("a sub-agent compacts ahead of the window, by the same threshold, as often as it fills it", async () => {
+        let rounds = 0;
+        const { run, compactions, events } = setup(
+            (req) => {
+                if (isSummary(req)) return say("SUMMARY", usage(1000, 50));
+                // Each tool round adds 60K tokens; over the window, the provider refuses.
+                const since = req.messages.filter((m) => m.role === "assistant").length;
+                if (since >= 4) throw overflow();
+                return ++rounds <= 10 ? todo(`c${rounds}`, usage(60_000 * (since + 1), 50)) : say("done");
+            },
+            { subagent: true },
+        );
+        expect(await run([{ type: "text", text: "long task" }])).toBe("done");
+        expect(compactions()).toBeGreaterThanOrEqual(3);
+        // Never had to wait for the provider to refuse.
+        expect(events.filter((e) => e.type === "notice" && /exceeded the model's context window/.test(e.message))).toEqual([]);
+    });
+
+    test("an overflow compacts again whenever the last compaction shrank the history (here, a model with no known window)", async () => {
+        let rounds = 0;
+        const { run, compactions, requests } = setup(
+            (req) => {
+                if (isSummary(req)) return say("SUMMARY", usage(1000, 50));
+                if (req.messages.length > 6) throw overflow();
+                return ++rounds <= 8 ? todo(`c${rounds}`) : say("done");
+            },
+            { model: { provider: "anthropic", id: "claude-x" }, subagent: true },
+        );
+        expect(await run([{ type: "text", text: "long task" }])).toBe("done");
+        expect(compactions()).toBeGreaterThanOrEqual(2);
+        expect(requests.filter((r) => !isSummary(r) && r.messages.length > 6).length).toBe(compactions());
+    });
+
+    test("a prompt kept after a summary that still overflows is folded in by a second compaction", async () => {
+        const { run, session, requests, compactions } = setup((req) => {
+            if (isSummary(req)) return say("SUMMARY", usage(1000, 50));
+            if (req.messages.some((m) => m.meta?.kind === "prompt" && JSON.stringify(m.content).includes("HUGE"))) throw overflow();
+            return say("done");
+        });
+        session.push({ role: "user", content: [{ type: "text", text: "a" }] });
+        session.push(say("b"));
+        session.push({ role: "user", content: [{ type: "text", text: "c" }] });
+        session.push(say("d"));
+        expect(await run([{ type: "text", text: "HUGE " + "x".repeat(5000) }])).toBe("done");
+        expect(compactions()).toBe(2);
+        // The first kept the prompt; the second summarized it.
+        const [first, second] = requests.filter(isSummary);
+        expect(JSON.stringify(first!.messages)).not.toContain("HUGE");
+        expect(JSON.stringify(second!.messages)).toContain("HUGE");
+        expect(requests.at(-1)!.messages.length).toBe(1);
+        expect(session.messages.map((m) => m.meta?.kind ?? m.role)).toEqual(["summary", "assistant"]);
+    });
+
+    test("a compaction that didn't shrink the history doesn't stop the next one, once the model has answered since", async () => {
+        let main = 0;
+        let summaries = 0;
+        const { run, session, compactions } = setup((req) => {
+            // The first summary is longer than the little it summarized; the second is short.
+            if (isSummary(req)) return say(++summaries === 1 ? "SUMMARY " + "s".repeat(4000) : "S");
+            switch (++main) {
+                case 1:
+                    return todo("c1", usage(190_000));
+                case 2:
+                    return todo("c2");
+                case 3:
+                    throw overflow();
+                default:
+                    return say("done");
+            }
+        });
+        session.push({ role: "user", content: [{ type: "text", text: "a" }] });
+        session.push(say("b"));
+        session.push({ role: "user", content: [{ type: "text", text: "c" }] });
+        session.push(say("d"));
+        expect(await run([{ type: "text", text: "go" }])).toBe("done");
+        expect(compactions()).toBe(2);
+        expect(session.summary).toBe("S");
+    });
+
+    test("a request that overflows however much is compacted stops after two compactions, not in a loop", async () => {
+        const { run, session, requests, compactions } = setup(
+            (req) => {
+                if (isSummary(req)) return say("SUMMARY");
+                throw overflow();
+            },
+            { model: { provider: "anthropic", id: "claude-x" } },
+        );
+        session.push({ role: "user", content: [{ type: "text", text: "a" }] });
+        session.push(say("b"));
+        session.push({ role: "user", content: [{ type: "text", text: "c" }] });
+        session.push(say("d"));
+        expect(await run([{ type: "text", text: "go" }])).toBe("error");
+        expect(compactions()).toBeLessThanOrEqual(2);
+        expect(requests.length).toBeLessThanOrEqual(5);
+    });
+
+    test("an error that isn't transient isn't retried", async () => {
+        const { agent, session, requests } = setup(() => {
+            throw new ProviderError("invalid x-api-key", 401, false);
+        });
+        twoMessages(session);
+        await expect(agent.compact({ auto: false, signal: new AbortController().signal })).rejects.toThrow("invalid x-api-key");
+        expect(requests.length).toBe(1);
+    });
+});
