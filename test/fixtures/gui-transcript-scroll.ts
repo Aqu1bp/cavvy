@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, type Node } from "../helpers/gui-render";
-import { anchoredTop, atBottom, restoredShown, positionCache, TURN_PAGE } from "../../gui/src/lib/transcript-scroll";
+import { anchoredTop, atBottom, FAR, restoredShown, positionCache, TURN_PAGE } from "../../gui/src/lib/transcript-scroll";
 import { glideFrom, heldTurns, liveLine, specialActivity } from "../../gui/src/lib/live-line";
 
 // Real Solid effects/reconciliation; deterministic layout and browser scheduling
@@ -34,9 +34,11 @@ let viewportHeight = 500;
 let deferSmooth = false;
 let partShift = 30;
 const turnHeights = new Map<string, number>();
+/** A far turn (data-far) keeps the size it was skipped at, if one is set here, whatever it would be drawn at now. */
+const skippedAt = new Map<string, number>();
 let omitPromptPart = false;
 const has = (n: Node, cls: string) => n.props.class?.split(" ").includes(cls);
-const height = (n: Node): number => n.props["data-turn"] ? turnHeights.get(n.props["data-turn"]) ?? 200 : has(n, "earlier") ? 50 : has(n, "transcript-end") ? 500 : n.children.reduce((sum, child) => sum + height(child), 0);
+const height = (n: Node): number => n.props["data-turn"] ? (n.props["data-far"] !== undefined ? skippedAt.get(n.props["data-turn"]) : undefined) ?? turnHeights.get(n.props["data-turn"]) ?? 200 : has(n, "earlier") ? 50 : has(n, "transcript-end") ? 500 : n.children.reduce((sum, child) => sum + height(child), 0);
 const absolute = (n: Node): number => {
     if (!n.parent || has(n, "transcript-col")) return 0;
     return absolute(n.parent) + n.parent.children.slice(0, n.parent.children.indexOf(n)).reduce((sum, child) => sum + height(child), 0);
@@ -46,8 +48,10 @@ const matches = (n: Node, selector: string) => selector.split(", ").some((s) => 
     const match = s.match(/^\[([^=\]]+)(?:="([^"]*)")?\]$/);
     return !!match && n.props[match[1]!] !== undefined && (match[2] === undefined || n.props[match[1]!] === match[2]);
 });
-/** The column's glides (Transcript.tsx pin): where each starts, and the translate a running one is at now. */
-const glides: { from: number; duration: number; anim: { playState: string; cancel(): void } }[] = [];
+/** The glides (Transcript.tsx pin), one per row moved: where each starts, and the translate a running one is at now. */
+const glides: { el: Node; from: number; duration: number; anim: { playState: string; cancel(): void } }[] = [];
+/** The far-turn observer (Transcript.tsx): what it watches, how, and its callback (report() says what's near). */
+const io = { targets: new Set<Node>(), options: undefined as any, cb: undefined as undefined | ((entries: any[]) => void) };
 let shiftNow = 0;
 /** The conversation's moves while the panels slide (Transcript.tsx hold): what each translates from, and its timing. */
 const slides: { from: string; options: { duration: number; easing?: string }; anim: { playState: string; startTime?: number } }[] = [];
@@ -58,7 +62,7 @@ const decorate = (n: Node): any => Object.assign(n, {
             slides.push({ from: keyframes[0]!.transform, options, anim });
             return anim;
         }
-        glides.push({ from: Number(/translateY\((-?[\d.]+)px\)/.exec(keyframes[0]!.transform)?.[1]), duration: options.duration, anim });
+        glides.push({ el: n, from: Number(/translateY\((-?[\d.]+)px\)/.exec(keyframes[0]!.transform)?.[1]), duration: options.duration, anim });
         return anim;
     },
     getBoundingClientRect: () => ({ top: has(n, "transcript") ? 0 : absolute(n) - top, bottom: absolute(n) - top + height(n), height: height(n) }),
@@ -66,13 +70,19 @@ const decorate = (n: Node): any => Object.assign(n, {
     querySelector: (selector: string) => all(n).slice(1).find((child) => matches(child, selector)),
     scrollTo: (options: any) => { scrollBehavior = options.behavior; scrollTarget = Math.max(0, Math.min(options.top, height(n) - viewportHeight)); if (!deferSmooth || options.behavior !== "smooth") (n as any).scrollTop = options.top; },
     classList: { add() {}, remove() {} },
+    hasAttribute: (name: string) => n.props[name] !== undefined,
+    removeAttribute: (name: string) => { delete n.props[name]; },
+    toggleAttribute: (name: string, force: boolean) => { if (force) n.props[name] = ""; else delete n.props[name]; return force; },
 });
+const elements = (n?: Node) => (n?.children ?? []).filter((c) => c.tag !== "#text");
 const create = (tag: string): any => {
     const n = decorate(renderer.createElement(tag));
     Object.defineProperties(n, {
         dataset: { get: () => ({ turn: n.props["data-turn"], find: n.props["data-find"] }) },
         scrollTop: { get: () => top, set: (value) => { scrollWrites++; top = Math.max(0, Math.min(value, height(n) - viewportHeight)); } },
         scrollHeight: { get: () => height(n) }, clientHeight: { get: () => viewportHeight },
+        lastElementChild: { get: () => elements(n).at(-1) ?? null },
+        previousElementSibling: { get: () => { const s = elements(n.parent); return s[s.indexOf(n) - 1] ?? null; } },
     });
     return n;
 };
@@ -82,7 +92,7 @@ const [panelHold, setPanelHold] = solid.createSignal<any>();
 let findProps: any;
 const scope = {
     renderer: { ...solid, ...renderer, createElement: create },
-    anchoredTop, atBottom, restoredShown, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, glideFrom, heldTurns, liveLine, specialActivity,
+    anchoredTop, atBottom, FAR, restoredShown, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, glideFrom, heldTurns, liveLine, specialActivity,
     LiveLine: () => node("live-line"), Spinner: () => node("spinner"),
     getComputedStyle: () => ({ transform: `matrix(1, 0, 0, 1, 0, ${shiftNow})` }),
     DOMMatrixReadOnly: class { m42: number; constructor(m: string) { this.m42 = Number(/, (-?[\d.]+)\)$/.exec(m)?.[1] ?? 0); } },
@@ -96,6 +106,12 @@ const scope = {
     },
     addEventListener: (type: string, fn: () => void) => { if (!lifts.has(type)) lifts.set(type, new Set()); lifts.get(type)!.add(fn); },
     removeEventListener: (type: string, fn: () => void) => lifts.get(type)?.delete(fn),
+    IntersectionObserver: class {
+        constructor(cb: (entries: any[]) => void, options: any) { io.cb = cb; io.options = options; }
+        observe(target: Node) { io.targets.add(target); }
+        unobserve(target: Node) { io.targets.delete(target); }
+        disconnect() { io.targets.clear(); io.cb = undefined; }
+    },
     ResizeObserver: class {
         constructor(private cb: () => void) {}
         observe(target: Node) { if (!observers.has(this.cb)) observers.set(this.cb, new Set()); observers.get(this.cb)!.add(target); }
@@ -110,6 +126,7 @@ const scope = {
     TurnView: (p: any) => {
         restoredOpen ||= p.workOpen;
         const n = create("article"); n.props["data-turn"] = p.turn.id;
+        p.onElement?.(n);
         if (omitPromptPart && p.turn.id === "turn-5") return n;
         const part = create("div"); part.props["data-find"] = "prompt";
         part.getBoundingClientRect = () => ({ top: absolute(n) - top + partShift, bottom: absolute(n) - top + height(n), height: height(n) - partShift });
@@ -257,22 +274,25 @@ try {
     flush();
     assert.equal(top, bottom(), "growth is at the end in one frame");
     assert.equal(scrollWrites, glideWrites + 1, "with one scrollTop write");
-    assert.equal(glides.length, 1, "and one glide");
-    assert.deepEqual([glides[0]!.from, glides[0]!.duration], [220, 240], "from where the column was drawn, in 240ms");
+    // In sight: the end's room and the last turn (the one before is 420px above the view, more than the glide's 220).
+    assert.deepEqual(glides.map((g) => g.el), [button("transcript-end"), turn("turn-44")], "and one glide, of only the rows in sight");
+    assert.ok(!glides.some((g) => has(g.el, "transcript-col")), "not of the whole column: its cost doesn't grow with the conversation");
+    assert.deepEqual(glides.map((g) => [g.from, g.duration]), [[220, 240], [220, 240]], "from where they were drawn, in 240ms");
+    const first = glides.length;
     scroller().props.onScroll(); // Our own write's scroll event.
     assert.equal(button("jump"), undefined, "our own write keeps it pinned");
     // More growth while that glide runs: one motion, picked up where it is (drawn 100px down by now).
     shiftNow = 100;
     turnHeights.set("turn-44", 460); resize(); flush();
-    assert.equal(glides[0]!.anim.playState, "idle", "the running glide gives way");
+    assert.ok(glides.slice(0, first).every((g) => g.anim.playState === "idle"), "the running glide gives way");
     assert.equal(glides.at(-1)!.from, 140, "the next starts from where the last one was, plus the growth");
-    shiftNow = 0; glides[1]!.anim.cancel();
+    shiftNow = 0; glides.forEach((g) => g.anim.cancel());
     scroller().props.onScroll();
     // A big jump starts no farther than 240px off.
     turnHeights.set("turn-44", 1460); resize(); flush();
     assert.equal(top, bottom());
     assert.equal(glides.at(-1)!.from, 240, "a glide never covers more than 240px");
-    glides.at(-1)!.anim.cancel();
+    glides.forEach((g) => g.anim.cancel());
     scroller().props.onScroll();
     // Nothing to do: no write, no glide.
     glideWrites = scrollWrites;
@@ -378,6 +398,41 @@ try {
         omitPromptPart = false;
         turnHeights.clear();
     }
+
+    // A turn far from the view skips its layout (transcript.css): drawn once first, it's marked far when the
+    // observer says so, and when it comes near again any difference in its size above the view is the scroll's.
+    dispose();
+    const [farTurns, setFarTurns] = solid.createSignal(turns(90));
+    const long = { id: "far", view: { state: {}, get turns() { return farTurns(); } } };
+    dispose = mount(long);
+    const articles = () => all(root).filter((n) => n.tag === "article");
+    const report = (ids: string[], near: boolean) => io.cb!(ids.map((id) => ({ target: turn(id), isIntersecting: near })));
+    assert.equal(io.targets.size, 40, "each turn drawn is watched");
+    assert.deepEqual(io.options, { root: scroller(), rootMargin: "100% 0px" }, "for whether it's within a screen of the view");
+    scroll(0);
+    button("earlier").props.onClick();
+    assert.equal(io.targets.size, 80, "a page shown earlier is watched too");
+    assert.ok(articles().every((n) => n.props[FAR] === undefined), "and drawn before any of it is skipped");
+    // turn-50 is at the top of the view; turn-10 to turn-45 are more than a screen above it.
+    report(Array.from({ length: 36 }, (_, i) => `turn-${10 + i}`), false);
+    assert.equal(articles().filter((n) => n.props[FAR] !== undefined).length, 36, "those far from the view are marked far");
+    // turn-45, skipped at 200px, is drawn at 320 when it comes near: what's in view doesn't move.
+    skippedAt.set("turn-45", 200); turnHeights.set("turn-45", 320);
+    const reading = turn("turn-50").getBoundingClientRect().top;
+    report(["turn-45"], true);
+    assert.equal(turn("turn-45").props[FAR], undefined, "one near again is drawn");
+    assert.equal(turn("turn-50").getBoundingClientRect().top, reading, "a turn drawn above the view at another size doesn't move what's in view");
+    // Below the view, it moves nothing in view: nothing is written.
+    report(["turn-60"], false); skippedAt.set("turn-60", 200); turnHeights.set("turn-60", 320);
+    const belowWrites = scrollWrites;
+    report(["turn-60"], true);
+    assert.equal(scrollWrites, belowWrites, "a turn drawn below the view at another size writes nothing");
+    const removed = turn("turn-89");
+    setFarTurns(farTurns().slice(0, 89));
+    assert.ok(!io.targets.has(removed) && io.targets.has(turn("turn-9")), "a turn removed is no longer watched (and one paged in is)");
+    skippedAt.clear(); turnHeights.clear();
+    dispose();
+    assert.equal(io.targets.size, 0, "nor is any once the conversation is closed");
 
     // The composer dock's height (SessionView's dock prop) is set on the two boxes that keep room for it, and find
     // keeps a match above it: --dock-h isn't inherited, and WebKit keeps an inherited one stale.

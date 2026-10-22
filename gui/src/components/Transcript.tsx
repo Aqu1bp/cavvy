@@ -5,7 +5,7 @@ import { fork, forkAnchor } from "../state/actions";
 import { activate, toast, type SessionHandle } from "../state/app";
 import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setJumpTarget, setRewindOpen } from "../state/ui";
 import { prefs } from "../state/prefs";
-import { anchoredTop, atBottom, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
+import { anchoredTop, atBottom, FAR, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
 import { glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
 import { TurnView } from "./TurnView";
@@ -90,17 +90,37 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     };
 
     // Pinned to the end while a turn runs, new content glides in rather than jumping: one scrollTop write a
-    // frame (to the end, at once), then a short compositor-only translate on the column from where it was drawn
-    // to where it is, picked up from wherever a glide still running is. Scrolling runs no script of ours.
+    // frame (to the end, at once), then a short compositor-only translate from where it was drawn to where it
+    // is, picked up from wherever a glide still running is. Scrolling runs no script of ours. Only what's in
+    // sight (or glides into it) moves, not the whole column: a long conversation costs no more to glide.
     let pinFrame = 0;
-    let glide: Animation | undefined;
-    /** How far a running glide has the column drawn from its place (px). */
-    const shift = () => (glide?.playState === "running" && content ? new DOMMatrixReadOnly(getComputedStyle(content).transform).m42 : 0);
+    /** The running glide: the same translate on each of the column's rows in sight. */
+    let glides: { el: HTMLElement; anim: Animation }[] = [];
+    /** How far a running glide has the rows in sight drawn from their place (px). */
+    const shift = () => {
+        const g = glides[0];
+        return g?.anim.playState === "running" ? new DOMMatrixReadOnly(getComputedStyle(g.el).transform).m42 : 0;
+    };
+    const cancelGlide = () => {
+        for (const g of glides) g.anim.cancel();
+        glides = [];
+    };
     const stopGlide = () => {
         cancelAnimationFrame(pinFrame);
         pinFrame = 0;
-        glide?.cancel();
-        glide = undefined;
+        cancelGlide();
+    };
+    /** The column's rows in the view, or within `px` of it, from the end up (where a pin leaves it, a few). */
+    const inSight = (px: number) => {
+        const out: HTMLElement[] = [];
+        if (!scroller || !content) return out;
+        const view = scroller.getBoundingClientRect();
+        for (let el = content.lastElementChild as HTMLElement | null; el; el = el.previousElementSibling as HTMLElement | null) {
+            const box = el.getBoundingClientRect();
+            if (box.bottom < view.top - px) break;
+            if (box.top <= view.bottom + px) out.push(el);
+        }
+        return out;
     };
     const pin = () => {
         if (pinFrame) return;
@@ -116,9 +136,11 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             const ms = motionMs(GLIDE_MS);
             if (!ms || !content || typeof content.animate !== "function") return;
             const running = shift();
-            glide?.cancel();
+            cancelGlide();
             const from = glideFrom(scroller.scrollTop - before, running);
-            glide = from === undefined ? undefined : content.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GLIDE_EASE });
+            if (from === undefined) return;
+            // Placed with the last glide gone; a row farther than `from` from the view never comes into it.
+            glides = inSight(Math.abs(from)).map((el) => ({ el, anim: el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GLIDE_EASE }) }));
         });
     };
 
@@ -155,8 +177,38 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         wrote();
     };
 
+    // A turn a screen or more from the view is marked far: it skips its layout and paint (transcript.css), at the
+    // size it was last drawn at. Each is drawn once before it can be (not far until the observer says so).
+    let far: IntersectionObserver | undefined;
+    const track = (el: HTMLElement) => {
+        far?.observe(el);
+        onCleanup(() => far?.unobserve(el));
+    };
+
     onMount(() => {
         if (!scroller || !content) return;
+        if (typeof IntersectionObserver !== "undefined") {
+            far = new IntersectionObserver((entries) => {
+                // One drawn again may not be the size it was skipped at (the column was another width, say). Above
+                // the view, the scroll position takes the difference: what's in view stays put. Measured here, as
+                // the next scroll event's capture() would take the move for the reader's.
+                const top = scroller!.getBoundingClientRect().top;
+                const near = entries.filter((e) => e.isIntersecting && e.target.hasAttribute(FAR)).map((e) => {
+                    const box = e.target.getBoundingClientRect();
+                    return { el: e.target, was: box.bottom <= top ? box.height : undefined };
+                });
+                for (const e of entries) e.target.toggleAttribute(FAR, !e.isIntersecting);
+                if (stick() || smoothScroll) return;
+                let moved = 0;
+                for (const n of near) if (n.was !== undefined) moved += n.el.getBoundingClientRect().height - n.was;
+                if (Math.abs(moved) > 0.5) {
+                    scroller!.scrollTop += moved;
+                    wrote();
+                }
+            }, { root: scroller, rootMargin: "100% 0px" });
+            for (const el of content.querySelectorAll<HTMLElement>("[data-turn]")) far.observe(el);
+            onCleanup(() => far?.disconnect());
+        }
         const ro = new ResizeObserver(() => {
             if (!ready) return;
             if (smoothScroll) toBottom(true);
@@ -412,7 +464,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                     </Show>
                     <CardFoldsProvider sessionId={id}>
                         <For each={visible()}>{(t) => <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={rewind} onFork={() => forkFrom(t)}
-                            workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} held={held().has(t.id)} />}</For>
+                            workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} held={held().has(t.id)} onElement={track} />}</For>
                     </CardFoldsProvider>
                     {/* Work that isn't a turn (a compaction, one while idle): it shows at the end, as a turn's would. */}
                     <Show when={p.handle.view.state.busy && specialActivity(p.handle.view.state.activity?.label) && !turns().some((t) => t.status === "running")}>
