@@ -43,7 +43,7 @@ import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { agentCli, type AttachmentKind } from "../backends/defs";
 import { account } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
-import { modelRef, parseModelRef, textOf, toolCallsOf, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
+import { continuationGroups, modelRef, parseModelRef, textOf, toolCallsOf, assistantText, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
 import { expandMentions } from "../ui/mentions";
 import { expandMcpMentions } from "../mcp/mentions";
 import type { McpAsker } from "../mcp/elicitation";
@@ -317,6 +317,7 @@ export class Runtime {
     /** Settles when the running turn has ended (and written how). */
     private turnDone?: Promise<void>;
     private openText?: string;
+    private continuationText?: { id: string; prefix: string };
     private openThinking?: string;
     /** Blocks from the model response being streamed (dropped if it's retried). */
     private responseBlocks: string[] = [];
@@ -1355,13 +1356,24 @@ export class Runtime {
                 if (e.text) this.activity(e.text);
                 else this.setState({ activity: undefined });
                 break;
-            case "request_start":
+            case "request_start": {
                 this.closeOpen();
+                const previous = e.continuation ? this.currentTurn().blocks.findLast((b) => b.t === "text") : undefined;
+                const prefix = e.continuation ? assistantText(this.session.messages) : "";
+                this.continuationText = previous?.t === "text" && prefix && previous.text === prefix ? { id: previous.id, prefix } : undefined;
                 this.responseBlocks = [];
                 this.activity("Thinking");
                 this.notePrompt();
                 break;
+            }
             case "text": {
+                if (this.continuationText) {
+                    this.closeOpen();
+                    this.openText = this.continuationText.id;
+                    this.op({ op: "append", turnId: this.turnId!, blockId: this.openText, field: "text", text: redact(e.text) });
+                    this.activity("Writing");
+                    break;
+                }
                 if (!this.openText) {
                     this.closeOpen();
                     const id = this.newId();
@@ -1380,6 +1392,12 @@ export class Runtime {
                     this.addBlock({ t: "thinking", id, text: "", startedAt: Date.now() });
                     this.openThinking = id;
                     this.responseBlocks.push(id);
+                    // Keep the continued answer after its reasoning, visible outside the work fold.
+                    const answer = this.continuationText && this.blockIn(this.turnId, this.continuationText.id);
+                    if (answer) {
+                        this.op({ op: "block.remove", turnId: this.turnId!, blockId: answer.id });
+                        this.op({ op: "block", turnId: this.turnId!, block: answer });
+                    }
                     this.activity("Thinking");
                 }
                 this.op({ op: "append", turnId: this.turnId ?? this.currentTurn().id, blockId: this.openThinking, field: "text", text: redact(e.text) });
@@ -1453,6 +1471,7 @@ export class Runtime {
             case "retry": {
                 // The partial response is thrown away and asked for again.
                 const turnId = this.turnId;
+                if (this.continuationText) this.patchBlock(this.continuationText.id, { text: this.continuationText.prefix }, turnId);
                 if (turnId) for (const id of this.responseBlocks) this.op({ op: "block.remove", turnId, blockId: id });
                 this.responseBlocks = [];
                 this.openText = this.openThinking = undefined;
@@ -1497,22 +1516,36 @@ export class Runtime {
         this.closeOpen();
         const turnId = this.turnId;
         if (!turnId) return;
-        const texts = msg.content.filter((p) => p.type === "text").map((p) => p.text ?? "");
-        const streamed = this.responseBlocks.map((id) => this.blockIn(turnId, id)).filter((b): b is Block => b?.t === "text");
+        let texts = msg.content.filter((p) => p.type === "text").map((p) => p.text ?? "");
+        if (this.continuationText) {
+            this.patchBlock(this.continuationText.id, { text: this.continuationText.prefix + texts.join("") }, turnId);
+            texts = [];
+            this.continuationText = undefined;
+        }
+        let streamed = this.responseBlocks.map((id) => this.blockIn(turnId, id)).filter((b): b is Block => b?.t === "text");
+        const cutOffText = msg.stopReason === "max_tokens" && !msg.content.some((p) => p.type === "tool_call");
+        if (cutOffText && texts.length) {
+            texts = [texts.join("")];
+            // Keep an answer that may continue in one Markdown block, after its reasoning.
+            const first = streamed[0];
+            for (const b of streamed) this.op({ op: "block.remove", turnId, blockId: b.id });
+            if (first) this.op({ op: "block", turnId, block: first });
+            streamed = first ? [first] : [];
+        }
         streamed.forEach((b, i) => {
             const text = i === streamed.length - 1 ? texts.slice(i).join("") : texts[i];
-            if (text === undefined || !text.trim()) this.op({ op: "block.remove", turnId, blockId: b.id });
+            if (text === undefined || !text || (!text.trim() && !cutOffText)) this.op({ op: "block.remove", turnId, blockId: b.id });
             else if (b.t === "text" && b.text !== text) this.patchBlock(b.id, { text }, turnId);
         });
         // Text the provider didn't stream (some send it all at the end).
-        if (!streamed.length) for (const t of texts) if (t.trim()) this.addBlock({ t: "text", id: this.newId(), text: t });
+        if (!streamed.length) for (const t of texts) if (t.trim() || (t && cutOffText)) this.addBlock({ t: "text", id: this.newId(), text: t });
         for (const id of this.responseBlocks) {
             const b = this.blockIn(turnId, id);
             if (b?.t === "thinking" && !b.text.trim()) this.op({ op: "block.remove", turnId, blockId: id });
         }
         this.responseBlocks = [];
         // Its calls have arrived whole. Those not started yet wait their turn (a call runs after the one before it finishes), or, cut off or declined, never run.
-        const notRun = msg.stopReason === "max_tokens" || msg.stopReason === "refusal";
+        const notRun = msg.stopReason === "max_tokens" || msg.stopReason === "context_window_exceeded" || msg.stopReason === "refusal";
         for (const part of msg.content) {
             if (part.type !== "tool_call") continue;
             const call = part as unknown as ToolCallPart;
@@ -1697,6 +1730,9 @@ export class Runtime {
                 if (a.activity !== "Writing") this.agentPatch(id, { activity: "Writing" });
                 break;
             }
+            case "assistant":
+                if (e.answer?.trim()) this.agentPatch(id, { report: e.answer.trim() });
+                break;
             case "tool_call_start":
                 this.agentText.delete(id);
                 this.agentPatch(id, { activity: `Preparing ${e.name}` });
@@ -2518,7 +2554,7 @@ export class Runtime {
 
     /** What the session's model may not take of what's attached to a prompt, or to a message steering a turn. */
     private attachmentWarnings(attachments: readonly AttachedPart[], say: (text: string, level: "info" | "warn") => void) {
-        if (this.model?.supportsImages === false && attachments.some((a) => a.type === "image")) say(`${this.model.name ?? this.model.id} may not accept images.`, "warn");
+        if (this.model?.supportsImages === false && attachments.some((a) => a.type === "image")) say(`${this.model.name ?? this.model.id} can't read images: it's told one was attached, not what's in it.`, "warn");
         // Checked when it was sent; the model may have changed while it waited in the queue.
         if (this.model && !readsPdf(this.model) && attachments.some((a) => a.type === "file" && a.kind === "pdf")) say(`${this.model.name ?? this.model.id} can't read PDFs: it's told one was attached, not what's in it.`, "warn");
     }
@@ -3149,7 +3185,8 @@ export class Runtime {
 
     exportMarkdown(): string {
         const out: string[] = [`# ${this.session.title ?? "Session"} (${this.id})`, "", `- Directory: ${this.ws.cwd}`, `- Model: ${this.session.model ?? "?"}`, `- Exported: ${new Date().toISOString()}`, ""];
-        for (const msg of this.session.messages) {
+        for (const group of continuationGroups(this.session.messages)) {
+            const msg = group[0]!;
             if (msg.role === "user") {
                 const kind = msg.meta?.kind ?? "prompt";
                 if (kind === "tool_results") {
@@ -3164,9 +3201,9 @@ export class Runtime {
                 const note = attachmentsNote(msg.content);
                 if (t || note) out.push(kind === "summary" ? "## Summary of earlier conversation" : "## User", "", ...(t ? [t] : []), ...(note ? [`*${note}*`] : []), "");
             } else {
-                const t = textOf(msg).trim();
+                const t = group.map(textOf).join("").trim();
                 if (t) out.push("## Assistant", "", t, "");
-                for (const p of msg.content) if (p.type === "tool_call") out.push(`**${p.name}** \`${JSON.stringify(p.input).slice(0, 300)}\``, "");
+                for (const part of group) for (const p of part.content) if (p.type === "tool_call") out.push(`**${p.name}** \`${JSON.stringify(p.input).slice(0, 300)}\``, "");
             }
         }
         return redact(out.join("\n"));

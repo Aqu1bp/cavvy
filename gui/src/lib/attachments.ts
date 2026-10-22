@@ -172,8 +172,8 @@ export function toWire(list: readonly Attachment[]): { images?: { mediaType: str
     return { ...(images.length ? { images } : {}), ...(files.length ? { files } : {}) };
 }
 
-/** Why the message can't be sent as it is, if it can't. */
-export function blockedBy(list: readonly Attachment[], readsPdf: boolean): string | undefined {
+/** Why the message can't be sent as it is, if it can't. `readsImages`: false only for a model known to take none. */
+export function blockedBy(list: readonly Attachment[], readsPdf: boolean, readsImages = true): string | undefined {
     if (list.some((a) => a.kind === "refused")) return "Remove the files that can't be attached to send this message.";
     // Each fit when it was added; together (messages handed back from the queue) they may not.
     if (fileCount(list) > ATTACH_LIMITS.files) return `A message can carry ${ATTACH_LIMITS.files} files at most. Remove ${fileCount(list) - ATTACH_LIMITS.files}.`;
@@ -181,5 +181,6 @@ export function blockedBy(list: readonly Attachment[], readsPdf: boolean): strin
     if (bytesOf(list, ["image", "pdf"]) > MEDIA_BUDGET) return `PDFs and images in one message can come to ${formatSize(MEDIA_BUDGET)} at most. Remove some.`;
     if (bytesOf(list, ["image", "text", "pdf"]) > MAX_MESSAGE) return "Too much attached for one message. Remove some.";
     if (!readsPdf && list.some((a) => a.kind === "pdf")) return "This model can't read PDFs. Remove the PDF, or pick a model that can.";
+    if (!readsImages && list.some((a) => a.kind === "image")) return "This model can't read images. Remove the image, or pick a model that can.";
     return undefined;
 }

@@ -462,6 +462,11 @@ describe("the composer's sorting (gui/src/lib/attachments)", () => {
         expect(gui.blockedBy(pdf, true)).toBeUndefined();
         expect(gui.blockedBy(pdf, false)).toMatch(/can't read PDFs/);
         expect(gui.blockedBy([{ kind: "refused", name: "a.zip", size: 1, reason: "x" }], true)).toMatch(/can't be attached/);
+        // Images, like PDFs: blocked only for a model known to take none.
+        const image = gui.fromWire([{ mediaType: "image/png", data: "AA==" }], undefined);
+        expect(gui.blockedBy(image, true)).toBeUndefined();
+        expect(gui.blockedBy(image, true, false)).toMatch(/can't read images/);
+        expect(gui.blockedBy(pdf, true, false)).toBeUndefined();
         // Two queued messages of six files each, handed back together after an interrupt.
         const twelve = gui.fromWire(undefined, Array.from({ length: 12 }, (_, i) => ({ name: `${i}.txt`, data: b64("x") })));
         expect(twelve.every((a) => a.kind === "text")).toBe(true);
