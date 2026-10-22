@@ -191,11 +191,12 @@ const CODEX: AgentCliDef = {
         // text, as in turn/start (and one is refused when it's sent: the model can't read it).
         steersAttachments: ["image", "text", "pdf"],
         backgroundTasks: true,
-        // thread/backgroundTerminals/terminate and turn/interrupt on a sub-agent's thread; neither is sent yet.
-        stopTask: false,
+        // thread/backgroundTerminals/terminate (with experimentalApi), and turn/interrupt on a sub-agent's thread (codex-live.ts).
+        stopTask: true,
         moveToBackground: false,
-        // Codex starts goal turns itself; for finished background commands the harness would (#219 §2).
-        wakes: "native",
+        // Codex starts goal turns itself; for a background command that finished after its turn, the harness starts
+        // one (codex.wakeOnBackgroundCommand): Codex reports only the item's end (#219 §2).
+        wakes: "host",
         // turn/start carries the model, effort, approval policy and sandbox.
         live: { model: true, effort: true, mode: "per-turn" },
         fork: true,

@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import { chmodSync, existsSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
+import { fakeEnvFile, stopLiveCodex } from "./helpers/fake-env";
 
 const { cleanup } = isolate();
 const registry = await import("../src/providers/registry");
@@ -29,6 +30,7 @@ writeFileSync(codexBin, `#!/bin/sh\nexec "${process.execPath}" "${join(import.me
 chmodSync(codexBin, 0o755);
 const FAKE_LSP = join(import.meta.dir, "fixtures", "fake-lsp.ts");
 const NO_BUILTINS = Object.fromEntries(Object.keys(BUILTIN_SERVERS).map((n) => [n, { disabled: true }]));
+const fakeEnv = fakeEnvFile(bin);
 const FAKE_ENV = ["FAKE_SCENARIO", "FAKE_STEER_WAKES", "FAKE_EDIT_FILE", "FAKE_EDIT_TEXT", "FAKE_EDIT_WAIT"];
 
 let cwd: string;
@@ -47,13 +49,14 @@ beforeEach(() => {
     forgetClient("codex");
 });
 afterEach(async () => {
+    await stopLiveCodex();
     for (const s of states) await s.lsp?.dispose();
     states = [];
 });
 afterAll(() => {
     cleanup();
     rmSync(bin, { recursive: true, force: true });
-    for (const k of [...FAKE_ENV, "FAKE_LOG"]) delete process.env[k];
+    for (const k of [...FAKE_ENV, "FAKE_LOG", "FAKE_ENV_FILE"]) delete process.env[k];
 });
 
 const logLines = (): any[] => (existsSync(LOG) ? readFileSync(LOG, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
@@ -90,7 +93,13 @@ async function makeAgent(o: { lsp?: unknown; lspEnv?: Record<string, string>; un
         toolState,
         host: { drainQueued: () => [], emit: (e) => events.push(e), ui: {} },
     });
-    return { events, run: (text: string) => agent.run([{ type: "text", text }], { signal: new AbortController().signal }) };
+    return {
+        events,
+        run: (text: string) => {
+            fakeEnv.write();
+            return agent.run([{ type: "text", text }], { signal: new AbortController().signal });
+        },
+    };
 }
 
 describe("diagnostics after Codex's edits", () => {

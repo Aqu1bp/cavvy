@@ -54,6 +54,20 @@ function wrapper(name: string, fixture: string): string {
 }
 const claudeBin = wrapper("claude", "fake-claude.ts");
 const codexBin = wrapper("codex", "fake-codex.ts");
+/** The fakes' FAKE_* settings as this process has them: a live Codex app-server reads them again with every message. */
+const ENV_FILE = join(bin, "fake-env.json");
+/** Stop the live Codex app-servers (as Harness quitting does): the next turn starts one that resumes the thread. */
+async function newAppServer() {
+    await (await import("../src/backends/codex-live")).shutdownCodexLive();
+}
+function writeFakeEnv() {
+    writeFileSync(ENV_FILE, JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("FAKE_") && k !== "FAKE_ENV_FILE" && k !== "FAKE_LOG"))));
+}
+
+// Each test's live Codex app-servers stop with it (one with background work would outlive it otherwise).
+afterEach(async () => {
+    await (await import("../src/backends/codex-live")).shutdownCodexLive();
+});
 
 afterAll(() => {
     restoreSecrets();
@@ -78,6 +92,8 @@ beforeEach(() => {
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
     forgetClient("codex");
+    process.env.FAKE_ENV_FILE = ENV_FILE;
+    writeFakeEnv();
 });
 
 function logLines(): any[] {
@@ -144,7 +160,10 @@ async function makeAgent(o: Opts) {
                 : undefined,
         },
     });
-    const run = (text: string, signal = new AbortController().signal) => agent.run([{ type: "text", text }], { signal });
+    const run = (text: string, signal = new AbortController().signal) => {
+        writeFakeEnv();
+        return agent.run([{ type: "text", text }], { signal });
+    };
     /** The user changing the mode (shift+tab): the agent hears about it. */
     const switchMode = (m: PermissionMode) => {
         const from = mode;
@@ -1366,10 +1385,16 @@ describe("Codex backend", () => {
         expect(notices(events).join("\n")).toMatch(/Codex isn't signed in.*codex login/);
     });
 
-    test("the next turn resumes the thread; a lost one starts over", async () => {
+    test("the next turn goes on in the same app-server and thread; a new app-server resumes it; a lost one starts over", async () => {
         const { run, session } = await makeAgent({ provider: "codex", settings: { permissions: { allow: ["Bash(touch:*)"] } } });
         await run("one");
         await run("two");
+        // One app-server for both turns (#219): no second start, no resume.
+        expect(starts()).toHaveLength(1);
+        expect(received().filter((m) => m.method === "turn/start").map((m) => m.params.threadId)).toEqual(["thr-new", "thr-new"]);
+        expect(received().some((m) => m.method === "thread/resume")).toBe(false);
+        await newAppServer();
+        await run("after a restart");
         expect(received().find((m) => m.method === "thread/resume")?.params.threadId).toBe("thr-new");
         rmSync(LOG, { force: true });
         session.setBackendSession("codex", "gone-9", session.messages.length);
@@ -2013,6 +2038,8 @@ describe("review findings, round 2", () => {
         const a = await makeAgent({ provider: "codex", settings: { permissions: { allow: ["Bash(touch:*)"] } } });
         await a.run("one");
         expect(a.session.backends.get("codex")?.id).toBe("thr-new");
+        // A new app-server (Harness restarted) resumes the thread.
+        await newAppServer();
         process.env.FAKE_SLOW_RESUME = "3000";
         const ac = new AbortController();
         const done = a.run("two", ac.signal);
@@ -2146,6 +2173,8 @@ describe("fast mode backend wiring", () => {
             const { run, session } = await makeAgent({ provider, model: { supportsFastMode: true, fastModeTier: "priority" }, settings: { fastMode: true } });
             session.setFastMode(false);
             await run("hello");
+            // A new app-server resumes the thread: that's sent no tier either.
+            if (provider === "codex") await newAppServer();
             await run("again");
             if (provider === "codex") {
                 expect(received().filter((m) => m.method === "turn/start").every((m) => !("serviceTier" in m.params))).toBe(true);
@@ -2293,11 +2322,18 @@ describe("forked sessions", () => {
         expect(tokensOf(fork.session)).toBeGreaterThan(0);
         expect(tokensOf(fork.session)).toBe(tokensOf(orig.session));
 
+        // The original's app-server forks its own copy in place (its background work would go on).
         await orig.run("in the original");
         const origThread = orig.session.backends.get("codex")!.id;
         expect(origThread).toMatch(/^thr-fork-/);
         expect(origThread).not.toBe(forkThread);
+        expect(received().filter((m) => m.method === "turn/start").at(-1)?.params.threadId).toBe(origThread);
         await orig.run("again");
+        expect(threads()).toEqual(["thread/fork thr-new", "thread/fork thr-new"]);
+        expect(received().filter((m) => m.method === "turn/start").at(-1)?.params.threadId).toBe(origThread);
+        // A new app-server resumes the copy.
+        await newAppServer();
+        await orig.run("after a restart");
         expect(threads()).toEqual(["thread/fork thr-new", "thread/fork thr-new", `thread/resume ${origThread}`]);
     });
 
@@ -2576,6 +2612,7 @@ describe("Codex project MCP boundary", () => {
         expect(received().find((m) => m.method === "config/read").params).toEqual({ cwd, includeLayers: true });
         const config = received().find((m) => m.method === "thread/start").params.config;
         expect(config).toEqual({ mcp_servers: { project: { enabled: false }, shared: { enabled: false }, "dotted.name": { enabled: false } } });
+        await newAppServer();
         await run("resume");
         expect(received().find((m) => m.method === "thread/resume").params.config).toEqual(config);
     });
@@ -2585,6 +2622,7 @@ describe("Codex project MCP boundary", () => {
         process.env.FAKE_PROJECT_PLUGINS = JSON.stringify({ "theirs@local": { enabled: true } });
         const { run } = await makeAgent({ provider: "codex", trusted: true });
         await run("hello");
+        await newAppServer();
         await run("resume");
         for (const method of ["thread/start", "thread/resume"]) expect(received().find((m) => m.method === method).params.config).toEqual({ plugins: { "theirs@local": { enabled: false } } });
     });
@@ -2598,6 +2636,7 @@ describe("Codex project MCP boundary", () => {
         process.env.FAKE_CONFIG_LAYERS = JSON.stringify(layers);
         const { run, events } = await makeAgent({ provider: "codex", trusted: true });
         expect(await run("hello")).toBe("done");
+        await newAppServer();
         expect(await run("resume")).toBe("done");
         for (const method of ["thread/start", "thread/resume"]) {
             expect(received().find((m) => m.method === method).params.config).toEqual({ mcp_servers: { personal: { enabled: false } } });

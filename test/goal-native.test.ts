@@ -2,10 +2,11 @@
 // gets /goal as it is and reports the goal as it goes (active_goal); Codex's thread goal is driven
 // with thread/goal/* and the run waits through the turns Codex starts for it. Fake CLIs (test/fixtures).
 
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
+import { fakeEnvFile, stopLiveCodex } from "./helpers/fake-env";
 
 const iso = isolate();
 const registry = await import("../src/providers/registry");
@@ -33,6 +34,9 @@ function wrapper(name: string, fixture: string): string {
 }
 const claudeBin = wrapper("claude", "fake-claude.ts");
 const codexBin = wrapper("codex", "fake-codex.ts");
+const fakeEnv = fakeEnvFile(bin);
+
+afterEach(() => stopLiveCodex());
 
 afterAll(() => {
     iso.cleanup();
@@ -48,6 +52,7 @@ beforeEach(() => {
     // Claude Code's own remote sessions report their goal on stdout too (a test may run in one).
     delete process.env.CLAUDE_CODE_REMOTE;
     process.env.FAKE_LOG = LOG;
+    fakeEnv.write();
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -56,7 +61,13 @@ beforeEach(() => {
 
 const received = () => (existsSync(LOG) ? readFileSync(LOG, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []).flatMap((l: any) => (l.received ? [l.received] : []));
 
-async function makeAgent(provider: "claude-code" | "codex", session = Session.create(cwd, { persist: false }), queue: string[] = []) {
+/**
+ * `live`: Codex keeps one app-server for the session (#219), and the turns it starts by itself are wakes the host
+ * adopts (`wakes`); off, an app-server per run waits through them in the run (agentCli.liveSessions false).
+ */
+async function makeAgent(provider: "claude-code" | "codex", session = Session.create(cwd, { persist: false }), queue: string[] = [], o: { live?: boolean } = {}) {
+    const settings = { agentCli: { liveSessions: o.live === true } };
+    const wakes: import("../src/backends/types").BackendWake[] = [];
     const events: AgentEvent[] = [];
     trust.trustForSession(cwd);
     const client = await clientFor(provider);
@@ -65,14 +76,17 @@ async function makeAgent(provider: "claude-code" | "codex", session = Session.cr
         session,
         model: { provider, id: "default" },
         client,
-        settings: () => ({}),
-        checker: new PermissionChecker(() => ({}), cwd),
+        settings: () => settings,
+        checker: new PermissionChecker(() => settings, cwd),
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
         toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() },
-        host: { drainQueued: () => queue.splice(0), emit: (e) => events.push(e), ui: {} },
+        host: { drainQueued: () => queue.splice(0), emit: (e) => events.push(e), ui: {}, wake: (w) => void wakes.push(w) },
     });
-    const run = (text: string, signal = new AbortController().signal) => agent.run([{ type: "text", text }], { signal });
+    const run = (text: string, signal = new AbortController().signal) => {
+        fakeEnv.write();
+        return agent.run([{ type: "text", text }], { signal });
+    };
     const goals = () => events.flatMap((e) => (e.type === "goal" ? [e.goal] : []));
     const notices = () => events.flatMap((e) => (e.type === "notice" ? [e.message] : []));
     // setMode: the mode as the turn reads it next, with nothing told; switchMode: as the user switches it (the running turn is told).
@@ -81,7 +95,16 @@ async function makeAgent(provider: "claude-code" | "codex", session = Session.cr
         mode = m;
         agent.noteModeChange(from, m);
     };
-    return { agent, events, run, goals, notices, session, setMode: (m: typeof mode) => (mode = m), switchMode };
+    /** Take the next wake turn Codex (or the harness, for it) started: adopted as the runtime does. */
+    const adoptNext = async (ms = 5000) => {
+        for (const end = Date.now() + ms; !wakes.length; ) {
+            if (Date.now() > end) throw new Error("no wake came");
+            await Bun.sleep(5);
+        }
+        const w = wakes.shift()!;
+        return { wake: w, reason: await agent.run([{ type: "text", text: w.label ?? "" }], { signal: new AbortController().signal, kind: "wake", display: w.label, adopt: w }) };
+    };
+    return { agent, events, run, goals, notices, session, setMode: (m: typeof mode) => (mode = m), switchMode, wakes, adoptNext };
 }
 
 describe("parsing what the CLIs report", () => {
@@ -701,7 +724,7 @@ describe("in the app's server", () => {
         }
     }, 20_000);
 
-    test("Codex: the run waits through Codex's own goal turns, and its end is said", async () => {
+    test("Codex: the turns Codex starts for its goal are wake turns of the session, and its end is said", async () => {
         process.env.FAKE_GOAL_TURNS = "2";
         const { engine, rt } = await session("codex");
         try {
@@ -710,9 +733,14 @@ describe("in the app's server", () => {
             expect(shown(rt)).toContain("✓ Goal achieved: the docs build");
             expect(rt.snapshot().state.goal).toBeUndefined();
             expect(rt.goal.active).toBe(false);
+            // The goal's first turn is the prompt's; the two Codex started itself are wake turns of their own (#219).
+            expect(rt.snapshot().turns.map((t: any) => t.prompt?.text)).toEqual(["/goal the docs build", "Codex went on with the goal: the docs build", "Codex went on with the goal: the docs build"]);
+            // All in one thread of one app-server: started once, never resumed.
+            expect(received().filter((m) => m.method === "thread/start" && !m.params.ephemeral)).toHaveLength(1);
+            expect(received().some((m) => m.method === "thread/resume")).toBe(false);
             // Codex still reports the met goal at the start of later runs: it isn't said again.
             await rt.send("thanks");
-            await until(() => !rt.busy && rt.snapshot().turns.length === 2);
+            await until(() => !rt.busy && rt.snapshot().turns.length === 4);
             await Bun.sleep(50);
             expect(shown(rt).filter((n: string) => n.startsWith("✓ Goal achieved"))).toHaveLength(1);
             expect(rt.snapshot().state.goal).toBeUndefined();
@@ -730,6 +758,7 @@ describe("in the app's server", () => {
             await until(() => !rt.busy && rt.snapshot().state.goal?.note?.includes("usage") === true);
             process.env.FAKE_SCENARIO = "cmd";
             process.env.FAKE_GOAL_TURNS = "1";
+            fakeEnv.write();
             await (rt as any).runScheduled("Your usage limit has reset. Continue where you left off.", { kind: "resume", prompt: "", at: Date.now() }, "Resuming after the usage limit reset");
             await until(() => !rt.busy && shown(rt).some((n: string) => n.startsWith("✓ Goal achieved")));
             const sets = received().filter((m) => m.method === "thread/goal/set").map((m) => m.params.status);
