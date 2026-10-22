@@ -3204,8 +3204,10 @@ export class Runtime {
         const bg = this.toolState.background;
         if (!bg || this.closed) return;
         const src = { delegated: this.agent?.delegatedTasks, shells: this.toolState.shells };
-        // One that ended on its own is news, in this window or as a notification (the GUI decides which).
-        for (const t of bg.sync(src)) this.engine.notifyBackground(this, { ...t, label: redact(t.label).slice(0, 300) });
+        // One that ended on its own is news, in this window or as a notification (the GUI decides which). Not with
+        // the agentCli.liveSessions kill switch off: a delegated task's end is a transcript line then, as before.
+        const news = bg.sync(src);
+        if (this.settings().agentCli?.liveSessions !== false) for (const t of news) this.engine.notifyBackground(this, { ...t, label: redact(t.label).slice(0, 300) });
         const tasks = bg.shown(src).map((t) => ({ ...t, label: redact(t.label).slice(0, 300) }));
         if (JSON.stringify(tasks) !== JSON.stringify(this.view.state.backgroundTasks ?? [])) this.setState({ backgroundTasks: tasks });
     }

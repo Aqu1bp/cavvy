@@ -1614,6 +1614,34 @@ describe("harness models", () => {
         expect(JSON.stringify(requests.at(-1)!.messages)).toContain("All good.");
     });
 
+    test("the kill switch (agentCli.liveSessions false): Esc stops a background Task started on an earlier turn, as before #228", async () => {
+        const main = (content: unknown[], stopReason = "end_turn") => ({ role: "assistant", provider: "anthropic", model: "claude-main", stopReason, content, usage: { inputTokens: 10, outputTokens: 5 } });
+        const g = gate();
+        let n = 0;
+        const client = {
+            stream: async (req: ChatRequest) => {
+                n++;
+                if (n === 1) return main([{ type: "tool_call", id: "t1", name: "Task", input: { description: "Long review", prompt: "Review everything", model: "gemini:gemini-test", subagent_type: "explore", run_in_background: true } }], "tool_use");
+                if (n === 2) return main([{ type: "text", text: "Started it." }]);
+                return gate().wait(req.signal).then(() => main([{ type: "text", text: "never" }]));
+            },
+            listModels: async () => [],
+        };
+        script = async (req) => (await g.wait(req.signal), say("All good."));
+        const { run, agent, events } = await makeAgent({ provider: "anthropic", model: { id: "claude-main" }, client, settings: { agentCli: { liveSessions: false } } });
+        expect(await run("start a background review")).toBe("done");
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["running"]);
+        const ac = new AbortController();
+        const turn2 = run("meanwhile, a quick question", ac.signal);
+        await until(() => n >= 3);
+        ac.abort();
+        expect(await turn2).toBe("aborted");
+        await agent.delegatedTasks[0]!.settled;
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["cancelled"]);
+        expect(notices(events)).toContain("info: Stopped 1 delegated task.");
+        expect(notices(events).join("\n")).not.toContain("keeps running");
+    });
+
     test("Task runs a sub-agent on the model asked for, and ListModels shows what can run", async () => {
         const mainRequests: ChatRequest[] = [];
         const main = (content: unknown[], stopReason = "end_turn") => ({ role: "assistant", provider: "anthropic", model: "claude-main", stopReason, content, usage: { inputTokens: 10, outputTokens: 5 } });

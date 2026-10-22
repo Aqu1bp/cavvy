@@ -492,3 +492,46 @@ test("review round 3, B-R3-4: Stop on a delegated task that already finished: it
         await engine.stop();
     }
 });
+
+test("the kill switch (agentCli.liveSessions false): no background notices, and the agent isn't told of tasks that stopped when Harness quit, as before", async () => {
+    const off = (rt: any) => (rt.ws.settings = { ...rt.ws.settings, agentCli: { liveSessions: false } });
+    const first = await session();
+    const { id } = first;
+    let path: string;
+    try {
+        off(first.rt);
+        const ends = shell("bash_1", "npm test");
+        first.rt.toolState.shells.set(ends.id, ends);
+        await first.engine.handle(first.c, "session.stopBackground", { id, ids: [] });
+        ends.exitCode = 1;
+        await first.engine.handle(first.c, "session.stopBackground", { id, ids: [] });
+        expect(notices(first.c)).toEqual([]);
+        // The list itself stays: it only adds a view.
+        expect(first.rt.snapshot().state.backgroundTasks!.map((t) => [t.id, t.status])).toEqual([["bash_1", "failed"]]);
+        await first.engine.handle(first.c, "session.send", { id, text: "hello" });
+        await until(() => first.rt.idle && first.rt.session.messages.some((m) => m.role === "assistant"));
+        const runs = shell("bash_2", "npm run watch");
+        first.rt.toolState.shells.set(runs.id, runs);
+        await first.engine.handle(first.c, "session.stopBackground", { id, ids: [] });
+        path = first.rt.session.path;
+        first.rt.toolState.shells.delete(runs.id);
+    } finally {
+        await first.engine.stop();
+    }
+    const engine = new Engine();
+    const c = client(engine);
+    try {
+        await engine.handle(c, "session.open", { id });
+        const rt = engine.runtimes.get(id)!;
+        await rt.ready;
+        off(rt);
+        await engine.handle(c, "session.send", { id, text: "what happened?" });
+        await until(() => rt.idle && rt.session.messages.filter((m) => m.role === "assistant").length >= 2);
+        const sent = JSON.stringify([...mock.bodies].reverse().find((b) => b.tools?.length)?.messages ?? []);
+        expect(sent).not.toContain("stopped when Harness quit");
+        // Written stopped all the same: not said again.
+        expect(logLines(path!).filter((l) => l.t === "bgtask" && l.task.id === "bash_2").map((l) => l.task.status)).toEqual(["running", "stopped"]);
+    } finally {
+        await engine.stop();
+    }
+});

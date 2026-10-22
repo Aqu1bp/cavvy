@@ -660,7 +660,8 @@ export class Agent {
         // a prompt that takes the reminders now (it's stored just below). Taking them writes them stopped in the
         // log, so not for a /goal, which leaves its reminders for the next prompt (kept in memory only).
         const lost = this.o.isSubagent || keepNotes ? [] : (this.state.background?.takeLost() ?? []);
-        if (lost.length) this.addReminder(lostNote(lost));
+        // With the kill switch off (liveSessions), only written stopped, as before: the agent isn't told.
+        if (lost.length && this.liveSessions) this.addReminder(lostNote(lost));
         for (const r of keepNotes ? [] : this.pendingReminders.splice(0)) parts.push(reminder(r.text));
         // Codex's edits are checked too: what came after their wait goes with this prompt (after a /goal, with the next).
         const late = keepNotes ? undefined : this.lateDiagnostics();
@@ -1546,7 +1547,8 @@ export class Agent {
         for (const t of this.delegations?.undelivered() ?? []) {
             t.delivered = true;
             this.addReminder(taskEndedNote(t, backend));
-            if (notify && !this.o.host.announcesBackgroundEnds) this.emit({ type: "notice", level: "info", message: `${backend ? "Delegated" : "Background"} task ${t.id} "${t.description}" (${t.model}) ${t.status === "done" ? "finished" : t.status}. Its result goes to ${name} with your next message.` });
+            // The window announces it (notifyBackground), unless the kill switch is off (liveSessions): then a line, as before.
+            if (notify && (!this.o.host.announcesBackgroundEnds || !this.liveSessions)) this.emit({ type: "notice", level: "info", message: `${backend ? "Delegated" : "Background"} task ${t.id} "${t.description}" (${t.model}) ${t.status === "done" ? "finished" : t.status}. Its result goes to ${name} with your next message.` });
         }
     }
 
@@ -1569,8 +1571,25 @@ export class Agent {
         this.emit({ type: "notice", level: "info", message: `${running} background task${running === 1 ? " is" : "s are"} still running. ${running === 1 ? "Its result goes" : "Their results go"} to ${this.model.name ?? this.model.id} with your next message (/tasks shows them, /tasks stop stops them).` });
     }
 
+    /**
+     * The agentCli.liveSessions kill switch (on unless it's false). Off, the session-level background behaviour
+     * of #219 PR 2 falls back to what it was: Esc stops every delegated task (cancelTasks), a delegated task's end
+     * is a transcript line again rather than the window's notice (deliverTasks; the runtime and the TUI send no
+     * background notices), and the agent isn't told of tasks that stopped when Harness quit. The Background list,
+     * its log lines and the user's explicit Stop stay: they only add a view and an action the user takes.
+     */
+    private get liveSessions(): boolean {
+        return this.o.settings().agentCli?.liveSessions !== false;
+    }
+
     /** The user interrupted the turn: stop the delegated tasks it waits on (not those in the background, #228). */
     private cancelTasks() {
+        if (!this.liveSessions) {
+            // The kill switch: as before #228, interrupting a turn stops every delegated task, those in the background too.
+            const all = this.delegations?.cancelAll() ?? 0;
+            if (all) this.emit({ type: "notice", level: "info", message: `Stopped ${all} delegated task${all === 1 ? "" : "s"}.` });
+            return;
+        }
         const n = this.delegations?.cancelForeground() ?? 0;
         if (n) this.emit({ type: "notice", level: "info", message: `Stopped ${n} delegated task${n === 1 ? "" : "s"}.` });
         const left = this.delegations?.running().filter((t) => !t.controller.signal.aborted).length ?? 0;

@@ -877,7 +877,9 @@ export class App {
         }
         const delegated = this.agent?.delegatedTasks;
         const ended = this.toolState.background?.sync({ delegated, shells: this.toolState.shells }) ?? [];
-        // A delegated task's end is said already, with where its result goes (Agent.deliverTasks).
+        // A delegated task's end is said already, with where its result goes (Agent.deliverTasks). None with the
+        // agentCli.liveSessions kill switch off, as before.
+        if (this.settings.agentCli?.liveSessions === false) return;
         for (const t of ended) if (!delegated?.some((d) => d.id === t.id)) this.notice(redact(endedText(t)), t.status === "failed" ? "warn" : "info");
     }
 
