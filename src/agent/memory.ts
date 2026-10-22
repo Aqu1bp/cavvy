@@ -9,13 +9,13 @@
 // `@path` in any of them imports a file, as in Claude Code's CLAUDE.md: relative
 // to the importing file, `~/` for home, four hops deep at most, and not inside
 // code spans, code blocks or HTML blocks and comments (as Bun's CommonMark
-// parser reads them). An imported file comes before the one importing it.
+// parser reads them); the path as written. An imported file comes before the one importing it.
 // A project's files import only from inside the project unless the user trusted
 // the folder themselves (Claude Code asks before it loads such "external imports").
 // All of them together are capped (MAX_FILES, MAX_TOTAL_BYTES), with a notice.
 
-import { appendFileSync, closeSync, constants, existsSync, fstatSync, opendirSync, openSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from "fs";
-import { dirname, isAbsolute, join, relative, resolve } from "path";
+import { appendFileSync, closeSync, constants, existsSync, fstatSync, lstatSync, opendirSync, openSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from "fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { homedir } from "os";
 import { paths, ensureDir, harnessHome } from "../config/paths";
 import { gitRoot } from "../util/git";
@@ -152,7 +152,7 @@ function readCapped(file: string, within: string | undefined, limit: number, roo
 /** A block's text ends with a line break, so two blocks' text never runs together. */
 const block = (children: string) => `${children}\n`;
 const cell = (children: string) => ` ${children} `;
-/** What Bun's Markdown renderer keeps of a document: its text, without code or HTML blocks. */
+/** What Bun's Markdown renderer keeps of a document: its text, without code or HTML blocks (where proseImports looks for its markers). */
 const PROSE: Bun.markdown.RenderCallbacks = {
     code: () => "\n",
     codespan: () => " ",
@@ -164,34 +164,55 @@ const PROSE: Bun.markdown.RenderCallbacks = {
     td: cell,
 };
 
+/** `@path` after the start of a line or a space; `\ ` is a space in the path. */
+const IMPORT = /(?<=^|\s)@((?:\\ |[^\s])+)/g;
+
 /**
- * `text` without its code: fenced and indented code blocks, code spans and
- * HTML blocks, wherever they are (in block quotes, list items), and HTML
- * comments; as CommonMark reads them (Bun's parser, md4c), not a scanner of
- * our own. Without that parser (an older Bun), nothing: an import missed, not one made.
+ * The `@path`s in `text` that are prose, each as written in the source. Bun's
+ * CommonMark parser (md4c) decides what's code (fenced and indented code
+ * blocks, code spans, HTML blocks, wherever they are), but the path is never
+ * taken from what it renders: its emphasis, entities and links would turn
+ * `@docs/_draft_.md` into docs/draft.md. Instead each `@` in the source gets
+ * a marker of letters and digits just before it (after the space or line
+ * start the `@` needs, so it changes no Markdown around it), and a path
+ * counts if its marker comes out in the rendered prose. Without the parser
+ * (an older Bun), none: an import missed, not one made.
  */
-function proseOf(text: string): string {
-    if (typeof Bun === "undefined" || typeof Bun.markdown?.render !== "function") return "";
-    // No strikethrough: GFM reads `@~/a.md and @~/b.md` as struck-through text and drops its tildes.
-    // Inline HTML stays in a paragraph's text; a comment there hides what's in it.
-    return Bun.markdown.render(text, PROSE, { strikethrough: false }).replace(/<!--[\s\S]*?-->/g, " ");
+function proseImports(text: string): string[] {
+    const found = [...text.matchAll(IMPORT)];
+    if (!found.length || typeof Bun === "undefined" || typeof Bun.markdown?.render !== "function") return [];
+    let tag: string;
+    do tag = `hx${Math.random().toString(36).slice(2, 10)}q`;
+    while (text.includes(tag));
+    const mark = (i: number) => `${tag}${i}z`;
+    let marked = "";
+    let from = 0;
+    found.forEach((m, i) => {
+        marked += text.slice(from, m.index) + mark(i);
+        from = m.index;
+    });
+    marked += text.slice(from);
+    // No strikethrough: GFM reads `@~/a.md and @~/b.md` as struck-through text. Inline HTML stays
+    // in a paragraph's text; a comment there hides what's in it.
+    const prose = Bun.markdown.render(marked, PROSE, { strikethrough: false, autolinks: false }).replace(/<!--[\s\S]*?-->/g, " ");
+    return found.filter((_, i) => prose.includes(mark(i))).map((m) => m[1]!);
 }
 
 /**
- * What `text` (in `base`) imports: each `@path` outside code, after the start
- * of a line or a space. `\ ` is a space in the path, and a quoted path isn't
- * an import. Each comes as written, then without the punctuation after it
- * when it has some ("See @docs/style.md." is docs/style.md unless
+ * What `text` (in `base`) imports: each `@path` in its prose (proseImports),
+ * as written. `\ ` is a space in the path, and a quoted path isn't an import.
+ * Each comes as written, then without the punctuation or emphasis marks after
+ * it when it has some ("See @docs/style.md." is docs/style.md unless
  * "docs/style.md." is there).
  */
 function importCandidates(text: string, base: string): string[][] {
     const out: string[][] = [];
     const keys = new Set<string>();
     const at = (p: string) => (p === "~" || p.startsWith("~/") ? join(userHome(), p.slice(1)) : isAbsolute(p) ? p : resolve(base, p));
-    for (const m of proseOf(text).matchAll(/(?:^|\s)@((?:\\ |[^\s])+)/g)) {
-        const raw = m[1]!.replace(/\\ /g, " ");
+    for (const token of proseImports(text)) {
+        const raw = token.replace(/\\ /g, " ");
         if (/^["']/.test(raw)) continue;
-        const bare = raw.replace(/[.,;:!?)\]]+$/, "");
+        const bare = raw.replace(/[.,;:!?)\]*_]+$/, "");
         const spellings = bare && bare !== raw ? [at(raw), at(bare)] : [at(raw)];
         const key = spellings.join("\0");
         if (!keys.has(key)) out.push(spellings);
@@ -431,9 +452,11 @@ export function loadMemory(cwd: string, trusted?: boolean): Memory {
 }
 
 /** How the trust question names a file: inside the project from its root, else from home (`~/`), else in full; by real path (a link in the project is named by where it leads). */
-function importName(top: string): (p: string) => string {
+function importName(top: string, o: { tree?: boolean } = {}): (p: string) => string {
     const homes = [...new Set([userHome(), canonical(userHome())])];
     return (p) => {
+        // A path in a commit's tree is already where it leads, in a checkout that isn't made yet (not on disk).
+        if (o.tree && isInside(p, top)) return relative(top, p);
         const real = canonical(p);
         if (isInside(real, top)) return relative(top, real);
         const h = homes.find((h) => isInside(real, h));
@@ -450,54 +473,80 @@ export function externalImports(cwd: string): string[] {
     return [...new Set(collect(cwd, { user: false, project: true, external: false }).outside.map((o) => `${name(o.importedBy)} imports ${name(o.path)}`))];
 }
 
-/** A path in a commit's tree, as a checkout would have it: where it leads (links followed), and a file's text when that's in the tree. */
+/** A path in a commit's tree, as a checkout would have it: where it leads (links followed), and for a file in the tree, how to read its start. */
 export interface TreeFile {
     real: string;
-    text?: string;
+    /** Its first `max` bytes, no more fetched (a file in the tree). */
+    head?: (max: number) => Promise<string>;
 }
 
 /**
  * externalImports for a checkout of a commit that isn't made yet (a run's
  * worktrees): what the memory files at its root, as committed, import from
- * outside it. `read` opens a path inside `top` in the commit's tree. An import
- * that lands in `top`'s parent folder (`../x.md` from a worktree: a sibling
- * worktree, whose name isn't known yet) counts whether or not it's there now.
+ * outside it. `read` opens a path inside `top` in the commit's tree; only
+ * markdown inside it is fetched, and only within loadMemory's budget
+ * (MAX_FILES files fetched, MAX_BYTES each, MAX_TOTAL_BYTES in all). An
+ * import outside counts as loadMemory would count it: markdown that's there.
+ * One in a worktree that isn't there yet (`../<name>/x.md` from a worktree:
+ * this run may make it) counts if it's markdown, since it can't be checked.
  */
 export async function committedExternalImports(top: string, read: (path: string) => Promise<TreeFile | undefined>): Promise<string[]> {
     const roots = credentialRoots();
-    const name = importName(top);
+    const name = importName(top, { tree: true });
+    const worktrees = dirname(top);
     const found = new Set<string>();
     const seen = new Set<string>();
+    let bytes = 0;
+    const unmade = (p: string) => {
+        const rel = relative(worktrees, p).split(sep);
+        return isInside(p, worktrees) && rel.length > 1 && /\.md$/i.test(p) && !lexists(join(worktrees, rel[0]!));
+    };
     // Breadth first, so each file's imports are followed from its shortest route, as collect() does.
     const queue: { path: string; real: string; text: string; depth: number }[] = [];
-    const visit = (path: string, f: TreeFile | undefined, depth: number) => {
-        if (!f?.text?.trim() || !isInside(f.real, top) || !/\.md$/i.test(f.real) || seen.has(f.real) || seen.size >= MAX_FILES) return;
+    const visit = async (path: string, f: TreeFile | undefined, depth: number) => {
+        if (!f?.head || !isInside(f.real, top) || !/\.md$/i.test(f.real) || seen.has(f.real)) return;
+        const left = MAX_TOTAL_BYTES - bytes;
+        if (seen.size >= MAX_FILES || left <= 0) return;
         seen.add(f.real);
-        queue.push({ path, real: f.real, text: f.text.slice(0, MAX_BYTES), depth });
+        const text = await f.head(Math.min(MAX_BYTES, left));
+        if (!text.trim()) return;
+        bytes += Buffer.byteLength(text);
+        queue.push({ path, real: f.real, text, depth });
     };
-    for (const n of [...PROJECT_NAMES, ...LOCAL_NAMES]) visit(join(top, n), await read(join(top, n)), 0);
+    for (const n of [...PROJECT_NAMES, ...LOCAL_NAMES]) await visit(join(top, n), await read(join(top, n)), 0);
     for (let e; (e = queue.shift()); ) {
         if (e.depth >= MAX_IMPORT_DEPTH) continue;
-        for (const spellings of importCandidates(e.text, dirname(e.path))) {
+        for (const forms of importCandidates(e.text, dirname(e.path))) {
             // The first spelling that's there: in the tree inside the checkout, on disk outside it.
             let hit: { path: string; f: TreeFile } | undefined;
-            for (const p of spellings) {
-                const f = isInside(p, top) ? await read(p) : isInside(p, dirname(top)) || existsSync(p) ? { real: p } : undefined;
+            for (const p of forms) {
+                const f = isInside(p, top) ? await read(p) : existsSync(p) || unmade(p) ? { real: p } : undefined;
                 if (f) {
                     hit = { path: p, f };
                     break;
                 }
             }
             if (!hit) continue;
-            if (isInside(hit.f.real, top)) visit(hit.path, hit.f, e.depth + 1);
-            else if (isInside(hit.f.real, dirname(top)) || readCapped(hit.f.real, undefined, 0, roots)?.cut) found.add(`${name(e.real)} imports ${name(hit.f.real)}`);
+            if (isInside(hit.f.real, top)) await visit(hit.path, hit.f, e.depth + 1);
+            else if (unmade(hit.f.real) || readCapped(hit.f.real, undefined, 0, roots)?.cut) found.add(`${name(e.real)} imports ${name(hit.f.real)}`);
         }
     }
     return [...found];
 }
 
+const lexists = (p: string) => {
+    try {
+        lstatSync(p);
+        return true;
+    } catch {
+        return false;
+    }
+};
+
 export function formatMemory(files: Memory, cwd: string): string {
-    if (!files.length) return "";
+    const notice = budgetNotice(files, (p) => p.replace(homedir(), "~"));
+    // Nothing loaded, but something was left out (a crowded rules folder): the notice still says so.
+    if (!files.length) return notice ? `# Instructions from memory files\n${notice}` : "";
     // A project's files lie between its repository root and cwd: named from cwd (../AGENTS.md), so that
     // a worktree's prompt doesn't carry its own path and every worktree of the project shares it.
     // An import from outside the project (in a folder the user trusted) is named as the user's files are.
@@ -508,7 +557,6 @@ export function formatMemory(files: Memory, cwd: string): string {
         const label = f.scope === "user" ? "user's personal instructions (all projects)" : f.scope === "local" ? "user's private project instructions" : "project instructions, checked into the codebase";
         return `Contents of ${shown(f.path, f.scope)} (${label}${f.importedBy ? `; imported by ${shown(f.importedBy, f.scope)}` : ""}):\n\n${redact(f.content.trim())}`;
     });
-    const notice = budgetNotice(files, (p) => p.replace(homedir(), "~"));
     return `# Instructions from memory files\nThese instructions come from the user and the project. Follow them; they override default behavior where they conflict.\n\n${parts.join("\n\n---\n\n")}${notice ? `\n\n---\n\n${notice}` : ""}`;
 }
 

@@ -237,6 +237,23 @@ describe("runs.start", () => {
         expect(branchesOf(main)).toEqual(["main"]);
     });
 
+    test("a commit's file is read only as far as asked: a large blob's head, not all of it (review 3 of #246)", async () => {
+        const { treeReader } = await import("../src/server/runs");
+        const main = repo({ "big.md": "y".repeat(2_000_000), "docs/note.md": "note" });
+        Bun.spawnSync(["ln", "-s", "docs", join(main, "linked")]);
+        git(main, "add", "linked");
+        git(main, "commit", "-q", "-m", "Link");
+        const top = join(main, ".claude", "worktrees", "new-worktree");
+        const read = treeReader(main, git(main, "rev-parse", "HEAD"), top);
+        const big = await read(join(top, "big.md"));
+        expect(await big!.head!(100)).toBe("y".repeat(100));
+        const note = await read(join(top, "linked", "note.md"));
+        expect(note!.real).toBe(join(top, "docs", "note.md"));
+        expect(await note!.head!(40_000)).toBe("note");
+        expect(await read(join(top, "docs"))).toBeUndefined();
+        expect(await read(join(top, "nope.md"))).toBeUndefined();
+    });
+
     test("a committed memory file that imports only inside the project doesn't ask (review 2 of #246)", async () => {
         const main = repo({ "CLAUDE.md": "@docs/more.md @missing.md\n", "docs/more.md": "@../AGENTS.md\n", "AGENTS.md": "agents\n" });
         const r = await c.call<{ results: RunResult[] }>("runs.start", { path: main, models: ["mock:mock-opus", "mock:mock-sonnet"], text: "look inside" });

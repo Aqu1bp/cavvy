@@ -17,7 +17,7 @@ const { bashRuleMatches, mcpToolMatches } = await import("../src/permissions/rul
 const { PermissionChecker } = await import("../src/permissions/checker");
 const await_import_search = await import("../src/tools/search-tools");
 const { filterRgOutput, searchFilter } = await_import_search;
-const { loadMemory, formatMemory, openedPath, readHooks, MAX_FILES, MAX_TOTAL_BYTES } = await import("../src/agent/memory");
+const { loadMemory, formatMemory, openedPath, readHooks, committedExternalImports, MAX_FILES, MAX_TOTAL_BYTES } = await import("../src/agent/memory");
 const { trustForSession, trustUntilExit, projectConfigSummary } = await import("../src/config/trust");
 const { CASE_INSENSITIVE_FS } = await import("../src/util/files");
 const { Session, redactMessage, redactedJson } = await import("../src/agent/session");
@@ -577,7 +577,7 @@ describe("Claude Code's and Codex's global instructions, and @imports (#246)", (
     });
     test("HTML blocks and comments aren't imports; tight list items, table cells and emphasis are prose (review 2 of #246)", () => {
         const p = project();
-        writeFileSync(join(p, "CLAUDE.md"), "<!--\n@hidden-block.md\n-->\n\nSee <!-- @hidden-inline.md --> this.\n\n- one @li1.md\n- two @li2.md\n\n| a | b |\n|---|---|\n| @cell.md | `@cellcode.md` |\n\n*@em.md*\n");
+        writeFileSync(join(p, "CLAUDE.md"), "<!--\n@hidden-block.md\n-->\n\nSee <!-- @hidden-inline.md --> this.\n\n- one @li1.md\n- two @li2.md\n\n| a | b |\n|---|---|\n| @cell.md | `@cellcode.md` |\n\n*see @em.md*\n");
         for (const n of ["hidden-block", "hidden-inline", "li1", "li2", "cell", "cellcode", "em"]) writeFileSync(join(p, `${n}.md`), `FILE-${n}`);
         const t = text(p);
         for (const n of ["hidden-block", "hidden-inline", "cellcode"]) expect(t).not.toContain(`FILE-${n}`);
@@ -597,6 +597,56 @@ describe("Claude Code's and Codex's global instructions, and @imports (#246)", (
         } finally {
             rmSync(big, { recursive: true, force: true });
         }
+    });
+    test("an import is the path as written: Markdown's emphasis, entities, links and escapes don't change it (review 3 of #246)", () => {
+        const p = project();
+        writeFileSync(join(p, "CLAUDE.md"), "@docs/_draft_.md @docs/a&amp;b.md @docs/[plan](ignored).md @docs/<a@b.md>\n\n\\@docs/esc.md &#64;docs/ent.md\n");
+        const files: Record<string, string> = {
+            "_draft_.md": "RIGHT-draft",
+            "draft.md": "WRONG-draft",
+            "a&amp;b.md": "RIGHT-amp",
+            "a&b.md": "WRONG-amp",
+            "[plan](ignored).md": "RIGHT-link",
+            "plan.md": "WRONG-link",
+            // As written, it isn't markdown (it ends in ">"), so neither loads.
+            "<a@b.md>": "WRONG-angle-not-markdown",
+            "a@b.md": "WRONG-angle",
+            "esc.md": "WRONG-escaped",
+            "ent.md": "WRONG-entity",
+        };
+        for (const [n, t] of Object.entries(files)) write(join(p, "docs", n), t);
+        const t = text(p);
+        for (const marker of Object.values(files)) (marker.startsWith("RIGHT") ? expect(t) : expect(t).not).toContain(marker);
+    });
+    test("with nothing loaded, a crowded rules folder's notice still reaches the prompt (review 3 of #246)", () => {
+        const none = Object.assign([], { budget: { omitted: [], more: false, crowded: "/x/rules/big" } });
+        expect(formatMemory(none, tempDir())).toContain("/x/rules/big has more entries");
+        expect(formatMemory([], tempDir())).toBe("");
+    });
+    test("a commit's memory files: only markdown inside it is fetched, within the budget; non-markdown and missing siblings don't count (review 3 of #246)", async () => {
+        const main = tempDir();
+        const worktrees = join(main, ".claude", "worktrees");
+        const top = join(worktrees, "new-worktree");
+        const tree = new Map<string, string>([
+            ["CLAUDE.md", ["@huge.bin @../package.json @../.env @../missing.txt @../missing.md @../later/x.md", ...Array.from({ length: 250 }, (_, i) => `@m${i}.md`)].join("\n")],
+            ["huge.bin", "x".repeat(1_000_000)],
+        ]);
+        for (let i = 0; i < 250; i++) tree.set(`m${i}.md`, `M${i}`);
+        writeFileSync(join(main, "package.json"), "{}");
+        const fetched: { path: string; max: number }[] = [];
+        const read = async (path: string) => {
+            const rel = path.slice(top.length + 1);
+            const text = tree.get(rel);
+            return text === undefined ? undefined : { real: path, head: async (max: number) => (fetched.push({ path: rel, max }), text.slice(0, max)) };
+        };
+        const found = await committedExternalImports(top, read);
+        expect(fetched.some((f) => f.path === "huge.bin")).toBe(false);
+        expect(fetched.length).toBeLessThanOrEqual(MAX_FILES);
+        expect(fetched.every((f) => f.max <= 40_000)).toBe(true);
+        // Only the markdown in a worktree the run may yet make; not package.json, .env, missing.txt or missing.md.
+        expect(found).toHaveLength(1);
+        expect(found[0]).toStartWith("CLAUDE.md imports ");
+        expect(found[0]).toEndWith(join("later", "x.md"));
     });
     test("imports come before their importer even when a shorter route reaches one again (review 2 of #246)", () => {
         const p = project();

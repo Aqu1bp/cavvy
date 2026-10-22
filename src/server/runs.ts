@@ -208,10 +208,11 @@ async function headCommit(path: string): Promise<string> {
     return commit;
 }
 
-async function readGit(main: string, args: string[]): Promise<string> {
-    const r = await runGitAsync(main, args, GIT_READ_MS);
-    if (r.code !== 0 || r.timedOut) throw new RpcError("Git couldn't read this repository's HEAD, so nothing was created.", "git_failed");
-    return r.stdout;
+/** Git's output for `args`, at most `maxBytes` of it when given (`cut`: there was more). */
+async function readGit(main: string, args: string[], maxBytes?: number): Promise<{ out: string; cut: boolean }> {
+    const r = await runGitAsync(main, args, GIT_READ_MS, maxBytes === undefined ? {} : { maxBytes });
+    if (r.timedOut || (r.code !== 0 && !r.cut)) throw new RpcError("Git couldn't read this repository's HEAD, so nothing was created.", "git_failed");
+    return { out: r.stdout, cut: !!r.cut };
 }
 
 /**
@@ -220,7 +221,7 @@ async function readGit(main: string, args: string[]): Promise<string> {
  * committed, import from outside it (the working copy's may say otherwise).
  */
 async function committedConfig(main: string, commit: string): Promise<string[]> {
-    const records = (await readGit(main, ["ls-tree", "-r", "-t", "-z", commit, "--", ".harness", ".mcp.json", ".claude", ".codex"])).split("\0").filter(Boolean);
+    const records = (await readGit(main, ["ls-tree", "-r", "-t", "-z", commit, "--", ".harness", ".mcp.json", ".claude", ".codex"])).out.split("\0").filter(Boolean);
     const entries = new Set(records.map((r) => r.slice(r.indexOf("\t") + 1)));
     // A committed config directory can be a symlink. Its targets aren't
     // beneath that name in the tree, but checkout will expose them there.
@@ -233,24 +234,38 @@ async function committedConfig(main: string, commit: string): Promise<string[]> 
 
 /** Links followed in a path before it's given up on, as the system does (ELOOP). */
 const MAX_LINK_HOPS = 40;
+/** A link's target longer than a path can be isn't one the system would follow. */
+const MAX_LINK_BYTES = 4096;
+/** A folder's listing, read whole: a folder with more than this in it isn't checked (the run asks instead of guessing). */
+const MAX_LISTING_BYTES = 4 * 1024 * 1024;
+
+interface TreeEntry {
+    mode: string;
+    oid: string;
+    /** A blob's size in bytes. */
+    size: number;
+}
 
 /**
  * Opens paths in `commit`'s tree as a checkout of it at `top` would have
  * them: links followed, through the tree or out of it (then `real` is where
- * the link leads, outside `top`), and a file's text. Undefined: not there, or
- * not a file (a folder, a submodule).
+ * the link leads, outside `top`). Nothing is fetched but folder listings and
+ * links' targets (by size, before reading them) until a file's `head` is
+ * asked for, and then only that much of it. Undefined: not there, or not a
+ * file (a folder, a submodule).
  */
-function treeReader(main: string, commit: string, top: string): (path: string) => Promise<TreeFile | undefined> {
-    const listings = new Map<string, Promise<Map<string, { mode: string; oid: string }>>>();
+export function treeReader(main: string, commit: string, top: string): (path: string) => Promise<TreeFile | undefined> {
+    const listings = new Map<string, Promise<Map<string, TreeEntry>>>();
     const list = (tree: string) => {
         let l = listings.get(tree);
         if (!l) {
-            l = readGit(main, ["ls-tree", "-z", tree]).then((out) => {
-                const m = new Map<string, { mode: string; oid: string }>();
+            l = readGit(main, ["ls-tree", "-l", "-z", tree], MAX_LISTING_BYTES).then(({ out, cut }) => {
+                if (cut) throw new RpcError("A folder in this repository's HEAD is too large to check what its memory files import, so nothing was created. Trust the folder to start the run.", "git_failed");
+                const m = new Map<string, TreeEntry>();
                 for (const rec of out.split("\0").filter(Boolean)) {
-                    const [meta, name] = [rec.slice(0, rec.indexOf("\t")), rec.slice(rec.indexOf("\t") + 1)];
-                    const [mode, , oid] = meta.split(" ");
-                    m.set(name, { mode: mode!, oid: oid! });
+                    const tab = rec.indexOf("\t");
+                    const [mode, , oid, size] = rec.slice(0, tab).trim().split(/\s+/);
+                    m.set(rec.slice(tab + 1), { mode: mode!, oid: oid!, size: Number(size) || 0 });
                 }
                 return m;
             });
@@ -258,12 +273,13 @@ function treeReader(main: string, commit: string, top: string): (path: string) =
         }
         return l;
     };
-    // Each object read once, however many spellings of a path reach it.
-    const blobs = new Map<string, Promise<string>>();
-    const blob = (oid: string) => {
-        let b = blobs.get(oid);
-        if (!b) blobs.set(oid, (b = readGit(main, ["cat-file", "blob", oid])));
-        return b;
+    const head = async (e: TreeEntry, max: number) => (await readGit(main, ["cat-file", "blob", e.oid], Math.min(e.size, Math.max(0, max)))).out;
+    // A link's target read once, however many spellings of a path go through it.
+    const targets = new Map<string, Promise<string>>();
+    const target = (e: TreeEntry) => {
+        let t = targets.get(e.oid);
+        if (!t) targets.set(e.oid, (t = head(e, MAX_LINK_BYTES)));
+        return t;
     };
     const root = `${commit}^{tree}`;
     return async (path) => {
@@ -284,15 +300,15 @@ function treeReader(main: string, commit: string, top: string): (path: string) =
             const entry = (await list(trees.at(-1)!)).get(c);
             if (!entry) return undefined;
             if (entry.mode === "120000") {
-                if (++hops > MAX_LINK_HOPS) return undefined;
-                const target = await blob(entry.oid);
-                if (isAbsolute(target)) {
-                    const to = resolve(target, ...pending);
-                    if (!isInside(to, top)) return { real: to };
-                    pending = relative(top, to).split(sep).filter(Boolean);
+                if (++hops > MAX_LINK_HOPS || entry.size > MAX_LINK_BYTES) return undefined;
+                const to = await target(entry);
+                if (isAbsolute(to)) {
+                    const out = resolve(to, ...pending);
+                    if (!isInside(out, top)) return { real: out };
+                    pending = relative(top, out).split(sep).filter(Boolean);
                     names = [];
                     trees = [root];
-                } else pending = [...target.split("/").filter(Boolean), ...pending];
+                } else pending = [...to.split("/").filter(Boolean), ...pending];
                 continue;
             }
             if (entry.mode === "040000") {
@@ -301,7 +317,7 @@ function treeReader(main: string, commit: string, top: string): (path: string) =
                 continue;
             }
             if (pending.length || !entry.mode.startsWith("100")) return undefined;
-            return { real: join(top, ...names, c), text: await blob(entry.oid) };
+            return { real: join(top, ...names, c), head: (max) => head(entry, max) };
         }
         return undefined;
     };
