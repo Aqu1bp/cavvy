@@ -109,7 +109,11 @@ export interface SteerMessage {
 }
 
 /** Something a backend reports about the session rather than a turn: its background work, a notice when no turn runs. */
-export type SessionEvent = { type: "background_task"; task: BackgroundTaskInfo } | { type: "notice"; level: "info" | "warn" | "error"; message: string };
+export type SessionEvent =
+    | { type: "background_task"; task: BackgroundTaskInfo }
+    | { type: "notice"; level: "info" | "warn" | "error"; message: string }
+    /** Something the CLI did outside any turn (a background sub-agent's steps, its Agent call ending): shown where it belongs (by its call's id). */
+    | { type: "event"; event: AgentEvent };
 
 /** A turn the CLI started by itself (a background task's report, a goal's next step), for the host to adopt as a wake turn. */
 export interface BackendWake {
@@ -119,6 +123,11 @@ export interface BackendWake {
     ref: string;
     /** What it's about, for the wake's row: "Background task finished: Map auth". */
     label?: string;
+    /**
+     * The turn answers a message of the user's (`label`, as they typed it): one that Esc sent at once in place of
+     * the turn it stopped. Recorded as their prompt, not as a wake.
+     */
+    prompt?: boolean;
 }
 
 /**
@@ -275,6 +284,13 @@ export interface BackendTurn {
      * until it ends. Only for a backend with adoptsTurns.
      */
     adopt?: string;
+    /**
+     * Nothing will take a report after this turn (-p, the SDK runner, a harness sub-agent): the turn itself should
+     * wait for the work it leaves in the background. A backend may run it on a process of its own with the per-turn
+     * path's bounded wait (backgroundWaitSec, #193's timeouts, servers stopped at the answer), as Claude Code does
+     * (#219 PR 4); one that ignores it ends the turn at its answer, and what's left in the background stops at release.
+     */
+    untilQuiet?: boolean;
     /** The session's side: permissions, usage, background tasks, wakes. */
     session: SessionHost;
     /** This turn's events and steering. */
@@ -325,6 +341,14 @@ export interface AgentBackendClient extends ProviderClient {
      * the task is reported not running (SessionEvent background_task); none here means the backend can't.
      */
     stopBackground?(sessionKey: string, ids?: string[]): Promise<Record<string, BackgroundStop>>;
+    /**
+     * Esc with a message the user sent while the turn ran: the backend sends it at once in place of the turn
+     * the interrupt stops (Claude Code's send_now), and reports its turn as a wake with `prompt`. False when it
+     * can't now: the message stays the caller's. Called just before the turn's signal is aborted.
+     */
+    sendNow?(sessionKey: string, text: string): boolean;
+    /** Restart a session's live CLI process (it didn't answer an interrupt): what runs under it stops. */
+    restart?(sessionKey: string): Promise<void>;
     /**
      * The harness is done with this session (closed, cleared or replaced, the harness quitting) or sub-agent
      * (its run is over): stop the CLI process kept for it. What ran in it stopped with it, and is reported so

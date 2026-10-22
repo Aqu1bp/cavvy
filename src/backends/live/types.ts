@@ -71,6 +71,7 @@ export type CliEvent =
     /**
      * A background task started, changed or ended. `wakeDue`: the CLI will start a turn of its own to report
      * it (Claude Code after a task_notification); until a turn starts or ends, the session isn't quiet.
+     * `false`: a report said to be due won't come after all (none started in time).
      */
     | { t: "task"; task: BackgroundTaskInfo; wakeDue?: boolean }
     | { t: "session_id"; id: string }

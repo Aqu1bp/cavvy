@@ -492,7 +492,13 @@ export class LiveCliSession {
         this._error = error;
         const reason: TurnEndReason = error === undefined ? "aborted" : "error";
         for (const t of [this.turn, ...this.wakes.values()]) if (t && !t.result) this.finish(t, { ref: t.ref, reason, ...(error === undefined ? {} : { error }) });
+        const running = this.tasks.running();
         this.tasks.lose();
+        // Told as the CLI's own task events are, so whoever lists them sees them end.
+        for (const t of running) {
+            const lost = this.tasks.get(t.id);
+            if (lost) this.emitSession({ t: "task", task: lost });
+        }
     }
 
     private exitMessage(proc: JsonLinesProcess, code: number): string {
@@ -550,6 +556,8 @@ export class LiveCliSession {
             case "task":
                 this.touch();
                 if (e.wakeDue) this.wakeDue = true;
+                // The report it said it would start won't come after all (none came in time).
+                else if (e.wakeDue === false) this.wakeDue = false;
                 this.tasks.report(e.task);
                 return this.emitSession(e);
             case "session_id":

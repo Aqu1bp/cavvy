@@ -1755,6 +1755,7 @@ export class Agent {
         // first), and what its CLI reports now (its tasks stopping with the process, say) is no longer this one's.
         if (this.disposed) return;
         if (e.type === "notice") return this.emit(e);
+        if (e.type === "event") return this.emitFromBackend(e.event);
         this.state.background?.report(e.task);
         this.o.host.backgroundChanged?.();
     }
