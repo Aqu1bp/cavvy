@@ -728,7 +728,7 @@ describe("background", () => {
         expect(said.some((m) => m.includes("still running"))).toBe(false);
     });
 
-    test("interrupting the turn stops it; so does the session ending", async () => {
+    test("interrupting the turn leaves it running (#228); the session ending stops it", async () => {
         childScript = (_r, _n, signal) =>
             new Promise((_res, rej) => {
                 signal?.addEventListener("abort", () => rej(new Error("aborted")), { once: true });
@@ -744,17 +744,13 @@ describe("background", () => {
         ];
         const { run, agent } = await makeAgent();
         await run("go", ctrl.signal);
-        await until(() => agent.delegatedTasks[0]?.status !== "running");
-        expect(agent.delegatedTasks[0]!.status).toBe("cancelled");
+        // Esc stops the answer, not background work (agentCli.liveSessions; delegation.test.ts covers it off).
+        await new Promise((r) => setTimeout(r, 100));
+        expect(agent.delegatedTasks[0]!.status).toBe("running");
 
-        // A new one, then the session ends.
-        mainSteps = [() => use("t2", "Task", task("general-purpose", { run_in_background: true }), "main"), () => say("ok", "main")];
-        mainRequests = [];
-        mainSent = [];
-        await run("again");
-        expect(agent.delegatedTasks[1]!.status).toBe("running");
+        // The session ending stops it.
         await agent.dispose(1000);
-        expect(agent.delegatedTasks[1]!.status).toBe("cancelled");
+        expect(agent.delegatedTasks[0]!.status).toBe("cancelled");
     });
 
     test("a one-shot run (-p) runs it in the foreground", async () => {
