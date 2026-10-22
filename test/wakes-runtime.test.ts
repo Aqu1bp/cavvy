@@ -189,3 +189,34 @@ test("a CLI's own turn that arrives while the session can't start one (a model s
         await engine.stop();
     }
 });
+
+test("an adopted wake sends nothing, so Harness's notes and what the CLI wasn't sent go with the next prompt (#282 review round 2, B7)", async () => {
+    const { engine, c, id, rt } = await session();
+    try {
+        await rt.ready;
+        // A turn on another model first: the CLI hasn't seen it.
+        await engine.handle(c, "session.send", { id, text: "hello" });
+        await until(() => rt.idle && rt.session.messages.some((m) => m.role === "assistant"));
+        const turns: BackendTurn[] = [];
+        const backend = adoptingBackend(turns);
+        const runTurn = backend.runTurn;
+        backend.runTurn = async (t: BackendTurn) => {
+            // The CLI's session: its place in the conversation moves to the turn's end.
+            t.session.sessionId("cli-session-1");
+            return runTurn(t);
+        };
+        rt.agent!.setModel(backendModel("fake-cli", "x"), backend as never);
+        rt.agent!.addReminder("Delegated task task-1 finished: the diff looks right.");
+        rt.adoptWake({ provider: "fake-cli", ref: "turn-8", label: "Background task finished: Map auth" });
+        await until(() => turns.length === 1 && rt.idle);
+        expect(turns[0]!.adopt).toBe("turn-8");
+        await engine.handle(c, "session.send", { id, text: "and now?" });
+        await until(() => turns.length === 2 && rt.idle);
+        expect(turns[1]!.adopt).toBeUndefined();
+        expect(turns[1]!.prompt).toContain("Delegated task task-1 finished: the diff looks right.");
+        expect(turns[1]!.prompt).toContain("hello");
+        expect(turns[1]!.prompt).toContain("and now?");
+    } finally {
+        await engine.stop();
+    }
+});

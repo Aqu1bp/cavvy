@@ -644,22 +644,26 @@ export class Agent {
             }
             if (h.context) this.addReminder(h.context);
         }
+        // A turn its CLI started by itself (adopt) is sent nothing: Harness's notes, results and context all wait
+        // for the next prompt that is sent, as they do for a /goal.
+        const adopting = Boolean(opts.adopt);
         // SessionStart hooks' context goes with the first prompt after them.
-        for (const c of this.o.isSubagent ? [] : this.session.hookContext.splice(0)) this.addReminder(c);
+        for (const c of this.o.isSubagent || adopting ? [] : this.session.hookContext.splice(0)) this.addReminder(c);
 
         // Delegated tasks that ended during a turn on another model (not a backend's) go with this prompt.
-        this.deliverTasks(false);
+        if (!adopting) this.deliverTasks(false);
         const parts: UserContent[] = [...content];
         // A /goal to Claude Code or Codex is their own command, sent as typed: Harness's notes wait for the next prompt.
         const goalCommand = isAgentBackend(this.client) && GOAL_COMMAND.test(promptText);
+        const keepNotes = goalCommand || adopting;
         // Background tasks that stopped when Harness quit (the session was open with them running): said once, with
         // a prompt that takes the reminders now (it's stored just below). Taking them writes them stopped in the
         // log, so not for a /goal, which leaves its reminders for the next prompt (kept in memory only).
-        const lost = this.o.isSubagent || goalCommand ? [] : (this.state.background?.takeLost() ?? []);
+        const lost = this.o.isSubagent || keepNotes ? [] : (this.state.background?.takeLost() ?? []);
         if (lost.length) this.addReminder(lostNote(lost));
-        for (const r of goalCommand ? [] : this.pendingReminders.splice(0)) parts.push(reminder(r.text));
+        for (const r of keepNotes ? [] : this.pendingReminders.splice(0)) parts.push(reminder(r.text));
         // Codex's edits are checked too: what came after their wait goes with this prompt (after a /goal, with the next).
-        const late = goalCommand ? undefined : this.lateDiagnostics();
+        const late = keepNotes ? undefined : this.lateDiagnostics();
         if (late) parts.push(late);
         const prompt = this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint } });
         this.prompted = true;
@@ -1952,7 +1956,13 @@ export class Agent {
                 const sent = toSend(resume);
                 // An adopted turn is the first round only: a Stop hook's "keep going" is a prompt of ours.
                 const adopting = adopt !== undefined && stopRounds === 0;
+                // What the CLI hasn't been sent of the conversation before the turn it started (another model's
+                // turns, Harness's notes): nothing goes with that turn, so if it moves the CLI's place past them
+                // (sessionId), they go with the next prompt.
+                const unsent = adopting ? this.backendPrompt("", promptIndex, resume).trim() : "";
                 result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...sent, synthetic: woken || sent.prompt !== prompt, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork, ...(adopting ? { adopt } : {}) });
+                // The turn's end moves the CLI's place to here (endBackendTurn): what it wasn't sent goes after it.
+                if (unsent && this.session.backends.has(provider)) this.backendStopReminders.push(unsent);
                 if (result.resumeFailed && !adopting) {
                     // Gone, or made in another folder: start a new one with this conversation as context.
                     this.session.forgetBackendSession(provider);
