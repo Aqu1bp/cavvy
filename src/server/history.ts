@@ -459,7 +459,7 @@ export function cutOffPrompt(ui: UiLog, seg: number, messages: Message[], notice
     // Another prompt there (that one was rewound in a terminal, this one sent there).
     if (rec.prompt !== undefined && rec.prompt !== promptKey(prompt as UserMessage)) return undefined;
     // A note of how it ended (an error), unless it went on after that (a Stop hook kept it going after a warning).
-    const wentOn = (from: number) => messages.slice(from).some((m) => m.role === "assistant" || m.meta?.kind === "reminder");
+    const wentOn = (from: number) => messages.slice(from).some((m) => m.role === "assistant" || m.meta?.kind === "reminder" || m.meta?.kind === "continuation");
     if (notices.some((n) => n.index > rec.index && !wentOn(n.index))) return undefined;
     const last = messages[messages.length - 1]!;
     if (last.role === "assistant" && !toolCallsOf(last).length) return undefined;
@@ -560,11 +560,12 @@ export function replay(o: ReplayInput): Turn[] {
         };
         // Turns whose steps came from the log: the transcript's text of them isn't shown again.
         const shown = new Set<Turn>();
+        let answerBlock: Extract<Block, { t: "text" }> | undefined;
         seg.messages.forEach((m, index) => {
             noticesBefore(index);
             if (m.role === "user") {
                 const kind = m.meta?.kind ?? "prompt";
-                if (kind === "summary" || kind === "reminder") return;
+                if (kind === "summary" || kind === "reminder" || kind === "continuation") return;
                 if (kind === "interrupt") {
                     const t = ensure(index);
                     t.status = "aborted";
@@ -607,12 +608,26 @@ export function replay(o: ReplayInput): Turn[] {
             const t = ensure(index);
             const backend = getProvider(m.provider ?? "")?.kind === "agent";
             if (backend && shown.has(t)) return;
+            const previous = seg.messages[index - 1];
+            const continuing = previous?.role === "user" && previous.meta?.kind === "continuation";
+            if (!continuing) answerBlock = undefined;
+            const joinText = continuing || (m.stopReason === "max_tokens" && !toolCallsOf(m).length);
             for (const p of m.content) {
                 if (p.type === "thinking") {
-                    if (p.text.trim()) t.blocks.push({ t: "thinking", id: o.newId(), text: p.text });
+                    if (p.text.trim()) {
+                        t.blocks.push({ t: "thinking", id: o.newId(), text: p.text });
+                        if (answerBlock && joinText) {
+                            t.blocks.splice(t.blocks.indexOf(answerBlock), 1);
+                            t.blocks.push(answerBlock);
+                        }
+                    }
                 } else if (p.type === "text") {
                     const text = backend ? withoutActionsNote(p.text) : p.text;
-                    if (text.trim()) t.blocks.push({ t: "text", id: o.newId(), text });
+                    if (answerBlock && joinText) answerBlock.text += text;
+                    else if (text.trim() || (text && joinText)) {
+                        answerBlock = { t: "text", id: o.newId(), text };
+                        t.blocks.push(answerBlock);
+                    }
                     // An imported turn has no steps to show: its note says what was used.
                     else if (backend && t.imported) for (const used of actionsInNote(p.text)) t.blocks.push({ t: "notice", id: o.newId(), level: "info", text: `Used: ${used}` });
                 } else if (p.type === "tool_call") {

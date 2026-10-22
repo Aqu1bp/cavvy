@@ -138,7 +138,7 @@ describe("output token limit continuation", () => {
         expect(await a.run("answer")).toBe("done");
         expect(a.requests).toHaveLength(2);
         expect(a.requests[1]!.messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
-        expect(a.requests[1]!.messages.at(-1)).toMatchObject({ role: "user", meta: { kind: "reminder" }, content: [{ type: "text", text: expect.stringContaining("Continue from where you stopped") }] });
+        expect(a.requests[1]!.messages.at(-1)).toMatchObject({ role: "user", meta: { kind: "continuation" }, content: [{ type: "text", text: expect.stringContaining("Continue from where you stopped") }] });
         const parts = a.session.messages.filter((m: any) => m.role === "assistant").flatMap((m: any) => m.content.map((p: any) => p.text));
         expect(parts).toEqual(["The answer is ", "forty-two."]);
         expect(a.events.filter((e) => e.type === "assistant").map((e) => e.message.content[0].text)).toEqual(parts);
@@ -146,7 +146,7 @@ describe("output token limit continuation", () => {
         a.session.release();
         const turns = reopenTurns(a.session.path);
         expect(turns).toHaveLength(1);
-        expect(turns[0]!.blocks.filter((b) => b.t === "text").map((b) => b.text)).toEqual(parts);
+        expect(turns[0]!.blocks.filter((b) => b.t === "text").map((b) => b.text)).toEqual([parts.join("")]);
     });
 
     test("streamed continuations appear once in the live UI", async () => {
@@ -165,11 +165,96 @@ describe("output token limit continuation", () => {
             await rt.startTurn("answer");
             const turns = rt.snapshot().turns;
             expect(turns).toHaveLength(1);
-            expect(turns[0]!.blocks.filter((b) => b.t === "text").map((b) => b.text)).toEqual(["The answer is ", "forty-two."]);
+            expect(turns[0]!.blocks.filter((b) => b.t === "text").map((b) => b.text)).toEqual(["The answer is forty-two."]);
             expect(a.events.filter((e) => e.type === "text").map((e) => e.text)).toEqual(["The answer is ", "forty-two."]);
         } finally {
             await engine.stop();
         }
+    });
+
+    test.each(["streamed", "unstreamed", "retry", "whitespace", "multiple text blocks"])("%s continuation stays one Markdown block after thinking, live and reopened", async (mode) => {
+        const { Engine } = await import("../src/server/engine");
+        const engine = new Engine({ listModels: async () => [] });
+        const intro = mode === "multiple text blocks" ? "Introduction.\n\n" : "";
+        const head = mode === "whitespace" ? "    " : "Here is the code:\n```ts\nconst ";
+        const tail = mode === "whitespace" ? "indented code" : "answer = 42;\n```";
+        try {
+            const rt = await engine.createSession(realpathSync(tempDir()));
+            await rt.ready;
+            rt.session.setTitle("Continuation with reasoning");
+            const a = scripted((_req, n, onEvent) => {
+                if (n > 1) onEvent({ type: "thinking", text: "Continue the code" });
+                if (mode === "retry" && n === 2) {
+                    onEvent({ type: "text", text: "discard this tail" });
+                    throw new ProviderError("temporary", 503, true, 1);
+                }
+                const part = n === 1 ? head : tail;
+                if (n === 1 && intro) {
+                    onEvent({ type: "text", text: intro });
+                    onEvent({ type: "thinking", text: "Compose the code" });
+                }
+                if (mode !== "unstreamed") onEvent({ type: "text", text: part });
+                return reply([...(n === 1 && intro ? [{ type: "text", text: intro }, { type: "thinking", text: "Compose the code" }] : []), ...(n > 1 ? [{ type: "thinking", text: "Continue the code" }] : []), { type: "text", text: part }], n === 1 ? "max_tokens" : "end_turn");
+            }, { session: rt.session, emit: (e) => (rt as any).onEvent(e) });
+            Object.assign(rt, { model: a.agent.model, agent: a.agent });
+            await rt.startTurn("code");
+            const check = (turns: ReturnType<typeof reopenTurns>) => {
+                expect(turns).toHaveLength(1);
+                const blocks = turns[0]!.blocks;
+                expect(blocks.filter((b) => b.t === "text").map((b) => b.text)).toEqual([intro + head + tail]);
+                expect(blocks.findLastIndex((b) => b.t === "text")).toBeGreaterThan(blocks.findLastIndex((b) => b.t === "thinking"));
+            };
+            check(rt.snapshot().turns);
+            await engine.stop();
+            check(reopenTurns(a.session.path));
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("the GUI Agents panel report uses the complete continued answer", async () => {
+        const { Engine } = await import("../src/server/engine");
+        const engine = new Engine({ listModels: async () => [] });
+        try {
+            const rt = await engine.createSession(realpathSync(tempDir()));
+            await rt.ready;
+            const a = scripted((_req, n, onEvent) => {
+                const part = n === 1 ? "REPORT HEAD " : "TAIL";
+                onEvent({ type: "text", text: part });
+                return reply([{ type: "text", text: part }], n === 1 ? "max_tokens" : "end_turn");
+            }, { session: rt.session, emit: (e) => (rt as any).onEvent(e) });
+            (rt as any).onEvent({ type: "tool_start", call: { type: "tool_call", id: "c1", name: "Task", input: { description: "probe" } }, title: "probe" });
+            const child = await (a.agent as any).runChild("c1", { prompt: "answer", description: "probe", agent: "general-purpose" }, new AbortController().signal);
+            expect(child.report).toBe("REPORT HEAD TAIL");
+            expect(rt.snapshot().agents.find((a) => a.id === "c1")?.report).toBe("REPORT HEAD TAIL");
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("the SDK result, Stop hooks and sub-agent report keep the whole continued answer", async () => {
+        const { TurnTally } = await import("../src/sdk/messages");
+        const tally = new TurnTally();
+        const a = scripted((_req, n) => reply([{ type: "text", text: n % 2 ? "HEAD " : "TAIL" }], n % 2 ? "max_tokens" : "end_turn"), { emit: (e) => tally.observe(e) });
+        (a.agent.options.settings() as any).hooks = { Stop: [{}] };
+        let stopped: any;
+        (a.agent as any).hooks = async (event: string, input: any) => { if (event === "Stop") stopped = input; };
+        await a.run("answer");
+        expect(tally.result("done", "s", "m").result).toBe("HEAD TAIL");
+        expect(stopped.last_assistant_message).toBe("HEAD TAIL");
+        expect((a.agent as any).lastAssistantText()).toBe("HEAD TAIL");
+        const child = await (a.agent as any).runChild("c1", { prompt: "answer", description: "probe", agent: "general-purpose" }, new AbortController().signal);
+        expect(child.report).toBe("HEAD TAIL");
+    });
+
+    test("only explicit continuation links join assistant text", async () => {
+        const { assistantText } = await import("../src/providers/types");
+        const user = (kind: any) => ({ role: "user", content: [{ type: "text", text: "go" }], meta: { kind } }) as any;
+        const chain = [user("prompt"), text("HEAD "), user("continuation"), reply([{ type: "thinking", text: "hmm" }]), user("continuation"), text("TAIL")];
+        expect(assistantText(chain)).toBe("HEAD TAIL");
+        for (const kind of ["prompt", "tool_results", "reminder", "wake"]) expect(assistantText([...chain, user(kind), text("new answer")])).toBe("new answer");
+        expect(assistantText([...chain, user("prompt")])).toBe("");
+        expect(assistantText([...chain, user("interrupt")])).toBe("HEAD TAIL");
     });
 
     test.each(["text", "thinking"])("preserves raw %s and appends a user continuation in every wire format", async (kind) => {
@@ -209,7 +294,7 @@ describe("output token limit continuation", () => {
         for (let turn = 1; turn <= 2; turn++) {
             expect(await a.run("answer")).toBe("done");
             expect(a.requests).toHaveLength(turn * 4);
-            expect(a.session.messages.filter((m: any) => m.meta?.kind === "reminder")).toHaveLength(turn * 3);
+            expect(a.session.messages.filter((m: any) => m.meta?.kind === "continuation")).toHaveLength(turn * 3);
             expect(a.session.notices.map((n: any) => n.text)).toEqual(Array(turn).fill("Response was cut off at the output token limit."));
         }
     });

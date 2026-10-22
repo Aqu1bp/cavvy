@@ -23,7 +23,7 @@ import type {
     UserContent,
     UserMessage,
 } from "../providers/types";
-import { ProviderError, modelRef, parseModelRef, textOf, toolCallsOf } from "../providers/types";
+import { ProviderError, modelRef, parseModelRef, textOf, toolCallsOf, assistantText } from "../providers/types";
 import type { Effort, Settings } from "../config/settings";
 import { claudePluginDirs, loadsPluginsNatively, withoutPluginHooks } from "../plugins/native";
 import type { ApprovedMcpServers } from "../mcp/manager";
@@ -99,14 +99,14 @@ import type { NativeGoal } from "./goal";
 // Host interface (implemented by the TUI and by headless mode)
 
 export type AgentEvent =
-    | { type: "request_start" }
+    | { type: "request_start"; continuation?: boolean }
     | { type: "activity"; text?: string }
     | { type: "text"; text: string }
     | { type: "thinking"; text: string }
     | { type: "tool_call_start"; id: string; name: string }
     | { type: "tool_call_delta"; id: string; partial: string }
     | { type: "server_tool"; name: string; detail: string }
-    | { type: "assistant"; message: AssistantMessage }
+    | { type: "assistant"; message: AssistantMessage; /** Full text of this answer, including linked continuations. */ answer?: string }
     | { type: "tool_start"; call: ToolCallPart; title: string; tool?: Tool<any>; autoApproved?: string }
     | { type: "tool_progress"; id: string; text: string }
     | { type: "tool_approved"; id: string; reason: string; sandboxed?: boolean }
@@ -683,7 +683,7 @@ export class Agent {
 
             // From here on, the redacted copy: it's what gets shown and what tools run with.
             msg = this.session.push(msg);
-            this.emit({ type: "assistant", message: msg });
+            this.emit({ type: "assistant", message: msg, answer: assistantText(this.session.messages) });
             if (msg.usage) {
                 this.recordUsage(msg.usage);
                 this.noteCache(msg.usage, this.sentAt);
@@ -691,6 +691,28 @@ export class Agent {
 
             const calls = toolCallsOf(msg);
             if (calls.length || textOf(msg).trim()) answered = true;
+
+            if (msg.stopReason === "context_window_exceeded") {
+                // A context-limited tool call may be incomplete. Close it without running it,
+                // so both the compaction request and a later user turn have a valid transcript.
+                if (calls.length) this.session.push({
+                    role: "user",
+                    content: calls.map((c) => ({ type: "tool_result", toolCallId: c.id, toolName: c.name, content: "The model reached its context window, so this possibly incomplete tool call was not run.", isError: true })),
+                    meta: { kind: "tool_results" },
+                });
+                if (!overflowCompacted) {
+                    overflowCompacted = true;
+                    this.emit({ type: "notice", level: "warn", message: "The conversation reached the model's context window; compacting and retrying." });
+                    try {
+                        if (await this.compact({ auto: true, signal, continuing: true })) continue;
+                    } catch (e) {
+                        if (isAbort(e, signal)) return this.interrupted(false);
+                    }
+                }
+                this.endNotice("error", "The model reached its context window. Compact the conversation or start a new session to continue.");
+                this.emit({ type: "turn_end", reason: "error" });
+                return "error";
+            }
 
             if (msg.stopReason === "pause_turn" && !calls.length && pauses++ < 5) continue;
 
@@ -727,7 +749,7 @@ export class Agent {
                     this.session.push({
                         role: "user",
                         content: [reminder("Your response hit the output token limit. Continue from where you stopped without repeating what you already wrote. If you have not answered yet, continue with your answer.")],
-                        meta: { kind: "reminder" },
+                        meta: { kind: "continuation" },
                     });
                     continue;
                 }
@@ -755,7 +777,7 @@ export class Agent {
                 const stopEvent = this.o.isSubagent ? "SubagentStop" : "Stop";
                 if (settings.hooks?.[stopEvent]?.length && stopHookRounds < 3) {
                     const sub = this.o.subagent;
-                    const last = textOf(msg);
+                    const last = this.lastAssistantText();
                     const h = await this.hooks(stopEvent, { ...(sub ? { description: sub.description } : {}), stop_hook_active: stopHookRounds > 0, last_assistant_message: last, last_message: last }, signal);
                     if (this.hookStop) return this.stoppedByHook();
                     if (h?.blocked) {
@@ -830,12 +852,7 @@ export class Agent {
 
     /** What the model said last, for Stop and StopFailure hooks. */
     private lastAssistantText(): string {
-        for (let i = this.session.messages.length - 1; i >= 0; i--) {
-            const m = this.session.messages[i]!;
-            if (m.role === "assistant") return textOf(m);
-            if (m.role === "user" && m.meta?.kind === "prompt") break;
-        }
-        return "";
+        return assistantText(this.session.messages);
     }
 
     /** Wakes that may join the running turn, as one reminder; noted in the transcript. */
@@ -1093,7 +1110,8 @@ export class Agent {
         this.retrying = undefined;
         try {
             for (let attempt = 1; ; attempt++) {
-                this.emit({ type: "request_start" });
+                const last = (messages ?? this.session.messages).at(-1);
+                this.emit({ type: "request_start", ...(last?.role === "user" && last.meta?.kind === "continuation" ? { continuation: true } : {}) });
                 try {
                     // After any retries: the cache dates from the request that was answered.
                     this.sentAt = Date.now();
@@ -1156,7 +1174,8 @@ export class Agent {
         try {
             // Same system prompt and tools as the session, so the cached prefix is reused.
             const res = await this.client.stream(this.request(req, opts.signal, { maxTokens: 16_000 }), () => {});
-            summary = textOf(res);
+            opts.signal.throwIfAborted();
+            summary = res.stopReason === "context_window_exceeded" ? "" : textOf(res);
             if (res.usage) {
                 const cost = costOf(res.usage, this.model);
                 this.session.recordUsage(modelRef(this.model), res.usage, cost.usd, cost.unknown);
@@ -1181,6 +1200,8 @@ export class Agent {
                 lightweight: true,
             });
             const res = await this.client.stream(req, () => {});
+            opts.signal.throwIfAborted();
+            if (res.stopReason === "context_window_exceeded") throw new Error("The conversation still exceeds the model's context window after condensing it");
             summary = textOf(res);
         }
         if (!summary.trim()) throw new Error("The model returned an empty summary");
@@ -2846,9 +2867,8 @@ export class Agent {
             tokens += u.usage.inputTokens + u.usage.outputTokens + (u.usage.cacheReadTokens ?? 0) + (u.usage.cacheWriteTokens ?? 0);
             cost += u.cost;
         }
-        const last = [...session.messages].reverse().find((m) => m.role === "assistant");
         // A backend's: its answer, then what it did ("[Codex used: …]").
-        const report = backend ? (child.backendReport ?? "") : !last ? "" : textOf(last).trim();
+        const report = backend ? (child.backendReport ?? "") : assistantText(session.messages).trim();
         const result = (status: ChildResult["status"], text: string): ChildResult => ({ status, report: [text, worktreeText].filter(Boolean).join("\n\n"), model: modelRef(model), tokens, cost: cost || undefined, durationMs: Date.now() - started });
         switch (reason) {
             case "aborted":

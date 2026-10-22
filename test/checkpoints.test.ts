@@ -639,6 +639,18 @@ describe("/rewind command", () => {
         expect(rewindTargets(Session.load(s.session.path).messages).map((t) => t.text)).toEqual(["one"]);
     });
 
+    test("rewinding restores the whole continued answer for /copy", async () => {
+        const proj = project();
+        const s = setup(proj, { one: [], two: [] });
+        await s.run("one");
+        s.session.push({ role: "user", content: [{ type: "text", text: "Continue" }], meta: { kind: "continuation" } });
+        s.session.push({ role: "assistant", provider: "test", model: "test", content: [{ type: "text", text: " and its continuation" }], stopReason: "end_turn" });
+        await s.run("two");
+        const f = fakeApp(s, proj, [pickLabel("two"), pickValue("conversation")]);
+        await rewindCommand(f.app);
+        expect(f.app.lastResponse).toBe("done one and its continuation");
+    });
+
     test("conversation only keeps the files; code only keeps the conversation", async () => {
         const proj = project();
         const a = join(proj, "a.txt");

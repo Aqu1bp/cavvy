@@ -8,7 +8,7 @@ import { theme, truncate } from "../ui/ansi";
 import { backendsIn, canonical, FileHistory, resetToolState, rewindTargets, untrackedChangesNote, type RestoreItem, type RewindTarget } from "../agent/checkpoints";
 import { beforeFork } from "../agent/fork";
 import { APP_TITLE } from "../config/paths";
-import { textOf, type Message } from "../providers/types";
+import { assistantText, type Message } from "../providers/types";
 import { displayPath } from "../util/files";
 
 const SHOWN = 10;
@@ -44,11 +44,7 @@ function listed(lines: string[]): string[] {
 }
 
 function lastReply(messages: Message[]): string {
-    for (let i = messages.length - 1; i >= 0; i--) {
-        const m = messages[i]!;
-        if (m.role === "assistant" && textOf(m).trim()) return textOf(m).trim();
-    }
-    return "";
+    return assistantText(messages).trim();
 }
 
 export async function rewindCommand(app: App) {
