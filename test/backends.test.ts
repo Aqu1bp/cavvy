@@ -73,7 +73,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS", "FAKE_SHELL_STATUS", "FAKE_STOP_ANSWER", "FAKE_STOP_MS", "FAKE_FOLLOWUP_MS", "FAKE_RESULT_DELAY_MS", "FAKE_EXIT_AFTER_MS"]) delete process.env[k];
+    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS", "FAKE_SHELL_STATUS", "FAKE_STOP_ANSWER", "FAKE_STOP_MS", "FAKE_FOLLOWUP_MS", "FAKE_RESULT_DELAY_MS", "FAKE_EXIT_AFTER_MS", "FAKE_STOP_STATUS", "FAKE_STOP_TURN_AT", "FAKE_STOP_NOTIFY_AT", "FAKE_STOP_RESULT_AT", "FAKE_SHELL_NOTIFY_MS"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -3755,4 +3755,149 @@ describe("Claude Code background tasks: #282 review round 3", () => {
         expect(a.agent.backgroundTasks().map((x) => [x.id, x.status])).toEqual([["toolu_x", "failed"]]);
         expect(bg.sync().map((x) => [x.id, x.status])).toEqual([["toolu_x", "failed"]]);
     });
+});
+
+describe("Claude Code background tasks: #282 review round 4", () => {
+    const stops = () => received().filter((m) => m.request?.subtype === "stop_task").map((m) => m.request.task_id);
+    const timing = (t: Partial<typeof backgroundTiming>) => {
+        const saved = { ...backgroundTiming };
+        Object.assign(backgroundTiming, t);
+        return () => Object.assign(backgroundTiming, saved);
+    };
+    const until = async (pred: () => boolean, ms = 5000) => {
+        for (const end = Date.now() + ms; !pred() && Date.now() < end; ) await Bun.sleep(5);
+        expect(pred()).toBe(true);
+    };
+    const running = (a: { agent: InstanceType<typeof Agent> }, id: string) => a.agent.backgroundTasks().some((t) => t.id === id && t.status === "running" && t.stoppable);
+
+    for (const said of [true, false]) {
+        test(`Harness's own stop goes unanswered while Claude Code takes a turn of its own; ${said ? "the task says it completed after the stop's timeout: that end settles it, and the run ends (Bug A)" : "nothing is said: the run ends as unconfirmed"}`, async () => {
+            process.env.FAKE_SCENARIO = "shell-background-mixed";
+            process.env.FAKE_COMMAND = "sleep 150";
+            process.env.FAKE_BACKGROUND_MS = "1500";
+            process.env.FAKE_STOP_TASK = "hang-turn";
+            process.env.FAKE_STOP_NOTIFY_AT = said ? "600" : "999999";
+            const restore = timing({ stopTimeoutMs: 400, pollMs: 20, settleMs: 300 });
+            try {
+                const a = await makeAgent({ provider: "claude-code", settings: { claudeCode: { backgroundWaitSec: 0.1 } } });
+                a.agent.state.background = new SessionBackground();
+                expect(await Promise.race([a.run("start both"), Bun.sleep(8000).then(() => "stuck")])).toBe("done");
+                expect(stops()).toEqual(["background-1"]);
+                if (said) {
+                    expect(notices(a.events).join("\n")).not.toContain("did not confirm a task stop");
+                    expect(JSON.stringify(a.session.messages)).toContain("The explorer reported back");
+                    expect(a.agent.backgroundTasks().map((t) => [t.id, t.status]).sort()).toEqual([["background-1", "done"], ["toolu_agent", "done"]]);
+                } else expect(notices(a.events).join("\n")).toContain("did not confirm a task stop");
+            } finally {
+                restore();
+            }
+        }, 15_000);
+    }
+
+    test("a refused stop of a shell that left the list before saying how it ended: its report turn is still waited for (Astra 1)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        process.env.FAKE_STOP_TASK = "leave-reject";
+        const restore = timing({ pollMs: 10, settleMs: 1500 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            const bg = (a.agent.state.background = new SessionBackground());
+            bg.sync();
+            const done = a.run("run checks and wait");
+            await until(() => running(a, "background-1"));
+            bg.sync();
+            expect(await bg.userStop(["background-1"], () => a.agent.stopBackground(["background-1"]))).toEqual({ "background-1": "failed" });
+            expect(await Promise.race([done, Bun.sleep(5000).then(() => "stuck")])).toBe("done");
+            expect(JSON.stringify(a.session.messages)).toContain("Follow-up: the checks passed.");
+            expect(a.agent.backgroundTasks().map((t) => [t.id, t.status])).toEqual([["background-1", "done"]]);
+            expect(bg.sync().map((t) => [t.id, t.status])).toEqual([["background-1", "done"]]);
+        } finally {
+            restore();
+        }
+    }, 15_000);
+
+    for (const kind of ["shell", "sub-agent"] as const) {
+        test(`the ${kind}'s report turn ran while the user's stop was pending: once the stop settles the run ends, without waiting for that turn again (Bug C)`, async () => {
+            process.env.FAKE_SCENARIO = kind === "shell" ? "shell-background-stuck" : "agent-background";
+            process.env.FAKE_STOP_TASK = "hang";
+            if (kind === "shell") process.env.FAKE_SHELL_MS = "250";
+            else process.env.FAKE_BACKGROUND_MS = "200";
+            const restore = timing({ stopTimeoutMs: 1200, pollMs: 10, settleMs: 4000 });
+            try {
+                const a = await makeAgent({ provider: "claude-code" });
+                const bg = (a.agent.state.background = new SessionBackground());
+                bg.sync();
+                const done = a.run(kind === "shell" ? "run checks and wait" : "map auth in the background");
+                await until(() => a.agent.backgroundTasks().some((t) => t.status === "running" && t.stoppable));
+                bg.sync();
+                const id = a.agent.backgroundTasks().find((t) => t.status === "running")!.id;
+                expect(await bg.userStop([id], () => a.agent.stopBackground([id]))).toEqual({ [id]: "ended" });
+                const settled = Date.now();
+                expect(await Promise.race([done, Bun.sleep(8000).then(() => "stuck")])).toBe("done");
+                expect(Date.now() - settled).toBeLessThan(2000);
+                expect(a.agent.backgroundTasks().map((t) => t.status)).toEqual(["done"]);
+            } finally {
+                restore();
+            }
+        }, 15_000);
+    }
+
+    test("Harness's own stop is refused, but the task said meanwhile it stopped: not an unconfirmed stop that ends the run (C1c)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-mixed";
+        process.env.FAKE_COMMAND = "sleep 150";
+        process.env.FAKE_STOP_TASK = "complete-first";
+        process.env.FAKE_STOP_STATUS = "stopped";
+        process.env.FAKE_STOP_ANSWER = "error";
+        process.env.FAKE_FOLLOWUP_MS = "20";
+        process.env.FAKE_BACKGROUND_MS = "1500";
+        const restore = timing({ pollMs: 10 });
+        try {
+            const a = await makeAgent({ provider: "claude-code", settings: { claudeCode: { backgroundWaitSec: 0.1 } } });
+            a.agent.state.background = new SessionBackground();
+            expect(await Promise.race([a.run("start both"), Bun.sleep(8000).then(() => "stuck")])).toBe("done");
+            expect(stops()).toEqual(["background-1"]);
+            expect(notices(a.events).join("\n")).not.toContain("did not confirm a task stop");
+            expect(JSON.stringify(a.session.messages)).toContain("The explorer reported back");
+        } finally {
+            restore();
+        }
+    }, 15_000);
+
+    test("Stop on a shell that left Claude Code's list, before it says how it ended: it ended (C8)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background";
+        process.env.FAKE_SHELL_MS = "150";
+        process.env.FAKE_SHELL_NOTIFY_MS = "1500";
+        const restore = timing({ pollMs: 10 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            a.agent.state.background = new SessionBackground();
+            const done = a.run("run checks and wait");
+            await until(() => running(a, "background-1"));
+            // Off the list (150 ms), its notification still to come (1.5 s later).
+            await Bun.sleep(500);
+            expect(await a.agent.stopBackground(["background-1"])).toEqual({ "background-1": "ended" });
+            expect(stops()).toEqual([]);
+            expect(await done).toBe("done");
+            expect(a.agent.backgroundTasks().map((t) => [t.id, t.status])).toEqual([["background-1", "done"]]);
+        } finally {
+            restore();
+        }
+    }, 15_000);
+
+    test("the user's Stop of a monitor whose command just exited (its close not taken in): the agent is told it was stopped (Bug B)", async () => {
+        const { startMonitor } = await import("../src/tools/monitor");
+        const wakes = new WakeQueue();
+        const a = await makeAgent({ provider: "claude-code", wakes });
+        const bg = (a.agent.state.background = new SessionBackground());
+        // A grandchild in a process group of its own keeps stdout open after the command exits.
+        const m = startMonitor({ command: `perl -e 'setpgrp(0,0); sleep 3' & exit 0`, description: "watch build", timeoutMs: 60_000, ctx: { state: a.agent.state, wakes } as never, env: { PATH: process.env.PATH! } });
+        bg.sync({ shells: a.agent.state.shells });
+        await Bun.sleep(150);
+        expect(m.shell.exitCode).toBeNull();
+        expect(await bg.userStop([m.id], () => a.agent.stopBackground([m.id]))).toEqual({ [m.id]: "stopped" });
+        await Bun.sleep(1200);
+        const reminders: string[] = (a.agent as any).pendingReminders.map((x: any) => x.text);
+        const told = reminders.length + wakes.pending().length;
+        expect(told).toBe(1);
+        expect(reminders.join("\n")).toContain(m.id);
+    }, 15_000);
 });

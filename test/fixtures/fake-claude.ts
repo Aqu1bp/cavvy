@@ -37,8 +37,12 @@
 //                   report, then the process exits without answering; complete-first: the task completes (said, then
 //                   off the list) just before the stop is taken, which is answered success (as Claude Code answers for a
 //                   task it no longer runs; FAKE_STOP_ANSWER=error: refused), and its report turn follows FAKE_FOLLOWUP_MS later
-//                   (all of it FAKE_STOP_MS after the stop is asked; default at once)
+//                   (all of it FAKE_STOP_MS after the stop is asked; default at once; FAKE_STOP_STATUS: what it says, default
+//                   completed); hang-turn: unanswered, and Claude Code takes a turn of its own during which the task
+//                   says it completed (FAKE_STOP_TURN_AT / _NOTIFY_AT / _RESULT_AT ms after the stop); leave-reject:
+//                   the task leaves the list and the stop is refused, then its notification and report turn come
 // FAKE_RESULT_DELAY_MS  shell-background*: the turn's answer comes this long after the background command is listed
+// FAKE_SHELL_NOTIFY_MS  shell-background*: its task_notification comes this long after it leaves the list (default 80)
 // FAKE_SHELL_MS     shell-background*: the background command finishes this long after the answer (default 150; the
 //                   stuck, mixed and nested ones finish only when it's set)
 // FAKE_API_KEY_SOURCE  system/init apiKeySource (default "none": a plan)
@@ -712,7 +716,7 @@ async function turn(content: any[], uuid?: string) {
             if (stoppedTasks.has("background-1")) return;
             bgTasks.delete("background-1");
             backgroundChanged();
-            await Bun.sleep(80);
+            await Bun.sleep(Number(process.env.FAKE_SHELL_NOTIFY_MS ?? 80));
             // Shell/Monitor notifications may have no tool_use_id.
             out({ type: "system", subtype: "task_notification", task_id: "background-1", status: process.env.FAKE_SHELL_STATUS ?? "completed", summary: "Checks passed", session_id: sessionId });
             await Bun.sleep(80);
@@ -877,11 +881,38 @@ for await (const chunk of Bun.stdin.stream()) {
                     const tid = m.request.task_id;
                     setTimeout(() => {
                         bgTasks.delete(tid);
-                        out({ type: "system", subtype: "task_notification", task_id: tid, ...(tid === "agent-1" ? { tool_use_id: "toolu_agent" } : {}), status: "completed", summary: "Explorer report: auth keeps strategies in one list.", session_id: sessionId });
+                        out({ type: "system", subtype: "task_notification", task_id: tid, ...(tid === "agent-1" ? { tool_use_id: "toolu_agent" } : {}), status: process.env.FAKE_STOP_STATUS ?? "completed", summary: "Explorer report: auth keeps strategies in one list.", session_id: sessionId });
                         backgroundChanged();
                         out(process.env.FAKE_STOP_ANSWER === "error" ? { type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "No running task" } } : { type: "control_response", response: { subtype: "success", request_id: m.request_id } });
                         setTimeout(() => followUp("Follow-up: the explorer reported back."), Number(process.env.FAKE_FOLLOWUP_MS ?? 100));
                     }, Number(process.env.FAKE_STOP_MS ?? 0));
+                    continue;
+                }
+                // Never answered: a turn of Claude Code's own starts, and during it (after the stop's timeout) the task
+                // says it completed (FAKE_STOP_TURN_AT, FAKE_STOP_NOTIFY_AT, FAKE_STOP_RESULT_AT after the stop).
+                if (process.env.FAKE_STOP_TASK === "hang-turn") {
+                    const tid = m.request.task_id;
+                    setTimeout(() => out({ type: "system", subtype: "init", session_id: sessionId, apiKeySource: "none", permissionMode: mode }), Number(process.env.FAKE_STOP_TURN_AT ?? 200));
+                    setTimeout(() => {
+                        bgTasks.delete(tid);
+                        backgroundChanged();
+                        out({ type: "system", subtype: "task_notification", task_id: tid, status: "completed", summary: "Checks passed", session_id: sessionId });
+                    }, Number(process.env.FAKE_STOP_NOTIFY_AT ?? 600));
+                    setTimeout(() => {
+                        answering = undefined;
+                        text("A turn of its own.");
+                        result("success", { result: "A turn of its own." });
+                    }, Number(process.env.FAKE_STOP_RESULT_AT ?? 700));
+                    continue;
+                }
+                // The task leaves the list (it ended) and the stop is refused; its notification and report turn come after.
+                if (process.env.FAKE_STOP_TASK === "leave-reject") {
+                    const tid = m.request.task_id;
+                    bgTasks.delete(tid);
+                    backgroundChanged();
+                    out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "No running task" } });
+                    setTimeout(() => out({ type: "system", subtype: "task_notification", task_id: tid, status: "completed", summary: "Checks passed", session_id: sessionId }), 60);
+                    setTimeout(() => followUp("Follow-up: the checks passed."), Number(process.env.FAKE_FOLLOWUP_MS ?? 120));
                     continue;
                 }
                 if (process.env.FAKE_STOP_TASK === "late") {
