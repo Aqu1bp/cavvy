@@ -1,4 +1,5 @@
 import { readdir, stat, readFile } from "fs/promises";
+import { statSync } from "fs";
 import { isAbsolute, join, relative } from "path";
 import type { Tool, ToolContext } from "./types";
 import { displayPath, expandPath, formatBytes, looksBinary, truncateMiddle } from "../util/files";
@@ -134,6 +135,7 @@ export const GrepTool: Tool<GrepInput> = {
         const rg = ripgrep();
         let out: string;
         let incomplete = false;
+        let skipped: string[] = [];
         if (rg) {
             // --null: a NUL after every printed path, so results can be filtered per file.
             const args = ["--no-config", "--color=never", "--null", "--with-filename"];
@@ -162,7 +164,7 @@ export const GrepTool: Tool<GrepInput> = {
             if (code === 2 && !stdout) return { content: `Grep error: ${stderr.trim()}`, isError: true };
             out = filterRgOutput(stdout, mode, (p) => Boolean(hide?.("Grep", isAbsolute(p) ? p : join(ctx.state.cwd, p))), input.show_line_numbers !== false);
         } else {
-            ({ out, incomplete } = await jsGrep(input, target, mode, ctx.signal, hide));
+            ({ out, incomplete, skipped } = await jsGrep(input, target, mode, ctx.signal, hide));
         }
         let lines = out.split("\n").filter((l) => l !== "");
         // Make paths relative for compactness.
@@ -176,13 +178,21 @@ export const GrepTool: Tool<GrepInput> = {
         const total = lines.length;
         const limit = input.head_limit ?? (mode === "content" ? 400 : 200);
         if (lines.length > limit) lines = lines.slice(0, limit);
-        const notice = "Search incomplete: the fallback scans at most 20,000 eligible files. Narrow path, glob or type, or install ripgrep to search the whole tree.";
-        if (!total) return { content: incomplete ? `No matches in the scanned files. ${notice}` : "No matches found", display: { summary: incomplete ? "Search incomplete" : "No matches" } };
+        const notices: string[] = [];
+        if (incomplete) notices.push("Search incomplete: the fallback scans at most 20,000 eligible files. Narrow path, glob or type, or install ripgrep to search the whole tree.");
+        if (skipped.length) {
+            const shown = skipped.slice(0, 5).map((f) => (f.startsWith(base + "/") ? f.slice(base.length + 1) : f));
+            const more = skipped.length > shown.length ? `, and ${skipped.length - shown.length} more` : "";
+            const them = skipped.length === 1 ? "it" : "them";
+            notices.push(`Search incomplete: skipped ${skipped.length.toLocaleString("en-US")} file${skipped.length === 1 ? "" : "s"} over 5 MB, which the fallback doesn't search (${shown.join(", ")}${more}). Install ripgrep to search ${them}, or Read ${them} in parts with offset and limit.`);
+        }
+        const unsure = notices.length > 0;
+        if (!total) return { content: unsure ? `No matches in the scanned files. ${notices.join(" ")}` : "No matches found", display: { summary: unsure ? "Search incomplete" : "No matches" } };
         let content = truncateMiddle(redact(lines.join("\n")), 30_000);
         if (total > lines.length) content += `\n(Showing ${lines.length} of ${total}. Narrow the search or raise head_limit.)`;
-        if (incomplete) content += `\n(${notice})`;
+        for (const notice of notices) content += `\n(${notice})`;
         const noun = mode === "files_with_matches" ? "file" : mode === "count" ? "file" : "line";
-        return { content: redact(content), display: { summary: `Found ${total} ${noun}${total === 1 ? "" : "s"}${incomplete ? " (search incomplete)" : ""}` } };
+        return { content: redact(content), display: { summary: `Found ${total} ${noun}${total === 1 ? "" : "s"}${unsure ? " (search incomplete)" : ""}` } };
     },
 };
 
@@ -244,17 +254,20 @@ export function filterRgOutput(stdout: string, mode: string, hidden: (path: stri
     return out.join("\n");
 }
 
-async function jsGrep(input: GrepInput, target: string, mode: string, signal: AbortSignal, hide?: (toolName: string, abs: string) => boolean): Promise<{ out: string; incomplete: boolean }> {
+/** The fallback doesn't search files bigger than this; it reports the ones it skips. */
+const JS_GREP_MAX_BYTES = 5_000_000;
+
+async function jsGrep(input: GrepInput, target: string, mode: string, signal: AbortSignal, hide?: (toolName: string, abs: string) => boolean): Promise<{ out: string; incomplete: boolean; skipped: string[] }> {
     const flags = (input.ignore_case ? "i" : "") + (input.multiline ? "ms" : "");
     let re: RegExp;
     try {
         re = new RegExp(input.pattern, flags);
     } catch (e) {
-        return { out: `Invalid regex: ${(e as Error).message}`, incomplete: false };
+        return { out: `Invalid regex: ${(e as Error).message}`, incomplete: false, skipped: [] };
     }
     const fileGlob = input.glob ? new Bun.Glob(input.glob.includes("/") ? input.glob : `**/${input.glob}`) : undefined;
     const exts = input.type ? TYPE_EXTS[input.type.toLowerCase()] : undefined;
-    if (input.type && !exts) return { out: `Grep error: unrecognized file type: ${input.type}`, incomplete: false };
+    if (input.type && !exts) return { out: `Grep error: unrecognized file type: ${input.type}`, incomplete: false, skipped: [] };
     const out: string[] = [];
     const st = await stat(target).catch(() => undefined);
     const files: string[] = [];
@@ -269,10 +282,22 @@ async function jsGrep(input: GrepInput, target: string, mode: string, signal: Ab
     const before = Math.max(0, input.before ?? input.context ?? 0);
     const after = Math.max(0, input.after ?? input.context ?? 0);
     const num = input.show_line_numbers !== false;
+    const skipped: string[] = [];
     for (const f of files) {
         if (signal.aborted) break;
+        // Check the size first, so a huge file is never loaded.
+        let size: number;
+        try {
+            size = statSync(f).size;
+        } catch {
+            continue;
+        }
+        if (size > JS_GREP_MAX_BYTES) {
+            skipped.push(f);
+            continue;
+        }
         const buf = await readFile(f).catch(() => undefined);
-        if (!buf || buf.length > 5_000_000 || looksBinary(buf)) continue;
+        if (!buf || looksBinary(buf)) continue;
         const text = buf.toString("utf-8");
         if (mode === "files_with_matches") {
             if (re.test(text)) out.push(f);
@@ -300,7 +325,7 @@ async function jsGrep(input: GrepInput, target: string, mode: string, signal: Ab
             last = Math.max(last, to);
         }
     }
-    return { out: out.join("\n"), incomplete };
+    return { out: out.join("\n"), incomplete, skipped };
 }
 
 /** Line indexes (sorted) that a match touches (with multiline, a match can span several), the match count, and whether any match contains a newline. */
