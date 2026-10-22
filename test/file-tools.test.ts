@@ -137,6 +137,9 @@ describe("line endings and the byte-order mark", () => {
         expect(applyEdit("a\r\nb\r\n", { old_string: "\nb", new_string: "b" }, "x")).toEqual({ text: "ab\r\n" });
         expect(applyEdit("a\r\nb\r\n", { old_string: "a\r", new_string: "x\r" }, "x")).toEqual({ text: "x\r\nb\r\n" });
         expect(applyEdit("a\r\nb\r\n", { old_string: "a\r", new_string: "x" }, "x")).toEqual({ text: "xb\r\n" });
+        // Adjacent matches sharing a CRLF are both replaced, and the line break between them is written once.
+        expect(applyEdit("a\r\nfoo\r\nfoo\r\nz\r\n", { old_string: "\nfoo\r", new_string: "\nbar\r", replace_all: true }, "x")).toEqual({ text: "a\r\nbar\r\nbar\r\nz\r\n" });
+        expect(applyEdit("a\r\nfoo\r\nfoo\r\nz\r\n", { old_string: "\nfoo\r", new_string: "\nbar\r" }, "x")).toEqual({ error: expect.stringContaining("appears 2 times") });
         // Every replace_all occurrence, also in a mostly-LF file.
         expect(applyEdit("a\r\nb\r\nc", { old_string: "\n", new_string: "\n\n", replace_all: true }, "x")).toEqual({ text: "a\r\n\r\nb\r\n\r\nc" });
         expect(applyEdit("a\r\nb\nc\nd\n", { old_string: "\n", new_string: " ", replace_all: true }, "x")).toEqual({ text: "a b c d " });

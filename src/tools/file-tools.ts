@@ -276,14 +276,21 @@ export function applyEdit(text: string, e: EditSpec, label: string): { text: str
     }
     let out = "";
     let at = 0;
-    for (let idx = text.indexOf(oldS); idx !== -1; idx = e.replace_all ? text.indexOf(oldS, at) : -1) {
+    // Matches are found where countOccurrences finds them; only what's replaced around each one widens.
+    for (let idx = text.indexOf(oldS); idx !== -1; idx = e.replace_all ? text.indexOf(oldS, idx + oldS.length) : -1) {
         let start = idx;
         let end = idx + oldS.length;
         let rep = newS;
         // A match that starts or ends inside a CRLF ("\nb" in "a\r\nb") takes the whole line break, so no lone or doubled CR is left.
         if (oldS.startsWith("\n") && text[start - 1] === "\r") {
-            start--;
-            if (rep.startsWith("\n")) rep = "\r" + rep;
+            if (at > start) {
+                // The previous match ended on this CRLF's CR and took it whole: the line break is done once.
+                start = at;
+                rep = rep.replace(/^\r?\n/, "");
+            } else {
+                start--;
+                if (rep.startsWith("\n")) rep = "\r" + rep;
+            }
         }
         if (oldS.endsWith("\r") && text[end] === "\n") {
             end++;
