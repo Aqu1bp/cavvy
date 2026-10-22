@@ -578,8 +578,8 @@ export class Agent {
         this.running = true;
         this.prompted = false;
         this.limitStop = undefined;
-        // Interrupting a turn stops the delegated tasks still running, those in the background too
-        // (delegated on an earlier turn, maybe before a switch to another model).
+        // Interrupting a turn stops the delegated tasks it waits on. Those in the background (started on this
+        // turn or an earlier one) run on: only an explicit stop ends them (#228, stopBackground).
         const onAbort = () => this.cancelTasks();
         opts.signal.addEventListener("abort", onAbort, { once: true });
         this.hookStop = undefined;
@@ -1432,10 +1432,12 @@ export class Agent {
         this.emit({ type: "notice", level: "info", message: `${running} background task${running === 1 ? " is" : "s are"} still running. ${running === 1 ? "Its result goes" : "Their results go"} to ${this.model.name ?? this.model.id} with your next message (/tasks shows them, /tasks stop stops them).` });
     }
 
-    /** Stop the delegated tasks still running (the user interrupted the turn). */
+    /** The user interrupted the turn: stop the delegated tasks it waits on (not those in the background, #228). */
     private cancelTasks() {
-        const n = this.delegations?.cancelAll() ?? 0;
+        const n = this.delegations?.cancelForeground() ?? 0;
         if (n) this.emit({ type: "notice", level: "info", message: `Stopped ${n} delegated task${n === 1 ? "" : "s"}.` });
+        const left = this.delegations?.running().filter((t) => !t.controller.signal.aborted).length ?? 0;
+        if (left) this.emit({ type: "notice", level: "info", message: `${left} background task${left === 1 ? " keeps" : "s keep"} running (/tasks stop stops ${left === 1 ? "it" : "them"}).` });
     }
 
     /** A wake turn to adopt, on a model that can't take one (another provider's now, or one that runs no CLI). */

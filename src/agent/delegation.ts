@@ -177,6 +177,8 @@ export interface DelegatedTask {
     result?: ChildResult;
     /** The main agent has been given the result. */
     delivered: boolean;
+    /** Calls waiting on it as their turn's own work (delegate without wait: false): interrupting the turn stops it. */
+    foreground?: number;
     settled: Promise<void>;
     controller: AbortController;
 }
@@ -281,6 +283,30 @@ export class Delegations {
         ]);
         clearTimeout(timer);
         if (onAbort) signal?.removeEventListener("abort", onAbort);
+    }
+
+    /**
+     * Wait for a task as the caller's turn's own work: interrupting that turn (cancelForeground) stops it. A
+     * wait that runs out leaves it in the background, where only an explicit stop ends it.
+     */
+    async waitForeground(t: DelegatedTask, ms: number, signal?: AbortSignal): Promise<void> {
+        t.foreground = (t.foreground ?? 0) + 1;
+        try {
+            await this.wait([t], ms, signal);
+        } finally {
+            t.foreground = (t.foreground ?? 1) - 1;
+        }
+    }
+
+    /**
+     * The turn was interrupted (Esc): stop the tasks it waits on, and any still being set up; those in the
+     * background run on (#228). How many weren't already stopping.
+     */
+    cancelForeground(): number {
+        this.generation++;
+        const waited = this.running().filter((t) => t.foreground && !t.controller.signal.aborted);
+        for (const t of waited) t.controller.abort();
+        return waited.length;
     }
 
     /** Stop a running task; false if it isn't running or is already stopping. */
@@ -439,7 +465,7 @@ export function orchestratorTools(h: OrchestratorHost): ServerTool[] {
                 if (typeof t === "string") return { text: t, isError: true };
                 if (args.wait === false || def.background) return { text: `Started task ${t.id} "${t.description}" (${t.agent} on ${t.model}${t.effort ? `, ${t.effort} effort` : ""}). Get its result with task_status; cancel it with task_cancel.` };
                 const limit = waitMs(args.timeout_minutes, DELEGATION_LIMITS.defaultWaitMs);
-                await h.tasks.wait([t], limit, ctx.signal);
+                await h.tasks.waitForeground(t, limit, ctx.signal);
                 if (t.status === "running") return { text: `${taskReport(t)} It keeps running: get its result with task_status (it can wait), or cancel it with task_cancel.` };
                 return { text: deliver(t, ctx.signal), isError: t.status === "failed" };
             },

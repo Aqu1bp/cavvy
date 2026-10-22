@@ -778,7 +778,7 @@ describe("Claude Code as the main agent", () => {
         expect(notices(events)).toContain("info: Stopped 1 delegated task.");
     });
 
-    test("after a switch to a harness model, esc still stops the tasks running in the background", async () => {
+    test("after a switch to a harness model, esc leaves the tasks running in the background, and an explicit stop ends them (#228)", async () => {
         process.env.FAKE_SCENARIO = "mcp";
         calls([{ tool: "delegate", args: { task: "Review", description: "Review", model: "gemini:gemini-test", agent: "explore", wait: false } }]);
         script = async (req) => {
@@ -796,9 +796,16 @@ describe("Claude Code as the main agent", () => {
         await Bun.sleep(50);
         ac.abort();
         expect(await done).toBe("aborted");
+        await Bun.sleep(30);
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["running"]);
+        expect(notices(events)).not.toContain("info: Stopped 1 delegated task.");
+        expect(notices(events)).toContain("info: 1 background task keeps running (/tasks stop stops it).");
+        // It's in the session's background list, and stops when asked to.
+        expect(agent.backgroundTasks()).toMatchObject([{ id: "task-1", provider: "gemini", kind: "agent", label: "Review", status: "running", stoppable: true }]);
+        expect(await agent.stopBackground(["task-1"])).toEqual({ "task-1": "stopped" });
         await agent.delegatedTasks[0]!.settled;
         expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["cancelled"]);
-        expect(notices(events)).toContain("info: Stopped 1 delegated task.");
+        expect(agent.backgroundTasks()[0]!.status).toBe("stopped");
     });
 
     test("stopping a task withdraws its permission prompt, and stops the shells it started", async () => {
@@ -1547,6 +1554,42 @@ describe("Monitor for Codex (it has none of its own)", () => {
 // ---------------------------------------------------------------------------
 
 describe("harness models", () => {
+    test("esc in an API session ends the turn, not a background Task started on an earlier turn: it still reports back (#228)", async () => {
+        const main = (content: unknown[], stopReason = "end_turn") => ({ role: "assistant", provider: "anthropic", model: "claude-main", stopReason, content, usage: { inputTokens: 10, outputTokens: 5 } });
+        const g = gate();
+        let n = 0;
+        const requests: ChatRequest[] = [];
+        const client = {
+            stream: async (req: ChatRequest) => {
+                requests.push(req);
+                n++;
+                if (n === 1) return main([{ type: "tool_call", id: "t1", name: "Task", input: { description: "Long review", prompt: "Review everything", model: "gemini:gemini-test", subagent_type: "explore", run_in_background: true } }], "tool_use");
+                if (n === 2) return main([{ type: "text", text: "Started it." }]);
+                // Turn 2 works until it's stopped; turn 3 answers.
+                if (n === 3) return gate().wait(req.signal).then(() => main([{ type: "text", text: "never" }]));
+                return main([{ type: "text", text: "Got the review." }]);
+            },
+            listModels: async () => [],
+        };
+        script = async () => (await g.wait(), say("All good."));
+        const { run, agent } = await makeAgent({ provider: "anthropic", model: { id: "claude-main" }, client });
+        expect(await run("start a background review")).toBe("done");
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["running"]);
+        const ac = new AbortController();
+        const turn2 = run("meanwhile, a quick question", ac.signal);
+        await until(() => n >= 3);
+        ac.abort();
+        expect(await turn2).toBe("aborted");
+        await Bun.sleep(30);
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["running"]);
+        // It finishes, and its result goes with the next prompt.
+        g.open();
+        await agent.delegatedTasks[0]!.settled;
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["done"]);
+        expect(await run("anything back?")).toBe("done");
+        expect(JSON.stringify(requests.at(-1)!.messages)).toContain("All good.");
+    });
+
     test("Task runs a sub-agent on the model asked for, and ListModels shows what can run", async () => {
         const mainRequests: ChatRequest[] = [];
         const main = (content: unknown[], stopReason = "end_turn") => ({ role: "assistant", provider: "anthropic", model: "claude-main", stopReason, content, usage: { inputTokens: 10, outputTokens: 5 } });
