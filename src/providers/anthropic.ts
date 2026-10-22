@@ -28,6 +28,7 @@ import { anthropicTraits, ANTHROPIC_FALLBACK_MODELS } from "./anthropic-models";
 import type { Effort } from "../config/settings";
 import { plainErrorText } from "../util/html";
 import { fileAsText, fitRequest, readsPdf } from "./files";
+import { stallError, stallTimer } from "./sse";
 
 type BetaParams = Anthropic.Beta.Messages.MessageCreateParamsStreaming;
 type BetaMessageParam = Anthropic.Beta.Messages.BetaMessageParam;
@@ -128,6 +129,7 @@ export class AnthropicProvider implements ProviderClient {
             try {
                 return await this.runStream(params, req, onEvent);
             } catch (e) {
+                if (req.signal?.aborted || e instanceof Anthropic.APIUserAbortError) throw new ProviderError("aborted");
                 if (e instanceof Anthropic.APIError) {
                     const msg = String(e.message ?? "");
                     if (e.status === 400) {
@@ -147,7 +149,6 @@ export class AnthropicProvider implements ProviderClient {
                     }
                     throw toProviderError(e);
                 }
-                if (e instanceof Anthropic.APIUserAbortError || req.signal?.aborted) throw new ProviderError("aborted", undefined, false);
                 if (isConnectionError(e)) throw toProviderError(e);
                 // Eager input streaming hands invalid tool JSON to us; re-issue the turn.
                 if (jsonRetries++ < 2 && e instanceof Error && /json/i.test(e.message)) {
@@ -224,50 +225,78 @@ export class AnthropicProvider implements ProviderClient {
     }
 
     private async runStream(params: BetaParams, req: ChatRequest, onEvent: (e: StreamEvent) => void): Promise<AssistantMessage> {
-        const stream = this.client.beta.messages.stream(params, { signal: req.signal });
-        const blockTypes = new Map<number, string>();
-        const toolIds = new Map<number, string>();
-        for await (const ev of stream) {
-            switch (ev.type) {
-                case "content_block_start": {
-                    const b = ev.content_block;
-                    blockTypes.set(ev.index, b.type);
-                    if (b.type === "tool_use") {
-                        toolIds.set(ev.index, b.id);
-                        onEvent({ type: "tool_call_start", id: b.id, name: b.name });
-                    } else if (b.type === "server_tool_use") {
-                        onEvent({ type: "server_tool", name: b.name, detail: "" });
-                    } else if (b.type === "web_search_tool_result") {
-                        const c = b.content;
-                        const n = Array.isArray(c) ? c.length : 0;
-                        onEvent({ type: "server_tool", name: "web_search_result", detail: Array.isArray(c) ? `${n} results` : "error" });
-                    } else if (b.type === "thinking" || b.type === "redacted_thinking") {
-                        // With display "omitted" nothing more arrives until the thinking ends; say it started.
-                        onEvent({ type: "thinking", text: "" });
-                    } else if (b.type === "fallback") {
-                        onEvent({ type: "notice", message: `${b.from.model} declined this request; continuing on ${b.to.model}.` });
+        const stall = stallTimer(req.signal);
+        try {
+            const stream = this.client.beta.messages.stream(params, {
+                signal: stall.signal,
+                // The SDK hides ping events. Observe bytes so keep-alives reset the timer too.
+                middleware: [async (request, next) => {
+                    const response = await next(request);
+                    stall.touch();
+                    if (!response.body) return response;
+                    return new Response(response.body.pipeThrough(new TransformStream({
+                        transform(chunk, controller) {
+                            stall.touch();
+                            controller.enqueue(chunk);
+                        },
+                    })), response);
+                }],
+            });
+            const blockTypes = new Map<number, string>();
+            const toolIds = new Map<number, string>();
+            for await (const ev of stream) {
+                switch (ev.type) {
+                    case "content_block_start": {
+                        const b = ev.content_block;
+                        blockTypes.set(ev.index, b.type);
+                        if (b.type === "tool_use") {
+                            toolIds.set(ev.index, b.id);
+                            onEvent({ type: "tool_call_start", id: b.id, name: b.name });
+                        } else if (b.type === "server_tool_use") {
+                            onEvent({ type: "server_tool", name: b.name, detail: "" });
+                        } else if (b.type === "web_search_tool_result") {
+                            const c = b.content;
+                            const n = Array.isArray(c) ? c.length : 0;
+                            onEvent({ type: "server_tool", name: "web_search_result", detail: Array.isArray(c) ? `${n} results` : "error" });
+                        } else if (b.type === "thinking" || b.type === "redacted_thinking") {
+                            // With display "omitted" nothing more arrives until the thinking ends; say it started.
+                            onEvent({ type: "thinking", text: "" });
+                        } else if (b.type === "fallback") {
+                            onEvent({ type: "notice", message: `${b.from.model} declined this request; continuing on ${b.to.model}.` });
+                        }
+                        break;
                     }
-                    break;
-                }
-                case "content_block_delta": {
-                    const d = ev.delta;
-                    if (d.type === "text_delta") onEvent({ type: "text", text: d.text });
-                    else if (d.type === "thinking_delta") {
-                        if (d.thinking) onEvent({ type: "thinking", text: d.thinking });
-                    } else if (d.type === "input_json_delta") {
-                        const id = toolIds.get(ev.index);
-                        if (id) onEvent({ type: "tool_call_delta", id, partial: d.partial_json });
+                    case "content_block_delta": {
+                        const d = ev.delta;
+                        if (d.type === "text_delta") onEvent({ type: "text", text: d.text });
+                        else if (d.type === "thinking_delta") {
+                            if (d.thinking) onEvent({ type: "thinking", text: d.thinking });
+                        } else if (d.type === "input_json_delta") {
+                            const id = toolIds.get(ev.index);
+                            if (id) onEvent({ type: "tool_call_delta", id, partial: d.partial_json });
+                        }
+                        break;
                     }
-                    break;
-                }
-                case "message_delta": {
-                    break;
+                    case "message_delta": {
+                        break;
+                    }
                 }
             }
+            const final = await stream.finalMessage();
+            if (req.fastMode && final.usage.speed === "standard") onEvent({ type: "notice", message: "Anthropic served this response at standard speed and rates." });
+            return this.fromFinal(final, req);
+        } catch (e) {
+            if (req.signal?.aborted) throw new ProviderError("aborted");
+            if (stall.stalled()) throw stallError(this.def.name, stall.limit());
+            // The SDK wraps body read failures and premature EOF in plain AnthropicError.
+            // Keep API errors and malformed tool JSON on their existing paths.
+            if (e instanceof Anthropic.AnthropicError && !(e instanceof Anthropic.APIError) && !/json/i.test(e.message)) {
+                throw new ProviderError(`${this.def.name}: ${e.message}`, undefined, true);
+            }
+            throw e;
+        } finally {
+            stall.stop();
         }
-        const final = await stream.finalMessage();
-        if (req.fastMode && final.usage.speed === "standard") onEvent({ type: "notice", message: "Anthropic served this response at standard speed and rates." });
-        return this.fromFinal(final, req);
     }
 
     private fromFinal(final: Anthropic.Beta.Messages.BetaMessage, req: ChatRequest): AssistantMessage {
@@ -371,12 +400,13 @@ function toProviderError(e: unknown): ProviderError {
     if (e instanceof Anthropic.APIConnectionError) return new ProviderError(`Connection error: ${e.message}`, undefined, true);
     if (e instanceof Anthropic.APIError) {
         const status = e.status;
-        const retryAfter = Number(e.headers?.get?.("retry-after"));
+        const header = e.headers?.get?.("retry-after");
+        const retryAfter = header ? Number(header) * 1000 || Date.parse(header) - Date.now() : undefined;
         const retryable = status === undefined || status === 408 || status === 409 || status === 429 || status >= 500;
         let message = plainErrorText(e.message);
         if (status === 401) message = "Authentication failed: the Anthropic API key was rejected. Run /login to update it.";
         else if (status === 529 || /overloaded/i.test(message)) message = "Anthropic API is overloaded";
-        return new ProviderError(message, status, retryable, Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : undefined);
+        return new ProviderError(message, status, retryable, retryAfter && Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined);
     }
     return new ProviderError(String((e as Error)?.message ?? e));
 }

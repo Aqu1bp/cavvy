@@ -1435,7 +1435,7 @@ export class Runtime {
                 if (turnId) for (const id of this.responseBlocks) this.op({ op: "block.remove", turnId, blockId: id });
                 this.responseBlocks = [];
                 this.openText = this.openThinking = undefined;
-                this.activity(`Retrying in ${Math.ceil(e.delayMs / 1000)}s`, `${e.reason.slice(0, 160)} (attempt ${e.attempt})`);
+                this.activity(`Retrying in ${Math.ceil(e.delayMs / 1000)}s · Esc cancels`, `${e.reason.slice(0, 160)} (attempt ${e.attempt})`);
                 break;
             }
             case "usage": {

@@ -1216,7 +1216,7 @@ export class App {
                 this.thinking = "";
                 this.thinkingNow = false;
                 this.receiving.clear();
-                this.status = `${e.reason.slice(0, 80)} · retrying in ${Math.ceil(e.delayMs / 1000)}s (attempt ${e.attempt})`;
+                this.status = `${e.reason.slice(0, 80)} · retrying in ${Math.ceil(e.delayMs / 1000)}s (attempt ${e.attempt}) · Esc cancels`;
                 break;
             case "goal":
                 this.nativeGoalReported(e.goal);

@@ -26,10 +26,20 @@ type Json = Record<string, any>;
 /** Gemini accepts this documented placeholder for tool calls it didn't produce. */
 const GEMINI_FOREIGN_SIGNATURE = "skip_thought_signature_validator";
 
+/** Permanent quota exhaustion, distinct from a rate limit that resets with time. */
+export function isUsageLimit(error: Json): boolean {
+    return error.code === "insufficient_quota" || error.type === "insufficient_quota"
+        || /credit balance (?:is )?(?:too low|exhausted)|(?:out of|insufficient) credits|exceeded your current quota.*billing/i.test(String(error.message ?? ""));
+}
+
+export const usageLimitHint = ". Usage limit / billing: check your plan and credit balance.";
+
 export function httpError(status: number, statusText: string, body: string, retryAfter: string | null, providerName: string, authHint = "Check the API key with /login."): ProviderError {
     let message = `${providerName} API error ${status} ${statusText}`;
+    let usageLimit = false;
     try {
         const j = JSON.parse(body);
+        usageLimit = isUsageLimit(j?.error ?? j ?? {});
         const m = j?.error?.message ?? j?.message ?? j?.detail ?? (Array.isArray(j) ? j[0]?.error?.message : undefined);
         if (m) message = `${providerName}: ${typeof m === "string" ? m : JSON.stringify(m)} (${status})`;
     } catch {
@@ -40,7 +50,8 @@ export function httpError(status: number, statusText: string, body: string, retr
     // A quota of 0 (Gemini's free tier for a model it doesn't include) never frees up: no use retrying.
     const noQuota = status === 429 && /\blimit:\s*0\b/.test(body);
     if (noQuota) message += ". Not retried: the quota for this model is 0 on this key's plan.";
-    const retryable = !noQuota && [408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524, 529].includes(status);
+    if (usageLimit) message += usageLimitHint;
+    const retryable = !usageLimit && !noQuota && [408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524, 529].includes(status);
     const ra = retryAfter ? Number(retryAfter) * 1000 || Date.parse(retryAfter) - Date.now() : undefined;
     return new ProviderError(message, status, retryable, ra && ra > 0 ? ra : undefined, body);
 }
@@ -261,7 +272,8 @@ export class OpenAICompatProvider implements ProviderClient {
                 }
                 if (chunk.error) {
                     const code = Number(chunk.error.code) || undefined;
-                    throw new ProviderError(`${def.name}: ${chunk.error.message ?? JSON.stringify(chunk.error)}`, code, code === 429 || (code ?? 0) >= 500);
+                    const usageLimit = isUsageLimit(chunk.error);
+                    throw new ProviderError(`${def.name}: ${chunk.error.message ?? JSON.stringify(chunk.error)}${usageLimit ? usageLimitHint : ""}`, code, !usageLimit && (code === 429 || (code ?? 0) >= 500));
                 }
                 if (chunk.model) model = chunk.model;
                 const u = chunk.usage ?? chunk.x_groq?.usage;
