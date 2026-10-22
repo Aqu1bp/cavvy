@@ -275,8 +275,39 @@ describe("the manager: resources, prompts and the model's resource tools", () =>
         expect(st.prompts).toEqual([]);
         const names = m2.tools().map((t) => t.name);
         expect(names).not.toContain("ListMcpResources");
+        expect(names).not.toContain("ReadMcpResource");
         expect(m2.promptCommands()).toEqual([]);
     });
+
+    for (const era of ["legacy", "modern"]) {
+        test(`${era}: resource links are readable with empty resource and template catalogs`, async () => {
+            const m2 = new McpManager(WORK, () => ({ mcpServers: { docs: stdio(era, { MCP_FIXTURE_EMPTY_RESOURCES: "1" }) } }), false);
+            managers.push(m2);
+            m2.load();
+            await m2.startAll();
+            const st = m2.servers.get("docs")!;
+            expect(st.status).toBe("connected");
+            expect(st.client!.offers("resources")).toBe(true);
+            expect(st.resources).toEqual([]);
+            expect(st.templates).toEqual([]);
+            expect(m2.resourceList()).toEqual([]);
+            const tools = m2.tools();
+            const ctx = { ui: {}, signal: new AbortController().signal } as any;
+            const generated = await tools.find((t) => t.name === "mcp__docs__generate_report")!.run({}, ctx);
+            expect(generated.content).toBe("Resource: Report <report://generated/123>");
+            const read = tools.find((t) => t.name === "ReadMcpResource");
+            expect(read).toBeDefined();
+            const list = tools.find((t) => t.name === "ListMcpResources")!;
+            expect((await list.run({ server: "docs" }, ctx)).content).toBe("## docs");
+            const result = await read!.run({ server: "docs", uri: "report://generated/123" }, ctx);
+            expect(result.isError).not.toBe(true);
+            expect(result.content).toBe("Generated report contents");
+            await st.client!.callTool("crash", {}).catch(() => {});
+            expect(await waitFor(() => st.status === "failed")).toBe(true);
+            expect(m2.tools().map((t) => t.name)).not.toContain("ReadMcpResource");
+            expect((await read!.run({ server: "docs", uri: "report://generated/123" }, ctx)).isError).toBe(true);
+        });
+    }
 
     test("required nullable arguments reach the MCP server unchanged", async () => {
         const properties = { text: { type: ["string", "null"] }, cursor: { type: "string", nullable: true }, page: { anyOf: [{ type: "string" }, { type: "null" }] } };
