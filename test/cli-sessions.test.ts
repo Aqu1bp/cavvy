@@ -89,7 +89,8 @@ function logLines(): any[] {
 const received = () => logLines().flatMap((l) => (l.received ? [l.received] : []));
 /** The argv of each `claude` run for a turn (not the ones listing models). */
 const turnStarts = (): string[][] => logLines().flatMap((l) => (l.argv?.includes("--permission-prompt-tool=stdio") ? [l.argv] : []));
-const userTexts = () => received().flatMap((m) => (m.type === "user" ? m.message.content.filter((c: any) => c.type === "text").map((c: any) => c.text as string) : []));
+/** Each user message's text: its text blocks (Harness's catch-up in one of its own, then the user's words) joined. */
+const userTexts = () => received().flatMap((m) => (m.type === "user" && Array.isArray(m.message.content) && m.message.content.some((c: any) => c.type === "text") ? [m.message.content.filter((c: any) => c.type === "text").map((c: any) => c.text as string).join("\n\n")] : []));
 
 /** Send a prompt and wait for the turn to end, allowing whatever it asks. */
 async function send(e: InstanceType<typeof Engine>, c: { subs: Set<string>; send(): void }, id: string, text: string) {
