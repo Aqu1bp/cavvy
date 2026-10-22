@@ -501,6 +501,21 @@ describe("background work across turns", () => {
         expect(session.messages.filter((m) => m.role === "user" && JSON.stringify(m.content).includes("also check the tests")).length).toBe(1);
     });
 
+    test("review #295 P2-7: a wake's result names no message, and doesn't answer the steering queued in it: that runs as the wake's, not a wake of its own", async () => {
+        process.env.FAKE_SCENARIO = "agent-background";
+        process.env.FAKE_SECOND_SCENARIO = "silent";
+        process.env.FAKE_BACKGROUND_MS = "100";
+        process.env.FAKE_WAKE_TOOL = "1";
+        const { run, wakes, adopt, queued, events } = await makeAgent();
+        expect(await run("map auth")).toBe("done");
+        await until(() => wakes.length > 0, 5000, "the wake");
+        queued.push(["also check the tests"]);
+        expect(await adopt(wakes[0]!)).toBe("done");
+        await Bun.sleep(600);
+        expect(wakes.length).toBe(1);
+        expect(notices(events).join("\n")).not.toMatch(/error/i);
+    });
+
     test("a permission prompt from a background sub-agent between turns is asked (no turn running), and its answer reaches it", async () => {
         process.env.FAKE_SCENARIO = "agent-background-ask";
         const asked: PermissionRequest[] = [];

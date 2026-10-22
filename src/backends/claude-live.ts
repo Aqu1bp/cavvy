@@ -672,8 +672,9 @@ export class ClaudeConnection implements CliConnection {
         const pending = this.outstanding.get(ref);
         if (pending) {
             const named = ids.filter((id) => pending.has(id));
-            // An older Claude Code names none: it answered them all.
-            for (const id of named.length || ids.length ? named : [...pending]) {
+            // An older Claude Code names none for a prompt's turn: it answered them all. A wake's result names none
+            // (no message of the user's started it): what was steered into it comes as a turn of its own after.
+            for (const id of named.length || ids.length || turn.kind !== "user" ? named : [...pending]) {
                 pending.delete(id);
                 answered.push(id);
                 const p = this.prompts.get(id);
