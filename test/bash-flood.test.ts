@@ -293,23 +293,53 @@ describe("paced pipes", () => {
         expect((await BashOutputTool.run({ bash_id: id }, ctx)).content).toContain("BEFORE_MARKER");
     }, 30_000);
 
-    test("once mkfifo fails, later commands go straight to ordinary pipes", async () => {
-        // In a process of its own: the failure is remembered for the rest of the process.
-        const dir = realpathSync(tempDir("harness-no-mkfifo-"));
-        dirs.push(dir);
-        const log = join(dir, "calls");
-        writeFileSync(join(dir, "mkfifo"), `#!/bin/sh\necho x >> ${quote(log)}\nexit 1\n`, { mode: 0o755 });
+    /**
+     * Runs Bash commands in a process of its own (what mkfifo did is remembered for the process), with `dir`
+     * as the whole PATH. Each step: optional shell set-up run first, a clock shift, then a command that says
+     * whether its stdout and stderr share one pipe (paced) or not (ordinary pipes).
+     */
+    function pacing(dir: string, steps: { before?: string; later?: number }[]): string[] {
         const probe = join(dir, "probe.ts");
         writeFileSync(probe, `const { BashTool } = await import(${JSON.stringify(join(import.meta.dir, "../src/tools/bash"))});
+const { execSync } = await import("node:child_process");
+const real = Date.now;
+let shift = 0;
+Date.now = () => real() + shift;
 const ctx = { state: { cwd: ${JSON.stringify(dir)}, projectRoot: ${JSON.stringify(dir)}, fileState: new Map(), todos: [], shells: new Map() }, settings: {}, signal: new AbortController().signal };
 const out = [];
-for (let i = 0; i < 5; i++) out.push((await BashTool.run({ command: "/bin/echo run" + i }, ctx)).content);
-await Bun.sleep(200);
+for (const step of ${JSON.stringify(steps)}) {
+    if (step.before) execSync(step.before, { shell: "/bin/sh" });
+    shift += step.later ?? 0;
+    out.push((await BashTool.run({ command: "test /dev/fd/1 -ef /dev/fd/2 && echo paced || echo pipes" }, ctx)).content);
+    await Bun.sleep(100);
+}
 console.log(out.join(","));`);
         const r = Bun.spawnSync([process.execPath, "--no-env-file", probe], { env: { ...process.env, PATH: dir } });
-        expect(r.stdout.toString().trim()).toBe("run0,run1,run2,run3,run4");
-        // The first command's own attempt and the spares made alongside it, then none.
-        expect(readFileSync(log, "utf8").split("\n").filter(Boolean).length).toBeLessThanOrEqual(2);
+        return r.stdout.toString().trim().split(",");
+    }
+    const mkfifo = Bun.which("mkfifo")!;
+
+    test("a failing mkfifo means ordinary pipes for a while, then FIFOs again", async () => {
+        const dir = realpathSync(tempDir("harness-mkfifo-"));
+        dirs.push(dir);
+        const log = join(dir, "calls");
+        const failing = join(dir, "failing");
+        writeFileSync(failing, "");
+        // Fails while `failing` exists (no space, say), then works.
+        writeFileSync(join(dir, "mkfifo"), `#!/bin/sh\necho x >> ${quote(log)}\n[ -e ${quote(failing)} ] && exit 1\nexec ${quote(mkfifo)} "$@"\n`, { mode: 0o755 });
+        const calls = () => readFileSync(log, "utf8").split("\n").filter(Boolean).length;
+        expect(pacing(dir, [{}, {}, {}])).toEqual(["pipes", "pipes", "pipes"]);
+        // The first command's attempt (and the spares started with it), then none while it's recent: each costs a process.
+        expect(calls()).toBeLessThanOrEqual(2);
+        // Old: the first failure turned FIFOs off for good, so a flood could freeze the server again until a restart.
+        expect(pacing(dir, [{}, { before: `/bin/rm ${quote(failing)}`, later: 10_000 }, { later: 25_000 }, {}])).toEqual(["pipes", "pipes", "paced", "paced"]);
+    }, 30_000);
+
+    test("a missing mkfifo means ordinary pipes for good, and output still comes through", async () => {
+        const dir = realpathSync(tempDir("harness-no-mkfifo-"));
+        dirs.push(dir);
+        // mkfifo turns up later: still not tried again.
+        expect(pacing(dir, [{}, { before: `/bin/ln -s ${quote(mkfifo)} ${quote(join(dir, "mkfifo"))}`, later: 60_000 }, {}])).toEqual(["pipes", "pipes", "pipes"]);
     }, 30_000);
 
     test("with pacedOutput off, output comes through ordinary pipes", async () => {

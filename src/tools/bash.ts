@@ -393,13 +393,24 @@ interface Fifo { read: number; write: number }
 const spareFifos: Fifo[] = [];
 const SPARE_FIFOS = 4;
 let makingFifos = false;
-/** mkfifo failed (missing, or FIFOs unsupported here): ordinary pipes from then on. */
-let noFifos = false;
+/** There's no mkfifo: ordinary pipes for the rest of the process. */
+let noMkfifo = false;
+/** When making FIFOs last failed otherwise (no space, say, which can clear): ordinary pipes until FIFO_RETRY_MS later. */
+let fifosFailedAt = -Infinity;
+const FIFO_RETRY_MS = 30_000;
+
+/** Ordinary pipes for now: mkfifo isn't there, or failed lately (trying again costs a process each time). */
+const fifosOff = () => noMkfifo || Date.now() - fifosFailedAt < FIFO_RETRY_MS;
+
+function fifosFailed(error?: Error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") noMkfifo = true;
+    else fifosFailedAt = Date.now();
+}
 
 /** `count` FIFOs, each open at both ends, with nothing left on disk; undefined where FIFOs can't be made. */
 function pacedFifos(count: number): Fifo[] | undefined {
-    if (noFifos) return undefined;
     const spares = spareFifos.length >= count ? spareFifos.splice(-count) : undefined;
+    if (fifosOff()) return spares;
     if (!makingFifos && spareFifos.length < SPARE_FIFOS) makeSpareFifos();
     if (spares) return spares;
     let dir: string | undefined;
@@ -408,10 +419,10 @@ function pacedFifos(count: number): Fifo[] | undefined {
         dir = made.dir;
         const r = spawnSync("mkfifo", ["-m", "600", ...made.paths], { stdio: "ignore" });
         if (r.status === 0) return openFifos(made.paths);
-        // Not there, or it ran and failed; not a passing shortage (of processes, say), which can clear.
-        if (r.status !== null || (r.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") noFifos = true;
+        fifosFailed(r.error);
         return undefined;
-    } catch {
+    } catch (e) {
+        fifosFailed(e as Error);
         return undefined;
     } finally {
         if (dir) rmSync(dir, { recursive: true, force: true });
@@ -422,13 +433,14 @@ function makeSpareFifos() {
     makingFifos = true;
     let dir: string | undefined;
     let settled = false;
-    const done = (paths?: string[]) => {
+    const done = (paths?: string[], error?: Error) => {
         if (settled) return;
         settled = true;
         try {
             if (paths) spareFifos.push(...openFifos(paths));
-        } catch {
-            // Made again, in its turn, by the next command.
+            else fifosFailed(error);
+        } catch (e) {
+            fifosFailed(e as Error);
         } finally {
             if (dir) rmSync(dir, { recursive: true, force: true });
             makingFifos = false;
@@ -438,11 +450,11 @@ function makeSpareFifos() {
         const made = fifoPaths(SPARE_FIFOS);
         dir = made.dir;
         const maker = spawn("mkfifo", ["-m", "600", ...made.paths], { stdio: "ignore" });
-        maker.once("error", () => done());
+        maker.once("error", (e) => done(undefined, e));
         maker.once("exit", (code) => done(code === 0 ? made.paths : undefined));
-    } catch {
-        // Out of descriptors or processes, say: the next command tries again.
-        done();
+    } catch (e) {
+        // Out of descriptors or processes, say: tried again after FIFO_RETRY_MS.
+        done(undefined, e as Error);
     }
 }
 
