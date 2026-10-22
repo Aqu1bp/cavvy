@@ -1,4 +1,6 @@
 // Browser-safe known-format patterns shared with redact.ts. Keep detection and redaction in sync.
+// Each pattern's run of key characters must take "A": Read ends a long line it
+// cut with one, so a key running past the cut still matches (file-tools.ts).
 export const SECRET_PATTERNS: [RegExp, string][] = [
     [/sk-ant-(?:api|admin|oat|sid)\d{0,2}-[A-Za-z0-9_-]{20,}/g, "anthropic-key"],
     [/sk-or-v1-[A-Za-z0-9]{32,}/g, "openrouter-key"],
