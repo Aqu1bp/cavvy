@@ -633,7 +633,7 @@ export class Agent {
         let stopHookRounds = 0;
         /** Compactions since the model last answered: the first keeps a message waiting for that answer out of the summary; after two, this turn stops compacting. */
         let compactions = 0;
-        /** A compaction didn't shrink the history: compacting again won't help, so this turn doesn't. */
+        /** A compaction didn't shrink the history: compacting again won't help until the model has added to it. */
         let unshrinkable = false;
         /** Compacts in this turn: true when that shrank the history, or kept a message the next one can fold in. */
         const compactInTurn = async (): Promise<boolean> => {
@@ -695,6 +695,7 @@ export class Agent {
             // back a cut-off response; drop it like any other partial response.
             if (signal.aborted) return this.interrupted(false);
             compactions = 0;
+            unshrinkable = false;
 
             // From here on, the redacted copy: it's what gets shown and what tools run with.
             msg = this.session.push(msg);

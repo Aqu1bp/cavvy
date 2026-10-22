@@ -438,6 +438,32 @@ describe("the agent loop's compaction", () => {
         expect(session.messages.map((m) => m.meta?.kind ?? m.role)).toEqual(["summary", "assistant"]);
     });
 
+    test("a compaction that didn't shrink the history doesn't stop the next one, once the model has answered since", async () => {
+        let main = 0;
+        let summaries = 0;
+        const { run, session, compactions } = setup((req) => {
+            // The first summary is longer than the little it summarized; the second is short.
+            if (isSummary(req)) return say(++summaries === 1 ? "SUMMARY " + "s".repeat(4000) : "S");
+            switch (++main) {
+                case 1:
+                    return todo("c1", usage(190_000));
+                case 2:
+                    return todo("c2");
+                case 3:
+                    throw overflow();
+                default:
+                    return say("done");
+            }
+        });
+        session.push({ role: "user", content: [{ type: "text", text: "a" }] });
+        session.push(say("b"));
+        session.push({ role: "user", content: [{ type: "text", text: "c" }] });
+        session.push(say("d"));
+        expect(await run([{ type: "text", text: "go" }])).toBe("done");
+        expect(compactions()).toBe(2);
+        expect(session.summary).toBe("S");
+    });
+
     test("a request that overflows however much is compacted stops after two compactions, not in a loop", async () => {
         const { run, session, requests, compactions } = setup(
             (req) => {
