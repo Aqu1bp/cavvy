@@ -214,11 +214,23 @@ describe("Session persistence", () => {
         expect(JSON.stringify(back.messages)).not.toContain("earlier");
         const fork = back.fork({ persist: false, shareBackends: true });
         expect(fork.backends.get("claude-code")?.unsent).toBe("<conversation-so-far>earlier</conversation-so-far>");
+        // Shared with a fork (from now on only forked): still waiting, in memory and in the log.
+        expect(back.markBackendForked("claude-code")).toBe(true);
+        expect(Session.load(s.path).backends.get("claude-code")).toMatchObject({ fork: true, unsent: "<conversation-so-far>earlier</conversation-so-far>" });
         back.setBackendUnsent("claude-code", undefined);
-        expect(Session.load(s.path).backends.get("claude-code")).toEqual({ id: "cli-1", synced: 2 });
+        expect(Session.load(s.path).backends.get("claude-code")).toEqual({ id: "cli-1", synced: 2, fork: true });
+        // A new id (a native fork, a compaction) continues a session that never saw it either: it stays, until a
+        // prompt that carried it is delivered (consumeBackendUnsent), and only that one.
         back.setBackendUnsent("claude-code", "again");
         back.setBackendSession("claude-code", "cli-2", 2);
+        expect(Session.load(s.path).backends.get("claude-code")).toEqual({ id: "cli-2", synced: 2, unsent: "again" });
+        back.consumeBackendUnsent("claude-code", "older");
+        expect(back.backends.get("claude-code")?.unsent).toBe("again");
+        back.consumeBackendUnsent("claude-code", "again");
         expect(Session.load(s.path).backends.get("claude-code")).toEqual({ id: "cli-2", synced: 2 });
+        // Written with the place, in one line (an adopted turn's move).
+        back.setBackendSession("claude-code", "cli-2", 3, undefined, "with the move");
+        expect(Session.load(s.path).backends.get("claude-code")).toEqual({ id: "cli-2", synced: 3, unsent: "with the move" });
         back.release();
     });
 

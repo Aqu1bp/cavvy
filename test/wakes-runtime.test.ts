@@ -4,7 +4,7 @@
 // they wait for the user; and the Watching panel's stop button.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { writeFileSync } from "fs";
+import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -344,6 +344,135 @@ describe("an adopted turn's unsent context (#282 review round 3)", () => {
             expect(count(sent(turns), NOTE)).toBe(1);
         } finally {
             await engine.stop();
+        }
+    });
+});
+
+// #282 review round 4 (Astra 3 and 4, Bug E): what an adopted turn's CLI wasn't sent moves with every move of its
+// place, in the same write, and is taken only by a prompt the CLI got.
+describe("an adopted turn's unsent context: atomic with its place, taken only on delivery (#282 review round 4)", () => {
+    const TOKEN = "walrus-teacup-93";
+    const count = (s: string, sub: string) => s.split(sub).length - 1;
+    type Plan = { announce?: string | false; result?: any; throwAfter?: boolean; hold?: Promise<void> };
+
+    /** A CLI backend whose next turns do what `plans` say (by default: say its session id "cli-1", answer). */
+    function backend(turns: BackendTurn[], plans: Plan[]) {
+        return {
+            agentBackend: true as const,
+            adoptsTurns: true,
+            setMode() {},
+            listModels: async () => [],
+            stream: async () => {
+                throw new Error("not used");
+            },
+            compact: async (t: any) => {
+                t.session.sessionId("cli-compacted");
+                return { reason: "done" as const, text: "", actions: [] };
+            },
+            runTurn: async (t: BackendTurn) => {
+                turns.push(t);
+                const p = plans.shift() ?? {};
+                if (p.announce !== false) t.session.sessionId(p.announce ?? "cli-1");
+                if (p.hold) await p.hold;
+                if (p.throwAfter) throw new Error("host went away");
+                return p.result ?? { reason: "done" as const, text: t.adopt ? "Auth is mapped." : "ok.", actions: [] };
+            },
+        };
+    }
+
+    /** The CLI's session has seen "first"; then another model's turn it hasn't (with TOKEN); then back on the CLI. */
+    async function setup(plans: Plan[]) {
+        const s = await session();
+        await s.rt.ready;
+        const realModel = s.rt.agent!.model;
+        const realClient = s.rt.agent!.client;
+        const turns: BackendTurn[] = [];
+        const cli = backend(turns, plans);
+        s.rt.agent!.setModel(backendModel("fake-cli", "x"), cli as never);
+        await s.engine.handle(s.c, "session.send", { id: s.id, text: "first" });
+        await until(() => turns.length === 1 && s.rt.idle);
+        s.rt.agent!.setModel(realModel, realClient);
+        await s.engine.handle(s.c, "session.send", { id: s.id, text: `hello ${TOKEN}` });
+        await until(() => s.rt.idle && s.rt.session.messages.filter((m) => m.role === "assistant").length >= 2);
+        s.rt.agent!.setModel(backendModel("fake-cli", "x"), cli as never);
+        return { ...s, turns, realModel, realClient };
+    }
+
+    const send = async (s: Awaited<ReturnType<typeof setup>>, text: string, n: number) => {
+        await s.engine.handle(s.c, "session.send", { id: s.id, text });
+        await until(() => s.turns.length === n && s.rt.idle);
+        return s.turns[n - 1]!.prompt;
+    };
+    const adopt = async (s: Awaited<ReturnType<typeof setup>>, n: number) => {
+        s.rt.adoptWake({ provider: "fake-cli", ref: `turn-${n}`, label: "Background task finished: Map auth" });
+        await until(() => s.turns.length === n && s.rt.idle);
+    };
+
+    test("an adopted turn that ends well without saying its session id again: the next prompt still carries what it wasn't sent (Astra 3)", async () => {
+        const s = await setup([{}, { announce: false }]);
+        try {
+            await adopt(s, 2);
+            expect(s.turns[1]!.adopt).toBe("turn-2");
+            expect(count(await send(s, "and now?", 3), TOKEN)).toBe(1);
+        } finally {
+            await s.engine.stop();
+        }
+    });
+
+    test("an adopted turn that said its session id and is still running: the log line that moved its place carries what it wasn't sent (Astra 3, after a restart)", async () => {
+        let release!: () => void;
+        const s = await setup([{}, { hold: new Promise<void>((r) => (release = r)) }]);
+        try {
+            s.rt.adoptWake({ provider: "fake-cli", ref: "turn-2", label: "Background task finished: Map auth" });
+            await until(() => s.turns.length === 2 && s.rt.busy);
+            const lines = readFileSync(s.rt.session.path, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+            const last = lines.filter((l) => l.t === "backend" && l.provider === "fake-cli").at(-1);
+            expect(last.synced).toBe(s.rt.session.messages.length);
+            expect(count(last.unsent ?? "", TOKEN)).toBe(1);
+            release();
+            await until(() => s.rt.idle);
+        } finally {
+            release?.();
+            await s.engine.stop();
+        }
+    });
+
+    test("a prompt that carried it, but the CLI failed before taking it (an error with nothing done): the retry carries it again (Astra 4)", async () => {
+        const s = await setup([{}, {}, { announce: false, result: { reason: "error", text: "", actions: [], error: "Not logged in" } }]);
+        try {
+            await adopt(s, 2);
+            expect(count(await send(s, "and now?", 3), TOKEN)).toBe(1);
+            expect(count(await send(s, "again?", 4), TOKEN)).toBe(1);
+            // Taken by the one the CLI answered: not sent a third time.
+            expect(count(await send(s, "and after?", 5), TOKEN)).toBe(0);
+        } finally {
+            await s.engine.stop();
+        }
+    });
+
+    test("shared with a fork, the next turn says its forked session id and then fails: the retry carries it (Astra 4)", async () => {
+        const s = await setup([{}, {}, { announce: "cli-fork-2", throwAfter: true }]);
+        try {
+            await adopt(s, 2);
+            expect(s.rt.session.markBackendForked("fake-cli")).toBe(true);
+            await send(s, "and now?", 3);
+            expect(s.rt.session.backends.get("fake-cli")?.id).toBe("cli-fork-2");
+            expect(count(await send(s, "again?", 4), TOKEN)).toBe(1);
+        } finally {
+            await s.engine.stop();
+        }
+    });
+
+    test("shared with a fork, then compacted (a new session id): the next prompt carries it, once (Bug E)", async () => {
+        const s = await setup([{}, {}]);
+        try {
+            await adopt(s, 2);
+            expect(s.rt.session.markBackendForked("fake-cli")).toBe(true);
+            await s.rt.agent!.compact({ auto: false, signal: new AbortController().signal });
+            expect(s.rt.session.backends.get("fake-cli")?.id).toBe("cli-compacted");
+            expect(count(await send(s, "and now?", 3), TOKEN)).toBe(1);
+        } finally {
+            await s.engine.stop();
         }
     });
 });

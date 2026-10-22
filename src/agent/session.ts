@@ -471,20 +471,26 @@ export class Session {
         return current;
     }
 
-    setBackendSession(provider: string, id: string, synced: number, folder = this.backendFolders.get(provider)) {
+    /**
+     * The backend session's id and place. `unsent` (BackendSession.unsent) is written with the place when given
+     * (an adopted turn moving it, in one line); otherwise what it wasn't sent stays, whatever the id: a native fork
+     * or a compaction continues a session that never saw it either. Only a prompt that carried it takes it away
+     * (consumeBackendUnsent); forgetting the session (a fresh one is sent everything) drops it.
+     */
+    setBackendSession(provider: string, id: string, synced: number, folder = this.backendFolders.get(provider), unsent?: string) {
         const cur = this.backends.get(provider);
-        if (cur?.id === id && cur.synced === synced && folder === this.backendFolders.get(provider)) return;
+        const kept = unsent ?? cur?.unsent;
+        if (cur?.id === id && cur.synced === synced && folder === this.backendFolders.get(provider) && (cur.unsent ?? "") === (kept ?? "")) return;
         if (cur?.id !== id) this.runsFor?.recordSubagentRun(provider, id);
         // Still the shared one (the backend never answered with its fork): it stays shared.
         const fork = cur?.id === id && cur.fork ? { fork: true } : {};
-        // What it wasn't sent stays with the same session until a prompt takes it (setBackendUnsent); a new one is sent everything.
-        const unsent = cur?.id === id && cur.unsent ? { unsent: cur.unsent } : {};
-        this.backends.set(provider, { id, synced, ...fork, ...unsent });
+        const carried = kept ? { unsent: kept } : {};
+        this.backends.set(provider, { id, synced, ...fork, ...carried });
         if (folder) this.backendFolders.set(provider, folder);
-        this.write({ t: "backend", provider, id, synced, ...fork, ...unsent, ...(folder ? { folder } : {}) });
+        this.write({ t: "backend", provider, id, synced, ...fork, ...carried, ...(folder ? { folder } : {}) });
     }
 
-    /** What the backend session wasn't sent of the conversation before its place (BackendSession.unsent); none: it was sent. */
+    /** What the backend session wasn't sent of the conversation before its place (BackendSession.unsent); none: nothing. */
     setBackendUnsent(provider: string, unsent: string | undefined) {
         const cur = this.backends.get(provider);
         if (!cur || (cur.unsent ?? "") === (unsent ?? "")) return;
@@ -493,6 +499,11 @@ export class Session {
         this.backends.set(provider, next);
         const folder = this.backendFolders.get(provider);
         this.write({ t: "backend", provider, ...next, ...(folder ? { folder } : {}) });
+    }
+
+    /** A prompt carrying `sent` (what was waiting) reached the backend: it's sent, unless something newer waits now. */
+    consumeBackendUnsent(provider: string, sent: string) {
+        if (this.backends.get(provider)?.unsent === sent) this.setBackendUnsent(provider, undefined);
     }
 
     /** A fork is to share this backend session: from now on it's only forked, never continued in place. False if that couldn't be saved. */
