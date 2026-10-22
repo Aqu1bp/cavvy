@@ -143,7 +143,7 @@ test("terminal add-account cancellation and invalid input never launch a login",
     let launched = false;
     let values: (string | undefined)[] = [undefined];
     const app: any = {
-        cwd: root, busy: false, customCommands: [], print() {}, renderLive() {},
+        cwd: root, busy: false, customCommands: [], print() {}, renderLive() {}, yieldIdleCompaction: async () => {},
         notice: (text: string) => notices.push(text), showDialog: async () => values.shift(),
         screen: { suspend: () => { launched = true; } },
     };

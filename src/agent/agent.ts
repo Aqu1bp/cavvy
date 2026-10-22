@@ -505,6 +505,8 @@ export class Agent {
     private recentActions: string[] = [];
     /** Tasks a backend (Claude Code, Codex) delegated to other models through the harness's MCP tools. */
     private delegations?: Delegations;
+    /** The account each background task of the session's own CLI runs under, by provider and task id (see sessionEvent). */
+    private cliTaskAccounts = new Map<string, { provider: string; accountId: string }>();
     /** The harness agents this turn passed to Claude Code (--agents), by name: their permission modes apply to their asks. */
     private nativeDefs = new Map<string, AgentDef>();
     private nativeNotes = new Set<string>();
@@ -1781,12 +1783,17 @@ export class Agent {
     }
 
     /** Session-level news from a backend: its background tasks, a notice outside any turn. */
-    private sessionEvent(e: SessionEvent) {
+    private sessionEvent(e: SessionEvent, hostAccount: string) {
         // Disposed: the session is let go, or another took its place (the TUI's /new rebinds the background list
         // first), and what its CLI reports now (its tasks stopping with the process, say) is no longer this one's.
         if (this.disposed) return;
         if (e.type === "notice") return this.emit(e);
         if (e.type === "event") return this.emitFromBackend(e.event);
+        // The account its process signed in with, as the backend says; else the one the reporting turn ran on.
+        // Never the session's selection now: an old process can report new work after a switch.
+        const key = `${e.task.provider}\0${e.task.id}`;
+        if (e.task.status !== "running") this.cliTaskAccounts.delete(key);
+        else if (e.accountId !== undefined || !this.cliTaskAccounts.has(key)) this.cliTaskAccounts.set(key, { provider: e.task.provider, accountId: e.accountId ?? hostAccount });
         this.state.background?.report(e.task);
         this.o.host.backgroundChanged?.();
     }
@@ -1858,13 +1865,18 @@ export class Agent {
         );
         if (cli.length) {
             const backend = isAgentBackend(this.client) ? this.client : undefined;
-            const mine = cli.filter((id) => all.find((t) => t.id === id)?.provider === this.model.provider);
+            // The CLI asked: the model can change while it answers.
+            const provider = this.model.provider;
+            const mine = cli.filter((id) => all.find((t) => t.id === id)?.provider === provider);
             for (const id of cli) if (!mine.includes(id) || !backend?.stopBackground) out[id] = "not_stoppable";
             if (mine.length && backend?.stopBackground) Object.assign(out, await backend.stopBackground(this.session.meta.id, mine).catch(() => Object.fromEntries(mine.map((id) => [id, "failed" as const]))));
             // Its CLI doesn't know it (the run it was in is over, without a word of its end): it isn't running.
             for (const id of mine) {
-                const t = out[id] === "unknown" ? this.state.background?.get(id) : undefined;
-                if (t?.status !== "running") continue;
+                if (out[id] !== "unknown") continue;
+                this.cliTaskAccounts.delete(`${provider}\0${id}`);
+                const t = this.state.background?.get(id);
+                // Not another CLI's task of the same id that the list (keyed by id alone) now shows.
+                if (t?.status !== "running" || t.provider !== provider) continue;
                 this.state.background!.report({ ...t, status: "stopped", endedAt: Date.now(), withProcess: true });
                 out[id] = "stopped";
             }
@@ -1878,14 +1890,27 @@ export class Agent {
         return this.delegations?.list() ?? [];
     }
 
-    /** Children keep the accounts they started with even when the parent switches. */
-    childUsesAccount(provider: string, id: string): boolean {
-        return [...this.children].some((child) => child.session.accountId(provider) === id || child.childUsesAccount(provider, id));
+    /**
+     * The session's own CLI background work still running (idle between turns too), with the account it runs under:
+     * as its CLIs report it, by provider and id. Not the Background list, which keys tasks by id alone, so one CLI's
+     * task ending there can hide another's of the same id still running.
+     */
+    private runningCliTasks(): { provider: string; accountId: string }[] {
+        return [...this.cliTaskAccounts.values()];
     }
 
-    /** Adding accounts refreshes the protection snapshot of every running CLI child. */
+    /** Children, and the CLI's own background work, keep the accounts they started with even when the parent switches. */
+    childUsesAccount(provider: string, id: string): boolean {
+        return this.runningCliTasks().some((t) => t.provider === provider && t.accountId === id)
+            || [...this.children].some((child) => child.session.accountId(provider) === id || child.childUsesAccount(provider, id));
+    }
+
+    /**
+     * Adding accounts refreshes the protection snapshot of every running CLI child, and restarts
+     * a session's CLI process (stopping its background work) when the snapshot changes.
+     */
     hasCliChild(): boolean {
-        return [...this.children].some((child) => isAgentBackend(child.client) || child.hasCliChild());
+        return this.runningCliTasks().length > 0 || [...this.children].some((child) => isAgentBackend(child.client) || child.hasCliChild());
     }
 
     /** Stop one delegated task, or all of them; how many were running. */
@@ -2071,6 +2096,7 @@ export class Agent {
         // hook), not this turn's, which may have been stopped.
         const seq = ++this.backendTurns;
         const over = () => !this.running || this.backendTurns !== seq;
+        const hostAccount = this.session.accountId(provider);
         const sessionSignal = () => (over() ? this.lifetime.signal : signal);
         const session: SessionHost = {
             ...this.backendHooks(sessionSignal),
@@ -2108,7 +2134,7 @@ export class Agent {
             // An adopted turn's move of its place carries what it wasn't sent, in the same line (adoptedUnsent).
             sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length, folder, this.adoptedUnsent?.provider === provider ? this.adoptedUnsent.text : undefined),
             limits: (limits, partial) => this.emitFromBackend({ type: "limits", limits, partial }),
-            emitSession: (e) => this.sessionEvent(e),
+            emitSession: (e) => this.sessionEvent(e, hostAccount),
             // Not once disposed: a wake its backend reports late (its label was still being read) isn't the session's
             // that took its place (the TUI's /new keeps the same host).
             onWake: (w) => {
@@ -2422,6 +2448,7 @@ export class Agent {
         const ownHooks = provider === "codex";
         if (ownHooks && !(await this.preCompact(opts))) return false;
         this.emit({ type: "compact_start", auto: opts.auto, ...(opts.idle ? { idle: true } : {}) });
+        const hostAccount = this.session.accountId(provider);
         const session: SessionHost = {
             ...this.backendHooks(opts.signal),
             mode: () => this.o.mode.get(),
@@ -2432,7 +2459,7 @@ export class Agent {
             usage: (u, o) => this.recordBackendUsage(u, o),
             sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length, folder),
             limits: (limits, partial) => this.emit({ type: "limits", limits, partial }),
-            emitSession: (e) => this.sessionEvent(e),
+            emitSession: (e) => this.sessionEvent(e, hostAccount),
         };
         const sink: TurnSink = {
             emit: (e) => {

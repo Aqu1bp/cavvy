@@ -1,8 +1,8 @@
 // Account metadata and folder ownership. Never open files inside a CLI home.
-import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { dirname, isAbsolute, join, resolve, sep } from "path";
 import { homedir } from "os";
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { paths } from "../config/paths";
 import { canonical } from "../util/files";
 import { readAgentConfig, readProvidersFileForUpdate, writeProvidersFile, type CliAccount, validAccountFolder } from "./registry";
@@ -56,23 +56,45 @@ export function defaultAccount(provider: string): string {
     const id = readAgentConfig(provider)?.defaultAccount ?? "default";
     return listAccounts(provider).some((a) => a.id === id) ? id : "default";
 }
-/** Default preserves the launching shell selectors exactly; relative paths are unsafe. */
+/**
+ * A CLI's model catalog (its models, and their effort and speed options) is listed
+ * by its starting account only. Said when a session uses another, whose own may differ.
+ */
+export function catalogNote(provider: string, selected: CliAccount, cli: string): string | undefined {
+    const from = defaultAccount(provider);
+    if (from === selected.id) return undefined;
+    const source = listAccounts(provider).find((a) => a.id === from)?.name ?? from;
+    return `${cli}'s model list, with each model's effort and speed options, comes from its starting account (${source}); ${selected.name} may not offer all of them.`;
+}
+const SELECTORS = { "claude-code": ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"], codex: ["CODEX_HOME"] } as const;
+/**
+ * Default preserves the launching shell selectors exactly. A relative one of the
+ * launched CLI is refused: each child resolves it against its own cwd, and Claude
+ * hashes the raw text into its keychain entry, so rewriting it would change identity.
+ * The other CLI's relative selector is left out rather than repointed by a child's cwd.
+ */
 export function accountEnv(provider: string, id = "default", cwd = homedir()): Record<string, string> {
     const a = account(provider, id);
     if (id === "default") {
+        const own: readonly string[] = SELECTORS[provider as keyof typeof SELECTORS];
         const env: Record<string, string> = {};
-        for (const key of ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME"]) {
+        for (const key of Object.values(SELECTORS).flat()) {
             const value = process.env[key];
-            if (value && !isAbsolute(value)) throw new RpcError(`Default cannot use relative ${key}; set it to an absolute path`, "invalid");
+            if (value && !isAbsolute(value)) {
+                if (own.includes(key)) throw new RpcError(`Default cannot use relative ${key}; set it to an absolute path`, "invalid");
+                continue;
+            }
             if (value !== undefined) env[key] = value;
         }
         return env;
     }
     // Recheck persisted accounts too: the user's default selectors (or symlinks)
-    // may have changed since this account was added.
+    // may have changed since this account was added, and a folder replaced by a
+    // link to another account's would silently sign in as that account.
     if (!validAccountFolder(a.folder)) throw new RpcError("Invalid account folder: use a non-empty absolute path with no '..'", "invalid");
     const folder = accountRealPath(resolve(a.folder));
     separateFromDefault(folder, [cwd]);
+    separateFromAccounts(folder, { provider, id });
     validateIdentityFiles(provider, folder);
     if (provider === "claude-code") separateKeychain(folder, id);
     // Secure storage can independently override Claude's config directory, even
@@ -89,11 +111,20 @@ export function accountFolders(): string[] {
     if (!hasNamedAccounts()) return [];
     return [...new Set([join(paths.home(), "accounts"), ...ACCOUNT_PROVIDERS.flatMap((p) => (readAgentConfig(p)?.accounts ?? []).filter((a) => !a.invalid).map((a) => a.folder))].flatMap((folder) => [folder, accountRealPath(resolve(folder))]))];
 }
+/**
+ * Where Default Claude Code keeps a file sign-in: a defined secure-storage selector
+ * wins over the config folder, and an empty one means ~/.claude.
+ */
+function claudeSecureStorage(): string {
+    const secure = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
+    return secure === undefined ? defaultFolder("claude-code") : resolve(launchCwd, secure || normalFolder("claude-code"));
+}
 /** Default homes stay usable; their sign-in files are protected only alongside named accounts. */
 export function accountCredentialFiles(): string[] {
     if (!hasNamedAccounts()) return [];
-    const credentials = ACCOUNT_PROVIDERS.map((p) => join(resolve(defaultFolder(p)), p === "codex" ? "auth.json" : ".credentials.json"));
-    return [...new Set(credentials.flatMap((file) => [file, canonical(file)]))];
+    const credentials = [join(defaultFolder("codex"), "auth.json"), join(defaultFolder("claude-code"), ".credentials.json"), join(claudeSecureStorage(), ".credentials.json")];
+    // Claude Code uses its selector in NFC, which is another file where names aren't normalized.
+    return [...new Set(credentials.flatMap((file) => [file, file.normalize("NFC")]).flatMap((file) => [file, canonical(file)]))];
 }
 export function accountProtectedPaths(): string[] {
     return [...new Set([...accountFolders(), ...accountCredentialFiles()])];
@@ -140,11 +171,8 @@ function separateFromDefault(folder: string, roots: string[] = []): void {
         }
     }
 }
-function validateFolder(folder: unknown, roots: string[], exclude?: { provider: string; id: string }, managed = false): string {
-    if (typeof folder !== "string" || folder.length > 1024 || !isAbsolute(folder) || !/^[a-zA-Z0-9 /_.-]+$/.test(folder) || folder.split(/[\\/]/).includes("..")) throw new RpcError("Use an absolute account folder with plain characters and no '..'", "invalid");
-    const real = accountRealPath(resolve(folder));
-    if (real === sep || real === accountRealPath(homedir())) throw new RpcError("Choose a dedicated account folder", "invalid");
-    separateFromDefault(real, roots);
+/** Named accounts of either CLI, by where their folders actually are. */
+function separateFromAccounts(real: string, exclude?: { provider: string; id: string }): void {
     for (const p of ACCOUNT_PROVIDERS) {
         for (const a of readAgentConfig(p)?.accounts ?? []) {
             if (a.invalid || (p === exclude?.provider && a.id === exclude.id)) continue;
@@ -152,6 +180,13 @@ function validateFolder(folder: unknown, roots: string[], exclude?: { provider: 
             if (inside(real, other) || inside(other, real)) throw new RpcError("Accounts must have separate, non-overlapping folders", "invalid");
         }
     }
+}
+function validateFolder(folder: unknown, roots: string[], exclude?: { provider: string; id: string }, managed = false): string {
+    if (typeof folder !== "string" || folder.length > 1024 || !isAbsolute(folder) || !/^[a-zA-Z0-9 /_.-]+$/.test(folder) || folder.split(/[\\/]/).includes("..")) throw new RpcError("Use an absolute account folder with plain characters and no '..'", "invalid");
+    const real = accountRealPath(resolve(folder));
+    if (real === sep || real === accountRealPath(homedir())) throw new RpcError("Choose a dedicated account folder", "invalid");
+    separateFromDefault(real, roots);
+    separateFromAccounts(real, exclude);
     if (projectFolder(real, roots, managed)) throw new RpcError("Account folders must be outside projects", "invalid");
     if (existsSync(real) && !statSync(real).isDirectory()) throw new RpcError("Account folder is not a directory", "invalid");
     return real;
@@ -233,10 +268,81 @@ export function setDefaultAccount(provider: string, id: string): void {
     ((pf.agents ??= {})[provider] ??= {}).defaultAccount = id;
     writeProvidersFile(pf);
 }
+/**
+ * Sign-ins and removals of accounts, in any Harness process on this home (the terminal app, a desktop server). Each
+ * leaves a file of its own in the accounts folder (which tools can't touch), named for its process and a nonce, before
+ * it looks for the other kind: of a login and a removal of one account that overlap, the later to write sees the
+ * earlier's file and refuses. A removal's file stays until its change is saved, so a login that no longer sees it finds
+ * the account gone. A file whose process is gone doesn't count; what can't be read refuses.
+ */
+function leasesFolder(): string { return join(paths.home(), "accounts", ".leases"); }
+type LeaseKind = "login" | "remove";
+const processRuns = (pid: number) => {
+    try { process.kill(pid, 0); return true; } catch (e: any) { return e.code !== "ESRCH"; }
+};
+function lease(kind: LeaseKind, provider: string, id: string): () => void {
+    accountProvider(provider);
+    if (!validAccountId(id)) throw new RpcError("Invalid account id", "invalid");
+    const file = join(leasesFolder(), `${kind}.${provider}.${id}.${process.pid}.${randomUUID()}`);
+    try {
+        mkdirSync(leasesFolder(), { recursive: true, mode: 0o700 });
+        writeFileSync(file, "", { flag: "wx", mode: 0o600 });
+    } catch {
+        throw new RpcError("Cannot record this account's sign-in or removal in Harness's accounts folder", "invalid");
+    }
+    return () => rmSync(file, { force: true });
+}
+function leased(kind: LeaseKind, provider: string, id: string): boolean {
+    let names: string[];
+    try { names = readdirSync(leasesFolder()); } catch (e: any) {
+        if (e.code === "ENOENT") return false;
+        throw new RpcError("Cannot check this account's sign-ins and removals in Harness's accounts folder", "busy");
+    }
+    const prefix = `${kind}.${provider}.${id}.`;
+    return names.some((name) => {
+        if (!name.startsWith(prefix)) return false;
+        const pid = Number(name.slice(prefix.length).split(".")[0]);
+        if (!Number.isSafeInteger(pid) || pid <= 0 || processRuns(pid)) return true;
+        // Only this file: its name is its holder's alone.
+        try { rmSync(join(leasesFolder(), name), { force: true }); } catch {}
+        return false;
+    });
+}
+/** A login's, from before its account is looked up until its process has exited. Refused while the account is being removed. */
+export function holdLogin(provider: string, id: string): () => void {
+    const release = lease("login", provider, id);
+    try {
+        if (leased("remove", provider, id)) throw new RpcError("This account is being removed", "busy");
+    } catch (e) {
+        release();
+        throw e;
+    }
+    return release;
+}
+/** A removal's, until its change is saved. Refused while a sign-in for the account runs. */
+export function holdRemoval(provider: string, id: string): () => void {
+    const release = lease("remove", provider, id);
+    try {
+        if (leased("login", provider, id)) throw new RpcError("A sign-in for this account is still running in Harness; finish or close it before removing the account", "busy");
+    } catch (e) {
+        release();
+        throw e;
+    }
+    return release;
+}
 export function removeAccount(provider: string, id: string, confirmedFolder: string, projectRoots: string[] = []): void {
     const a = findAccount(provider, id);
     if (id === "default") throw new RpcError("The Default account cannot be removed", "invalid");
     if (confirmedFolder !== a.folder) throw new RpcError("Confirm the exact account folder before removing it", "invalid");
+    // A login in any Harness process would sign in to a folder no longer registered.
+    const release = holdRemoval(provider, id);
+    try {
+        forgetAccount(provider, id, a, projectRoots);
+    } finally {
+        release();
+    }
+}
+function forgetAccount(provider: string, id: string, a: CliAccount, projectRoots: string[]): void {
     const pf = readProvidersFileForUpdate();
     if (a.managed && !a.invalid) {
         const expected = join(accountRealPath(paths.home()), "accounts", provider, id);

@@ -117,7 +117,8 @@ export interface SteerMessage {
 
 /** Something a backend reports about the session rather than a turn: its background work, a notice when no turn runs. */
 export type SessionEvent =
-    | { type: "background_task"; task: BackgroundTaskInfo }
+    /** `accountId`: the account the CLI process reporting it signed in with (it can differ from the session's selection now). */
+    | { type: "background_task"; task: BackgroundTaskInfo; accountId?: string }
     | { type: "notice"; level: "info" | "warn" | "error"; message: string }
     /** Something the CLI did outside any turn (a background sub-agent's steps, its Agent call ending): shown where it belongs (by its call's id). */
     | { type: "event"; event: AgentEvent };

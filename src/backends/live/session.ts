@@ -109,6 +109,7 @@ export class LiveCliSession {
     /** Which process events and exits count: each start and stop moves it on. */
     private generation = 0;
     private fingerprint?: string;
+    private processAccount?: string;
     /** As the running process has them. */
     private settings?: LiveSettings;
     private cliSessionId?: string;
@@ -166,6 +167,10 @@ export class LiveCliSession {
     /** The running process's pid. */
     get pid(): number | undefined {
         return this.proc?.pid;
+    }
+    /** The account the process signed in with: a turn for another runs on it while background work holds the restart back. */
+    get account(): string | undefined {
+        return this.processAccount;
     }
     /** The CLI's own session id, as its process last reported it; later processes resume it. */
     get sessionId(): string | undefined {
@@ -393,7 +398,7 @@ export class LiveCliSession {
             const proc = this.proc;
             const conn = this.conn;
             if (!proc || !conn) {
-                await this.start(spec, settings, { resumeId: c.resumeId, fork: c.forkSession }, signal);
+                await this.start(spec, settings, { resumeId: c.resumeId, fork: c.forkSession }, signal, c.accountId);
                 return undefined;
             }
             const gen = this.generation;
@@ -437,7 +442,7 @@ export class LiveCliSession {
         }
     }
 
-    private async start(spec: SpawnSpec, settings: LiveSettings, resume: { resumeId?: string; fork?: boolean }, signal: AbortSignal): Promise<void> {
+    private async start(spec: SpawnSpec, settings: LiveSettings, resume: { resumeId?: string; fork?: boolean }, signal: AbortSignal, account: string | undefined): Promise<void> {
         let proc: JsonLinesProcess;
         try {
             proc = new JsonLinesProcess(spec.bin, spec.args, { cwd: spec.cwd, env: spec.env });
@@ -449,6 +454,7 @@ export class LiveCliSession {
         this._state = "starting";
         this._error = undefined;
         this.fingerprint = spec.fingerprint;
+        this.processAccount = account ?? "default";
         this.settings = undefined;
         this.stale = false;
         this.proc = proc;

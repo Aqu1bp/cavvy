@@ -21,10 +21,11 @@ if (!process.env.HARNESS_TEST_DEFAULT_ACCOUNTS) {
     const home = process.env.HARNESS_TEST_DEFAULT_ACCOUNTS;
     if (!home.startsWith(realpathSync(tmpdir()) + sep) || home !== realpathSync(homedir())) throw new Error("Expected an isolated temporary home");
     const iso = isolate();
-    const previous = { HOME: process.env.HOME, HARNESS_HOME: process.env.HARNESS_HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, CODEX_HOME: process.env.CODEX_HOME };
+    const previous = { HOME: process.env.HOME, HARNESS_HOME: process.env.HARNESS_HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, CLAUDE_SECURESTORAGE_CONFIG_DIR: process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR, CODEX_HOME: process.env.CODEX_HOME };
     process.env.HOME = home;
     process.env.HARNESS_HOME = join(home, ".harness");
     delete process.env.CLAUDE_CONFIG_DIR;
+    delete process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
     delete process.env.CODEX_HOME;
     for (const dir of [".claude", ".codex", ".harness"]) mkdirSync(join(home, dir));
     const alias = join(home, "codex-link");
@@ -188,6 +189,69 @@ if (!process.env.HARNESS_TEST_DEFAULT_ACCOUNTS) {
             expect(accountTarget(`find '${named}' -type f`, home)).toBe(true);
             expect(check("Glob", { path: named, pattern: "*" }).behavior).toBe("deny");
         } finally { clear(); }
+        unchangedDefault();
+    });
+
+    test("Claude's secure-storage sign-in file is protected for distinct, empty, unset, aliased and dangling selectors, only alongside named accounts", () => {
+        clear();
+        // Outside the workspace, where Auto otherwise reads freely.
+        const project = join(home, "secure-project");
+        const config = join(home, "claude-config");
+        const secure = join(home, "secure-store");
+        const target = join(home, "secure-target");
+        const alias = join(home, "secure-alias");
+        const later = join(home, "secure-later");
+        const dangling = join(home, "secure-dangling");
+        for (const dir of [project, config, secure, target]) mkdirSync(dir);
+        symlinkSync(target, alias);
+        symlinkSync(later, dangling);
+        const outside = new PermissionChecker(() => ({}), project);
+        const checkOutside = (name: string, input: unknown) => outside.check(BUILTIN_TOOLS.find((t) => t.name === name)!, input, "auto", project).behavior;
+        // The file Claude Code uses (by the selector's spelling and where it really is), for each setting.
+        const cases: { secure?: string; config?: string; file: string; real: string }[] = [
+            { secure, file: join(secure, ".credentials.json"), real: join(secure, ".credentials.json") },
+            { secure: "", config, file: join(home, ".claude", ".credentials.json"), real: join(home, ".claude", ".credentials.json") },
+            { config, file: join(config, ".credentials.json"), real: join(config, ".credentials.json") },
+            { secure: alias, file: join(alias, ".credentials.json"), real: join(target, ".credentials.json") },
+            { secure: dangling, file: join(dangling, ".credentials.json"), real: join(later, ".credentials.json") },
+            // Claude Code uses its selector in NFC.
+            { secure: join(home, "secure-cafe\u0301"), file: join(home, "secure-caf\u00e9", ".credentials.json"), real: join(home, "secure-caf\u00e9", ".credentials.json") },
+        ];
+        const set = (key: string, value: string | undefined) => { if (value === undefined) delete process.env[key]; else process.env[key] = value; };
+        try {
+            for (const c of cases) {
+                set("CLAUDE_SECURESTORAGE_CONFIG_DIR", c.secure);
+                set("CLAUDE_CONFIG_DIR", c.config);
+                clear();
+                // Without named accounts, Default is unchanged.
+                expect({ ...c, read: checkOutside("Read", { file_path: c.file }), protectedPaths: accountProtectedPaths() }).toEqual({ ...c, read: "allow", protectedPaths: [] });
+                // A named account of either CLI protects it, for Harness's tools and both CLIs' own sandboxes.
+                saveAgentConfig("codex", { accounts: [{ id: "named", name: "Named", folder: join(home, "named"), managed: false }] });
+                const decisions = Object.fromEntries([...new Set([c.file, c.real])].flatMap((file) => [
+                    [`Read ${file}`, checkOutside("Read", { file_path: file })],
+                    [`Write ${file}`, checkOutside("Write", { file_path: file, content: "x" })],
+                    [`cat ${file}`, checkOutside("Bash", { command: `cat '${file}'` })],
+                ]));
+                expect({ ...c, decisions }).toEqual({ ...c, decisions: Object.fromEntries(Object.keys(decisions).map((k) => [k, "deny"])) });
+                expect(sandboxPolicy([project], { harnessHome: process.env.HARNESS_HOME! }).unreadable).toContain(c.real);
+                expect(claudeAccountSandbox()!.filesystem.denyRead).toContain(c.real);
+                expect(claudeAccountSandbox()!.filesystem.denyWrite).toContain(c.real);
+                for (const profile of Object.values(accountPermissionConfig([])!)) expect((profile as any).filesystem[c.real]).toBe("deny");
+                expect(claudePermissions({ deny: [], ask: [], root: project }).deny).toContain(`Read(/${c.real})`);
+            }
+            // Only the sign-in file: the rest of a separate secure-storage folder stays usable.
+            set("CLAUDE_SECURESTORAGE_CONFIG_DIR", secure);
+            set("CLAUDE_CONFIG_DIR", undefined);
+            expect(checkOutside("Read", { file_path: join(secure, "notes.md") })).toBe("allow");
+            for (const tool of ["Glob", "LS"]) expect(checkOutside(tool, { path: secure, pattern: "*" })).toBe("allow");
+            expect(checkOutside("Grep", { path: secure, pattern: "token" })).toBe("deny");
+            // Codex's own sign-in file is independent of Claude's selectors.
+            expect(checkOutside("Read", { file_path: join(home, ".codex", "auth.json") })).toBe("deny");
+        } finally {
+            set("CLAUDE_SECURESTORAGE_CONFIG_DIR", undefined);
+            set("CLAUDE_CONFIG_DIR", undefined);
+            clear();
+        }
         unchangedDefault();
     });
 

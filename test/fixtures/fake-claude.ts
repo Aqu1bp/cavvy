@@ -59,6 +59,7 @@
 //                    after the "rate-limit" scenario's error instead; FAKE_RATE_LIMIT_REPEAT=n sends it n times (as
 //                    Claude Code sends one per request)
 // FAKE_SCENARIO=rate-limit  the turn ends on the plan's limit (an assistant error "rate_limit", an error result)
+// FAKE_SCENARIO=auth-failed  the turn ends signed out (an assistant error "authentication_failed", an error result)
 // Reliability cases: steering / steering-many fold stdin input between tool rounds (dropping its document blocks,
 // as Claude Code 2.1.304 does: images reach the model mid-turn, PDFs don't);
 // shell-background / shell-background-stuck / monitor-background report live tasks;
@@ -721,6 +722,10 @@ async function turn(content: any[], uuid?: string) {
         return result("success", { is_error: true, result: "You've hit your limit" });
     }
     if (scenario === "result-error") return result("error_during_execution", { errors: ["CLI diagnostic: execution failed"], usage: {} });
+    if (scenario === "auth-failed") {
+        out({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Invalid API key" }] }, error: "authentication_failed", parent_tool_use_id: null, session_id: sessionId });
+        return result("success", { is_error: true, result: "Invalid API key" });
+    }
     // A reply with nothing in it.
     if (scenario === "silent") return result("success", { result: "", usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
     text("Working on it.");

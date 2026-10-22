@@ -42,7 +42,7 @@ import { isAgentBackend, type BackendWake, type BackgroundStop } from "../backen
 import { SessionBackground } from "../agent/background";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { agentCli, type AttachmentKind } from "../backends/defs";
-import { account } from "../providers/accounts";
+import { account, catalogNote } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
 import { continuationGroups, modelRef, parseModelRef, textOf, toolCallsOf, assistantText, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
 import { expandMentions } from "../ui/mentions";
@@ -877,9 +877,10 @@ export class Runtime {
         const selected = account(provider, id);
         if (!this.session.setAccount(provider, selected.id)) return;
         this.setState({ accounts: { "claude-code": this.session.accountId("claude-code"), codex: this.session.accountId("codex") } });
-        if (this.session.messages.length) {
-            const name = getProvider(provider)?.name ?? provider;
-            const text = `Continuing on ${name} · ${selected.name}: starting a new ${name} thread with this conversation as context.`;
+        const name = getProvider(provider)?.name ?? provider;
+        const handoff = this.session.messages.length ? `Continuing on ${name} · ${selected.name}: starting a new ${name} thread with this conversation as context.` : undefined;
+        const text = [handoff, catalogNote(provider, selected, name)].filter(Boolean).join(" ");
+        if (text) {
             this.session.recordNotice("info", text);
             this.notice(text);
         }

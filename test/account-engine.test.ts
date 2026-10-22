@@ -51,10 +51,14 @@ for (const provider of ["claude-code", "codex"]) test(`${provider}: account chan
         for (const addedProvider of ["claude-code", "codex"]) {
             await expect(engine.handle(client, "accounts.add", { provider: addedProvider, id: "while-running", name: "While running" })).rejects.toMatchObject({ code: "busy" });
         }
-        await engine.handle(client, "accounts.remove", { provider, id: unused.id, confirmedFolder: unused.folder });
-        expect(existsSync(unused.folder)).toBe(false);
+        // Removing even an account nothing uses changes every running CLI's protections, which restarts the child's
+        // CLI (its turn fails, its background work stops): it waits for the child too.
+        await expect(engine.handle(client, "accounts.remove", { provider, id: unused.id, confirmedFolder: unused.folder })).rejects.toMatchObject({ code: "busy" });
+        expect(existsSync(unused.folder)).toBe(true);
         finish.resolve();
         await task.settled;
+        await engine.handle(client, "accounts.remove", { provider, id: unused.id, confirmedFolder: unused.folder });
+        expect(existsSync(unused.folder)).toBe(false);
         await expect(engine.handle(client, "accounts.add", { provider, id: "after-child", name: "After child" })).resolves.toMatchObject({ id: "after-child" });
         await engine.handle(client, "accounts.remove", { provider, id: selected.id, confirmedFolder: selected.folder });
         expect(existsSync(selected.folder)).toBe(false);
