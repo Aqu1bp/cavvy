@@ -417,7 +417,7 @@ describe("the environment block warns about GNU and bash habits that fail here",
         const saved = process.env.SHELL;
         process.env.SHELL = "/usr/local/bin/fish";
         try {
-            expect(environmentBlock(tempDir(), { provider: "x", id: "y" } as any, false)).toContain(`Shell: ${pickShell()}`);
+            expect(environmentBlock(tempDir(), { provider: "x", id: "y" } as any)).toContain(`Shell: ${pickShell()}`);
             expect(pickShell()).not.toContain("fish");
         } finally {
             process.env.SHELL = saved;

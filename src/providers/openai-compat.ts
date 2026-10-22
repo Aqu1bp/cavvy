@@ -7,6 +7,7 @@ import { resolveBaseUrl, customProviderModels } from "./registry";
 import { parseSse, stallError, stallTimer } from "./sse";
 import { fileAsText, fitRequest, frameName, providerReadsPdf } from "./files";
 import {
+    splitSystemPrompt,
     ProviderError,
     type AssistantContent,
     type AssistantMessage,
@@ -268,7 +269,9 @@ export class OpenAICompatProvider implements ProviderClient {
         const payload = fitRequest(req.messages, providerReadsPdf(def), (messages) => {
             const converted = toOpenAIMessages(req.system, messages, def);
             if (cacheClaude && req.cacheSystem && req.system) {
-                converted[0]!.content = [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }];
+                // The breakpoint goes before the session context (date, git), so sessions share the prefix.
+                const { shared, session } = splitSystemPrompt(req.system);
+                converted[0]!.content = [{ type: "text", text: shared, cache_control: { type: "ephemeral" } }, ...(session ? [{ type: "text", text: session }] : [])];
             }
             return JSON.stringify({ ...body, messages: converted });
         });
