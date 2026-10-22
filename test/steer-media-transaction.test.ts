@@ -221,7 +221,8 @@ describe("a steer with an image to Codex is the queue's until Codex accepts it",
         writeFileSync(join(iso.home, "settings.json"), JSON.stringify({ hooks: { UserPromptSubmit: [{ command: `cat >> '${seen}'; echo >> '${seen}'` }] } }));
         try {
             // Its turn/steer refused while the turn goes on (about 5 s), then the turn ends and the run with it.
-            const { engine, c, id, rt } = await codexSession("slow", { FAKE_STEER_FAIL: "1" });
+            // The next turn asks nothing (on the live app-server it's the fake's second, not a new process's first).
+            const { engine, c, id, rt } = await codexSession("slow", { FAKE_STEER_FAIL: "1", FAKE_CODEX_SCENARIOS: "slow,steps" });
             try {
                 expect(await until(() => rt.busy && turnStarts().length === 1)).toBe(true);
                 await engine.handle(c as never, "session.send", { id, text: "look at this", images: [{ mediaType: "image/png", data: PNG }], mode: "steer" });

@@ -35,7 +35,7 @@ import { spawnFingerprint, type LiveCliSession, type LiveTurnResult, type LiveWa
 import type { AgentCliAdapter, CliConnection, CliEvent, CliEventSink, LiveSettings, SpawnConfig, SpawnSpec } from "./live/types";
 import type { BackgroundTaskInfo } from "./live/info";
 import { liveDebug, liveDebugOn } from "./live/debug";
-import type { BackendPermission, BackendResult, BackendTurn, BackgroundStop, SessionHost, TurnSink } from "./types";
+import type { BackendPermission, BackendResult, BackendTurn, BackgroundStop, SessionHost, SteerMessage, TurnSink } from "./types";
 import type { AgentCliStatus } from "./index";
 import {
     CODEX_CLIENT_NAME,
@@ -54,6 +54,8 @@ import {
     parseAccount,
     untrustedArgs,
     withTimeout,
+    joined,
+    imagesOf,
     type CodexBackend,
     type LimitOrdering,
     type OpenItem,
@@ -86,8 +88,8 @@ interface Segment {
     after: string;
     /** Make the goal active once this turn has started. */
     activate?: boolean;
-    /** The user's queued messages `text` carries: saved for the next turn if this one can't start. */
-    queued?: string;
+    /** The user's queued messages `text` carries (none with attachments: those stay the host's): saved for the next turn if this one can't start. */
+    queued?: SteerMessage[];
     /** The harness turn's first: its skills and a /goal command are read here. */
     first?: boolean;
     /**
@@ -615,8 +617,8 @@ export class CodexLiveConnection extends CodexTurn {
             this.goalOnRestart = false;
             // A steer the interrupt beat goes in with it, not after the restarted turn.
             await this.steering;
-            const queued = this.unsteered.length ? this.unsteered.splice(0).join("\n\n") : undefined;
-            return { kind: "prompt", text: [modeSwitched(restart), queued].filter(Boolean).join("\n\n"), images: this.unsteeredImages.splice(0), after: "", activate, queued, why: "mode-restart" };
+            const queued = this.unsteered.length ? this.unsteered.splice(0) : undefined;
+            return { kind: "prompt", text: [modeSwitched(restart), queued && joined(queued)].filter(Boolean).join("\n\n"), images: imagesOf(queued), after: "", activate, queued, why: "mode-restart" };
         }
         // A steer on its way when the turn ended: whether Codex took it decides what's next.
         await this.steering;
@@ -624,24 +626,25 @@ export class CodexLiveConnection extends CodexTurn {
         if (this.aborted || run.aborted) return undefined;
         const followUp = this.followUp && this.followUps++ < 5 ? this.followUp : undefined;
         this.followUp = undefined;
-        const why = followUp ? "follow-up" : this.unsteered.length || this.unsteeredImages.length ? "unsent" : "queued";
-        const images = followUp ? [] : this.unsteeredImages.splice(0);
-        const next = followUp ? [followUp] : this.unsteered.length || images.length ? this.unsteered.splice(0) : await run.t.sink.drainQueued(() => this.progress());
-        if (!next.length && images.length) return { kind: "prompt", text: "", images, after: "", why };
+        const why = followUp ? "follow-up" : this.unsteered.length ? "unsent" : "queued";
+        // One with attachments isn't taken here: it stays queued, and goes as a prompt of its own (#299).
+        const next: SteerMessage[] = followUp ? [{ text: followUp, images: [], documents: [] }] : this.unsteered.length ? this.unsteered.splice(0) : await this.holdOver(await run.t.sink.drainQueued(() => this.progress()));
         if (!next.length) {
             // Paused for a mode change (before or while it ran): it goes on here, under the mode.
             if (this.goalPausedForMode && !this.aborted) return { kind: "prompt", text: modeSwitched(this.host.mode()), images: [], after: "", activate: true, why: "goal-under-mode" };
             return undefined;
         }
         // The user's words name skills; a watch's events (others' words, such as a PR comment) come after and don't.
-        const typed = next.filter((x) => !run.t.sink.fromWake?.(x));
-        const woke = next.filter((x) => run.t.sink.fromWake?.(x));
-        const text = [...typed, ...woke].join("\n\n");
+        const typed = next.filter((x) => !run.t.sink.fromWake?.(x.text));
+        const woke = next.filter((x) => run.t.sink.fromWake?.(x.text));
+        const queued = [...typed, ...woke];
+        const text = joined(queued);
         // Nor does what a UserPromptSubmit hook added after them: what's scanned ends before the first.
-        const cut = typed.findIndex((x) => (run.t.sink.requestOf?.(x) ?? x) !== x);
-        const words = cut < 0 ? typed : [...typed.slice(0, cut), run.t.sink.requestOf!(typed[cut]!)!];
+        const said = typed.map((x) => x.text).filter(Boolean);
+        const cut = said.findIndex((x) => (run.t.sink.requestOf?.(x) ?? x) !== x);
+        const words = cut < 0 ? said : [...said.slice(0, cut), run.t.sink.requestOf!(said[cut]!)!];
         const request = words.length ? words.join("\n\n") : undefined;
-        return { kind: "prompt", text, images, request, after: request === undefined ? "" : text.slice(request.length), queued: text, why };
+        return { kind: "prompt", text, images: imagesOf(queued), request, after: request === undefined ? "" : text.slice(request.length), queued, why };
     }
 
     /** How the run went, as a BackendResult. */
@@ -659,8 +662,8 @@ export class CodexLiveConnection extends CodexTurn {
     }
 
     /** A segment's messages that never went out (the run was stopped before): saved for the next turn at detach. */
-    keepUnsent(text: string) {
-        this.unsteered.push(text);
+    keepUnsent(messages: SteerMessage[]) {
+        this.unsteered.push(...messages);
     }
 
     /** The run is over: what it left goes to the next (messages it never sent), and finished commands may start a turn now. */
@@ -679,8 +682,8 @@ export class CodexLiveConnection extends CodexTurn {
         // Settled once Codex is gone (its pending requests fail): nothing records a prompt after the turn's end.
         await this.steering;
         // Recorded as sent but never taken (the turn failed or was stopped): saved for the next turn.
-        if (this.unsteered.length) run.t.sink.undelivered?.(this.unsteered.splice(0));
-        this.unsteeredImages = [];
+        // Words only: a prompt's images kept here (claim) aren't a queued message's to save (SteerMessage.settle).
+        if (this.unsteered.length) run.t.sink.undelivered?.(this.unsteered.splice(0).map((m) => ({ text: m.text, images: [], documents: [] })).filter((m) => m.text));
         this.liveRun = undefined;
         this.aborted = false;
         this.failure = undefined;
@@ -801,7 +804,7 @@ export class CodexLiveConnection extends CodexTurn {
                     }
                 }
                 // The messages this turn was for aren't lost with it: saved for the next turn, and the notes for the next prompt.
-                if (seg.queued) this.unsteered.push(seg.queued);
+                if (seg.queued) this.unsteered.push(...seg.queued);
                 this.putBackNotes(taken);
                 throw e;
             }
@@ -830,16 +833,9 @@ export class CodexLiveConnection extends CodexTurn {
         return { ref: id };
     }
 
-    /**
-     * The images of messages kept for the next turn (unsteered): a prompt Codex's own turn took, and couldn't be
-     * steered into it, keeps them (#304 on the live path). Gone with the run (its words go back undelivered).
-     */
-    private unsteeredImages: BackendTurn["images"] = [];
-
-    /** A message for the next turn, with its images. */
+    /** A prompt Codex's own turn took but that couldn't go into it: kept for the next turn, its images with it (#304 on the live path). */
     private keepForNext(text: string, images: BackendTurn["images"]) {
-        if (text) this.unsteered.push(text);
-        this.unsteeredImages.push(...images);
+        if (text || images.length) this.unsteered.push({ text, images, documents: [] });
     }
 
     /** Codex's turn that refused the prompt's becomes the run's, with the prompt's words and images steered into it. */

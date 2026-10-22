@@ -483,12 +483,12 @@ export function modeSwitched(m: PermissionMode): string {
 }
 
 /** Drained messages as one text: one with only an image (no words) adds none. */
-function joined(messages: readonly SteerMessage[]): string {
+export function joined(messages: readonly SteerMessage[]): string {
     return messages.map((m) => m.text).filter(Boolean).join("\n\n");
 }
 
 /** The images attached to drained messages, each message's own; Codex takes no PDFs (they're a note in the text). */
-function imagesOf(messages: readonly SteerMessage[] | undefined): ImagePart[] {
+export function imagesOf(messages: readonly SteerMessage[] | undefined): ImagePart[] {
     return (messages ?? []).flatMap((m) => m.images);
 }
 
