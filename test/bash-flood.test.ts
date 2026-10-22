@@ -22,7 +22,8 @@ afterAll(async () => {
     iso.cleanup();
 });
 
-const VALUE = "hN8sR4uY2cF7jM9Q";
+// Not secret-output's value: a secret is registered process-wide under the first name it's set with, and files share the process.
+const VALUE = "pZ3kT7vB1xL9wD5G";
 function noFragments(text: string, value = VALUE) {
     for (let i = 0; i <= value.length - 6; i++) expect(text).not.toContain(value.slice(i, i + 6));
 }
