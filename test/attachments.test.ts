@@ -588,21 +588,22 @@ describe("nothing gets lost", () => {
             await engine.handle(c, "session.send", { id, text: "with a file", files: [file] });
             await engine.handle(c, "session.send", { id, text: "plain" });
             expect(rt.snapshot().state.queuedModes).toEqual(["steer", "steer"]);
-            const inner = rt as unknown as { drainQueued(): unknown[]; steersAttachments(): boolean };
+            const inner = rt as unknown as { drainQueued(): unknown[]; steerKinds(): readonly string[] };
             const drained = inner.drainQueued();
             expect(drained).toEqual([{ text: "with a file", admission: "go", attachments: [expect.objectContaining({ type: "file", name: "a.txt", kind: "text" })] }, "plain"]);
             expect(rt.snapshot().state.queued).toEqual([]);
             // The turn they start shows the file.
             expect(rt.snapshot().turns.at(-1)!.prompt).toMatchObject({ text: "with a file\n\nplain", files: [expect.objectContaining({ name: "a.txt" })] });
             // A backend that can't take them mid-turn: the message waits, and says so.
-            inner.steersAttachments = () => false;
+            inner.steerKinds = () => ["image"];
             await engine.handle(c, "session.send", { id, text: "another file", files: [file] });
             await engine.handle(c, "session.send", { id, text: "plain again" });
             expect(rt.snapshot().state.queuedModes).toEqual(["turn", "steer"]);
+            expect(rt.snapshot().state.queuedWhy).toEqual([expect.stringMatching(/can't take text files in a running turn/), ""]);
             expect(inner.drainQueued()).toEqual(["plain again"]);
             expect(rt.snapshot().state.queued).toEqual(["another file"]);
             const [waiting] = rt.snapshot().state.queueIds;
-            await expect(engine.handle(c, "session.sendQueuedNow", { id, queueId: waiting })).rejects.toThrow(/can't take images or files in a running turn/);
+            await expect(engine.handle(c, "session.sendQueuedNow", { id, queueId: waiting })).rejects.toThrow(/can't take text files in a running turn/);
         } finally {
             await engine.handle(c, "session.interrupt", { id }).catch(() => undefined);
             await engine.stop();

@@ -43,7 +43,8 @@
 //                    after the "rate-limit" scenario's error instead; FAKE_RATE_LIMIT_REPEAT=n sends it n times (as
 //                    Claude Code sends one per request)
 // FAKE_SCENARIO=rate-limit  the turn ends on the plan's limit (an assistant error "rate_limit", an error result)
-// Reliability cases: steering / steering-many fold stdin input between tool rounds;
+// Reliability cases: steering / steering-many fold stdin input between tool rounds (dropping its document blocks,
+// as Claude Code 2.1.304 does: images reach the model mid-turn, PDFs don't);
 // shell-background / shell-background-stuck / monitor-background report live tasks;
 // partial-error / partial-error-exit / result-error separate diagnostics from replies.
 // FAKE_CLAUDE_VERSION overrides the initialize version for compatibility tests.
@@ -195,7 +196,7 @@ let prompts = 0;
 /** The prompt the turn under way answers (its user message's uuid); none for a turn Claude Code starts itself. */
 let answering: string | undefined;
 // A busy CLI folds these into the current turn, rather than starting concurrent turns.
-let steering: { uuid?: string; text: string }[] | undefined;
+let steering: { uuid?: string; text: string; images?: number }[] | undefined;
 /** FAKE_GOAL_HOLD=1: the goal's second turn waits for an interrupt. */
 let goalRelease: (() => void) | undefined;
 let steeringWake: (() => void) | undefined;
@@ -595,7 +596,7 @@ async function turn(content: any[], uuid?: string) {
         const folded = steering;
         steering = undefined;
         steeringWake = undefined;
-        log({ foldedBeforeResult: folded.map((m) => m.text) });
+        log({ foldedBeforeResult: folded.map((m) => m.text), foldedImages: folded.reduce((n, m) => n + (m.images ?? 0), 0) });
         text(folded.length ? `Adjusted: ${folded.map((m) => m.text).join(" | ")}` : "No steering received before result.");
         return result("success", { user_message_uuids: [uuid, ...folded.map((m) => m.uuid)].slice(-64) });
     }
@@ -857,7 +858,11 @@ for await (const chunk of Bun.stdin.stream()) {
             r?.(m.response?.response ?? {});
         } else if (m.type === "user") {
             if (steering) {
-                steering.push({ uuid: m.uuid, text: m.message.content.map((b: any) => b.text ?? "").join("") });
+                // As Claude Code 2.1.304 does (test/fixtures/protocol/claude-2.1.304-steer-pdf-dropped.jsonl): a
+                // mid-turn message's document blocks never reach the model; its images do.
+                const dropped = m.message.content.filter((b: any) => b?.type === "document").length;
+                if (dropped) log({ droppedMidTurnDocuments: dropped });
+                steering.push({ uuid: m.uuid, text: m.message.content.map((b: any) => b.text ?? "").join(""), images: m.message.content.filter((b: any) => b?.type === "image").length });
                 steeringWake?.();
             } else turnTail = turnTail.then(() => turn(m.message?.content ?? [], typeof m.uuid === "string" ? m.uuid : undefined));
         }

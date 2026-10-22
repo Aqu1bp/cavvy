@@ -40,7 +40,7 @@ import { clientFor, defaultModelFrom, lookupModel, resolveModelInfo, reviewTarge
 import { costOf } from "../providers/pricing";
 import { isAgentBackend } from "../backends/types";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
-import { agentCli } from "../backends/defs";
+import { agentCli, type AttachmentKind } from "../backends/defs";
 import { account } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
 import { modelRef, parseModelRef, textOf, toolCallsOf, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
@@ -121,15 +121,20 @@ interface Queued {
     held?: boolean;
 }
 
+const ALL_KINDS: readonly AttachmentKind[] = ["image", "text", "pdf"];
+const KIND_NAMES: Record<AttachmentKind, string> = { image: "images", text: "text files", pdf: "PDFs" };
+
 /**
- * A message the running turn can take, read as dispatch reads it: not a command or `!command` (those get a turn
- * of their own), and with images or files only when what runs the turn can take them mid-turn (`attachments`).
+ * Why a message can't join the running turn (it runs once the turn ends), or undefined when it can, read as
+ * dispatch reads it: a command or `!command` gets a turn of its own, and so does one carrying an attachment of a
+ * kind what runs the turn can't take mid-turn (`kinds`, CliCapabilities.steersAttachments): the whole message.
  */
-function steerable(q: Queued, attachments: boolean): boolean {
-    if (q.attachments?.length && !attachments) return false;
-    if (q.literal) return true;
+function waitsFor(q: Queued, kinds: readonly AttachmentKind[], who: string): string | undefined {
+    const cant = [...new Set((q.attachments ?? []).map((a) => (a.type === "image" ? "image" : a.kind)))].filter((k) => !kinds.includes(k));
+    if (cant.length) return `${who} can't take ${cant.map((k) => KIND_NAMES[k]).join(" or ")} in a running turn: this runs once it ends.`;
+    if (q.literal) return undefined;
     const t = q.text.trim();
-    return !t.startsWith("!") && (!t.startsWith("/") || t.startsWith("//"));
+    return t.startsWith("!") || (t.startsWith("/") && !t.startsWith("//")) ? "Commands can't join a running turn: they run after it." : undefined;
 }
 
 /** A slash command or `!command`, as dispatch reads it: the server runs it, so it isn't sent as a prompt. */
@@ -550,10 +555,16 @@ export class Runtime {
         return Boolean(this.schedules.act(scheduleId, action));
     }
 
-    /** Whether a message steering the running turn can carry images and files: API models' can, an agent CLI's if it takes them mid-turn. */
-    private steersAttachments(): boolean {
+    /** What a message steering the running turn can carry: anything for API models, what an agent CLI takes mid-turn. */
+    private steerKinds(): readonly AttachmentKind[] {
         const provider = this.agent?.model.provider ?? this.model?.provider ?? "";
-        return getProvider(provider)?.kind !== "agent" || Boolean(agentCli(provider)?.caps.steersAttachments);
+        return getProvider(provider)?.kind === "agent" ? (agentCli(provider)?.caps.steersAttachments ?? []) : ALL_KINDS;
+    }
+
+    /** Why this queued message can't join the running turn, or undefined when it can (see waitsFor). */
+    private waits(q: Queued): string | undefined {
+        const provider = this.agent?.model.provider ?? this.model?.provider ?? "";
+        return waitsFor(q, this.steerKinds(), getProvider(provider)?.name ?? this.model?.name ?? "This model");
     }
 
     /** Claude Code or Codex: an agent backend runs this session's turns. */
@@ -2103,7 +2114,7 @@ export class Runtime {
 
     private drainQueued(record?: () => void, admit?: (text: string) => Promise<Admitted>): (string | Admitted)[] | Promise<Admitted[]> {
         // Messages to steer with; queued ones, held ones, commands, and those with images or files where the turn can't take them wait for their own turn.
-        const steering = () => this.queued.filter((q) => q.mode === "steer" && !q.held && steerable(q, this.steersAttachments()));
+        const steering = () => this.queued.filter((q) => q.mode === "steer" && !q.held && !this.waits(q));
         const take = steering();
         if (!take.length) return [];
         return admit ? this.admitQueued(take, admit, steering, record) : this.steerWith(take, record);
@@ -2249,7 +2260,7 @@ export class Runtime {
             const q: Queued = { id: ++this.queueSeq, text, attachments, literal: literal || undefined, mode: mode ?? followUpDefault(this.settings().followUpBehavior) };
             this.queued.push(q);
             this.queueUpdated();
-            if (q.mode === "steer" && steerable(q, this.steersAttachments())) this.agent?.queueChanged();
+            if (q.mode === "steer" && !this.waits(q)) this.agent?.queueChanged();
             // Back before an idle compaction is done: it stops, and this runs on the cache that's still warm.
             if (this.idleCompacting) this.abort?.abort();
             return { queued: true };
@@ -2571,7 +2582,8 @@ export class Runtime {
             queued: this.queued.map((q) => q.text),
             queueIds: this.queued.map((q) => q.id),
             queuedAttached: this.queued.map((q) => attachedLabel(q.attachments)),
-            queuedModes: this.queued.map((q): QueuedMode => (q.held ? "held" : !steerable(q, this.steersAttachments()) ? "turn" : q.mode)),
+            queuedModes: this.queued.map((q): QueuedMode => (q.held ? "held" : this.waits(q) ? "turn" : q.mode)),
+            queuedWhy: this.queued.map((q) => this.waits(q) ?? ""),
         };
     }
 
@@ -2601,8 +2613,9 @@ export class Runtime {
             void this.dispatch(q.text, q.attachments, q.literal).catch((e) => this.notice(redact((e as Error).message), "error"));
             return { sent: true, started: true };
         }
-        if (!steerable(q, this.steersAttachments())) {
-            if (!q.held) throw new RpcError(isCommand(q) || q.text.trim().startsWith("!") ? "Commands can't join a running turn: they run after it." : `${this.model?.name ?? "This model"} can't take images or files in a running turn: this runs after it.`, "not_steerable");
+        const why = this.waits(q);
+        if (why) {
+            if (!q.held) throw new RpcError(why, "not_steerable");
             q.held = undefined;
             this.queueUpdated();
             return { sent: true };

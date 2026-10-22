@@ -34,15 +34,15 @@ const SEND_NOW: QueueAction = { label: "Send now", title: "Send now" };
 /** Where every backend puts it (the agent loop, Claude Code, Codex): at a tool step, or else after the reply being written. */
 const JOINS = "Joins the current turn at its next step. If the model is already writing its last reply, it goes in right after that reply";
 
-/** A row of the queue, by what the message will do and whether a turn is running. */
-export function queueRow(mode: QueuedMode | undefined, busy: boolean): QueueRowInfo {
+/** A row of the queue, by what the message will do and whether a turn is running; `why` it can't join a running turn, from the server. */
+export function queueRow(mode: QueuedMode | undefined, busy: boolean, why?: string): QueueRowInfo {
     switch (mode ?? "steer") {
         case "steer":
             return { hint: busy ? "Joins at the next step" : "Next step", detail: JOINS, joining: busy };
         case "queue":
             return { hint: "After this turn", detail: "Runs as a turn of its own once this one ends, or at once while the turn only waits on background work", action: busy ? STEER : SEND_NOW };
         case "turn":
-            return { hint: "After this turn", detail: "Commands, and images or files this model can't take in a running turn, don't join it: this runs once it ends. While the turn only waits on background work, images and files go at once; commands run after the background work ends", ...(busy ? {} : { action: SEND_NOW }) };
+            return { hint: "After this turn", detail: why || "Commands, and attachments this model can't take in a running turn, don't join it: this runs once it ends. While the turn only waits on background work, images and files go at once; commands run after the background work ends", ...(busy ? {} : { action: SEND_NOW }) };
         case "held":
             return {
                 hint: "Held",

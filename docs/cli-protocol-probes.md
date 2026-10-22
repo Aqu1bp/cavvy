@@ -185,6 +185,8 @@ Design meaning: limits can be updated per turn from the notification, but showin
 | `claude-q2-d-moved.jsonl` | `PROBE_VARIANT=d-moved claude-interrupt-variants.ts` | Q2 follow-up |
 | `claude-q2-e-now-text.jsonl` | `PROBE_VARIANT=e-now-text claude-interrupt-variants.ts` | Q2 follow-up |
 | `claude-q2-e-now-slash.jsonl` | `PROBE_VARIANT=e-now-slash claude-interrupt-variants.ts` | Q2 follow-up |
+| `claude-2.1.304-steer-image.jsonl` | ad hoc steer probe, 2026-10-22 (haiku) | a mid-turn user message's image block reaches the model, in the running turn (`test/steer-attachments-captures.test.ts`) |
+| `claude-2.1.304-steer-pdf-dropped.jsonl` | ad hoc steer probe, 2026-10-22 (haiku) | a mid-turn user message's document block (PDF) is dropped without a word; the same block as a first prompt works |
 | `claude-q2-f-spared.jsonl` | `PROBE_VARIANT=f-spared claude-interrupt-variants.ts` | Q2 follow-up |
 | `claude-q2-f-reason.jsonl` | `PROBE_VARIANT=f-reason claude-interrupt-variants.ts` | Q2 follow-up |
 | `claude-q2-entry-desktop.jsonl` | `PROBE_VARIANT=entry-desktop claude-interrupt-variants.ts` | Q2 follow-up |
@@ -193,5 +195,6 @@ Design meaning: limits can be updated per turn from the notification, but showin
 | `codex-background-terminal-experimental.jsonl` | `codex-background-terminal.ts` | Q6 |
 | `codex-background-terminal-no-capability.jsonl` | `codex-background-terminal.ts` | Q6 |
 | `codex-model-list.jsonl` | `codex-models.ts` | model choice |
+| `codex-0.163-steer-image.jsonl` | ad hoc steer probe, 2026-10-22 | `turn/steer` takes an `image` item (data URL) into the running turn at once; the model reads it |
 
 Timings were measured on one Mac under normal load, and the 8-12 s idle windows are samples, not limits. Each behavior was observed in one or two runs, not repeated for flakiness.

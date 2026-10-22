@@ -3177,6 +3177,26 @@ describe("Codex mid-turn steering", () => {
         expect(m.meta?.kind).toBe("prompt");
     });
 
+    test("a steer's text file and PDF go to Codex as turn/start sends them: the file as text, the PDF as a note (it has no document item)", async () => {
+        process.env.FAKE_SCENARIO = "slow";
+        process.env.FAKE_STEER_WAKES = "1";
+        const pdf = Buffer.from("%PDF-1.4\n%%EOF\n").toString("base64");
+        const host: { text: string; admission: "go"; attachments: import("../src/providers/types").AttachedPart[] }[] = [];
+        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
+        const done = a.run("start");
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        await Bun.sleep(50);
+        host.push({ text: "see these", admission: "go", attachments: [{ type: "file", kind: "text", name: "notes.md", size: 9, lines: 1, text: "# notes\n" }, { type: "file", kind: "pdf", name: "spec.pdf", size: 14, mediaType: "application/pdf", data: pdf }] });
+        a.agent.queueChanged();
+        expect(await done).toBe("done");
+        const input = steers()[0]!.input;
+        expect(input.map((i: any) => i.type)).toEqual(["text"]);
+        expect(input[0].text).toStartWith("see these");
+        expect(input[0].text).toContain("# notes");
+        expect(input[0].text).toContain("spec.pdf");
+        expect(input[0].text).not.toContain(pdf);
+    });
+
     test("a steer with an image Codex refuses (its turn just ended) starts the next turn with the image", async () => {
         process.env.FAKE_SCENARIO = "steps";
         process.env.FAKE_STEER_FAIL = "1";

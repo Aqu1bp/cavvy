@@ -106,6 +106,62 @@ describe("steering a running Claude Code turn with an image", () => {
     }, 30_000);
 });
 
+const PDF = Buffer.from("%PDF-1.4\n% a test document\n%%EOF\n").toString("base64");
+const log = () => (existsSync(process.env.FAKE_LOG!) ? readFileSync(process.env.FAKE_LOG!, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+
+// Claude Code drops a mid-turn message's document blocks (claude-2.1.304-steer-pdf-dropped.jsonl): a PDF waits.
+describe("steering a running Claude Code turn with a PDF", () => {
+    test("it waits for a turn of its own, says why, and Claude Code gets the PDF then", async () => {
+        const { engine, c, id, rt } = await claudeSession("steering", { FAKE_SECOND_SCENARIO: "silent" });
+        try {
+            expect(await until(() => rt.busy)).toBe(true);
+            await engine.handle(c, "session.send", { id, text: "read this pdf", files: [{ name: "spec.pdf", data: PDF }], mode: "steer" });
+            expect(rt.snapshot().state.queuedModes).toEqual(["turn"]);
+            expect(rt.snapshot().state.queuedWhy).toEqual(["Claude Code can't take PDFs in a running turn: this runs once it ends."]);
+            const [queueId] = rt.snapshot().state.queueIds;
+            await expect(engine.handle(c, "session.sendQueuedNow", { id, queueId })).rejects.toThrow(/can't take PDFs in a running turn/);
+            expect(await until(() => !rt.busy && !rt.snapshot().state.queued.length && Boolean(withText("read this pdf")))).toBe(true);
+            // Not folded into the running turn (where it'd be dropped), but its own prompt, with the document.
+            expect(folded()).toEqual([]);
+            expect(log().some((l) => l.droppedMidTurnDocuments)).toBe(false);
+            expect(withText("read this pdf")!.content.map((b) => b.type)).toEqual(["document", "text"]);
+            const stored = rt.session.messages.find((m) => m.role === "user" && JSON.stringify(m.content).includes("read this pdf"))!;
+            expect(stored.content.some((p) => p.type === "file" && p.kind === "pdf")).toBe(true);
+        } finally {
+            await cleanup(engine);
+        }
+    }, 30_000);
+
+    test("an image with a PDF: the whole message waits, not split", async () => {
+        const { engine, c, id, rt } = await claudeSession("steering", { FAKE_SECOND_SCENARIO: "silent" });
+        try {
+            expect(await until(() => rt.busy)).toBe(true);
+            await engine.handle(c, "session.send", { id, text: "both of these", images: [{ mediaType: "image/png", data: PNG }], files: [{ name: "spec.pdf", data: PDF }], mode: "steer" });
+            expect(rt.snapshot().state.queuedModes).toEqual(["turn"]);
+            expect(await until(() => !rt.busy && !rt.snapshot().state.queued.length && Boolean(withText("both of these")))).toBe(true);
+            expect(folded()).toEqual([]);
+            expect(withText("both of these")!.content.map((b) => b.type)).toEqual(["image", "document", "text"]);
+        } finally {
+            await cleanup(engine);
+        }
+    }, 30_000);
+
+    test("a text file still joins the running turn: it goes as text", async () => {
+        const { engine, c, id, rt } = await claudeSession("steering", { FAKE_SECOND_SCENARIO: "silent" });
+        try {
+            expect(await until(() => rt.busy)).toBe(true);
+            await engine.handle(c, "session.send", { id, text: "and these notes", files: [{ name: "notes.md", data: Buffer.from("# remember the cache\n").toString("base64") }], mode: "steer" });
+            expect(rt.snapshot().state.queuedModes).toEqual(["steer"]);
+            expect(await until(() => !rt.busy)).toBe(true);
+            expect(folded()).toHaveLength(1);
+            expect(folded()[0]).toStartWith("and these notes");
+            expect(folded()[0]).toContain("# remember the cache");
+        } finally {
+            await cleanup(engine);
+        }
+    }, 30_000);
+});
+
 describe("a message with an image sent while Claude Code is busy", () => {
     for (const mode of ["steer", "queue", undefined] as const) {
         test(`mid-turn (${mode ?? "the setting's default"}): it runs after the turn, with its image`, async () => {
