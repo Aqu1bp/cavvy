@@ -28,8 +28,10 @@ const GEMINI_FOREIGN_SIGNATURE = "skip_thought_signature_validator";
 
 /** Permanent quota exhaustion, distinct from a rate limit that resets with time. */
 export function isUsageLimit(error: Json): boolean {
+    // Gemini and gateways can reuse billing language for quotas that reset.
+    if (/RetryInfo|Please retry in|quotaId[^,}]*Per(?:Minute|Day)/i.test(JSON.stringify(error))) return false;
     return error.code === "insufficient_quota" || error.type === "insufficient_quota"
-        || /credit balance (?:is )?(?:too low|exhausted)|(?:out of|insufficient) credits|exceeded your current quota.*billing/i.test(String(error.message ?? ""));
+        || /credit balance (?:is )?(?:too low|exhausted)|(?:out of|insufficient) credits/i.test(String(error.message ?? ""));
 }
 
 export const usageLimitHint = ". Usage limit / billing: check your plan and credit balance.";

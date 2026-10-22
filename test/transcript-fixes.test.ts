@@ -173,11 +173,27 @@ describe("a request that doesn't answer fails visibly, in bounded time", () => {
         expect(ops).toEqual(["partial-text", "partial-tool"].map((blockId) => ({ op: "block.remove", turnId: "turn", blockId })));
         expect(runtime.responseBlocks).toEqual([]);
         expect(activity[0]).toContain("120s");
-        expect(activity[0]).toContain("Esc cancels");
+        expect(activity[0]).toContain("Stop to cancel");
+        expect(activity[0]).not.toContain("Esc");
         const app: any = { md: { hasContent: true }, mdLines: 1, mdSource: "partial", thinking: "partial", receiving: new Map([["tool", {}]]), notice() {}, renderLive() {} };
         (App.prototype as any).onAgentEvent.call(app, event);
         expect(app.status).toContain("120s");
-        expect(app.status).toContain("Esc cancels");
+        expect(app.status).not.toContain("Esc");
+        Object.assign(app, { active: new Map(), detached: new Map(), dialogs: [], queued: [], turnStart: Date.now(), turnTokens: 0, streamChars: 0, frame: 0, toolState: { todos: [] } });
+        let binding: string | undefined = "ctrl+x";
+        app.keys = { label: (action: string) => { expect(action).toBe("chat:cancel"); return binding; } };
+        const { stripAnsi } = await import("../src/ui/ansi");
+        const spinner = () => stripAnsi((App.prototype as any).renderActivity.call(app, 160, 40).status[0]);
+        expect(spinner()).toContain("ctrl+x to interrupt");
+        // Queueing after the retry event changes what the same key does.
+        app.queued.push({ text: "next", mode: "queue" });
+        expect(spinner()).not.toContain("to interrupt");
+        expect(spinner()).not.toContain("cancels");
+        expect(spinner()).toContain("ctrl+x to take back the queued message");
+        app.queued = [];
+        binding = undefined;
+        expect(spinner()).not.toContain("to interrupt");
+        expect(spinner()).not.toContain("esc");
         expect(app.mdSource).toBe("");
         expect(app.receiving.size).toBe(0);
     });
@@ -218,7 +234,7 @@ describe("a request that doesn't answer fails visibly, in bounded time", () => {
     });
 
     test("Retry-After above five minutes stops and reports the requested wait", async () => {
-        const a = scripted(() => { throw new ProviderError("Rate limited", 429, true, 600_000); });
+        const a = scripted(() => { throw new ProviderError("Service unavailable", 503, true, 600_000); });
         const ac = new AbortController();
         const guard = setTimeout(() => ac.abort(), 100);
         try {
@@ -226,7 +242,9 @@ describe("a request that doesn't answer fails visibly, in bounded time", () => {
             expect(a.requests).toHaveLength(1);
             expect(a.events.filter((e) => e.type === "retry")).toHaveLength(0);
             expect(a.session.notices[0]?.text).toContain("600s");
-            expect(a.session.notices[0]?.text).toContain("Rate limited");
+            expect(a.session.notices[0]?.text).toContain("Service unavailable");
+            const { classifyError } = await import("../src/agent/goal");
+            expect(classifyError(a.session.notices[0]!.text)).toBe("limit");
         } finally { clearTimeout(guard); }
     });
 
@@ -875,10 +893,34 @@ describe("provider retry classification", () => {
     test("explicit billing exhaustion without a code is fatal; a temporary quota remains retryable", () => {
         const error = (message: string) => httpError(429, "Too Many Requests", JSON.stringify({ error: { message } }), null, "P");
         expect(error("Your credit balance is too low. Please purchase credits.").retryable).toBe(false);
-        expect(error("You exceeded your current quota, please check your plan and billing details.").retryable).toBe(false);
+        expect(error("You exceeded your current quota, please check your plan and billing details.").retryable).toBe(true);
         expect(error("Token quota exceeded for this minute; try again later.").retryable).toBe(true);
         expect(httpError(429, "Too Many Requests", JSON.stringify({ error: { status: "RESOURCE_EXHAUSTED", message: "Quota exceeded" } }), null, "Google Gemini").retryable).toBe(true);
         expect(httpError(402, "Payment Required", JSON.stringify({ error: { message: "Not enough credits" } }), null, "OpenRouter").retryable).toBe(false);
+    });
+
+    test.each(["object", "array", "string-wrapped"])("Gemini per-minute quotas remain retryable: %s", (shape) => {
+        const message = "You exceeded your current quota, please check your plan and billing details.\n* Quota exceeded for metric: generate_content_free_tier_input_token_count, limit: 250000\nPlease retry in 33.9s.";
+        const error = { code: 429, message, status: "RESOURCE_EXHAUSTED", details: [
+            { "@type": "type.googleapis.com/google.rpc.QuotaFailure", violations: [{ quotaId: "GenerateContentInputTokensPerModelPerMinute-FreeTier" }] },
+            { "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "33s" },
+        ] };
+        const body = shape === "array" ? [{ error }] : shape === "string-wrapped" ? { error: { message: `litellm.RateLimitError: GeminiException - ${JSON.stringify({ error })}`, type: "throttling_error", code: "429" } } : { error };
+        const e = httpError(429, "Too Many Requests", JSON.stringify(body), "33.9", "Google Gemini");
+        expect(e.retryable).toBe(true);
+        expect(e.retryAfterMs).toBe(33_900);
+        expect(e.message).toContain("Please retry in 33.9s");
+        expect(e.message).not.toContain("Usage limit / billing:");
+    });
+
+    test.each([
+        { details: [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "30s" }] },
+        { message: "Your credit balance is too low. Please retry in 30s." },
+        { details: [{ violations: [{ quotaId: "RequestsPerMinute" }] }] },
+        { details: [{ violations: [{ quotaId: "RequestsPerDay" }] }] },
+    ])("retry guidance overrides permanent-quota heuristics: %p", (hint) => {
+        const body = JSON.stringify({ error: { code: "insufficient_quota", message: "Your credit balance is too low.", ...hint } });
+        expect(httpError(429, "Too Many Requests", body, "30", "Gateway").retryable).toBe(true);
     });
 
     const ev = (type: string, data: Json = {}) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
