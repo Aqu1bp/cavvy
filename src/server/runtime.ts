@@ -46,7 +46,7 @@ import { account } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
 import { continuationGroups, modelRef, parseModelRef, textOf, toolCallsOf, assistantText, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
 import { expandMentions } from "../ui/mentions";
-import { expandMcpMentions } from "../mcp/mentions";
+import { expandMcpMentions, findMcpMentions } from "../mcp/mentions";
 import type { McpAsker } from "../mcp/elicitation";
 import { notifyAfterMs } from "../ui/notify";
 import { displayPath } from "../util/files";
@@ -1860,8 +1860,11 @@ export class Runtime {
         const turnId = this.turnId;
         if (!turnId) return;
         const turn = findTurn(this.view, turnId);
+        // A call whose work goes on in the background (a sub-agent the CLI keeps running past the turn): it ends when that does.
+        const background = new Set((this.agent?.backgroundTasks() ?? []).flatMap((t) => (t.status === "running" && t.toolUseId ? [t.toolUseId] : [])));
         // Tool calls that never finished (interrupted, or not run after a denial).
         for (const b of turn?.blocks ?? []) {
+            if (b.t === "tool" && b.status === "running" && background.has(b.id)) continue;
             if (b.t === "tool" && (b.status === "running" || b.status === "streaming" || b.status === "queued" || b.status === "awaiting")) {
                 this.patchBlock(b.id, { status: reason === "aborted" ? "error" : "error", summary: reason === "aborted" ? "Interrupted" : "Not run", progress: undefined, receiving: undefined }, turnId);
                 // Never ended, so never recorded: what it was about is kept for a reopen all the same.
@@ -2803,7 +2806,8 @@ export class Runtime {
         const adopt = this.adopts.shift();
         if (adopt) {
             const label = adopt.label?.trim() || `${getProvider(adopt.provider)?.name ?? adopt.provider} reported back`;
-            void this.startTurn(label, { display: label, kind: "wake", adopt }).catch((e) => this.notice(redact((e as Error).message), "error"));
+            // One answering the user's message (sent at once on Esc) is their prompt; others are wakes.
+            void this.startTurn(label, { display: label, kind: adopt.prompt ? "prompt" : "wake", adopt }).catch((e) => this.notice(redact((e as Error).message), "error"));
             return;
         }
         const wakes = this.toolState.wakes!.takeForTurn();
@@ -2827,6 +2831,17 @@ export class Runtime {
         // Esc stops the answer: a background sub-agent's prompt isn't the answer's.
         this.cancelInteractions({ keepBackground: true });
         if (this.abort) {
+            // Esc with a message sent meanwhile: a backend that can sends it at once in place of the turn it stops
+            // (Claude Code's send-now, which spares its background sub-agents); its turn comes back as the user's.
+            // Only with the first Esc: once the stop is under way, nothing would send another.
+            // Not one naming an MCP resource (@server:uri): sent now, it would go as typed, without the resource,
+            // which only a prompt of the harness's attaches.
+            const servers = [...this.ws.mcp.servers.keys()];
+            const q = this.abort.signal.aborted ? undefined : this.queued.find((x) => !x.held && !isCommand(x) && !x.attachments?.length && x.text.trim() && !findMcpMentions(x.text, servers).length);
+            if (q && this.agent?.sendNow(q.text)) {
+                this.queued = this.queued.filter((x) => x !== q);
+                this.queueUpdated();
+            }
             this.abort.abort();
             this.activity("Interrupting");
         } else {
@@ -3369,6 +3384,13 @@ export class Runtime {
         if (JSON.stringify(tasks) !== JSON.stringify(this.view.state.backgroundTasks ?? [])) this.setState({ backgroundTasks: tasks });
     }
 
+    /** Restart the session's agent CLI process (/tasks restart): it didn't answer a stop, or new settings wait for its background work. */
+    async restartCli(): Promise<void> {
+        if (!(await this.agent?.restartBackend())) throw new RpcError("This session has no agent CLI process to restart.", "invalid");
+        this.notice("Restarted the agent CLI's process. What it ran in the background was stopped.", "info");
+        this.syncShells();
+    }
+
     /** Stop background work from the panel or /tasks stop: these tasks, or every one running. How each went. */
     async stopBackground(ids?: string[]): Promise<Record<string, BackgroundStop>> {
         const agent = this.agent;
@@ -3440,6 +3462,8 @@ export class Runtime {
     private settled(monitors: boolean): boolean {
         if (this.busy || this.committing || this.nextQueued() || this.pending.size || this.switching || this.goal.pending()) return false;
         if ([...this.toolState.shells.values()].some((s) => s.exitCode === null && (monitors || !s.monitor))) return false;
+        // What an agent CLI runs in the background (Claude Code's sub-agents, shells, monitors): closing the session would stop it.
+        if ((this.agent?.backgroundTasks() ?? []).some((t) => t.status === "running" && (monitors || t.kind !== "monitor"))) return false;
         return !(this.agent?.delegatedTasks ?? []).some((t) => t.status === "running" || !t.delivered);
     }
 
@@ -3472,6 +3496,7 @@ export class Runtime {
         const commit = this.commitDone?.catch(() => undefined);
         const ending = Promise.all([
             this.hook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000)),
+            // Its live CLI processes too, and what they run in the background.
             this.agent?.dispose(),
             killAllShells({ state: this.toolState }),
             this.toolState.lsp?.dispose(),

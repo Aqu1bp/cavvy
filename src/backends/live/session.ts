@@ -12,7 +12,7 @@
 // with it, until the runtime adopts it (onWake, adopt).
 
 import { createHash } from "crypto";
-import type { TurnEndReason } from "../../agent/agent";
+import type { AgentEvent, TurnEndReason } from "../../agent/agent";
 import type { Usage } from "../../providers/types";
 import { JsonLinesProcess, cliMessage, stopTiming } from "../cli";
 import { BackgroundTasks, type StopResult } from "./tasks";
@@ -267,6 +267,33 @@ export class LiveCliSession {
             this.wakes.delete(ref);
             this.changed();
         }
+    }
+
+    /** A turn the CLI started by itself, not taken yet. */
+    hasWake(ref: string): boolean {
+        const w = this.wakes.get(ref);
+        return Boolean(w && !w.sink);
+    }
+
+    /**
+     * A wake turn the session won't take over: all the text it said (its events so far, then the rest), once it has
+     * ended, however long that takes (it ends with the process at the latest); undefined if there's no such turn to
+     * take. Nothing else can take it after.
+     */
+    async wakeText(ref: string): Promise<string | undefined> {
+        const w = this.wakes.get(ref);
+        if (!w || w.sink) return undefined;
+        const parts: string[] = [];
+        const collect = (e: AgentEvent) => void (e.type === "text" && parts.push(e.text));
+        w.sink = { emit: collect, drainQueued: () => [] } as TurnSink;
+        for (const e of w.held.splice(0)) if (e.t === "turn_event") collect(e.event);
+        const ended = w.result ? Promise.resolve() : new Promise<void>((resolve) => (w.resolve = () => resolve()));
+        void ended.then(() => {
+            this.wakes.delete(ref);
+            this.changed();
+        });
+        await ended;
+        return parts.join("");
     }
 
     /** Session-wide events: tasks, limits, the goal, the CLI's commands, and turn events that belong to no turn. Returns the unsubscribe. */

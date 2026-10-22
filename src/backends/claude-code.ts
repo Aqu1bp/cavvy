@@ -50,11 +50,18 @@ import { CLAUDE_PREFIX, claudeNames, claudePrompt, forClaudeCode, skillFolder } 
 import { CLAUDE_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
 import { claudeMcpPolicy } from "./claude-mcp-policy";
 import { writeAgentsFile } from "./claude-agents";
-import { backendModel, type AgentBackendClient, type BackgroundStop, type SessionHost, type TurnSink, type BackendResult, type BackendTurn, type SteerMessage } from "./types";
+import { backendModel, type AgentBackendClient, type BackgroundStop, type SessionHost, type TurnSink, type BackendResult, type BackendTurn, type SteerMessage, type BackendWake } from "./types";
 import type { BackgroundTaskInfo } from "./live/info";
 import type { TurnEndReason } from "../agent/agent";
 import type { NativeGoal } from "../agent/goal";
 import { ClaudeGoalWatch, claudeTranscriptFile } from "./claude-goal";
+import { ClaudeLive } from "./claude-live";
+import type { AgentCliStatus } from "./index";
+
+/** checkAgentCli, imported when it's asked for (index.ts imports this file). */
+async function checkAgentCliLazy(providerId: string, signal?: AbortSignal, accountId?: string): Promise<AgentCliStatus> {
+    return (await import("./index")).checkAgentCli(providerId, signal, accountId);
+}
 
 /** How often the transcript is looked at for the goal's progress while Claude Code runs. */
 const GOAL_POLL_MS = 400;
@@ -152,14 +159,14 @@ interface BackgroundWork {
 }
 
 /** What a background sub-agent's Agent call says when it ends without a report. */
-const LAUNCH_END: Record<string, string> = {
+export const LAUNCH_END: Record<string, string> = {
     done: "Claude Code passed on no report from this sub-agent.",
     error: "The sub-agent failed.",
     aborted: "The sub-agent was stopped before it reported back.",
 };
 
 /** A sub-agent that ended this way failed or was stopped: its call's row says so, as its chip does. */
-const endedBadly = (reason: TurnEndReason) => reason !== "done" && reason !== "max_turns";
+export const endedBadly = (reason: TurnEndReason) => reason !== "done" && reason !== "max_turns";
 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
@@ -176,7 +183,7 @@ const STREAM_ARGS = ["-p", "--output-format", "stream-json", "--input-format", "
  * where the harness's still asks for shell commands. It runs in default mode
  * instead, and the harness approves its edits inside the workspace itself.
  */
-const MODES: Record<PermissionMode, string> = {
+export const MODES: Record<PermissionMode, string> = {
     default: "default",
     acceptEdits: "default",
     plan: "plan",
@@ -225,7 +232,7 @@ export function claudeFastModeVersion(version: unknown): boolean {
     return claudeVersionAtLeast(version, 205);
 }
 
-function claudeVersionAtLeast(version: unknown, minPatch: number): boolean {
+export function claudeVersionAtLeast(version: unknown, minPatch: number): boolean {
     if (typeof version !== "string") return false;
     const m = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
     if (!m) return false;
@@ -254,7 +261,7 @@ export function claudePromptHooks(hooks: BackendTurn["hooks"]): { hooks?: Record
 }
 
 let requestSeq = 0;
-const requestId = () => `harness-${Date.now().toString(36)}-${(++requestSeq).toString(36)}`;
+export const requestId = () => `harness-${Date.now().toString(36)}-${(++requestSeq).toString(36)}`;
 
 export class ClaudeCodeBackend implements AgentBackendClient {
     readonly agentBackend = true as const;
@@ -268,8 +275,16 @@ export class ClaudeCodeBackend implements AgentBackendClient {
     private spent = new Map<string, number>();
     /** Each limit window's last status and reset, so "close to the limit" is said once for each (Claude Code repeats it per request). */
     private limitSeen = new Map<string, string>();
+    /** The sessions' live processes (src/backends/claude-live.ts), made at the first live turn. */
+    private _live?: ClaudeLive;
+    /** It takes over turns Claude Code starts by itself (its live sessions'). */
+    readonly adoptsTurns = true;
 
     constructor(readonly def: ProviderDef) {}
+
+    get live(): ClaudeLive {
+        return (this._live ??= new ClaudeLive(this.def, { spending: this.spent, limitSeen: this.limitSeen }, async (accountId, signal) => ({ status: await checkAgentCliLazy(this.def.id, signal, accountId) }), (signal) => this.listModels(signal)));
+    }
 
     /**
      * A one-off request (a prompt hook, MCP sampling, a title): Claude Code
@@ -345,10 +360,47 @@ export class ClaudeCodeBackend implements AgentBackendClient {
     async stopBackground(sessionKey: string, ids?: string[]): Promise<Record<string, BackgroundStop>> {
         const turn = [...this.turns].find((t) => t.sessionKey === sessionKey);
         if (turn) return turn.stopBackground(ids);
+        if (this._live?.get(sessionKey)) return this._live.stopBackground(sessionKey, ids);
         return Object.fromEntries((ids ?? []).map((id) => [id, "unknown" as const]));
     }
 
+    sendNow(sessionKey: string, text: string): boolean {
+        return this._live?.sendNow(sessionKey, text) ?? false;
+    }
+
+    async wakeReport(w: BackendWake): Promise<string | undefined> {
+        return this._live?.wakeReport(w.ref);
+    }
+
+    async restart(sessionKey: string): Promise<void> {
+        await this._live?.restart(sessionKey);
+    }
+
+    async release(sessionKey: string): Promise<void> {
+        await this._live?.release(sessionKey);
+    }
+
+    /** Stop every live process (the harness is quitting). */
+    async shutdown(): Promise<void> {
+        await this._live?.shutdown();
+    }
+
     async runTurn(t: BackendTurn): Promise<BackendResult> {
+        // One process per session, kept between turns (#219), unless agentCli.liveSessions is off: then one per turn, as
+        // before. So too a turn nothing takes reports after (-p, the SDK runner, a sub-agent): its run waits for its
+        // background work, with the bounded wait below (servers stopped at the answer, #193's timeouts), until the
+        // live layer has that policy (#219 PR 5).
+        // A turn Claude Code started by itself (a wake) is on the live process, whatever the setting says now: its
+        // report is taken there, never asked again of a new process.
+        if (t.adopt || (t.liveSessions !== false && !t.untilQuiet)) return this.live.runTurn(t);
+        // A process still kept for the session (live sessions turned off since): it goes first, or it would go on
+        // beside this run in the same Claude Code session (its background work reporting there).
+        const kept = this._live?.get(t.sessionKey);
+        if (kept) {
+            const tasks = kept.tasks.running().length;
+            await this._live!.release(t.sessionKey);
+            if (tasks) t.sink.emit({ type: "notice", level: "warn", message: `Live sessions are off (agentCli.liveSessions), so Claude Code's process for this session was stopped, and ${tasks === 1 ? "its background task" : `its ${tasks} background tasks`} with it.` });
+        }
         const bin = requireCli(this.def.id, CLAUDE_CLI);
         const key = (id: string) => `${t.accountId ?? "default"}:${id}`;
         // The harness's skills Claude Code doesn't read itself come as a plugin of their own, so it runs them like its own.
@@ -382,10 +434,11 @@ export class ClaudeCodeBackend implements AgentBackendClient {
     /** Each running turn takes its own agent's mode now (a read-only sub-agent's stays read-only). */
     setMode(_m: PermissionMode) {
         for (const turn of this.turns) turn.setMode(turn.agentMode());
+        this._live?.setMode();
     }
 }
 
-interface PendingTool {
+export interface PendingTool {
     name: string;
     input: Record<string, unknown>;
     title: string;
@@ -632,46 +685,17 @@ class ClaudeTurn {
 
     private args(): string[] {
         const t = this.t;
-        const a = [...extraArgs(this.def.id), ...STREAM_ARGS, "--include-partial-messages", "--permission-prompt-tool=stdio", "--permission-mode", MODES[t.mode]];
-        if (t.model.id !== "default") a.push("--model", t.model.id);
-        if (t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort))) a.push("--effort", t.effort);
-        if (t.resumeId) a.push("--resume", t.resumeId, ...(t.forkSession ? ["--fork-session"] : []));
-        if (t.maxTurns && Number.isFinite(t.maxTurns)) a.push("--max-turns", String(t.maxTurns));
-        a.push("--append-system-prompt", [t.appendSystemPrompt, t.goalContext,
-            `After an answer, Harness waits for a reported background Bash command until its own \`timeout\` runs out, counted from its start (at most ${span(backgroundTiming.commandMaxTimeoutMs)}); for one without a timeout, and for each monitor, it waits up to ${claudeBackgroundWaitMs(t.backgroundWaitSec) / 1000} seconds after the answer. ${Number.isFinite(backgroundTiming.maxWaitMs) ? `Sub-agents and other background work have a ${span(backgroundTiming.maxWaitMs)} limit, which doesn't cut short a command still within its own timeout (nor, while one is, any sub-agent or workflow).` : "Sub-agents and other background work run until they finish or the user stops them, with no time limit."} For a long finite job in the background (a test suite, a build, a benchmark), pass \`timeout\` with \`run_in_background\`, set to how long it may take. Background commands and monitors do not survive process shutdown, a user interrupt, or the end of their wait. Recognized dev servers/watchers are stopped without waiting after the answer, timeout or not. Consume finite-work results before declaring success; do not expect a background server to outlive the turn. Work not reported by the CLI cannot be waited for.`,
-        ].filter(Boolean).join("\n\n"));
-        for (const d of t.additionalDirectories) a.push("--add-dir", d);
-        if (this.pluginDir) a.push("--plugin-dir", this.pluginDir);
-        // The harness's plugins, in Claude Code's own format: it runs their commands, agents, skills, hooks and servers.
-        if (!t.readOnly) for (const d of t.pluginDirs ?? []) a.push("--plugin-dir", d);
-        // An untrusted folder's Claude Code settings (hooks, permission rules), skills, agents and .mcp.json stay off.
-        if (!t.trusted) a.push("--setting-sources", "user");
         // The harness's agents, for its own Agent tool (a file: -p reads one, and prompts can outgrow an argument).
-        if (t.agents && Object.keys(t.agents).length && !t.readOnly) {
-            this.agentsFile ??= writeAgentsFile(t.agents);
-            a.push("--agents", this.agentsFile.path);
-        }
-        // The harness's deny and ask rules also cover what Claude Code would do without asking.
-        const permissions = claudePermissions(t.rules);
-        const sandbox = claudeAccountSandbox();
-        // Also check excluded commands, which the CLI may run outside its sandbox.
-        if (sandbox && !permissions.ask.includes("Bash")) permissions.ask.push("Bash");
-        // This process ends with the turn, so its own schedules would never fire: Harness's schedule tools keep them instead.
-        if (t.orchestrator?.tools.includes("schedule_create")) permissions.deny.push(...CLAUDE_SCHEDULE_TOOLS);
-        // Always override external preferences: an unsupported model must not silently switch to Opus.
-        const fastMode = Boolean(t.fastMode && t.model.supportsFastMode);
-        const mcp = t.trusted && !t.readOnly ? claudeMcpPolicy(t.cwd, t.approvedMcpServers) : { strict: true };
-        if (mcp.strict) a.push("--strict-mcp-config");
-        if (mcp.warning) this.sink.emit({ type: "notice", level: "warn", message: mcp.warning });
-        if (!t.readOnly) {
-            a.push("--settings", JSON.stringify({ permissions, fastMode, ...(sandbox ? { sandbox } : {}), ...mcp.settings, ...claudePromptHooks(this.t.hooks) }));
-            return a;
-        }
-        // A read-only sub-agent: no edit tools, no MCP servers of its own, and every command asks (the harness lets read-only ones run).
-        a.push("--disallowedTools", READ_ONLY_DENY.join(","));
-        const settings = { fastMode, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { ...sandbox, autoAllowBashIfSandboxed: false }, ...claudePromptHooks(this.t.hooks) };
-        a.push("--settings", JSON.stringify(settings));
-        return a;
+        if (t.agents && Object.keys(t.agents).length && !t.readOnly) this.agentsFile ??= writeAgentsFile(t.agents);
+        const { args, mcpWarning } = claudeArgs(this.def.id, t, {
+            pluginDir: this.pluginDir,
+            agentsPath: this.agentsFile?.path,
+            append: [t.appendSystemPrompt, t.goalContext,
+                `After an answer, Harness waits for a reported background Bash command until its own \`timeout\` runs out, counted from its start (at most ${span(backgroundTiming.commandMaxTimeoutMs)}); for one without a timeout, and for each monitor, it waits up to ${claudeBackgroundWaitMs(t.backgroundWaitSec) / 1000} seconds after the answer. ${Number.isFinite(backgroundTiming.maxWaitMs) ? `Sub-agents and other background work have a ${span(backgroundTiming.maxWaitMs)} limit, which doesn't cut short a command still within its own timeout (nor, while one is, any sub-agent or workflow).` : "Sub-agents and other background work run until they finish or the user stops them, with no time limit."} For a long finite job in the background (a test suite, a build, a benchmark), pass \`timeout\` with \`run_in_background\`, set to how long it may take. Background commands and monitors do not survive process shutdown, a user interrupt, or the end of their wait. Recognized dev servers/watchers are stopped without waiting after the answer, timeout or not. Consume finite-work results before declaring success; do not expect a background server to outlive the turn. Work not reported by the CLI cannot be waited for.`,
+            ],
+        });
+        if (mcpWarning) this.sink.emit({ type: "notice", level: "warn", message: mcpWarning });
+        return args;
     }
 
     setMode(m: PermissionMode) {
@@ -1824,13 +1848,66 @@ class ClaudeTurn {
  * go along as they are), and the message stays the user's: it isn't marked synthetic for Harness's catch-up.
  */
 export function textBlocks(prompt: string, preamble?: string): Record<string, unknown>[] {
+    const split = splitPreamble(prompt, preamble);
+    return [...(split.preamble ? [{ type: "text", text: split.preamble }] : []), { type: "text", text: split.text }];
+}
+
+/** The prompt's preamble (BackendTurn.preamble) and the user's words after it, apart; all of it as theirs if it has none. */
+export function splitPreamble(prompt: string, preamble?: string): { preamble?: string; text: string } {
     const own = preamble && prompt.startsWith(preamble) ? prompt.slice(preamble.length) : undefined;
-    if (!own?.trim() || !preamble!.trim()) return [{ type: "text", text: prompt }];
-    return [{ type: "text", text: preamble!.trimEnd() }, { type: "text", text: own }];
+    if (!own?.trim() || !preamble!.trim()) return { text: prompt };
+    return { preamble: preamble!.trimEnd(), text: own };
+}
+
+/** What claudeArgs reads of a turn: its spawn settings. */
+export type ClaudeSpawnSettings = Pick<BackendTurn, "mode" | "model" | "effort" | "resumeId" | "forkSession" | "maxTurns" | "additionalDirectories" | "pluginDirs" | "readOnly" | "trusted" | "agents" | "rules" | "orchestrator" | "fastMode" | "cwd" | "approvedMcpServers" | "hooks">;
+
+/**
+ * `claude -p`'s arguments for a turn's settings: the stream-json protocol, the mode, model and effort, the
+ * session to resume, and what keeps it within the harness's rules (--settings: permissions, the sandbox,
+ * MCP policy, prompt hooks). `append`: the parts of --append-system-prompt (empty ones left out).
+ * `mcpWarning`: what the MCP policy says the user should know.
+ */
+export function claudeArgs(defId: string, t: ClaudeSpawnSettings, o: { pluginDir?: string; agentsPath?: string; append: (string | undefined)[] }): { args: string[]; mcpWarning?: string } {
+    const a = [...extraArgs(defId), ...STREAM_ARGS, "--include-partial-messages", "--permission-prompt-tool=stdio", "--permission-mode", MODES[t.mode]];
+    if (t.model.id !== "default") a.push("--model", t.model.id);
+    if (t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort))) a.push("--effort", t.effort);
+    if (t.resumeId) a.push("--resume", t.resumeId, ...(t.forkSession ? ["--fork-session"] : []));
+    if (t.maxTurns && Number.isFinite(t.maxTurns)) a.push("--max-turns", String(t.maxTurns));
+    const append = o.append.filter(Boolean).join("\n\n");
+    if (append) a.push("--append-system-prompt", append);
+    for (const d of t.additionalDirectories) a.push("--add-dir", d);
+    if (o.pluginDir) a.push("--plugin-dir", o.pluginDir);
+    // The harness's plugins, in Claude Code's own format: it runs their commands, agents, skills, hooks and servers.
+    if (!t.readOnly) for (const d of t.pluginDirs ?? []) a.push("--plugin-dir", d);
+    // An untrusted folder's Claude Code settings (hooks, permission rules), skills, agents and .mcp.json stay off.
+    if (!t.trusted) a.push("--setting-sources", "user");
+    // The harness's agents, for its own Agent tool.
+    if (o.agentsPath && t.agents && Object.keys(t.agents).length && !t.readOnly) a.push("--agents", o.agentsPath);
+    // The harness's deny and ask rules also cover what Claude Code would do without asking.
+    const permissions = claudePermissions(t.rules);
+    const sandbox = claudeAccountSandbox();
+    // Also check excluded commands, which the CLI may run outside its sandbox.
+    if (sandbox && !permissions.ask.includes("Bash")) permissions.ask.push("Bash");
+    // Its own schedules would fire only while its process runs (it's stopped at a turn's end, or when idle): Harness's schedule tools keep them instead.
+    if (t.orchestrator?.tools.includes("schedule_create")) permissions.deny.push(...CLAUDE_SCHEDULE_TOOLS);
+    // Always override external preferences: an unsupported model must not silently switch to Opus.
+    const fastMode = Boolean(t.fastMode && t.model.supportsFastMode);
+    const mcp = t.trusted && !t.readOnly ? claudeMcpPolicy(t.cwd, t.approvedMcpServers) : { strict: true };
+    if (mcp.strict) a.push("--strict-mcp-config");
+    if (!t.readOnly) {
+        a.push("--settings", JSON.stringify({ permissions, fastMode, ...(sandbox ? { sandbox } : {}), ...mcp.settings, ...claudePromptHooks(t.hooks) }));
+        return { args: a, mcpWarning: mcp.warning };
+    }
+    // A read-only sub-agent: no edit tools, no MCP servers of its own, and every command asks (the harness lets read-only ones run).
+    a.push("--disallowedTools", READ_ONLY_DENY.join(","));
+    const settings = { fastMode, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { ...sandbox, autoAllowBashIfSandboxed: false }, ...claudePromptHooks(t.hooks) };
+    a.push("--settings", JSON.stringify(settings));
+    return { args: a, mcpWarning: mcp.warning };
 }
 
 /** A prompt's images and PDFs as Claude Code takes them, after its text. */
-function mediaBlocks(images: readonly ImagePart[], documents: readonly PdfPart[]): Record<string, unknown>[] {
+export function mediaBlocks(images: readonly ImagePart[], documents: readonly PdfPart[]): Record<string, unknown>[] {
     return [
         ...images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.mediaType, data: i.data } })),
         ...documents.map((d) => ({ type: "document", source: { type: "base64", media_type: "application/pdf", data: d.data } })),
@@ -1843,14 +1920,14 @@ function ownDeadline(t: BackgroundWork): number | undefined {
 }
 
 /** "2 background sub-agents (Map auth, Check tests)". */
-function describeBackground(list: { agent: boolean; label: string }[]): string {
+export function describeBackground(list: { agent: boolean; label: string }[]): string {
     const kind = list.length && list.every((x) => x.agent) ? "background sub-agent" : "background task";
     const shown = list.slice(0, 3).map((x) => x.label);
     return `${plural(list.length, kind)}${shown.length ? ` (${shown.join(", ")}${list.length > shown.length ? `, and ${list.length - shown.length} more` : ""})` : ""}`;
 }
 
 /** The report a sub-agent handed back, as its Agent call's structured result carries it. */
-function handedBack(m: Record<string, any>): string | undefined {
+export function handedBack(m: Record<string, any>): string | undefined {
     const text = m.tool_use_result?.handbackReport?.text;
     return typeof text === "string" ? text : undefined;
 }
@@ -1937,7 +2014,7 @@ export function titleFor(name: string, input: Record<string, unknown>): string {
     }
 }
 
-function resultText(content: unknown): string {
+export function resultText(content: unknown): string {
     if (typeof content === "string") return content;
     if (Array.isArray(content)) {
         return content
@@ -1953,7 +2030,7 @@ function rel(path: string, cwd: string): string {
 }
 
 /** Diffs for Claude Code's file edits, from the structured result it reports. */
-function resultDisplay(p: PendingTool, r: unknown, cwd: string): ToolDisplay | undefined {
+export function resultDisplay(p: PendingTool, r: unknown, cwd: string): ToolDisplay | undefined {
     if (!r || typeof r !== "object") return undefined;
     const x = r as Record<string, unknown>;
     const path = typeof x.filePath === "string" ? x.filePath : undefined;
@@ -1990,7 +2067,7 @@ function resultDisplay(p: PendingTool, r: unknown, cwd: string): ToolDisplay | u
 }
 
 /** The config folder this turn's Claude Code reads (its skills are under it). */
-function claudeConfigDir(provider: string, t: BackendTurn): string | undefined {
+export function claudeConfigDir(provider: string, t: BackendTurn): string | undefined {
     try {
         return accountEnv(provider, t.accountId, t.cwd).CLAUDE_CONFIG_DIR;
     } catch {

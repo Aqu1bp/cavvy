@@ -62,6 +62,8 @@ for (const provider of ["test", "claude-code"]) {
                     model: { provider, id: "test" },
                     // As the real Agent: told when a message to steer with is queued (the image message is one).
                     queueChanged() {},
+                    // As the real Agent: its CLI's background work (none here), which keeps a session from counting as idle.
+                    backgroundTasks: () => [],
                     async run(_parts: unknown, { signal }: { signal: AbortSignal }) {
                         runs++;
                         if (runs > 1) return "done";

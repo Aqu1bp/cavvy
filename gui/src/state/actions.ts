@@ -121,6 +121,10 @@ function clientCommand(id: string | undefined, text: string): boolean {
             return true;
         case "tasks": {
             const [verb, task] = args.trim().split(/\s+/);
+            if (verb === "restart" && id) {
+                void rpc.call("session.restartCli", { id }).catch(reportError);
+                return true;
+            }
             if (verb === "stop" && id) {
                 // By task id (task-1, bash_2, a CLI's own), as in the terminal, or every one still running.
                 const listed = backgroundOf(handleFor(id)?.view.state);

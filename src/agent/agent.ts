@@ -1548,6 +1548,8 @@ export class Agent {
             backgroundWaitSec: s.claudeCode?.backgroundWaitSec,
             liveSessions: s.agentCli?.liveSessions !== false,
             wakeOnBackgroundCommand: s.codex?.wakeOnBackgroundCommand !== false,
+            // Nothing adopts the CLI's report turns after this one (-p, the SDK runner, a sub-agent): it waits for them.
+            untilQuiet: !this.o.host.wake,
             additionalDirectories: s.permissions?.additionalDirectories ?? [],
             trusted,
             // The backend registers a project's own only where the user trusted it (the list may come from implicit trust).
@@ -1756,8 +1758,26 @@ export class Agent {
         const about = w.label?.trim() ? ` (${w.label.trim()})` : "";
         this.endNotice("warn", `${name} started a turn of its own, but this session can't take it over now${on}.${report ? ` What it reported${about}:\n${report}` : ""}`);
         if (report) this.addReminder(`${name}, which this session ran on earlier, reported on background work it was doing${about}:\n${report}`);
+        else void this.laterReport(w, name, about);
         this.emit({ type: "turn_end", reason: "error" });
         return "error";
+    }
+
+    /**
+     * A wake not taken over that carried no report (a Claude Code monitor's event: only the turn it started saw its
+     * output): what that turn said, once it ends, is shown and told to the model, as a report is (#305).
+     */
+    private async laterReport(w: BackendWake, name: string, about: string) {
+        for (const b of this.backendsUsed) {
+            const said = await b.wakeReport?.(w).catch(() => undefined);
+            if (said === undefined) continue;
+            const text = redact(said.trim());
+            if (!text || this.disposed) return;
+            const report = text.length > WAKE_REPORT_CHARS ? `${text.slice(0, WAKE_REPORT_CHARS)}…` : text;
+            this.emit({ type: "notice", level: "info", message: `What ${name}'s turn said${about}:\n${report}` });
+            this.addReminder(`${name}, which this session ran on earlier, took a turn of its own on background work it was doing${about}, and said:\n${report}`);
+            return;
+        }
     }
 
     /** Session-level news from a backend: its background tasks, a notice outside any turn. */
@@ -1774,6 +1794,24 @@ export class Agent {
     /** The session's background work, as one list (src/agent/background.ts): running and ended. */
     backgroundTasks(): BackgroundTaskInfo[] {
         return (this.state.background ?? new SessionBackground()).list({ delegated: this.delegatedTasks, shells: this.state.shells });
+    }
+
+    /**
+     * Esc with a message the user sent meanwhile: the backend sends it at once in place of the running turn
+     * (Claude Code's send-now), which it reports back as a wake turn to adopt as the user's. False when it can't.
+     */
+    sendNow(text: string): boolean {
+        // Not one the user's UserPromptSubmit hooks haven't admitted (they may block it, or add to it): it waits in
+        // the queue, and goes through them as a prompt of its own once the turn has stopped.
+        if (!this.o.isSubagent && this.hookSettings().hooks?.UserPromptSubmit?.length) return false;
+        return isAgentBackend(this.client) && Boolean(this.client.sendNow?.(this.session.meta.id, text));
+    }
+
+    /** Restart the session's live CLI process (it didn't answer a stop): what it runs in the background stops. */
+    async restartBackend(): Promise<boolean> {
+        if (!isAgentBackend(this.client) || !this.client.restart) return false;
+        await this.client.restart(this.session.meta.id);
+        return true;
     }
 
     /**
@@ -1856,8 +1894,10 @@ export class Agent {
         return id ? Number(this.delegations.cancel(id)) : this.delegations.cancelAll();
     }
 
-    /** Aborted when the agent is disposed: a background sub-agent's prompt (BackendPermission.background) waits until then. */
+    /** Aborted when the agent is disposed: what a backend asks between turns, and a background sub-agent's prompt (BackendPermission.background), waits until then. */
     private lifetime = new AbortController();
+    /** Backend turns run, so a turn's session host can tell when it's no longer the running one's. */
+    private backendTurns = 0;
 
     /**
      * The session is done with this agent: stop its delegated tasks (waiting a moment for them), let go of the
@@ -1985,9 +2025,10 @@ export class Agent {
     private adoptedUnsent?: { provider: string; text: string };
 
     /** How a backend runs the harness's hooks: whole events (Codex's items), or one handler Claude Code calls back for. */
-    private backendHooks(signal: AbortSignal): Pick<SessionHost, "hooks" | "hookHandler"> {
+    private backendHooks(signalOf: AbortSignal | (() => AbortSignal)): Pick<SessionHost, "hooks" | "hookHandler"> {
+        const current = () => (typeof signalOf === "function" ? signalOf() : signalOf);
         return {
-            hooks: (event, payload) => this.hooks(event, payload, signal),
+            hooks: (event, payload) => this.hooks(event, payload, current()),
             hookHandler: async (event, h, input, sig) => {
                 // As the harness's own hooks: its session (Claude Code's own id beside it), and `if` applied here.
                 const sub = this.o.subagent;
@@ -1995,6 +2036,7 @@ export class Agent {
                 const cwd = typeof input.cwd === "string" ? input.cwd : this.state.cwd;
                 if (!hookApplies(h, event, full, cwd)) return { kind: "none" };
                 // Claude Code waits for its callback: an async hook answers at once and goes on in the background.
+                const signal = current();
                 if (isAsync(h)) {
                     runInBackground(h, event, full, cwd, this.hookServices(signal));
                     return { kind: "none" };
@@ -2024,15 +2066,20 @@ export class Agent {
         /** What drainQueued handed over from the user, to the words they typed (what hooks added follows). */
         const typed = new Map<string, string>();
         // The session's side. Still made per turn for the backends that run a process per turn (its permission
-        // answers end this turn); a live CLI session binds one for good (#219).
+        // answers end this turn); a live CLI session keeps the last turn's between turns (#219). Once this agent's
+        // run is over (or another started), what's asked is the session's (a background sub-agent's prompt or
+        // hook), not this turn's, which may have been stopped.
+        const seq = ++this.backendTurns;
+        const over = () => !this.running || this.backendTurns !== seq;
+        const sessionSignal = () => (over() ? this.lifetime.signal : signal);
         const session: SessionHost = {
-            ...this.backendHooks(signal),
+            ...this.backendHooks(sessionSignal),
             mode: () => this.o.mode.get(),
             fastMode: () => this.fastMode(),
             permission: async (req) => {
                 // A background sub-agent's goes on past the turn (and Esc): only the session's end, or the backend
                 // saying it no longer matters (req.signal: its sub-agent's turn ended), withdraws it.
-                const a = await this.backendPermission(req, req.background ? (req.signal ? AbortSignal.any([this.lifetime.signal, req.signal]) : this.lifetime.signal) : signal);
+                const a = await this.backendPermission(req, req.background ? (req.signal ? AbortSignal.any([this.lifetime.signal, req.signal]) : this.lifetime.signal) : sessionSignal());
                 // A no to one of the backend's own sub-agents stops that one (the backend says so to it), not this turn.
                 if (!a.allow && a.stop && !req.agentLabel) declined = true;
                 return a;
@@ -3369,8 +3416,9 @@ export class Agent {
             lastError ??= redact((e as Error).message ?? String(e));
         } finally {
             this.children.delete(child);
-            // Nothing takes a sub-agent's later turns: the CLI process kept for it goes, with what it left running.
-            // Before its servers close, so nothing still running there finds them gone.
+            // Nothing takes a sub-agent's later turns: the CLI process kept for it goes, with what it left running
+            // (Claude Code runs a sub-agent's turns on its per-run path, untilQuiet, so it has none). Before its servers
+            // close, so nothing still running there finds them gone.
             await child.releaseBackends();
             await servers?.close().catch(() => undefined);
         }

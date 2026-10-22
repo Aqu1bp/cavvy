@@ -826,6 +826,7 @@ test("a delegated task's effective effort is set once and survives agent-head re
         model: { provider: "codex", id: "test" },
         agent: {
             delegatedTasks: [task],
+            backgroundTasks: () => [],
             dispose: async () => {},
             run: async () => {
                 session.push({ role: "user", content: [{ type: "text", text: "Delegate a review" }] });

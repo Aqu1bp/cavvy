@@ -57,6 +57,12 @@ async function until(pred: () => boolean, ms = 10_000) {
     }
 }
 
+/**
+ * The turn is over. Not `rt.idle`: while an agent CLI's task runs on in the background, the session isn't idle
+ * (closing or unloading it would stop the task, #219 PR 4).
+ */
+const turnOver = (rt: { busy: boolean; session: { messages: readonly { role: string }[] } }) => !rt.busy && rt.session.messages.some((m) => m.role === "assistant");
+
 /** A background shell of the harness's own, as Bash leaves one (without a process). */
 function shell(id: string, command: string): BackgroundShell & { killed: number } {
     const s = {
@@ -113,7 +119,7 @@ test("the session's background list has an agent CLI's tasks and its own shells,
         const stops: { key: string; ids?: string[] }[] = [];
         rt.agent!.setModel(backendModel("fake-cli", "x"), cliBackend(stops) as never);
         await engine.handle(c, "session.send", { id, text: "map auth in the background" });
-        await until(() => rt.idle);
+        await until(() => turnOver(rt));
         const sh = shell("bash_1", "npm run dev");
         rt.toolState.shells.set(sh.id, sh);
         // The next tool's end, or the panel's poll, looks at the shells: a stop does too.
@@ -297,7 +303,7 @@ test("review round 2, A1/B4: Stop all on a task that can't be stopped doesn't ma
         const { backend, h } = stubCli(task, "stopped");
         rt.agent!.setModel(backendModel("fake-cli", "x"), backend as never);
         await engine.handle(c, "session.send", { id, text: "go" });
-        await until(() => rt.idle);
+        await until(() => turnOver(rt));
         expect(await engine.handle(c, "session.stopBackground", { id })).toEqual({ results: { "cli-ns": "not_stoppable" } });
         h.session!.emitSession?.({ type: "background_task", task: { ...task, status: "done" } });
         expect(notices(c).map((n) => [n.task?.id, n.task?.outcome])).toEqual([["cli-ns", "done"]]);
@@ -313,7 +319,7 @@ test("review round 2, A1/B4: a stop the CLI refuses, then the task fails on its 
         const { backend, h } = stubCli(task, "failed");
         rt.agent!.setModel(backendModel("fake-cli", "x"), backend as never);
         await engine.handle(c, "session.send", { id, text: "go" });
-        await until(() => rt.idle);
+        await until(() => turnOver(rt));
         expect(await engine.handle(c, "session.stopBackground", { id, ids: ["cli-rf"] })).toEqual({ results: { "cli-rf": "failed" } });
         h.session!.emitSession?.({ type: "background_task", task: { ...task, status: "failed" } });
         expect(rt.snapshot().state.backgroundTasks!.find((t) => t.id === "cli-rf")?.status).toBe("failed");
@@ -337,7 +343,7 @@ test("review round 2, A1/B4: a task that ends while its stop is being answered: 
         };
         rt.agent!.setModel(backendModel("fake-cli", "x"), backend as never);
         await engine.handle(c, "session.send", { id, text: "go" });
-        await until(() => rt.idle);
+        await until(() => turnOver(rt));
         h.session!.emitSession?.({ type: "background_task", task: b });
         expect(rt.snapshot().state.backgroundTasks!.filter((t) => t.status === "running").map((t) => t.id)).toEqual(["cli-a", "cli-b"]);
         await engine.handle(c, "session.stopBackground", { id });
@@ -356,7 +362,7 @@ test("review round 2, A1/B4: a stop not confirmed in time: ending stopped it was
         const { backend, h } = stubCli(a, "timeout");
         rt.agent!.setModel(backendModel("fake-cli", "x"), backend as never);
         await engine.handle(c, "session.send", { id, text: "go" });
-        await until(() => rt.idle);
+        await until(() => turnOver(rt));
         h.session!.emitSession?.({ type: "background_task", task: b });
         expect(await engine.handle(c, "session.stopBackground", { id })).toEqual({ results: { "cli-a": "timeout", "cli-b": "timeout" } });
         h.session!.emitSession?.({ type: "background_task", task: { ...a, status: "stopped" } });
@@ -417,7 +423,7 @@ test("review round 2, B3: a task said to be done, then to have failed: Finished 
         const { backend, h } = stubCli(task, "stopped");
         rt.agent!.setModel(backendModel("fake-cli", "x"), backend as never);
         await engine.handle(c, "session.send", { id, text: "go" });
-        await until(() => rt.idle);
+        await until(() => turnOver(rt));
         h.session!.emitSession?.({ type: "background_task", task: { ...task, status: "done" } });
         expect(rt.snapshot().state.backgroundTasks!.map((t) => [t.id, t.status])).toEqual([["cli-rv", "done"]]);
         h.session!.emitSession?.({ type: "background_task", task: { ...task, status: "failed" } });
@@ -669,6 +675,78 @@ test("review #295 P1-1: Esc stops the answer, not a background sub-agent's permi
         await Bun.sleep(50);
         expect(JSON.stringify(asked[0]!.answer)).toBeUndefined();
     } finally {
+        await engine.stop();
+    }
+});
+
+test("review #295 P1-3: a second Esc while the first one's stop is under way hands no other queued message to send-now", async () => {
+    const { engine, c, id, rt } = await session();
+    try {
+        const sentNow: string[] = [];
+        let turns = 0;
+        const backend = {
+            agentBackend: true as const,
+            setMode() {},
+            listModels: async () => [],
+            stream: async () => {
+                throw new Error("not used");
+            },
+            compact: async () => ({ reason: "done" as const, text: "", actions: [] }),
+            runTurn: async (t: BackendTurn) => {
+                turns++;
+                if (turns === 1 && !t.signal.aborted) await new Promise<void>((r) => t.signal.addEventListener("abort", () => setTimeout(r, 100), { once: true }));
+                return { reason: t.signal.aborted ? ("aborted" as const) : ("done" as const), text: "ok", actions: [] };
+            },
+            sendNow: (_key: string, text: string) => (sentNow.push(text), true),
+        };
+        rt.agent!.setModel(backendModel("fake-cli", "x"), backend as never);
+        await engine.handle(c, "session.send", { id, text: "go" });
+        await until(() => rt.busy && turns === 1);
+        await engine.handle(c, "session.send", { id, text: "one" });
+        await engine.handle(c, "session.send", { id, text: "two" });
+        await engine.handle(c, "session.interrupt", { id });
+        await engine.handle(c, "session.interrupt", { id });
+        expect(sentNow).toEqual(["one"]);
+        await until(() => !rt.busy);
+        // The second is still the user's: back in the composer once the turn has stopped, as Esc leaves queued messages.
+        expect((sent.get(c) ?? []).some((e) => e.type === "draft" && (e as { text?: string }).text === "two")).toBe(true);
+    } finally {
+        await engine.stop();
+    }
+});
+
+test("final review, blocker 1: Esc doesn't send at once a queued message naming an MCP resource (it would go without it)", async () => {
+    const { engine, c, id, rt } = await session();
+    try {
+        const sentNow: string[] = [];
+        let turns = 0;
+        const backend = {
+            agentBackend: true as const,
+            setMode() {},
+            listModels: async () => [],
+            stream: async () => {
+                throw new Error("not used");
+            },
+            compact: async () => ({ reason: "done" as const, text: "", actions: [] }),
+            runTurn: async (t: BackendTurn) => {
+                turns++;
+                if (turns === 1 && !t.signal.aborted) await new Promise<void>((r) => t.signal.addEventListener("abort", () => r(), { once: true }));
+                return { reason: t.signal.aborted ? ("aborted" as const) : ("done" as const), text: "ok", actions: [] };
+            },
+            sendNow: (_key: string, text: string) => (sentNow.push(text), true),
+        };
+        // A configured MCP server named "photos".
+        (rt as any).ws.mcp.servers.set("photos", { status: "connected" });
+        rt.agent!.setModel(backendModel("fake-cli", "x"), backend as never);
+        await engine.handle(c, "session.send", { id, text: "go" });
+        await until(() => rt.busy && turns === 1);
+        await engine.handle(c, "session.send", { id, text: "analyze @photos:resource://diagram" });
+        await engine.handle(c, "session.interrupt", { id });
+        await until(() => !rt.busy);
+        expect(sentNow).toEqual([]);
+        expect((sent.get(c) ?? []).some((e) => e.type === "draft" && (e as { text?: string }).text?.includes("@photos:resource://diagram"))).toBe(true);
+    } finally {
+        (rt as any).ws.mcp.servers.delete("photos");
         await engine.stop();
     }
 });
