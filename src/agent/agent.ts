@@ -1369,7 +1369,8 @@ export class Agent {
         let summary = "";
         try {
             // Same system prompt and tools as the session, so the cached prefix is reused.
-            const res = await send(this.request(req, opts.signal, { maxTokens: maxOut }));
+            // Reserve the output budget for the summary instead of manual thinking.
+            const res = await send(this.request(req, opts.signal, { maxTokens: maxOut, noThinking: true }));
             summary = res.stopReason === "context_window_exceeded" ? "" : textOf(res);
         } catch (e) {
             if (isAbort(e, opts.signal)) throw e;
@@ -1387,6 +1388,7 @@ export class Agent {
                 system: "You summarize conversations between a user and an AI coding assistant so the work can continue in a fresh context.",
                 tools: [],
                 maxTokens: maxOut,
+                noThinking: true,
                 lightweight: true,
             });
             const res = await send(req);

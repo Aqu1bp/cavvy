@@ -25,7 +25,7 @@ import {
     type StreamEvent,
     type Usage,
 } from "./types";
-import { anthropicTraits, ANTHROPIC_FALLBACK_MODELS } from "./anthropic-models";
+import { anthropicTraits, ANTHROPIC_FALLBACK_MODELS, ANTHROPIC_THINKING_BUDGETS, ANTHROPIC_BUDGET_EFFORTS } from "./anthropic-models";
 import type { Effort } from "../config/settings";
 import { plainErrorText } from "../util/html";
 import { fileAsText, fitRequest, readsPdf } from "./files";
@@ -76,6 +76,8 @@ export class AnthropicProvider implements ProviderClient {
                         if (caps.effort[lvl]?.supported) effortLevels.push(lvl);
                     }
                 }
+                const adaptive = caps ? caps.thinking.types.adaptive.supported : t.adaptive;
+                const budget = !!t.budget && (caps ? caps.thinking.types.enabled.supported : true);
                 out.push({
                     provider: this.def.id,
                     id: m.id,
@@ -88,10 +90,11 @@ export class AnthropicProvider implements ProviderClient {
                     ...apiFastModeInfo(this.def.id, m.id, resolveBaseUrl(this.def)),
                     supportsTools: true,
                     supportsImages: caps ? caps.image_input.supported : true,
-                    supportsReasoning: caps ? caps.thinking.supported : t.adaptive,
-                    adaptiveThinking: caps ? caps.thinking.types.adaptive.supported : t.adaptive,
-                    budgetThinking: caps ? caps.thinking.types.enabled.supported : !t.adaptive,
-                    effortLevels: caps ? effortLevels : t.effort,
+                    supportsReasoning: adaptive || budget,
+                    adaptiveThinking: adaptive,
+                    budgetThinking: budget,
+                    effortLevels: !adaptive && budget ? ANTHROPIC_BUDGET_EFFORTS : caps ? effortLevels : t.effort,
+                    nativeEffortLevels: caps ? effortLevels : t.effort,
                     created: Date.parse(m.created_at) || undefined,
                     // Anthropic-compatible proxies may leave lifecycle out; that isn't a retirement signal.
                     deprecated: m.lifecycle !== undefined && m.lifecycle !== "active",
@@ -118,10 +121,11 @@ export class AnthropicProvider implements ProviderClient {
             longContextThreshold: t.longContextThreshold,
             supportsTools: true,
             supportsImages: true,
-            supportsReasoning: t.adaptive,
+            supportsReasoning: t.adaptive || !!t.budget,
             adaptiveThinking: t.adaptive,
-            budgetThinking: !t.adaptive,
-            effortLevels: t.effort,
+            budgetThinking: !!t.budget,
+            effortLevels: t.budget ? ANTHROPIC_BUDGET_EFFORTS : t.effort,
+            nativeEffortLevels: t.effort,
         };
     }
 
@@ -169,7 +173,11 @@ export class AnthropicProvider implements ProviderClient {
         const m = req.model;
         const t = anthropicTraits(m.id);
         const adaptive = m.adaptiveThinking ?? t.adaptive;
-        const effortLevels = m.effortLevels ?? t.effort;
+        // Old caches guessed budget support for every unknown model. Only known
+        // manual-thinking models may enable it; an explicit denial still wins.
+        const budget = !adaptive && t.budget && m.budgetThinking !== false;
+        // Manual models expose our budget levels to the UI, not native API effort.
+        const effortLevels = adaptive ? m.effortLevels ?? t.effort : m.nativeEffortLevels ?? t.effort;
         const betas: string[] = [];
         const features: string[] = [];
         const use = (f: string) => !disabledFeatures.has(f) && (features.push(f), true);
@@ -216,6 +224,13 @@ export class AnthropicProvider implements ProviderClient {
                 betas.push("thinking-binding-controls-2026-08-01");
             }
             params.thinking = thinking;
+        } else if (budget && req.effort && !req.noThinking && !req.lightweight) {
+            if (maxOut < 1025) throw new ProviderError("Extended thinking requires max_tokens of at least 1025. Increase the output limit or turn effort off.");
+            // Keep the 1024-token minimum and reserve 1024 answer tokens where
+            // the output cap permits it, without raising an explicit limit.
+            params.thinking = { type: "enabled", budget_tokens: Math.min(ANTHROPIC_THINKING_BUDGETS[req.effort], Math.max(1024, maxOut - 1024)) };
+            // Haiku 4.5 cannot interleave. Opus/Sonnet 4 need the beta for tools.
+            if (tools.length && /^claude-(opus|sonnet)-4/.test(m.id)) betas.push("interleaved-thinking-2025-05-14");
         }
         const effort = req.effort;
         if (effort && effortLevels.length) {
