@@ -356,6 +356,19 @@ describe("the agent loop's compaction", () => {
         expect(JSON.stringify(toAnthropicMessages(sent))).toContain('"type":"image"');
         expect(JSON.stringify(toOpenAIMessages("sys", sent, getProvider("openai")!))).toContain("image_url");
         expect(JSON.stringify(toResponsesInput(sent, getProvider("openai")!, "gpt-x"))).toContain("input_image");
+        // Chat Completions too: one user message (strict templates refuse two in a row), the summary, the prompt, then its image.
+        const chat = toOpenAIMessages("sys", [...sent, say("final")], getProvider("mistral")!);
+        expect(chat.map((m) => m.role)).toEqual(["system", "user", "assistant"]);
+        expect(chat[1]!.content.map((p: { type: string; text?: string }) => p.type === "text" ? p.text!.slice(0, 20) : p.type)).toEqual([summaryText.slice(0, 20), "What is wrong in thi", "image_url"]);
+    });
+
+    test("consecutive text-only user messages go to Chat Completions as one, in order", () => {
+        const chat = toOpenAIMessages("", [user("[Request interrupted by user]"), user("try again"), assistant("ok"), user("next")], getProvider("openai")!);
+        expect(chat).toEqual([
+            { role: "user", content: "[Request interrupted by user]\n\ntry again" },
+            { role: "assistant", content: "ok" },
+            { role: "user", content: "next" },
+        ]);
     });
 
     test("a mid-turn compaction (after tool results) summarizes everything, and the work carries on", async () => {
