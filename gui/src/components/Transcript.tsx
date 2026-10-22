@@ -352,15 +352,28 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     // From the column's end if it's following the end, else from its top.
     let box: HTMLDivElement | undefined;
     let moving: Animation | undefined;
+    /** This slide's box is held from the column's end (it was following the end as the slide began). */
+    let fromEnd = false;
     const atEnd = createMemo(on(() => panelHold()?.slide, (slide) => !!slide && untrack(stick)));
     const hold = () => {
         const held = panelHold();
         return held && { width: `${held.column.w}px`, height: `${held.column.h}px`, top: `${atEnd() ? held.to.h - held.column.h : 0}px` };
     };
+    // The hold ending puts the box back at the column's top. Held from the end and scrolled up meanwhile (not
+    // following the end any more), it's scrolled by as much, so what's read stays where it is.
+    createEffect(on(panelHold, (held, before) => {
+        if (held || !before || !scroller || !fromEnd || stick()) return;
+        const top = before.to.h - before.column.h;
+        if (!top) return;
+        scroller.scrollTop -= top;
+        wrote();
+        reading = capture();
+    }, { defer: true }));
     createEffect(on(() => panelHold()?.slide, (slide) => {
         moving?.cancel();
         moving = undefined;
         const held = panelHold();
+        if (slide) fromEnd = atEnd();
         const x = held ? (held.from.w - held.to.w) / 2 : 0;
         const y = held && atEnd() ? held.from.h - held.to.h : 0;
         if (!slide || !box || (!x && !y)) return;

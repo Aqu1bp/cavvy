@@ -425,7 +425,22 @@ try {
     setPanelHold({ column: { w: 1092, h: 864 }, from: { w: 1092, h: 864 }, to: { w: 1092, h: 604 }, sheetWidth: 1092, terminal: 260, slide: { ...slide } });
     assert.deepEqual(hold().props.style, { width: "1092px", height: "864px", top: "-260px" });
     assert.equal(slides.at(-1)!.from, "translate(0px, 260px)");
+    // Scrolled up before the slide ends: the box goes back to the column's top, 260px down, and what's read stays put.
+    scroller().props.onWheel({ deltaY: -100 }); scroll(5000); scroll(4900);
+    assert.ok(button("jump"), "not following the end any more");
     setPanelHold(undefined);
+    assert.equal(top, 4900 + 260, "scrolled by as much as the box moved");
+    resize(scroller()); flush();
+    assert.equal(top, 4900 + 260, "and the reading anchor, taken again, doesn't undo it");
+    // The mirror: the terminal closing under a conversation read further up, then scrolled to the end mid-slide.
+    // Held from the top, the box doesn't move as the hold ends: nothing to make up for, and it follows the end.
+    setPanelHold({ column: { w: 1092, h: 864 }, from: { w: 1092, h: 604 }, to: { w: 1092, h: 864 }, sheetWidth: 1092, terminal: 260, slide: { ...slide } });
+    assert.equal(hold().props.style.top, "0px");
+    scroll(1e9);
+    assert.equal(button("jump"), undefined, "following the end again");
+    const end = top;
+    setPanelHold(undefined); resize(scroller()); flush();
+    assert.equal(top, end, "still at the end");
     // Read further up, it stays where it is: from the top, nothing to move.
     scroll(1200); scroll(1100);
     assert.ok(button("jump"), "not following the end");
