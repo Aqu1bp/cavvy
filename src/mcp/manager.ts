@@ -649,9 +649,9 @@ export class McpManager {
         });
     }
 
-    /** Connected servers that offer resources (a list or templates). */
+    /** Connected servers that offer resources, including unlisted links returned by tools. */
     resourceServers(): ServerState[] {
-        return [...this.servers.values()].filter((s) => s.status === "connected" && s.client && (s.resources?.length || s.templates?.length));
+        return [...this.servers.values()].filter((s) => s.status === "connected" && s.client && (s.resources?.length || s.templates?.length || s.client.offers("resources")));
     }
 
     /** Every connected server's resources, for @-mention menus: `mention` is what to type after the @. */
@@ -720,7 +720,7 @@ export class McpManager {
                 name: "ReadMcpResource",
                 category: "mcp",
                 readOnly: true,
-                description: "Read one resource from a connected MCP server by its URI (from ListMcpResources, or a template filled in).",
+                description: "Read one resource from a connected MCP server by its URI (from ListMcpResources, a resource link returned by a tool, or a template filled in).",
                 parameters: { type: "object", properties: { server: { type: "string", description: "The MCP server's name" }, uri: { type: "string", description: "The resource URI" } }, required: ["server", "uri"] },
                 title: (input: { server?: string; uri?: string }) => `Read MCP resource ${input?.server ?? ""}:${(input?.uri ?? "").slice(0, 80)}`,
                 async run(input: { server: string; uri: string }, ctx): Promise<ToolResult> {

@@ -132,6 +132,17 @@ export function toOpenAIMessages(system: string, messages: Message[], def: Provi
         }
         if (msg.raw?.openai && msg.provider === def.id) {
             const raw = { ...msg.raw.openai };
+            if (Array.isArray(raw.tool_calls)) {
+                raw.tool_calls = raw.tool_calls.map((call: Json) => {
+                    if (!call.function) return call;
+                    try {
+                        const input = JSON.parse(call.function.arguments);
+                        if (input && typeof input === "object" && !Array.isArray(input)) return call;
+                    } catch {}
+                    // Keep valid argument bytes intact; the tool result explains invalid input.
+                    return { ...call, function: { ...call.function, arguments: "{}" } };
+                });
+            }
             if (deepseek) raw.reasoning_content ??= visibleReasoning(msg);
             else delete raw.reasoning_content;
             out.push(raw);

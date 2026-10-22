@@ -738,6 +738,142 @@ function gate() {
     return { p, open };
 }
 
+describe("TUI output-limit continuations", () => {
+    function continuationApp() {
+        const { app } = testApp();
+        type Content = string | string[] | ((cols: number) => string[]);
+        let entries: { content: Content }[] = [];
+        (app as any).screen = {
+            print(content: Content) {
+                const entry = { content };
+                entries.push(entry);
+                return entry;
+            },
+            replace(old: typeof entries, content: Content) {
+                const index = entries.indexOf(old[0]!);
+                if (index < 0) return;
+                entries = [...entries.slice(0, index), { content }, ...entries.slice(index).filter((entry) => !old.includes(entry))];
+            },
+            redraw() {},
+        };
+        app.settings.showThinking = true;
+        const emit = (event: AgentEvent) => (app as any).onAgentEvent(event);
+        const output = () => entries.flatMap(({ content }) => typeof content === "function" ? content(100) : Array.isArray(content) ? content : [content]).map(stripAnsi).join("\n");
+        const assistant = (text: string, stopReason: "max_tokens" | "end_turn", answer = text) => emit({
+            type: "assistant", answer,
+            message: { role: "assistant", provider: "test", model: "test", content: [{ type: "text", text }], stopReason },
+        });
+        return { app, emit, output, assistant };
+    }
+
+    test("thinking between fragments preserves one Markdown answer and the complete /copy text", () => {
+        const { app, emit, output, assistant } = continuationApp();
+        const head = "Example:\n```ts\nconst value = ";
+        const tail = "42;\n```\nDone.";
+        emit({ type: "text", text: head });
+        assistant(head, "max_tokens");
+        emit({ type: "request_start", continuation: true });
+        emit({ type: "thinking", text: "Finish the example." });
+        emit({ type: "text", text: tail });
+        assistant(tail, "end_turn", head + tail);
+        emit({ type: "turn_end", reason: "done" });
+        expect(app.lastResponse).toBe(head + tail);
+        expect(output()).toContain("const value = 42;");
+        expect(output().split(BULLET)).toHaveLength(2);
+        expect(output().match(/const value/g)).toHaveLength(1);
+        expect(output().indexOf("Finish the example.")).toBeGreaterThan(output().indexOf("Done."));
+    });
+
+    test.each(["text", "tool_call_start", "server_tool", "notice"] as const)("retry after %s discards the failed tail while preserving the accepted prefix and its Markdown state", (boundary) => {
+        const { app, emit, output, assistant } = continuationApp();
+        const head = "```ts\nconst value = ";
+        const tail = "42;\n```";
+        emit({ type: "text", text: head });
+        assistant(head, "max_tokens");
+        emit({ type: "request_start", continuation: true });
+        emit({ type: "text", text: "FAILED;\n" });
+        if (boundary === "tool_call_start") emit({ type: "tool_call_start", id: "failed-call", name: "Write" });
+        if (boundary === "server_tool") emit({ type: "server_tool", name: "web_search", detail: "" });
+        if (boundary === "notice") emit({ type: "notice", message: "Provider status", level: "info" });
+        emit({ type: "retry", reason: "connection reset", delayMs: 0, attempt: 1 });
+        emit({ type: "request_start", continuation: true });
+        emit({ type: "text", text: tail });
+        assistant(tail, "end_turn", head + tail);
+        expect(app.lastResponse).toBe(head + tail);
+        expect(output()).toContain("const value = 42;");
+        expect(output()).not.toContain("FAILED");
+        expect(output().match(/const value/g)).toHaveLength(1);
+    });
+
+    test.each(["done", "aborted"] as const)("%s flushes pending cutoff text once and keeps the next turn separate", (reason) => {
+        const { emit, output, assistant } = continuationApp();
+        emit({ type: "text", text: "Unfinished prefix" });
+        assistant("Unfinished prefix", "max_tokens");
+        if (reason === "aborted") {
+            emit({ type: "request_start", continuation: true });
+            emit({ type: "text", text: " and interrupted tail" });
+        }
+        emit({ type: "turn_end", reason });
+        emit({ type: "request_start" });
+        emit({ type: "text", text: "New answer" });
+        assistant("New answer", "end_turn");
+        expect(output().match(/Unfinished prefix/g)).toHaveLength(1);
+        expect(output().match(/New answer/g)).toHaveLength(1);
+        if (reason === "aborted") expect(output()).toContain("Unfinished prefix and interrupted tail");
+        expect(output().split(BULLET)).toHaveLength(3);
+    });
+
+    test("a fresh request without the continuation marker finishes the pending answer", () => {
+        const { emit, output, assistant } = continuationApp();
+        emit({ type: "text", text: "First answer" });
+        assistant("First answer", "max_tokens");
+        emit({ type: "request_start" });
+        emit({ type: "text", text: "Second answer" });
+        assistant("Second answer", "end_turn");
+        expect(output()).toContain("First answer");
+        expect(output()).toContain("Second answer");
+        expect(output()).not.toContain("First answerSecond answer");
+        expect(output().split(BULLET)).toHaveLength(3);
+    });
+
+    test("a cut-off tool call closes its text before tool recovery", () => {
+        const { emit, output, assistant } = continuationApp();
+        emit({ type: "text", text: "Before tool" });
+        emit({ type: "tool_call_start", id: "call", name: "Write" });
+        emit({
+            type: "assistant",
+            message: {
+                role: "assistant", provider: "test", model: "test", stopReason: "max_tokens",
+                content: [{ type: "text", text: "Before tool" }, { type: "tool_call", id: "call", name: "Write", input: {} }],
+            },
+        });
+        emit({ type: "request_start" });
+        emit({ type: "text", text: "After tool" });
+        assistant("After tool", "end_turn");
+        expect(output()).toContain("Before tool");
+        expect(output()).toContain("After tool");
+        expect(output()).not.toContain("Before toolAfter tool");
+        expect(output().split(BULLET)).toHaveLength(3);
+    });
+
+    test.each([false, true])("resumed history joins continuation Markdown, including a chain crossing the history tail (%s)", (crossesTail) => {
+        const { app, output } = continuationApp();
+        const head = "Example:\n```ts\nconst value = ";
+        const tail = "42;\n```\nDone.";
+        app.session.push({ role: "assistant", provider: "test", model: "test", stopReason: "max_tokens", content: [{ type: "text", text: head }] });
+        app.session.push({ role: "user", meta: { kind: "continuation" }, content: [{ type: "text", text: "Continue." }] });
+        app.session.push({ role: "assistant", provider: "test", model: "test", content: [{ type: "thinking", text: "Finish the example." }, { type: "text", text: tail }] });
+        if (crossesTail) {
+            for (let i = 0; i < 39; i++) app.session.push({ role: "user", meta: { kind: "reminder" }, content: [{ type: "text", text: "Internal note" }] });
+        }
+        (app as any).replayTranscript();
+        expect(output()).toContain("const value = 42;");
+        expect(output().match(/Example:/g)).toHaveLength(1);
+        expect(output().split(BULLET)).toHaveLength(2);
+        expect(output()).not.toContain("Continue.");
+    });
+});
+
 describe("TUI input handling", () => {
     test("a prompt sent while MCP servers are still connecting is queued, not lost", async () => {
         const { app } = testApp();
