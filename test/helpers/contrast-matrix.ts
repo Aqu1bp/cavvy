@@ -71,6 +71,10 @@ export const TEXT: [string, string[]][] = [
     ["--danger", [...SHEET, "--sheet > color-mix(in srgb, var(--danger) 12%, transparent)"]],
     ["--add-fg", ["--sheet > --add-bg", "--sheet-2 > --add-bg", "--term-bg > --add-bg", "--sheet > --add-bg-strong"]],
     ["--del-fg", ["--sheet > --del-bg", "--sheet-2 > --del-bg", "--term-bg > --del-bg", "--sheet > --del-bg-strong"]],
+    // What you said: your words in the bubble (a shell line's is tinted), quieter once archived,
+    // and its "Show more" and comment headings; the attachment pills under the same fill.
+    ["--fg", ["--bubble", "color-mix(in srgb, var(--ok) 7%, var(--bubble))"]],
+    ["--fg-2", ["--bubble", "color-mix(in srgb, var(--ok) 7%, var(--bubble))"]],
 ];
 
 /** Every declared theme and its actual light/dark scheme. */

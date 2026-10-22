@@ -1,14 +1,15 @@
-/* Model replies, in the mockup's prose rules: the reading size (--fs, 14.5px
-   at the default text size), full-strength text, airy lines. */
+/* Model replies, in the mockup's prose rules (chat.css, "The reply"): the
+   reading size (14.5px at the default text size), full-strength text, airy
+   lines, 12px between blocks. Each block is its own .md-block (lib/markdown.ts). */
 
 .md {
     font-size: 1.036rem;
-    line-height: 1.65;
+    line-height: 1.62;
     color: var(--fg);
     overflow-wrap: anywhere;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 12px;
     min-width: 0;
 }
 
@@ -28,29 +29,43 @@
 
 .md p {
     margin: 0;
+    text-wrap: pretty;
 }
 
 .md h1,
 .md h2,
 .md h3,
 .md h4 {
-    margin: 10px 0 -2px;
-    line-height: 1.3;
+    margin: 0;
+    line-height: 1.35;
     font-weight: 650;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.005em;
     color: var(--fg);
+}
+
+/* A heading's block: more room above it than between paragraphs, less under
+   it, so it reads with what follows. (The block, not the heading: a block's
+   first and last child have no margins of their own.) */
+.md > .md-block:has(> :is(h1, h2, h3, h4)) {
+    margin-bottom: -4px;
+}
+
+.md > .md-block:not(:first-child):has(> :is(h1, h2, h3, h4)) {
+    margin-top: 10px;
 }
 
 .md h1 {
     font-size: 1.2em;
+    letter-spacing: -0.01em;
 }
 
 .md h2 {
     font-size: 1.1em;
+    letter-spacing: -0.01em;
 }
 
 .md h3 {
-    font-size: 1em;
+    font-size: 1.035em;
 }
 
 .md h4 {
@@ -61,15 +76,35 @@
 .md ul,
 .md ol {
     margin: 0;
-    padding-left: 1.4em;
+    padding-left: 1.25em;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
 }
 
-.md li + li {
-    margin-top: 4px;
+.md li {
+    padding-left: 0.2em;
 }
 
+/* Bullets are quiet; numbers are read, so they keep a text colour. */
 .md li::marker {
     color: var(--fg-3);
+}
+
+.md ul > li::marker {
+    color: var(--fg-4);
+}
+
+/* A nested list is the detail: closer, a step quieter, with dashes. */
+.md li > :is(ul, ol) {
+    margin-top: 6px;
+    gap: 4px;
+    color: var(--fg-2);
+}
+
+/* As list-style-type, not ::marker's content: WebKit (the app's WKWebView) ignores content there. */
+.md li > ul {
+    list-style-type: "–  ";
 }
 
 .md li > p {
@@ -83,11 +118,12 @@
 
 .md :not(pre) > code {
     font-family: var(--font-mono);
-    font-size: 0.86em;
-    padding: 1px 5px;
+    font-size: 0.85em;
+    padding: 1.5px 5px;
     border-radius: 5px;
     color: var(--fg);
     background: var(--sheet-2);
+    box-shadow: inset 0 0 0 0.5px var(--line);
     overflow-wrap: anywhere;
 }
 
@@ -123,6 +159,16 @@
 
 .md a.md-file > code {
     color: inherit;
+}
+
+/* A file named in code: the code is the link, no underline under it. */
+.md a.md-file:has(> code:only-child) {
+    text-decoration: none;
+}
+
+.md a.md-file:has(> code:only-child):hover > code {
+    text-decoration: underline;
+    text-underline-offset: 2px;
 }
 
 .md .md-image {
@@ -164,11 +210,12 @@
     outline-offset: 2px;
 }
 
-/* Tables: a card on the sheet, a quiet header row, hairlines between rows. */
+/* Tables: a card on the sheet with a hairline edge (a border, which the
+   header row's fill can't cover), a quiet header row, hairlines between rows. */
 .md-table {
     overflow-x: auto;
     background: var(--sheet);
-    box-shadow: inset 0 0 0 0.5px var(--line);
+    border: 0.5px solid var(--line-strong);
     border-radius: var(--r-card);
 }
 
@@ -176,7 +223,7 @@
     border-collapse: collapse;
     width: 100%;
     font-size: 0.93em;
-    line-height: 1.5;
+    line-height: 1.45;
 }
 
 .md th,
@@ -205,13 +252,38 @@
     border-bottom: 0;
 }
 
+/* A column the reply aligned (|---:|), or whose every cell is a number
+   (lib/markdown.ts marks those .num): the header goes with its cells. */
+.md :is(th, td)[align="right"],
+.md :is(th, td).num {
+    text-align: right;
+}
+
+.md :is(th, td)[align="center"] {
+    text-align: center;
+}
+
+.md td.num {
+    font-variant-numeric: tabular-nums;
+}
+
+/* Code blocks: a tinted card with a hairline edge. */
+.md .md-pre,
+.md .code:not(.bare) {
+    box-shadow: inset 0 0 0 0.5px var(--line);
+}
+
+.md .md-pre,
+.md .code:not(.bare) .code-body {
+    padding: 12px 14px;
+    font: 0.893rem/1.65 var(--font-mono);
+}
+
 .md .md-pre {
     margin: 0;
-    padding: 10px 14px;
     background: var(--sheet-2);
     border-radius: var(--r-card);
     overflow-x: auto;
-    font: 0.857rem/1.7 var(--font-mono);
 }
 
 .md-check {
@@ -231,20 +303,20 @@
 
 .md li:has(> .md-check) {
     list-style: none;
-    margin-left: -1.2em;
+    margin-left: -1.25em;
 }
 
 /* While the reply streams: what just arrived fades in (lib/stream-dom.ts marks
    it), and a soft dot sits where it's being written, after the last text or the
    code being typed. */
 .md.streaming :is(.md-fresh, .code.fresh) {
-    animation: md-fresh 280ms var(--ease-out) both;
+    animation: md-fresh 260ms var(--ease-out) both;
 }
 
 /* Never fully clear at first, so the dot doesn't sit past a blank. */
 @keyframes md-fresh {
     from {
-        opacity: 0.2;
+        opacity: 0.35;
     }
 }
 

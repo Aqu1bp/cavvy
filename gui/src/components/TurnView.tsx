@@ -2,7 +2,7 @@ import { RenderBoundary } from "./ui/ErrorBoundary";
 import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, Show, Switch } from "solid-js";
 import { AlertCircle, AlertTriangle, BellRing, Check, CircleCheck, CircleStop, CircleX, ChevronRight, Clock, FileDiff, FileText, GitFork, Goal, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
-import { duration, turnDuration, firstChangedLine, plural, stripAnsi } from "../lib/format";
+import { duration, turnDuration, firstChangedLine, plural, promptTime, shortPrompt, stripAnsi } from "../lib/format";
 import { now } from "../lib/clock";
 import { formatSize } from "../lib/attachments";
 import { linesLabel, linesPhrase, splitComments } from "../lib/review-comments";
@@ -63,24 +63,32 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
             </div>
         );
     }
+    // At the right, as wide as its text: attachments above it, and under it (over the gap, on hover
+    // or focus) when it was sent, Copy and Rewind.
     return (
         <div class="user-row">
-            <div class={`user-bubble ${p.turn.prompt?.command ? "command" : ""} ${shell() ? "shell" : ""} ${long() && !expanded() ? "clamped" : ""}`} data-find="prompt">
-                <span class="user-actions" data-find-skip>
-                    <CopyButton text={raw} label="Copy prompt" />
-                    <Show when={p.turn.prompt?.index != null && p.onRewind && !p.turn.archived}>
-                        <button class="icon-btn" title="Rewind to before this prompt" aria-label="Rewind to before this prompt" onClick={() => p.onRewind!(p.turn.prompt!.index!)}>
-                            <RotateCcw size={14} />
-                        </button>
+            <Show when={p.turn.prompt?.scheduled}>
+                {(label) => (
+                    <span class="prompt-scheduled" data-find-skip>
+                        <Clock size={12} /> {label()}
+                    </span>
+                )}
+            </Show>
+            <Show when={p.turn.prompt?.images || p.turn.prompt?.files?.length}>
+                <span class="prompt-attachments" data-find-skip>
+                    <Show when={p.turn.prompt?.images}>
+                        {(n) => <PromptImages sessionId={p.sessionId} turn={p.turn} count={n()} />}
                     </Show>
+                    <For each={p.turn.prompt?.files ?? []}>
+                        {(f) => (
+                            <span class="chip tiny" title={`${f.name} · ${formatSize(f.size)}${f.lines !== undefined ? ` · ${plural(f.lines, "line")}` : ""}`}>
+                                <FileText size={11} /> <span class="truncate">{f.name}</span> · {formatSize(f.size)}
+                            </span>
+                        )}
+                    </For>
                 </span>
-                <Show when={p.turn.prompt?.scheduled}>
-                    {(label) => (
-                        <span class="prompt-scheduled" data-find-skip>
-                            <Clock size={12} /> {label()}
-                        </span>
-                    )}
-                </Show>
+            </Show>
+            <div class={`user-bubble ${p.turn.prompt?.command ? "command" : ""} ${shell() ? "shell" : ""} ${long() && !expanded() ? "clamped" : ""} ${shortPrompt(text()) && !parts().comments.length ? "short" : ""}`} data-find="prompt">
                 <Show when={shell()} fallback={<span class="user-text">{text()}</span>}>
                     <span class="user-text mono">
                         <SquareTerminal size={13} /> {text().slice(1)}
@@ -101,23 +109,24 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
                         </For>
                     </div>
                 </Show>
-                <Show when={p.turn.prompt?.images || p.turn.prompt?.files?.length}>
-                    <span class="prompt-attachments" data-find-skip>
-                        <Show when={p.turn.prompt?.images}>
-                            {(n) => <PromptImages sessionId={p.sessionId} turn={p.turn} count={n()} />}
-                        </Show>
-                        <For each={p.turn.prompt?.files ?? []}>
-                            {(f) => (
-                                <span class="chip tiny" title={`${f.name} · ${formatSize(f.size)}${f.lines !== undefined ? ` · ${plural(f.lines, "line")}` : ""}`}>
-                                    <FileText size={11} /> <span class="truncate">{f.name}</span> · {formatSize(f.size)}
-                                </span>
-                            )}
-                        </For>
-                    </span>
-                </Show>
                 <Show when={long()}>
                     <button class="link-btn more" aria-expanded={expanded()} onClick={() => setExpanded(!expanded())}>
                         {expanded() ? "Show less" : "Show more"}
+                    </button>
+                </Show>
+            </div>
+            <div class="user-actions" data-find-skip>
+                <Show when={p.turn.startedAt}>
+                    {(at) => (
+                        <time class="user-when" dateTime={new Date(at()).toISOString()} title={new Date(at()).toLocaleString()}>
+                            {promptTime(at())}
+                        </time>
+                    )}
+                </Show>
+                <CopyButton text={raw} label="Copy prompt" />
+                <Show when={p.turn.prompt?.index != null && p.onRewind && !p.turn.archived}>
+                    <button class="icon-btn" title="Rewind to before this prompt" aria-label="Rewind to before this prompt" onClick={() => p.onRewind!(p.turn.prompt!.index!)}>
+                        <RotateCcw size={14} />
                     </button>
                 </Show>
             </div>

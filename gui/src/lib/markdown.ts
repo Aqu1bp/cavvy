@@ -157,6 +157,20 @@ function hrefPath(href: string): PathRef | undefined {
     }
 }
 
+/**
+ * A table cell that's a number: "1,204", "41.2s", "-3", "12 %", "$4.50", "2.5 GB".
+ * Not a version (0.42.1), a ratio (1/4), a date or a time.
+ */
+const NUMBER = /^[+\-−±~≈]?[$€£¥]?(?:\d{1,3}(?:[, ]\d{3})+|\d+)(?:\.\d+)?(?:\s?(?:%|×|[a-zA-Zµ]{1,3}))?$/;
+/** Cells that say there's nothing there, which don't make a column any less numeric. */
+const BLANK = /^(?:|-|–|—|n\/a)$/i;
+
+/** Every cell with something in it is a number (emphasis and code marks aside), and at least one has. */
+export function numericColumn(cells: readonly string[]): boolean {
+    const filled = cells.map((c) => c.replace(/[*_`]/g, "").trim()).filter((c) => !BLANK.test(c));
+    return filled.length > 0 && filled.every((c) => NUMBER.test(c));
+}
+
 const md = new Marked({ gfm: true, breaks: false, async: false });
 md.use({
     renderer: {
@@ -196,9 +210,16 @@ md.use({
             return `<pre class="md-pre"><code${lang ? ` data-lang="${escapeHtml(lang)}"` : ""}>${escapeHtml(text)}</code></pre>`;
         },
         table(token: Tokens.Table) {
+            // A column the reply didn't align itself, whose every cell is a number, is aligned at the right, header and all.
+            const numeric = token.header.map((_, i) => !token.align[i] && numericColumn(token.rows.map((r) => r[i]?.text ?? "")));
+            const cell = (c: Tokens.TableCell, i: number) => {
+                const tag = c.header ? "th" : "td";
+                const attrs = c.align ? ` align="${c.align}"` : numeric[i] ? ` class="num"` : "";
+                return `<${tag}${attrs}>${this.parser.parseInline(c.tokens)}</${tag}>`;
+            };
             // Wide tables scroll inside their own box instead of widening the page.
-            const head = `<tr>${token.header.map((c) => this.tablecell(c)).join("")}</tr>`;
-            const body = token.rows.map((r) => `<tr>${r.map((c) => this.tablecell(c)).join("")}</tr>`).join("");
+            const head = `<tr>${token.header.map(cell).join("")}</tr>`;
+            const body = token.rows.map((r) => `<tr>${r.map(cell).join("")}</tr>`).join("");
             return `<div class="md-table"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
         },
         checkbox({ checked }: Tokens.Checkbox) {
