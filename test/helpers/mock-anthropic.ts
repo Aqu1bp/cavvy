@@ -9,6 +9,8 @@
 export interface MockAnthropicRequest {
     messages: { role: string; content: unknown }[];
     system?: unknown;
+    /** The request as sent. */
+    body: Record<string, unknown>;
     at: number;
     usage: { input_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number };
     compaction: boolean;
@@ -65,7 +67,7 @@ export function startMockAnthropic(o: { ttlMs?: number; ttl1h?: boolean; tokensP
             const last = body.messages[body.messages.length - 1];
             const compaction = /write a detailed summary of the conversation/.test(textOf(last?.content));
             const usage = { input_tokens: 3, cache_read_input_tokens: read, cache_creation_input_tokens: Math.max(0, total - read - 3) };
-            const r: MockAnthropicRequest = { messages: body.messages, system: body.system, at, usage, compaction };
+            const r: MockAnthropicRequest = { messages: body.messages, system: body.system, body, at, usage, compaction };
             mock.requests.push(r);
             const out = mock.reply(r);
             if (typeof out === "number") return Response.json({ type: "error", error: { type: "api_error", message: "mock failure" } }, { status: out });

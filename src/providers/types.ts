@@ -7,6 +7,14 @@
 
 import type { Effort } from "../config/settings";
 
+// Lives here, not in tools/types, so the GUI can import the transcript types
+// without pulling the agent's tool code into its typecheck.
+export interface TodoItem {
+    content: string;
+    status: "pending" | "in_progress" | "completed";
+    activeForm?: string;
+}
+
 export type TextPart = { type: "text"; text: string };
 export type ImagePart = { type: "image"; mediaType: string; data: string /* base64 */ };
 /**
@@ -63,6 +71,8 @@ export interface UserMessage {
         imported?: boolean;
         /** Models (modelRef) that refused a request for this message's images: they're sent it without them. The images stay. */
         imagesRefused?: string[];
+        /** State at a compaction boundary, restored before replaying later tool calls. */
+        compactedState?: { todos: TodoItem[]; approvedPlan?: string };
     };
 }
 
@@ -92,6 +102,8 @@ export interface Usage {
     /** Portion of cache writes using Anthropic's one-hour TTL. */
     cacheWrite1hTokens?: number;
     reasoningTokens?: number;
+    /** Billable Anthropic server web searches ($10 per 1,000 requests). */
+    webSearchRequests?: number;
     /** The provider actually served this response at fast speed. */
     fastMode?: boolean;
     /** Provider-reported cost in USD, when available (OpenRouter). */
@@ -110,6 +122,22 @@ export interface ToolSchema {
     parameters: Record<string, unknown>; // JSON Schema (type: object)
 }
 
+/**
+ * The heading of a system prompt's last section, what it says of its session
+ * only (the date, the git status at its start; src/agent/system-prompt.ts).
+ */
+export const SESSION_CONTEXT_HEADING = "# Session context";
+
+/**
+ * A system prompt as the part every session of a project shares and the
+ * session's own context after it ("" when there's none, as in prompts frozen
+ * before there was a section for it).
+ */
+export function splitSystemPrompt(system: string): { shared: string; session: string } {
+    const at = system.lastIndexOf(`\n\n${SESSION_CONTEXT_HEADING}\n`);
+    return at > 0 ? { shared: system.slice(0, at), session: system.slice(at + 2) } : { shared: system, session: "" };
+}
+
 export interface ChatRequest {
     model: ModelInfo;
     system: string;
@@ -124,7 +152,12 @@ export interface ChatRequest {
     lightweight?: boolean;
     /** No extended thinking, where the model can turn it off (a quick answer matters more). */
     noThinking?: boolean;
-    /** Cache the system prompt even when lightweight: it's the same on every call (the auto-mode reviewer's). */
+    /**
+     * Cache the system prompt (and the tools ahead of it) on its own, up to its
+     * session context, so requests whose messages differ share it: every session
+     * and sub-agent of a kind in a project sends the same one, as the auto-mode
+     * reviewer does on each call (even lightweight).
+     */
     cacheSystem?: boolean;
     /** Anthropic server-side web search. */
     webSearch?: boolean;

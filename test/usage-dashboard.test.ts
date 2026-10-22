@@ -15,6 +15,46 @@ const now = Date.parse("2026-10-15T16:30:00Z");
 const fixture = (name: string) => readFileSync(join(import.meta.dir, "fixtures/usage", name), "utf8");
 function write(file: string, data: string) { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, data); return file; }
 const harnessLine = (model = "anthropic:claude-opus-5-5", cost = 1) => JSON.stringify({ t: "usage", at: now - 1000, model, cost, usage: { inputTokens: 100, outputTokens: 10 } }) + "\n";
+
+test("Anthropic search fees survive session reload and dashboard cost breakdown", async () => {
+    const { Session } = await import("../src/agent/session");
+    const { resolveModelInfo } = await import("../src/providers/models");
+    const session = Session.create(iso.home);
+    session.push({ role: "user", content: [{ type: "text", text: "search" }] });
+    const usage = { inputTokens: 100, outputTokens: 100, webSearchRequests: 8 };
+    const model = "anthropic:claude-sonnet-5-5";
+    const cost = costOf(usage, resolveModelInfo(model)).usd;
+    expect(cost).toBeCloseTo(.0812, 10);
+    session.recordUsage(model, usage, cost);
+    const loaded = Session.load(session.path);
+    expect(loaded.cost).toBeCloseTo(.0812, 10);
+    expect(loaded.usageByModel.get(model)!.usage.webSearchRequests).toBe(8);
+    const summary = await usageSummary(1);
+    expect(summary.totals.cost).toBeCloseTo(.0812, 10);
+    expect(summary.totals.costByType.input).toBeCloseTo(.0002, 10);
+    expect(summary.totals.costByType.output).toBeCloseTo(.001, 10);
+    expect(summary.totals.costByType.unallocated).toBeCloseTo(.08, 10);
+    expect((await scanUsage()).files[0]!.records[0]!.usage.webSearchRequests).toBe(8);
+});
+
+test("offline Anthropic pricing includes Haiku's full-prompt long tier", async () => {
+    const { resolveModelInfo } = await import("../src/providers/models");
+    const usage = { inputTokens: 1, cacheReadTokens: 100_000, outputTokens: 1000 };
+    expect(costOf(usage, resolveModelInfo("anthropic:claude-haiku-5-5")).usd).toBeCloseTo(.0075005, 10);
+    write(join(iso.home, "projects/p/haiku.jsonl"), JSON.stringify({ t: "usage", at: now - 1000, model: "anthropic:claude-haiku-5-5", usage }) + "\n");
+    expect((await usageSummary(1, now)).totals.cost).toBeCloseTo(.0075005, 10);
+});
+
+test("cached Anthropic metadata cannot retain stale static prices", async () => {
+    const { resolveModelInfo, cachedListings } = await import("../src/providers/models");
+    write(join(iso.home, "cache/models.json"), JSON.stringify({ version: 3, providers: { anthropic: { fetchedAt: now, fp: "test", models: [
+        { provider: "anthropic", id: "claude-sonnet-5-5", pricing: { input: 2, output: 10, cacheRead: .2, cacheWrite: 2.5 } },
+        { provider: "anthropic", id: "claude-haiku-5-5", pricing: { input: .1, output: .5, cacheRead: .01, cacheWrite: .125 } },
+    ] } } }));
+    expect(costOf({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 1_000_000 }, resolveModelInfo("anthropic:claude-sonnet-5-5")).usd).toBe(.1);
+    const haiku = cachedListings().find(l => l.provider.id === "anthropic")!.models.find(m => m.id === "claude-haiku-5-5")!;
+    expect(costOf({ inputTokens: 150_000, outputTokens: 10_000 }, haiku).usd).toBeCloseTo(.1, 10);
+});
 beforeEach(() => {
     for (const root of [iso.home, claude, codex]) { rmSync(root, { recursive: true, force: true }); mkdirSync(root, { recursive: true }); }
     process.env.HARNESS_HOME = iso.home; process.env.CLAUDE_CONFIG_DIR = claude; process.env.CODEX_HOME = codex;
