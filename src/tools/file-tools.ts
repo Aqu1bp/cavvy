@@ -48,6 +48,7 @@ export const ReadTool: Tool<{ file_path: string; offset?: number; limit?: number
 Usage:
 - file_path may be absolute or relative to the working directory.
 - By default reads up to ${MAX_LINES} lines from the start. For long files pass offset (1-based line number) and limit.
+- Text files over 10 MiB cannot be read, even with offset/limit. Use Grep or extract a smaller file first.
 - Lines longer than 2000 characters are truncated.
 - Images (PNG, JPG, GIF, WEBP) are returned as images you can see.
 - Jupyter notebooks (.ipynb) are rendered as cells with their outputs.
@@ -81,8 +82,8 @@ Usage:
                 display: { summary: `Read image (${Math.round(st.size / 1024)} KB)` },
             };
         }
-        if (st.size > MAX_TEXT_BYTES && !input.offset && !input.limit) {
-            return { content: `File is large (${st.size} bytes). Use offset and limit to read it in parts, or Grep to search it.`, isError: true };
+        if (st.size > MAX_TEXT_BYTES) {
+            return { content: `File is too large (${st.size} bytes, max ${MAX_TEXT_BYTES} bytes), even with offset/limit. Use Grep to search it, or extract a smaller file first.`, isError: true };
         }
         const buf = await readFile(abs);
         if (abs.endsWith(".ipynb")) {

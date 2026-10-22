@@ -4,7 +4,8 @@
 // that ignore SIGTERM, compaction of an oversized history, and the TUI's
 // input handling (queued messages, ! commands, paste, key changes).
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
+import * as fsPromises from "fs/promises";
 import { spawn } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
@@ -45,6 +46,37 @@ afterAll(() => {
 const ROOT = resolve(import.meta.dir, "..");
 const toolState = (cwd: string) => ({ cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() }) as any;
 const toolCtx = (cwd: string) => ({ state: toolState(cwd), settings: {}, signal: new AbortController().signal }) as any;
+
+test("Read ranges cannot bypass the text size limit", async () => {
+    const proj = tempDir();
+    for (const name of ["large.log", "large.ipynb"]) {
+        const file_path = join(proj, name);
+        writeFileSync(file_path, "x\n".repeat(5 * 1024 * 1024 + 1));
+        const ctx = toolCtx(proj);
+        const read = spyOn(fsPromises, "readFile");
+        try {
+            for (const range of [{ limit: 1 }, { offset: 1 }, { offset: 1, limit: 1 }, {}]) {
+                const result = await ReadTool.run({ file_path, ...range }, ctx);
+                expect(result.isError).toBe(true);
+                expect(result.content).toContain("max 10485760 bytes");
+                expect(result.content).not.toContain("Use offset");
+                expect(result.content).toContain("Grep");
+                expect(ctx.state.fileState.has(file_path)).toBe(false);
+            }
+            expect(read).not.toHaveBeenCalled();
+        } finally {
+            read.mockRestore();
+        }
+    }
+    const file_path = join(proj, "small.log");
+    writeFileSync(file_path, "first\nsecond\nthird\n");
+    const ctx = toolCtx(proj);
+    const result = await ReadTool.run({ file_path, offset: 2, limit: 1 }, ctx);
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("2\tsecond");
+    expect(result.content).not.toContain("first");
+    expect(ctx.state.fileState.get(file_path).partial).toBe(true);
+});
 
 describe("Write re-checks the file after approval", () => {
     test("a change saved while the prompt was open isn't overwritten", async () => {
