@@ -524,6 +524,33 @@ describe("isolation: worktree", () => {
         expect(result("t1")!.content).toContain("It made no changes, so its worktree was removed.");
     });
 
+    test("two runs of a worktree agent send the same cached prefix: each one's worktree is named after it (#255)", async () => {
+        await initRepo();
+        defineAgent("isolated", "isolation: worktree");
+        childScript = () => say("looked around");
+        mainCalls(["t1", "Task", task("isolated")], ["t2", "Task", task("isolated")]);
+        const { run } = await makeAgent({ mode: "bypassPermissions" });
+        await run("go");
+        expect(childRequests).toHaveLength(2);
+        // As the Anthropic provider sends them (the scripted child stands in for a Claude model).
+        const { AnthropicProvider } = await import("../src/providers/anthropic");
+        const { BUILTIN_PROVIDERS } = await import("../src/providers/registry");
+        const anthropic = new AnthropicProvider(BUILTIN_PROVIDERS.find((p) => p.id === "anthropic")!, "sk-ant-test") as any;
+        const sent = childRequests.map((r) => anthropic.buildParams({ ...r, model: { provider: "anthropic", id: "claude-haiku-5-5" } }, false).params);
+        const prefix = (p: any) => JSON.stringify({ tools: p.tools, system: p.system.slice(0, 1) });
+        expect(sent[0].system[0].cache_control).toEqual({ type: "ephemeral" });
+        expect(prefix(sent[1])).toBe(prefix(sent[0]));
+        const where = childRequests.map((r) => /You work in a git worktree of your own, (\S+), on branch (\S+)/.exec(r.system)!);
+        expect(where[0]![1]).not.toBe(where[1]![1]);
+        sent.forEach((p, i) => {
+            expect(p.system[0].text).toContain(`Project: ${cwd} (you work in a git worktree of it`);
+            expect(p.system[0].text).not.toContain(".claude/worktrees");
+            expect(p.system[0].text).not.toContain("agent/isolated-");
+            expect(p.system[1].text).toContain(`Working directory: ${where[i]![1]}`);
+            expect(p.system[1].text).toContain(where[i]![2]);
+        });
+    });
+
     test("one that changed something is kept, and the report says where", async () => {
         await initRepo();
         defineAgent("changer", "isolation: worktree\npermissionMode: acceptEdits");

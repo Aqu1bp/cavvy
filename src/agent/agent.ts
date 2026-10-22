@@ -2720,8 +2720,9 @@ export class Agent {
             extra.push(agentMemoryPrompt(def.memory, dir, readable ? readAgentMemory(dir) : undefined));
         }
         if (servers?.instructions) extra.push(servers.instructions);
-        if (worktree) extra.push(`# Your worktree\nYou work in a git worktree of your own, ${worktree.path}, on branch ${worktree.branch} (from ${worktree.base.slice(0, 12)}). Make your changes there. When you're done, commit them on that branch; the main agent will review and merge it. If you change nothing, the worktree is removed.`);
         const own = [def.prompt, ...extra].filter(Boolean).join("\n\n");
+        // Each worktree's path and branch are new: they come after what every agent of the type shares (and caches).
+        const checkout = worktree && `# Your worktree\nYou work in a git worktree of your own, ${worktree.path}, on branch ${worktree.branch} (from ${worktree.base.slice(0, 12)}). Make your changes there. When you're done, commit them on that branch; the main agent will review and merge it. If you change nothing, the worktree is removed.`;
 
         const system = buildSystemPrompt({
             cwd: projectRoot,
@@ -2730,6 +2731,7 @@ export class Agent {
             append: def.readOnly ? EXPLORE_APPEND : undefined,
             includeGit: false,
             projectFiles: this.projectTrusted(),
+            ...(checkout ? { checkout: { project: this.state.projectRoot, note: checkout } } : {}),
         });
         const session = Session.create(projectRoot, { persist: false, system });
         // Not saved itself: a Claude Code or Codex session it runs on is recorded in this one.
@@ -2773,7 +2775,7 @@ export class Agent {
             memoryDir,
             maxTurns,
             // Claude Code and Codex use their own system prompts: this goes on top.
-            appendSystemPrompt: backend ? [BACKEND_SUBAGENT, own, def.readOnly ? BACKEND_READ_ONLY : ""].filter(Boolean).join("\n\n") : undefined,
+            appendSystemPrompt: backend ? [BACKEND_SUBAGENT, own, checkout, def.readOnly ? BACKEND_READ_ONLY : ""].filter(Boolean).join("\n\n") : undefined,
             nativeWebSearch: this.o.nativeWebSearch && model.provider === this.model.provider,
             toolState: {
                 cwd,

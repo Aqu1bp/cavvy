@@ -55,14 +55,24 @@ export interface SystemPromptOptions {
     includeMemory?: boolean;
     /** The run's decision about the folder, for its memory files (see loadMemory). Left out, the folder's trust decides. */
     projectFiles?: boolean;
+    /**
+     * `cwd` is a checkout of its own (a sub-agent's worktree), new each time: the part every
+     * session shares names `project`, the folder it's a checkout of, and the session context
+     * says where it works, with `note`.
+     */
+    checkout?: { project: string; note: string };
 }
 
-/** What the prompt says of the machine and project: the same for every session in the folder (on one model). */
-export function environmentBlock(cwd: string, model: ModelInfo): string {
+/**
+ * What the prompt says of the machine and project: the same for every session
+ * in the folder (on one model). `checkout`: the session works in a worktree of
+ * `cwd`, which the session context names.
+ */
+export function environmentBlock(cwd: string, model: ModelInfo, checkout = false): string {
     const root = gitRoot(cwd);
     return [
         "# Environment",
-        `Working directory: ${cwd}`,
+        checkout ? `Project: ${cwd} (you work in a git worktree of it, under "Session context" below)` : `Working directory: ${cwd}`,
         `Is a git repository: ${root ? "yes" : "no"}${root && root !== cwd ? ` (root: ${root})` : ""}`,
         `Platform: ${platform()} ${release()}`,
         `Shell: ${pickShell()}`,
@@ -72,12 +82,14 @@ export function environmentBlock(cwd: string, model: ModelInfo): string {
 }
 
 /**
- * What the prompt says of this session only: the date and the git status at
- * its start. It goes last, under SESSION_CONTEXT_HEADING, so that everything
- * before it is the same in every session and providers can cache it once.
+ * What the prompt says of this session only: the date, `extra` (where a
+ * worktree is), and the git status at its start. It goes last, under
+ * SESSION_CONTEXT_HEADING, so that everything before it is the same in every
+ * session and providers can cache it once.
  */
-export function sessionContextBlock(cwd: string, includeGit = true): string {
+export function sessionContextBlock(cwd: string, includeGit = true, extra?: string): string {
     const lines = [SESSION_CONTEXT_HEADING, `Today's date: ${new Date().toISOString().slice(0, 10)}`];
+    if (extra) lines.push("", extra);
     const g = includeGit && gitRoot(cwd) ? gitSnapshot(cwd) : undefined;
     if (g) {
         lines.push(
@@ -108,13 +120,13 @@ export function shellNotes(os: string, shell: string, which: (prog: string) => s
 }
 
 export function buildSystemPrompt(o: SystemPromptOptions): string {
-    const parts = [o.replaceCore ?? CORE, environmentBlock(o.cwd, o.model)];
+    const parts = [o.replaceCore ?? CORE, environmentBlock(o.checkout?.project ?? o.cwd, o.model, Boolean(o.checkout))];
     if (o.includeMemory ?? true) {
         const mem = formatMemory(loadMemory(o.cwd, o.projectFiles), o.cwd);
         if (mem) parts.push(mem);
     }
     if (o.append) parts.push(o.append);
-    parts.push(sessionContextBlock(o.cwd, o.includeGit ?? true));
+    parts.push(sessionContextBlock(o.cwd, o.includeGit ?? true, o.checkout && `Working directory: ${o.cwd}\n\n${o.checkout.note}`));
     return parts.join("\n\n");
 }
 
