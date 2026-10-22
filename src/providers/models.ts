@@ -13,7 +13,7 @@ import { apiFastModeInfo } from "./fast-mode";
 import { OpenAIResponsesProvider, responsesModelInfo } from "./openai-responses";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, resolveBaseUrl, type ProviderDef } from "./registry";
 import { VertexProvider, forgetTokens } from "./vertex";
-import { anthropicPricing, anthropicTraits } from "./anthropic-models";
+import { anthropicPricing, anthropicTraits, ANTHROPIC_BUDGET_EFFORTS } from "./anthropic-models";
 import { ProviderError, parseModelRef, type ModelInfo, type ProviderClient } from "./types";
 import { getKey } from "../auth/credentials";
 import { createBackend } from "../backends/index";
@@ -124,6 +124,26 @@ function readCache(): CacheFile {
             if (!anthropicPricing(model.id)) continue;
             const t = anthropicTraits(model.id);
             Object.assign(model, { pricing: t.pricing, pricingLong: t.pricingLong, longContextThreshold: t.longContextThreshold });
+        }
+    }
+    // Older Anthropic cache entries stored only native API effort levels.
+    // Upgrade those controls without discarding other providers' cached models.
+    for (const [provider, entry] of Object.entries(c.providers)) {
+        if (getProvider(provider)?.kind !== "anthropic") continue;
+        for (const model of entry.models) {
+            const t = anthropicTraits(model.id);
+            model.nativeEffortLevels ??= model.effortLevels ?? t.effort;
+            // Before budget support was explicit, unknown ids were marked true.
+            // Never promote that guess into a thinking control, even if a newer
+            // table now recognizes the id as adaptive.
+            if (!t.budget && model.budgetThinking && !(model.adaptiveThinking ?? t.adaptive)) {
+                model.effortLevels = model.nativeEffortLevels;
+                model.supportsReasoning = false;
+            }
+            model.budgetThinking = !!t.budget && model.budgetThinking !== false;
+            if ((model.adaptiveThinking ?? t.adaptive) || !model.budgetThinking) continue;
+            model.effortLevels = ANTHROPIC_BUDGET_EFFORTS;
+            model.supportsReasoning = true;
         }
     }
     return c;
@@ -293,10 +313,11 @@ export function resolveModelInfo(ref: string): ModelInfo | undefined {
             ...apiFastModeInfo(def.id, parsed.id, resolveBaseUrl(def)),
             supportsTools: true,
             supportsImages: true,
-            supportsReasoning: t.adaptive,
+            supportsReasoning: t.adaptive || !!t.budget,
             adaptiveThinking: t.adaptive,
-            budgetThinking: !t.adaptive,
-            effortLevels: t.effort,
+            budgetThinking: !!t.budget,
+            effortLevels: t.budget ? ANTHROPIC_BUDGET_EFFORTS : t.effort,
+            nativeEffortLevels: t.effort,
         };
     }
     return compatModelInfo(def, parsed.id);

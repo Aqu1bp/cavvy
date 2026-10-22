@@ -49,6 +49,8 @@ const COPIED: Record<Line["t"], boolean> = {
     schedules: false,
     // A goal belongs to the run that set it: the fork starts without one.
     goal: false,
+    // Written afresh from the original's messages as they are now (refusals()): one can come after the cut.
+    imagesRefused: false,
 };
 
 const REMINDERS = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
@@ -152,8 +154,18 @@ function historyOf(lines: Line[]): Message[] {
         if (l.t === "msg") messages.push(l.m);
         else if (l.t === "compact") messages = [];
         else if (l.t === "rewind") messages = messages.slice(0, l.count);
+        else if (l.t === "imagesRefused") for (const i of l.indexes) {
+            const m = messages[i];
+            // A copy: the message is also a record written to the fork.
+            if (m?.role === "user" && !m.meta?.imagesRefused?.includes(l.model)) messages[i] = { ...m, meta: { ...m.meta, imagesRefused: [...(m.meta?.imagesRefused ?? []), l.model] } };
+        }
     }
     return messages;
+}
+
+/** Records of which models refused these messages' images, a message and model at a time (so each message's list replays in its order). */
+function refusals(messages: Message[]): Line[] {
+    return messages.flatMap((m, i) => (m.role === "user" ? (m.meta?.imagesRefused ?? []).map((model): Line => ({ t: "imagesRefused", model, indexes: [i] })) : []));
 }
 
 /** The conversation's first prompt, as the session list names it: one rewound away doesn't count, one compacted away still does. */
@@ -188,6 +200,7 @@ export function forkSession(original: Session, o: ForkOptions): Session {
     if (!Number.isInteger(o.cut) || o.cut < 1 || o.cut > original.messages.length) throw new Error("That point isn't in this conversation.");
     const source = parse(original.path);
     const copied = recordsUpTo(source, o.cut).filter((l) => COPIED[l.t]);
+    copied.push(...refusals(original.messages.slice(0, o.cut)));
     // Import provenance is written after the imported messages. An earlier
     // cut still needs its timeline banner, without claiming the CLI session.
     if (!copied.some((l) => l.t === "import") && copied.some((l) => l.t === "msg" && l.m.role === "user" && l.m.meta?.imported)) {

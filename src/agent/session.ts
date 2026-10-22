@@ -113,7 +113,9 @@ export type Line =
     /** The /goal set in this session; null when it ended. Older versions skip these lines. */
     | { t: "goal"; goal: GoalRecord | null }
     /** A background task as it is now (the last line for its id wins): started, or ended. Older versions skip these lines. */
-    | { t: "bgtask"; task: BackgroundTaskInfo };
+    | { t: "bgtask"; task: BackgroundTaskInfo }
+    /** `model` refused a request for the images of the messages at `indexes` (see refuseImages). Older versions skip these lines. */
+    | { t: "imagesRefused"; model: string; indexes: number[] };
 
 /**
  * Where an imported session came from. It stays in the file for good, so the
@@ -552,6 +554,17 @@ export class Session {
         this.write({ t: "rewind", count });
     }
 
+    /**
+     * `model` refused a request for these messages' images: from now on it's
+     * sent them without, here and in a resumed or forked copy (the mark is on
+     * the message). Another model is still sent them, and the images stay.
+     */
+    refuseImages(messages: Message[], model: string) {
+        const indexes = messages.map((m) => this.messages.indexOf(m)).filter((i) => i >= 0);
+        for (const i of indexes) markRefused(this.messages[i]!, model);
+        if (indexes.length) this.write({ t: "imagesRefused", model, indexes });
+    }
+
     /** Replace history with a compacted version. Backend sessions start over from the summary. `kept`: `messages` ends with the last message before. */
     compact(summary: string, messages: Message[], idle = false, kept = false) {
         this.messages = [];
@@ -641,6 +654,9 @@ export class Session {
             else if (l.t === "fastMode" && typeof l.enabled === "boolean") s.fastMode = s.savedFastMode = l.enabled;
             else if (l.t === "title") s.title = l.title;
             else if (l.t === "goal") s.goal = validGoal(l.goal);
+            else if (l.t === "imagesRefused" && typeof l.model === "string" && Array.isArray(l.indexes)) {
+                for (const i of l.indexes) if (typeof i === "number" && s.messages[i]) markRefused(s.messages[i]!, l.model);
+            }
             else if (l.t === "plan" && typeof l.id === "string" && typeof l.text === "string") s.plans = [...s.plans.filter((p) => p.id !== l.id), { id: l.id, text: l.text, at: typeof l.at === "number" ? l.at : 0 }].slice(-PLANS_KEPT);
             else if (l.t === "planLink" && validLink(l.link)) s.planLinks = [...s.planLinks, l.link].slice(-PLANS_KEPT);
             else if (l.t === "import" && typeof l.source === "string" && typeof l.id === "string") s.imported = { source: l.source, id: l.id, startedAt: l.startedAt, importedAt: l.importedAt, messages: l.messages, omitted: l.omitted };
@@ -682,6 +698,12 @@ function validTask(t: unknown): BackgroundTaskInfo | undefined {
         ...(v.withProcess === true ? { withProcess: true } : {}),
         ...(v.byUser === true ? { byUser: true } : {}),
     };
+}
+
+/** Marks a user message's images as refused by `model` (see Session.refuseImages). */
+function markRefused(m: Message, model: string) {
+    if (m.role !== "user" || m.meta?.imagesRefused?.includes(model)) return;
+    m.meta = { ...m.meta, imagesRefused: [...(m.meta?.imagesRefused ?? []), model] };
 }
 
 /** A notice line as read from disk, or undefined if it isn't one. */

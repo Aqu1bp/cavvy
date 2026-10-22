@@ -161,7 +161,7 @@ export class TurnTally {
         switch (e.type) {
             case "assistant": {
                 this.numTurns++;
-                const t = textOf(e.message).trim();
+                const t = (e.answer ?? textOf(e.message)).trim();
                 if (t) this.lastText = t;
                 break;
             }

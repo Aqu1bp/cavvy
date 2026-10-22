@@ -50,6 +50,10 @@ export interface ProviderDef {
     auth?: "gcloud" | "cli";
     /** The model listing already comes newest first. */
     sorted?: boolean;
+    /** Image types its docs list as accepted (an image of another type is re-encoded); unset: PNG and JPEG (imageTypesOf). */
+    imageTypes?: string[];
+    /** The base64 of all of a request's images together must stay within this (its docs give a per-request total). */
+    imageBase64PerRequest?: number;
     custom?: boolean;
 }
 
@@ -58,6 +62,8 @@ const NON_CHAT = /embed|embedding|whisper|tts|dall-e|davinci|babbage|moderation|
 export const BUILTIN_PROVIDERS: ProviderDef[] = [
     {
         id: "anthropic",
+        // JPEG, PNG, GIF, WebP: platform.claude.com/docs/en/build-with-claude/vision (2026-10-22).
+        imageTypes: ["image/png", "image/jpeg", "image/gif", "image/webp"],
         // Next to Claude Code (your plan), so it's clear which one bills the key.
         name: "Anthropic API",
         kind: "anthropic",
@@ -70,6 +76,8 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
     },
     {
         id: "openai",
+        // PNG, JPEG, WebP, non-animated GIF: developers.openai.com/api/docs/guides/images-vision (2026-10-22).
+        imageTypes: ["image/png", "image/jpeg", "image/gif", "image/webp"],
         name: "OpenAI",
         // Current OpenAI models only support function tools with reasoning on
         // through the Responses API, so that's the wire format we use.
@@ -87,6 +95,9 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
     },
     {
         id: "gemini",
+        // PNG, JPEG, WebP (and HEIC/HEIF), no GIF: ai.google.dev/gemini-api/docs/image-understanding (2026-10-22). That page is
+        // the native API's; the OpenAI-compatible endpoint used here lists no formats (UNVERIFIED for it).
+        imageTypes: ["image/png", "image/jpeg", "image/webp"],
         name: "Google Gemini",
         kind: "openai",
         baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
@@ -105,6 +116,8 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
         // 2026), billed to a Cloud project, so Cloud credits apply. The
         // project path is added to baseUrl from the saved setup.
         id: "vertex",
+        // PNG, JPEG, WebP (and HEIC/HEIF), no GIF: docs.cloud.google.com/vertex-ai/generative-ai/docs/multimodal/image-understanding (2026-10-22).
+        imageTypes: ["image/png", "image/jpeg", "image/webp"],
         name: "Google Vertex AI",
         kind: "openai",
         baseUrl: "https://aiplatform.googleapis.com",
@@ -148,6 +161,8 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
     },
     {
         id: "openrouter",
+        // png, jpeg, webp, gif: openrouter.ai/docs, image understanding (2026-10-22).
+        imageTypes: ["image/png", "image/jpeg", "image/gif", "image/webp"],
         name: "OpenRouter",
         kind: "openai",
         baseUrl: "https://openrouter.ai/api/v1",
@@ -166,6 +181,7 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
     },
     {
         id: "groq",
+        // No formats listed at console.groq.com/docs/vision (2026-10-22): UNVERIFIED, so the default (PNG, JPEG).
         name: "Groq",
         kind: "openai",
         baseUrl: "https://api.groq.com/openai/v1",
@@ -178,6 +194,8 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
     },
     {
         id: "deepseek",
+        // JPEG, PNG, GIF, WebP: api-docs.deepseek.com/guides/vision (2026-10-22).
+        imageTypes: ["image/png", "image/jpeg", "image/gif", "image/webp"],
         name: "DeepSeek",
         kind: "openai",
         baseUrl: "https://api.deepseek.com",
@@ -189,6 +207,8 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
     },
     {
         id: "xai",
+        // "jpg/jpeg or png": docs.x.ai/developers/model-capabilities/images/understanding (2026-10-22).
+        imageTypes: ["image/png", "image/jpeg"],
         name: "xAI",
         kind: "openai",
         baseUrl: "https://api.x.ai/v1",
@@ -201,6 +221,8 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
     },
     {
         id: "mistral",
+        // PNG, JPEG, WebP, single-frame GIF: docs.mistral.ai/capabilities/vision (2026-10-22).
+        imageTypes: ["image/png", "image/jpeg", "image/gif", "image/webp"],
         name: "Mistral",
         kind: "openai",
         baseUrl: "https://api.mistral.ai/v1",
@@ -211,6 +233,7 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
     },
     {
         id: "together",
+        // No formats listed in docs.together.ai's vision docs (2026-10-22): UNVERIFIED, so the default (PNG, JPEG).
         name: "Together AI",
         kind: "openai",
         baseUrl: "https://api.together.ai/v1",
@@ -223,6 +246,10 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
     },
     {
         id: "fireworks",
+        // png, jpg/jpeg, gif (bmp, tiff, ppm), no WebP: docs.fireworks.ai/guides/querying-vision-language-models (2026-10-22).
+        imageTypes: ["image/png", "image/jpeg", "image/gif"],
+        // "Total base64-encoded images must be less than 10MB" (same page): kept a little under, MB or MiB.
+        imageBase64PerRequest: 9_500_000,
         name: "Fireworks AI",
         kind: "openai",
         baseUrl: "https://api.fireworks.ai/inference/v1",
@@ -235,6 +262,10 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
     },
     {
         id: "cerebras",
+        // PNG and JPEG: inference-docs.cerebras.ai/capabilities/image-inputs (2026-10-22).
+        imageTypes: ["image/png", "image/jpeg"],
+        // "10 MiB total request payload" (same page), text included: the images get 8 MiB of it.
+        imageBase64PerRequest: 8 * 1024 * 1024,
         name: "Cerebras",
         kind: "openai",
         baseUrl: "https://api.cerebras.ai/v1",
@@ -246,6 +277,7 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
     },
     {
         id: "ollama",
+        // No formats listed at docs.ollama.com/api/openai-compatibility (2026-10-22): UNVERIFIED, so the default (PNG, JPEG).
         name: "Ollama (local)",
         kind: "openai",
         baseUrl: "http://localhost:11434/v1",
@@ -258,6 +290,8 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
     },
     {
         id: "lmstudio",
+        // JPEG, PNG, WebP per LM Studio's SDK image-input docs; its OpenAI-compatible endpoint's docs list none (2026-10-22):
+        // UNVERIFIED for that endpoint, so the default (PNG, JPEG).
         name: "LM Studio (local)",
         kind: "openai",
         baseUrl: "http://localhost:1234/v1",
@@ -452,6 +486,15 @@ export function allProviders(): ProviderDef[] {
 
 export function getProvider(id: string): ProviderDef | undefined {
     return allProviders().find((p) => p.id === id);
+}
+
+/**
+ * The image types a provider is sent. PNG and JPEG are on every format list
+ * the providers here document, so a provider whose docs list none (or a
+ * custom one) gets those two, and anything else is re-encoded for it.
+ */
+export function imageTypesOf(def?: ProviderDef): readonly string[] {
+    return def?.imageTypes ?? ["image/png", "image/jpeg"];
 }
 
 export function resolveBaseUrl(p: ProviderDef): string {

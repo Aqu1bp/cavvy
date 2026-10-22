@@ -20,7 +20,7 @@
 //
 // FAKE_LOG          each line: what it was started with, and what it received
 // FAKE_LOGGED_IN=0  auth status says signed out
-// FAKE_SCENARIO     write (default) | write-config | read-secret | rm | bash | leak | ask | plan | hang | write-hang | mcp | silent | agent | agent-background | agent-background-late | agent-background-stuck | agent-quiet | agent-waits | agent-renotified | agent-fails-later | agent-fails-then-reports | agent-hands-back-late
+// FAKE_SCENARIO     write (default) | shell-cap-late | write-config | read-secret | rm | bash | leak | ask | plan | hang | write-hang | mcp | silent | agent | agent-background | agent-background-late | agent-background-stuck | agent-quiet | agent-waits | agent-renotified | agent-fails-later | agent-fails-then-reports | agent-hands-back-late
 // FAKE_SECOND_SCENARIO  the scenario for its prompts after the first (default: the same)
 // FAKE_BACKGROUND_MS  how long a background sub-agent goes on after the turn's result (default 300)
 // FAKE_STALE_TASK=1   resumed, it first reports a background sub-agent of the earlier run as stopped, in a turn of its own with no model call (what Claude Code does for one killed with its process)
@@ -619,6 +619,28 @@ async function turn(content: any[], uuid?: string) {
         // Notifications start native report turns while the Monitor remains running.
         // Stdin keeps the fake alive; shutdown must also stop its report timer.
         setInterval(() => followUp(`Monitor notification ${++reports}.`), 40).unref();
+        return;
+    }
+    if (scenario === "shell-cap-late") {
+        // A sub-agent keeps the wait going; a command it starts later gets its own cap, not what's left of the wait's.
+        agentCall(true);
+        const finishAgent = afterResult;
+        afterResult = undefined;
+        text("Waiting for the sub-agent.");
+        result("success");
+        finishAgent?.();
+        setTimeout(() => {
+            bgTasks.set("B", { task_id: "B", task_type: "local_bash", description: "Command B" });
+            backgroundChanged();
+            setTimeout(async () => {
+                if (stoppedTasks.has("B")) return;
+                bgTasks.delete("B");
+                backgroundChanged();
+                out({ type: "system", subtype: "task_notification", task_id: "B", status: "completed", summary: "B done", session_id: sessionId });
+                await Bun.sleep(40);
+                followUp("Command B completed with its results.");
+            }, 200);
+        }, 500);
         return;
     }
     if (scenario.startsWith("shell-grace-")) {

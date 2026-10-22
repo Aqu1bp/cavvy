@@ -458,6 +458,8 @@ class ClaudeTurn {
     private waitingSince?: number;
     /** Each command's grace starts after an answer, or when it joins the wait. */
     private commandWaitingSince = new Map<string, number>();
+    /** Each command's overall cap counts from when the wait first listed it, across answers and report turns. */
+    private commandListedSince = new Map<string, number>();
     private waitingLabel?: string;
     /** Each Bash call's command and own background timeout, by its tool_use id; then by the task it started (task_started), from when. */
     private shellCommands = new Map<string, { command: string; timeoutMs?: number }>();
@@ -768,11 +770,15 @@ class ClaudeTurn {
         for (const id of this.commandWaitingSince.keys()) {
             if (!commands.some((t) => t.id === id)) this.commandWaitingSince.delete(id);
         }
+        for (const id of this.commandListedSince.keys()) {
+            if (!commands.some((t) => t.id === id)) this.commandListedSince.delete(id);
+        }
         const stopping: { task: BackgroundWork; why: string }[] = [];
         for (const task of commands) {
             // Command tasks come from the CLI's list and have task IDs.
             const id = task.id!;
             if (!this.commandWaitingSince.has(id)) this.commandWaitingSince.set(id, now);
+            if (!this.commandListedSince.has(id)) this.commandListedSince.set(id, now);
             const until = ownDeadline(task);
             if (task.command && longLivedClaudeCommand(task.command)) stopping.push({ task, why: "without waiting: a recognized long-lived server/watcher" });
             // One with a timeout of its own runs until it's up, as in Claude Code; the setting changes only the default.
@@ -798,12 +804,13 @@ class ClaudeTurn {
             this.waitFor(left);
             // Commands without a timeout of their own and monitors have a cap; sub-agents and workflows none by
             // default (maxWaitMs), as in Claude Code: they run until they're done or the user stops them.
-            const waited = Date.now() - this.waitingSince!;
+            // A command's from when it was first listed, not from the start of a wait other work kept going.
+            const waited = (t: BackgroundWork) => now - (t.commandTask ? (this.commandListedSince.get(t.id!) ?? this.waitingSince!) : this.waitingSince!);
             const capOf = (t: BackgroundWork) => (t.commandTask ? Math.min(backgroundTiming.commandsMaxWaitMs, backgroundTiming.maxWaitMs) : backgroundTiming.maxWaitMs);
             // Sub-agents and workflows go on too while a command within its own timeout does: stopping one ends the
             // shells under it (a grandchild's too), and a command's completion goes to the sub-agent that ran it.
             const timed = left.some((t) => ownDeadline(t) !== undefined);
-            const over = left.filter((t) => ownDeadline(t) === undefined && waited >= capOf(t) && !(timed && !t.commandTask));
+            const over = left.filter((t) => ownDeadline(t) === undefined && waited(t) >= capOf(t) && !(timed && !t.commandTask));
             if (!over.length) return false;
             const ms = Math.min(...over.map(capOf));
             // So too while a finished command's report is still due: stop the rest by task id and let that turn come.
@@ -1047,6 +1054,7 @@ class ClaudeTurn {
         this.pollTimer = undefined;
         this.waitingSince = undefined;
         this.commandWaitingSince.clear();
+        this.commandListedSince.clear();
         this.clearWaitStatus();
     }
 
