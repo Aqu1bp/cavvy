@@ -466,6 +466,28 @@ describe("Grep without ripgrep", () => {
         writeFileSync(join(proj, "z/late.ts"), "needle\n");
         Bun.spawnSync(["git", "init", "-q"], { cwd: proj }); // git lists paths sorted, so z/ comes last
         expect(await grepWithoutRg({ pattern: "needle", glob: "*.ts", output_mode: "count" }, proj)).toBe("z/late.ts:1");
+        const broad = await grepWithoutRg({ pattern: "needle" }, proj);
+        expect(broad).toContain("Search incomplete");
+        expect(broad).toContain("20,000");
+        expect(broad).toContain("Narrow");
+        expect(broad).not.toContain("No matches found");
+        writeFileSync(join(proj, "a/f0.js"), "needle\n");
+        for (const output_mode of ["files_with_matches", "count", "content"]) {
+            const result = await grepWithoutRg({ pattern: "needle", output_mode, head_limit: 1 }, proj);
+            expect(result).toContain("a/f0.js");
+            expect(result).toContain("Search incomplete");
+        }
+        // Without git, enumeration must also disclose the cap.
+        const prev = process.env.PATH;
+        process.env.PATH = "";
+        try {
+            const result = await GrepTool.run({ pattern: "absent" }, toolCtx(proj));
+            expect(result.content).toContain("Search incomplete");
+            expect(result.content).not.toContain("No matches found");
+            expect(result.display?.summary).toContain("incomplete");
+        } finally {
+            process.env.PATH = prev;
+        }
     }, 30_000);
     test("multiline counts are matches, as with ripgrep, when a match crosses lines", async () => {
         const proj = tempDir();

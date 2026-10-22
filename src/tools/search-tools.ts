@@ -133,6 +133,7 @@ export const GrepTool: Tool<GrepInput> = {
         const hide = searchFilter(ctx, "Grep", target);
         const rg = ripgrep();
         let out: string;
+        let incomplete = false;
         if (rg) {
             // --null: a NUL after every printed path, so results can be filtered per file.
             const args = ["--no-config", "--color=never", "--null", "--with-filename"];
@@ -161,7 +162,7 @@ export const GrepTool: Tool<GrepInput> = {
             if (code === 2 && !stdout) return { content: `Grep error: ${stderr.trim()}`, isError: true };
             out = filterRgOutput(stdout, mode, (p) => Boolean(hide?.("Grep", isAbsolute(p) ? p : join(ctx.state.cwd, p))), input.show_line_numbers !== false);
         } else {
-            out = await jsGrep(input, target, mode, ctx.signal, hide);
+            ({ out, incomplete } = await jsGrep(input, target, mode, ctx.signal, hide));
         }
         let lines = out.split("\n").filter((l) => l !== "");
         // Make paths relative for compactness.
@@ -175,11 +176,13 @@ export const GrepTool: Tool<GrepInput> = {
         const total = lines.length;
         const limit = input.head_limit ?? (mode === "content" ? 400 : 200);
         if (lines.length > limit) lines = lines.slice(0, limit);
-        if (!total) return { content: "No matches found", display: { summary: "No matches" } };
+        const notice = "Search incomplete: the fallback scans at most 20,000 eligible files. Narrow path, glob or type, or install ripgrep to search the whole tree.";
+        if (!total) return { content: incomplete ? `No matches in the scanned files. ${notice}` : "No matches found", display: { summary: incomplete ? "Search incomplete" : "No matches" } };
         let content = truncateMiddle(redact(lines.join("\n")), 30_000);
         if (total > lines.length) content += `\n(Showing ${lines.length} of ${total}. Narrow the search or raise head_limit.)`;
+        if (incomplete) content += `\n(${notice})`;
         const noun = mode === "files_with_matches" ? "file" : mode === "count" ? "file" : "line";
-        return { content: redact(content), display: { summary: `Found ${total} ${noun}${total === 1 ? "" : "s"}` } };
+        return { content: redact(content), display: { summary: `Found ${total} ${noun}${total === 1 ? "" : "s"}${incomplete ? " (search incomplete)" : ""}` } };
     },
 };
 
@@ -241,24 +244,27 @@ export function filterRgOutput(stdout: string, mode: string, hidden: (path: stri
     return out.join("\n");
 }
 
-async function jsGrep(input: GrepInput, target: string, mode: string, signal: AbortSignal, hide?: (toolName: string, abs: string) => boolean): Promise<string> {
+async function jsGrep(input: GrepInput, target: string, mode: string, signal: AbortSignal, hide?: (toolName: string, abs: string) => boolean): Promise<{ out: string; incomplete: boolean }> {
     const flags = (input.ignore_case ? "i" : "") + (input.multiline ? "ms" : "");
     let re: RegExp;
     try {
         re = new RegExp(input.pattern, flags);
     } catch (e) {
-        return `Invalid regex: ${(e as Error).message}`;
+        return { out: `Invalid regex: ${(e as Error).message}`, incomplete: false };
     }
     const fileGlob = input.glob ? new Bun.Glob(input.glob.includes("/") ? input.glob : `**/${input.glob}`) : undefined;
     const exts = input.type ? TYPE_EXTS[input.type.toLowerCase()] : undefined;
-    if (input.type && !exts) return `Grep error: unrecognized file type: ${input.type}`;
+    if (input.type && !exts) return { out: `Grep error: unrecognized file type: ${input.type}`, incomplete: false };
     const out: string[] = [];
     const st = await stat(target).catch(() => undefined);
     const files: string[] = [];
+    let incomplete = false;
     if (st?.isFile()) files.push(target);
     else if (st?.isDirectory()) {
         const wanted = (f: string) => (!fileGlob || fileGlob.match(f)) && (!exts || exts.includes(f.slice(f.lastIndexOf(".") + 1).toLowerCase())) && !hide?.("Grep", join(target, f));
-        for (const f of await candidateFiles(target, wanted)) files.push(join(target, f));
+        const candidates = await candidateFiles(target, wanted);
+        incomplete = candidates.incomplete;
+        for (const f of candidates.files) files.push(join(target, f));
     }
     const before = Math.max(0, input.before ?? input.context ?? 0);
     const after = Math.max(0, input.after ?? input.context ?? 0);
@@ -294,7 +300,7 @@ async function jsGrep(input: GrepInput, target: string, mode: string, signal: Ab
             last = Math.max(last, to);
         }
     }
-    return out.join("\n");
+    return { out: out.join("\n"), incomplete };
 }
 
 /** Line indexes (sorted) that a match touches (with multiline, a match can span several), the match count, and whether any match contains a newline. */
@@ -363,17 +369,20 @@ const TYPE_EXTS: Record<string, string[]> = {
  * what git lists (so .gitignore is honored, as ripgrep would); hidden files
  * are skipped either way, also like ripgrep.
  */
-async function candidateFiles(dir: string, wanted: (f: string) => boolean): Promise<string[]> {
+async function candidateFiles(dir: string, wanted: (f: string) => boolean): Promise<{ files: string[]; incomplete: boolean }> {
     const tracked = gitListFiles(dir);
     // The cap applies after filtering, so a glob or type still finds files late in a big tree.
-    if (tracked) return tracked.filter((f) => !f.split("/").some((p) => p.startsWith(".")) && wanted(f)).slice(0, 20_000);
+    if (tracked) {
+        const files = tracked.filter((f) => !f.split("/").some((p) => p.startsWith(".")) && wanted(f));
+        return { files: files.slice(0, 20_000), incomplete: files.length > 20_000 };
+    }
     const out: string[] = [];
     for await (const f of new Bun.Glob("**/*").scan({ cwd: dir, onlyFiles: true })) {
         if (f.split("/").some((p) => DEFAULT_IGNORES.includes(p)) || !wanted(f)) continue;
+        if (out.length >= 20_000) return { files: out, incomplete: true };
         out.push(f);
-        if (out.length >= 20_000) break;
     }
-    return out;
+    return { files: out, incomplete: false };
 }
 
 // ---------------------------------------------------------------------------
