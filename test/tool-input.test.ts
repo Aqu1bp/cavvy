@@ -62,10 +62,74 @@ describe("required nullable tool arguments", () => {
         expect(validateInput(tool({ type: ["string", "null"] }), { cursor: "next" })).toBeUndefined();
     });
 
-    test("optional parameters may be omitted but must permit an explicit null", () => {
+    test("an optional parameter's forbidden null counts as omitted and is dropped", () => {
         const t = tool({ type: "string" });
         t.parameters.required = [];
         expect(validateInput(t, {})).toBeUndefined();
-        expect(validateInput(t, { cursor: null })).toBe('Parameter "cursor" does not allow null');
+        expect(validateInput(t, { cursor: null })).toBeUndefined();
+        expect(coerceInput(t, { cursor: null })).toEqual({});
+    });
+
+    test("an optional parameter's allowed null is kept", () => {
+        const t = tool({ type: ["string", "null"] });
+        t.parameters.required = [];
+        expect(coerceInput(t, { cursor: null })).toEqual({ cursor: null });
+        expect(validateInput(t, { cursor: null })).toBeUndefined();
+    });
+
+    test("null for an unknown key is left alone", () => {
+        const t = tool({ type: "string" });
+        expect(coerceInput(t, { cursor: "next", other: null })).toEqual({ cursor: "next", other: null });
+        expect(validateInput(t, { cursor: "next", other: null })).toBeUndefined();
+    });
+});
+
+describe("built-in tools with null for unused optional parameters", () => {
+    test("Read accepts null offset and limit, and the tool never sees them", async () => {
+        const { ReadTool } = await import("../src/tools/file-tools");
+        const input = coerceInput(ReadTool, { file_path: "/tmp/x", offset: null, limit: null });
+        expect(input).toEqual({ file_path: "/tmp/x" });
+        expect(validateInput(ReadTool, input)).toBeUndefined();
+        expect(validateInput(ReadTool, { file_path: "/tmp/x", offset: null, limit: null })).toBeUndefined();
+    });
+
+    test("Grep accepts null glob, type and head_limit", async () => {
+        const { GrepTool } = await import("../src/tools/search-tools");
+        const input = coerceInput(GrepTool, { pattern: "x", glob: null, type: null, head_limit: null });
+        expect(input).toEqual({ pattern: "x" });
+        expect(validateInput(GrepTool, input)).toBeUndefined();
+    });
+
+    test("a required built-in parameter still rejects null", async () => {
+        const { ReadTool } = await import("../src/tools/file-tools");
+        expect(coerceInput(ReadTool, { file_path: null })).toEqual({ file_path: null });
+        expect(validateInput(ReadTool, { file_path: null })).toBe('Parameter "file_path" does not allow null');
+    });
+});
+
+describe("malformed property schemas from MCP servers", () => {
+    const schemas: unknown[] = [null, "string", 3, [], { anyOf: [null] }, { anyOf: "x" }, { oneOf: [null, { type: "string" }] }, { allOf: [null] }, { not: null }, { enum: 3 }];
+    for (const prop of schemas) {
+        for (const required of [true, false]) {
+            test(`does not throw for ${JSON.stringify(prop)} (${required ? "required" : "optional"})`, () => {
+                const t = tool(prop);
+                if (!required) t.parameters.required = [];
+                for (const value of ["a", null, 1, {}]) {
+                    expect(() => validateInput(t, coerceInput(t, { cursor: value }))).not.toThrow();
+                }
+            });
+        }
+    }
+
+    test("a property schema that is not an object or boolean constrains nothing", () => {
+        const t = { parameters: { type: "object", properties: { x: null }, required: [] } } as unknown as Tool<any>;
+        expect(validateInput(t, { x: "a" })).toBeUndefined();
+        expect(validateInput(t, { x: null })).toBeUndefined();
+        expect(coerceInput(t, { x: null })).toEqual({ x: null });
+    });
+
+    test("a malformed not constrains nothing", () => {
+        const t = tool({ type: ["string", "null"], not: null });
+        expect(validateInput(t, { cursor: null })).toBeUndefined();
     });
 });

@@ -55,18 +55,40 @@ interface PropertySchema {
     not?: PropertySchema | boolean;
 }
 
-/** Null is a value, not a missing key; check the constraints that can exclude it. */
-function allowsNull(prop: PropertySchema | boolean): boolean {
+/** A property schema we can read: an object or a boolean. MCP servers can send anything else. */
+function isSchema(prop: unknown): prop is PropertySchema | boolean {
+    return typeof prop === "boolean" || (prop !== null && typeof prop === "object" && !Array.isArray(prop));
+}
+
+/**
+ * Null is a value, not a missing key; check the constraints that can exclude it.
+ * A malformed schema (null, a string, ...) constrains nothing, so it allows null.
+ */
+function allowsNull(prop: unknown): boolean {
+    if (!isSchema(prop)) return true;
     if (typeof prop === "boolean") return prop;
     const types = Array.isArray(prop.type) ? prop.type : prop.type ? [prop.type] : [];
     if (types.length && !types.includes("null") && !prop.nullable) return false;
-    if (prop.enum && !prop.enum.includes(null)) return false;
+    if (Array.isArray(prop.enum) && !prop.enum.includes(null)) return false;
     if ("const" in prop && prop.const !== null) return false;
-    if (prop.anyOf && !prop.anyOf.some(allowsNull)) return false;
-    if (prop.oneOf && prop.oneOf.filter(allowsNull).length !== 1) return false;
-    if (prop.allOf && !prop.allOf.every(allowsNull)) return false;
-    if (prop.not !== undefined && allowsNull(prop.not)) return false;
+    if (Array.isArray(prop.anyOf) && !prop.anyOf.some(allowsNull)) return false;
+    if (Array.isArray(prop.oneOf) && prop.oneOf.filter(allowsNull).length !== 1) return false;
+    if (Array.isArray(prop.allOf) && !prop.allOf.every(allowsNull)) return false;
+    if (isSchema(prop.not) && allowsNull(prop.not)) return false;
     return true;
+}
+
+/**
+ * An optional key whose null the schema forbids. Models often send null for
+ * parameters they don't use; that means "omitted", so the key is dropped.
+ */
+function isOmittedNull(t: Tool<any>, key: string, val: unknown): boolean {
+    if (val !== null) return false;
+    const schema = (t.parameters ?? {}) as { properties?: Record<string, unknown>; required?: unknown };
+    const required = Array.isArray(schema.required) ? schema.required : [];
+    if (required.includes(key)) return false;
+    const props = schema.properties ?? {};
+    return Object.hasOwn(props, key) && !allowsNull(props[key]);
 }
 
 /**
@@ -82,10 +104,10 @@ export function validateInput(t: Tool<any>, input: unknown): string | undefined 
         if (!Object.hasOwn(obj, key) || obj[key] === undefined) return `Missing required parameter "${key}"`;
     }
     for (const [key, val] of Object.entries(obj)) {
-        const prop = schema.properties?.[key];
-        if (prop === undefined || val === undefined) continue;
+        const prop: unknown = schema.properties?.[key];
+        if (val === undefined || !isSchema(prop)) continue;
         if (val === null) {
-            if (!allowsNull(prop)) return `Parameter "${key}" does not allow null`;
+            if (!allowsNull(prop) && !isOmittedNull(t, key, val)) return `Parameter "${key}" does not allow null`;
             continue;
         }
         if (typeof prop === "boolean") {
@@ -96,7 +118,7 @@ export function validateInput(t: Tool<any>, input: unknown): string | undefined 
         if (types.length && !types.some((ty) => typeMatches(ty, val))) {
             return `Parameter "${key}" should be ${types.join(" or ")}, got ${Array.isArray(val) ? "array" : typeof val}`;
         }
-        if (prop.enum && !prop.enum.includes(val)) return `Parameter "${key}" must be one of ${prop.enum.map((e) => JSON.stringify(e)).join(", ")}`;
+        if (Array.isArray(prop.enum) && !prop.enum.includes(val)) return `Parameter "${key}" must be one of ${prop.enum.map((e) => JSON.stringify(e)).join(", ")}`;
     }
     return undefined;
 }
@@ -125,11 +147,17 @@ function typeMatches(ty: string, v: unknown): boolean {
 /**
  * Models sometimes send numbers/booleans as strings. Coerce top-level values
  * where the schema is unambiguous, so a "30000" timeout doesn't fail the call.
+ * An optional key set to a null its schema forbids is dropped, as if omitted,
+ * so tools (and MCP servers) get arguments their schema accepts.
  */
 export function coerceInput(t: Tool<any>, input: Record<string, unknown>): Record<string, unknown> {
     const props = (t.parameters as { properties?: Record<string, { type?: string }> }).properties ?? {};
     const out: Record<string, unknown> = { ...input };
     for (const [k, v] of Object.entries(out)) {
+        if (isOmittedNull(t, k, v)) {
+            delete out[k];
+            continue;
+        }
         const ty = props[k]?.type;
         if (typeof v !== "string") continue;
         if ((ty === "number" || ty === "integer") && /^-?\d+(\.\d+)?$/.test(v.trim())) out[k] = Number(v);

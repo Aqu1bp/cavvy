@@ -326,6 +326,23 @@ describe("the manager: resources, prompts and the model's resource tools", () =>
         expect(log.find((r: any) => r.method === "tools/call" && r.params.name === "echo").params.arguments).toEqual({ text: null, cursor: null, page: null });
     });
 
+    test("an optional argument's forbidden null is dropped before it reaches the MCP server", async () => {
+        const properties = { text: { type: "string" }, cursor: { type: "string" }, page: { type: ["string", "null"] } };
+        const schema = { type: "object", properties, required: ["text"] };
+        const m2 = new McpManager(WORK, () => ({ mcpServers: { optional: stdio("legacy", { MCP_FIXTURE_ECHO_SCHEMA: JSON.stringify(schema) }) } }), false);
+        managers.push(m2);
+        m2.load();
+        await m2.startAll();
+        expect(m2.servers.get("optional")!.status).toBe("connected");
+        const tool = m2.tools().find((t) => t.name === "mcp__optional__echo")!;
+        const input = coerceInput(tool, { text: "hi", cursor: null, page: null });
+        expect(validateInput(tool, input)).toBeUndefined();
+        const ctx = { ui: {}, signal: new AbortController().signal } as any;
+        expect((await tool.run(input, ctx)).isError).toBe(false);
+        const log = JSON.parse(textOf(await m2.servers.get("optional")!.client!.callTool("get_log", {}))).log;
+        expect(log.find((r: any) => r.method === "tools/call" && r.params.name === "echo").params.arguments).toEqual({ text: "hi", page: null });
+    });
+
     test("resourceList: every connected server's, with what to type after @", () => {
         const list = m.resourceList();
         expect(list).toHaveLength(10);
