@@ -3097,6 +3097,20 @@ describe("Claude Code reviewed grace fixes", () => {
         expect(longLivedClaudeCommand("npm test -- --watch=")).toBe(false);
     });
 
+    test("a command listed after the commands' cap has passed for the wait still gets its own full cap", async () => {
+        process.env.FAKE_SCENARIO = "shell-cap-late";
+        process.env.FAKE_BACKGROUND_MS = "1200";
+        const saved = { ...backgroundTiming };
+        Object.assign(backgroundTiming, { commandsMaxWaitMs: 300, pollMs: 10 });
+        try {
+            const a = await makeAgent({ provider: "claude-code", settings: { claudeCode: { backgroundWaitSec: 5 } } });
+            expect(await a.run("start the agent")).toBe("done");
+            expect(JSON.stringify(a.session.messages)).toContain("Command B completed with its results.");
+            expect(notices(a.events).some((n) => /Stopped.*Command B/.test(n))).toBe(false);
+            expect(received().filter((m) => m.request?.subtype === "stop_task").map((m) => m.request.task_id)).toEqual([]);
+        } finally { Object.assign(backgroundTiming, saved); }
+    });
+
     for (const scenario of ["shell-grace-queued", "shell-grace-turn", "shell-grace-overlap", "shell-grace-replace", "shell-grace-renew"]) test(`${scenario}: each task gets its own full grace after its answer`, async () => {
         process.env.FAKE_SCENARIO = scenario;
         const saved = { ...backgroundTiming };

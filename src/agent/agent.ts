@@ -23,7 +23,7 @@ import type {
     UserContent,
     UserMessage,
 } from "../providers/types";
-import { ProviderError, modelRef, parseModelRef, textOf, toolCallsOf } from "../providers/types";
+import { ProviderError, modelRef, parseModelRef, textOf, toolCallsOf, assistantText } from "../providers/types";
 import type { Effort, Settings } from "../config/settings";
 import { claudePluginDirs, loadsPluginsNatively, withoutPluginHooks } from "../plugins/native";
 import type { ApprovedMcpServers } from "../mcp/manager";
@@ -100,14 +100,14 @@ import type { NativeGoal } from "./goal";
 // Host interface (implemented by the TUI and by headless mode)
 
 export type AgentEvent =
-    | { type: "request_start" }
+    | { type: "request_start"; continuation?: boolean }
     | { type: "activity"; text?: string }
     | { type: "text"; text: string }
     | { type: "thinking"; text: string }
     | { type: "tool_call_start"; id: string; name: string }
     | { type: "tool_call_delta"; id: string; partial: string }
     | { type: "server_tool"; name: string; detail: string }
-    | { type: "assistant"; message: AssistantMessage }
+    | { type: "assistant"; message: AssistantMessage; /** Full text of this answer, including linked continuations. */ answer?: string }
     | { type: "tool_start"; call: ToolCallPart; title: string; tool?: Tool<any>; autoApproved?: string }
     | { type: "tool_progress"; id: string; text: string }
     | { type: "tool_approved"; id: string; reason: string; sandboxed?: boolean }
@@ -681,6 +681,7 @@ export class Agent {
 
         let turns = 0;
         let maxTokenStrikes = 0;
+        let maxTokenContinuations = 0;
         let pauses = 0;
         let stopHookRounds = 0;
         let imagesRejected = false;
@@ -758,8 +759,10 @@ export class Agent {
             // A provider that returns (rather than throws) after an abort hands
             // back a cut-off response; drop it like any other partial response.
             if (signal.aborted) return this.interrupted(false);
-            compactions = 0;
-            unshrinkable = false;
+            if (msg.stopReason !== "context_window_exceeded") {
+                compactions = 0;
+                unshrinkable = false;
+            }
 
             // Answered without the images it refused: they stay out for this model.
             if (this.refusing) {
@@ -769,7 +772,7 @@ export class Agent {
 
             // From here on, the redacted copy: it's what gets shown and what tools run with.
             msg = this.session.push(msg);
-            this.emit({ type: "assistant", message: msg });
+            this.emit({ type: "assistant", message: msg, answer: assistantText(this.session.messages) });
             if (msg.usage) {
                 this.recordUsage(msg.usage);
                 this.noteCache(msg.usage, this.sentAt);
@@ -777,6 +780,27 @@ export class Agent {
 
             const calls = toolCallsOf(msg);
             if (calls.length || textOf(msg).trim()) answered = true;
+
+            if (msg.stopReason === "context_window_exceeded") {
+                // A context-limited tool call may be incomplete. Close it without running it,
+                // so both the compaction request and a later user turn have a valid transcript.
+                if (calls.length) this.session.push({
+                    role: "user",
+                    content: calls.map((c) => ({ type: "tool_result", toolCallId: c.id, toolName: c.name, content: "The model reached its context window, so this possibly incomplete tool call was not run.", isError: true })),
+                    meta: { kind: "tool_results" },
+                });
+                if (!unshrinkable && compactions < 2) {
+                    this.emit({ type: "notice", level: "warn", message: "The conversation reached the model's context window; compacting and retrying." });
+                    try {
+                        if (await compactInTurn()) continue;
+                    } catch (e) {
+                        if (isAbort(e, signal)) return this.interrupted(false);
+                    }
+                }
+                this.endNotice("error", "The model reached its context window. Compact the conversation or start a new session to continue.");
+                this.emit({ type: "turn_end", reason: "error" });
+                return "error";
+            }
 
             if (msg.stopReason === "pause_turn" && !calls.length && pauses++ < 5) continue;
 
@@ -806,6 +830,17 @@ export class Agent {
             }
 
             if (!calls.length) {
+                if (msg.stopReason === "max_tokens" && maxTokenContinuations < 3) {
+                    maxTokenContinuations++;
+                    // Keep the partial response intact, including provider reasoning state.
+                    // A user reminder permits continuation without an assistant prefill.
+                    this.session.push({
+                        role: "user",
+                        content: [reminder("Your response hit the output token limit. Continue from where you stopped without repeating what you already wrote. If you have not answered yet, continue with your answer.")],
+                        meta: { kind: "continuation" },
+                    });
+                    continue;
+                }
                 if (msg.stopReason === "max_tokens") this.endNotice("warn", "Response was cut off at the output token limit.");
                 else if (msg.stopReason === "refusal") this.endNotice("warn", "The model declined this request.");
                 // Nothing at all came back this turn: say so rather than end it blank.
@@ -833,7 +868,7 @@ export class Agent {
                 const stopEvent = this.o.isSubagent ? "SubagentStop" : "Stop";
                 if (settings.hooks?.[stopEvent]?.length && stopHookRounds < 3) {
                     const sub = this.o.subagent;
-                    const last = textOf(msg);
+                    const last = this.lastAssistantText();
                     const h = await this.hooks(stopEvent, { ...(sub ? { description: sub.description } : {}), stop_hook_active: stopHookRounds > 0, last_assistant_message: last, last_message: last }, signal);
                     if (this.hookStop) return this.stoppedByHook();
                     if (h?.blocked) {
@@ -909,12 +944,7 @@ export class Agent {
 
     /** What the model said last, for Stop and StopFailure hooks. */
     private lastAssistantText(): string {
-        for (let i = this.session.messages.length - 1; i >= 0; i--) {
-            const m = this.session.messages[i]!;
-            if (m.role === "assistant") return textOf(m);
-            if (m.role === "user" && m.meta?.kind === "prompt") break;
-        }
-        return "";
+        return assistantText(this.session.messages);
     }
 
     /** Wakes that may join the running turn, as one reminder; noted in the transcript. */
@@ -1197,6 +1227,9 @@ export class Agent {
     private shouldAutoCompact(): boolean {
         const s = this.o.settings();
         if (s.autoCompact === false) return false;
+        // Keep a cut-off answer verbatim until it finishes; real overflows still compact reactively.
+        const last = this.session.messages.at(-1);
+        if (last?.role === "user" && last.meta?.kind === "continuation") return false;
         // Agent backends manage their own context.
         if (isAgentBackend(this.client)) return false;
         const window = this.model.contextWindow;
@@ -1236,7 +1269,8 @@ export class Agent {
 
     private callModel(signal: AbortSignal, extra: Partial<ChatRequest> = {}, messages?: Message[]): Promise<AssistantMessage> {
         return this.withRetries(signal, async () => {
-            this.emit({ type: "request_start" });
+            const last = (messages ?? this.session.messages).at(-1);
+            this.emit({ type: "request_start", ...(last?.role === "user" && last.meta?.kind === "continuation" ? { continuation: true } : {}) });
             const sendable = await this.sendable(messages ?? this.session.messages);
             // After any retries: the cache dates from the request that was answered.
             this.sentAt = Date.now();
@@ -1311,7 +1345,7 @@ export class Agent {
         if (isAgentBackend(this.client)) return this.compactBackend(this.client, opts);
         let history = this.session.messages;
         const last = history.at(-1);
-        const kept = opts.keepLast && history.length > 2 && last?.role === "user" && !last.content.some((p) => p.type === "tool_result") ? last : undefined;
+        const kept = opts.keepLast && history.length > 2 && last?.role === "user" && last.meta?.kind !== "continuation" && !last.content.some((p) => p.type === "tool_result") ? last : undefined;
         if (kept) history = history.slice(0, -1);
         if (history.length < 2) return false;
         if (!(await this.preCompact(opts))) return false;
@@ -1321,6 +1355,7 @@ export class Agent {
         // An idle compaction is worth it only before the cache expires, so it gets one try.
         const send = async (r: ChatRequest) => {
             const res = await (opts.idle ? this.client.stream(r, () => {}) : this.withRetries(opts.signal, () => this.client.stream(r, () => {})));
+            opts.signal.throwIfAborted();
             if (res.usage) {
                 const cost = costOf(res.usage, this.model);
                 this.session.recordUsage(modelRef(this.model), res.usage, cost.usd, cost.unknown);
@@ -1334,7 +1369,8 @@ export class Agent {
         let summary = "";
         try {
             // Same system prompt and tools as the session, so the cached prefix is reused.
-            summary = textOf(await send(this.request(req, opts.signal, { maxTokens: maxOut })));
+            const res = await send(this.request(req, opts.signal, { maxTokens: maxOut }));
+            summary = res.stopReason === "context_window_exceeded" ? "" : textOf(res);
         } catch (e) {
             if (isAbort(e, opts.signal)) throw e;
             // Refused for its images too: the text transcript below has none.
@@ -1353,7 +1389,9 @@ export class Agent {
                 maxTokens: maxOut,
                 lightweight: true,
             });
-            summary = textOf(await send(req));
+            const res = await send(req);
+            if (res.stopReason === "context_window_exceeded") throw new Error("The conversation still exceeds the model's context window after condensing it");
+            summary = textOf(res);
         }
         if (!summary.trim()) throw new Error("The model returned an empty summary");
         // The kept message says what comes next.
@@ -3032,9 +3070,8 @@ export class Agent {
             tokens += u.usage.inputTokens + u.usage.outputTokens + (u.usage.cacheReadTokens ?? 0) + (u.usage.cacheWriteTokens ?? 0);
             cost += u.cost;
         }
-        const last = [...session.messages].reverse().find((m) => m.role === "assistant");
         // A backend's: its answer, then what it did ("[Codex used: …]").
-        const report = backend ? (child.backendReport ?? "") : !last ? "" : textOf(last).trim();
+        const report = backend ? (child.backendReport ?? "") : assistantText(session.messages).trim();
         const result = (status: ChildResult["status"], text: string): ChildResult => ({ status, report: [text, worktreeText].filter(Boolean).join("\n\n"), model: modelRef(model), tokens, cost: cost || undefined, durationMs: Date.now() - started });
         switch (reason) {
             case "aborted":

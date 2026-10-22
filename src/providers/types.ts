@@ -63,7 +63,7 @@ export interface UserMessage {
     content: UserContent[];
     /** Harness-only bookkeeping, never sent to providers. */
     meta?: {
-        kind?: "prompt" | "tool_results" | "interrupt" | "summary" | "command" | "reminder" | "wake";
+        kind?: "prompt" | "tool_results" | "interrupt" | "summary" | "command" | "reminder" | "continuation" | "wake";
         display?: string;
         /** The file checkpoint this prompt started (/rewind). */
         checkpoint?: number;
@@ -92,7 +92,7 @@ export interface AssistantMessage {
 
 export type Message = UserMessage | AssistantMessage;
 
-export type StopReason = "end_turn" | "tool_use" | "max_tokens" | "refusal" | "stop_sequence" | "pause_turn" | "error" | "aborted" | "other";
+export type StopReason = "end_turn" | "tool_use" | "max_tokens" | "context_window_exceeded" | "refusal" | "stop_sequence" | "pause_turn" | "error" | "aborted" | "other";
 
 export interface Usage {
     inputTokens: number;
@@ -245,6 +245,45 @@ export function textOf(msg: Message): string {
         .filter((p): p is TextPart => p.type === "text")
         .map((p) => p.text)
         .join("");
+}
+
+/** Display/export groups; continuation links join assistants without changing their stored wire payloads. */
+export function* continuationGroups(messages: readonly Message[]): Generator<Message[]> {
+    for (let i = 0; i < messages.length; i++) {
+        const first = messages[i]!;
+        const group = [first];
+        if (first.role === "assistant") {
+            while (i + 2 < messages.length) {
+                const link = messages[i + 1]!;
+                const next = messages[i + 2]!;
+                if (link.role !== "user" || link.meta?.kind !== "continuation" || next.role !== "assistant") break;
+                group.push(next);
+                i += 2;
+            }
+        }
+        yield group;
+    }
+}
+
+/** The latest answer, joining only messages linked by an output-limit continuation. */
+export function assistantText(messages: readonly Message[]): string {
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i]!;
+        if (m.role === "user") {
+            if ([undefined, "prompt", "command", "wake"].includes(m.meta?.kind)) return "";
+            continue;
+        }
+        let text = textOf(m);
+        while (i >= 2) {
+            const link = messages[i - 1]!;
+            const previous = messages[i - 2]!;
+            if (link.role !== "user" || link.meta?.kind !== "continuation" || previous.role !== "assistant") break;
+            text = textOf(previous) + text;
+            i -= 2;
+        }
+        return text;
+    }
+    return "";
 }
 
 export function toolCallsOf(msg: AssistantMessage): ToolCallPart[] {

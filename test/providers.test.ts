@@ -531,6 +531,21 @@ describe("Chat Completions: streaming", () => {
         const msg = await new OpenAICompatProvider(CUSTOM, FAKE.openai).stream(req(model, []), () => {});
         expect(msg.content).toEqual([{ type: "tool_call", id: "c9", name: "read_file", input: { __invalid_json: '{"path": ' } }]);
         expect(msg.stopReason).toBe("tool_use");
+
+        const { validateInput } = await import("../src/tools");
+        const { ReadTool } = await import("../src/tools/file-tools");
+        const call = msg.content[0]!;
+        if (call.type !== "tool_call") throw new Error("expected a tool call");
+        const error = validateInput(ReadTool, call.input)!;
+        expect(error).toContain("The tool arguments were not valid JSON");
+        respond = () => sse([{ choices: [{ index: 0, delta: { content: "retry" }, finish_reason: "stop" }] }]);
+        await new OpenAICompatProvider(CUSTOM, FAKE.openai).stream(req(model, [msg, {
+            role: "user", content: [{ type: "tool_result", toolCallId: call.id, toolName: call.name, content: error, isError: true }],
+        }]), () => {});
+        const replay = seen[1]!.body.messages;
+        expect(replay[1].tool_calls[0].function.arguments).toBe("{}");
+        expect(replay[2]).toEqual({ role: "tool", tool_call_id: "c9", content: `Error: ${error}` });
+        expect((msg.raw!.openai!.tool_calls as Json[])[0]!.function.arguments).toBe('{"path": ');
     });
 
     test("finish_reason length maps to max_tokens", async () => {
@@ -1217,6 +1232,24 @@ describe("Anthropic message conversion", () => {
 });
 
 describe("Anthropic streaming", () => {
+    test("context-window exhaustion preserves partial output and usage with a distinct stop reason", async () => {
+        const { AnthropicProvider } = await import("../src/providers/anthropic");
+        const ev = (type: string, data: Json) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+        respond = () => new Response([
+            ev("message_start", { message: { id: "msg_context", type: "message", role: "assistant", model: "claude-haiku-5-5", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 100, output_tokens: 1 } } }),
+            ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } }),
+            ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: "partial answer" } }),
+            ev("content_block_stop", { index: 0 }),
+            ev("message_delta", { delta: { stop_reason: "model_context_window_exceeded", stop_sequence: null }, usage: { output_tokens: 12 } }),
+            ev("message_stop", {}),
+        ].join(""), { headers: { "content-type": "text/event-stream" } });
+        const m: ModelInfo = { provider: "anthropic", id: "claude-haiku-5-5" };
+        const msg = await new AnthropicProvider(builtin("anthropic", { baseUrl: `http://127.0.0.1:${server.port}` }), FAKE.anthropic).stream(req(m, [{ role: "user", content: [{ type: "text", text: "q" }] }]), () => {});
+        expect(msg.stopReason).toBe("context_window_exceeded");
+        expect(msg.content).toEqual([{ type: "text", text: "partial answer" }]);
+        expect(msg.usage).toMatchObject({ inputTokens: 100, outputTokens: 12 });
+    });
+
     test("thinking that isn't streamed still says it started", async () => {
         const { AnthropicProvider } = await import("../src/providers/anthropic");
         const ev = (type: string, data: Json) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
