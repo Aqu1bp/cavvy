@@ -292,20 +292,16 @@ for (const g of [{ state: "paused", judge: "model" }, { state: "active", judge: 
 }
 assert.equal(interrupts, stopsBefore + 3);
 setGoal(undefined);
-// The status row shows while a turn runs, not while a request card already says what's happening.
-const statusRows = () => nodes.filter((n) => n.props.class === "c-status").length;
-const rowsBefore = statusRows();
-setAsks([{ id: "ask", kind: "permission" }]);
+// No status row while a turn runs: the turn's live line says what it's doing; the box keeps its height,
+// with "esc" beside the stop button.
+const escs = () => nodes.filter((n) => n.props.class === "c-alt c-esc").length;
+const escsBefore = escs();
 setWorking(true);
-assert.equal(statusRows(), rowsBefore, "no status row under a request card");
-setAsks([]);
-assert.equal(statusRows(), rowsBefore + 1, "the status row appears once the card is answered");
-assert.ok(renderedText.includes("Running bun test"), "it says what the turn is doing");
-assert.ok(renderedText.includes("3600s"), "a turn's timer counts from the turn's start");
-// Compacting while idle: no turn runs, so its timer starts with the compaction.
+assert.equal(nodes.filter((n) => n.props.class === "c-status").length, 0, "no status row");
+assert.ok(!renderedText.includes("Running bun test"), "the composer doesn't say what the turn is doing");
+assert.equal(escs(), escsBefore + 1, "an esc hint beside the stop button");
 setActivity({ label: "Compacting", since: Date.now() - 2000, idle: true });
-assert.ok(renderedText.includes("Compacting"));
-assert.equal(renderedText.at(-1), "2s", "an idle compaction counts from its own start");
+assert.ok(!renderedText.includes("Compacting"), "nor an idle compaction (the transcript's live line does)");
 setActivity({ label: "Running bun test", since: Date.now() });
 setWorking(false);
 // The mention button puts an @ at the caret (after a space) and asks for files.

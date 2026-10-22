@@ -169,6 +169,7 @@
     --syn-type: #0b5fb0;
 
     --plan: #7c4dff;
+    --steer: #7c4dff; /* a message steered into a running turn */
     --auto: #a35401; /* was #a45501, nudged for AA on the new sheet */
     --shell: #086f64;
     --stop: #e5484d;
@@ -246,6 +247,7 @@
     --syn-type: #6cb6ff;
 
     --plan: #a78bfa;
+    --steer: #a78bfa;
     --auto: #f0a24a;
     --shell: #5eead4;
     --stop: #ef4444;

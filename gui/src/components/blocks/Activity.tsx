@@ -33,7 +33,8 @@ import {
     Wrench,
     X, GitCommitHorizontal, ArrowUpFromLine, GitPullRequestArrow } from "lucide-solid";
 import type { AgentRun, Block, ThinkingBlock, TodoEntry, ToolBlock } from "@shared/protocol";
-import { duration, firstChangedLine, plural, sleepSeconds, splitTitle, stripAnsi, tokens } from "../../lib/format";
+import { duration, firstChangedLine, plural, sleepSeconds, stripAnsi, tokens } from "../../lib/format";
+import { isLive, runningVerb, shortModelRef, toolLabel } from "../../lib/tool-words";
 import { now } from "../../lib/clock";
 import { app, reportError, rpc } from "../../state/app";
 import { prefs } from "../../state/prefs";
@@ -102,92 +103,7 @@ export function cardOf(t: ToolBlock): Card | undefined {
 }
 
 // ---------------------------------------------------------------------------
-// Wording
-
-const VERBS: Record<string, string> = {
-    Read: "Read",
-    Grep: "Search",
-    Glob: "Find",
-    LS: "List",
-    Edit: "Edit",
-    MultiEdit: "Edit",
-    Write: "Write",
-    NotebookEdit: "Edit notebook",
-    Bash: "Run",
-    BashOutput: "Check output",
-    KillShell: "Stop",
-    Monitor: "Monitor",
-    WebFetch: "Fetch",
-    WebSearch: "Search the web",
-    Task: "Agent",
-    Skill: "Load skill",
-    TodoWrite: "Update todos",
-    AskUserQuestion: "Ask",
-    ExitPlanMode: "Present plan",
-    GitCommit: "Commit",
-    GitPush: "Push",
-    CreatePullRequest: "Open pull request",
-    WatchPullRequest: "Watch pull request",
-    UnwatchPullRequest: "Stop watching",
-};
-
-const RUNNING: Record<string, string> = {
-    Read: "Reading",
-    Grep: "Searching",
-    Glob: "Finding files",
-    LS: "Listing",
-    Edit: "Editing",
-    MultiEdit: "Editing",
-    Write: "Writing",
-    NotebookEdit: "Editing notebook",
-    Bash: "Running",
-    BashOutput: "Checking output",
-    Monitor: "Starting monitor",
-    WebFetch: "Fetching",
-    WebSearch: "Searching the web",
-    Task: "Agent working",
-    Skill: "Loading skill",
-    TodoWrite: "Updating todos",
-    AskUserQuestion: "Waiting for your answer",
-    ExitPlanMode: "Waiting for plan review",
-    GitCommit: "Committing",
-    GitPush: "Pushing",
-    CreatePullRequest: "Opening pull request",
-    WatchPullRequest: "Reading pull request",
-};
-
-/** "Gemini 3 Pro" style: the model part of provider:model. */
-export function shortModelRef(ref?: string): string | undefined {
-    return ref?.slice(ref.indexOf(":") + 1);
-}
-
-export function toolLabel(t: ToolBlock): { verb: string; arg?: string } {
-    // A sub-agent: its task, and the model when it's another one.
-    if (t.agent) {
-        const i = t.input ?? {};
-        const model = shortModelRef(typeof i.model === "string" ? i.model : undefined);
-        const what = String(i.description ?? splitTitle(t.title).arg ?? "");
-        return { verb: t.name === "Task" ? "Agent" : "Delegate", arg: [what, model].filter(Boolean).join(" · ") || undefined };
-    }
-    if (t.name.startsWith("mcp__")) {
-        const { verb, arg } = splitTitle(t.title);
-        return { verb, arg };
-    }
-    const { arg } = splitTitle(t.title);
-    const input = t.input ?? {};
-    let a = arg;
-    if (t.name === "Bash") a = String(input.command ?? arg ?? "").split("\n")[0];
-    if (t.job && (t.name === "BashOutput" || t.name === "KillShell")) a = t.job.label;
-    if (t.name === "Monitor") a = String(input.description ?? arg ?? "");
-    if (t.name === "Task") a = String(input.description ?? arg ?? "");
-    if (t.name === "AskUserQuestion") a = String(input.question ?? arg ?? "");
-    if (t.name === "Skill") a = String(input.skill ?? input.name ?? arg ?? "");
-    if (t.name === "TodoWrite" || t.name === "ExitPlanMode" || t.name === "GitPush") a = undefined;
-    if (t.name === "GitCommit") a = String(input.message ?? arg ?? "").split("\n")[0];
-    if (t.name === "CreatePullRequest") a = String(input.title ?? arg ?? "");
-    if (t.name === "WatchPullRequest" || t.name === "UnwatchPullRequest") a = input.pr !== undefined && input.pr !== "" ? `#${String(input.pr).replace(/^#/, "").replace(/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\//, "")}` : undefined;
-    return { verb: VERBS[t.name] ?? t.name, arg: a || undefined };
-}
+// Icons and summaries (the words are lib/tool-words.ts's)
 
 export function ToolIcon(p: { name: string; size?: number; agent?: boolean }) {
     const s = () => p.size ?? 15;
@@ -349,8 +265,6 @@ function Inline(p: { text: string }) {
 // The work log: one sentence per run of tool calls, opening into a plain line
 // per call; sub-agents get their own row; the call running now shimmers.
 
-const isLive = (t: ToolBlock) => t.status === "running" || t.status === "streaming" || t.status === "queued" || t.status === "awaiting";
-
 const elapsed = (ms: number) => duration(Math.max(0, ms)).replace(/^(\d+)ms$/, "0s");
 
 /** How long a running call has run; a wait, against how long it waits. */
@@ -361,15 +275,70 @@ function liveTime(t: ToolBlock): string | undefined {
     return wait ? `${ran} of ${elapsed(wait * 1000)}` : ran;
 }
 
-type GroupProps = { tools: ToolBlock[]; steps: (ToolBlock | ThinkingBlock)[]; turnRunning: boolean; keepTail?: boolean; agents?: AgentRun[]; card?: Card };
+type GroupProps = {
+    tools: ToolBlock[];
+    steps: (ToolBlock | ThinkingBlock)[];
+    turnRunning: boolean;
+    keepTail?: boolean;
+    agents?: AgentRun[];
+    card?: Card;
+    /** A turn's work log: a quiet row per finished step, no summary line (a sub-agent's view keeps its summaries). */
+    flat?: boolean;
+    /** The turn's live line says what's under way: calls still running aren't rows until they're done. */
+    hideLive?: boolean;
+};
 
 export function ActivityGroup(p: GroupProps) {
     return (
         <RenderBoundary raw={() => p.steps}>
-            <Show when={p.card && p.tools[0]} fallback={<ActivityGroupContent {...p} />}>
-                {(t) => (p.card === "edit" ? <EditCard tool={t()} /> : <CommandCard tool={t()} />)}
+            <Show when={p.card && p.tools[0]} fallback={p.flat ? <StepRows {...p} /> : <ActivityGroupContent {...p} />}>
+                {(t) => (
+                    <Show when={!(p.hideLive && isLive(t()))}>
+                        {p.card === "edit" ? <EditCard tool={t()} /> : <CommandCard tool={t()} />}
+                    </Show>
+                )}
             </Show>
         </RenderBoundary>
+    );
+}
+
+/**
+ * The model's reasoning, as a quiet row: "Thought for 41s", opening into the text. While it's written, the turn's
+ * live line shows it (with its latest line); Settings → Show thinking hides finished ones.
+ */
+export function Thinking(p: { block: ThinkingBlock; live: boolean }) {
+    const [open, setOpen] = createSignal(false);
+    const label = () => (p.live ? "Thinking" : p.block.durationMs && p.block.durationMs >= 1500 ? `Thought for ${duration(p.block.durationMs)}` : "Thought briefly");
+    const preview = () => p.block.text.trim().split("\n").filter(Boolean).slice(-2).join(" ");
+    return (
+        <Show when={prefs.showThinking || p.live}>
+            <div class={`wgroup thinking ${open() ? "open" : ""} ${p.live ? "live" : ""}`}>
+                <button class="acts-h wrow" onClick={() => setOpen(!open())} aria-expanded={open()}>
+                    <ChevronRight size={14} class="chev" />
+                    <span class={`wtext ${p.live ? "shimmer" : ""}`}>{label()}</span>
+                </button>
+                <Show when={open()} fallback={<Show when={p.live && preview()}><div class="thinking-peek">{preview()}</div></Show>}>
+                    <div class="thinking-text">{p.block.text.trim()}</div>
+                </Show>
+            </div>
+        </Show>
+    );
+}
+
+/** A run of calls in a turn's work: a row per step (icon, verb, what, and what it came to), and its sub-agents. */
+function StepRows(p: GroupProps) {
+    const agentIds = createMemo(() => new Set(p.tools.filter((t) => t.agent).map((t) => t.id)));
+    const runs = createMemo(() => (p.agents ?? []).filter((a) => agentIds().has(a.id)));
+    const runIds = createMemo(() => new Set(runs().map((a) => a.id)));
+    // A sub-agent with a run is a row in the sub-agents' card; a call still under way is the live line's.
+    const rows = createMemo(() => p.steps.filter((b) => b.t === "thinking" || (!runIds().has(b.id) && !(p.hideLive && isLive(b)))));
+    return (
+        <div class="steps">
+            <For each={rows()}>{(b) => (b.t === "tool" ? <ToolRow tool={b} /> : <Thinking block={b} live={false} />)}</For>
+            <Show when={runs().length}>
+                <SubAgentsRow runs={runs()} />
+            </Show>
+        </div>
     );
 }
 
@@ -467,14 +436,6 @@ function ActivityGroupContent(p: GroupProps) {
             </div>
         </div>
     );
-}
-
-function runningVerb(t: ToolBlock): string {
-    if (t.status === "awaiting") return t.name === "AskUserQuestion" || t.name === "ExitPlanMode" ? RUNNING[t.name]! : "Waiting for approval";
-    if (t.status === "streaming") return `Preparing ${VERBS[t.name]?.toLowerCase() ?? t.name}`;
-    if (t.status === "queued") return `Then ${VERBS[t.name]?.toLowerCase() ?? t.name}`;
-    if (t.name === "Bash" && sleepSeconds(t.input?.command)) return "Waiting";
-    return RUNNING[t.name] ?? `Running ${t.name}`;
 }
 
 const AGENT_STATUS: Record<AgentRun["status"], string> = {
@@ -793,7 +754,7 @@ function EditCardContent(p: { tool: ToolBlock }) {
                         </Show>
                     </Show>
                 </span>
-                <span class="sr-only" data-find-skip>{live() ? runningVerb(t()) : label().verb}{" "}</span>
+                <span class="tcard-verb" data-find-skip>{live() ? runningVerb(t()) : label().verb}{" "}</span>
                 <Show when={label().arg && t().status !== "streaming"}>
                     <span class="tcard-p truncate" title={label().arg}>{label().arg}</span>{!live() && " "}
                 </Show>
@@ -829,7 +790,7 @@ function EditCardContent(p: { tool: ToolBlock }) {
             </div>
             <Show when={open() && hasBody()}>
                 <div class="tcard-body" data-find-skip>
-                    <Show when={t().diff}>{(d) => <DiffView diff={d()} maxLines={40} class="inline" />}</Show>
+                    <Show when={t().diff}>{(d) => <DiffView diff={d()} maxLines={16} class="inline" />}</Show>
                     <Show when={input()}>
                         {(code) => (
                             <div class="tcard-sec">

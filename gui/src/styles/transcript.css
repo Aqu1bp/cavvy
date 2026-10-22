@@ -31,6 +31,13 @@
     padding: 0 var(--lane-r) 0 var(--lane-l);
 }
 
+/* The column glides (a translate, Transcript.tsx pin): clipped here, vertically only, so a glide never adds
+   to what the conversation scrolls through, and nothing beside the column is cut. */
+.transcript-glide {
+    overflow-x: visible;
+    overflow-y: clip;
+}
+
 /* --bar-room: what a title bar laid over the conversation covers (the shell sets it). */
 .transcript-col {
     max-width: var(--column-w);
@@ -115,6 +122,11 @@
     color: var(--fg);
 }
 
+/* Still working down there. */
+.jump.is-live .spinner {
+    color: var(--accent);
+}
+
 @keyframes jump-in {
     from {
         opacity: 0;
@@ -194,6 +206,11 @@
     padding-bottom: 26px;
 }
 
+/* A turn a steer ended: the next one carries straight on, so they sit close. */
+.turn.chained {
+    padding-bottom: 6px;
+}
+
 /* De-emphasize archived prompts without fading all their text below AA. */
 .turn.archived .user-bubble {
     color: var(--fg-2);
@@ -214,6 +231,19 @@
     flex-direction: column;
     align-items: flex-end;
     margin-bottom: 22px;
+}
+
+/* "Steered in": sent while it worked, it joined the work at its next step. */
+.steered-tag {
+    align-self: flex-end;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin: 0 4px 5px 0;
+    font-size: 0.821rem;
+    font-weight: 600;
+    color: var(--steer);
+    animation: fade 300ms var(--ease) 260ms both;
 }
 
 /* Started by an event the agent asked to be woken for. */
@@ -482,6 +512,188 @@
     font-size: 0.857rem;
 }
 
+/* "Worked for 2m 5s": a finished turn's work, folded, on a hairline to the column's edge. */
+.acts-h.worked {
+    align-self: stretch;
+    max-width: none;
+    gap: 6px;
+    margin: 0 0 4px -4px;
+    padding-right: 0;
+    background: none;
+    font-size: 0.929rem;
+    animation: fade 220ms var(--ease);
+}
+
+.acts-h.worked::after {
+    content: "";
+    flex: 1;
+    height: 0.5px;
+    margin-left: 4px;
+    background: var(--line-strong);
+}
+
+.acts-h.worked:hover {
+    background: none;
+    color: var(--fg-2);
+}
+
+/* The work, fading out before it folds into "Worked for". */
+.worklog.leaving {
+    animation: fade-out 200ms ease-out both;
+}
+
+@keyframes fade-out {
+    to {
+        opacity: 0;
+    }
+}
+
+/* ---- The live line ----------------------------------------------------
+   The running turn's one indicator, always its last row (LiveLine.tsx). Its
+   states share one grid cell and roll (the old one up and out, the new one up
+   from below, clipped to the row), so the row never changes height. Label,
+   what it's about (a file, a command, the thought being written), and its own
+   timer at the right. */
+
+.live-line {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    margin-top: 2px;
+}
+
+.live-stack {
+    display: grid;
+    height: 30px;
+    overflow: hidden;
+}
+
+.live-line .layer {
+    grid-area: 1 / 1;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-width: 0;
+    padding: 0 2px;
+    font-size: 0.964rem;
+    color: var(--fg-3);
+    white-space: nowrap;
+}
+
+.layer .lic {
+    width: 22px;
+    height: 22px;
+    flex: none;
+    display: grid;
+    place-items: center;
+    color: var(--accent);
+}
+
+.layer.k-wait .lic,
+.layer.k-wait .lbl {
+    color: var(--warn);
+}
+
+.layer .lbl {
+    flex: none;
+    font-weight: 500;
+}
+
+.layer .det {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--fg-3);
+}
+
+.layer .det.mono {
+    font-family: var(--font-mono);
+    font-size: 0.893rem;
+    color: var(--fg-2);
+}
+
+.layer .lend {
+    margin-left: auto;
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-left: 8px;
+    font-size: 0.857rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-3);
+}
+
+/* Thinking: a breathing dot, where the others have a spinner. */
+.orb {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: orb 1.1s var(--ease) infinite alternate;
+}
+
+@keyframes orb {
+    to {
+        transform: scale(0.55);
+        opacity: 0.45;
+    }
+}
+
+/* A running command's output: always three lines tall, the newest at the bottom; a click opens it to more. */
+.live-out {
+    height: calc(0.857rem * 1.6 * 3 + 14px);
+    margin: 2px 0 4px 33px;
+    padding: 7px 12px;
+    border-radius: 10px;
+    background: var(--sheet-2);
+    font: 0.857rem/1.6 var(--font-mono);
+    color: var(--fg-2);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    -webkit-mask-image: linear-gradient(transparent, #000 40%);
+    mask-image: linear-gradient(transparent, #000 40%);
+    cursor: pointer;
+}
+
+.live-out.open {
+    height: auto;
+    min-height: calc(0.857rem * 1.6 * 3 + 14px);
+    max-height: 240px;
+    overflow-y: auto;
+    justify-content: flex-start;
+    -webkit-mask-image: none;
+    mask-image: none;
+    cursor: auto;
+}
+
+.live-out:focus-visible {
+    outline-offset: 2px;
+}
+
+.live-out > div {
+    flex: none;
+    white-space: pre;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.live-out.open > div {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.live-out .ok {
+    color: var(--ok);
+}
+
+.live-out .er {
+    color: var(--danger);
+}
+
+/* A sub-agent's view (Agents.tsx): its own one-line status under its log. */
 .live-head {
     display: flex;
     align-items: center;
@@ -500,10 +712,6 @@
 
 .live-label .muted {
     color: var(--fg-3);
-}
-
-.live-tail {
-    margin-top: 2px;
 }
 
 /* After the reply: copy and fork, shown when the turn is pointed at. */
@@ -634,8 +842,66 @@
 .worklog {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 2px;
     min-width: 0;
+}
+
+/* A turn's steps: a quiet row each (icon, verb, what in mono, and on the right what it came to). */
+.steps {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.steps .tool-line {
+    gap: 9px;
+    min-height: 30px;
+    width: 100%;
+    margin-left: 0;
+    padding: 0 8px 0 2px;
+    font-size: 0.964rem;
+    color: var(--fg-2);
+    animation: step-in 320ms var(--ease);
+}
+
+.steps .tool-line:hover,
+.steps .tool.open > .tool-head > .tool-line {
+    color: var(--fg-2);
+    background: var(--hover);
+}
+
+.steps .tool-icon {
+    width: 22px;
+    height: 22px;
+}
+
+.steps .tool-arg {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 0.893rem;
+    color: var(--fg);
+}
+
+.steps .tool-meta {
+    flex: none;
+    margin-left: auto;
+    padding-left: 8px;
+    font-variant-numeric: tabular-nums;
+}
+
+.steps .tool-head > .row-open {
+    margin-left: 2px;
+}
+
+.steps .tool-detail {
+    padding-left: 33px;
+}
+
+/* A finished thought, among the steps: "Thought for 4s". */
+.steps > .wgroup.thinking > .acts-h,
+.worklog > .wgroup.thinking > .acts-h {
+    min-height: 30px;
 }
 
 .acts,
@@ -1055,6 +1321,79 @@
 }
 
 /* ---- Cards: an edit, a command ---------------------------------------- */
+
+/* An edit is a step like the others: no card, its row (icon, verb, file, +3 −2), and its diff under it. */
+.tcard.edit-card {
+    margin: 0;
+    border-radius: 8px;
+    background: none;
+    box-shadow: none;
+    overflow: visible;
+    animation: step-in 320ms var(--ease);
+}
+
+.edit-card > .tcard-h {
+    gap: 9px;
+    min-height: 30px;
+    padding: 0 4px 0 2px;
+    border-radius: 8px;
+    font-size: 0.964rem;
+    color: var(--fg-2);
+    transition: background 140ms;
+}
+
+.edit-card > .tcard-h:hover {
+    background: var(--hover);
+}
+
+.edit-card .tcard-ic {
+    width: 22px;
+    height: 22px;
+    color: var(--fg-3);
+}
+
+.edit-card .tcard-verb {
+    flex: none;
+}
+
+/* What it came to sits at the right, by the row's buttons; those show on hover. */
+.edit-card > .tcard-h > .grow {
+    display: none;
+}
+
+.edit-card > .tcard-h > .tcard-p {
+    margin-right: auto;
+}
+
+.edit-card > .tcard-h > .tcard-btn {
+    opacity: 0;
+    transition: opacity 140ms;
+}
+
+.edit-card > .tcard-h:hover > .tcard-btn,
+.edit-card > .tcard-h > .tcard-btn:focus-visible {
+    opacity: 1;
+}
+
+.edit-card .tcard-p {
+    min-width: 0;
+    font-size: 0.893rem;
+}
+
+.edit-card .tcard-h .stat {
+    font-weight: 500;
+    font-size: 0.857rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.edit-card > .tcard-body {
+    margin: 2px 0 6px 33px;
+    border-top: 0;
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--sheet-2);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+}
 
 .tcard {
     margin: 2px 0 6px;

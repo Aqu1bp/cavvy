@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, type Node } from "../helpers/gui-render";
 import { anchoredTop, atBottom, restoredShown, positionCache, TURN_PAGE } from "../../gui/src/lib/transcript-scroll";
+import { glideFrom, heldTurns, liveLine, specialActivity } from "../../gui/src/lib/live-line";
 
 // Real Solid effects/reconciliation; deterministic layout and browser scheduling
 // at the DOM boundary let these regressions run without listening on a socket.
@@ -19,6 +20,12 @@ let reduced = false;
 const prefs = { motion: "smooth" };
 let scrollBehavior: string | undefined;
 let scrollTarget = 0;
+/** The column's MutationObserver: mutate() is its content changing, now. */
+const mutations = new Set<() => void>();
+const mutate = () => mutations.forEach((fn) => fn());
+/** Window listeners (a pointer's lift); pointerUp() lifts it. */
+const lifts = new Map<string, Set<() => void>>();
+const pointerUp = () => [...(lifts.get("pointerup") ?? [])].forEach((fn) => fn());
 let restoredOpen = false;
 let root = node("root");
 let top = 0;
@@ -39,7 +46,15 @@ const matches = (n: Node, selector: string) => selector.split(", ").some((s) => 
     const match = s.match(/^\[([^=\]]+)(?:="([^"]*)")?\]$/);
     return !!match && n.props[match[1]!] !== undefined && (match[2] === undefined || n.props[match[1]!] === match[2]);
 });
+/** The column's glides (Transcript.tsx pin): where each starts, and the translate a running one is at now. */
+const glides: { from: number; duration: number; anim: { playState: string; cancel(): void } }[] = [];
+let shiftNow = 0;
 const decorate = (n: Node): any => Object.assign(n, {
+    animate: (keyframes: { transform: string }[], options: { duration: number }) => {
+        const anim = { playState: "running", cancel() { anim.playState = "idle"; } };
+        glides.push({ from: Number(/translateY\((-?[\d.]+)px\)/.exec(keyframes[0]!.transform)?.[1]), duration: options.duration, anim });
+        return anim;
+    },
     getBoundingClientRect: () => ({ top: has(n, "transcript") ? 0 : absolute(n) - top, bottom: absolute(n) - top + height(n), height: height(n) }),
     querySelectorAll: (selector: string) => all(n).slice(1).filter((child) => matches(child, selector)),
     querySelector: (selector: string) => all(n).slice(1).find((child) => matches(child, selector)),
@@ -60,8 +75,20 @@ const [findShown, setFindShown] = solid.createSignal(false);
 let findProps: any;
 const scope = {
     renderer: { ...solid, ...renderer, createElement: create },
-    anchoredTop, atBottom, restoredShown, transcriptPositions: cache, PAGE: TURN_PAGE, prefs,
+    anchoredTop, atBottom, restoredShown, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, glideFrom, heldTurns, liveLine, specialActivity,
+    LiveLine: () => node("live-line"), Spinner: () => node("spinner"),
+    getComputedStyle: () => ({ transform: `matrix(1, 0, 0, 1, 0, ${shiftNow})` }),
+    DOMMatrixReadOnly: class { m42: number; constructor(m: string) { this.m42 = Number(/, (-?[\d.]+)\)$/.exec(m)?.[1] ?? 0); } },
+    motionMs: (ms: number) => (reduced || prefs.motion === "instant" ? 0 : ms),
     requestAnimationFrame: raf, cancelAnimationFrame: (id: number) => frames.delete(id),
+    performance: { now: () => clock },
+    MutationObserver: class {
+        constructor(private cb: () => void) {}
+        observe() { mutations.add(this.cb); }
+        disconnect() { mutations.delete(this.cb); }
+    },
+    addEventListener: (type: string, fn: () => void) => { if (!lifts.has(type)) lifts.set(type, new Set()); lifts.get(type)!.add(fn); },
+    removeEventListener: (type: string, fn: () => void) => lifts.get(type)?.delete(fn),
     ResizeObserver: class {
         constructor(private cb: () => void) {}
         observe(target: Node) { if (!observers.has(this.cb)) observers.set(this.cb, new Set()); observers.get(this.cb)!.add(target); }
@@ -90,7 +117,10 @@ const a = { id: "a", view: { state: {}, get turns() { return aTurns(); } } };
 const b = { id: "b", view: { state: {}, turns: turns(90) } };
 const mount = (handle: any, runFrame = true) => { top = 0; root = node("root"); const dispose = renderer.render(() => Transcript({ handle }), root); if (runFrame) flush(); return dispose; };
 const scroller = () => all(root).find((n) => has(n, "transcript"))!;
-const scroll = (value: number) => { (scroller() as any).scrollTop = value; scroller().props.onScroll(); };
+/** The reader scrolling (well after any write of ours: Transcript.tsx's ENGINE_MS). */
+const scroll = (value: number) => { clock += 1000; (scroller() as any).scrollTop = value; scroller().props.onScroll(); };
+/** The engine moving the scroll position at once, as WebKit does undoing a write of ours. */
+const engineScroll = (value: number) => { (scroller() as any).scrollTop = value; scroller().props.onScroll(); };
 const button = (cls: string) => all(root).find((n) => has(n, cls))!;
 const turn = (id: string) => all(root).find((n) => n.props["data-turn"] === id) as any;
 let dispose = mount(a);
@@ -140,7 +170,8 @@ try {
     for (const input of ["onWheel", "onTouchStart", "onPointerDown", "onKeyDown"]) {
         scroll(1200); deferSmooth = true;
         button("jump").props.onClick();
-        scroller().props[input]();
+        // A wheel or keys toward the end interrupt the jump too; up is a scroll away (checked with the glide below).
+        scroller().props[input](input === "onWheel" ? { deltaY: 3 } : input === "onKeyDown" ? { key: "ArrowDown" } : undefined);
         const pendingInterruptedWrites = scrollWrites;
         viewportHeight = 240; resize(scroller());
         assert.equal(scrollWrites, pendingInterruptedWrites, `${input} cancels following before the first scroll event`);
@@ -207,31 +238,112 @@ try {
     setATurns(turns(132)); flush(); scroll(0);
     assert.ok(button("jump"), "a send before initial restoration still enables scroll tracking");
     dispose();
-    // While a turn runs, growth at the end glides into view over a few frames and stays followed.
+    // While a turn runs, growth at the end is written once, in the next frame, and the column glides in from where it was.
     const live = { id: "live", view: { state: {}, turns: turns(45).map((t, i) => ({ ...t, status: i === 44 ? "running" : "done" })) } };
     dispose = mount(live);
     const bottom = () => height(scroller()) - viewportHeight;
     assert.equal(top, bottom(), "a running turn starts followed");
+    const start = top;
     turnHeights.set("turn-44", 420); resize();
-    assert.ok(top < bottom(), "growth doesn't jump: it glides");
+    assert.equal(top, start, "nothing is written until the next frame");
+    let glideWrites = scrollWrites;
     flush();
-    assert.ok(top > bottom() - 220 && top < bottom(), "the first frame moves part of the way");
-    scroller().props.onScroll(); // The glide's own scroll event, still more than 64px from the end.
-    assert.equal(button("jump"), undefined, "a glide on its way down stays stuck to the end");
-    let glideFrames = 1;
-    while (frames.size && glideFrames < 60) { flush(); glideFrames++; }
-    assert.equal(top, bottom(), "the glide reaches the end");
-    assert.ok(glideFrames > 3, "over several frames");
-    turnHeights.set("turn-44", 620); resize(); flush();
-    scroller().props.onWheel();
-    assert.equal(frames.size, 0, "the reader scrolling stops a glide");
+    assert.equal(top, bottom(), "growth is at the end in one frame");
+    assert.equal(scrollWrites, glideWrites + 1, "with one scrollTop write");
+    assert.equal(glides.length, 1, "and one glide");
+    assert.deepEqual([glides[0]!.from, glides[0]!.duration], [220, 240], "from where the column was drawn, in 240ms");
+    scroller().props.onScroll(); // Our own write's scroll event.
+    assert.equal(button("jump"), undefined, "our own write keeps it pinned");
+    // More growth while that glide runs: one motion, picked up where it is (drawn 100px down by now).
+    shiftNow = 100;
+    turnHeights.set("turn-44", 460); resize(); flush();
+    assert.equal(glides[0]!.anim.playState, "idle", "the running glide gives way");
+    assert.equal(glides.at(-1)!.from, 140, "the next starts from where the last one was, plus the growth");
+    shiftNow = 0; glides[1]!.anim.cancel();
     scroller().props.onScroll();
-    assert.ok(button("jump"), "and where they leave it decides whether it follows");
+    // A big jump starts no farther than 240px off.
+    turnHeights.set("turn-44", 1460); resize(); flush();
+    assert.equal(top, bottom());
+    assert.equal(glides.at(-1)!.from, 240, "a glide never covers more than 240px");
+    glides.at(-1)!.anim.cancel();
+    scroller().props.onScroll();
+    // Nothing to do: no write, no glide.
+    glideWrites = scrollWrites;
+    const count = glides.length;
+    resize(); flush();
+    assert.deepEqual([scrollWrites, glides.length], [glideWrites, count], "unchanged, nothing is written and nothing glides");
+    // The reader scrolling up, however little, unpins it at once; growth below then leaves them where they are.
+    scroller().props.onWheel({ deltaY: -3 });
+    assert.ok(button("jump"), "a scroll up, however small, unpins it");
+    const away = top;
+    turnHeights.set("turn-44", 1600); resize(); flush();
+    assert.equal(top, away, "growth doesn't pull an unpinned reader down");
+    // A scroll up by the scrollbar or keys (no wheel): unpinned too, even within the 64px of the end.
+    scroll(bottom()); assert.equal(button("jump"), undefined, "back at the end, it follows again");
+    scroll(bottom() - 20);
+    assert.ok(button("jump"), "a scroll away from the end unpins it, however near");
+    scroll(bottom() - 10);
+    assert.equal(button("jump"), undefined, "moving back down near the end pins it again");
+    // Content shrinking above (a fold) pulls the scroll position up without unpinning it.
+    scroll(bottom());
+    turnHeights.set("turn-44", 900);
+    scroll(bottom());
+    assert.equal(button("jump"), undefined, "a shrink at the end isn't the reader scrolling away");
+    // WebKit, mid-update: the column shorter for a moment clamps the position up, then it grows back a little.
+    // The scroll event comes with the new size: the layout's doing, not the reader's, so it stays pinned.
+    turnHeights.set("turn-44", 880);
+    scroll(bottom() - 40);
+    assert.equal(button("jump"), undefined, "a scroll up that comes with a change of size keeps it pinned");
+    resize(); flush();
+    assert.equal(top, bottom(), "and the next frame puts it back at the end");
+    scroller().props.onScroll();
+    // WebKit, just after our write: the position put back where it was (clamped to the column's old size), at
+    // the same size. Not the reader: it's written again at once, before it's drawn there.
+    clock += 1000;
+    const beforeGrowth = top;
+    turnHeights.set("turn-44", 960); resize(); flush();
+    assert.equal(top, bottom());
+    const rewrites = scrollWrites;
+    engineScroll(beforeGrowth);
+    assert.equal(button("jump"), undefined, "an engine's undoing of our write keeps it pinned");
+    assert.equal(top, bottom(), "and it's back at the end at once");
+    assert.equal(scrollWrites, rewrites + 2, "with one write (besides the engine's own)");
+    scroller().props.onScroll();
+    // Just after the content changed, at the same size (a row replaced by one as tall): the layout's too.
+    clock += 1000;
+    mutate();
+    engineScroll(bottom() - 61);
+    assert.equal(button("jump"), undefined, "a scroll up just after the content changed keeps it pinned");
+    assert.equal(top, bottom(), "and it's back at the end at once");
+    scroller().props.onScroll();
+    // The engine's come one or two at a time (WebKit at a turn's end: two, 50ms apart).
+    clock += 50; mutate();
+    engineScroll(bottom() - 61);
+    assert.equal(button("jump"), undefined, "a second straight after is still the engine's");
+    scroller().props.onScroll();
+    // A third in a row is the reader dragging the scrollbar (were its pointer not seen).
+    clock += 16; mutate();
+    engineScroll(bottom() - 80);
+    assert.ok(button("jump"), "a run of scrolls up is the reader's");
     scroll(bottom()); assert.equal(button("jump"), undefined);
-    reduced = true; turnHeights.set("turn-44", 740); resize();
-    assert.equal(top, bottom(), "reduced motion follows at once");
-    reduced = false; live.view.turns[44]!.status = "done"; turnHeights.set("turn-44", 780); resize();
+    // The same move well after any write of ours is the reader's.
+    scroll(bottom() - 30);
+    assert.ok(button("jump"), "later, a scroll up at the same size is the reader's");
+    scroll(bottom()); assert.equal(button("jump"), undefined);
+    // But the reader dragging the scrollbar up while it grows: theirs, so it unpins.
+    scroller().props.onPointerDown();
+    turnHeights.set("turn-44", 920);
+    scroll(bottom() - 200);
+    assert.ok(button("jump"), "a scroll up with a pointer down unpins it, growing or not");
+    pointerUp();
+    scroll(bottom()); assert.equal(button("jump"), undefined);
+    const glidesBefore = glides.length;
+    reduced = true; turnHeights.set("turn-44", 1000); resize(); flush();
+    assert.equal(top, bottom(), "reduced motion follows");
+    assert.equal(glides.length, glidesBefore, "without a glide");
+    reduced = false; live.view.turns[44]!.status = "done"; turnHeights.set("turn-44", 1100); resize();
     assert.equal(top, bottom(), "the end of a turn lands at once");
+    assert.equal(glides.length, glidesBefore, "a turn's end (its work folding away) doesn't glide");
     turnHeights.clear(); dispose();
     const running = { id: "background", view: { state: {}, turns: turns(45).map((t) => ({ ...t, status: "running" })) } };
     dispose = mount(running); scroll(0); dispose();

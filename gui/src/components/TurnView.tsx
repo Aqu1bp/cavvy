@@ -1,9 +1,9 @@
 import { RenderBoundary } from "./ui/ErrorBoundary";
-import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, Show, Switch } from "solid-js";
-import { AlertCircle, AlertTriangle, BellRing, Check, CircleCheck, CircleStop, CircleX, ChevronRight, Clock, FileDiff, FileText, GitFork, Goal, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-solid";
+import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, Show, Switch, untrack } from "solid-js";
+import { AlertCircle, AlertTriangle, BellRing, Check, CircleCheck, CircleStop, CircleX, ChevronRight, Clock, CornerDownRight, FileDiff, FileText, GitFork, Goal, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
-import { duration, turnDuration, firstChangedLine, plural, promptTime, shortPrompt, stripAnsi } from "../lib/format";
-import { now } from "../lib/clock";
+import { firstChangedLine, plural, promptTime, shortPrompt, stripAnsi } from "../lib/format";
+import { liveLine, workedLabel } from "../lib/live-line";
 import { formatSize } from "../lib/attachments";
 import { linesLabel, linesPhrase, splitComments } from "../lib/review-comments";
 import { prefs } from "../state/prefs";
@@ -11,9 +11,10 @@ import { fetchGitChanges, type GitView } from "../state/changes";
 import { openInEditor, openReview } from "../state/actions";
 import { findReveal, setViewedImage } from "../state/ui";
 import { imagesReady, promptImages, type PromptImage } from "../state/images";
-import { ActivityGroup, groupBlocks, type Item } from "./blocks/Activity";
+import { ActivityGroup, groupBlocks, Thinking, type Item } from "./blocks/Activity";
 import { Markdown } from "./blocks/Markdown";
 import { CopyButton, Spinner } from "./ui/bits";
+import { LiveLine, motionMs } from "./LiveLine";
 
 /** A prompt's images as thumbnails; the count alone when they can't be had (asked again after a reconnect). */
 function PromptImages(p: { sessionId?: string; turn: Turn; count: number }) {
@@ -66,7 +67,14 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
     // At the right, as wide as its text: attachments above it, and under it (over the gap, on hover
     // or focus) when it was sent, Copy and Rewind.
     return (
-        <div class="user-row">
+        <div class={`user-row ${p.turn.prompt?.steered ? "steered" : ""}`}>
+            {/* Sent while the turn before ran, and joined it at its next step (that turn ended for it). */}
+            <Show when={p.turn.prompt?.steered}>
+                <span class="steered-tag" data-find-skip title="Sent while it worked: joined the work at its next step">
+                    <CornerDownRight size={12} aria-hidden="true" />
+                    Steered in
+                </span>
+            </Show>
             <Show when={p.turn.prompt?.scheduled}>
                 {(label) => (
                     <span class="prompt-scheduled" data-find-skip>
@@ -131,26 +139,6 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
                 </Show>
             </div>
         </div>
-    );
-}
-
-/** The model's reasoning, as a work-log row: "Thought for 41s", opening into the text. */
-export function Thinking(p: { block: ThinkingBlock; live: boolean }) {
-    const [open, setOpen] = createSignal(false);
-    const label = () => (p.live ? "Thinking" : p.block.durationMs && p.block.durationMs >= 1500 ? `Thought for ${duration(p.block.durationMs)}` : "Thought briefly");
-    const preview = () => p.block.text.trim().split("\n").filter(Boolean).slice(-2).join(" ");
-    return (
-        <Show when={prefs.showThinking || p.live}>
-            <div class={`wgroup thinking ${open() ? "open" : ""} ${p.live ? "live" : ""}`}>
-                <button class="acts-h wrow" onClick={() => setOpen(!open())} aria-expanded={open()}>
-                    <ChevronRight size={14} class="chev" />
-                    <span class={`wtext ${p.live ? "shimmer" : ""}`}>{label()}</span>
-                </button>
-                <Show when={open()} fallback={<Show when={p.live && preview()}><div class="thinking-peek">{preview()}</div></Show>}>
-                    <div class="thinking-text">{p.block.text.trim()}</div>
-                </Show>
-            </div>
-        </Show>
     );
 }
 
@@ -323,50 +311,6 @@ function Shell(p: { block: ShellBlock }) {
     );
 }
 
-/** An activity shown even when no turn is running: a retry, a compaction, a reconnect. */
-export function specialActivity(label: string): boolean {
-    return SPECIAL.test(label);
-}
-
-/** Labels that say more than "Working": the turn is in a special state. */
-const SPECIAL = /^(Retrying|Compacting|Interrupting|Connecting|Waiting for background)/;
-
-/**
- * One live head: above streaming output, or at the tail during pauses. How to
- * stop a turn is the composer's status row's to say; `hint` says what the user
- * can do about something that isn't a turn (idle compaction).
- */
-export function LiveHead(p: { state: SessionState; since?: number; waiting?: boolean; tail?: boolean; /** Said beside it: what the user can do. */ hint?: string }) {
-    const elapsed = () => duration(Math.max(0, now() - (p.since ?? p.state.activity?.since ?? now()))).replace(/^(\d+)ms$/, "0s");
-    const activity = () => (p.state.activity && (p.tail || SPECIAL.test(p.state.activity.label)) ? p.state.activity : undefined);
-    return (
-        <>
-            <div class={`live-head${p.tail ? " live-tail" : ""}`} data-find-skip>
-                <Show
-                    when={!p.waiting}
-                    fallback={
-                        <span class="tone-warn live-label">
-                            Waiting for you <span class="muted num">· {elapsed()}</span>
-                        </span>
-                    }
-                >
-                    <Show when={activity()} fallback={<span class="shimmer num live-label">Working for {elapsed()}</span>}>
-                        {(a) => (
-                            <span class="live-label" title={a().detail}>
-                                <span class="shimmer">{a().label}</span>
-                                <span class="muted num"> · {elapsed()}</span>
-                                <Show when={p.hint}>
-                                    <span class="muted"> · {p.hint}</span>
-                                </Show>
-                            </span>
-                        )}
-                    </Show>
-                </Show>
-            </div>
-        </>
-    );
-}
-
 type Changed = { path: string; status: Diff["status"]; added: number; removed: number; line?: number };
 
 /** What a finished turn changed, file by file (its edits' diffs, added up), with where the first edit landed. */
@@ -535,6 +479,8 @@ type TurnViewProps = {
     keepWorkOpen?: () => boolean;
     onWorkOpen?: (open: boolean) => void;
     onToggleWork?: (el: HTMLElement, toggle: () => void) => void;
+    /** Ended by a steer whose turn (or one after it) still runs: its work stays open until that chain ends. */
+    held?: boolean;
 };
 
 export function TurnView(p: TurnViewProps) {
@@ -547,35 +493,30 @@ function TurnViewContent(p: TurnViewProps) {
     const running = () => p.turn.status === "running";
     const live = () => running() && p.last && p.state.busy;
     const writing = () => live() && p.state.activity?.label === "Writing";
-    const thinking = (b: ThinkingBlock) => live() && b.durationMs === undefined && p.state.activity?.label === "Thinking";
-    // Inspect the last rendered item: a grouped tool can still be live even
-    // when a later call in that same group has finished.
-    const streamingTail = () => {
-        const all = items();
-        const item = all.at(-1);
-        if (!item) return false;
-        if (item.kind === "activity") {
-            // Commands and edits are cards of their own: a call still running in the run of calls at the end is live.
-            for (let i = all.length - 1; i >= 0; i--) {
-                const it = all[i]!;
-                if (it.kind !== "activity") break;
-                if (it.tools.some((t) => t.status === "running" || t.status === "streaming" || t.status === "queued" || t.status === "awaiting")) return true;
-            }
-            return false;
-        }
-        const b = item.block;
-        if (b.t === "text") return writing();
-        if (b.t === "thinking") return thinking(b);
-        return b.t === "shell" && b.running;
-    };
+    // The turn's one indicator, at its end: what's under way now (nothing while the answer streams).
+    const line = createMemo(() => (live() ? liveLine({ blocks: p.turn.blocks, activity: p.state.activity, interactions: p.state.interactions, showThinking: prefs.showThinking }) : undefined));
+    const lastBlockId = () => p.turn.blocks[p.turn.blocks.length - 1]?.id;
+    /** The thought being written: the live line shows it, not a row. */
+    const liveThought = (b: ThinkingBlock) => line()?.kind === "think" && b.durationMs === undefined && b.id === lastBlockId();
     const hasWork = () => segs().some((s) => s.kind === "work");
-    const [unfolded, setUnfolded] = createSignal(p.workOpen ?? false);
+    // Over, and not carried on by a steer (the turn it started, or one after, still runs): its work folds away.
+    // A memo, made before the computation below and the work's <Show>: they hear of a change in that order, so
+    // the reader's open work is kept open before the <Show> would take it away (and remount it).
+    const foldable = createMemo(() => !running() && !p.held);
+    const [unfolded, setUnfolded] = createSignal(p.workOpen ?? prefs.expandActivity);
     const unfold = (open: boolean) => { setUnfolded(open); p.onWorkOpen?.(open); };
+    // Fading out before it folds: the work's last moment on screen, then "Worked for".
+    const [folding, setFolding] = createSignal(false);
     // Run before DOM effects can remove the work the reader is inspecting.
-    createComputed(on(running, (value, previous) => {
-        if (previous && !value && p.keepWorkOpen?.()) unfold(true);
+    createComputed(on(foldable, (value, previous) => {
+        if (previous !== false || !value || untrack(unfolded)) return;
+        if (p.keepWorkOpen?.()) return unfold(true);
+        const ms = motionMs(200);
+        if (!ms) return;
+        setFolding(true);
+        setTimeout(() => setFolding(false), ms);
     }));
-    const showWork = () => running() || unfolded();
+    const showWork = () => !foldable() || unfolded() || folding();
     // A match in the work log (or in what was said on the way) opens it.
     createEffect(
         on(findReveal, (r) => {
@@ -593,20 +534,18 @@ function TurnViewContent(p: TurnViewProps) {
         }
         return undefined;
     };
-    const lastBlockId = () => p.turn.blocks[p.turn.blocks.length - 1]?.id;
     const reply = () =>
         p.turn.blocks
             .filter((b): b is TextBlock => b.t === "text")
             .map((b) => b.text)
             .join("\n\n");
-    const waitingOnUser = () => running() && p.state.interactions.length > 0;
-    const worked = () => (p.turn.endedAt && p.turn.startedAt ? turnDuration(p.turn.endedAt - p.turn.startedAt) : undefined);
+    const worked = () => workedLabel(p.turn.startedAt, p.turn.endedAt);
 
     // By position, not by object: the items are rebuilt on every streamed token, the rows mustn't be.
     const renderItem = (it: () => Item) => (
         <Switch>
             <Match when={it().kind === "activity" && (it() as Extract<Item, { kind: "activity" }>)}>
-                {(g) => <ActivityGroup tools={g().tools} steps={g().steps} card={g().card} turnRunning={running()} keepTail={items().at(-1) === g()} agents={p.agents} />}
+                {(g) => <ActivityGroup tools={g().tools} steps={g().steps} card={g().card} turnRunning={running()} agents={p.agents} flat hideLive={live()} />}
             </Match>
             <Match when={it().kind === "block" && (it() as { block: Block }).block}>
                 {(b) => (
@@ -614,7 +553,7 @@ function TurnViewContent(p: TurnViewProps) {
                         <Match when={b().t === "text" && (b() as TextBlock)}>
                             {(t) => <Markdown text={t().text} streaming={writing() && t().id === lastText()} sessionId={p.state.id} find={t().id} />}
                         </Match>
-                        <Match when={b().t === "thinking" && (b() as ThinkingBlock)}>{(t) => <Thinking block={t()} live={thinking(t()) && t().id === lastBlockId()} />}</Match>
+                        <Match when={b().t === "thinking" && (b() as ThinkingBlock)}>{(t) => <Show when={!liveThought(t())}><Thinking block={t()} live={false} /></Show>}</Match>
                         <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} />}</Match>
                         <Match when={b().t === "compact" && (b() as CompactBlock)}>{(c) => <Compacted block={c()} />}</Match>
                         <Match when={b().t === "imported" && (b() as ImportedBlock)}>{(c) => <Imported block={c()} />}</Match>
@@ -626,7 +565,7 @@ function TurnViewContent(p: TurnViewProps) {
     );
 
     return (
-        <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""}`} data-turn={p.turn.id} aria-busy={running()}>
+        <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""} ${p.held ? "chained" : ""} ${foldable() ? "done" : ""}`} data-turn={p.turn.id} aria-busy={running()}>
             <Show when={p.turn.prompt}>
                 <h2 class="sr-only" data-find-skip>You said</h2>
                 <UserPrompt turn={p.turn} sessionId={p.state.id} onRewind={p.onRewind} />
@@ -634,23 +573,14 @@ function TurnViewContent(p: TurnViewProps) {
             <Show when={hasOutput()}>
                 <div class="reply">
                     <h2 class="sr-only" data-find-skip>{running() ? "Harness is working" : "Harness replied"}</h2>
-                    <Show when={live() && streamingTail()}>
-                        <LiveHead state={p.state} since={p.turn.startedAt} waiting={waitingOnUser()} />
-                    </Show>
-                    <Show when={!running() && hasWork()}>
-                        <button class="fold acts-h" aria-expanded={unfolded()} onClick={(event) => {
+                    <Show when={foldable() && hasWork() && !folding()}>
+                        <button class="fold acts-h worked" aria-expanded={unfolded()} onClick={(event) => {
                             const toggle = () => unfold(!unfolded());
                             if (p.onToggleWork) p.onToggleWork(event.currentTarget, toggle);
                             else toggle();
                         }}>
                             <ChevronRight size={14} class="chev" />
-                            {worked() ? (
-                                <span>
-                                    Worked for <span class="num">{worked()}</span>
-                                </span>
-                            ) : (
-                                "Work log"
-                            )}
+                            <span class="num">{worked() ?? "Work log"}</span>
                         </button>
                     </Show>
                     <Index each={segs()}>
@@ -664,17 +594,17 @@ function TurnViewContent(p: TurnViewProps) {
                                 }
                             >
                                 <Show when={showWork()}>
-                                    <div class="worklog">
+                                    <div class={`worklog ${folding() ? "leaving" : ""}`}>
                                         <Index each={(seg() as { items: Item[] }).items ?? []}>{(it) => renderItem(it)}</Index>
                                     </div>
                                 </Show>
                             </Show>
                         )}
                     </Index>
-                    <Show when={!running() && !p.turn.archived && !p.turn.imported}>
+                    <Show when={foldable() && !p.turn.archived && !p.turn.imported}>
                         <ChangesCard turn={p.turn} cwd={p.state.cwd} sessionId={p.state.id} busy={p.state.busy} />
                     </Show>
-                    <Show when={!running() && p.turn.prompt}>
+                    <Show when={foldable() && p.turn.prompt}>
                         <Show when={END_TEXT[p.turn.status]}>
                             <div class={`notice end-note end-${p.turn.status}`} data-find-skip>
                                 {p.turn.status === "aborted" ? <CircleStop size={14} /> : p.turn.status === "error" || p.turn.status === "blocked" ? <AlertCircle size={14} /> : <AlertTriangle size={14} />}
@@ -692,8 +622,8 @@ function TurnViewContent(p: TurnViewProps) {
                             </Show>
                         </div>
                     </Show>
-                    <Show when={live() && !streamingTail()}>
-                        <LiveHead state={p.state} since={p.turn.startedAt} waiting={waitingOnUser()} tail />
+                    <Show when={live()}>
+                        <LiveLine state={line()} />
                     </Show>
                 </div>
             </Show>

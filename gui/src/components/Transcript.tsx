@@ -7,13 +7,23 @@ import { findOpen, jumpTarget, openFind, setFindQuery, setJumpTarget, setRewindO
 import { prefs } from "../state/prefs";
 import { anchoredTop, atBottom, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
-import { LiveHead, specialActivity, TurnView } from "./TurnView";
+import { glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
+import { TurnView } from "./TurnView";
+import { LiveLine, motionMs } from "./LiveLine";
 import { CardFoldsProvider } from "./blocks/Activity";
+import { Spinner } from "./ui/bits";
 import { rewindTarget } from "./RewindDialog";
 import { BAR_ROOM, FindBar, type FindAnchor } from "./FindBar";
 
-/** How quickly a glide closes the distance to the end: about 63% of it in this long. */
-const GLIDE_MS = 70;
+/** How long new content takes to glide into place at the end, before Settings → Motion scales it. */
+const GLIDE_MS = 240;
+/** A scroll back to where a pin moved from, this soon after, is the engine undoing it (onScroll), not the reader. */
+const ENGINE_MS = 250;
+/** A scroll up this soon after the column's content changed is the layout's (onScroll), not the reader's. */
+const MUTATION_MS = 40;
+/** A third scroll up within this of two taken for the engine's is the reader's (a scrollbar dragged). */
+const REPIN_MS = 300;
+const GLIDE_EASE = "cubic-bezier(0.2, 0.8, 0.2, 1)";
 
 /** `dock`: the composer dock's height (undefined until it's measured). */
 export function Transcript(p: { handle: SessionHandle; dock?: number }) {
@@ -31,6 +41,26 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     let ready = false;
     let smoothScroll = false;
     let frame = 0;
+    /** Where the last scroll event left the conversation (onScroll). */
+    let lastTop = 0;
+    let lastGap = 0;
+    /** The sizes it was measured at: a scroll that comes with a change of size is the layout's, not the reader's. */
+    let lastSize = "";
+    /** A pointer or finger is down on the conversation (dragging its scrollbar, say): its scrolls are the reader's. */
+    let pressed = false;
+    const sizeOf = (el: HTMLElement) => `${el.scrollHeight}:${el.clientHeight}`;
+    /** Our own write is where the next scroll is measured from: only the reader's scrolls move it on from there. */
+    /** The last pin's write: when, and from where (onScroll tells WebKit undoing it from the reader). */
+    let pinned = { at: -Infinity, from: 0 };
+    /** When the column's content last changed, and when onScroll last put the engine's scroll back. */
+    let mutatedAt = -Infinity;
+    let repinned: number[] = [];
+    const wrote = () => {
+        if (!scroller) return;
+        lastTop = scroller.scrollTop;
+        lastGap = scroller.scrollHeight - scroller.clientHeight - lastTop;
+        lastSize = sizeOf(scroller);
+    };
     const afterLayout = (fn: () => void) => {
         cancelAnimationFrame(frame);
         frame = requestAnimationFrame(() => {
@@ -38,6 +68,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             // A send or search may supersede the initial restoration frame.
             ready = true;
             reading = capture();
+            wrote();
         });
     };
     const turns = () => p.handle.view.turns;
@@ -55,46 +86,46 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         if (Math.abs(Math.max(0, height - scroller.clientHeight) - scroller.scrollTop) <= 0.5) return;
         smoothScroll = smooth && prefs.motion !== "instant" && !matchMedia("(prefers-reduced-motion: reduce)").matches;
         scroller.scrollTo({ top: height, behavior: smoothScroll ? "smooth" : "instant" });
+        if (!smoothScroll) wrote();
     };
 
-    // Following the end as a reply streams: each new line glides into view
-    // instead of the column jumping a line at a time. Starts where it is and
-    // eases toward the bottom, picking up new growth on the way; the reader
-    // scrolling, a jump, or reduced motion stops it.
-    let glideFrame = 0;
-    let gliding = false;
+    // Pinned to the end while a turn runs, new content glides in rather than jumping: one scrollTop write a
+    // frame (to the end, at once), then a short compositor-only translate on the column from where it was drawn
+    // to where it is, picked up from wherever a glide still running is. Scrolling runs no script of ours.
+    let pinFrame = 0;
+    let glide: Animation | undefined;
+    /** How far a running glide has the column drawn from its place (px). */
+    const shift = () => (glide?.playState === "running" && content ? new DOMMatrixReadOnly(getComputedStyle(content).transform).m42 : 0);
     const stopGlide = () => {
-        cancelAnimationFrame(glideFrame);
-        glideFrame = 0;
-        gliding = false;
+        cancelAnimationFrame(pinFrame);
+        pinFrame = 0;
+        glide?.cancel();
+        glide = undefined;
     };
-    const follow = () => {
-        if (!scroller) return;
-        if (matchMedia("(prefers-reduced-motion: reduce)").matches) return toBottom();
-        if (gliding) return;
-        const gap = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;
-        // Far behind (a session opened, a panel resized): no glide through it.
-        if (gap > scroller.clientHeight / 2) return toBottom();
-        if (gap <= 0.5) return;
-        gliding = true;
-        let last = performance.now();
-        const step = (now: number) => {
-            glideFrame = 0;
-            if (!scroller || !stick() || smoothScroll) return stopGlide();
-            const gap = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;
-            if (gap <= 0.5) return stopGlide();
-            const dt = Math.min(48, now - last);
-            last = now;
-            const move = gap > scroller.clientHeight / 2 ? gap : Math.max(1, gap * (1 - Math.exp(-dt / GLIDE_MS)));
-            scroller.scrollTop += move;
-            glideFrame = requestAnimationFrame(step);
-        };
-        glideFrame = requestAnimationFrame(step);
+    const pin = () => {
+        if (pinFrame) return;
+        pinFrame = requestAnimationFrame(() => {
+            pinFrame = 0;
+            if (!scroller || !stick() || smoothScroll) return;
+            const before = scroller.scrollTop;
+            const end = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+            if (Math.abs(end - before) <= 0.5) return;
+            scroller.scrollTop = end;
+            wrote();
+            pinned = { at: performance.now(), from: before };
+            const ms = motionMs(GLIDE_MS);
+            if (!ms || !content || typeof content.animate !== "function") return;
+            const running = shift();
+            glide?.cancel();
+            const from = glideFrom(scroller.scrollTop - before, running);
+            glide = from === undefined ? undefined : content.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GLIDE_EASE });
+        });
     };
 
     const capture = (): ScrollAnchor | undefined => {
         if (!scroller || !content) return;
-        const top = scroller.getBoundingClientRect().top;
+        // Where things are, not where a running glide draws them.
+        const top = scroller.getBoundingClientRect().top + shift();
         const turn = [...content.querySelectorAll<HTMLElement>("[data-turn]")].find((el) => el.getBoundingClientRect().bottom > top);
         if (!turn) return;
         // A block anchor also survives replacing the live head with a work-log toggle.
@@ -118,9 +149,10 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         // A remounted prompt may be clamped again. If the saved reading point
         // no longer fits, show this anchor's top instead of skipping past it.
         const offset = savedOffset <= -box.height ? 0 : savedOffset;
-        const next = anchoredTop(scroller.scrollTop, box.top - scroller.getBoundingClientRect().top, offset);
+        const next = anchoredTop(scroller.scrollTop, box.top - shift() - scroller.getBoundingClientRect().top, offset);
         // A no-op write would cancel an in-flight smooth Jump to latest.
         if (Math.abs(next - scroller.scrollTop) > 0.5) scroller.scrollTop = next;
+        wrote();
     };
 
     onMount(() => {
@@ -128,14 +160,19 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         const ro = new ResizeObserver(() => {
             if (!ready) return;
             if (smoothScroll) toBottom(true);
-            // Glides only while a turn is running: the end of a turn (its
-            // footer, the composer settling) lands at once, as before.
-            else if (stick()) turns().at(-1)?.status === "running" ? follow() : toBottom();
+            // Glides only while a turn is running: the end of a turn (its work folding away above, its footer,
+            // the composer settling) lands at once.
+            else if (stick()) turns().at(-1)?.status === "running" ? pin() : toBottom();
             else restore();
         });
         ro.observe(content);
         ro.observe(scroller);
         onCleanup(() => ro.disconnect());
+        if (typeof MutationObserver !== "undefined") {
+            const mo = new MutationObserver(() => (mutatedAt = performance.now()));
+            mo.observe(content, { childList: true, subtree: true, characterData: true });
+            onCleanup(() => mo.disconnect());
+        }
         afterLayout(() => {
             if (stick()) toBottom();
             else { scroller!.scrollTop = saved?.top ?? 0; restore(); }
@@ -166,6 +203,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         setStick(false);
         toggle();
         if (scroller) scroller.scrollTop = anchoredTop(scroller.scrollTop, el.getBoundingClientRect().top, top);
+        wrote();
         reading = capture();
     };
 
@@ -182,21 +220,89 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         ),
     );
 
+    // Where the last scroll left it. Only the reader's own scroll up, away from the end, unsticks it: content
+    // growing below moves nothing, the column shrinking above (a fold) pulls it up without moving it away from
+    // the end, and our own writes go down. Moving down near the end sticks it again.
     const onScroll = () => {
         if (!scroller || !ready) return;
-        if (scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= 1) smoothScroll = false;
-        // A glide is still on its way down: it stays stuck to the end.
-        if (!gliding) setStick(atBottom(scroller.scrollTop, scroller.scrollHeight, scroller.clientHeight));
+        const top = scroller.scrollTop;
+        const gap = scroller.scrollHeight - scroller.clientHeight - top;
+        if (gap <= 1) smoothScroll = false;
+        const size = sizeOf(scroller);
+        const resized = size !== lastSize;
+        lastSize = size;
+        const up = top < lastTop - 0.5 && gap > lastGap + 0.5;
+        // Not every scroll up is the reader's (their wheel and keys unpin it before the scroll comes):
+        // - the column changing size: WebKit clamps the position to a shorter column for a moment mid-update
+        //   (a row replaced by another), then it grows back. The ResizeObserver puts it back at the end.
+        // - just after a pin: WebKit can put the position back where it was, the end of the column before it
+        //   grew (its scrolling thread hadn't the new size yet). Written again at once, before it's drawn
+        //   there; by now the new size is known.
+        // A pointer or finger down (the scrollbar dragged) is always the reader.
+        // - just after the content changed, at the same size: WebKit's clamp mid-update again, the column
+        //   back to its size by the time the scroll is told (a row removed, another added).
+        // Each is put back at the end at once. A pointer or finger down (the scrollbar dragged) is always the
+        // reader, and so is a run of them (a drag without pointer events; the engine's come one or two at a time).
+        const now = performance.now();
+        const undone = now - pinned.at < ENGINE_MS && Math.abs(top - pinned.from) <= 1;
+        repinned = repinned.filter((t) => now - t < REPIN_MS);
+        const engine = !pressed && repinned.length < 2 && (resized || undone || now - mutatedAt < MUTATION_MS);
+        if (up && engine && stick() && !smoothScroll) {
+            repinned.push(now);
+            scroller.scrollTop = scroller.scrollHeight - scroller.clientHeight;
+            wrote();
+            return;
+        }
+        if (up) setStick(false);
+        else if (atBottom(top, scroller.scrollHeight, scroller.clientHeight) && (gap <= 1 || top > lastTop + 0.5)) setStick(true);
+        lastTop = top;
+        lastGap = gap;
+        reading = capture();
+    };
+    /** Find moved to a match: up from the end, it stops following (its scroll may come just after a write of ours). */
+    const navigated = () => {
+        if (scroller && scroller.scrollTop < lastTop - 0.5) {
+            smoothScroll = false;
+            setStick(false);
+        }
         reading = capture();
     };
     const interruptJump = () => {
-        // The reader takes over from a glide; where they leave it decides whether it follows.
-        if (gliding) stopGlide();
         if (!smoothScroll) return;
         smoothScroll = false;
         setStick(false);
         reading = capture();
     };
+    /** The reader scrolling up (wheel, touch, keys): it stops following at once, however near the end. */
+    const scrollUp = () => {
+        if (!stick() && !smoothScroll) return;
+        smoothScroll = false;
+        setStick(false);
+        reading = capture();
+    };
+    /** A pointer or finger down on the conversation: until it's lifted, scrolls up are the reader's even as it grows. */
+    const press = () => {
+        interruptJump();
+        if (pressed) return;
+        pressed = true;
+        const lift = () => {
+            pressed = false;
+            for (const t of ["pointerup", "pointercancel", "touchend", "touchcancel"]) removeEventListener(t, lift, true);
+        };
+        for (const t of ["pointerup", "pointercancel", "touchend", "touchcancel"]) addEventListener(t, lift, true);
+    };
+    const onWheel = (e: WheelEvent) => {
+        if (e.deltaY < 0) scrollUp();
+        else interruptJump();
+    };
+    const onKey = (e: KeyboardEvent) => {
+        if (["ArrowUp", "PageUp", "Home"].includes(e.key) || (e.key === " " && e.shiftKey)) scrollUp();
+        else interruptJump();
+    };
+
+    /** Finished turns a steer carried on, while the chain still runs: they stay open until it ends. */
+    const held = createMemo(() => heldTurns(turns()));
+    const running = () => Boolean(p.handle.view.state.busy && turns().at(-1)?.status === "running");
 
     const forkFrom = (t: Turn) => {
         const at = forkAnchor(turns(), turns().indexOf(t));
@@ -231,6 +337,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                 const el = content?.querySelector<HTMLElement>(`[data-turn="${CSS.escape(turn.id)}"]`);
                 if (!el || !scroller) return;
                 scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - BAR_ROOM;
+                wrote();
                 reading = capture();
                 el.classList.remove("flash");
                 void el.offsetWidth;
@@ -248,7 +355,9 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     return (
         <div class="transcript-wrap">
             <div class="transcript-fade" aria-hidden="true" />
-            <div class="transcript" ref={scroller} onScroll={onScroll} onWheel={interruptJump} onTouchStart={interruptJump} onPointerDown={interruptJump} onKeyDown={interruptJump} aria-label="Conversation">
+            <div class="transcript" ref={scroller} onScroll={onScroll} onWheel={onWheel} onTouchStart={press} onPointerDown={press} onKeyDown={onKey} aria-label="Conversation">
+                {/* Clips the column's glide, so a translate never adds to what the conversation scrolls through. */}
+                <div class="transcript-glide">
                 <div class="transcript-col" ref={content}>
                     <Show when={p.handle.view.state.forkOf}>
                         {(f) => (
@@ -264,23 +373,33 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                     </Show>
                     <CardFoldsProvider sessionId={id}>
                         <For each={visible()}>{(t) => <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={rewind} onFork={() => forkFrom(t)}
-                            workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} />}</For>
+                            workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} held={held().has(t.id)} />}</For>
                     </CardFoldsProvider>
                     {/* Work that isn't a turn (a compaction, one while idle): it shows at the end, as a turn's would. */}
-                    <Show when={p.handle.view.state.busy && specialActivity(p.handle.view.state.activity?.label ?? "") && !turns().some((t) => t.status === "running")}>
+                    <Show when={p.handle.view.state.busy && specialActivity(p.handle.view.state.activity?.label) && !turns().some((t) => t.status === "running")}>
                         <div class="turn">
-                            <LiveHead state={p.handle.view.state} tail hint={p.handle.view.state.activity?.idle ? "send a message to stop it" : undefined} />
+                            <div class="reply">
+                                <LiveLine
+                                    state={liveLine({ blocks: [], activity: p.handle.view.state.activity, interactions: [], showThinking: false })}
+                                    hint={p.handle.view.state.activity?.idle ? "Send a message to stop it" : undefined}
+                                />
+                            </div>
                         </div>
                     </Show>
                     <div class="transcript-end" style={{ "--dock-h": dock() }} />
                 </div>
+                </div>
             </div>
             <Show when={findOpen()}>
-                <FindBar turns={turns} scroller={() => scroller} dock={() => p.dock ?? 0} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={() => { reading = capture(); }} />
+                <FindBar turns={turns} scroller={() => scroller} dock={() => p.dock ?? 0} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={navigated} />
             </Show>
             <Show when={!stick()}>
-                <button class="jump glass" style={{ "--dock-h": dock() }} title="Jump to latest" aria-label="Jump to latest" onClick={() => { setStick(true); toBottom(true); }}>
-                    <ArrowDown size={14} /> Latest
+                <button class="jump glass" style={{ "--dock-h": dock() }} classList={{ "is-live": running() }} title="Jump to latest" aria-label={running() ? "Jump to latest: still working" : "Jump to latest"} onClick={() => { setStick(true); toBottom(true); }}>
+                    {/* Still working down there: a spinner, where the arrow is. */}
+                    <Show when={running()} fallback={<ArrowDown size={14} />}>
+                        <Spinner size={12} />
+                    </Show>
+                    Latest
                 </button>
             </Show>
         </div>

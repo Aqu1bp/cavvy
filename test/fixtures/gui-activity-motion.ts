@@ -5,6 +5,8 @@ import { createStore, produce } from "../../gui/node_modules/solid-js/store/dist
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
 import { boundary } from "../helpers/render-boundary";
 import * as format from "../../gui/src/lib/format";
+import * as toolWords from "../../gui/src/lib/tool-words";
+import * as liveLine from "../../gui/src/lib/live-line";
 import { MarkdownRenderer } from "../../gui/src/lib/markdown";
 import { createReveal } from "../../gui/src/lib/reveal";
 import { applyOp } from "../../src/server/timeline";
@@ -16,24 +18,27 @@ const activity = process.env.ACTIVITY_BEFORE ? readFileSync(process.env.ACTIVITY
 const tool = (id: string, status = "running"): any => ({ t: "tool", id, name: "Monitor", title: "Monitor", input: { description: `watch ${id}` }, status, startedAt: 1000 });
 const command = (id: string, status = "running"): any => ({ t: "tool", id, name: "Bash", title: "Bash", input: { command: `echo ${id}` }, status, startedAt: 1000 });
 const has = (n: Node, cls: string) => n.props.class?.split(" ").includes(cls);
-const row = (root: Node, id: string) => all(root).find((n) => n.props["data-find"] === id)!;
+const row = (root: Node, id: string) => all(root).find((n) => n.props["data-find"] === id && !has(n, "det"))!;
+const liveLineOf = (root: Node) => all(root).find((n) => has(n, "live-line"));
 
-function setup(blocks: any[], expanded = true, agents: any[] = [], session?: string) {
-    const [view, setView] = createStore<any>({ state: { id: "session", busy: true, interactions: [] }, turns: [{ id: "turn", status: "running", startedAt: 1000, blocks }], agents });
+/** `busy` false: a turn left running (no live line), whose calls under way are rows like the others. */
+function setup(blocks: any[], expanded = true, agents: any[] = [], session?: string, busy = true) {
+    const [view, setView] = createStore<any>({ state: { id: "session", busy, interactions: [] }, turns: [{ id: "turn", status: "running", startedAt: 1000, blocks }], agents });
     const [clock, setClock] = solid.createSignal(2000);
     const [reveal, setReveal] = solid.createSignal<any>();
     let icons = 0, groups = 0;
     const icon = () => { icons++; return node("icon"); };
     const scope = {
-        ...format, RenderBoundary: boundary(), now: clock, prefs: { expandActivity: expanded, showThinking: true }, findReveal: reveal,
+        ...format, ...toolWords, ...liveLine, RenderBoundary: boundary(), now: clock, prefs: { expandActivity: expanded, showThinking: true }, findReveal: reveal,
         CodeBlock: (p: any) => { const n = node("code"); solid.createRenderEffect(() => n.text = p.code); return n; },
         DiffView: (p: any) => { const n = node("diff"); solid.createRenderEffect(() => n.text = `diff ${p.diff.path}`); return n; },
         Markdown: () => node("markdown"), CopyButton: icon, Spinner: icon, openReview: () => {}, openInEditor: () => {},
         ...Object.fromEntries(["AlertTriangle", "Bot", "Check", "ChevronDown", "ChevronRight", "ClipboardList", "FileDiff", "FilePen", "FilePlus2", "FileText", "FolderTree", "Globe", "Hand", "ListChecks", "MessageCircleQuestion", "Plug", "Radar", "Search", "ShieldCheck", "SquareArrowOutUpRight", "SquareTerminal", "Wrench", "X", "Brain"].map((name) => [name, icon])),
     };
     // One copy of the module, as the app has: its components share its state (the command cards' folds).
-    const { ActivityGroup, CardFoldsProvider, groupBlocks } = component(`${activity}\nconst moduleExports = { ActivityGroup, CardFoldsProvider, groupBlocks };`, "moduleExports", scope);
-    const TurnView = component(source("TurnView"), "TurnView", { ...scope, ActivityGroup, groupBlocks: (b: any) => { groups++; return groupBlocks(b); } });
+    const { ActivityGroup, CardFoldsProvider, groupBlocks, Thinking } = component(`${activity}\nconst moduleExports = { ActivityGroup, CardFoldsProvider, groupBlocks, Thinking };`, "moduleExports", scope);
+    const { LiveLine, motionMs } = component(`${source("LiveLine")}\nconst both = { LiveLine, motionMs };`, "both", scope);
+    const TurnView = component(source("TurnView"), "TurnView", { ...scope, ActivityGroup, Thinking, LiveLine, motionMs, groupBlocks: (b: any) => { groups++; return groupBlocks(b); } });
     /** Draws the turn again, as a session's transcript does when it's opened (in `session`'s folds, when given). */
     const mount = (session?: string) => {
         const root = node("root");
@@ -46,36 +51,48 @@ function setup(blocks: any[], expanded = true, agents: any[] = [], session?: str
     return { root, view, setView, op, dispose, mount, setClock, setReveal, icons: () => icons, groups: () => groups };
 }
 
-test("one row and icon survive progress, completion, next calls, folding and find", () => {
+test("a call under way is the live line's; done, it's a row of its own, the same through next calls, details and find", () => {
     const h = setup([tool("a")], false);
     try {
+        expect(row(h.root, "a")).toBeUndefined();
+        expect(text(liveLineOf(h.root)!)).toContain("Starting monitor");
+        for (let i = 0; i < 40; i++) h.op({ op: "append", blockId: "a", field: "progress", text: `line ${i}\n` });
+        expect(row(h.root, "a")).toBeUndefined();
+        h.op({ op: "block.patch", blockId: "a", patch: { status: "ok", durationMs: 2000 } });
         const first = row(h.root, "a");
         expect(first).toBeDefined();
+        expect(has(first.parent!, "steps")).toBe(true);
         const icon = all(first).find((n) => n.tag === "icon");
-        for (let i = 0; i < 40; i++) h.op({ op: "append", blockId: "a", field: "progress", text: `line ${i}\n` });
-        expect(row(h.root, "a")).toBe(first);
-        expect(all(first).find((n) => n.tag === "icon")).toBe(icon);
-        h.op({ op: "block.patch", blockId: "a", patch: { status: "ok", durationMs: 2000 } });
-        expect(row(h.root, "a")).toBe(first);
-        expect(first.parent?.props.hidden).not.toBe(true);
         h.op({ op: "block", block: tool("b") });
         expect(row(h.root, "a")).toBe(first);
-        const second = row(h.root, "b");
-        const summary = all(h.root).find((n) => n.tag === "button" && has(n, "wrow") && !has(n, "tool-line"))!;
-        summary.props.onClick();
+        expect(row(h.root, "b")).toBeUndefined();
+        // No summary line over the rows: the turn's "Worked for" folds them all once it ends.
+        expect(all(h.root).filter((n) => n.tag === "button" && has(n, "wrow") && !has(n, "tool-line"))).toHaveLength(0);
+        all(first).find((n) => n.tag === "button" && has(n, "tool-line"))!.props.onClick();
         const detail = all(first).find((n) => has(n, "tool-detail"));
         expect(detail).toBeDefined();
         h.op({ op: "block.patch", blockId: "b", patch: { status: "ok" } });
+        const second = row(h.root, "b");
         h.op({ op: "block", block: tool("c") });
         expect(row(h.root, "a")).toBe(first);
         expect(row(h.root, "b")).toBe(second);
         expect(all(first).find((n) => has(n, "tool-detail"))).toBe(detail);
-        summary.props.onClick();
-        expect(row(h.root, "a")).toBe(first);
+        expect(all(first).find((n) => n.tag === "icon")).toBe(icon);
         h.setReveal({ turnId: "turn", part: "a" });
-        expect(first.parent?.props.hidden).not.toBe(true);
         expect(row(h.root, "a")).toBe(first);
-        expect(all(first).find((n) => has(n, "tool-head"))?.props.style?.display).not.toBe("none");
+        expect(text(h.root)).not.toContain("Couldn't render");
+    } finally { h.dispose(); }
+});
+
+test("a turn left running with no live line draws its calls under way as rows, the same row through progress and completion", () => {
+    const h = setup([tool("a")], false, [], undefined, false);
+    try {
+        expect(liveLineOf(h.root)).toBeUndefined();
+        const first = row(h.root, "a");
+        expect(first).toBeDefined();
+        for (let i = 0; i < 40; i++) h.op({ op: "append", blockId: "a", field: "progress", text: `line ${i}\n` });
+        h.op({ op: "block.patch", blockId: "a", patch: { status: "ok", durationMs: 2000 } });
+        expect(row(h.root, "a")).toBe(first);
         expect(text(h.root)).not.toContain("Couldn't render");
     } finally { h.dispose(); }
 });
@@ -108,7 +125,8 @@ test("2,000-tool streamed turn: linear membership, no finished row remounts, no 
     const mountMs = performance.now() - start;
     try {
         const finished = row(h.root, "0");
-        const running = row(h.root, "1999");
+        // Under way, the last call is the live line's, not a row.
+        expect(row(h.root, "1999")).toBeUndefined();
         const icons = h.icons(), groups = h.groups();
         reads = 0;
         const deltaStart = performance.now();
@@ -132,9 +150,11 @@ test("2,000-tool streamed turn: linear membership, no finished row remounts, no 
         expect(comparisons).toBeLessThan(2000 * 10);
         expect(updateComparisons).toBeLessThan(2000 * 10);
         expect(statusReads).toBeLessThan(2000 * 100);
+        const last = row(h.root, "1999");
+        expect(last).toBeDefined();
         h.op({ op: "block", block: tool("next") });
         expect(row(h.root, "0")).toBe(finished);
-        expect(row(h.root, "1999")).toBe(running);
+        expect(row(h.root, "1999")).toBe(last);
         expect(text(h.root)).not.toContain("Couldn't render");
     } finally { h.dispose(); }
 });
@@ -168,17 +188,17 @@ test("thinking lookahead stays linear", () => {
 });
 
 
-test("more work after prose folds the old group tail without remounting it", () => {
+test("more work after prose keeps the rows before it, as they were", () => {
     const h = setup([tool("a")], false);
     try {
-        const first = row(h.root, "a");
         h.op({ op: "block.patch", blockId: "a", patch: { status: "ok" } });
-        expect(first.parent?.props.hidden).not.toBe(true);
+        const first = row(h.root, "a");
         h.op({ op: "block", block: { t: "text", id: "prose", text: "Next step" } });
         h.op({ op: "block", block: tool("b") });
         expect(row(h.root, "a")).toBe(first);
-        expect(first.parent?.props.hidden).toBe(true);
-        expect(row(h.root, "b").parent?.props.hidden).not.toBe(true);
+        expect(first.props.hidden).not.toBe(true);
+        expect(row(h.root, "b")).toBeUndefined();
+        expect(text(liveLineOf(h.root)!)).toContain("Starting monitor");
     } finally { h.dispose(); }
 });
 
@@ -230,35 +250,39 @@ test("streaming Markdown retains code host, highlights finished lines at a bound
 });
 
 
-test("agent activity follows finished rows and displaces a retained plain tail", () => {
+test("a group's sub-agents card follows its rows", () => {
     const h = setup([tool("a", "ok")], true, [{ id: "agent", status: "done", startedAt: 0, endedAt: 1, blocks: [] }]);
     try {
         const first = row(h.root, "a");
         h.op({ op: "block", block: { ...tool("agent", "ok"), agent: true } });
         expect(row(h.root, "a")).toBe(first);
-        expect(has(first.parent!, "current")).not.toBe(true);
-        const list = all(h.root).find((n) => has(n, "activity-steps"))!;
+        const list = all(h.root).find((n) => has(n, "steps"))!;
         const agents = all(h.root).find((n) => has(n, "subagents"))!;
-        expect(list.children.indexOf(first.parent!)).toBeLessThan(list.children.indexOf(agents));
+        expect(list.children.indexOf(first)).toBeLessThan(list.children.indexOf(agents));
         h.op({ op: "block", block: tool("b") });
-        expect(list.children.indexOf(agents)).toBeLessThan(list.children.indexOf(row(h.root, "b").parent!));
+        expect(row(h.root, "b")).toBeUndefined();
+        h.op({ op: "block.patch", blockId: "b", patch: { status: "ok" } });
+        expect(list.children.indexOf(row(h.root, "b"))).toBeLessThan(list.children.indexOf(agents));
+        expect(row(h.root, "a")).toBe(first);
     } finally { h.dispose(); }
 });
 
 test("commands and edits are cards of their own, kept through output, completion and the next call", () => {
     const h = setup([tool("read", "ok"), command("cmd")], false);
     try {
+        // Running, it's the live line's: "Running", the command, and its last three lines under it.
+        expect(row(h.root, "cmd")).toBeUndefined();
+        for (let i = 0; i < 40; i++) h.op({ op: "append", blockId: "cmd", field: "progress", text: `line ${i}\n` });
+        const line = liveLineOf(h.root)!;
+        expect(text(line)).toContain("Running");
+        expect(text(line)).toContain("echo cmd");
+        expect(all(line).find((n) => has(n, "live-out"))!.children.map(text)).toEqual(["line 37", "line 38", "line 39"]);
+        h.op({ op: "block.patch", blockId: "cmd", patch: { status: "ok", durationMs: 2000, output: "ok\n 14 pass\n 0 fail\n" } });
         const card = row(h.root, "cmd");
         expect(has(card, "tcard")).toBe(true);
         expect(has(card, "cmd-card")).toBe(true);
         // Its group is the command alone: the call before it keeps its own group.
-        expect(all(h.root).filter((n) => has(n, "acts"))).toHaveLength(1);
-        for (let i = 0; i < 40; i++) h.op({ op: "append", blockId: "cmd", field: "progress", text: `line ${i}\n` });
-        expect(row(h.root, "cmd")).toBe(card);
-        expect(text(card)).toContain("line 39");
-        expect(text(card)).toContain("Running");
-        h.op({ op: "block.patch", blockId: "cmd", patch: { status: "ok", durationMs: 2000, output: "ok\n 14 pass\n 0 fail\n" } });
-        expect(row(h.root, "cmd")).toBe(card);
+        expect(all(h.root).filter((n) => has(n, "steps"))).toHaveLength(1);
         expect(text(card)).toContain("14 pass");
         const diff = { path: "src/a.ts", status: "modified", added: 2, removed: 1, hunks: [] };
         h.op({ op: "block", block: { t: "tool", id: "edit", name: "Edit", title: "Edit src/a.ts", input: { file_path: "/p/src/a.ts" }, status: "ok", diff } });
@@ -332,7 +356,8 @@ test("a command card is folded to its header line by default", () => {
 });
 
 test("a running command shows its last line folded; a failed one stays folded on its last line of output", () => {
-    const h = setup([command("cmd")], false);
+    // With no live line (a turn left running): a running command is a card like the others.
+    const h = setup([command("cmd")], false, [], undefined, false);
     try {
         const card = row(h.root, "cmd");
         for (let i = 0; i < 5; i++) h.op({ op: "append", blockId: "cmd", field: "progress", text: `line ${i}\n` });

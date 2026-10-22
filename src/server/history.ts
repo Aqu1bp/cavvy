@@ -590,7 +590,7 @@ export function replay(o: ReplayInput): Turn[] {
                         else if (p.type === "text" && p.text.startsWith(STEERING)) {
                             const rec = o.ui.turn(si, index);
                             // With what was attached to it (beside the results, not inside one).
-                            const t = start({ text: p.text.slice(STEERING.length).trim(), ...attachedPrompt(m.content) }, rec?.at, index);
+                            const t = start({ text: p.text.slice(STEERING.length).trim(), ...attachedPrompt(m.content), steered: true }, rec?.at, index);
                             t.snapshotId = m.meta?.checkpoint;
                             if (rec?.end) t.endedAt = rec.end;
                             if (rec?.status && rec.status !== "running") t.status = rec.status;

@@ -4,30 +4,31 @@ import { backgroundOf, finishedOf, kindName, noticeRoute, runnerName, runningCou
 import { tagId } from "../gui/src/lib/platform";
 import type { BackgroundTaskInfo } from "../src/server/protocol";
 import { componentCode, elements } from "./gui-component-harness";
+import { liveLine } from "../gui/src/lib/live-line";
 import { plural } from "../gui/src/lib/format";
 
-// Render the actual LiveHead branches without a browser or a listening socket.
-const source = readFileSync(new URL("../gui/src/components/TurnView.tsx", import.meta.url), "utf8");
-const liveHead = source.slice(source.indexOf("const SPECIAL"), source.indexOf("type Changed"));
-const code = new Bun.Transpiler({ loader: "tsx", tsconfig: { compilerOptions: { jsx: "react", jsxFactory: "node", jsxFragmentFactory: "Fragment" } } }).transformSync(liveHead).replace("export function LiveHead", "function LiveHead");
-const node = (tag: string, props: any, ...children: any[]): any => {
-    if (tag === "Show") return props.when ? children.map((child) => typeof child === "function" ? child(() => props.when) : child) : props.fallback;
-    return children;
-};
-const render = new Function("node", "Show", "Fragment", "now", "duration", `${code}; return LiveHead;`)(node, "Show", "Fragment", () => 1000, () => "1s");
 const text = (tree: any): string => Array.isArray(tree) ? tree.map(text).join("") : tree == null ? "" : String(tree);
+
+// What the running turn's live line says (gui/src/lib/live-line.ts) while Claude Code waits on its background work.
+const said = (activity?: { label: string; since: number }, interactions: any[] = []) => liveLine({ blocks: [], activity, interactions, showThinking: true });
 
 for (const kind of ["command", "monitor", "sub-agent"]) test(`GUI shows the actual background ${kind} wait, not the generic working label`, () => {
     const label = `Waiting for background ${kind}: Run checks · Esc to stop it`;
-    const displayed = text(render({ state: { activity: { label, since: 0 } } }));
-    expect(displayed).toContain(label);
-    expect(displayed).not.toContain("Working for");
-    expect(displayed.match(/Esc/g)).toHaveLength(1);
+    const line = said({ label, since: 0 })!;
+    expect([line.kind, line.label, line.detail]).toEqual(["bg", "Waiting for background", "Run checks"]);
+    // The whole label on hover; "Esc" isn't repeated on the line (the stop button has it beside it).
+    expect(line.title).toBe(label);
+    expect(`${line.label} ${line.detail}`).not.toContain("Esc");
+});
+
+test("several background waits name each; the goal's wait has no names", () => {
+    expect(said({ label: "Waiting for background command: bun test; background sub-agent: Map auth · Esc to stop them", since: 0 })?.detail).toBe("bun test, Map auth");
+    expect(said({ label: "Waiting for background tasks", since: 0 })).toMatchObject({ kind: "bg", label: "Waiting for background" });
 });
 
 test("ordinary work and approval waiting keep their existing labels", () => {
-    expect(text(render({ state: { activity: { label: "Thinking", since: 0 } } }))).toContain("Working for");
-    expect(text(render({ state: {}, waiting: true }))).toContain("Waiting for you");
+    expect(said({ label: "Thinking", since: 0 })).toMatchObject({ kind: "think", label: "Thinking" });
+    expect(said(undefined, [{ kind: "permission", id: "p", title: "Bash" }])).toMatchObject({ kind: "wait", label: "Waiting for approval" });
 });
 
 // ---------------------------------------------------------------------------

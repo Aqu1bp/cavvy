@@ -77,51 +77,6 @@
     }
 }
 
-/* ---- Status row: what the turn is doing, how long, how to stop it ---------- */
-
-.c-status {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    min-width: 0;
-    margin: 0 -2px 8px 0;
-    padding-bottom: 8px;
-    border-bottom: 0.5px solid var(--line);
-    font-size: 0.929rem;
-    color: var(--fg-2);
-    white-space: nowrap;
-    animation: c-in 300ms var(--ease);
-}
-
-.c-status .lbl {
-    min-width: 0;
-    font-weight: 500;
-    color: var(--fg);
-}
-
-.c-status .tm {
-    flex: none;
-    color: var(--fg-3);
-}
-
-.c-spin {
-    flex: none;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    border: 2px solid color-mix(in srgb, var(--accent) 22%, transparent);
-    border-top-color: var(--accent);
-    animation: spin 0.9s linear infinite;
-}
-
-.composer kbd.c-stop {
-    height: auto;
-    padding: 3px 5px;
-    font-size: 0.786rem;
-    color: var(--fg-3);
-    background: var(--hover);
-}
-
 /* While a turn runs: the other way to send what's written (steer or queue), beside the send button. */
 .composer kbd.c-alt {
     flex: none;
@@ -132,6 +87,12 @@
     color: var(--fg-3);
     background: var(--hover);
     white-space: nowrap;
+}
+
+/* While a turn runs: how to stop it, beside the stop button (the box doesn't grow a status row). */
+.composer kbd.c-esc {
+    margin-right: 4px;
+    animation: fade 200ms var(--ease);
 }
 
 .composer .grow {
@@ -2070,7 +2031,6 @@
         white-space: nowrap;
     }
 
-    .composer kbd.c-stop,
     .composer kbd.c-alt,
     .ask .pbtn kbd {
         display: none;

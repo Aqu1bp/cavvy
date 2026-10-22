@@ -259,6 +259,11 @@ export interface TurnPrompt {
     wake?: boolean;
     /** Position of the prompt in the session's messages, when it can be rewound to. */
     index?: number;
+    /**
+     * Sent while a turn ran and joined it at its next step: the turn before ended for it, and this one carries
+     * on its work (the GUI keeps their work open together until the last of them ends).
+     */
+    steered?: boolean;
 }
 
 export interface Turn {
