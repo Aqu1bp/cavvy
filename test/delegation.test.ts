@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
+import { stopLiveCodex } from "./helpers/fake-env";
 
 const { cleanup } = isolate();
 const registry = await import("../src/providers/registry");
@@ -137,6 +138,7 @@ beforeEach(() => {
 });
 afterEach(async () => {
     await Promise.all(agents.splice(0).map((a) => a.dispose(1000)));
+    await stopLiveCodex();
 });
 
 function logLines(): any[] {
@@ -1325,6 +1327,8 @@ describe("Codex as the main agent", () => {
         expect(session.backends.get("codex")?.id).toBe("thr-new");
         process.env.FAKE_REJECT_CONFIG = "1";
         rmSync(LOG, { force: true });
+        // A new app-server resumes the thread (the live one keeps it loaded, #219).
+        await stopLiveCodex();
         expect(await run("second")).toBe("done");
         const resumes = received().filter((m) => m.method === "thread/resume").map((m) => m.params);
         expect(resumes).toHaveLength(2);
@@ -1334,7 +1338,7 @@ describe("Codex as the main agent", () => {
         expect(resumes[1].developerInstructions).not.toContain("delegate");
         expect(resumes[1].threadId).toBe("thr-new");
         expect(received().some((m) => m.method === "thread/start")).toBe(false);
-        expect(notices(events)).toContain("warn: Codex didn't accept Harness's delegation tools (invalid config: unknown field `default_tools_approval_mode`); this turn runs without them, preserving MCP restrictions.");
+        expect(notices(events)).toContain("warn: Codex didn't accept Harness's delegation tools (invalid config: unknown field `default_tools_approval_mode`); this session runs without them, preserving MCP restrictions.");
         expect(notices(events).join("\n")).not.toContain("Starting a new one");
 
         const fresh = await makeAgent({ provider: "codex" });
@@ -1348,6 +1352,7 @@ describe("Codex as the main agent", () => {
         process.env.FAKE_REJECT_CONFIG = "1";
         const { run } = await makeAgent({ provider: "codex" });
         expect(await run("first")).toBe("done");
+        await stopLiveCodex();
         expect(await run("second")).toBe("done");
         for (const method of ["thread/start", "thread/resume"]) {
             const threads = received().filter((m) => m.method === method).map((m) => m.params);

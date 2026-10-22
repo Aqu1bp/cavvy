@@ -1934,9 +1934,16 @@ export class Runtime {
         return a;
     }
 
-    /** Answer what's pending with nothing. At a turn's end, a delegated task still running keeps asking: it outlives the turn. */
-    private cancelInteractions(opts: { keepDelegated?: boolean } = {}) {
+    /** Permission prompts of an agent CLI's background sub-agents (PermissionRequest.background), by interaction id. */
+    private backgroundAsks = new Set<string>();
+
+    /**
+     * Answer what's pending with nothing. At a turn's end, a delegated task still running keeps asking: it outlives
+     * the turn. `keepBackground` (a turn's end, Esc): so does an agent CLI's background sub-agent.
+     */
+    private cancelInteractions(opts: { keepDelegated?: boolean; keepBackground?: boolean } = {}) {
         for (const [id, p] of [...this.pending]) {
+            if (opts.keepBackground && this.backgroundAsks.has(id)) continue;
             const agentId = p.interaction.kind === "permission" ? p.interaction.agentId : undefined;
             // A delegated task's own sub-agent asks for the task.
             const agent = agentId ? this.outermost(agentId) : undefined;
@@ -2022,7 +2029,11 @@ export class Runtime {
         // Withdrawn when its sub-agent is stopped.
         const withdraw = () => this.settle(it.id, undefined);
         req.signal?.addEventListener("abort", withdraw, { once: true });
-        const answer = await this.interact(it).finally(() => req.signal?.removeEventListener("abort", withdraw));
+        if (req.background) this.backgroundAsks.add(it.id);
+        const answer = await this.interact(it).finally(() => {
+            req.signal?.removeEventListener("abort", withdraw);
+            this.backgroundAsks.delete(it.id);
+        });
         if (asking && this.view.agents.find((a) => a.id === asking.id)?.status === "waiting") this.agentPatch(asking.id, { status: "running", activity: req.title });
         const choice = answer?.kind === "permission" && !req.signal?.aborted ? answer.choice : "no";
         // Approved, it starts now: the time it shows running (a wait's countdown) doesn't count the time it waited for the answer.
@@ -2576,7 +2587,7 @@ export class Runtime {
             this.abort = undefined;
             this.runStart = undefined;
             this.pendingPrompt = undefined;
-            this.cancelInteractions({ keepDelegated: true });
+            this.cancelInteractions({ keepDelegated: true, keepBackground: true });
             this.closeOpen();
             this.turnId = undefined;
             this.setState({ busy: false, filesChanged: this.filesChanged(), activity: undefined, persisted: existsSync(this.session.path), todos: this.toolState.todos.map((t) => ({ ...t })) });
@@ -2813,7 +2824,8 @@ export class Runtime {
     interrupt() {
         // Stopped by the user: what watches wake it again only once they send something.
         if (this.abort) this.toolState.wakes?.pause();
-        this.cancelInteractions();
+        // Esc stops the answer: a background sub-agent's prompt isn't the answer's.
+        this.cancelInteractions({ keepBackground: true });
         if (this.abort) {
             this.abort.abort();
             this.activity("Interrupting");

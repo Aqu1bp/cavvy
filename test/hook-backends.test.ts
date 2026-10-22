@@ -3,11 +3,12 @@
 // handler (hook_callback); Codex's items run them on the harness's side.
 // Also the worktree hooks, which stand in for Git when they're configured.
 
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import { secretsSnapshot } from "./helpers/secrets";
+import { stopLiveCodex } from "./helpers/fake-env";
 
 const iso = isolate();
 const restoreSecrets = await secretsSnapshot();
@@ -35,6 +36,8 @@ function wrapper(name: string, fixture: string): string {
 }
 const claudeBin = wrapper("claude", "fake-claude.ts");
 const codexBin = wrapper("codex", "fake-codex.ts");
+
+afterEach(() => stopLiveCodex());
 
 afterAll(() => {
     restoreSecrets();
@@ -277,9 +280,12 @@ describe("Codex's items run the harness's hooks", () => {
         expect(url).toStartWith("http://127.0.0.1:");
         expect(server.default_tools_approval_mode).toBe("approve");
         expect(hookArg()).not.toContain(auth.slice(7));
-        const listed = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", Authorization: auth }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
-        // Closed with the turn: the token no longer works.
-        expect(listed.status).toBe(401);
+        const list = () => fetch(url, { method: "POST", headers: { "Content-Type": "application/json", Authorization: auth }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
+        // Open while the session's app-server is (#219): later turns' calls reach it too.
+        expect((await list()).status).toBe(200);
+        // Closed with the app-server: the token no longer works.
+        await stopLiveCodex();
+        expect((await list()).status).toBe(401);
         expect(logLines().find((l) => l.mcpConnected === "harness_hooks")?.tools).toEqual(["pre_tool_use"]);
     });
 

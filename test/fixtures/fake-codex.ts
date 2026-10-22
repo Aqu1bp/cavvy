@@ -21,6 +21,26 @@
 // FAKE_COMMAND        the command the "cmd" scenario runs (default: touch x); FAKE_COMMAND_SCRIPT the whole
 //                     script, where Codex's parsed commandActions leave part of it out; FAKE_COMMAND_RAW
 //                     the command exactly as Codex shows it (its shell wrapper, quoted); FAKE_COMMAND_CWD its folder
+// It serves turns until stdin closes, as `codex app-server` does: a live session (#219) keeps one across turns.
+// The first log line has its pid.
+// FAKE_CODEX_SCENARIOS  one scenario per turn, comma-separated (turn n takes the nth, the last one after that)
+// FAKE_SCENARIO=bg     the turn starts FAKE_BG_COUNT (default 1) commands that keep running after it (unified exec
+//                     terminals with a processId), says so and ends; each ends by itself FAKE_BG_MS (default 300; "never")
+//                     later with item/completed (FAKE_BG_EXIT exit code, default 0; FAKE_BG_STAGGER_MS apart). thread/backgroundTerminals/list and
+//                     /terminate (only with capabilities.experimentalApi, as 0.163) list and end them; FAKE_TERMINATE_LATE=1:
+//                     the command finished by itself just before the terminate (it answers terminated: false)
+// FAKE_SCENARIO=bgagent  the turn spawns a sub-agent (thread thr-bg-n) whose turn keeps working after the turn: until
+//                     turn/interrupt names its thread, or FAKE_BG_MS (default 300; "never"); FAKE_AGENT_PARENT=hang: the
+//                     turn itself works on too, until interrupted; FAKE_CHILD_ASK=1: the sub-agent asks to run a command
+//                     FAKE_CHILD_ASK_MS (default 50) in, after its parent's turn is over unless that hangs (as 0.163's
+//                     did, #310); the answer is logged (childAsked), and it ends the sub-agent's turn: completed once
+//                     approved, else interrupted (as Codex does)
+// FAKE_SCENARIO=hang   the turn runs a foreground command (FAKE_HANG_PHASE=tool, default) or streams text
+//                     (FAKE_HANG_PHASE=stream) until interrupted (or FAKE_HANG_MS, default 10000)
+// FAKE_ENV_FILE       a JSON file of FAKE_* settings, read again with every message: a test changes them between
+//                     turns of one live app-server as it would between per-turn ones (only those read per turn)
+// FAKE_CRASH_FILE     exits (code 3) as soon as this file exists (and removes it): a crash on demand
+// FAKE_IDLE_LIMIT_MS  after a turn ends, sends FAKE_LIMIT_UPDATE's account/rateLimits/updated this much later (idle)
 // FAKE_SCENARIO       cmd (default) | rename | perms | slow | mcp | subagent | elicit | web | steps (command, message, command, answer)
 //                     | edit (a patch, then work until steered; FAKE_EDIT_FILE, FAKE_EDIT_TEXT, FAKE_EDIT_WAIT)
 //                     subagent: Codex's own sub-agent (spawnAgent, then wait): its thread runs a command (which
@@ -34,6 +54,7 @@
 //                     web: a web search whose query comes only when it completes
 // FAKE_PHASES=1       agent messages say their phase (commentary, final_answer), as current models' do
 // FAKE_CODEX_SCENARIO  overrides FAKE_SCENARIO here (a fake Claude Code and Codex in one test)
+// FAKE_ONE_TURN=1     turn/start is refused while a turn of the thread runs ("a turn is already running")
 // FAKE_REJECT_CONFIG=1  thread/start and thread/resume fail when given config, like a Codex that can't parse it
 // FAKE_HANG_INIT=1    never answers initialize, and ignores SIGTERM
 // FAKE_PERMS          the permissions the "perms" scenario asks for (JSON)
@@ -43,6 +64,13 @@
 // FAKE_SLOW_RESUME, FAKE_SLOW_TURN_START  milliseconds before answering thread/resume, turn/start
 // FAKE_TURN_MS        how long every turn works before it answers
 // FAKE_STEER_MS       turn/steer is answered that many ms late (refused with FAKE_STEER_FAIL)
+// FAKE_STEER_DELAY_MS  milliseconds before answering turn/steer (refused then, with FAKE_STEER_FAIL)
+// FAKE_FAIL_TURN_START_AT=n  the nth turn/start fails (no turn starts)
+// FAKE_TERMINATE_LATE  1: a terminated command had finished by itself (terminated: false); fail: failed by itself;
+//                     after: not terminated, gone from the list, and its own end (a failure) comes after the answer
+// FAKE_WHOLE_TURN_AT=n  the nth turn/start's turn runs to its end before turn/start answers
+// FAKE_CHILD_REPORT   a bgagent sub-agent's last answer, said as it ends
+// FAKE_STARTED_FIRST=1  a turn's turn/started goes out before turn/start's answer
 // FAKE_STEER_WAKES=1  turn/steer is refused unless its expectedTurnId is the turn running now; in the "slow"
 //                     scenario a steer ends the first turn's wait, and its answer repeats what was steered
 // FAKE_MCP_CALLS      the "mcp" scenario's calls to servers from the thread's config: [{ server?, tool, args }]
@@ -74,7 +102,7 @@
 // thread/resume (with the earlier turn's id) and when a compaction starts.
 
 import { createHash } from "crypto";
-import { appendFileSync, existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
 import { callTool, connect, type McpServerRef } from "./mcp-call";
 
@@ -83,7 +111,7 @@ const log = (o: unknown) => {
 };
 const argv = process.argv.slice(2);
 const cwd = process.cwd();
-log({ argv, sawOpenAiKey: Boolean(process.env.OPENAI_API_KEY), sawApiKey: Boolean(process.env.ANTHROPIC_API_KEY), claudeConfigDir: process.env.CLAUDE_CONFIG_DIR, codexHome: process.env.CODEX_HOME, sawOauthToken: Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN) });
+log({ argv, pid: process.pid, sawOpenAiKey: Boolean(process.env.OPENAI_API_KEY), sawApiKey: Boolean(process.env.ANTHROPIC_API_KEY), claudeConfigDir: process.env.CLAUDE_CONFIG_DIR, codexHome: process.env.CODEX_HOME, sawOauthToken: Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN) });
 if (argv[0] === "login") process.exit(0);
 if (argv[0] !== "app-server") {
     console.error("fake codex: only app-server");
@@ -100,7 +128,54 @@ function projectModel(): string | undefined {
     return existsSync(f) ? readFileSync(f, "utf-8").match(/model\s*=\s*"([^"]+)"/)?.[1] : undefined;
 }
 
-const scenario = process.env.FAKE_CODEX_SCENARIO ?? process.env.FAKE_SCENARIO ?? "cmd";
+/** FAKE_ENV_FILE's settings, as the test has them now. */
+const startedAt = Date.now();
+function syncEnv() {
+    const f = process.env.FAKE_ENV_FILE;
+    // Written before this process started: its environment has it already (and may be newer, set for it alone).
+    if (!f || !existsSync(f) || statSync(f).mtimeMs < startedAt) return;
+    let env: Record<string, string>;
+    try {
+        env = JSON.parse(readFileSync(f, "utf-8"));
+    } catch {
+        return;
+    }
+    for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_") && !(k in env) && k !== "FAKE_ENV_FILE" && k !== "FAKE_LOG") delete process.env[k];
+    Object.assign(process.env, env);
+}
+syncEnv();
+const baseScenario = () => process.env.FAKE_CODEX_SCENARIO ?? process.env.FAKE_SCENARIO ?? "cmd";
+/** The scenario of turn `turnId` (turn-n): FAKE_CODEX_SCENARIOS's nth, else the one for all. */
+function scenarioOf(turnId: string): string {
+    const list = process.env.FAKE_CODEX_SCENARIOS?.split(",").map((x) => x.trim()).filter(Boolean);
+    if (!list?.length) return baseScenario();
+    const n = Number(turnId.split("-").pop());
+    return list[Math.min(Math.max(1, Number.isFinite(n) ? n : 1), list.length) - 1]!;
+}
+
+if (process.env.FAKE_CRASH_FILE) {
+    const f = process.env.FAKE_CRASH_FILE;
+    setInterval(() => {
+        if (!existsSync(f)) return;
+        rmSync(f, { force: true });
+        log({ crashed: process.pid });
+        process.exit(3);
+    }, 10);
+}
+
+/** initialize asked for experimentalApi (thread/backgroundTerminals/* need it). */
+let experimental = false;
+/** Commands still running after their turn (unified exec terminals), by processId. */
+const terminals = new Map<string, { threadId: string; turnId: string; item: any; timer?: ReturnType<typeof setTimeout> }>();
+let processSeq = 40000;
+function endTerminal(processId: string, status: string, exitCode: number, output: string) {
+    const t = terminals.get(processId);
+    if (!t) return;
+    terminals.delete(processId);
+    if (t.timer) clearTimeout(t.timer);
+    log({ terminalEnded: { processId, status, exitCode } });
+    notify("item/completed", { threadId: t.threadId, turnId: t.turnId, item: { ...t.item, status, exitCode, aggregatedOutput: output } });
+}
 
 /** Hooks given with -c hooks={…} (inline TOML, the subset JSON with = can write). */
 const hookConfig: any = (() => {
@@ -193,6 +268,8 @@ const setTier = (id: string, tier: unknown) => {
     if (tierFile) writeFileSync(tierFile, JSON.stringify(Object.fromEntries(tiers)));
 };
 let current: { threadId: string; turnId: string; interrupted: boolean; wake?: () => void; steered?: string[]; done?: boolean } | undefined;
+/** Sub-agents' turns still working (bgagent), by their thread. */
+const childTurns = new Map<string, { turnId: string; stop: (status: string) => void }>();
 type Tokens = { totalTokens: number; inputTokens: number; cachedInputTokens: number; cacheWriteInputTokens: number; outputTokens: number; reasoningOutputTokens: number };
 /** Each thread's token usage: its running total, its last response's, and the turn that was in. */
 const usageFile = process.env.FAKE_LOG ? process.env.FAKE_LOG + ".usage.json" : undefined;
@@ -248,6 +325,10 @@ let lastPolicy: any = {};
 let racedOnce = false;
 let turnStarts = 0;
 let refusals = 0;
+let startFailures = 0;
+let wholeTurns = 0;
+/** Turns whose turn/started went out before turn/start answered (FAKE_STARTED_FIRST). */
+const startedEarly = new Set<string>();
 /** A thread started or resumed with a policy: the goal's turns Codex starts itself run under it, until a turn/start gives another. */
 function threadPolicy(p: any) {
     const sandbox: Record<string, string> = { "danger-full-access": "dangerFullAccess", "workspace-write": "workspaceWrite", "read-only": "readOnly" };
@@ -257,6 +338,7 @@ let delayedLimits: (() => void) | undefined;
 let releasedLimits: Promise<void> | undefined;
 
 async function runTurn(threadId: string, turnId: string, policy: { approvalPolicy?: string; sandboxPolicy?: { type?: string }; approvalsReviewer?: string }) {
+    const scenario = scenarioOf(turnId);
     const t: NonNullable<typeof current> = { threadId, turnId, interrupted: false };
     current = t;
     const finish = (status: string) => {
@@ -271,12 +353,13 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             notify("thread/goal/updated", { threadId, turnId, goal: goalOut(g) });
         }
         notify("turn/completed", { threadId, turn: { id: turnId, status, error: null } });
+        if (process.env.FAKE_IDLE_LIMIT_MS && process.env.FAKE_LIMIT_UPDATE) setTimeout(() => notify("account/rateLimits/updated", JSON.parse(readFileSync(process.env.FAKE_LIMIT_UPDATE!, "utf-8"))), Number(process.env.FAKE_IDLE_LIMIT_MS));
         // Still active: Codex goes on with it by itself, unless a turn has started since.
         const goOn = () => void ((!current || current.done) && runTurn(threadId, `turn-${++turnSeq}`, lastPolicy));
         // FAKE_GOAL_CONTINUE_MS: how soon (default 5; 0: at once, before anything else is read).
         if (going && g.status === "active") process.env.FAKE_GOAL_CONTINUE_MS === "0" ? goOn() : setTimeout(goOn, Number(process.env.FAKE_GOAL_CONTINUE_MS ?? 5));
     };
-    notify("turn/started", { threadId, turn: { id: turnId, status: "inProgress" } });
+    if (!startedEarly.delete(turnId)) notify("turn/started", { threadId, turn: { id: turnId, status: "inProgress" } });
     for (let i = 0; process.env.FAKE_LIMIT_UPDATE && i < Number(process.env.FAKE_LIMIT_REPEAT ?? 1); i++) notify("account/rateLimits/updated", JSON.parse(readFileSync(process.env.FAKE_LIMIT_UPDATE, "utf-8")));
     // Answer an earlier read after the push, before completing the turn.
     delayedLimits?.();
@@ -303,6 +386,80 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     if (process.env.FAKE_LIMIT_ERROR === "1") {
         notify("turn/completed", { threadId, turn: { id: turnId, status: "failed", error: { message: "Usage cap", codexErrorInfo: "usageLimitExceeded" } } });
         return;
+    }
+    if (scenario === "bg") {
+        // Commands that keep running after the turn (Codex 0.163's unified exec, yield_time_ms short of their end).
+        for (let i = 0; i < Number(process.env.FAKE_BG_COUNT ?? 1); i++) {
+            const processId = String(++processSeq);
+            const shown = process.env.FAKE_BG_COMMAND ?? `sleep 1; echo bg ${i + 1}`;
+            const item = { type: "commandExecution", id: `exec-${turnId}-${i + 1}`, command: `/bin/zsh -lc '${shown}'`, cwd, status: "inProgress", processId, source: "unifiedExecStartup", commandActions: [{ type: "unknown", command: shown }], aggregatedOutput: null, exitCode: null };
+            notify("item/started", { threadId, turnId, item });
+            const term: { threadId: string; turnId: string; item: any; timer?: ReturnType<typeof setTimeout> } = { threadId, turnId, item };
+            terminals.set(processId, term);
+            log({ terminalStarted: { processId, itemId: item.id } });
+            if (process.env.FAKE_BG_MS !== "never") term.timer = setTimeout(() => endTerminal(processId, Number(process.env.FAKE_BG_EXIT ?? 0) === 0 ? "completed" : "failed", Number(process.env.FAKE_BG_EXIT ?? 0), process.env.FAKE_BG_OUTPUT ?? `bg ${i + 1} done\n`), Number(process.env.FAKE_BG_MS ?? 300) + i * Number(process.env.FAKE_BG_STAGGER_MS ?? 0));
+        }
+        notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg2-${turnId}`, text: "Started it in the background.", ...phase("final_answer") } });
+        spend(threadId, turnId, tokens(120, 20, 30, 5));
+        return finish(t.interrupted ? "interrupted" : "completed");
+    }
+    if (scenario === "bgagent") {
+        const child = `thr-bg-${turnSeq}`;
+        const childTurn = `turn-bg-${turnSeq}`;
+        const spawn = { type: "collabAgentToolCall", id: `spawn-${turnId}`, tool: "spawnAgent", status: "inProgress", senderThreadId: threadId, receiverThreadIds: [] as string[], prompt: "Watch the build.", model: "", reasoningEffort: "medium", agentsStates: {} };
+        notify("item/started", { threadId, turnId, item: spawn });
+        notify("item/completed", { threadId, turnId, item: { ...spawn, status: "completed", receiverThreadIds: [child], model: "gpt-test", agentsStates: { [child]: { status: "running", message: null } } } });
+        notify("turn/started", { threadId: child, turn: { id: childTurn, rootTurnId: turnId, status: "inProgress" } });
+        notify("item/completed", { threadId: child, turnId: childTurn, item: { type: "agentMessage", id: `c-${childTurn}`, text: "Watching.", phase: "commentary" } });
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const stop = (status: string) => {
+            if (!childTurns.delete(child)) return;
+            if (timer) clearTimeout(timer);
+            log({ childEnded: { thread: child, status } });
+            // FAKE_CHILD_REPORT: what it says last (its answer), as it ends.
+            if (process.env.FAKE_CHILD_REPORT && status === "completed") notify("item/completed", { threadId: child, turnId: childTurn, item: { type: "agentMessage", id: `c-end-${childTurn}`, text: process.env.FAKE_CHILD_REPORT, phase: "final_answer" } });
+            notify("turn/completed", { threadId: child, turn: { id: childTurn, rootTurnId: turnId, status, error: null } });
+        };
+        childTurns.set(child, { turnId: childTurn, stop });
+        log({ childStarted: { thread: child, turn: childTurn } });
+        if (process.env.FAKE_BG_MS !== "never") timer = setTimeout(() => stop("completed"), Number(process.env.FAKE_BG_MS ?? 300));
+        if (process.env.FAKE_CHILD_ASK === "1")
+            setTimeout(async () => {
+                if (!childTurns.has(child)) return;
+                const command = "touch probe-A.txt";
+                const r = await serverRequest("item/commandExecution/requestApproval", { threadId: child, turnId: childTurn, itemId: `ask-${childTurn}`, command, cwd, commandActions: [{ type: "unknown", command }], availableDecisions: ["accept", "decline", "cancel"] });
+                log({ childAsked: { thread: child, decision: r?.decision } });
+                stop(r?.decision === "accept" ? "completed" : "interrupted");
+            }, Number(process.env.FAKE_CHILD_ASK_MS ?? 50));
+        if (process.env.FAKE_AGENT_PARENT === "hang") {
+            await new Promise<void>((r) => (t.wake = r));
+            return finish(t.interrupted ? "interrupted" : "completed");
+        }
+        notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg2-${turnId}`, text: "It works on in the background.", ...phase("final_answer") } });
+        return finish("completed");
+    }
+    if (scenario === "hang") {
+        // Works until interrupted: in a foreground command (tool), or streaming its answer (stream).
+        const stream = process.env.FAKE_HANG_PHASE === "stream";
+        const cmd = { type: "commandExecution", id: `hang-${turnId}`, command: "/bin/zsh -lc 'sleep 60'", cwd, status: "inProgress", commandActions: [{ type: "unknown", command: "sleep 60" }], aggregatedOutput: null, exitCode: null };
+        if (!stream) notify("item/started", { threadId, turnId, item: cmd });
+        else notify("item/started", { threadId, turnId, item: { type: "agentMessage", id: `stream-${turnId}`, text: "" } });
+        const until = Date.now() + Number(process.env.FAKE_HANG_MS ?? 10000);
+        let woken = false;
+        const wake = new Promise<void>((r) => (t.wake = () => ((woken = true), r())));
+        while (!t.interrupted && Date.now() < until) {
+            if (stream) notify("item/agentMessage/delta", { threadId, turnId, itemId: `stream-${turnId}`, delta: "more " });
+            await Promise.race([wake, Bun.sleep(20)]);
+            if (woken && !t.interrupted) {
+                // A steer: it heard it, and goes on.
+                woken = false;
+                log({ hangSteered: t.steered ?? [] });
+            }
+        }
+        log({ hangEnded: { turnId, interrupted: t.interrupted } });
+        if (!stream) notify("item/completed", { threadId, turnId, item: { ...cmd, status: t.interrupted ? "failed" : "completed", exitCode: t.interrupted ? -1 : 0, aggregatedOutput: "" } });
+        else notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `stream-${turnId}`, text: "more more" } });
+        return finish(t.interrupted ? "interrupted" : "completed");
     }
     if (scenario === "slow" && turnSeq === 1) {
         // The first turn works until interrupted (or a while).
@@ -590,6 +747,7 @@ function listSkills() {
 }
 
 async function handle(m: any) {
+    syncEnv();
     log({ received: m });
     if (m.method === undefined) {
         const r = pending.get(m.id);
@@ -604,6 +762,7 @@ async function handle(m: any) {
     switch (m.method) {
         case "initialize":
             if (process.env.FAKE_HANG_INIT === "1") return;
+            experimental = p.capabilities?.experimentalApi === true;
             return reply({ userAgent: "fake-codex/0.0.1", codexHome: "/tmp/none", platformFamily: "unix", platformOs: "linux" });
         case "hooks/list":
             if (process.env.FAKE_NO_HOOKS === "1") return out({ id: m.id, error: { code: -32601, message: "Method not found: hooks/list" } });
@@ -686,6 +845,10 @@ async function handle(m: any) {
                 notify("turn/completed", { threadId: "thr-oneoff", turn: { id: "turn-oneoff", status: fail ? "failed" : "completed", error: fail ? { message: fail } : null } });
                 break;
             }
+            // FAKE_FAIL_TURN_START_AT=n: the nth turn/start fails, and nothing starts.
+            if (process.env.FAKE_FAIL_TURN_START_AT && ++startFailures === Number(process.env.FAKE_FAIL_TURN_START_AT)) return fail("Codex couldn't start the turn");
+            // FAKE_ONE_TURN=1: one turn at a time, as a thread runs them; another turn/start meanwhile is refused.
+            if (process.env.FAKE_ONE_TURN === "1" && current && !current.done && current.threadId === p.threadId) return fail("a turn is already running");
             // FAKE_GOAL_RACE=1: with the goal active, Codex has just started its own next turn, and refuses this one.
             const raced = goals.get(p.threadId);
             // FAKE_REFUSE_TURN_START_AT=n: the nth turn/start is refused that way, the goal active or not (its pause not taken in yet).
@@ -706,6 +869,16 @@ async function handle(m: any) {
             // FAKE_SLOW_TURN_START_AT=n:ms: the nth turn/start answers that late.
             const slowAt = process.env.FAKE_SLOW_TURN_START_AT?.split(":").map(Number);
             if (slowAt && ++turnStarts === slowAt[0]) await Bun.sleep(slowAt[1]!);
+            // FAKE_STARTED_FIRST=1: the turn's turn/started goes out before turn/start's answer.
+            if (process.env.FAKE_STARTED_FIRST === "1") {
+                startedEarly.add(turnId);
+                notify("turn/started", { threadId: p.threadId, turn: { id: turnId, status: "inProgress" } });
+            }
+            // FAKE_WHOLE_TURN_AT=n: the nth turn/start's turn runs to its end before turn/start answers.
+            if (process.env.FAKE_WHOLE_TURN_AT && ++wholeTurns === Number(process.env.FAKE_WHOLE_TURN_AT)) {
+                await runTurn(p.threadId, turnId, p);
+                return reply({ turn: { id: turnId, status: "inProgress" } });
+            }
             reply({ turn: { id: turnId, status: "inProgress" } });
             void runTurn(p.threadId, turnId, p);
             return;
@@ -717,9 +890,43 @@ async function handle(m: any) {
             return reply({});
         case "skills/list":
             return reply({ data: [{ cwd: p.cwds?.[0] ?? cwd, skills: listSkills(), errors: [] }] });
+        case "thread/backgroundTerminals/list":
+            if (!experimental) return fail(`${m.method} requires experimentalApi capability`);
+            return reply({ data: [...terminals.entries()].filter(([, t]) => t.threadId === p.threadId).map(([processId, t]) => ({ itemId: t.item.id, processId, command: t.item.command, cwd, osPid: null, cpuPercent: null, rssKb: null })), nextCursor: null });
+        case "thread/backgroundTerminals/terminate": {
+            if (!experimental) return fail(`${m.method} requires experimentalApi capability`);
+            const pid = String(p.processId);
+            if (!terminals.has(pid)) return reply({ terminated: false });
+            log({ terminated: pid });
+            // It had just finished by itself (=fail: failed by itself, exit code 1).
+            if (process.env.FAKE_TERMINATE_LATE === "1" || process.env.FAKE_TERMINATE_LATE === "fail") {
+                const failed = process.env.FAKE_TERMINATE_LATE === "fail";
+                endTerminal(pid, failed ? "failed" : "completed", failed ? 1 : 0, failed ? "boom\n" : "finished first\n");
+                return reply({ terminated: false });
+            }
+            // =after: it's ending by itself: not terminated, gone from the list, and its end comes a moment later.
+            if (process.env.FAKE_TERMINATE_LATE === "after") {
+                const t = terminals.get(pid)!;
+                terminals.delete(pid);
+                reply({ terminated: false });
+                setTimeout(() => {
+                    terminals.set(pid, t);
+                    endTerminal(pid, "failed", 1, "boom\n");
+                }, 150);
+                return;
+            }
+            reply({ terminated: true });
+            return endTerminal(pid, "failed", -1, "");
+        }
         case "turn/interrupt":
             // FAKE_IGNORE_INTERRUPT=1: answers, and the turn goes on.
             if (process.env.FAKE_IGNORE_INTERRUPT === "1") return reply({});
+            log({ interrupt: { threadId: p.threadId, turnId: p.turnId } });
+            // A sub-agent's turn (bgagent): only that one stops.
+            if (childTurns.get(p.threadId)?.turnId === p.turnId) {
+                childTurns.get(p.threadId)!.stop("interrupted");
+                return reply({});
+            }
             if (current) {
                 current.interrupted = true;
                 current.wake?.();
@@ -731,6 +938,8 @@ async function handle(m: any) {
                 setTimeout(() => (process.env.FAKE_STEER_FAIL ? fail("no active turn to steer") : reply({ turnId: p.expectedTurnId })), Number(process.env.FAKE_STEER_MS));
                 return;
             }
+            // FAKE_STEER_DELAY_MS: answered this late (refused then, with FAKE_STEER_FAIL).
+            if (process.env.FAKE_STEER_DELAY_MS) await Bun.sleep(Number(process.env.FAKE_STEER_DELAY_MS));
             // FAKE_STEER_FAIL: the turn has already ended.
             if (process.env.FAKE_STEER_FAIL) return fail("no active turn to steer");
             if (process.env.FAKE_STEER_WAKES === "1") {
@@ -812,3 +1021,5 @@ for await (const chunk of Bun.stdin.stream()) {
     }
 }
 if (process.env.FAKE_HANG_INIT === "1") await new Promise(() => {});
+// Stdin closed: the app-server exits (its background terminals and timers with it).
+process.exit(0);

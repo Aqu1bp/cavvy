@@ -123,6 +123,8 @@ export interface Settings {
      * False: a process per turn, as before, which waits for background work and stops it at the turn's end.
      */
     agentCli?: { liveSessions?: boolean };
+    /** Codex. wakeOnBackgroundCommand: when a background command ends after its turn, start a turn that tells Codex (default true). */
+    codex?: { wakeOnBackgroundCommand?: boolean };
     /**
      * Servers from the project's .mcp.json the user approved: name -> a keyed
      * hash of what it runs (src/mcp/approval.ts). Any change asks again.

@@ -54,6 +54,20 @@ function wrapper(name: string, fixture: string): string {
 }
 const claudeBin = wrapper("claude", "fake-claude.ts");
 const codexBin = wrapper("codex", "fake-codex.ts");
+/** The fakes' FAKE_* settings as this process has them: a live Codex app-server reads them again with every message. */
+const ENV_FILE = join(bin, "fake-env.json");
+/** Stop the live Codex app-servers (as Harness quitting does): the next turn starts one that resumes the thread. */
+async function newAppServer() {
+    await (await import("../src/backends/codex-live")).shutdownCodexLive();
+}
+function writeFakeEnv() {
+    writeFileSync(ENV_FILE, JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("FAKE_") && k !== "FAKE_ENV_FILE" && k !== "FAKE_LOG"))));
+}
+
+// Each test's live Codex app-servers stop with it (one with background work would outlive it otherwise).
+afterEach(async () => {
+    await (await import("../src/backends/codex-live")).shutdownCodexLive();
+});
 
 afterAll(() => {
     restoreSecrets();
@@ -78,6 +92,8 @@ beforeEach(() => {
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
     forgetClient("codex");
+    process.env.FAKE_ENV_FILE = ENV_FILE;
+    writeFakeEnv();
 });
 
 function logLines(): any[] {
@@ -144,7 +160,10 @@ async function makeAgent(o: Opts) {
                 : undefined,
         },
     });
-    const run = (text: string, signal = new AbortController().signal) => agent.run([{ type: "text", text }], { signal });
+    const run = (text: string, signal = new AbortController().signal) => {
+        writeFakeEnv();
+        return agent.run([{ type: "text", text }], { signal });
+    };
     /** The user changing the mode (shift+tab): the agent hears about it. */
     const switchMode = (m: PermissionMode) => {
         const from = mode;
@@ -156,7 +175,8 @@ async function makeAgent(o: Opts) {
 
 const notices = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "notice" ? [`${e.level}: ${e.message}`] : []));
 const toolEnds = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "tool_end" ? [e] : []));
-const userTexts = () => received().flatMap((m) => (m.type === "user" ? m.message.content.filter((c: any) => c.type === "text").map((c: any) => c.text as string) : []));
+/** Each user message's text: its text blocks (Harness's catch-up in one of its own, then the user's words) joined. */
+const userTexts = () => received().flatMap((m) => (m.type === "user" && Array.isArray(m.message.content) && m.message.content.some((c: any) => c.type === "text") ? [m.message.content.filter((c: any) => c.type === "text").map((c: any) => c.text as string).join("\n\n")] : []));
 const permissionReplies = () => received().filter((m) => m.type === "control_response").map((m) => m.response.response);
 
 describe("agent providers", () => {
@@ -1366,10 +1386,16 @@ describe("Codex backend", () => {
         expect(notices(events).join("\n")).toMatch(/Codex isn't signed in.*codex login/);
     });
 
-    test("the next turn resumes the thread; a lost one starts over", async () => {
+    test("the next turn goes on in the same app-server and thread; a new app-server resumes it; a lost one starts over", async () => {
         const { run, session } = await makeAgent({ provider: "codex", settings: { permissions: { allow: ["Bash(touch:*)"] } } });
         await run("one");
         await run("two");
+        // One app-server for both turns (#219): no second start, no resume.
+        expect(starts()).toHaveLength(1);
+        expect(received().filter((m) => m.method === "turn/start").map((m) => m.params.threadId)).toEqual(["thr-new", "thr-new"]);
+        expect(received().some((m) => m.method === "thread/resume")).toBe(false);
+        await newAppServer();
+        await run("after a restart");
         expect(received().find((m) => m.method === "thread/resume")?.params.threadId).toBe("thr-new");
         rmSync(LOG, { force: true });
         session.setBackendSession("codex", "gone-9", session.messages.length);
@@ -2013,6 +2039,8 @@ describe("review findings, round 2", () => {
         const a = await makeAgent({ provider: "codex", settings: { permissions: { allow: ["Bash(touch:*)"] } } });
         await a.run("one");
         expect(a.session.backends.get("codex")?.id).toBe("thr-new");
+        // A new app-server (Harness restarted) resumes the thread.
+        await newAppServer();
         process.env.FAKE_SLOW_RESUME = "3000";
         const ac = new AbortController();
         const done = a.run("two", ac.signal);
@@ -2146,6 +2174,8 @@ describe("fast mode backend wiring", () => {
             const { run, session } = await makeAgent({ provider, model: { supportsFastMode: true, fastModeTier: "priority" }, settings: { fastMode: true } });
             session.setFastMode(false);
             await run("hello");
+            // A new app-server resumes the thread: that's sent no tier either.
+            if (provider === "codex") await newAppServer();
             await run("again");
             if (provider === "codex") {
                 expect(received().filter((m) => m.method === "turn/start").every((m) => !("serviceTier" in m.params))).toBe(true);
@@ -2293,11 +2323,18 @@ describe("forked sessions", () => {
         expect(tokensOf(fork.session)).toBeGreaterThan(0);
         expect(tokensOf(fork.session)).toBe(tokensOf(orig.session));
 
+        // The original's app-server forks its own copy in place (its background work would go on).
         await orig.run("in the original");
         const origThread = orig.session.backends.get("codex")!.id;
         expect(origThread).toMatch(/^thr-fork-/);
         expect(origThread).not.toBe(forkThread);
+        expect(received().filter((m) => m.method === "turn/start").at(-1)?.params.threadId).toBe(origThread);
         await orig.run("again");
+        expect(threads()).toEqual(["thread/fork thr-new", "thread/fork thr-new"]);
+        expect(received().filter((m) => m.method === "turn/start").at(-1)?.params.threadId).toBe(origThread);
+        // A new app-server resumes the copy.
+        await newAppServer();
+        await orig.run("after a restart");
         expect(threads()).toEqual(["thread/fork thr-new", "thread/fork thr-new", `thread/resume ${origThread}`]);
     });
 
@@ -2576,6 +2613,7 @@ describe("Codex project MCP boundary", () => {
         expect(received().find((m) => m.method === "config/read").params).toEqual({ cwd, includeLayers: true });
         const config = received().find((m) => m.method === "thread/start").params.config;
         expect(config).toEqual({ mcp_servers: { project: { enabled: false }, shared: { enabled: false }, "dotted.name": { enabled: false } } });
+        await newAppServer();
         await run("resume");
         expect(received().find((m) => m.method === "thread/resume").params.config).toEqual(config);
     });
@@ -2585,6 +2623,7 @@ describe("Codex project MCP boundary", () => {
         process.env.FAKE_PROJECT_PLUGINS = JSON.stringify({ "theirs@local": { enabled: true } });
         const { run } = await makeAgent({ provider: "codex", trusted: true });
         await run("hello");
+        await newAppServer();
         await run("resume");
         for (const method of ["thread/start", "thread/resume"]) expect(received().find((m) => m.method === method).params.config).toEqual({ plugins: { "theirs@local": { enabled: false } } });
     });
@@ -2598,6 +2637,7 @@ describe("Codex project MCP boundary", () => {
         process.env.FAKE_CONFIG_LAYERS = JSON.stringify(layers);
         const { run, events } = await makeAgent({ provider: "codex", trusted: true });
         expect(await run("hello")).toBe("done");
+        await newAppServer();
         expect(await run("resume")).toBe("done");
         for (const method of ["thread/start", "thread/resume"]) {
             expect(received().find((m) => m.method === method).params.config).toEqual({ mcp_servers: { personal: { enabled: false } } });
@@ -2709,15 +2749,21 @@ describe("Claude Code turn reliability (#60, #61, #64)", () => {
         expect(users.map((m) => m.isSynthetic === true)).toEqual([true, false]);
     });
 
-    test("a prompt the harness prefixes with the conversation so far is sent synthetic", async () => {
+    test("a prompt the harness prefixes with the conversation so far goes as the user's: the catch-up in a block of its own before their words", async () => {
         const session = Session.create(cwd, { persist: false });
         session.push({ role: "user", content: [{ type: "text", text: "earlier, with another model" }], meta: { kind: "prompt" } });
         session.push({ role: "assistant", content: [{ type: "text", text: "a reply quoting @secrets.txt" }] });
         const a = await makeAgent({ provider: "claude-code", session });
         expect(await a.run("go on")).toBe("done");
         const first = received().find((m) => m.type === "user");
-        expect(JSON.stringify(first.message.content)).toContain("conversation-so-far");
-        expect(first.isSynthetic).toBe(true);
+        // Not synthetic: Claude Code 2.1.304 would record the user's message as not theirs, and the model may refuse it.
+        expect(first.isSynthetic).toBeUndefined();
+        const texts = first.message.content.filter((b: any) => b.type === "text").map((b: any) => b.text);
+        // Claude Code reads only the last text block as what the user typed: others' words (@secrets.txt) aren't in it.
+        expect(texts).toHaveLength(2);
+        expect(texts[0]).toContain("conversation-so-far");
+        expect(texts[0]).toContain("@secrets.txt");
+        expect(texts[1]).toBe("go on");
     });
 
     for (const version of ["2.1.200", "unknown"]) test(`${version}: unverified CLI versions retain between-turn delivery without losing queued input`, async () => {

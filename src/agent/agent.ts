@@ -147,6 +147,8 @@ export interface PermissionRequest {
     summary?: string;
     /** Ends when the request no longer matters (its sub-agent was stopped): the prompt is withdrawn. */
     signal?: AbortSignal;
+    /** A background sub-agent's (BackendPermission.background): not the turn's, so its end or Esc leaves it. */
+    background?: boolean;
     /** run_with_secrets: the secrets the command gets in its environment, by name. Prompts show them. */
     secrets?: string[];
 }
@@ -401,6 +403,9 @@ function readOnlyRefusal(toolName: string, command?: string, why?: string): stri
     return `This is a read-only agent, and ${what ?? "this command isn't read-only"}. Only read-only commands run: plain commands such as cat, rg, wc or git log, and pipes of them, with no loops, subshells, $(…) or > redirects. Tests, builds and scripts don't run either. Leave out or replace just that part, or report what should be run or changed instead.`;
 }
 
+/** How much of a wake's report is shown and told when the session can't take the wake over (#305). */
+const WAKE_REPORT_CHARS = 4000;
+
 /** For a backend whose last turn was stopped without its knowing (Harness was closed or died while it worked). */
 const BACKEND_CUT_OFF = "Your last turn in this session was cut off: Harness stopped while you were working (it was closed, or it crashed), so that turn may not have finished what it set out to do.";
 
@@ -512,6 +517,12 @@ export class Agent {
     /** The backend's open delegate calls: a delegated agent's work shows under the call that started it. */
     private delegateCalls: { id: string; input: Record<string, unknown>; claimed: boolean }[] = [];
     private disposed = false;
+    /**
+     * The agent backends this agent ran turns on, each of which may keep a CLI process for its session (release).
+     * Not just the current client: a switch of model, provider or account (a new client) leaves the old one's
+     * process, and what runs in it, until the agent is done.
+     */
+    private backendsUsed = new Set<AgentBackendClient>();
     /** Sub-agents running now (Task, delegated tasks). */
     private children = new Set<Agent>();
 
@@ -1535,6 +1546,8 @@ export class Agent {
             fastMode: this.fastMode(),
             appendSystemPrompt: this.o.appendSystemPrompt,
             backgroundWaitSec: s.claudeCode?.backgroundWaitSec,
+            liveSessions: s.agentCli?.liveSessions !== false,
+            wakeOnBackgroundCommand: s.codex?.wakeOnBackgroundCommand !== false,
             additionalDirectories: s.permissions?.additionalDirectories ?? [],
             trusted,
             // The backend registers a project's own only where the user trusted it (the list may come from implicit trust).
@@ -1733,17 +1746,27 @@ export class Agent {
         if (left) this.emit({ type: "notice", level: "info", message: `${left} background task${left === 1 ? " keeps" : "s keep"} running (/tasks stop stops ${left === 1 ? "it" : "them"}).` });
     }
 
-    /** A wake turn to adopt, on a model that can't take one (another provider's now, or one that runs no CLI). */
+    /** A wake turn to adopt, on a model that can't take one (another provider's now, or one that runs no CLI). Its report is shown, and told to the model. */
     private cannotAdopt(w: BackendWake): TurnEndReason {
         const name = getProvider(w.provider)?.name ?? w.provider;
-        this.endNotice("warn", `${name} started a turn of its own, but this session can't take it over now${this.model.provider === w.provider ? "" : ` (it's on ${this.model.name ?? this.model.id})`}.`);
+        const on = this.model.provider === w.provider ? "" : ` (it's on ${this.model.name ?? this.model.id})`;
+        // What its background work reported isn't lost with the turn (#305): shown here, and told to the model now.
+        const said = w.report?.trim() ? redact(w.report.trim()) : undefined;
+        const report = said && said.length > WAKE_REPORT_CHARS ? `${said.slice(0, WAKE_REPORT_CHARS)}…` : said;
+        const about = w.label?.trim() ? ` (${w.label.trim()})` : "";
+        this.endNotice("warn", `${name} started a turn of its own, but this session can't take it over now${on}.${report ? ` What it reported${about}:\n${report}` : ""}`);
+        if (report) this.addReminder(`${name}, which this session ran on earlier, reported on background work it was doing${about}:\n${report}`);
         this.emit({ type: "turn_end", reason: "error" });
         return "error";
     }
 
     /** Session-level news from a backend: its background tasks, a notice outside any turn. */
     private sessionEvent(e: SessionEvent) {
+        // Disposed: the session is let go, or another took its place (the TUI's /new rebinds the background list
+        // first), and what its CLI reports now (its tasks stopping with the process, say) is no longer this one's.
+        if (this.disposed) return;
         if (e.type === "notice") return this.emit(e);
+        if (e.type === "event") return this.emitFromBackend(e.event);
         this.state.background?.report(e.task);
         this.o.host.backgroundChanged?.();
     }
@@ -1833,15 +1856,34 @@ export class Agent {
         return id ? Number(this.delegations.cancel(id)) : this.delegations.cancelAll();
     }
 
-    /** The session is done with this agent: stop its delegated tasks (waiting a moment for them) and revoke its MCP token. */
+    /** Aborted when the agent is disposed: a background sub-agent's prompt (BackendPermission.background) waits until then. */
+    private lifetime = new AbortController();
+
+    /**
+     * The session is done with this agent: stop its delegated tasks (waiting a moment for them), let go of the
+     * CLI processes its backends keep for the session (releaseBackends), and revoke its MCP token.
+     */
     async dispose(graceMs = 3000): Promise<void> {
         this.disposed = true;
+        this.lifetime.abort();
+        const released = this.releaseBackends();
         this.fileWatch?.close();
         this.fileWatch = undefined;
         this.registration?.close();
         this.registration = undefined;
         const running = this.delegations?.close() ?? [];
         if (running.length) await Promise.race([Promise.all(running.map((t) => t.settled)), Bun.sleep(graceMs)]);
+        await released;
+    }
+
+    /**
+     * Let go of the CLI processes the backends this agent used keep for its session: what runs in them stops.
+     * Called when it's disposed, and when a sub-agent's run is over.
+     */
+    async releaseBackends(): Promise<void> {
+        const used = [...this.backendsUsed];
+        this.backendsUsed.clear();
+        await Promise.all(used.map((b) => b.release?.(this.session.meta.id).catch(() => undefined)));
     }
 
     /** Whether a model can run a delegated task: its provider is set up, and the model exists there. */
@@ -1905,6 +1947,15 @@ export class Agent {
         return `<conversation-so-far>\n${intro}${shortened}\n\n${transcript}\n</conversation-so-far>\n\n${text}`;
     }
 
+    /**
+     * What Harness put before the user's words in a backend prompt (the conversation so far, its notes): kept apart
+     * (BackendTurn.preamble), so the prompt still goes as the user's own message. Marked synthetic, Claude Code 2.1.304
+     * records it as not the user's ("[MESSAGE FROM NON-USER SOURCE …]"), and the model may refuse what they asked.
+     */
+    private preamble(sent: string, own: string): Pick<BackendTurn, "preamble"> {
+        return sent !== own && sent.endsWith(own) && sent.length > own.length ? { preamble: sent.slice(0, sent.length - own.length) } : {};
+    }
+
     /** `woken`: the turn is for wakes, so its prompt carries others' words (see BackendTurn.synthetic). */
     private async runBackend(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal, woken = false, adopt?: BackendWake): Promise<TurnEndReason> {
         if (adopt && (!backend.adoptsTurns || adopt.provider !== this.model.provider)) return this.cannotAdopt(adopt);
@@ -1958,6 +2009,7 @@ export class Agent {
 
     /** `adopt`: the turn the CLI started by itself to take (BackendTurn.adopt), sending nothing. */
     private async runBackendTurn(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal, woken: boolean, adopt?: string): Promise<TurnEndReason> {
+        this.backendsUsed.add(backend);
         // Its first request goes with the prompt.
         this.backendRequestAt = Date.now();
         this.idleTried = false;
@@ -1978,7 +2030,9 @@ export class Agent {
             mode: () => this.o.mode.get(),
             fastMode: () => this.fastMode(),
             permission: async (req) => {
-                const a = await this.backendPermission(req, signal);
+                // A background sub-agent's goes on past the turn (and Esc): only the session's end, or the backend
+                // saying it no longer matters (req.signal: its sub-agent's turn ended), withdraws it.
+                const a = await this.backendPermission(req, req.background ? (req.signal ? AbortSignal.any([this.lifetime.signal, req.signal]) : this.lifetime.signal) : signal);
                 // A no to one of the backend's own sub-agents stops that one (the backend says so to it), not this turn.
                 if (!a.allow && a.stop && !req.agentLabel) declined = true;
                 return a;
@@ -2008,7 +2062,11 @@ export class Agent {
             sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length, folder, this.adoptedUnsent?.provider === provider ? this.adoptedUnsent.text : undefined),
             limits: (limits, partial) => this.emitFromBackend({ type: "limits", limits, partial }),
             emitSession: (e) => this.sessionEvent(e),
-            onWake: (w) => this.o.host.wake?.(w),
+            // Not once disposed: a wake its backend reports late (its label was still being read) isn't the session's
+            // that took its place (the TUI's /new keeps the same host).
+            onWake: (w) => {
+                if (!this.disposed) this.o.host.wake?.(w);
+            },
         };
         const sink: TurnSink = {
             emit: (e) => this.emitFromBackend(e),
@@ -2171,7 +2229,7 @@ export class Agent {
                 if (adopting) this.adoptedUnsent = { provider, text: unsent };
                 this.modelTookPrompt = false;
                 try {
-                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...sent, synthetic: woken || sent.prompt !== prompt, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork, ...(adopting ? { adopt } : {}) });
+                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...sent, ...this.preamble(sent.prompt, prompt), synthetic: woken, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork, ...(adopting ? { adopt } : {}) });
                     returned = result;
                 } finally {
                     this.adoptedUnsent = undefined;
@@ -2192,7 +2250,7 @@ export class Agent {
                     this.session.forgetBackendSession(provider);
                     this.emit({ type: "notice", level: "warn", message: `${redact(result.error ?? `Couldn't continue the earlier ${name} session`)}. Starting a new one with this conversation as context.` });
                     const fresh = toSend();
-                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...fresh, synthetic: woken || fresh.prompt !== prompt, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: undefined });
+                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...fresh, ...this.preamble(fresh.prompt, prompt), synthetic: woken, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: undefined });
                 }
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);
@@ -2335,6 +2393,7 @@ export class Agent {
             },
             drainQueued: () => [],
         };
+        this.backendsUsed.add(backend);
         const r = await backend.compact({ ...this.backendTurn(opts.signal, session, sink), resumeId: resume.id, forkSession: resume.fork, instructions: opts.instructions });
         if (r.reason === "aborted") throw new ProviderError("aborted");
         if (r.reason === "error") throw new Error(r.error ?? "Compaction failed");
@@ -2660,7 +2719,7 @@ export class Agent {
             sandbox: undefined,
             needsClassifier: undefined,
         };
-        const answer = await this.o.host.askPermission({ tool, input, title, decision: ask, preview, ...(req.agentLabel ? { agentLabel: req.agentLabel } : {}), ...(req.callId ? { callId: req.callId } : {}) });
+        const answer = await this.o.host.askPermission({ tool, input, title, decision: ask, preview, ...(req.agentLabel ? { agentLabel: req.agentLabel } : {}), ...(req.callId ? { callId: req.callId } : {}), ...(req.background ? { background: true, signal } : {}) });
         if (signal.aborted) return { allow: false, message: "Interrupted by user", stop: true };
         if (answer.setMode) this.o.mode.set(answer.setMode);
         if (answer.rules?.length) {
@@ -3310,6 +3369,9 @@ export class Agent {
             lastError ??= redact((e as Error).message ?? String(e));
         } finally {
             this.children.delete(child);
+            // Nothing takes a sub-agent's later turns: the CLI process kept for it goes, with what it left running.
+            // Before its servers close, so nothing still running there finds them gone.
+            await child.releaseBackends();
             await servers?.close().catch(() => undefined);
         }
         // Stopped: so is what it left running (a watcher writing files, say), even where the shell itself has exited.

@@ -98,6 +98,8 @@ class FakeConnection implements CliConnection {
         this.send({ type: "interrupt", id: ref });
     }
     async stopTask(id: string) {
+        // Held: the CLI hasn't answered yet (and refuses it if the hold rejects).
+        await this.adapter.hold.stop;
         this.send({ type: "stop_task", id });
     }
     async apply(s: Partial<LiveSettings>) {
@@ -118,7 +120,7 @@ class FakeAdapter implements AgentCliAdapter {
     connections: FakeConnection[] = [];
     bin = process.execPath;
     /** Calls that wait for these first (a CLI slow to answer them); apply's settles with its answer. */
-    hold: { open?: Promise<unknown>; prompt?: Promise<unknown>; apply?: Promise<"applied" | "restart">; close?: Promise<unknown> } = {};
+    hold: { open?: Promise<unknown>; prompt?: Promise<unknown>; apply?: Promise<"applied" | "restart">; close?: Promise<unknown>; stop?: Promise<unknown> } = {};
     applies = 0;
     spawn(cfg: SpawnConfig): SpawnSpec {
         return { bin: this.bin, args: [FIXTURE], cwd: cfg.cwd, fingerprint: spawnFingerprint({ system: cfg.appendSystemPrompt }) };
@@ -396,7 +398,8 @@ test("stopping a task counts once the CLI confirms it, and times out when it doe
     await turn(s, "bg stubborn1");
     expect(await s.stopTasks(["t1", "nope"])).toEqual({ t1: "stopped", nope: "unknown" });
     expect(s.tasks.get("t1")?.status).toBe("stopped");
-    expect(await s.stopTasks(["t1"])).toEqual({ t1: "stopped" });
+    // Already over: the stop isn't what ended it.
+    expect(await s.stopTasks(["t1"])).toEqual({ t1: "ended" });
 
     let result: unknown;
     void s.stopTasks().then((r) => (result = r));
@@ -406,6 +409,51 @@ test("stopping a task counts once the CLI confirms it, and times out when it doe
     await until(() => result !== undefined);
     expect(result).toEqual({ stubborn1: "timeout" });
     expect(s.tasks.get("stubborn1")?.status).toBe("running");
+});
+
+test("an end of the task's own while its stop is asked: it ended by itself (ended), however the CLI answers; the process gone, its own end stands", async () => {
+    const { pool, fake } = setup();
+    const s = pool.session("a", "fake");
+    await turn(s, "bg stubborn1");
+    await turn(s, "bg stubborn2");
+    await turn(s, "bg stubborn3");
+    const conn = fake.connections[0]!;
+    const ended = (id: string, status: "done" | "failed") => conn.inject({ t: "task", task: { ...s.tasks.get(id)!, status } });
+    const asked = (id: string) => {
+        let refuse!: (e: Error) => void;
+        let take!: () => void;
+        fake.hold.stop = new Promise<void>((resolve, reject) => ((take = resolve), (refuse = reject)));
+        let result: unknown;
+        void s.stopTasks([id]).then((r) => (result = r[id]));
+        return { result: () => result, refuse, take };
+    };
+
+    // It finished as the stop went out (the CLI then refuses the stop): it ended by itself.
+    const one = asked("stubborn1");
+    await Bun.sleep(10);
+    ended("stubborn1", "done");
+    await until(() => one.result() !== undefined);
+    one.refuse(new Error("no such task"));
+    expect(one.result()).toBe("ended");
+    expect(s.tasks.get("stubborn1")?.status).toBe("done");
+
+    // The same, but the CLI answered the stop success: its own end says it ended by itself (a CLI's success
+    // doesn't say the stop took; Claude Code answers so for a task it no longer runs, #295 review).
+    const two = asked("stubborn2");
+    await Bun.sleep(10);
+    ended("stubborn2", "done");
+    two.take();
+    await until(() => two.result() !== undefined);
+    expect(two.result()).toBe("ended");
+
+    // No answer, then the process goes: the end it said stands (not taken for a stop).
+    const three = asked("stubborn3");
+    await Bun.sleep(10);
+    ended("stubborn3", "failed");
+    await s.restart();
+    await until(() => three.result() !== undefined);
+    expect(three.result()).toBe("ended");
+    expect(s.tasks.get("stubborn3")?.status).toBe("failed");
 });
 
 test("release stops one harness session's processes; shutdownAll stops them all, tasks and all", async () => {

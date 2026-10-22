@@ -19,6 +19,13 @@ import type { BackgroundTaskInfo } from "./live/info";
 
 /** A permission prompt raised by the backend's own permission system. */
 export interface BackendPermission {
+    /**
+     * Asked by a background sub-agent of the CLI's (its work outlives the turn): the turn's end or Esc doesn't
+     * withdraw it; the session's end does.
+     */
+    background?: boolean;
+    /** With background: aborts when the request no longer matters (its sub-agent's turn ended), withdrawing the prompt. */
+    signal?: AbortSignal;
     /** The harness tool whose rules apply: Bash, Edit, Write, Read, WebFetch, mcp__server__tool, or the backend's own name. */
     toolName: string;
     /** Input in that tool's shape (command, file_path, url, …). */
@@ -109,7 +116,11 @@ export interface SteerMessage {
 }
 
 /** Something a backend reports about the session rather than a turn: its background work, a notice when no turn runs. */
-export type SessionEvent = { type: "background_task"; task: BackgroundTaskInfo } | { type: "notice"; level: "info" | "warn" | "error"; message: string };
+export type SessionEvent =
+    | { type: "background_task"; task: BackgroundTaskInfo }
+    | { type: "notice"; level: "info" | "warn" | "error"; message: string }
+    /** Something the CLI did outside any turn (a background sub-agent's steps, its Agent call ending): shown where it belongs (by its call's id). */
+    | { type: "event"; event: AgentEvent };
 
 /** A turn the CLI started by itself (a background task's report, a goal's next step), for the host to adopt as a wake turn. */
 export interface BackendWake {
@@ -119,6 +130,16 @@ export interface BackendWake {
     ref: string;
     /** What it's about, for the wake's row: "Background task finished: Map auth". */
     label?: string;
+    /**
+     * The turn answers a message of the user's (`label`, as they typed it): one that Esc sent at once in place of
+     * the turn it stopped. Recorded as their prompt, not as a wake.
+     */
+    prompt?: boolean;
+    /**
+     * What the background work it reports said (a finished command's output, a sub-agent's report), redacted:
+     * shown, and told to the session's model, when the session can't take the turn over (it's on another model).
+     */
+    report?: string;
 }
 
 /**
@@ -201,10 +222,16 @@ export interface BackendTurn {
     /** With a /goal command as the prompt: what Harness would have put before it (the conversation so far), kept apart. */
     goalContext?: string;
     /**
-     * The prompt isn't only the user's own words (an event a watch raised, or what the harness adds before
-     * them): Claude Code reads it as written, with no @mention expansion or slash command.
+     * The prompt isn't the user's at all (a turn for wakes: an event a watch raised, others' words): Claude Code
+     * reads it as written, with no @mention expansion or slash command, and records it as not the user's.
      */
     synthetic?: boolean;
+    /**
+     * What Harness put before the user's words at the start of `prompt` (the conversation so far, its notes to the
+     * model). A backend that sends blocks sends it as one of its own before theirs: Claude Code reads only the last
+     * text block as what the user typed (a /command), so others' words in it aren't taken as the user's.
+     */
+    preamble?: string;
     images: ImagePart[];
     /** PDFs, for a backend that reads them (Claude Code); others get a note in the prompt instead. */
     documents?: PdfPart[];
@@ -216,6 +243,13 @@ export interface BackendTurn {
     appendSystemPrompt?: string;
     /** Grace for Claude Code background shells without a timeout of their own, and monitors (seconds, default 1800). */
     backgroundWaitSec?: number;
+    /**
+     * Run on the session's live CLI process, kept between turns (#219), rather than one process per turn: the
+     * agentCli.liveSessions setting (on unless it's false). A backend without live sessions ignores it.
+     */
+    liveSessions?: boolean;
+    /** Start a turn that tells the CLI when a background command it started ends after its turn (Codex; default true). */
+    wakeOnBackgroundCommand?: boolean;
     additionalDirectories: string[];
     /** The user trusts this folder's configuration. */
     trusted: boolean;
@@ -268,6 +302,13 @@ export interface BackendTurn {
      * until it ends. Only for a backend with adoptsTurns.
      */
     adopt?: string;
+    /**
+     * Nothing will take a report after this turn (-p, the SDK runner, a harness sub-agent): the turn itself should
+     * wait for the work it leaves in the background. A backend may run it on a process of its own with the per-turn
+     * path's bounded wait (backgroundWaitSec, #193's timeouts, servers stopped at the answer), as Claude Code does
+     * (#219 PR 4); one that ignores it ends the turn at its answer, and what's left in the background stops at release.
+     */
+    untilQuiet?: boolean;
     /** The session's side: permissions, usage, background tasks, wakes. */
     session: SessionHost;
     /** This turn's events and steering. */
@@ -318,6 +359,24 @@ export interface AgentBackendClient extends ProviderClient {
      * the task is reported not running (SessionEvent background_task); none here means the backend can't.
      */
     stopBackground?(sessionKey: string, ids?: string[]): Promise<Record<string, BackgroundStop>>;
+    /**
+     * Esc with a message the user sent while the turn ran: the backend sends it at once in place of the turn
+     * the interrupt stops (Claude Code's send_now), and reports its turn as a wake with `prompt`. False when it
+     * can't now: the message stays the caller's. Called just before the turn's signal is aborted.
+     */
+    sendNow?(sessionKey: string, text: string): boolean;
+    /** Restart a session's live CLI process (it didn't answer an interrupt): what runs under it stops. */
+    restart?(sessionKey: string): Promise<void>;
+    /**
+     * The harness is done with this session (closed, cleared or replaced, the harness quitting) or sub-agent
+     * (its run is over): stop the CLI process kept for it. What ran in it stopped with it, and is reported so
+     * (SessionEvent background_task, status stopped, withProcess), as any loss of the process is. A session
+     * already let go records nothing more: its log keeps those tasks running, so when it's opened again they
+     * show as stopped when Harness quit, and the agent is told (src/agent/background.ts).
+     */
+    release?(sessionKey: string): Promise<void>;
+    /** Stop every live CLI process it keeps (the client is dropped, or the harness quits), reported as release's are. */
+    shutdown?(): Promise<void>;
 }
 
 /**

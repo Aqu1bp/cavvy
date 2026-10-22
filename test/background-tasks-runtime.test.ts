@@ -616,3 +616,59 @@ test("review round 4 (A9): with the kill switch off, a delegated task's end is a
         }
     }
 });
+
+/** An agent CLI whose background sub-agent (toolu_bg) asks a permission during the turn, and keeps asking after it. */
+function askingBackend(asked: { answer?: unknown }[], o: { hang?: boolean } = {}) {
+    const task: BackgroundTaskInfo = { id: "task-bg-1", provider: "fake-cli", kind: "agent", label: "Map auth", toolUseId: "toolu_bg", startedAt: Date.now(), status: "running", stoppable: true };
+    return {
+        agentBackend: true as const,
+        setMode() {},
+        listModels: async () => [],
+        stream: async () => {
+            throw new Error("not used");
+        },
+        compact: async () => ({ reason: "done" as const, text: "", actions: [] }),
+        runTurn: async (t: BackendTurn) => {
+            t.session.emitSession?.({ type: "background_task", task });
+            const input = { command: "rm -rf ./build" };
+            t.sink.emit({ type: "subagent", parentId: "toolu_bg", label: "Map auth", event: { type: "tool_start", call: { type: "tool_call", id: "toolu_sub_1", name: "Bash", input }, title: "rm -rf ./build" } } as never);
+            const entry: { answer?: unknown } = {};
+            asked.push(entry);
+            void t.session.permission({ toolName: "Bash", input, callId: "toolu_sub_1", background: true }).then((a) => (entry.answer = a));
+            if (o.hang && !t.signal.aborted) await new Promise<void>((r) => t.signal.addEventListener("abort", () => r(), { once: true }));
+            return { reason: t.signal.aborted ? ("aborted" as const) : ("done" as const), text: "Started it in the background.", actions: [] };
+        },
+    };
+}
+
+test("review #295 P1-1: a background sub-agent's permission prompt outlives the turn's end (it isn't the turn's to cancel)", async () => {
+    const { engine, c, id, rt } = await session();
+    try {
+        const asked: { answer?: unknown }[] = [];
+        rt.agent!.setModel(backendModel("fake-cli", "x"), askingBackend(asked) as never);
+        await engine.handle(c, "session.send", { id, text: "map auth in the background" });
+        await until(() => !rt.busy && rt.session.messages.some((m) => m.role === "assistant"));
+        await Bun.sleep(50);
+        expect(asked).toHaveLength(1);
+        expect(JSON.stringify(asked[0]!.answer)).toBeUndefined();
+        expect(rt.snapshot().state.pending?.length ?? (rt as any).pending.size).toBeGreaterThan(0);
+    } finally {
+        await engine.stop();
+    }
+});
+
+test("review #295 P1-1: Esc stops the answer, not a background sub-agent's permission prompt", async () => {
+    const { engine, c, id, rt } = await session();
+    try {
+        const asked: { answer?: unknown }[] = [];
+        rt.agent!.setModel(backendModel("fake-cli", "x"), askingBackend(asked, { hang: true }) as never);
+        await engine.handle(c, "session.send", { id, text: "map auth in the background" });
+        await until(() => asked.length === 1 && (rt as any).pending.size > 0);
+        await engine.handle(c, "session.interrupt", { id });
+        await until(() => !rt.busy);
+        await Bun.sleep(50);
+        expect(JSON.stringify(asked[0]!.answer)).toBeUndefined();
+    } finally {
+        await engine.stop();
+    }
+});

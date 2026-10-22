@@ -1,7 +1,8 @@
-import { afterAll, beforeEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
+import { fakeEnvFile, stopLiveCodex } from "./helpers/fake-env";
 
 const iso = isolate();
 const { usageSummary, usageBounds, clearUsageCache } = await import("../src/server/usage");
@@ -25,6 +26,7 @@ beforeEach(() => {
     Object.assign(usageBounds, bounds);
     for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
 });
+afterEach(() => stopLiveCodex());
 afterAll(() => {
     Object.assign(usageBounds, bounds);
     clearUsageCache();
@@ -172,11 +174,14 @@ test("Claude result model and plan/API billing are recorded and survive folding 
 });
 
 test("Codex thread model is recorded for its default alias, including reroutes and API-key billing", async () => {
+    const fakeEnv = fakeEnvFile(tempDir("usage-accounting-env-"));
     const { agent, session } = await agentFor("codex");
     expect(await agent.run([{ type: "text", text: "hello" }], { signal: new AbortController().signal })).toBe("done");
     expect(usageLines(session).at(-1).usage).toMatchObject({ resolvedModel: "codex:gpt-test", billing: "plan", cost: 0 });
+    // Signed in with an API key now, on the same app-server (#219): the next turn reads it again.
     process.env.FAKE_ACCOUNT = "apikey";
     process.env.FAKE_CODEX_REROUTED = "gpt-6-astra";
+    fakeEnv.write();
     expect(await agent.run([{ type: "text", text: "again" }], { signal: new AbortController().signal })).toBe("done");
     const usage = usageLines(session).at(-1).usage;
     expect(usage).toMatchObject({ resolvedModel: "codex:gpt-6-astra", billing: "api" });

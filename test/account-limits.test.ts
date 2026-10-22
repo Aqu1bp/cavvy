@@ -39,11 +39,11 @@ afterAll(() => {
     iso.cleanup();
 });
 
-function turn(provider: string, accountId: string, events: AgentEvent[]): BackendTurn {
+function turn(provider: string, accountId: string, events: AgentEvent[], sessionKey = "test"): BackendTurn {
     return {
         prompt: "hello", images: [], cwd: root, model: { provider, id: "default" }, mode: "plan", accountId,
         additionalDirectories: [], trusted: true, rules: { deny: [], ask: [], root }, signal: new AbortController().signal,
-        sessionKey: "test",
+        sessionKey,
         session: { mode: () => "plan", permission: async () => ({ allow: false }), askQuestions: async () => undefined, approvePlan: async () => ({ approved: false }), setMode: () => {}, usage: () => {}, sessionId: () => {}, limits: (limits, partial) => events.push({ type: "limits", limits, partial }) },
         sink: { emit: (e) => events.push(e), drainQueued: () => [] },
     };
@@ -175,7 +175,8 @@ test("a newer Codex read on another account does not suppress a delayed account 
         delete process.env.FAKE_RATE_LIMITS_RELEASE;
         delete process.env.FAKE_LOG;
         process.env.FAKE_RATE_LIMITS = join(import.meta.dir, "fixtures", "limits", "codex-update-reached.json");
-        expect((await backend.runTurn(turn("codex", "work", work))).reason).toBe("done");
+        // Another session: one session runs one turn at a time (its app-server is live, #219).
+        expect((await backend.runTurn(turn("codex", "work", work, "other"))).reason).toBe("done");
         expect(work.filter((e) => e.type === "limits")).toHaveLength(1);
     } finally {
         writeFileSync(release, "release");
