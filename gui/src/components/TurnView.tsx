@@ -224,6 +224,8 @@ export function Notice(p: { block: NoticeBlock }) {
                         <For each={p.block.details}>
                             {(d) => (
                                 <li class="truncate" title={d}>
+                                    {/* A line break between them, as find reads them (find.ts): no match runs from one into the next. */}
+                                    <span class="sr-only">{"\n"}</span>
                                     {d}
                                 </li>
                             )}

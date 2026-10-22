@@ -1705,6 +1705,25 @@ describe("the notice of stopped background tasks (#300)", () => {
         expect(JSON.stringify(notice)).not.toMatch(/task IDs|Restart them|background command:/);
     });
 
+    test("redacts each name whole before cutting it, and cuts between words", async () => {
+        const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+        // Past the cut, as a whole: cut first, its start would no longer match and would show.
+        const credential = "demo_registered_credential_0123456789_ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        registerSecret(credential, "demo");
+        try {
+            const [name] = stoppedTasksNotice([`background command: curl -H Bearer:${credential} https://example.com/api`]).details;
+            expect(name).not.toContain("demo_registered");
+            expect(name).toStartWith("curl -H Bearer:[REDACTED demo]");
+        } finally { unregisterSecret(credential); }
+        // A word the cut falls in goes whole: no half of a token the redactor doesn't know.
+        const word = "q7Zp4Lx9Rw2Kd8Nf3Vb6Ty1Hm5Gs0Jc".repeat(2);
+        expect(stoppedTasksNotice([`background command: deploy --token ${word}`]).details).toEqual(["deploy --token…"]);
+        expect(stoppedTasksNotice([`background command: ${word}`]).details).toEqual(["…"]);
+        // At a space, nothing more goes.
+        const words = `${"a".repeat(29)} ${"b".repeat(29)} tail`;
+        expect(stoppedTasksNotice([`background task: ${words}`]).details).toEqual([`${"a".repeat(29)} ${"b".repeat(29)}…`]);
+    });
+
     test("names sub-agents as such, and one task in the singular", () => {
         expect(stoppedTasksNotice(["sub-agent: Map auth", "sub-agent: Check tests"]).text).toBe("Stopped 2 background sub-agents");
         expect(stoppedTasksNotice(["background monitor: Watch checks"])).toEqual({ text: "Stopped 1 background task", details: ["Watch checks"] });

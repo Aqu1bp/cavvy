@@ -3024,13 +3024,18 @@ const STOPPED_NAME_CHARS = 60;
 /**
  * The user's notice for background tasks a backend's run stopped (BackendResult.backgroundStopped, each
  * "background command: …"): "Stopped 2 background tasks", and each task's name on one short line (its
- * description, or the start of its command).
+ * description, or the start of its command). Each name is redacted whole before it's cut: a secret cut
+ * short isn't one the redactor knows. The cut is between words, so none is left half shown.
  */
 export function stoppedTasksNotice(stopped: string[]): { text: string; details: string[] } {
     const agents = stopped.every((s) => s.startsWith("sub-agent: "));
     const details = stopped.map((s) => {
-        const one = s.replace(/^(?:sub-agent|background (?:command|monitor|task)): /, "").replace(/\s+/g, " ").trim();
-        return one.length > STOPPED_NAME_CHARS ? `${one.slice(0, STOPPED_NAME_CHARS - 1).trimEnd()}…` : one;
+        const one = redact(s.replace(/^(?:sub-agent|background (?:command|monitor|task)): /, "")).replace(/\s+/g, " ").trim();
+        if (one.length <= STOPPED_NAME_CHARS) return one;
+        const cut = one.slice(0, STOPPED_NAME_CHARS - 1);
+        // Cut inside a word: that word goes (all of it, when the name is one word).
+        const whole = one[STOPPED_NAME_CHARS - 1] === " " ? cut : cut.replace(/\S+$/, "");
+        return `${whole.trimEnd()}…`;
     });
     return { text: `Stopped ${stopped.length} background ${agents ? "sub-agent" : "task"}${stopped.length === 1 ? "" : "s"}`, details };
 }
