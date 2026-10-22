@@ -11,6 +11,33 @@ function isLocalHost(h: string) {
     return h === "localhost" || h === "127.0.0.1" || h === "[::1]" || h.endsWith(".localhost");
 }
 
+async function readBody(res: Response, limit: number): Promise<{ text: string; bytes: number; limited: boolean }> {
+    if (!res.body) return { text: "", bytes: 0, limited: false };
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    const parts: string[] = [];
+    let bytes = 0;
+    try {
+        while (bytes < limit) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = value.subarray(0, limit - bytes);
+            bytes += chunk.byteLength;
+            parts.push(decoder.decode(chunk, { stream: true }));
+        }
+        const limited = bytes === limit;
+        if (limited) await reader.cancel();
+        else parts.push(decoder.decode());
+        return { text: parts.join(""), bytes, limited };
+    } finally {
+        reader.releaseLock();
+    }
+}
+
+function limitNotice(bytes: number) {
+    return `\n\n(Response may be truncated: stopped at the ${bytes}-byte limit.)`;
+}
+
 export const WebFetchTool: Tool<{ url: string; prompt?: string }> = {
     name: "WebFetch",
     category: "network",
@@ -65,17 +92,23 @@ export const WebFetchTool: Tool<{ url: string; prompt?: string }> = {
         }
         if (!res) return { content: "No response", isError: true };
         if (!res.ok) {
-            const body = (await res.text().catch(() => "")).slice(0, 500);
-            return { content: `HTTP ${res.status} ${res.statusText}${body ? `\n${body}` : ""}`, isError: true, display: { summary: `HTTP ${res.status}` } };
+            const body = await readBody(res, 500).catch(() => ({ text: "", limited: false }));
+            return { content: `HTTP ${res.status} ${res.statusText}${body.text ? `\n${body.text}` : ""}${body.limited ? limitNotice(500) : ""}`, isError: true, display: { summary: `HTTP ${res.status}${body.limited ? ", byte limit reached" : ""}` } };
         }
         const type = res.headers.get("content-type") ?? "";
         const len = Number(res.headers.get("content-length") ?? 0);
-        if (len > MAX_BYTES) return { content: `Response too large (${len} bytes)`, isError: true };
+        if (len > MAX_BYTES) {
+            await res.body?.cancel();
+            return { content: `Response too large (${len} bytes, max ${MAX_BYTES} bytes)`, isError: true };
+        }
         if (!/text|json|xml|javascript|markdown/i.test(type) && type) {
             await res.body?.cancel();
             return { content: `Unsupported content type: ${type}`, isError: true };
         }
-        const raw = (await res.text()).slice(0, MAX_BYTES);
+        const result = await readBody(res, MAX_BYTES);
+        const raw = result.text;
+        const notice = result.limited ? limitNotice(MAX_BYTES) : "";
+        const summary = result.limited ? ", byte limit reached" : "";
         let text: string;
         let title: string | undefined;
         if (/html/i.test(type) || /^\s*<(!doctype|html)/i.test(raw)) {
@@ -88,8 +121,8 @@ export const WebFetchTool: Tool<{ url: string; prompt?: string }> = {
             try {
                 const answer = await ctx.summarize(truncateMiddle(text, 150_000), input.prompt, ctx.signal);
                 return {
-                    content: `Content from ${url} (condensed for: ${input.prompt}):\n\n${answer}`,
-                    display: { summary: `Fetched ${Math.round(raw.length / 1024)} KB, condensed` },
+                    content: `Content from ${url} (condensed for: ${input.prompt}):\n\n${answer}${notice}`,
+                    display: { summary: `Fetched ${Math.round(result.bytes / 1024)} KB, condensed${summary}` },
                 };
             } catch {
                 // fall back to raw text
@@ -97,8 +130,8 @@ export const WebFetchTool: Tool<{ url: string; prompt?: string }> = {
         }
         const body = truncateMiddle(text, MAX_CHARS);
         return {
-            content: `${title ? `# ${title}\n` : ""}Source: ${url}\n\n${body}`,
-            display: { summary: `Fetched ${Math.round(raw.length / 1024)} KB (${res.status})` },
+            content: `${title ? `# ${title}\n` : ""}Source: ${url}\n\n${body}${notice}`,
+            display: { summary: `Fetched ${Math.round(result.bytes / 1024)} KB (${res.status})${summary}` },
         };
     },
 };
