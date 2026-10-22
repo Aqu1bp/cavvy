@@ -9,6 +9,7 @@
 //   - an interrupted (partial) model response is discarded, never stored
 
 import type {
+    AttachedPart,
     AssistantMessage,
     ChatRequest,
     ImagePart,
@@ -42,7 +43,7 @@ import { isReadOnlyCommand, notReadOnly } from "../permissions/bash-safety";
 import { mcpToolMatches } from "../permissions/rules";
 import { toolNameFor } from "../mcp/manager";
 import { costOf, promptTokens, type CostEstimate } from "../providers/pricing";
-import { Session } from "./session";
+import { redactMessage, Session } from "./session";
 import { hookApplies, isAsync, matcherFn, runHandler, runHooks, runInBackground, type HookEvent, type HookOutcome, type HookServices } from "./hooks";
 import { FileWatchHooks, type FileEvent } from "./file-watch-hooks";
 import { instructionsLoadedHooks, sessionStartHooks } from "./session-hooks";
@@ -56,7 +57,7 @@ import { TurnSnapshots, type TurnCapture } from "./turn-snapshots";
 import { redact } from "../util/redact";
 import type { Skill } from "./skills";
 import { claudeAgents } from "../backends/claude-agents";
-import { isAgentBackend, type AgentBackendClient, type BackendPermission, type BackgroundStop, type BackendWake, type SessionEvent, type SessionHost, type TurnSink, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "../backends/types";
+import { isAgentBackend, type AgentBackendClient, type BackendPermission, type BackgroundStop, type BackendWake, type SessionEvent, type SessionHost, type TurnSink, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer, type SteerMessage } from "../backends/types";
 import { getProvider, imageTypesOf } from "../providers/registry";
 import { ACCOUNT_PROVIDERS, account, accountRealPath } from "../providers/accounts";
 import { forBackend, pastedTexts, readsPdf } from "../providers/files";
@@ -175,9 +176,11 @@ export interface AgentHost {
      * hook blocked it, and the user is told) means it doesn't go and goes back to the user, "stopped" (the turn
      * was interrupted, or the backend can't take it) that none go and they stay queued, "go" that it goes: the
      * host hands back what admit gave for each that goes, in order. Those handed over without it (as strings)
-     * have their hooks run after.
+     * have their hooks run after; one handed over with what's attached (an Admitted that goes) had them run
+     * already, or there are none. `admit` is given what's attached too: its hooks read a long paste (which
+     * rides as an attachment) as part of what the user wrote, as a prompt's do.
      */
-    drainQueued?(record?: () => void, admit?: (text: string) => Promise<Admitted>): string[] | Promise<string[] | Admitted[]>;
+    drainQueued?(record?: () => void, admit?: (text: string, attachments?: readonly AttachedPart[]) => Promise<Admitted>): (string | Admitted)[] | Promise<(string | Admitted)[]>;
     /**
      * For a backend's CLI that's between its turns, waiting only on its background work: the first queued
      * message that can go now, as a prompt of its own, whatever its mode, prepared as a sent one is (its
@@ -205,6 +208,8 @@ export interface RunOptions {
     kind?: "prompt" | "command" | "wake";
     /** A wake turn the backend's CLI started by itself (AgentHost.wake): nothing is sent; the turn takes its events until it ends. */
     adopt?: BackendWake;
+    /** Its UserPromptSubmit hooks went already, when it was queued to steer, with what they added: they don't run again. */
+    admitted?: { context?: string };
 }
 
 /** What a queued message's hooks, and whether it can still go, decided (AgentHost.drainWaiting). */
@@ -215,6 +220,21 @@ export interface Admitted {
     text: string;
     admission: Admission;
     context?: string;
+    /** Images and files sent with it: they go into the turn with its text, as a prompt's do. */
+    attachments?: AttachedPart[];
+    /**
+     * For one with attachments: it's still the host's (queued, attachments and all) until what runs the turn has
+     * it. `accepted` once it does (an API model's request: at once; an agent CLI: SteerMessage.settle): the host
+     * takes it out of its queue and records it, and it's stored; false when the host can't any more (it's closing:
+     * it stays queued, on disk). `refused` when it doesn't go: it stays queued, to go as a prompt of its own.
+     */
+    transaction?: SteerTransaction;
+}
+
+/** A message with attachments steering a turn: the host's until it has gone (Admitted.transaction). */
+export interface SteerTransaction {
+    accepted(): boolean;
+    refused(): void;
 }
 
 export interface Helpers {
@@ -293,6 +313,11 @@ const MAX_STALL_RETRIES = 2;
 const TOOL_INTERRUPT = "[Request interrupted by user for tool use]";
 /** Starts the text of a message the user sent while tools were running. */
 const STEERING = "The user sent this message while you were working:\n";
+
+/** Messages steered with, as one text: one with only images or files adds none. */
+function joinSteered(texts: readonly string[], sep: string): string {
+    return texts.filter((t) => t.trim()).join(sep);
+}
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -622,6 +647,7 @@ export class Agent {
     // -----------------------------------------------------------------------
 
     /** Run one user turn to completion. */
+    /** `admitted`: its UserPromptSubmit hooks went already (when it was queued to steer), with what they added. */
     /** `adopt`: a wake turn its backend's CLI started by itself (AgentHost.wake): nothing is sent, its events are taken. */
     async run(content: UserContent[], opts: RunOptions): Promise<TurnEndReason> {
         if (this.running) throw new Error("Agent is already running");
@@ -670,8 +696,10 @@ export class Agent {
         const checkpoint = await this.checkpoint(opts.display ?? promptText);
         if (this.cutOff) return "aborted";
 
-        // A wake isn't something the user typed.
-        if (opts.kind !== "wake") {
+        // A wake isn't something the user typed. One whose hooks went when it was queued to steer: what they added.
+        if (opts.admitted) {
+            if (opts.admitted.context) this.addReminder(opts.admitted.context);
+        } else if (opts.kind !== "wake") {
             const h = await this.promptHooks(promptText, signal);
             if (h.blocked) {
                 this.emit({ type: "turn_end", reason: "blocked" });
@@ -882,8 +910,8 @@ export class Agent {
                 // Stopped while their hooks ran: they stay queued.
                 if (signal.aborted && !queued.length) return this.interrupted(false);
                 if (queued.length) {
-                    await this.checkpoint(queued.join("\n"), false, (checkpoint) => {
-                        this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }, ...steer.context.map(reminder)], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
+                    await this.checkpoint(joinSteered(queued, "\n"), false, (checkpoint) => {
+                        this.session.push({ role: "user", content: [{ type: "text", text: joinSteered(queued, "\n\n") }, ...steer.attachments, ...steer.context.map(reminder)], meta: { kind: "prompt", display: joinSteered(queued, "\n"), checkpoint } });
                     });
                     if (this.cutOff) return "aborted";
                     continue;
@@ -937,10 +965,10 @@ export class Agent {
                 const queued = steer.texts;
                 // Not into a round the user denied: that ends the turn, and the wake would go unanswered.
                 const woke = denied ? undefined : this.takeWakes();
-                if (queued.length) extra.push({ type: "text", text: `${STEERING}${queued.join("\n\n")}` }, ...steer.context.map(reminder));
+                if (queued.length) extra.push({ type: "text", text: `${STEERING}${joinSteered(queued, "\n\n")}` }, ...steer.attachments, ...steer.context.map(reminder));
                 if (woke) extra.push(reminder(woke));
                 // Steering's checkpoint records the results: everything to go with them is in by then.
-                if (queued.length) await this.checkpoint(queued.join("\n"), true, record);
+                if (queued.length) await this.checkpoint(joinSteered(queued, "\n"), true, record);
             }
             if (this.cutOff) return "aborted";
             // Steering saved the completed results before its capture: an interrupt is a new message.
@@ -1008,23 +1036,36 @@ export class Agent {
      * UserPromptSubmit hooks as a prompt sent on its own is (runInner): one a hook blocks doesn't join the
      * turn, and what they add goes with them. `live`: whether the backend can still take them.
      */
-    private async drainSteering(signal: AbortSignal, record?: () => void, live?: () => boolean): Promise<{ texts: string[]; context: string[] }> {
+    private async drainSteering(signal: AbortSignal, record?: () => void, live?: () => boolean, defer = false): Promise<{ texts: string[]; context: string[]; attachments: AttachedPart[]; transaction?: SteerTransaction }> {
         const hooked = !this.o.isSubagent && Boolean(this.hookSettings().hooks?.UserPromptSubmit?.length);
         const stopped = () => this.cutOff || signal.aborted || live?.() === false;
-        const admit = async (text: string): Promise<Admitted> => {
-            const h = await this.promptHooks(text, signal);
+        const admit = async (text: string, attachments?: readonly AttachedPart[]): Promise<Admitted> => {
+            // As a prompt's (runInner): its words, then what it pasted.
+            const h = await this.promptHooks(promptTextOf([{ type: "text", text }, ...(attachments ?? [])]), signal);
             if (stopped()) return { text, admission: "stopped" };
             return h.blocked ? { text, admission: "blocked" } : { text, admission: "go", context: h.context };
         };
         const drained = (await this.o.host.drainQueued?.(record, hooked ? admit : undefined)) ?? [];
         const texts: string[] = [];
         const context: string[] = [];
+        const attachments: AttachedPart[] = [];
         const lost: string[] = [];
+        let transaction: SteerTransaction | undefined;
         for (const d of drained) {
             if (typeof d !== "string") {
-                if (d.admission !== "go") continue;
+                if (d.admission !== "go") {
+                    d.transaction?.refused();
+                    continue;
+                }
+                // One with attachments goes once the turn has it: an API model's request takes it now; a CLI's
+                // backend says when (`defer`, SteerMessage.settle).
+                if (d.transaction) {
+                    if (defer) transaction = d.transaction;
+                    else if (!d.transaction.accepted()) continue;
+                }
                 texts.push(d.text);
                 if (d.context) context.push(d.context);
+                if (d.attachments) attachments.push(...d.attachments);
                 continue;
             }
             // From a host that hands them over without running them (a script's steering): they run now. Those
@@ -1041,7 +1082,7 @@ export class Agent {
             }
         }
         if (lost.length) this.emit({ type: "notice", level: "warn", message: `Not sent (stopped while its UserPromptSubmit hooks ran): ${lost.join("\n\n")}` });
-        return { texts, context };
+        return { texts, context, attachments, ...(transaction ? { transaction } : {}) };
     }
 
     private async checkpoint(prompt: string, snapshotOnly = false, record?: (checkpoint: number | undefined) => void): Promise<number | undefined> {
@@ -1977,9 +2018,10 @@ export class Agent {
             },
             // Saved past the sync cursor (see runBackend), so the next turn is sent them, after a restart too.
             diagnose: (paths) => this.diagnoseBackendEdits(paths, signal),
-            undelivered: (texts) => {
-                const news = texts.filter((t) => wakeTexts.has(t));
-                const typed = texts.filter((t) => !wakeTexts.has(t));
+            // Messages with attachments never get here: they go only once the backend has them (SteerMessage.settle).
+            undelivered: (messages) => {
+                const news = messages.filter((m) => wakeTexts.has(m.text)).map((m) => m.text);
+                const typed = messages.filter((m) => !wakeTexts.has(m.text)).map((m) => m.text);
                 if (typed.length) this.backendStopReminders.push(`The user sent this while you were working, but your turn ended before it reached you:\n${typed.join("\n\n")}`);
                 if (news.length) this.backendStopReminders.push(`This arrived while you were working, but your turn ended before it reached you:\n${news.join("\n\n")}`);
             },
@@ -1994,32 +2036,56 @@ export class Agent {
                     recorded = true;
                     this.recordBackendTurn(provider, name, progress());
                 };
-                const steer = await this.drainSteering(signal, record, live);
+                const steer = await this.drainSteering(signal, record, live, true);
                 const queued = steer.texts;
                 // Events a watch raised join the running turn as the user's messages do (Codex steers with them at once).
                 const woke = this.takeWakes();
                 if (!queued.length && !woke) return [];
-                record();
-                const out: string[] = [];
+                const display = joinSteered(queued, "\n");
+                const content: UserContent[] = [{ type: "text", text: joinSteered(queued, "\n\n") }, ...steer.attachments, ...steer.context.map(reminder)];
+                /** Its place in the session, after what the backend said before it, as the prompt it is. */
+                const store = () => this.checkpoint(display, false, (checkpoint) => void this.session.push({ role: "user", content, meta: { kind: "prompt", display, checkpoint } }));
+                const out: SteerMessage[] = [];
+                const t = steer.transaction;
                 if (queued.length) {
-                    await this.checkpoint(queued.join("\n"), false, (checkpoint) => {
-                        const m = this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }, ...steer.context.map(reminder)], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
-                        // With what hooks add after it, apart, as a prompt sent on its own is (forBackend).
-                        const text = forBackend(m.content, false).text;
-                        // The stored (redacted) text, so the request stays a prefix of what the backend gets.
-                        const first = m.content[0];
-                        typed.set(text, first?.type === "text" ? first.text : queued.join("\n\n"));
-                        out.push(text);
-                    });
-                }
+                    // As it's stored (redacted), with what hooks add after it, apart, as a prompt sent on its own is
+                    // (forBackend); its images and PDFs (for a backend that reads them) apart too, the rest of what's
+                    // attached as text. The stored text, so the request stays a prefix of what the backend gets.
+                    const sent = redactMessage({ role: "user", content }).content as UserContent[];
+                    const { text, images, documents } = forBackend(sent, readsPdf(this.model));
+                    const first = sent[0];
+                    typed.set(text, first?.type === "text" ? first.text : joinSteered(queued, "\n\n"));
+                    if (t) {
+                        // With attachments: the host's until the backend has it (settle). Then it's recorded, after
+                        // what the backend said before it; if it never goes, it stays queued, attachments and all.
+                        let settled = false;
+                        const settle = async (sentIt: boolean) => {
+                            if (settled) return;
+                            settled = true;
+                            if (!sentIt || this.cutOff) return t.refused();
+                            if (!t.accepted()) return;
+                            record();
+                            await store();
+                        };
+                        out.push({ text, images, documents, settle });
+                    } else {
+                        record();
+                        await store();
+                        out.push({ text, images, documents });
+                    }
+                } else record();
                 if (woke) {
                     // Not a prompt: no checkpoint, and the auto-mode reviewer doesn't read it as the user's request.
+                    if (t) record();
                     const m = this.session.push({ role: "user", content: [reminder(woke)], meta: { kind: "reminder" } });
                     const text = textOf(m);
                     wakeTexts.add(text);
-                    out.push(text);
+                    out.push({ text, images: [], documents: [] });
                 }
-                if (this.cutOff) return [];
+                if (this.cutOff) {
+                    t?.refused();
+                    return [];
+                }
                 return out;
             },
             drainWaiting: async (progress, live) => {
@@ -3000,10 +3066,12 @@ export class Agent {
                 const t = text();
                 if (t) requests.unshift(kind === "command" && m.meta?.display ? `(ran ${m.meta.display})\n${t}` : t);
             }
-            // Messages the developer sent while tools ran ride along with the results.
+            // Messages the developer sent while tools ran ride along with the results, with what they pasted
+            // (in tool results, a pasted text only ever comes with one of them).
             if (requests.length < 3 && kind === "tool_results") {
                 const sent = m.content.flatMap((p) => (p.type === "text" && p.text.startsWith(STEERING) ? [p.text.slice(STEERING.length).trim()] : [])).filter(Boolean);
-                if (sent.length) requests.unshift(sent.join("\n\n"));
+                const pasted = pastedTexts(m.content);
+                if (sent.length || pasted.length) requests.unshift([sent.join("\n\n"), ...pasted].filter(Boolean).join("\n"));
             }
         }
         return { requests, summary };

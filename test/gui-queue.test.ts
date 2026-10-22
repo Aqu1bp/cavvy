@@ -39,7 +39,8 @@ describe("queue rows", () => {
     test("each says what it will do, in a word or two, and why in its tooltip", () => {
         expect(queueRow("steer", false).hint).toBe("Next step");
         expect(queueRow("queue", true).hint).toBe("After this turn");
-        expect(queueRow("turn", true).detail).toMatch(/Images, files and commands/);
+        expect(queueRow("turn", true).detail).toMatch(/Commands, and attachments this model can.t take/);
+        expect(queueRow("turn", true, "Claude Code can't take PDFs in a running turn: this runs once it ends.").detail).toBe("Claude Code can't take PDFs in a running turn: this runs once it ends.");
         expect(queueRow("held", false)).toMatchObject({ hint: "Held", detail: expect.stringMatching(/restarted/) });
     });
 

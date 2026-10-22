@@ -522,6 +522,8 @@ export interface SessionState {
     queuedAttached?: string[];
     /** What each queued message will do (missing from older servers: all "steer"). */
     queuedModes?: QueuedMode[];
+    /** Why each queued message can't join a running turn ("" when it can): a command, or what it carries. */
+    queuedWhy?: string[];
     interactions: Interaction[];
     mcp: McpStatus[];
     /** Files this session's edit tools changed (the Changes panel). */

@@ -50,7 +50,7 @@ import { CLAUDE_PREFIX, claudeNames, claudePrompt, forClaudeCode, skillFolder } 
 import { CLAUDE_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
 import { claudeMcpPolicy } from "./claude-mcp-policy";
 import { writeAgentsFile } from "./claude-agents";
-import { backendModel, type AgentBackendClient, type BackgroundStop, type SessionHost, type TurnSink, type BackendResult, type BackendTurn } from "./types";
+import { backendModel, type AgentBackendClient, type BackgroundStop, type SessionHost, type TurnSink, type BackendResult, type BackendTurn, type SteerMessage } from "./types";
 import type { BackgroundTaskInfo } from "./live/info";
 import type { TurnEndReason } from "../agent/agent";
 import type { NativeGoal } from "../agent/goal";
@@ -679,8 +679,10 @@ class ClaudeTurn {
     }
 
     /** `synthetic`: not the user's own words (see BackendTurn.synthetic), so Claude Code expands no @mentions in it. */
-    private sendUser(content: unknown[], synthetic = false) {
-        if (this.aborted || this.finishing) return;
+    /** False when it didn't go: stopping, or Claude Code's stdin is gone (known once the write is done: JsonLinesProcess.send). */
+    private async sendUser(content: unknown[], synthetic = false): Promise<boolean> {
+        if (this.aborted || this.finishing) return false;
+        const wasBusy = this.busy;
         this.prompted = true;
         this.busy = true;
         this.commandWaitingSince.clear();
@@ -690,7 +692,13 @@ class ClaudeTurn {
         this.settleTimer = undefined;
         const uuid = crypto.randomUUID();
         this.unanswered.add(uuid);
-        this.proc.send({ type: "user", uuid, message: { role: "user", content }, parent_tool_use_id: null, session_id: this.sessionId ?? "", ...(synthetic ? { isSynthetic: true } : {}) });
+        const sent = await this.proc.send({ type: "user", uuid, message: { role: "user", content }, parent_tool_use_id: null, session_id: this.sessionId ?? "", ...(synthetic ? { isSynthetic: true } : {}) });
+        // Not written: no answer to wait for.
+        if (!sent) {
+            this.unanswered.delete(uuid);
+            this.busy = wasBusy;
+        }
+        return sent;
     }
 
     /**
@@ -875,7 +883,7 @@ class ClaudeTurn {
         if (this.aborted || this.finishing) {
             // Not expected: nothing is awaited between its "go" (see AgentHost.drainWaiting) and here. Should
             // a stop land anyway, the next turn is told of it rather than it vanishing.
-            this.sink.undelivered?.([p.text]);
+            this.sink.undelivered?.([{ text: p.text, images: p.images, documents: p.documents }]);
             return false;
         }
         this.reason = undefined;
@@ -891,17 +899,32 @@ class ClaudeTurn {
         const queued = await this.sink.drainQueued(() => this.progress(), () => !this.aborted && !this.finishing);
         if (!queued.length) return false;
         if (this.aborted || this.finishing) {
-            // Stopped once they were taken (they're in the transcript): the next turn is told of them rather than them vanishing.
-            this.sink.undelivered?.(queued);
+            // Stopped once they were taken (they're in the transcript): the next turn is told of them rather than them
+            // vanishing. One with attachments isn't in it yet: it stays queued, to go as a prompt of its own.
+            for (const m of queued) await m.settle?.(false);
+            const told = queued.filter((m) => !m.settle);
+            if (told.length) this.sink.undelivered?.(told);
             return false;
         }
         this.reason = undefined;
         // The user's messages as they typed them; a watch's events (others' words) apart, read as written.
-        const typed = queued.filter((t) => !this.sink.fromWake?.(t));
-        const woke = queued.filter((t) => this.sink.fromWake?.(t));
-        if (typed.length) this.sendUser([{ type: "text", text: typed.join("\n\n") }]);
-        if (woke.length) this.sendUser([{ type: "text", text: woke.join("\n\n") }], true);
-        return true;
+        // One with attachments (settle) is the user's, whatever its words.
+        const fromWake = (m: SteerMessage) => !m.settle && Boolean(this.sink.fromWake?.(m.text));
+        const typed = queued.filter((m) => !fromWake(m));
+        const woke = queued.filter(fromWake);
+        // Their images and PDFs first, as a prompt's (runTurn); the text last.
+        const media = typed.flatMap((m) => mediaBlocks(m.images, m.documents));
+        // One with only images or files has no text block (the API refuses an empty one).
+        const words = typed.map((m) => m.text).filter((t) => t).join("\n\n");
+        // Both buffered in order now; each known written (or not) once its write is done.
+        const sending = typed.length ? this.sendUser([...media, ...(words ? [{ type: "text", text: words }] : [])]) : Promise.resolve(false);
+        const telling = woke.length ? this.sendUser([{ type: "text", text: woke.map((m) => m.text).join("\n\n") }], true) : Promise.resolve(false);
+        const [sent, told] = await Promise.all([sending, telling]);
+        // Written whole to its stdin, as text steers are: one with attachments is the host's to record now (and if
+        // the write failed, Claude Code went away before taking it: it stays queued).
+        for (const m of typed) await m.settle?.(sent);
+        // Nothing written: nothing to wait for.
+        return sent || told;
     }
 
     private rememberStopped(tasks: BackgroundWork[]) {

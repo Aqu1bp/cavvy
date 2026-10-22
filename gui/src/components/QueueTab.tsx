@@ -64,7 +64,7 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
             <For each={p.state.queued}>
                 {(q, i) => {
                     const mode = () => p.state.queuedModes?.[i()];
-                    const info = () => queueRow(mode(), busy());
+                    const info = () => queueRow(mode(), busy(), p.state.queuedWhy?.[i()]);
                     const dropHere = () => drag()?.before === i() && dropTarget(drag()!.from, i()) !== undefined;
                     return (
                         <div

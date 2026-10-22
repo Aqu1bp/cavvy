@@ -42,6 +42,7 @@
 // FAKE_CODEX_SKILL    a skill of Codex's own that skills/list reports; FAKE_NO_SKILLS=1: an older Codex, without skills/extraRoots/set
 // FAKE_SLOW_RESUME, FAKE_SLOW_TURN_START  milliseconds before answering thread/resume, turn/start
 // FAKE_TURN_MS        how long every turn works before it answers
+// FAKE_STEER_MS       turn/steer is answered that many ms late (refused with FAKE_STEER_FAIL)
 // FAKE_STEER_WAKES=1  turn/steer is refused unless its expectedTurnId is the turn running now; in the "slow"
 //                     scenario a steer ends the first turn's wait, and its answer repeats what was steered
 // FAKE_MCP_CALLS      the "mcp" scenario's calls to servers from the thread's config: [{ server?, tool, args }]
@@ -725,6 +726,11 @@ async function handle(m: any) {
             }
             return reply({});
         case "turn/steer":
+            // FAKE_STEER_MS: answered that late (as FAKE_STEER_FAIL says), and other requests go on meanwhile.
+            if (process.env.FAKE_STEER_MS) {
+                setTimeout(() => (process.env.FAKE_STEER_FAIL ? fail("no active turn to steer") : reply({ turnId: p.expectedTurnId })), Number(process.env.FAKE_STEER_MS));
+                return;
+            }
             // FAKE_STEER_FAIL: the turn has already ended.
             if (process.env.FAKE_STEER_FAIL) return fail("no active turn to steer");
             if (process.env.FAKE_STEER_WAKES === "1") {

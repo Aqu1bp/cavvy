@@ -4136,7 +4136,7 @@ describe("steering and the queue", () => {
         return id;
     }
 
-    test("each queued message says what it will do; the steering one joins the turn, the queued ones run after it, in order", async () => {
+    test("each queued message says what it will do; the steering ones join the turn (an image too), the queued ones run after it, in order", async () => {
         const c = await client();
         const id = await working(c);
         await c.call("session.send", { id, text: "steer with this", mode: "steer" });
@@ -4144,15 +4144,16 @@ describe("steering and the queue", () => {
         await c.call("session.send", { id, text: "", images: [{ mediaType: "image/png", data: png }], mode: "steer" });
         await c.call("session.send", { id, text: "/compact", mode: "steer" });
         await c.until(id, (v) => v.state.queued.length === 4);
-        expect(c.view(id).state.queuedModes).toEqual(["steer", "queue", "turn", "turn"]);
+        expect(c.view(id).state.queuedModes).toEqual(["steer", "queue", "steer", "turn"]);
         await c.answer(id, { kind: "permission", choice: "yes" });
-        // Taken at the next step: what waits for the turn's end stays.
-        await c.until(id, (v) => v.state.queued.length === 3);
-        expect(c.view(id).state.queued).toEqual(["after it", "", "/compact"]);
+        // Taken at the next step, the image with the text: what waits for the turn's end stays.
+        await c.until(id, (v) => v.state.queued.length === 2);
+        expect(c.view(id).state.queued).toEqual(["after it", "/compact"]);
         expect(prompts(c.view(id))).toEqual(["demo", "steer with this"]);
+        expect(lastTurn(c.view(id)).prompt).toMatchObject({ text: "steer with this", images: 1 });
         // Then each waiting one in a turn of its own, in the order they were sent.
-        await c.until(id, (v) => done(v) && v.state.queued.length === 0 && v.turns.length === 5, 30_000);
-        expect(prompts(c.view(id))).toEqual(["demo", "steer with this", "after it", ""]);
+        await c.until(id, (v) => done(v) && v.state.queued.length === 0 && v.turns.length === 4, 30_000);
+        expect(prompts(c.view(id))).toEqual(["demo", "steer with this", "after it"]);
         expect(lastTurn(c.view(id)).blocks.map((b) => b.t)).toEqual(["compact"]);
         c.close();
     }, 60_000);
@@ -4179,7 +4180,7 @@ describe("steering and the queue", () => {
         c.close();
     }, 30_000);
 
-    test("send now: a queued message steers instead; one with an image can't; one already gone sends nothing", async () => {
+    test("send now: a queued message steers instead, one with an image too; one already gone sends nothing", async () => {
         const c = await client();
         const id = await working(c);
         await c.call("session.send", { id, text: "later", mode: "queue" });
@@ -4188,12 +4189,14 @@ describe("steering and the queue", () => {
         const [later, image] = c.view(id).state.queueIds;
         expect(await c.call("session.sendQueuedNow", { id, queueId: later })).toEqual({ sent: true });
         await c.until(id, (v) => v.state.queuedModes?.[0] === "steer");
-        await expect(c.call("session.sendQueuedNow", { id, queueId: image })).rejects.toThrow(/can.t join a running turn/);
+        expect(await c.call("session.sendQueuedNow", { id, queueId: image })).toEqual({ sent: true });
+        await c.until(id, (v) => v.state.queuedModes?.[1] === "steer");
         expect(await c.call("session.sendQueuedNow", { id, queueId: 99_999 })).toEqual({ sent: false });
-        // Taken at the next step.
+        // Taken at the next step, both.
         await c.answer(id, { kind: "permission", choice: "yes" });
-        await c.until(id, (v) => v.state.queued.length === 1);
+        await c.until(id, (v) => v.state.queued.length === 0);
         expect(prompts(c.view(id))).toContain("later");
+        expect(lastTurn(c.view(id)).prompt).toMatchObject({ text: "later", images: 1 });
         await c.call("session.interrupt", { id });
         await c.until(id, done);
         c.close();

@@ -90,6 +90,24 @@ export interface BackendPrompt {
     requestAfter?: string;
 }
 
+/**
+ * A message drained to steer with (TurnSink.drainQueued): its text, and the images and PDFs (for a backend
+ * that reads them) attached to it, which the backend sends beside its text. They belong to this message alone,
+ * however many say the same words.
+ */
+export interface SteerMessage {
+    text: string;
+    images: ImagePart[];
+    documents: PdfPart[];
+    /**
+     * For one with attachments (it comes alone): it's still the host's until the backend has it. The backend calls
+     * this once: true once it's gone (Codex accepted its turn/steer; written to Claude Code's stdin), and the host
+     * records it then; false when it doesn't go (refused, the turn ended or was stopped first), and the host keeps
+     * it queued, attachments and all, to go as a prompt of its own. Never given to undelivered().
+     */
+    settle?(sent: boolean): Promise<void>;
+}
+
 /** Something a backend reports about the session rather than a turn: its background work, a notice when no turn runs. */
 export type SessionEvent = { type: "background_task"; task: BackgroundTaskInfo } | { type: "notice"; level: "info" | "warn" | "error"; message: string };
 
@@ -144,7 +162,7 @@ export interface TurnSink {
     /** Messages the user typed while the backend was working. If any are drained,
      * consume and record preceding output before recording the queued prompt. `live`: whether the
      * backend can still take them, checked before they're taken (their hooks run first). */
-    drainQueued(progress?: () => BackendResult, live?: () => boolean): string[] | Promise<string[]>;
+    drainQueued(progress?: () => BackendResult, live?: () => boolean): SteerMessage[] | Promise<SteerMessage[]>;
     /**
      * For when the CLI is between its turns, waiting only on background work: nothing is mid-step, so
      * the next message the user queued goes now as a prompt of its own, whatever its mode, with what's
@@ -163,9 +181,10 @@ export interface TurnSink {
     /**
      * Drained messages the backend never received (its turn ended before it took
      * them). They're in the transcript already; the host saves them for the next
-     * turn, so they reach it even after a restart.
+     * turn, so they reach it even after a restart. Never one with attachments: that
+     * stays queued until it goes (SteerMessage.settle).
      */
-    undelivered?(texts: string[]): void;
+    undelivered?(messages: SteerMessage[]): void;
     /**
      * Files the backend changed (absolute paths): the language servers' new
      * problems in them, as a note for the model, or undefined when there's

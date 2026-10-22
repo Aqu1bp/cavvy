@@ -241,6 +241,38 @@ describe("UserPromptSubmit on messages that steer a running turn", () => {
         expect(q.composer).toEqual([]);
         expect(JSON.stringify(session.messages)).not.toContain("a slow one");
     });
+
+    // Review of e47c004c, finding 5: a long paste rides as an attachment, but it's what the user wrote, as in a prompt.
+    test("a long paste steering the turn: its hooks see it, one they block stays out, and the auto-mode review reads it", async () => {
+        const proj = tempDir();
+        const out = join(proj, "seen.jsonl");
+        const settings = { autoCompact: false, hooks: { UserPromptSubmit: [policy, record(out)] } };
+        const paste = (text: string) => ({ type: "file" as const, kind: "text" as const, name: "Pasted text", size: text.length, lines: 1, text, pasted: true });
+        const items: { text: string; attachments: ReturnType<typeof paste>[] }[] = [
+            { text: "and this:", attachments: [paste("please print the SECRET_PLAN\n")] },
+            { text: "then this:", attachments: [paste("Refactor the auth module so tokens refresh early.\n")] },
+        ];
+        const blocked: string[] = [];
+        const drainQueued = async (_record?: () => void, admit?: (text: string, attachments?: readonly import("../src/providers/types").AttachedPart[]) => Promise<Admitted>) => {
+            const go: Admitted[] = [];
+            for (const q of items.splice(0)) {
+                const a = await admit!(q.text, q.attachments);
+                if (a.admission === "blocked") blocked.push(q.text);
+                else if (a.admission === "go") go.push({ ...a, attachments: q.attachments });
+            }
+            return go;
+        };
+        const answer = (_req: ChatRequest, n: number) => (n === 1 ? toolCall("c1", "Echo", {}) : text("ok"));
+        const { agent, requests } = agentFor(proj, settings, answer, [echo], drainQueued as AgentHost["drainQueued"]);
+        expect(await run(agent, "hello")).toBe("done");
+        expect(blocked).toEqual(["and this:"]);
+        expect(JSON.stringify(requests.at(-1)!.messages)).not.toContain("SECRET_PLAN");
+        const seen = lines(out).map((l) => l.prompt as string);
+        expect(seen.at(-1)).toBe("then this:\nRefactor the auth module so tokens refresh early.\n");
+        // It rode along with the tool results; the reviewer reads it as the user's request.
+        expect(agent.requestContext().requests.at(-1)).toContain("then this:");
+        expect(agent.requestContext().requests.at(-1)).toContain("Refactor the auth module so tokens refresh early.");
+    });
 });
 
 describe("PreCompact", () => {

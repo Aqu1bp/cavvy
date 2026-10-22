@@ -101,6 +101,9 @@ export const stopTiming = {
     killMs: 2000,
 };
 
+/** How long after a write that waited on the pipe its process's exit, if that's why it settled, is reported (JsonLinesProcess.send). */
+const EXIT_SEEN_MS = 100;
+
 /** A long-running CLI speaking JSON lines on stdin/stdout. */
 export class JsonLinesProcess {
     private proc: Subprocess<"pipe", "pipe", "pipe">;
@@ -136,13 +139,38 @@ export class JsonLinesProcess {
         return redact(this.err);
     }
 
-    send(obj: unknown) {
-        if (this.closed) return;
+    /**
+     * Write one line to its stdin. True once all of it is written; false when it couldn't be: closed, or the
+     * process went away before taking it all. A line the pipe can't take at once (an image) waits on it: Bun's
+     * write hands back a promise, which rejects with EPIPE when the reader is gone, or settles as it exits
+     * (with what went so far), a moment before the exit is reported. So a write that waited counts only if the
+     * process is still there a moment later (EXIT_SEEN_MS). Calls stay in order: each line is buffered whole
+     * when it's called.
+     */
+    async send(obj: unknown): Promise<boolean> {
+        if (this.closed || this.gone) return false;
+        const sink = this.proc.stdin;
+        const written = (async () => {
+            const w = sink.write(JSON.stringify(obj) + "\n");
+            let waited = w instanceof Promise;
+            await w;
+            for (let i = 0; i < 1000; i++) {
+                const f = sink.flush();
+                const n = await f;
+                if (f instanceof Promise) waited = true;
+                else if (!n) break;
+            }
+            if (!waited) return true;
+            return !(await Promise.race([this.exited.then(() => true), Bun.sleep(EXIT_SEEN_MS).then(() => false)]));
+        })();
         try {
-            this.proc.stdin.write(JSON.stringify(obj) + "\n");
-            this.proc.stdin.flush();
+            // Its exit settles it too, should the pipe's promises never.
+            return await Promise.race([written, this.exited.then(() => false)]);
         } catch {
             // it exited; reading its output says why
+            return false;
+        } finally {
+            written.catch(() => {});
         }
     }
 

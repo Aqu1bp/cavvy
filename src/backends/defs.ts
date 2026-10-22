@@ -10,10 +10,18 @@
 import { join } from "path";
 import type { CliInfo } from "./cli";
 
+/** What's attached to a message, by how a backend takes it: images, text files (sent as text) and PDFs. */
+export type AttachmentKind = "image" | "text" | "pdf";
+
 /** What an agent CLI can do, for the harness to read instead of its id. Static defaults; a connection may refine them after its handshake. */
 export interface CliCapabilities {
     /** How a message sent mid-turn reaches it: folded in between tool rounds (Claude Code's stdin), at once (Codex's turn/steer), or not at all. */
     steering: "between-tool-rounds" | "immediate" | "none";
+    /**
+     * What a message steering a running turn can carry, by kind, sent as a prompt carries them. One carrying
+     * any other kind waits for its own turn, whole (not split).
+     */
+    steersAttachments: readonly AttachmentKind[];
     /** It runs work that outlives a turn (background shells, sub-agents, monitors). */
     backgroundTasks: boolean;
     /** One background task can be stopped on its own. */
@@ -123,6 +131,9 @@ const CLAUDE_CODE: AgentCliDef = {
     delegation: { providers: ["claude-code", "anthropic"], vendorPrefix: "anthropic/", models: "Claude models", own: "your own Agent tool" },
     caps: {
         steering: "between-tool-rounds",
+        // A mid-turn stream-json user message's image blocks reach the model; its document blocks (PDFs) are dropped
+        // without a word (2.1.304: test/fixtures/protocol/claude-2.1.304-steer-*.jsonl). Text files go as text.
+        steersAttachments: ["image", "text"],
         backgroundTasks: true,
         stopTask: true,
         // background_tasks {tool_use_id} exists in 2.1.304; nothing sends it yet.
@@ -175,6 +186,10 @@ const CODEX: AgentCliDef = {
     delegation: { providers: ["codex", "openai"], vendorPrefix: "openai/", models: "OpenAI models", own: "your own sub-agents" },
     caps: {
         steering: "immediate",
+        // turn/steer takes the same UserInput items as turn/start, images included (0.163: generate-ts, and
+        // test/fixtures/protocol/codex-0.163-steer-image.jsonl). It has no document item: a PDF is a note in the
+        // text, as in turn/start (and one is refused when it's sent: the model can't read it).
+        steersAttachments: ["image", "text", "pdf"],
         backgroundTasks: true,
         // thread/backgroundTerminals/terminate and turn/interrupt on a sub-agent's thread; neither is sent yet.
         stopTask: false,
