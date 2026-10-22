@@ -137,7 +137,8 @@ test.each([undefined, 0, 8])("server search usage is priced once from final usag
     const provider = providerWithMock();
     const model = provider.staticInfo("claude-sonnet-5-5");
     const msg = await provider.stream({ model, system: "test", messages: [{ role: "user", content: [{ type: "text", text: "search" }] }], tools: [], signal: new AbortController().signal }, () => {});
-    expect(msg.usage).toMatchObject({ inputTokens: 100, outputTokens: 100, webSearchRequests: searches ?? 0 });
+    expect(msg.usage).toMatchObject({ inputTokens: 100, outputTokens: 100 });
+    expect(msg.usage?.webSearchRequests ?? 0).toBe(searches ?? 0);
     expect(costOf(msg.usage!, model).usd).toBeCloseTo(.0012 + (searches ?? 0) * .01, 10);
     expect(costOf({ ...msg.usage!, cost: .123 }, model).usd).toBe(.123);
 });

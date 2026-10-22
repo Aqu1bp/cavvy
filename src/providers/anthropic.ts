@@ -302,7 +302,7 @@ export class AnthropicProvider implements ProviderClient {
             outputTokens: u.output_tokens ?? 0,
             cacheReadTokens: u.cache_read_input_tokens ?? 0,
             cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
-            webSearchRequests: u.server_tool_use?.web_search_requests ?? 0,
+            ...(u.server_tool_use?.web_search_requests ? { webSearchRequests: u.server_tool_use.web_search_requests } : {}),
             // A gateway may cache for an hour: priced (and kept warm) for that.
             ...(u.cache_creation ? { cacheWrite1hTokens: u.cache_creation.ephemeral_1h_input_tokens ?? 0 } : {}),
             ...(u.speed ? { fastMode: u.speed === "fast" } : {}),
