@@ -425,6 +425,7 @@ export class Session {
         cur.usage.outputTokens += usage.outputTokens;
         cur.usage.cacheReadTokens = (cur.usage.cacheReadTokens ?? 0) + (usage.cacheReadTokens ?? 0);
         cur.usage.cacheWriteTokens = (cur.usage.cacheWriteTokens ?? 0) + (usage.cacheWriteTokens ?? 0);
+        if (usage.webSearchRequests) cur.usage.webSearchRequests = (cur.usage.webSearchRequests ?? 0) + usage.webSearchRequests;
         cur.cost += cost;
         this.usageByModel.set(model, cur);
     }

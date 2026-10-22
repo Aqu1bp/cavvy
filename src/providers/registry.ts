@@ -1,6 +1,6 @@
 // Built-in provider catalog. Adding an OpenAI-compatible provider is one entry.
 
-import { readJson, readJsonForUpdate, writeJson } from "../config/settings";
+import { readJson, readJsonForUpdate, writeJson, type Effort } from "../config/settings";
 import { isAbsolute } from "path";
 import { paths } from "../config/paths";
 
@@ -38,6 +38,10 @@ export interface ProviderDef {
     reasoning?: "openai" | "openrouter" | "none";
     /** Gemini's Chat Completions dialect: tool calls carry thought signatures. */
     geminiCompat?: boolean;
+    /** Replay reasoning_content for DeepSeek-compatible gateways. Direct DeepSeek hosts are detected automatically. */
+    deepseekCompat?: boolean;
+    /** Documented reasoning_effort levels, keyed by exact model id (no inference from model names). */
+    modelEffortLevels?: Record<string, Effort[]>;
     /**
      * No API key. gcloud: short-lived tokens from the gcloud CLI, for the
      * account set up with /login. cli: the user's own agent CLI, signed in
@@ -279,6 +283,10 @@ export interface CustomProviderEntry {
     requiresKey?: boolean;
     headers?: Record<string, string>;
     maxTokensField?: "max_tokens" | "max_completion_tokens";
+    /** Set for gateways that require DeepSeek's reasoning_content on assistant messages. */
+    deepseekCompat?: boolean;
+    /** Opt in only models whose endpoint documents reasoning_effort; [] disables effort. */
+    modelEffortLevels?: Record<string, Effort[]>;
     /** Models to offer when the endpoint has no /models listing. */
     models?: string[];
 }
@@ -426,6 +434,8 @@ export function customProviders(): ProviderDef[] {
         requiresKey: c.requiresKey ?? true,
         headers: c.headers,
         maxTokensField: c.maxTokensField,
+        deepseekCompat: c.deepseekCompat,
+        modelEffortLevels: c.modelEffortLevels,
         streamUsage: true,
         custom: true,
         local: /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(c.baseUrl),

@@ -464,7 +464,7 @@ export function promptNotes(m: UserMessage): string[] {
 
 /**
  * Tool state that came from the conversation, set again from what's left of
- * it: todos and the approved plan from the last calls that succeeded, and no
+ * it: the compaction snapshot followed by the last calls that succeeded, and no
  * files counted as read (the model must read them again before editing).
  */
 export function resetToolState(state: ToolState, messages: Message[]) {
@@ -476,6 +476,10 @@ export function resetToolState(state: ToolState, messages: Message[]) {
     let todos: TodoItem[] = [];
     let plan: string | undefined;
     for (const m of messages) {
+        if (m.role === "user" && m.meta?.kind === "summary" && m.meta.compactedState) {
+            todos = m.meta.compactedState.todos.map((t) => ({ ...t }));
+            plan = m.meta.compactedState.approvedPlan;
+        }
         if (m.role !== "assistant") continue;
         for (const p of m.content) {
             if (p.type !== "tool_call" || !ok.has(p.id)) continue;

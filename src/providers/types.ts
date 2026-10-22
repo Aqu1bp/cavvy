@@ -7,6 +7,14 @@
 
 import type { Effort } from "../config/settings";
 
+// Lives here, not in tools/types, so the GUI can import the transcript types
+// without pulling the agent's tool code into its typecheck.
+export interface TodoItem {
+    content: string;
+    status: "pending" | "in_progress" | "completed";
+    activeForm?: string;
+}
+
 export type TextPart = { type: "text"; text: string };
 export type ImagePart = { type: "image"; mediaType: string; data: string /* base64 */ };
 /**
@@ -61,6 +69,8 @@ export interface UserMessage {
         checkpoint?: number;
         /** Brought in from a Claude Code or Codex session started elsewhere: shown, never rewound to. */
         imported?: boolean;
+        /** State at a compaction boundary, restored before replaying later tool calls. */
+        compactedState?: { todos: TodoItem[]; approvedPlan?: string };
     };
 }
 
@@ -90,6 +100,8 @@ export interface Usage {
     /** Portion of cache writes using Anthropic's one-hour TTL. */
     cacheWrite1hTokens?: number;
     reasoningTokens?: number;
+    /** Billable Anthropic server web searches ($10 per 1,000 requests). */
+    webSearchRequests?: number;
     /** The provider actually served this response at fast speed. */
     fastMode?: boolean;
     /** Provider-reported cost in USD, when available (OpenRouter). */

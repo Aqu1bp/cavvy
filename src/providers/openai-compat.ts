@@ -62,8 +62,23 @@ function mapToolId(id: string, def: ProviderDef): string {
     return out;
 }
 
+function usesDeepSeekDialect(def: ProviderDef, base = resolveBaseUrl(def)): boolean {
+    if (def.deepseekCompat !== undefined) return def.deepseekCompat;
+    if (def.id === "deepseek") return true;
+    try {
+        return new URL(base).hostname === "api.deepseek.com";
+    } catch {
+        return false;
+    }
+}
+
+function visibleReasoning(msg: AssistantMessage): string {
+    return msg.content.filter((p) => p.type === "thinking").map((p) => p.text).join("\n");
+}
+
 export function toOpenAIMessages(system: string, messages: Message[], def: ProviderDef): Json[] {
     const out: Json[] = [];
+    const deepseek = usesDeepSeekDialect(def);
     if (system) out.push({ role: "system", content: system });
     /** The last user message out, and its parts: one straight after it joins it. */
     let lastUser: { m: Json; parts: Json[] } | undefined;
@@ -102,20 +117,20 @@ export function toOpenAIMessages(system: string, messages: Message[], def: Provi
             continue;
         }
         if (msg.raw?.openai && msg.provider === def.id) {
-            out.push(msg.raw.openai);
+            const raw = { ...msg.raw.openai };
+            if (deepseek) raw.reasoning_content ??= visibleReasoning(msg);
+            else delete raw.reasoning_content;
+            out.push(raw);
             continue;
         }
         const text = msg.content.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("");
         const calls = msg.content.filter((p) => p.type === "tool_call");
         if (!text && !calls.length) continue;
         const m: Json = { role: "assistant", content: text || null };
-        if (def.id === "deepseek") {
+        if (deepseek) {
             // Turns from other providers: hand over their visible reasoning (if any)
             // so the reasoning_content field is present on every assistant turn.
-            m.reasoning_content = msg.content
-                .filter((p) => p.type === "thinking")
-                .map((p) => (p as { text: string }).text)
-                .join("\n");
+            m.reasoning_content = visibleReasoning(msg);
         }
         if (calls.length) {
             m.tool_calls = calls.map((c, i) => {
@@ -137,6 +152,32 @@ function deepMerge(a: Json | undefined, b: Json): Json {
         else out[k] = v;
     }
     return out;
+}
+
+function supportedEfforts(value: unknown): Effort[] {
+    return Array.isArray(value) ? value.filter((e): e is Effort => ["low", "medium", "high", "xhigh", "max"].includes(e)) : [];
+}
+
+/** Only documented model/endpoint pairs: reasoning output alone is not effort support. */
+export function compatModelInfo(def: ProviderDef, id: string): ModelInfo {
+    let levels = def.modelEffortLevels?.[id];
+    if (levels === undefined) {
+        // https://console.groq.com/docs/reasoning
+        // https://docs.together.ai/docs/gpt-oss
+        // https://docs.fireworks.ai/api-reference/post-chatcompletions (Harmony)
+        // https://inference-docs.cerebras.ai/capabilities/reasoning
+        // https://docs.ollama.com/api/openai-compatibility and /capabilities/thinking
+        const gptOss: Record<string, RegExp> = {
+            groq: /^openai\/gpt-oss-(20b|120b)$/,
+            together: /^openai\/gpt-oss-(20b|120b)$/,
+            fireworks: /^accounts\/fireworks\/models\/gpt-oss-(20b|120b)$/,
+            cerebras: /^gpt-oss-120b$/,
+            ollama: /^gpt-oss(?::(?:latest|20b|120b))?$/,
+        };
+        if (gptOss[def.id]?.test(id)) levels = ["low", "medium", "high"];
+    }
+    const effortLevels = supportedEfforts(levels);
+    return { provider: def.id, id, ...(levels !== undefined ? { supportsReasoning: effortLevels.length > 0, effortLevels } : {}) };
 }
 
 function effortFor(def: ProviderDef, model: ModelInfo, effort: Effort | undefined): string | undefined {
@@ -162,6 +203,7 @@ export class OpenAICompatProvider implements ProviderClient {
         base?: string,
     ) {
         this.base = base ?? resolveBaseUrl(def);
+        this.def = { ...def, deepseekCompat: usesDeepSeekDialect(def, this.base) };
     }
 
     /** The Authorization header, if any. `fresh`: the previous one was rejected. */
@@ -192,6 +234,10 @@ export class OpenAICompatProvider implements ProviderClient {
             model: m.id,
             stream: true,
         };
+        // OpenRouter's Claude routes support automatic caching; Gemini 2.5+ uses implicit caching.
+        // https://openrouter.ai/docs/guides/best-practices/prompt-caching
+        const cacheClaude = def.id === "openrouter" && /^~?anthropic\/claude-/.test(m.id);
+        if (cacheClaude && !req.lightweight) body.cache_control = { type: "ephemeral" };
         if (req.tools.length) {
             body.tools = req.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
         }
@@ -206,7 +252,13 @@ export class OpenAICompatProvider implements ProviderClient {
             else body.reasoning_effort = effort;
         }
 
-        const payload = fitRequest(req.messages, providerReadsPdf(def), (messages) => JSON.stringify({ ...body, messages: toOpenAIMessages(req.system, messages, def) }));
+        const payload = fitRequest(req.messages, providerReadsPdf(def), (messages) => {
+            const converted = toOpenAIMessages(req.system, messages, def);
+            if (cacheClaude && req.cacheSystem && req.system) {
+                converted[0]!.content = [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }];
+            }
+            return JSON.stringify({ ...body, messages: converted });
+        });
         // A request that stops sending anything is retried instead of waited on forever.
         const stall = stallTimer(req.signal, def.id === "vertex");
         const post = async (fresh: boolean) =>
@@ -247,6 +299,7 @@ export class OpenAICompatProvider implements ProviderClient {
 
         let text = "";
         let reasoning = "";
+        let reasoningContent: string | undefined;
         let reasoningDetails: Json[] | undefined;
         const calls = new Map<number, { id: string; name: string; args: string; extra?: Json }>();
         let finish: string | undefined;
@@ -280,6 +333,7 @@ export class OpenAICompatProvider implements ProviderClient {
                     onEvent({ type: "text", text: d.content });
                 }
                 const r = d.reasoning_content ?? d.reasoning;
+                if (typeof d.reasoning_content === "string") reasoningContent = (reasoningContent ?? "") + d.reasoning_content;
                 if (typeof r === "string" && r) {
                     reasoning += r;
                     onEvent({ type: "thinking", text: r });
@@ -356,7 +410,9 @@ export class OpenAICompatProvider implements ProviderClient {
         }
         // DeepSeek: with tools in the request, reasoning_content of every
         // earlier assistant turn must be sent back or the API returns 400.
-        if (def.id === "deepseek") rawMsg.reasoning_content = reasoning;
+        // Store this even for unknown dialects. Receiving it does not establish
+        // that the endpoint accepts it as input; replay is gated separately.
+        if (reasoningContent !== undefined || def.deepseekCompat) rawMsg.reasoning_content = reasoningContent ?? reasoning;
 
         let stopReason: StopReason = mapFinish(finish);
         if (rawCalls.length && stopReason === "end_turn") stopReason = "tool_use";
@@ -380,7 +436,7 @@ export class OpenAICompatProvider implements ProviderClient {
         const res = await fetch(`${this.base}/models`, { headers: await this.headers(), signal: signal ?? AbortSignal.timeout(20_000) });
         if (!res.ok) {
             const configured = customProviderModels(def.id);
-            if (configured.length) return configured.map((id) => ({ provider: def.id, id }));
+            if (configured.length) return configured.map((id) => compatModelInfo(def, id));
             throw this.apiError(res.status, res.statusText, await res.text().catch(() => ""), null);
         }
         const json = (await res.json()) as Json;
@@ -390,7 +446,7 @@ export class OpenAICompatProvider implements ProviderClient {
             const id: string = r.id ?? r.name;
             if (!id || (def.hideModels && def.hideModels.test(id))) continue;
             const label: string | undefined = r.display_name ?? r.name;
-            const info: ModelInfo = { provider: def.id, id, name: label && label !== id ? label : undefined, created: r.created ? r.created * 1000 : undefined };
+            const info: ModelInfo = { ...compatModelInfo(def, id), name: label && label !== id ? label : undefined, created: r.created ? r.created * 1000 : undefined };
             info.contextWindow = num(r.context_length ?? r.context_window ?? r.max_context_length ?? r.top_provider?.context_length);
             info.maxOutput = num(r.top_provider?.max_completion_tokens ?? r.max_output_tokens ?? r.max_completion_tokens);
             if (def.id === "openrouter") {
@@ -433,13 +489,19 @@ export class OpenAICompatProvider implements ProviderClient {
                 const pin = num(r.prompt_text_token_price);
                 const pout = num(r.completion_text_token_price);
                 if (pin !== undefined && pout !== undefined) info.pricing = { input: pin / 10_000, output: pout / 10_000, cacheRead: num(r.cached_prompt_text_token_price) !== undefined ? num(r.cached_prompt_text_token_price)! / 10_000 : undefined };
-                if (Array.isArray(r.capabilities?.reasoning_effort) && r.capabilities.reasoning_effort.length) info.supportsReasoning = true;
+                // xAI documents low/medium/high, plus xhigh on supported models.
+                // https://docs.x.ai/developers/model-capabilities/text/reasoning
+                const levels = supportedEfforts(r.capabilities?.reasoning_effort).filter((e) => e !== "max");
+                if (levels.length) {
+                    info.supportsReasoning = true;
+                    info.effortLevels = levels;
+                }
             } else if (def.id === "groq") {
                 if (r.active === false) continue;
             }
             out.push(info);
         }
-        for (const id of customProviderModels(def.id)) if (!out.some((m) => m.id === id)) out.push({ provider: def.id, id });
+        for (const id of customProviderModels(def.id)) if (!out.some((m) => m.id === id)) out.push(compatModelInfo(def, id));
         return out;
     }
 
