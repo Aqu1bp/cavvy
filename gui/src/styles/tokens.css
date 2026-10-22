@@ -108,6 +108,7 @@
 
     --sheet: #fcfcfd;
     --sheet-2: #f3f4f6;
+    --bubble: #eef0f3; /* what you said, at the right of the conversation */
     --insp-bg: #f8f8fa;
     --term-bg: #f7f7f9;
     --group: #f4f4f6;
@@ -184,6 +185,7 @@
 
     --sheet: #131417;
     --sheet-2: #1c1d21;
+    --bubble: #222328;
     --insp-bg: #16171a;
     --term-bg: #101113;
     --group: #1a1b1f;

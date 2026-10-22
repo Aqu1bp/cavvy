@@ -12,6 +12,19 @@ export function clock(ms: number): string {
     return new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
+/** When a prompt was sent, under it: the time today, with the day before that (and the year before this one). */
+export function promptTime(ms: number, now = Date.now()): string {
+    const d = new Date(ms);
+    const today = new Date(now);
+    if (d.toDateString() === today.toDateString()) return clock(ms);
+    return d.toLocaleString(undefined, { month: "short", day: "numeric", ...(d.getFullYear() !== today.getFullYear() ? { year: "numeric" } : {}), hour: "numeric", minute: "2-digit" });
+}
+
+/** A prompt short enough to be a rounder bubble, like a message: one line of under 60 characters. */
+export function shortPrompt(text: string): boolean {
+    return text.length < 60 && !text.includes("\n");
+}
+
 export { duration, turnDuration } from "../../../src/server/duration";
 
 /** A command that only waits (`sleep 240`, `sleep 4m; echo done`): how long, in seconds. */
