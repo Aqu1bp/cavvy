@@ -16,6 +16,7 @@ import { readJson, readJsonForUpdate, writeJson } from "./settings";
 import { harnessHome, paths } from "./paths";
 import { isInside } from "../util/files";
 import { readAgentConfig } from "../providers/registry";
+import { externalImports } from "../agent/memory";
 
 const file = () => join(harnessHome(), "trusted.json");
 /** Trusted by the user for this session only (home, "/", or the list couldn't be saved); folders inside it too. */
@@ -112,5 +113,10 @@ export function projectConfigSummary(cwd: string, has: (path: string) => boolean
     // Skills are instructions for the model, read natively from both folders whatever the model (src/agent/skills.ts).
     if (has(join(cwd, ".harness", "skills"))) found.push(".harness/skills/");
     if (has(join(cwd, ".claude", "skills"))) found.push(".claude/skills/");
+    // Memory files load in a folder with nothing to protect, but their imports stay inside the project
+    // until the user trusts it (src/agent/memory.ts): one that imports from outside has something to unlock.
+    // Only on disk: `has` for a commit's tree can't read what the files say, so a caller checking
+    // a commit reads its memory files itself (committedExternalImports, in src/server/runs.ts).
+    if (has === existsSync) found.push(...externalImports(cwd));
     return [...new Set(found)];
 }
