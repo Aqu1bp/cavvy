@@ -21,7 +21,8 @@ const user = (text: string): Message => ({ role: "user", content: [{ type: "text
 const assistant = (text: string): Message => ({ role: "assistant", content: [{ type: "text", text }], stopReason: "end_turn" });
 
 function handoff(messages: Message[]): string {
-    return (Agent.prototype as any).backendPrompt.call({ session: { messages } }, "continue", messages.length);
+    const proto = Agent.prototype as any;
+    return proto.backendPrompt.call({ session: { messages }, missedPrompt: proto.missedPrompt }, "continue", messages.length);
 }
 
 test("handoff keeps all eleven findings, without per-message clipping", () => {
