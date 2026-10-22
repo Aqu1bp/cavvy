@@ -43,7 +43,9 @@ function turn(provider: string, accountId: string, events: AgentEvent[]): Backen
     return {
         prompt: "hello", images: [], cwd: root, model: { provider, id: "default" }, mode: "plan", accountId,
         additionalDirectories: [], trusted: true, rules: { deny: [], ask: [], root }, signal: new AbortController().signal,
-        host: { emit: (e) => events.push(e), mode: () => "plan", permission: async () => ({ allow: false }), askQuestions: async () => undefined, approvePlan: async () => ({ approved: false }), setMode: () => {}, usage: () => {}, sessionId: () => {}, drainQueued: () => [] },
+        sessionKey: "test",
+        session: { mode: () => "plan", permission: async () => ({ allow: false }), askQuestions: async () => undefined, approvePlan: async () => ({ approved: false }), setMode: () => {}, usage: () => {}, sessionId: () => {}, limits: (limits, partial) => events.push({ type: "limits", limits, partial }) },
+        sink: { emit: (e) => events.push(e), drainQueued: () => [] },
     };
 }
 const report = (provider: string, accountId: string, percent: number, at = Date.now()): PlanLimits => ({ provider, accountId, windows: [{ id: "five", label: "5-hour", usedPercent: percent }], reached: percent === 100, at });

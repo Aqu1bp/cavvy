@@ -70,7 +70,7 @@ test("backend queued prompts wait for start snapshots before backend work resume
         compact: async () => ({ reason: "done" as const, text: "", actions: [] }),
         runTurn: async (turn: BackendTurn) => {
             events.push("backend:first");
-            const queued = await turn.host.drainQueued();
+            const queued = await turn.sink.drainQueued();
             events.push(`backend:${queued.map((m) => m.text).join()}`);
             return { reason: "done" as const, text: "done", actions: [] };
         },
@@ -176,7 +176,7 @@ for (const backend of [false, true]) test(`cutoff during ${backend ? "backend" :
             compact: async () => ({ reason: "done" as const, text: "", actions: [] }),
             runTurn: async (turn: BackendTurn) => {
                 requests++;
-                expect(await turn.host.drainQueued()).toEqual([]);
+                expect(await turn.sink.drainQueued()).toEqual([]);
                 return { reason: "aborted" as const, text: "", actions: [] };
             },
         } : {}),

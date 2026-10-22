@@ -6,6 +6,15 @@
 // Events:    server -> { event }                   (session timelines, sidebar updates, notifications)
 
 import type { DiagnosticReport } from "../lsp/diagnostics";
+import type { BackgroundTaskInfo } from "../backends/live/info";
+
+export type { BackgroundTaskInfo } from "../backends/live/info";
+
+/**
+ * How a request to stop a background task went: stopped by it, not confirmed in time, refused, can't be stopped
+ * alone, no such task, or it had already ended on its own (it keeps its own outcome).
+ */
+export type BackgroundStopResult = "stopped" | "timeout" | "failed" | "not_stoppable" | "unknown" | "ended";
 import type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus } from "../mcp/info";
 import type { PluginListing, PluginScope } from "../plugins/info";
 
@@ -523,6 +532,12 @@ export interface SessionState {
     shells: { id: string; command: string; running: boolean; exitCode: number | null; startedAt: number; /** Started by Monitor: its lines wake the agent. */ monitor?: { description: string; events: number; expiresAt: number } }[];
     /** What the agent is watching in the background (pull requests): each wakes it when there's news. */
     watches?: WatchInfo[];
+    /**
+     * The session's background work, whoever runs it: an agent CLI's background sub-agents, shells and monitors,
+     * the tasks it delegated to other models, and the harness's own background shells and monitors. Running ones,
+     * and those that stopped when Harness quit (lost) until the agent is told. Missing from older servers.
+     */
+    backgroundTasks?: BackgroundTaskInfo[];
     plan?: PlanRef;
     planLinks?: PlanLink[];
     /** Forked from this session (its title then). */
@@ -1230,7 +1245,17 @@ export type ServerEvent =
     | { type: "sessions.remove"; id: string }
     /** Its runtime was closed under the window (a delete that failed): open it again for a fresh snapshot, keeping the draft and view. */
     | { type: "session.reload"; sessionId: string }
-    | { type: "notify"; sessionId: string; kind: "done" | "permission" | "question" | "plan" | "error"; title: string; body: string }
+    | {
+          type: "notify";
+          sessionId: string;
+          /** background: a background task ended on its own (task says which, and how). */
+          kind: "done" | "permission" | "question" | "plan" | "error" | "background";
+          title: string;
+          body: string;
+          /** Names what it's about: one notification per tag (a background task's). */
+          tag?: string;
+          task?: { id: string; outcome: "done" | "failed" | "stopped" };
+      }
     | { type: "toast"; level: "info" | "warn" | "error"; message: string }
     /** What goes back into the session's input box (unsent messages after an interrupt, a rewound prompt). */
     | { type: "draft"; sessionId: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] }
@@ -1388,6 +1413,10 @@ export interface Methods {
     "session.delete": { params: { id: string }; result: null };
     "session.restore": { params: { id: string }; result: null };
     "session.killShell": { params: { id: string; shellId: string }; result: null };
+    /** Stop background tasks (SessionState.backgroundTasks) by id, or every one running: how each went. */
+    "session.stopBackground": { params: { id: string; ids?: string[] }; result: { results: Record<string, BackgroundStopResult> } };
+    /** Clear the finished tasks from the Background panel. */
+    "session.clearBackground": { params: { id: string }; result: null };
     "session.stopWatch": { params: { id: string; watchId: string }; result: null };
     /** New shells no longer get this secret. */
     "session.forgetSecret": { params: { id: string; name: string }; result: null };

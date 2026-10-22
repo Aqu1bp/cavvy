@@ -30,6 +30,19 @@
 // FAKE_HOLD_STDOUT=1  starts a command that keeps its stdout open for a while after it exits
 // FAKE_COMMAND      the "bash" scenario's command (default: npm test)
 // FAKE_TIMEOUT      shell-background*: the background Bash call's timeout (ms; default none)
+// FAKE_SHELL_STATUS shell-background*: how its task_notification says it ended (default completed; after it left the list)
+// FAKE_STOP_TASK    hang: stop_task unanswered; reject: refused; complete-reject: the task completes, then the stop is refused;
+//                   late: the first stop of a task goes through FAKE_STOP_MS later (default 300), and a second asked
+//                   meanwhile is refused once the first is answered (it's over); complete-exit: the task completes with a
+//                   report, then the process exits without answering; complete-first: the task completes (said, then
+//                   off the list) just before the stop is taken, which is answered success (as Claude Code answers for a
+//                   task it no longer runs; FAKE_STOP_ANSWER=error: refused), and its report turn follows FAKE_FOLLOWUP_MS later
+//                   (all of it FAKE_STOP_MS after the stop is asked; default at once; FAKE_STOP_STATUS: what it says, default
+//                   completed); hang-turn: unanswered, and Claude Code takes a turn of its own during which the task
+//                   says it completed (FAKE_STOP_TURN_AT / _NOTIFY_AT / _RESULT_AT ms after the stop); leave-reject:
+//                   the task leaves the list and the stop is refused, then its notification and report turn come
+// FAKE_RESULT_DELAY_MS  shell-background*: the turn's answer comes this long after the background command is listed
+// FAKE_SHELL_NOTIFY_MS  shell-background*: its task_notification comes this long after it leaves the list (default 80)
 // FAKE_SHELL_MS     shell-background*: the background command finishes this long after the answer (default 150; the
 //                   stuck, mixed and nested ones finish only when it's set)
 // FAKE_API_KEY_SOURCE  system/init apiKeySource (default "none": a plan)
@@ -233,6 +246,8 @@ function result(subtype: string, extra: Record<string, unknown> = {}) {
 const bgTasks = new Map<string, { task_id: string; task_type: string; description: string }>();
 /** Tasks stopped by the host (stop_task): they don't finish or report later. */
 const stoppedTasks = new Set<string>();
+/** FAKE_STOP_TASK=late: each task's first stop, answered later. */
+const lateStops = new Map<string, Promise<void>>();
 function backgroundChanged() {
     out({ type: "system", subtype: "background_tasks_changed", tasks: [...bgTasks.values()], session_id: sessionId });
 }
@@ -695,15 +710,16 @@ async function turn(content: any[], uuid?: string) {
         }
         bgTasks.set("background-1", { task_id: "background-1", task_type: type, description: "Wait for checks" });
         backgroundChanged();
+        if (process.env.FAKE_RESULT_DELAY_MS) await Bun.sleep(Number(process.env.FAKE_RESULT_DELAY_MS));
         text("Waiting for checks.");
         result("success");
         if (process.env.FAKE_SHELL_MS || !["shell-background-stuck", "shell-background-mixed", "shell-background-nested", "monitor-background-stuck"].includes(scenario)) setTimeout(async () => {
             if (stoppedTasks.has("background-1")) return;
             bgTasks.delete("background-1");
             backgroundChanged();
-            await Bun.sleep(80);
+            await Bun.sleep(Number(process.env.FAKE_SHELL_NOTIFY_MS ?? 80));
             // Shell/Monitor notifications may have no tool_use_id.
-            out({ type: "system", subtype: "task_notification", task_id: "background-1", status: "completed", summary: "Checks passed", session_id: sessionId });
+            out({ type: "system", subtype: "task_notification", task_id: "background-1", status: process.env.FAKE_SHELL_STATUS ?? "completed", summary: "Checks passed", session_id: sessionId });
             await Bun.sleep(80);
             followUp("Background checks passed.");
         }, Number(process.env.FAKE_SHELL_MS ?? 150));
@@ -853,6 +869,77 @@ for await (const chunk of Bun.stdin.stream()) {
                 out({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response: { added: [...mcpServers.keys()], removed: [], errors } } });
             } else if (sub === "stop_task") {
                 if (process.env.FAKE_STOP_TASK === "hang") continue;
+                if (process.env.FAKE_STOP_TASK === "complete-exit") {
+                    bgTasks.delete(m.request.task_id);
+                    backgroundChanged();
+                    out({ type: "system", subtype: "task_notification", task_id: m.request.task_id, ...(m.request.task_id === "agent-1" ? { tool_use_id: "toolu_agent" } : {}), status: "completed", summary: "Finished just now", handback: "send", handback_report: { text: "Auth keeps its strategies in one list." }, session_id: sessionId });
+                    setTimeout(() => process.exit(0), 50);
+                    continue;
+                }
+                // The task completes (with its report) just before the stop is processed; Claude Code answers
+                // success for a task it no longer runs (probe: stop_task of an unknown id -> success), then takes its report turn.
+                if (process.env.FAKE_STOP_TASK === "complete-first") {
+                    const tid = m.request.task_id;
+                    setTimeout(() => {
+                        bgTasks.delete(tid);
+                        out({ type: "system", subtype: "task_notification", task_id: tid, ...(tid === "agent-1" ? { tool_use_id: "toolu_agent" } : {}), status: process.env.FAKE_STOP_STATUS ?? "completed", summary: "Explorer report: auth keeps strategies in one list.", session_id: sessionId });
+                        backgroundChanged();
+                        out(process.env.FAKE_STOP_ANSWER === "error" ? { type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "No running task" } } : { type: "control_response", response: { subtype: "success", request_id: m.request_id } });
+                        setTimeout(() => followUp("Follow-up: the explorer reported back."), Number(process.env.FAKE_FOLLOWUP_MS ?? 100));
+                    }, Number(process.env.FAKE_STOP_MS ?? 0));
+                    continue;
+                }
+                // Never answered: a turn of Claude Code's own starts, and during it (after the stop's timeout) the task
+                // says it completed (FAKE_STOP_TURN_AT, FAKE_STOP_NOTIFY_AT, FAKE_STOP_RESULT_AT after the stop).
+                if (process.env.FAKE_STOP_TASK === "hang-turn") {
+                    const tid = m.request.task_id;
+                    setTimeout(() => out({ type: "system", subtype: "init", session_id: sessionId, apiKeySource: "none", permissionMode: mode }), Number(process.env.FAKE_STOP_TURN_AT ?? 200));
+                    setTimeout(() => {
+                        bgTasks.delete(tid);
+                        backgroundChanged();
+                        out({ type: "system", subtype: "task_notification", task_id: tid, status: "completed", summary: "Checks passed", session_id: sessionId });
+                    }, Number(process.env.FAKE_STOP_NOTIFY_AT ?? 600));
+                    setTimeout(() => {
+                        answering = undefined;
+                        text("A turn of its own.");
+                        result("success", { result: "A turn of its own." });
+                    }, Number(process.env.FAKE_STOP_RESULT_AT ?? 700));
+                    continue;
+                }
+                // The task leaves the list (it ended) and the stop is refused; its notification and report turn come after.
+                if (process.env.FAKE_STOP_TASK === "leave-reject") {
+                    const tid = m.request.task_id;
+                    bgTasks.delete(tid);
+                    backgroundChanged();
+                    out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "No running task" } });
+                    setTimeout(() => out({ type: "system", subtype: "task_notification", task_id: tid, status: "completed", summary: "Checks passed", session_id: sessionId }), 60);
+                    setTimeout(() => followUp("Follow-up: the checks passed."), Number(process.env.FAKE_FOLLOWUP_MS ?? 120));
+                    continue;
+                }
+                if (process.env.FAKE_STOP_TASK === "late") {
+                    const id = m.request.task_id;
+                    const first = lateStops.get(id);
+                    if (first) {
+                        void first.then(() => out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "No running task" } }));
+                        continue;
+                    }
+                    lateStops.set(id, Bun.sleep(Number(process.env.FAKE_STOP_MS ?? 300)).then(() => {
+                        bgTasks.delete(id);
+                        stoppedTasks.add(id);
+                        backgroundChanged();
+                        out({ type: "control_response", response: { subtype: "success", request_id: m.request_id } });
+                        out({ type: "system", subtype: "task_notification", task_id: id, status: "stopped", summary: "Stopped by host", session_id: sessionId });
+                    }));
+                    continue;
+                }
+                // The task completes just as it's asked to stop: it leaves the list, says it completed, and the stop fails.
+                if (process.env.FAKE_STOP_TASK === "complete-reject") {
+                    bgTasks.delete(m.request.task_id);
+                    backgroundChanged();
+                    out({ type: "system", subtype: "task_notification", task_id: m.request.task_id, ...(m.request.task_id === "agent-1" ? { tool_use_id: "toolu_agent" } : {}), status: "completed", summary: "Finished just now", session_id: sessionId });
+                    out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "No running task" } });
+                    continue;
+                }
                 if (process.env.FAKE_STOP_TASK === "reject") {
                     out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "stop failed" } });
                     continue;

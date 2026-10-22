@@ -607,3 +607,37 @@ button.prow:active {
         animation: none;
     }
 }
+
+/* ---- Background: what runs in the session's background, with Stop ---- */
+
+.bg-row {
+    min-height: 44px;
+}
+
+.bg-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    line-height: 1.25;
+}
+
+.bg-by {
+    font-size: 0.75rem;
+    color: var(--fg-3);
+}
+
+.bg-gone {
+    color: var(--fg-3);
+}
+
+.sh .bg-stop-all {
+    margin-right: -2px;
+    color: var(--stop);
+}
+
+.bg-sec .bg-clear {
+    display: block;
+    margin: 2px 0 0 auto;
+    padding: 4px 8px;
+    font-size: 0.821rem;
+}

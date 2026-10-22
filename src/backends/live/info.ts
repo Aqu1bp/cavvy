@@ -17,6 +17,10 @@ export interface BackgroundTaskInfo {
     endedAt?: number;
     /** It can be stopped on its own (CliCapabilities.stopTask, and the CLI says so for it). */
     stoppable: boolean;
-    /** Stopped because its process went away (a crash, a restart, the harness quitting), not by the CLI's word. */
+    /** Running when Harness quit (the session's log had it running when the session was opened again). */
     lost?: boolean;
+    /** Stopped because its CLI's process went away (a crash, a restart, the run ending), not by the CLI's word. */
+    withProcess?: boolean;
+    /** Stopped by the user (their Stop, or Esc): its end is no news to them. */
+    byUser?: boolean;
 }

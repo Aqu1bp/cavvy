@@ -43,6 +43,8 @@ const COPIED: Record<Line["t"], boolean> = {
     // Plans shown before the cut can still be saved or implemented from the fork; links say where the original's went.
     plan: true,
     planLink: false,
+    // The original's background work stays its own: the fork doesn't inherit it.
+    bgtask: false,
     // A fork doesn't take the original's schedules: they'd run twice.
     schedules: false,
     // A goal belongs to the run that set it: the fork starts without one.
@@ -226,7 +228,7 @@ export function forkSession(original: Session, o: ForkOptions): Session {
         ...(model ? [{ t: "model" as const, model }] : []),
         ...(original.fastMode !== undefined ? [{ t: "fastMode" as const, enabled: original.fastMode }] : []),
         ...Object.entries(original.accounts).map(([provider, id]) => ({ t: "account" as const, provider, id })),
-        ...shared.map(([provider, b]) => ({ t: "backend" as const, provider, id: b.id, synced: b.synced, fork: true, folder: original.backendFolder(provider) })),
+        ...shared.map(([provider, b]) => ({ t: "backend" as const, provider, id: b.id, synced: b.synced, fork: true, ...(b.unsent ? { unsent: b.unsent } : {}), folder: original.backendFolder(provider) })),
     ];
 
     // Claimed before it exists, so no other process opens it half way.

@@ -38,7 +38,8 @@ import { isShellTool } from "../tools/types";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
 import { clientFor, defaultModelFrom, lookupModel, resolveModelInfo, reviewTarget, smallModelFor } from "../providers/models";
 import { costOf } from "../providers/pricing";
-import { isAgentBackend } from "../backends/types";
+import { isAgentBackend, type BackendWake, type BackgroundStop } from "../backends/types";
+import { SessionBackground } from "../agent/background";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { agentCli, type AttachmentKind } from "../backends/defs";
 import { account } from "../providers/accounts";
@@ -369,7 +370,8 @@ export class Runtime {
         const effort = opts.resumed ? this.ui.state.effort : undefined;
         if (effort && EFFORT_LEVELS.includes(effort)) this.effort = effort;
         // Secrets live as long as the session is loaded: unloading it (closed, or idle with no window on it) drops them.
-        this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore(), wakes: new WakeQueue(), watchers: new WatcherMap() };
+        this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore(), wakes: new WakeQueue(), watchers: new WatcherMap(), background: new SessionBackground(session) };
+        this.toolState.background!.onChange(() => this.syncBackground());
         this.toolState.secrets!.onChange(() => this.setState({ secrets: this.toolState.secrets!.names() }));
         this.schedules = new SessionSchedules({
             session: () => this.session,
@@ -525,6 +527,7 @@ export class Runtime {
             filesChanged: this.filesChanged(),
             shells: [],
             watches: [],
+            backgroundTasks: this.toolState.background?.shown() ?? [],
             plan: this.planRef(this.latestPlan()),
             planLinks: [...this.session.planLinks],
             ...(this.session.meta.forkOf ? { forkOf: { id: this.session.meta.forkOf.id, title: this.session.meta.forkOf.title } } : {}),
@@ -1220,6 +1223,10 @@ export class Runtime {
                 },
                 drainQueued: (record, admit) => this.drainQueued(record, admit),
                 drainWaiting: (record) => this.drainWaiting(record),
+                wake: (w) => this.adoptWake(w),
+                backgroundChanged: () => this.syncBackground(),
+                // A task's end is a notice of the window's (notifyBackground), not a line in the transcript too.
+                announcesBackgroundEnds: true,
             },
             helpers: {
                 complete: (s, p, sig) => this.complete(s, p, sig),
@@ -1824,6 +1831,10 @@ export class Runtime {
     /** Stop a delegated task by its sub-agent's id, or every one still running. Task sub-agents stop with the turn. */
     stopAgent(agentId?: string): number {
         if (!this.agent) return 0;
+        // Only those still running: one that already ended keeps its own outcome.
+        const running = this.agent.delegatedTasks.filter((t) => t.status === "running").map((t) => t.id);
+        const taskId = agentId ? this.view.agents.find((x) => x.id === agentId)?.taskId : undefined;
+        this.toolState.background?.stoppedByUser(agentId ? (taskId && running.includes(taskId) ? [taskId] : []) : running);
         if (!agentId) return this.agent.stopDelegated();
         const a = this.view.agents.find((x) => x.id === agentId);
         if (!a?.taskId) throw new Error(a ? "This sub-agent stops with the turn: interrupt it (Esc) to stop it." : "No such sub-agent.");
@@ -2477,7 +2488,8 @@ export class Runtime {
     /** `about`: what to name the session after, when the text sent isn't the best guide (a skill's instructions). */
     /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files and MCP resources (a skill's or an MCP prompt's text is sent as written). */
     /** `goal`: a turn the goal started (src/agent/goal.ts). */
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string; wakes?: Wake[]; goal?: boolean; admitted?: { context?: string } } = {}) {
+    /** `adopt`: a wake turn its agent CLI started by itself (AgentHost.wake): nothing is sent, the turn takes its events. */
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string; wakes?: Wake[]; goal?: boolean; adopt?: BackendWake; admitted?: { context?: string } } = {}) {
         // The user's own turn overtakes a pending goal check, and a paused goal picks up after it. A scheduled prompt
         // leaves a paused goal paused; the resume after a usage limit is the exception, as in Claude Code.
         // A watch's events don't either: they aren't the user's.
@@ -2541,7 +2553,8 @@ export class Runtime {
             if (ac.signal.aborted) {
                 // Nothing was sent: a message goes back to the input box; events go back in their queue.
                 if (opts.wakes) this.toolState.wakes?.requeue(opts.wakes);
-                else this.engine.draft(this, display, opts.attachments);
+                // The CLI's own turn goes on without it: nothing is put back.
+                else if (!opts.adopt) this.engine.draft(this, display, opts.attachments);
                 reason = "aborted";
                 this.endTurn("aborted");
             } else {
@@ -2550,7 +2563,7 @@ export class Runtime {
                 const images = parts.filter((p): p is AttachedPart => p.type === "image");
                 this.pendingPrompt = { seg: this.segment, index, attachments: images };
                 if (images.length) this.op({ op: "turn.patch", turnId: turn.id, patch: { prompt: { ...turn.prompt!, ...attachedPrompt(images) } } });
-                reason = await agent.run(parts, { signal: ac.signal, display, kind: opts.kind, admitted: opts.admitted });
+                reason = await agent.run(parts, { signal: ac.signal, display, kind: opts.kind, ...(opts.adopt ? { adopt: opts.adopt } : {}), admitted: opts.admitted });
             }
         } catch (e) {
             const message = `Unexpected error: ${redact((e as Error).message)}`;
@@ -2655,12 +2668,15 @@ export class Runtime {
             const after = this.afterStop;
             this.afterStop = undefined;
             if (after) await this.dispatch(after).catch((e) => this.notice(redact((e as Error).message), "error"));
+            // A turn its agent CLI started by itself runs whatever the user stopped: it's taken now.
+            if (this.adopts.length) this.wake();
             return;
         }
         const next = this.nextQueued();
         // Nothing the user sent is waiting: the goal decides whether another turn starts; then events a watch raised meanwhile can have theirs.
         if (!next) {
             await this.settleGoal(false);
+            if (this.adopts.length) return this.wake();
             return this.toolState.wakes?.poke();
         }
         this.queued = this.queued.filter((q) => q !== next);
@@ -2757,20 +2773,41 @@ export class Runtime {
 
     /** Events a tool asked to be woken for (a watched PR): a turn of their own when nothing else is going on. */
     private wake() {
+        // Looked at again later: the turns a CLI started itself (adopts) are looked for here, not in the
+        // WakeQueue, whose poke does nothing without events of its own.
+        const again = () => (this.adopts.length ? this.wake() : this.toolState.wakes?.poke());
         // An idle compaction stops: the wake runs on the cache that's still warm, not after a summary nobody asked for.
-        if (this.idleCompacting) return void this.yieldIdleCompaction().then(() => this.toolState.wakes?.poke());
-        // Busy or with messages queued, the turn's end looks again (runQueued).
-        if (this.closed || this.busy || this.queued.length) return;
+        if (this.idleCompacting) return void this.yieldIdleCompaction().then(again);
+        // Busy or with messages queued, the turn's end looks again (runQueued). Messages held back (after a stop or
+        // a restart) don't hold up a CLI's own turn: it's running already, whatever the user sends next.
+        if (this.closed || this.busy || (this.adopts.length ? this.nextQueued() : this.queued.length)) return;
         // A model switch, a commit, the agent still starting, a goal between its turns (it goes first, as with
         // scheduled prompts): look again in a moment.
         if (this.switching || this.commitDone || !this.agent || this.goal.pending()) {
-            const t = setTimeout(() => this.toolState.wakes?.poke(), 1000);
+            const t = setTimeout(again, 1000);
             t.unref?.();
+            return;
+        }
+        // A turn an agent CLI started by itself goes first: it's running already, its events held until it's taken.
+        const adopt = this.adopts.shift();
+        if (adopt) {
+            const label = adopt.label?.trim() || `${getProvider(adopt.provider)?.name ?? adopt.provider} reported back`;
+            void this.startTurn(label, { display: label, kind: "wake", adopt }).catch((e) => this.notice(redact((e as Error).message), "error"));
             return;
         }
         const wakes = this.toolState.wakes!.takeForTurn();
         if (!wakes.length) return;
         void this.startTurn(formatWakes(wakes), { display: wakeDisplay(wakes), kind: "wake", wakes }).catch((e) => this.notice(redact((e as Error).message), "error"));
+    }
+
+    /** Turns agent CLIs started by themselves, waiting for the session to be free to adopt them (wake). */
+    private adopts: BackendWake[] = [];
+
+    /** An agent CLI started a turn by itself: it becomes a wake turn of this session's, when it's free. */
+    adoptWake(w: BackendWake) {
+        if (this.closed) return;
+        this.adopts.push(w);
+        this.wake();
     }
 
     interrupt() {
@@ -3295,12 +3332,59 @@ export class Runtime {
         }));
         const same = JSON.stringify(shells) === JSON.stringify(this.view.state.shells);
         if (!same) this.setState({ shells });
+        this.syncBackground();
         const running = shells.some((s) => s.running);
         if (running && !this.shellTimer) this.shellTimer = setInterval(() => this.syncShells(), 2000);
         else if (!running && this.shellTimer) {
             clearInterval(this.shellTimer);
             this.shellTimer = undefined;
         }
+    }
+
+    /**
+     * The session's background work as one list (src/agent/background.ts): kept in the session log, and
+     * what's running (or stopped when Harness quit, until the agent's told) shown in the Background panel.
+     */
+    private syncBackground() {
+        const bg = this.toolState.background;
+        if (!bg || this.closed) return;
+        const src = { delegated: this.agent?.delegatedTasks, shells: this.toolState.shells };
+        // One that ended on its own is news, in this window or as a notification (the GUI decides which). Not with
+        // the agentCli.liveSessions kill switch off: a delegated task's end is a transcript line then, as before.
+        const news = bg.sync(src);
+        if (this.settings().agentCli?.liveSessions !== false) for (const t of news) this.engine.notifyBackground(this, { ...t, label: redact(t.label).slice(0, 300) });
+        const tasks = bg.shown(src).map((t) => ({ ...t, label: redact(t.label).slice(0, 300) }));
+        if (JSON.stringify(tasks) !== JSON.stringify(this.view.state.backgroundTasks ?? [])) this.setState({ backgroundTasks: tasks });
+    }
+
+    /** Stop background work from the panel or /tasks stop: these tasks, or every one running. How each went. */
+    async stopBackground(ids?: string[]): Promise<Record<string, BackgroundStop>> {
+        const agent = this.agent;
+        const stop = async () => {
+            if (agent) return agent.stopBackground(ids);
+            // No agent (no model yet): only its shells can be running.
+            const results: Record<string, BackgroundStop> = {};
+            for (const id of ids ?? [...this.toolState.shells.values()].filter((s) => s.exitCode === null).map((s) => s.id)) {
+                const sh = this.toolState.shells.get(id);
+                // One that already ended (or whose process is already gone) keeps its own outcome.
+                results[id] = !sh ? "unknown" : sh.exitCode !== null || (await sh.kill()) === "gone" ? "ended" : "stopped";
+            }
+            return results;
+        };
+        // The user's own stop: no notice when one it stopped ends (but one it couldn't stop ends as it ends).
+        const asked = ids ?? (this.view.state.backgroundTasks ?? []).filter((t) => t.status === "running").map((t) => t.id);
+        const bg = this.toolState.background;
+        try {
+            return bg ? await bg.userStop(asked, stop) : await stop();
+        } finally {
+            this.syncShells();
+        }
+    }
+
+    /** The user cleared the finished tasks from the Background panel. */
+    clearBackground() {
+        this.toolState.background?.clearEnded();
+        this.syncBackground();
     }
 
     /** The user stopped a watch from the panel: the agent hears of it with their next message. */
@@ -3321,6 +3405,8 @@ export class Runtime {
     async killShell(shellId: string) {
         const sh = this.toolState.shells.get(shellId);
         if (!sh) throw new Error(`No background shell ${shellId}`);
+        // Not one that already ended: it keeps its own outcome.
+        if (sh.exitCode === null) this.toolState.background?.stoppedByUser([shellId]);
         // The agent may be counting on it to wake it: it hears it was stopped with the next message.
         if (sh.monitor && sh.exitCode === null) this.agent?.addReminder(stoppedMonitorNote(sh));
         await sh.kill();

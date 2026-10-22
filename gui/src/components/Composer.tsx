@@ -16,6 +16,7 @@ import { InteractionTab } from "./InteractionDock";
 import { ScheduleTab } from "./ScheduleTab";
 import { GoalTab } from "./GoalTab";
 import { ComposerMeter } from "./ComposerMeter";
+import { BackgroundChip } from "./BackgroundTasks";
 import { AttachmentChips } from "./AttachmentChips";
 import { ReviewCommentChips } from "./ReviewCommentChips";
 import { splitComments, takesComments, withComments } from "../lib/review-comments";
@@ -716,6 +717,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     <EffortPicker current={st()?.model} currentRef={app.settings.model} effort={st() ? st()!.effort : app.settings.effort} fast={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy && !st()?.activity?.idle} open={effortOpen()} setOpen={setEffortOpen} placement={menuSide()} />
                     <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} open={modePickerOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
                     <span class="grow" />
+                    <BackgroundChip sessionId={p.sessionId} />
                     <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} />
                     {/* Writing while a turn runs: the key that sends it the other way, by the button that sends it this way. */}
                     <Show when={busy() && hasContent() && !runPicks() && shortcutHint("chat:submitOtherWay")}>
