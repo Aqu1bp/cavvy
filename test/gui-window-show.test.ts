@@ -62,7 +62,7 @@ test("Home drawn before the window is shown is marked to skip its entrance; one 
         node, createSignal: (v: unknown) => [() => v, stub], createResource: () => [() => ({ needsTrust: [], git: false }), { refetch: stub }], For: stub, Show: stub,
         ChevronDown: stub, Folder: stub, FolderGit2: stub, FolderOpen: stub, KeyRound: stub, ListChecks: stub, MessageSquareText: stub, ShieldAlert: stub, TerminalIcon: stub,
         app: { conn: "open", homeCwd: "/project", providers: [], projects: [], models: [] }, refreshProjects: stub, reportError: stub, rpc: {}, chooseProject: stub, connectCli: stub, openProject: stub, trustAndContinue: stub,
-        requestComposerFocus: stub, setSettingsTab: stub, ago: stub, basename: (p: string) => p, tildify: (p: string) => p, now: stub, isWindowShown: () => shown,
+        requestComposerFocus: stub, setSettingsTab: stub, columnHeight: () => "800px", ago: stub, basename: (p: string) => p, tildify: (p: string) => p, now: stub, isWindowShown: () => shown,
         CliSessions: stub, Composer: stub, Menu: stub, WorktreePicker: stub, Logo: stub,
     }) as () => { tag: string; props: { class: string; classList?: Record<string, boolean> } };
     const atLaunch = Home();
