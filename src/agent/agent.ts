@@ -318,14 +318,19 @@ function isContextOverflow(e: unknown): boolean {
 
 /**
  * A request refused for its images: too large, too many, not decodable, or a
- * model that takes none. Anthropic's "many-image requests" is documented; the
- * other wordings are the shapes such errors take (not each seen live).
+ * model that takes none. Anthropic's "many-image requests" is documented,
+ * and its "image dimensions exceed max allowed size" seen live; OpenRouter's
+ * "No endpoints found that support image input" and the other wordings are
+ * the shapes such errors take. "image" counts as a word only, not inside a
+ * name (a tool called image_lookup), and an error about a tool's or
+ * function's schema is never about the conversation's images.
  */
 export function isImageRejection(e: unknown): boolean {
     const err = e as ProviderError;
     const msg = String(err?.message ?? "") + String(err?.body ?? "");
     if (!(err?.status === 400 || err?.status === 404 || err?.status === 413 || err?.status === 422) || isContextOverflow(e)) return false;
-    return /many-image|\bimages?\b[^.\n]{0,80}\b(exceeds?|too (large|big|many)|dimensions?|invalid|could not|couldn't|unable to|not supported|unsupported|does not match|not (a )?valid)|\b(invalid|unsupported|could not process|cannot process|can't process)\b[^.\n]{0,30}\bimage|image_url|image input|image_parse_error/i.test(msg);
+    if (/\b(tool|function)s?\b[^\n]{0,40}\b(schema|parameters)\b|\b(schema|parameters)\b[^\n]{0,40}\b(tool|function)s?\b|input_schema|\btools\.\d/i.test(msg)) return false;
+    return /many-image|(?<![\w-])images?(?![\w-])[^.\n]{0,80}\b(exceeds?|too (large|big|many)|dimensions?|invalid|could not|couldn't|unable to|not supported|unsupported|does not match|not (a )?valid)|\b(invalid|unsupported|could not process|cannot process|can't process)\b[^.\n]{0,30}(?<![\w-])images?(?![\w-])|image_url|image input|image_parse_error/i.test(msg);
 }
 
 /**
@@ -409,8 +414,12 @@ export class Agent {
     private autoCompactBlocked = false;
     /** The error the turn ended on, for StopFailure hooks. */
     private turnError?: string;
-    /** Messages whose images a provider refused: they're sent without them from then on. */
-    private rejectedImages = new WeakSet<Message>();
+    /**
+     * Messages whose images the model refused this turn, sent again without
+     * them: recorded on the session (Session.refuseImages) once that's
+     * answered, forgotten if it isn't (the images weren't the trouble then).
+     */
+    private refusing?: { model: string; messages: Set<Message> };
     private fileWatch?: FileWatchHooks;
     /** A backend turn that takes steering at once (Codex), told when a message to steer with arrives. */
     private queueListeners = new Set<() => void>();
@@ -552,7 +561,9 @@ export class Agent {
 
     /** The conversation with its images as this model may be sent them (src/providers/images.ts). */
     private sendable(messages: Message[]): Promise<Message[]> {
-        return imagesFor(messages, { readsImages: this.model.supportsImages !== false, rejected: this.rejectedImages });
+        const model = modelRef(this.model);
+        const refusing = this.refusing?.model === model ? this.refusing.messages : undefined;
+        return imagesFor(messages, { readsImages: this.model.supportsImages !== false, refused: (m) => Boolean(refusing?.has(m) || (m.role === "user" && m.meta?.imagesRefused?.includes(model))) });
     }
 
     private request(messages: Message[], signal: AbortSignal, extra: Partial<ChatRequest> = {}): ChatRequest {
@@ -654,6 +665,7 @@ export class Agent {
         let stopHookRounds = 0;
         let overflowCompacted = false;
         let imagesRejected = false;
+        this.refusing = undefined;
         /** The model has said or done something this turn. */
         let answered = false;
         const maxTurns = this.o.maxTurns ?? Infinity;
@@ -693,14 +705,16 @@ export class Agent {
                         if (isAbort(ce, signal)) return this.interrupted(false);
                     }
                 }
-                // Refused for its images: once, they're left out (for good, or every later turn would be refused too) and it's sent again.
-                const carrying = isImageRejection(e) && !imagesRejected ? this.session.messages.filter((m) => hasImages(m) && !this.rejectedImages.has(m)) : [];
+                // Refused for its images: once, they're left out and it's sent again. Answered, they stay out for this model (every later turn would be refused too).
+                const model = modelRef(this.model);
+                const carrying = isImageRejection(e) && !imagesRejected ? this.session.messages.filter((m) => hasImages(m) && !(m.role === "user" && m.meta?.imagesRefused?.includes(model))) : [];
                 if (carrying.length) {
                     imagesRejected = true;
-                    for (const m of carrying) this.rejectedImages.add(m);
+                    this.refusing = { model, messages: new Set(carrying) };
                     this.emit({ type: "notice", level: "warn", message: `The provider refused the conversation's images (${redact((e as Error).message)}); sending it again without them.` });
                     continue;
                 }
+                this.refusing = undefined;
                 this.endNotice("error", redact((e as Error).message || String(e)));
                 this.emit({ type: "turn_end", reason: "error" });
                 return "error";
@@ -709,6 +723,12 @@ export class Agent {
             // A provider that returns (rather than throws) after an abort hands
             // back a cut-off response; drop it like any other partial response.
             if (signal.aborted) return this.interrupted(false);
+
+            // Answered without the images it refused: they stay out for this model.
+            if (this.refusing) {
+                this.session.refuseImages([...this.refusing.messages], this.refusing.model);
+                this.refusing = undefined;
+            }
 
             // From here on, the redacted copy: it's what gets shown and what tools run with.
             msg = this.session.push(msg);

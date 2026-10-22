@@ -7,7 +7,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
-import { deflateSync } from "zlib";
+import { deflateSync, inflateSync } from "zlib";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
@@ -20,7 +20,8 @@ const { ProviderError } = await import("../src/providers/types");
 const { toAnthropicMessages } = await import("../src/providers/anthropic");
 const { toOpenAIMessages } = await import("../src/providers/openai-compat");
 const { getProvider } = await import("../src/providers/registry");
-const { IMAGE_BASE64, IMAGE_SIDE, fitImage, imageFits } = await import("../src/providers/images");
+const { IMAGE_BASE64, IMAGE_PIXELS, IMAGE_SIDE, fitContent, fitImage, imageFits } = await import("../src/providers/images");
+const { forkSession } = await import("../src/agent/fork");
 const { imageSize } = await import("../src/ui/images");
 import type { ImagePart, Message, UserContent } from "../src/providers/types";
 
@@ -47,6 +48,73 @@ function png(w: number, h: number, noise = false): Buffer {
         for (let y = 0; y < h; y++) crypto.getRandomValues(raw.subarray(y * (w * 3 + 1) + 1, (y + 1) * (w * 3 + 1)));
     }
     return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), pngChunk("IHDR", ihdr), pngChunk("IDAT", deflateSync(raw, { level: 1 })), pngChunk("IEND", Buffer.alloc(0))]);
+}
+
+/** A real RGBA PNG of noise, its left half fully transparent (black linework on transparency, say). */
+function transparentPng(w: number, h: number): Buffer {
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(w, 0);
+    ihdr.writeUInt32BE(h, 4);
+    ihdr[8] = 8;
+    ihdr[9] = 6;
+    const raw = Buffer.alloc((w * 4 + 1) * h);
+    for (let y = 0; y < h; y++) {
+        const row = raw.subarray(y * (w * 4 + 1) + 1, (y + 1) * (w * 4 + 1));
+        for (let i = 0; i < row.length; i += 65536) crypto.getRandomValues(row.subarray(i, Math.min(row.length, i + 65536)));
+        for (let x = 0; x < w; x++) row[x * 4 + 3] = x < w / 2 ? 0 : 255;
+    }
+    return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), pngChunk("IHDR", ihdr), pngChunk("IDAT", deflateSync(raw, { level: 1 })), pngChunk("IEND", Buffer.alloc(0))]);
+}
+
+/** A pixel's alpha, from any image Bun decodes (255 for one without an alpha channel). */
+async function alphaAt(p: ImagePart, x: number, y: number): Promise<number> {
+    const b = Buffer.from(await new Bun.Image(Buffer.from(p.data, "base64")).png({ compressionLevel: 0 }).bytes());
+    const w = b.readUInt32BE(16);
+    const type = b[25];
+    const bpp = type === 6 ? 4 : type === 2 ? 3 : type === 4 ? 2 : 1;
+    const idat: Buffer[] = [];
+    for (let at = 8; at < b.length; at += 12 + b.readUInt32BE(at)) if (b.toString("ascii", at + 4, at + 8) === "IDAT") idat.push(b.subarray(at + 8, at + 8 + b.readUInt32BE(at)));
+    const raw = inflateSync(Buffer.concat(idat));
+    const stride = w * bpp;
+    let prev = Buffer.alloc(stride);
+    let row = prev;
+    for (let r = 0; r <= y; r++) {
+        const filter = raw[r * (stride + 1)]!;
+        row = Buffer.from(raw.subarray(r * (stride + 1) + 1, (r + 1) * (stride + 1)));
+        for (let i = 0; i < stride; i++) {
+            const a = i >= bpp ? row[i - bpp]! : 0;
+            const up = prev[i]!;
+            const c = i >= bpp ? prev[i - bpp]! : 0;
+            const pa = Math.abs(up - c), pb = Math.abs(a - c), pc = Math.abs(a + up - 2 * c);
+            const add = filter === 1 ? a : filter === 2 ? up : filter === 3 ? (a + up) >> 1 : filter === 4 ? (pa <= pb && pa <= pc ? a : pb <= pc ? up : c) : 0;
+            row[i] = (row[i]! + add) & 0xff;
+        }
+        prev = row;
+    }
+    return type === 6 ? row[x * 4 + 3]! : type === 4 ? row[x * 2 + 1]! : 255;
+}
+
+/** Bun.Image with every decode counted, and the most running at once. */
+function spyOnDecodes() {
+    const Real = Bun.Image;
+    const seen = { made: 0, running: 0, most: 0, maxPixels: [] as (number | undefined)[] };
+    class Spy extends Real {
+        constructor(input: ConstructorParameters<typeof Real>[0], options?: ConstructorParameters<typeof Real>[1]) {
+            super(input, options);
+            seen.made++;
+            seen.maxPixels.push(options?.maxPixels);
+        }
+        override async bytes() {
+            seen.most = Math.max(seen.most, ++seen.running);
+            try {
+                return await super.bytes();
+            } finally {
+                seen.running--;
+            }
+        }
+    }
+    (Bun as { Image: typeof Real }).Image = Spy;
+    return { seen, restore: () => ((Bun as { Image: typeof Real }).Image = Real) };
 }
 
 const part = (b: Uint8Array, mediaType = "image/png"): ImagePart => ({ type: "image", mediaType, data: Buffer.from(b).toString("base64") });
@@ -136,6 +204,48 @@ describe("fitting one image", () => {
         expect(await fitImage(part(Buffer.from("not an image at all")))).toBeUndefined();
         expect(await fitImage(part(png(10, 10).subarray(0, 20)))).toBeUndefined();
     });
+    test("a PNG cut short after its header isn't sent as it is: its header fits, its pixels don't decode", async () => {
+        const cut = part(png(10, 10).subarray(0, 33));
+        expect(imageFits(cut)).toBe(true);
+        expect(await fitImage(cut)).toBeUndefined();
+        // Decoded once: asked again, it's the same answer without decoding again.
+        const { seen, restore } = spyOnDecodes();
+        try {
+            expect(await fitImage(cut)).toBeUndefined();
+            expect(seen.made).toBe(0);
+        } finally {
+            restore();
+        }
+    });
+    test("transparent and too heavy: re-encoded keeping its transparency (a WebP, not a JPEG that turns it black)", async () => {
+        const clear = part(transparentPng(2000, 2000));
+        expect(clear.data.length).toBeGreaterThan(IMAGE_BASE64);
+        expect(await alphaAt(clear, 10, 10)).toBe(0);
+        const fitted = (await fitImage(clear))!;
+        expect(fitted.mediaType).toBe("image/webp");
+        expect(fitted.data.length).toBeLessThanOrEqual(IMAGE_BASE64);
+        expect(await alphaAt(fitted, 10, 10)).toBe(0);
+        expect(await alphaAt(fitted, 1990, 10)).toBe(255);
+    }, 30_000);
+    test("decoding is bounded: an image over IMAGE_PIXELS isn't decoded at all, and a batch is decoded one image at a time", async () => {
+        // A header claiming 8000×7000 (56 megapixels): 200 MB and more to decode, whatever the file's size.
+        const huge = png(8000, 10);
+        huge.writeUInt32BE(7000, 20);
+        expect(8000 * 7000).toBeGreaterThan(IMAGE_PIXELS);
+        const { seen, restore } = spyOnDecodes();
+        try {
+            expect(await fitImage(part(huge))).toBeUndefined();
+            expect(seen.made).toBe(0);
+            const batch = await fitContent([png(3000, 100), png(100, 3000), png(2500, 2500), png(2100, 50)].map((b) => part(b)));
+            expect(batch.every((p) => p.type === "image" && imageFits(p))).toBe(true);
+            expect(seen.made).toBeGreaterThanOrEqual(4);
+            expect(seen.most).toBe(1);
+            // Bun refuses a bigger canvas itself, before allocating it, where the header couldn't be read here.
+            expect(seen.maxPixels.every((n) => n === IMAGE_PIXELS)).toBe(true);
+        } finally {
+            restore();
+        }
+    }, 30_000);
 });
 
 describe("every source is fitted before it's stored or sent", () => {
@@ -182,7 +292,16 @@ describe("every source is fitted before it's stored or sent", () => {
         const b = agentWith({ client: broken.client, tools: [screenshotTool(Buffer.from("garbage"))], allow: ["mcp__browser__screenshot"] });
         expect(await run(b.agent, [{ type: "text", text: "screenshot" }])).toBe("done");
         expect(imagesIn(broken.requests[1]!)).toEqual([]);
-        expect(textOf(broken.requests[1]!)).toContain("Here it is\\n[An image this returned isn't included: it couldn't be read as a PNG, JPEG, GIF or WebP image.]");
+        expect(textOf(broken.requests[1]!)).toContain("Here it is\\n[An image this returned isn't included: it couldn't be read as a PNG, JPEG, GIF or WebP image of at most 50 megapixels.]");
+    });
+    test("a broken attachment beside a good one: the good one goes, the broken one is a note, and nothing is refused", async () => {
+        const { client, requests } = scripted([{ text: "seen" }]);
+        const { agent, notices } = agentWith({ client });
+        expect(await run(agent, [{ type: "text", text: "look" }, part(png(40, 40)), part(png(10, 10).subarray(0, 33))])).toBe("done");
+        expect(requests.length).toBe(1);
+        expect(imagesIn(requests[0]!).length).toBe(1);
+        expect(textOf(requests[0]!)).toContain("[An image the user attached isn't included: it couldn't be read");
+        expect(notices.join("\n")).not.toContain("refused");
     });
     test("a resumed history stored before images were fitted is fitted when it's sent; the transcript keeps the original", async () => {
         const session = Session.create(tempDir(), { persist: false });
@@ -283,8 +402,13 @@ describe("a request refused for its images", () => {
         expect(imagesIn(requests[1]!)).toEqual([]);
         expect(JSON.stringify(session.messages)).toContain("Primary request: fix the header");
     });
-    test("which errors count: image ones, not context overflow or unrelated 400s", () => {
+    test("which errors count: image ones, not context overflow, a tool's schema, or unrelated 400s", () => {
         expect(isImageRejection(tooBig())).toBe(true);
+        expect(isImageRejection(new ProviderError("messages.0.content.1.image.source.base64.data: At least one of the image dimensions exceed max allowed size: 8000 pixels", 400))).toBe(true);
+        expect(isImageRejection(new ProviderError("At least one of the image dimensions exceed max allowed size: 8000 pixels", 400))).toBe(true);
+        expect(isImageRejection(new ProviderError("Invalid schema for function image_lookup: unsupported keyword", 400))).toBe(false);
+        expect(isImageRejection(new ProviderError("Invalid schema for function 'image': unsupported keyword 'format'", 400))).toBe(false);
+        expect(isImageRejection(new ProviderError("tools.2.custom.input_schema: invalid image property", 400))).toBe(false);
         expect(isImageRejection(new ProviderError("messages.3.content.0.image: many-image requests may not exceed 2000 pixels", 400))).toBe(true);
         expect(isImageRejection(new ProviderError("Image does not match the provided media type image/png", 400))).toBe(true);
         expect(isImageRejection(new ProviderError("unknown variant `image_url`, expected `text`", 400))).toBe(true);
@@ -292,5 +416,51 @@ describe("a request refused for its images", () => {
         expect(isImageRejection(new ProviderError("prompt is too long: 250000 tokens > 200000 maximum", 400))).toBe(false);
         expect(isImageRejection(new ProviderError("max_tokens: must be at most 64000", 400))).toBe(false);
         expect(isImageRejection(new ProviderError("image exceeds 5 MB maximum", 500))).toBe(false);
+    });
+    test("a retry that fails too keeps nothing out: the next turn sends the images again", async () => {
+        const unrelated = new ProviderError("max_tokens: must be at most 64000", 400);
+        const { client, requests } = scripted([tooBig(), unrelated, { text: "fine" }]);
+        const { agent, session } = agentWith({ client });
+        expect(await run(agent, [{ type: "text", text: "look" }, part(png(100, 100))])).toBe("error");
+        expect(await run(agent, [{ type: "text", text: "again" }])).toBe("done");
+        expect(requests.map((r) => imagesIn(r).length)).toEqual([1, 0, 1]);
+        expect(session.messages.some((m) => m.role === "user" && m.meta?.imagesRefused)).toBe(false);
+    });
+    test("refused by one model only: a model that reads images is sent them again, the one that refused isn't", async () => {
+        const noImages = () => new ProviderError("No endpoints found that support image input", 404);
+        const { client, requests } = scripted([noImages(), { text: "without" }, { text: "with" }, { text: "without again" }]);
+        const { agent } = agentWith({ client });
+        await run(agent, [{ type: "text", text: "look" }, part(png(100, 100))]);
+        agent.setModel({ provider: "test", id: "vision", supportsImages: true } as never, client as never);
+        await run(agent, [{ type: "text", text: "and you?" }]);
+        agent.setModel({ provider: "test", id: "test" } as never, client as never);
+        await run(agent, [{ type: "text", text: "back" }]);
+        expect(requests.map((r) => imagesIn(r).length)).toEqual([1, 0, 1, 0]);
+    });
+    test("kept for that model when the session is opened again or forked, and the images stay in the transcript", async () => {
+        const proj = tempDir();
+        const session = Session.create(proj);
+        const image = part(png(100, 100));
+        // Answered with the image once; refused for it on the next turn, after the turn a fork is cut at.
+        const { client, requests } = scripted([{ text: "seen" }, tooBig(), { text: "without" }, { text: "resumed" }, { text: "forked" }, { text: "other model" }, { text: "cut" }]);
+        const { agent } = agentWith({ client, proj, session });
+        await run(agent, [{ type: "text", text: "look" }, image]);
+        await run(agent, [{ type: "text", text: "more" }]);
+        expect(requests.map((r) => imagesIn(r).length)).toEqual([1, 1, 0]);
+
+        const opened = Session.load(session.path);
+        expect(imagesIn(opened.messages)[0]!.data).toBe(image.data);
+        await run(agentWith({ client, proj, session: opened }).agent, [{ type: "text", text: "resumed" }]);
+        await run(agentWith({ client, proj, session: session.fork({ persist: false }) }).agent, [{ type: "text", text: "forked" }]);
+        const other = agentWith({ client, proj, session: Session.load(session.path) }).agent;
+        other.setModel({ provider: "test", id: "vision", supportsImages: true } as never, client as never);
+        await run(other, [{ type: "text", text: "other model" }]);
+        expect(requests.slice(3).map((r) => imagesIn(r).length)).toEqual([0, 0, 1]);
+
+        // A fork cut before the refusal was recorded still has it (and the saved history still matches).
+        const cut = forkSession(session, { cut: 2 });
+        expect(imagesIn(cut.messages)[0]!.data).toBe(image.data);
+        await run(agentWith({ client, proj, session: cut }).agent, [{ type: "text", text: "cut" }]);
+        expect(imagesIn(requests.at(-1)!).length).toBe(0);
     });
 });

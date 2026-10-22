@@ -11,7 +11,9 @@
 // An image is fitted once, as it enters the conversation, so what's stored
 // (and resent every turn) already fits, and the 20-image threshold never
 // changes what an earlier image looks like (prompt caches match on prefix).
-// The file it came from is never touched.
+// The file it came from is never touched. Decoding takes memory by pixels,
+// not by file size (a 1 MB PNG can be a 36-megapixel canvas), so there's a
+// limit on those too, and images are decoded one at a time.
 
 import type { ImagePart, Message, ToolResultPart, UserContent } from "./types";
 import { imageSize } from "../ui/images";
@@ -21,11 +23,17 @@ import { sniffImage } from "../util/files";
 export const IMAGE_SIDE = 2000;
 /** An image's base64 at most (Anthropic on Bedrock and Google Cloud). */
 export const IMAGE_BASE64 = 5 * 1024 * 1024;
+/** Pixels an image may have to be decoded at all (about 200 MB as RGBA): a 48-megapixel phone photo is within it. */
+export const IMAGE_PIXELS = 50_000_000;
 
 const ENCODINGS = ["png", "jpeg", "webp"] as const;
 type Encoding = (typeof ENCODINGS)[number];
 
-/** Whether an image goes as it is: its bytes are the type it says, its size is known, and it's within both limits. */
+/**
+ * Whether an image may go as it is, by its header: its bytes are the type it
+ * says, its size is known, and it's within both limits. Its pixels can still
+ * be broken (a truncated download): fitImage decodes it too.
+ */
 export function imageFits(p: ImagePart): boolean {
     if (p.data.length > IMAGE_BASE64) return false;
     const bytes = Buffer.from(p.data, "base64");
@@ -33,42 +41,93 @@ export function imageFits(p: ImagePart): boolean {
     return sniffImage(bytes) === p.mediaType && Boolean(size?.width && size.height) && Math.max(size!.width, size!.height) <= IMAGE_SIDE;
 }
 
+/** Decodes waiting their turn: each can take IMAGE_PIXELS × 4 bytes while it runs, so a batch of images doesn't run at once. */
+let decoding: Promise<unknown> = Promise.resolve();
+function oneAtATime<T>(f: () => Promise<T>): Promise<T> {
+    const run = decoding.then(f);
+    decoding = run.catch(() => {});
+    return run;
+}
+
+/** Whether an image's pixels decode, by a hash of its base64: each is decoded once, however often it's sent. */
+const decodable = new Map<number | bigint, boolean>();
+async function decodes(data: string, bytes: Uint8Array): Promise<boolean> {
+    const key = Bun.hash(data);
+    let ok = decodable.get(key);
+    if (ok === undefined) {
+        // Scaled to a few pixels, so only the decode costs anything.
+        ok = await oneAtATime(() => new Bun.Image(bytes, { maxPixels: IMAGE_PIXELS }).resize(8, 8, { fit: "inside", withoutEnlargement: true }).png().bytes()).then(
+            () => true,
+            () => false,
+        );
+        if (decodable.size >= 1000) decodable.delete(decodable.keys().next().value!);
+        decodable.set(key, ok);
+    }
+    return ok;
+}
+
+/** Whether an image may have transparent pixels: a PNG with an alpha channel or a tRNS chunk, and any GIF or WebP. */
+function mayBeTransparent(bytes: Uint8Array, type: string): boolean {
+    if (type === "image/jpeg") return false;
+    if (type !== "image/png") return true;
+    // The colour type: 4 is grey and alpha, 6 is RGBA.
+    if (bytes[25] === 4 || bytes[25] === 6) return true;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    for (let at = 8; at + 8 <= bytes.length; ) {
+        const name = String.fromCharCode(bytes[at + 4]!, bytes[at + 5]!, bytes[at + 6]!, bytes[at + 7]!);
+        if (name === "tRNS") return true;
+        if (name === "IDAT") return false;
+        at += 12 + view.getUint32(at);
+    }
+    return false;
+}
+
 /**
- * The image as a model may be sent it: as it is when it fits; otherwise
- * decoded, scaled down to IMAGE_SIDE (aspect ratio kept) and re-encoded (as a
- * JPEG, then smaller, if it's still too heavy). Undefined when it can't be
- * decoded as a PNG, JPEG, GIF or WebP.
+ * The image as a model may be sent it: as it is when it fits and decodes;
+ * otherwise decoded, scaled down to IMAGE_SIDE (aspect ratio kept) and
+ * re-encoded (then lossy, and smaller, if it's still too heavy: as a WebP when
+ * it may be transparent, since a JPEG would turn transparent pixels black).
+ * Undefined when it can't be decoded as a PNG, JPEG, GIF or WebP of at most
+ * IMAGE_PIXELS.
  */
 export async function fitImage(p: ImagePart): Promise<ImagePart | undefined> {
     const bytes = Buffer.from(p.data, "base64");
     const type = sniffImage(bytes);
     if (!type) return undefined;
     const size = imageSize(bytes);
-    // Within the limits, only labelled as something else (a .png that's a JPEG): the label is put right.
-    if (size?.width && size.height && Math.max(size.width, size.height) <= IMAGE_SIDE && p.data.length <= IMAGE_BASE64) return type === p.mediaType ? p : { type: "image", mediaType: type, data: p.data };
+    if (size && size.width * size.height > IMAGE_PIXELS) return undefined;
+    if (size?.width && size.height && Math.max(size.width, size.height) <= IMAGE_SIDE && p.data.length <= IMAGE_BASE64) {
+        if (!(await decodes(p.data, bytes))) return undefined;
+        // Within the limits, only labelled as something else (a .png that's a JPEG): the label is put right.
+        return type === p.mediaType ? p : { type: "image", mediaType: type, data: p.data };
+    }
     // GIFs are decoded to their first frame (all a model sees of one) and kept as PNG.
     const own = type.slice("image/".length);
     const first: Encoding = (ENCODINGS as readonly string[]).includes(own) ? (own as Encoding) : "png";
+    const lossy: Encoding = mayBeTransparent(bytes, type) ? "webp" : "jpeg";
     const tries: [number, Encoding, number?][] = [
         [IMAGE_SIDE, first],
-        [IMAGE_SIDE, "jpeg", 80],
-        [1568, "jpeg", 70],
-        [1000, "jpeg", 60],
+        [IMAGE_SIDE, lossy, 80],
+        [1568, lossy, 70],
+        [1000, lossy, 60],
     ];
     try {
-        for (const [side, as, quality] of tries) {
-            const img = new Bun.Image(bytes).resize(side, side, { fit: "inside", withoutEnlargement: true });
-            const out = await (as === "jpeg" ? img.jpeg({ quality: quality ?? 85 }) : as === "webp" ? img.webp({ quality: 85 }) : img.png()).bytes();
-            const data = Buffer.from(out).toString("base64");
-            if (data.length <= IMAGE_BASE64) return { type: "image", mediaType: `image/${as}`, data };
-        }
+        return await oneAtATime(async () => {
+            for (const [side, as, quality] of tries) {
+                const img = new Bun.Image(bytes, { maxPixels: IMAGE_PIXELS }).resize(side, side, { fit: "inside", withoutEnlargement: true });
+                const out = await (as === "jpeg" ? img.jpeg({ quality: quality ?? 85 }) : as === "webp" ? img.webp({ quality: quality ?? 85 }) : img.png()).bytes();
+                const data = Buffer.from(out).toString("base64");
+                if (data.length <= IMAGE_BASE64) return { type: "image", mediaType: `image/${as}`, data } satisfies ImagePart;
+            }
+            return undefined;
+        });
     } catch {
-        // not decodable after all
+        // not decodable after all, or over IMAGE_PIXELS
+        return undefined;
     }
-    return undefined;
 }
 
-const UNREADABLE = "it couldn't be read as a PNG, JPEG, GIF or WebP image";
+const UNREADABLE = `it couldn't be read as a PNG, JPEG, GIF or WebP image of at most ${IMAGE_PIXELS / 1_000_000} megapixels`;
 
 /** A tool result with `images` in place of its own, and a line saying why for any taken out. */
 function lessImages(p: ToolResultPart, images: ImagePart[], why: string): ToolResultPart {
@@ -100,7 +159,7 @@ export async function fitContent(content: UserContent[], fit: (p: ImagePart) => 
 const fitted = new WeakMap<ImagePart, ImagePart | null>();
 async function fitOnce(p: ImagePart): Promise<ImagePart | undefined> {
     let f = fitted.get(p);
-    if (f === undefined) fitted.set(p, (f = imageFits(p) ? p : ((await fitImage(p)) ?? null)));
+    if (f === undefined) fitted.set(p, (f = (await fitImage(p)) ?? null));
     return f ?? undefined;
 }
 
@@ -125,18 +184,18 @@ export function hasImages(m: Message): boolean {
 /**
  * The conversation as this model may be sent it. A model known to take no
  * images (`supportsImages: false`; unknown isn't text-only) gets a note for
- * each. Messages in `rejected` (a provider refused a request for its images)
- * lose theirs. Any other image that doesn't fit (stored before images were
- * fitted on the way in) is fitted now. Only what's sent changes, never the
- * transcript; the same conversation always comes out the same.
+ * each. A message `refused` picks out (this model refused a request for its
+ * images) loses them. Any other image is fitted now, if it wasn't on the way
+ * in (a history stored before images were fitted). Only what's sent changes,
+ * never the transcript; the same conversation always comes out the same.
  */
-export async function imagesFor(messages: Message[], o: { readsImages: boolean; rejected?: WeakSet<Message> }): Promise<Message[]> {
+export async function imagesFor(messages: Message[], o: { readsImages: boolean; refused?: (m: Message) => boolean }): Promise<Message[]> {
     if (!messages.some(hasImages)) return messages;
     return Promise.all(
         messages.map(async (m) => {
             if (m.role !== "user" || !hasImages(m)) return m;
             if (!o.readsImages) return withoutImages(m, "[The user attached an image, but this model can't read images, so it isn't included.]", "this model can't read images");
-            if (o.rejected?.has(m)) return withoutImages(m, "[An image the user attached isn't included any more: the provider rejected a request carrying it.]", "the provider rejected a request carrying it");
+            if (o.refused?.(m)) return withoutImages(m, "[An image the user attached isn't included any more: the provider rejected a request carrying it.]", "the provider rejected a request carrying it");
             const content = await fitContent(m.content, fitOnce);
             return content.every((p, i) => p === m.content[i]) ? m : { ...m, content };
         }),
