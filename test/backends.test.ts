@@ -97,7 +97,7 @@ interface Opts {
     session?: InstanceType<typeof Session>;
     queued?: string[][];
     /** In place of queued: the messages waiting when the turn ends. */
-    drainQueued?: () => string[];
+    drainQueued?: import("../src/agent/agent").AgentHost["drainQueued"];
     /** What the runtime hands over while a CLI only waits on background work (AgentHost.drainWaiting). */
     drainWaiting?: import("../src/agent/agent").AgentHost["drainWaiting"];
     /** A wake queue, as the TUI and the app give a session. */
@@ -765,10 +765,24 @@ describe("Claude Code's background work (live test findings)", () => {
                 return taken;
             };
             const waits: string[] = [];
+            /** Steer messages a UserPromptSubmit hook blocked: the runtime hands them back to the composer. */
+            const blocked: string[] = [];
             return {
                 items,
                 waits,
-                drainQueued: () => take((q) => q.mode === "steer" && !q.held && !q.images?.length && !command(q.text)).map((q) => q.text),
+                blocked,
+                // Their hooks (admit) run while they're still queued, as the runtime has them.
+                drainQueued: async (_record?: () => void, admit?: (text: string) => Promise<string>) => {
+                    const steer = items.filter((q) => q.mode === "steer" && !q.held && !q.images?.length && !command(q.text));
+                    const go: string[] = [];
+                    for (const q of steer) {
+                        const admitted = admit ? await admit(q.text) : "go";
+                        if (admitted === "stopped") return [];
+                        (admitted === "blocked" ? blocked : go).push(q.text);
+                    }
+                    take((q) => steer.includes(q));
+                    return go;
+                },
                 drainWaiting: async (steps: any) => {
                     const q = items.find((x) => !x.held && !command(x.text));
                     if (!q) return undefined;
@@ -988,6 +1002,21 @@ describe("Claude Code's background work (live test findings)", () => {
             // No background work: nothing went as a prompt of its own; the runtime runs them after the run.
             expect(q.waits).toEqual([]);
             expect(q.items.map((x) => x.text)).toEqual(["after the turn", "with a picture"]);
+        });
+
+        // #222: steering is the default follow-up, so this is how most messages sent mid-step arrive.
+        test("during a step, a steer message's UserPromptSubmit hooks run before it joins: one they block stays out and goes back, and what they add goes with the rest", async () => {
+            process.env.FAKE_SCENARIO = "steering";
+            const settings = { hooks: { UserPromptSubmit: [{ command: `grep -q forbidden && { echo "no forbidden words" >&2; exit 2; }; exit 0` }, { command: "echo branch is main" }] } };
+            const q = queue([{ text: "say forbidden things", mode: "steer" }, { text: "steer now", mode: "steer" }]);
+            const a = await makeAgent({ provider: "claude-code", settings, drainQueued: q.drainQueued, drainWaiting: q.drainWaiting });
+            expect(await a.run("start")).toBe("done");
+            expect(logLines().find((l) => l.foldedBeforeResult)?.foldedBeforeResult).toEqual(["steer now\n\n<system-reminder>\nContext from a UserPromptSubmit hook:\nbranch is main\n</system-reminder>"]);
+            expect(JSON.stringify(received())).not.toContain("say forbidden things");
+            expect(JSON.stringify(a.session.messages)).not.toContain("say forbidden things");
+            expect(notices(a.events)).toContainEqual(expect.stringMatching(/^warn: Prompt blocked by hook: .*no forbidden words/));
+            expect(q.blocked).toEqual(["say forbidden things"]);
+            expect(q.items).toEqual([]);
         });
     });
 

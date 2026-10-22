@@ -594,6 +594,49 @@ describe("nothing gets lost", () => {
         }
     });
 
+    // #222: a steer message's UserPromptSubmit hooks (the agent's admit) run while it's still queued.
+    test("a steer message its hooks block goes back to the composer and starts no turn; the rest join the running one", async () => {
+        const { engine, c, id, rt, events } = await busySession();
+        try {
+            for (const text of ["say forbidden things", "a fine one"]) await engine.handle(c, "session.send", { id, text, mode: "steer" });
+            const inner = rt as unknown as { drainQueued(record?: () => void, admit?: (text: string) => Promise<"go" | "blocked" | "stopped">): Promise<string[]> };
+            const turns = rt.snapshot().turns.length;
+            const queuedMeanwhile: string[][] = [];
+            const drained = await inner.drainQueued(undefined, async (text) => (queuedMeanwhile.push(rt.snapshot().state.queued), text.includes("forbidden") ? "blocked" : "go"));
+            expect(drained).toEqual(["a fine one"]);
+            expect(queuedMeanwhile).toEqual([["say forbidden things", "a fine one"], ["say forbidden things", "a fine one"]]);
+            expect(rt.snapshot().state.queued).toEqual([]);
+            expect(events.filter((e) => e.type === "draft").map((e) => (e as Extract<ServerEvent, { type: "draft" }>).text)).toEqual(["say forbidden things"]);
+            // One turn, for the one that went.
+            expect(rt.snapshot().turns).toHaveLength(turns + 1);
+            expect(rt.snapshot().turns.at(-1)!.prompt?.text).toBe("a fine one");
+        } finally {
+            await engine.handle(c, "session.interrupt", { id }).catch(() => undefined);
+            await engine.stop();
+        }
+    });
+
+    test("steer messages stopped while their hooks run stay queued; one taken out meanwhile doesn't go", async () => {
+        const { engine, c, id, rt } = await busySession();
+        try {
+            for (const text of ["A", "B", "C"]) await engine.handle(c, "session.send", { id, text, mode: "steer" });
+            const inner = rt as unknown as { drainQueued(record?: () => void, admit?: (text: string) => Promise<"go" | "blocked" | "stopped">): Promise<string[]> };
+            const [, b] = rt.snapshot().state.queueIds;
+            expect(await inner.drainQueued(undefined, async (text) => (text === "B" ? "stopped" : "go"))).toEqual([]);
+            expect(rt.snapshot().state.queued).toEqual(["A", "B", "C"]);
+            const drained = await inner.drainQueued(undefined, async (text) => {
+                // While A's hooks run, the user takes B out of the queue.
+                if (text === "A") await engine.handle(c, "session.dequeue", { id, queueId: b });
+                return "go";
+            });
+            expect(drained).toEqual(["A", "C"]);
+            expect(rt.snapshot().state.queued).toEqual([]);
+        } finally {
+            await engine.handle(c, "session.interrupt", { id }).catch(() => undefined);
+            await engine.stop();
+        }
+    });
+
     // #202: Claude Code between its turns, waiting only on background work, takes any of them as a prompt of its own.
     test("while the agent CLI only waits on background work, queued messages go one at a time, in order, with their attachments; commands and held ones stay", async () => {
         const { engine, c, id, rt } = await busySession();

@@ -1192,7 +1192,7 @@ export class Runtime {
                     approvePlan: (plan) => this.approvePlan(plan),
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
                 },
-                drainQueued: (record) => this.drainQueued(record),
+                drainQueued: (record, admit) => this.drainQueued(record, admit),
                 drainWaiting: (record) => this.drainWaiting(record),
             },
             helpers: {
@@ -2071,9 +2071,38 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Prompts
 
-    private drainQueued(record?: () => void): string[] {
+    private drainQueued(record?: () => void, admit?: (text: string) => Promise<Admission>): string[] | Promise<string[]> {
         // Messages to steer with; queued ones, held ones and those with images or files wait for their own turn.
-        const take = this.queued.filter((q) => q.mode === "steer" && !q.held && steerable(q));
+        const steering = () => this.queued.filter((q) => q.mode === "steer" && !q.held && steerable(q));
+        const take = steering();
+        if (!take.length) return [];
+        return admit ? this.admitQueued(take, admit, steering, record) : this.steerWith(take, record);
+    }
+
+    /**
+     * Their UserPromptSubmit hooks run while they stay in the queue (on disk too): an interrupt meanwhile hands
+     * them back to the composer. One a hook blocks goes back to the composer now, to change or drop (the hook's
+     * warning says why); the rest go.
+     */
+    private async admitQueued(take: Queued[], admit: (text: string) => Promise<Admission>, steering: () => Queued[], record?: () => void): Promise<string[]> {
+        const blocked: Queued[] = [];
+        for (const q of take) {
+            const admitted = await admit(q.text);
+            if (admitted === "stopped") return [];
+            if (admitted === "blocked") blocked.push(q);
+        }
+        const back = blocked.filter((q) => this.queued.includes(q));
+        if (back.length) {
+            this.queued = this.queued.filter((q) => !back.includes(q));
+            this.queueUpdated();
+            this.engine.draft(this, back.map((q) => q.text).join("\n\n"));
+        }
+        // One the user took out or held meanwhile doesn't go.
+        const still = steering();
+        return this.steerWith(take.filter((q) => !blocked.includes(q) && still.includes(q)), record);
+    }
+
+    private steerWith(take: Queued[], record?: () => void): string[] {
         if (!take.length) return [];
         this.queued = this.queued.filter((q) => !take.includes(q));
         this.queueUpdated();
