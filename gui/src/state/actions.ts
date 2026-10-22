@@ -9,7 +9,7 @@ import { RpcError } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
 import { copyText, pickFolder } from "../lib/platform";
 import { toWire, type Attachment } from "../lib/attachments";
-import { activate, app, createSession, dropHandle, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
+import { activate, app, createSession, revealBackground, dropHandle, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
@@ -183,11 +183,11 @@ export async function stopBackground(sessionId: string, ids?: string[]) {
 }
 
 /** The side panel, where the Background section lists what runs in the background. */
-export function openBackground() {
-    setAgentFocus(undefined);
-    setPrefs("panel", true);
-    // Once the panel is drawn.
-    requestAnimationFrame(() => document.getElementById("background-tasks")?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
+export const openBackground = revealBackground;
+
+/** Clear the finished tasks from the Background panel. */
+export async function clearBackground(sessionId: string) {
+    await rpc.call("session.clearBackground", { id: sessionId }).catch(reportError);
 }
 
 export async function exportSession(id: string) {

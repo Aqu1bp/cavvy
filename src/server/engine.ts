@@ -6,7 +6,8 @@
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
 import { ACCOUNT_PROVIDERS, account, accountProvider, addAccount, defaultAccount, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots } from "../providers/accounts";
 import { loginCommand } from "../backends/account-login";
-import { planLimitKey, type AccountInfo } from "./protocol";
+import { planLimitKey, type AccountInfo, type BackgroundTaskInfo } from "./protocol";
+import { endedText } from "../agent/background";
 import { mergeLimits } from "../backends/limits";
 import { Terminals } from "./terminals";
 import { deleteScript, findScript, findSetupScript, listScripts, markUsed, reorderScripts, saveScript } from "./scripts";
@@ -441,11 +442,26 @@ export class Engine {
         for (const c of this.clients) if (c.subs.has(rt.id)) c.send({ type: "draft", sessionId: rt.id, text, ...back });
     }
 
-    notify(rt: Runtime, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
+    /** The session's name for a notification. */
+    private notifyTitle(rt: Runtime): string {
         // One line cut at a word (as a title from the prompt is made), not the raw prompt with its
         // newlines. Redacted first: the title reaches every window and the OS notification center.
         const first = rt.firstPrompt();
-        const title = rt.title ?? (first ? promptTitle(redact(first)) : undefined) ?? basename(rt.ws.cwd);
+        return rt.title ?? (first ? promptTitle(redact(first)) : undefined) ?? basename(rt.ws.cwd);
+    }
+
+    /**
+     * A background task ended on its own (done, failed, stopped by something other than the user's Stop): a
+     * toast in a window showing the session, a notification otherwise (the GUI decides, as for turns).
+     * Tagged per task, so it's said once however many times it reaches a window.
+     */
+    notifyBackground(rt: Runtime, task: BackgroundTaskInfo) {
+        const outcome = task.status === "done" ? "done" : task.status === "failed" ? "failed" : "stopped";
+        this.broadcast({ type: "notify", sessionId: rt.id, kind: "background", title: this.notifyTitle(rt), body: endedText(task), tag: `background:${rt.id}:${task.id}:${task.startedAt}`, task: { id: task.id, outcome } });
+    }
+
+    notify(rt: Runtime, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
+        const title = this.notifyTitle(rt);
         this.broadcast({ type: "notify", sessionId: rt.id, kind, title, body });
         this.sessionChanged(rt);
         const message = `Harness: ${body}`;
@@ -2225,6 +2241,9 @@ export class Engine {
                 if (p.ids !== undefined && (!Array.isArray(p.ids) || p.ids.length > 500 || p.ids.some((x: unknown) => typeof x !== "string" || !x || x.length > 500))) throw new RpcError("ids must be a list of task ids", "invalid");
                 return { results: await this.runtime(p.id).stopBackground(p.ids as string[] | undefined) };
             }
+            case "session.clearBackground":
+                this.runtime(p.id).clearBackground();
+                return null;
             case "session.stopWatch":
                 this.runtime(p.id).stopWatch(str(p.watchId, "watchId"));
                 return null;

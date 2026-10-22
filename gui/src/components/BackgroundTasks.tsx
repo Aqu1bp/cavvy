@@ -2,16 +2,17 @@
 // session's background, whoever runs it (Claude Code's or Codex's background
 // sub-agents, shells and monitors; tasks delegated to other models; Harness's
 // own background shells and monitors), with Stop on each and Stop all. Esc
-// stops only the turn: this is where background work is stopped. And the
-// composer's count of it, which opens the panel.
+// stops only the turn: this is where background work is stopped. Finished ones
+// stay under the running ones, folded, with how they ended, until cleared.
+// And the composer's count of it, which opens the panel.
 
 import { createSignal, For, Show } from "solid-js";
-import { Bot, Layers, Radar, Terminal, Workflow } from "lucide-solid";
+import { Bot, ChevronRight, Layers, Radar, Terminal, Workflow } from "lucide-solid";
 import type { BackgroundTaskInfo } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, handleFor } from "../state/app";
-import { openBackground, stopBackground } from "../state/actions";
-import { backgroundOf, kindName, runnerName, runningCount, taskMeta } from "../lib/background";
+import { clearBackground, openBackground, stopBackground } from "../state/actions";
+import { backgroundOf, finishedOf, kindName, runnerName, runningCount, taskMeta } from "../lib/background";
 import { duration, plural } from "../lib/format";
 import { now } from "../lib/clock";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
@@ -43,7 +44,7 @@ function TaskRow(p: { handle: SessionHandle; t: BackgroundTaskInfo }) {
                     {kindName(p.t)} · {by()}
                 </span>
             </span>
-            <span class={`meta ${p.t.lost ? "tone-warn" : ""}`}>{taskMeta(p.t, p.handle.view.state.shells, now(), duration)}</span>
+            <span class={`meta ${p.t.lost ? "tone-warn" : p.t.status === "failed" ? "tone-err" : p.t.status === "done" ? "tone-ok" : ""}`}>{taskMeta(p.t, p.handle.view.state.shells, now(), duration)}</span>
             <Show when={stoppable()}>
                 <button class="act hb sm stop" title="Stop" aria-label={`Stop ${kindName(p.t).toLowerCase()}: ${p.t.label}`} disabled={stopping()} onClick={() => void stop()}>
                     <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
@@ -55,12 +56,18 @@ function TaskRow(p: { handle: SessionHandle; t: BackgroundTaskInfo }) {
     );
 }
 
-/** The side panel's Background section; not drawn when nothing runs. */
+/** The side panel's Background section; not drawn when there's nothing running or finished. */
 export function BackgroundTasks(p: { handle: SessionHandle }) {
     const [confirm, setConfirm] = createSignal(false);
+    /** The user's choice to show the finished ones; until then, shown when nothing runs. */
+    const [showDone, setShowDone] = createSignal<boolean>();
     const tasks = () => backgroundOf(p.handle.view.state);
+    const live = () => tasks().filter((t) => t.status === "running");
+    const done = () => finishedOf(tasks());
     const running = () => runningCount(tasks());
-    const stoppable = () => tasks().filter((t) => t.status === "running" && t.stoppable).length;
+    const stoppable = () => live().filter((t) => t.stoppable).length;
+    const expanded = () => showDone() ?? running() === 0;
+    const failed = () => done().filter((t) => t.status === "failed").length;
     return (
         <Show when={tasks().length}>
             <div class="sec bg-sec" id="background-tasks" role="group" aria-label="Background tasks">
@@ -74,7 +81,25 @@ export function BackgroundTasks(p: { handle: SessionHandle }) {
                         </button>
                     </Show>
                 </div>
-                <For each={tasks()}>{(t) => <TaskRow handle={p.handle} t={t} />}</For>
+                <For each={live()}>{(t) => <TaskRow handle={p.handle} t={t} />}</For>
+                <Show when={done().length}>
+                    <button class="divi" aria-expanded={expanded()} onClick={() => setShowDone(!expanded())}>
+                        <span>
+                            Finished{expanded() ? "" : ` (${done().length})`}
+                        </span>
+                        <i />
+                        <Show when={failed()}>
+                            <span class="tone-err divi-tag">{failed()} failed</span>
+                        </Show>
+                        <ChevronRight size={14} class="chev" />
+                    </button>
+                    <Show when={expanded()}>
+                        <For each={done()}>{(t) => <TaskRow handle={p.handle} t={t} />}</For>
+                        <button class="link-btn bg-clear" onClick={() => void clearBackground(p.handle.id)}>
+                            Clear finished
+                        </button>
+                    </Show>
+                </Show>
             </div>
             <ConfirmDialog open={confirm()} title="Stop all background work?" confirmLabel="Stop all" onClose={() => setConfirm(false)} onConfirm={() => stopBackground(p.handle.id)}>
                 {plural(stoppable(), "task")} will stop, and won't report back. The current turn, if any, keeps going.

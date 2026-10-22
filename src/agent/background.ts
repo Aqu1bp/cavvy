@@ -32,12 +32,22 @@ export interface BackgroundSources {
 
 /** Ended tasks the CLIs reported, kept for the list (the oldest go first past this). */
 const ENDED_KEPT = 50;
+/** Tasks that ended while the session was open, shown under the running ones until cleared (the oldest go first past this). */
+const RECENT_KEPT = 20;
 
 export class SessionBackground {
     /** What agent CLIs reported, by id. */
     private reported = new Map<string, BackgroundTaskInfo>();
     /** Running when the session was last open: they stopped when Harness quit, and the agent hasn't been told yet. */
     private lost: BackgroundTaskInfo[] = [];
+    /** The user cleared the finished ones from the list (the lost ones too, though the agent is still told of those). */
+    private lostCleared = false;
+    /** Running as last looked at (sync), by id. */
+    private live = new Map<string, BackgroundTaskInfo>();
+    /** Ended since the session was opened, oldest first: listed until cleared. */
+    private recent: BackgroundTaskInfo[] = [];
+    /** Asked to stop by the user: their end is no news, and however it ended (a killed shell's exit code), they were stopped. */
+    private byUser = new Set<string>();
     private listeners = new Set<() => void>();
 
     constructor(
@@ -70,19 +80,61 @@ export class SessionBackground {
     list(src: BackgroundSources = {}): BackgroundTaskInfo[] {
         const all = new Map<string, BackgroundTaskInfo>();
         for (const t of this.reported.values()) all.set(t.id, { ...t });
-        for (const t of src.delegated ?? []) all.set(t.id, delegatedInfo(t));
+        // Not one a call is waiting on: that's the turn's own work, as a foreground sub-agent is.
+        for (const t of src.delegated ?? []) if (!t.foreground) all.set(t.id, delegatedInfo(t));
         for (const s of src.shells?.values() ?? []) all.set(s.id, shellInfo(s));
+        for (const id of this.byUser) {
+            const t = all.get(id);
+            if (t?.status === "failed") all.set(id, { ...t, status: "stopped" });
+        }
         return [...all.values()].sort((a, b) => a.startedAt - b.startedAt);
     }
 
     /**
-     * What the session's views show: the tasks running now, and (until the agent is told with the next
-     * prompt) those that stopped when Harness quit.
+     * What the session's views show: the tasks running now; those that ended since the session was opened,
+     * until the user clears them; and (until the agent is told with the next prompt, or they're cleared)
+     * those that stopped when Harness quit.
      */
     shown(src: BackgroundSources = {}): BackgroundTaskInfo[] {
         const running = this.list(src).filter((t) => t.status === "running");
         const ids = new Set(running.map((t) => t.id));
-        return [...this.lost.filter((t) => !ids.has(t.id)).map((t) => ({ ...t })), ...running];
+        const lost = this.lostCleared ? [] : this.lost.filter((t) => !ids.has(t.id));
+        const ended = this.recent.filter((t) => !ids.has(t.id));
+        return [...lost, ...ended, ...running].map((t) => ({ ...t }));
+    }
+
+    /**
+     * Look at the list now: keep it in the log, and note what ended since the last look. The tasks that ended
+     * on their own (done, failed, or stopped by something other than the user's Stop), for a notice.
+     */
+    sync(src: BackgroundSources = {}): BackgroundTaskInfo[] {
+        this.persist(src);
+        const all = new Map(this.list(src).map((t) => [t.id, t]));
+        const news: BackgroundTaskInfo[] = [];
+        for (const [id, was] of this.live) {
+            const now = all.get(id);
+            if (now?.status === "running" && now.startedAt === was.startedAt) continue;
+            this.live.delete(id);
+            // Gone with no word of how it ended (another task has its id now): nothing to say.
+            if (!now || now.startedAt !== was.startedAt) continue;
+            this.recent = [...this.recent.filter((t) => t.id !== id), now].slice(-RECENT_KEPT);
+            if (!this.byUser.has(id)) news.push(now);
+        }
+        for (const t of all.values()) if (t.status === "running") this.live.set(t.id, t);
+        return news;
+    }
+
+    /** The user asked for these to stop (the panel, /tasks stop): when they end, it's no news. */
+    stoppedByUser(ids: readonly string[]): void {
+        for (const id of ids) if (this.live.has(id)) this.byUser.add(id);
+    }
+
+    /** The user cleared the finished tasks from the list. */
+    clearEnded(): void {
+        if (!this.recent.length && (this.lostCleared || !this.lost.length)) return;
+        this.recent = [];
+        this.lostCleared = true;
+        this.changed();
     }
 
     /** Keep the list in the session log: a line for each task that started, or ended since it was written running. */
@@ -151,6 +203,21 @@ export function shellInfo(s: BackgroundShell): BackgroundTaskInfo {
 export function describeTask(t: Pick<BackgroundTaskInfo, "kind" | "label">): string {
     const kind = t.kind === "agent" ? "background sub-agent" : t.kind === "shell" ? "background command" : t.kind === "monitor" ? "monitor" : t.kind === "workflow" ? "workflow" : "background task";
     return `${kind}: ${t.label}`;
+}
+
+/** One line for a notice that a task ended: "Background sub-agent finished: Map auth (2m 5s)". */
+export function endedText(t: BackgroundTaskInfo): string {
+    const what = describeTask(t);
+    const [kind, ...rest] = what.split(": ");
+    const how = t.status === "done" ? "finished" : t.status === "failed" ? "failed" : t.lost ? "stopped with its process" : "was stopped";
+    const ms = (t.endedAt ?? t.startedAt) - t.startedAt;
+    return `${kind![0]!.toUpperCase()}${kind!.slice(1)} ${how}: ${rest.join(": ")}${ms > 0 ? ` (${span(ms)})` : ""}`;
+}
+
+/** "45s", "2m 5s", "1h 3m". */
+function span(ms: number): string {
+    const s = Math.round(ms / 1000);
+    return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
 
 /** For the agent, with the next prompt: what stopped when Harness quit (as a backend's stopped work is said, agent.ts recordBackendTurn). */

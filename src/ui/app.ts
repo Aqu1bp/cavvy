@@ -24,7 +24,7 @@ import type { McpAsker } from "../mcp/elicitation";
 import { formatBytes } from "../util/files";
 import { loadImageFile, planPaste, prepareImage, readClipboardImage, type NamedImage, type Prepared, type PrepareOptions } from "./images";
 import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
-import { describeTask, SessionBackground } from "../agent/background";
+import { describeTask, endedText, SessionBackground } from "../agent/background";
 import type { BackendWake } from "../backends/types";
 import { IdleCompactTimer } from "../agent/idle-compact";
 import { DELEGATE_TOOL } from "../agent/delegation";
@@ -846,9 +846,12 @@ export class App {
 
     private boundBackground?: Session;
 
-    /** Keep the background list in the session log (what started, what ended). */
+    /** Keep the background list in the session log (what started, what ended), and say what ended on its own. */
     private persistBackground() {
-        this.toolState.background?.persist({ delegated: this.agent?.delegatedTasks, shells: this.toolState.shells });
+        const delegated = this.agent?.delegatedTasks;
+        const ended = this.toolState.background?.sync({ delegated, shells: this.toolState.shells }) ?? [];
+        // A delegated task's end is said already, with where its result goes (Agent.deliverTasks).
+        for (const t of ended) if (!delegated?.some((d) => d.id === t.id)) this.notice(redact(endedText(t)), t.status === "failed" ? "warn" : "info");
     }
 
     /** Turns agent CLIs started by themselves, waiting for the session to be free to adopt them (wake). */

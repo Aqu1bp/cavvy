@@ -9,7 +9,8 @@ import type { GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderI
 import { applyOp, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
 import { credentials, focused, notify, isTauri, windowKey } from "../lib/platform";
-import { prefs } from "./prefs";
+import { prefs, setPrefs } from "./prefs";
+import { noticeRoute } from "../lib/background";
 import { mayCreateFiles } from "../lib/pathcache";
 // filelinks imports rpc from here: used only once events arrive, so the cycle is harmless.
 import { paths } from "./filelinks";
@@ -18,7 +19,7 @@ export type { Toast } from "../lib/toasts";
 import { DelayedPending } from "../lib/delayed-pending";
 import { safeRenderText } from "../lib/render-error";
 import { afterFailedReopen } from "../lib/reopen";
-import { jumpTarget, setFindOpen, setJumpTarget, setSettingsTab } from "./ui";
+import { jumpTarget, setAgentFocus, setFindOpen, setJumpTarget, setSettingsTab } from "./ui";
 import { applyKeybindingsFile, keymap } from "./keybindings";
 import { orderSessions } from "../lib/session-order";
 import { composerStorage } from "../lib/drafts";
@@ -679,6 +680,7 @@ function onEvent(ev: ServerEvent) {
             if (!app.modelsLoading) void refreshModels().catch(() => undefined);
             return;
         case "notify": {
+            if (ev.kind === "background") return backgroundEnded(ev);
             if (!prefs.notifications) return;
             if (focused() && app.activeId === ev.sessionId) return;
             if (ev.kind === "done" && focused()) return;
@@ -686,6 +688,31 @@ function onEvent(ev: ServerEvent) {
             return;
         }
     }
+}
+
+/** Background tasks whose end was told here (a toast or a notification), by tag: once each. */
+const toldEnded = new Set<string>();
+
+/** A background task ended on its own: a toast in its session's view, a desktop notification otherwise. */
+function backgroundEnded(ev: Extract<ServerEvent, { type: "notify" }>) {
+    const tag = ev.tag ?? `${ev.sessionId}:${ev.body}`;
+    const route = noticeRoute({ focused: focused(), active: app.activeId === ev.sessionId, notifications: prefs.notifications, seen: toldEnded.has(tag) });
+    if (route === "none") return;
+    toldEnded.add(tag);
+    const reveal = () => {
+        void activate(ev.sessionId);
+        revealBackground();
+    };
+    if (route === "toast") toast(ev.body, ev.task?.outcome === "failed" ? "warn" : ev.task?.outcome === "done" ? "success" : "info", { label: "Show", run: reveal });
+    else void notify(ev.title, ev.body, reveal, { tag });
+}
+
+/** The side panel, on its Background section. */
+export function revealBackground() {
+    setAgentFocus(undefined);
+    setPrefs("panel", true);
+    // Once the panel is drawn.
+    requestAnimationFrame(() => document.getElementById("background-tasks")?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
 }
 
 export function start() {

@@ -55,6 +55,32 @@ describe("Session persistence", () => {
         back.release();
     });
 
+    test("SessionBackground.sync says what ended on its own once, not the user's stops, and keeps the finished ones until cleared", async () => {
+        const { SessionBackground, endedText } = await import("../src/agent/background");
+        const bg = new SessionBackground(undefined, () => 100);
+        const shells = new Map<string, any>([
+            ["bash_1", { id: "bash_1", command: "npm test", startedAt: 10, exitCode: null }],
+            ["bash_2", { id: "bash_2", command: "npm run dev", startedAt: 20, exitCode: null }],
+        ]);
+        expect(bg.sync({ shells })).toEqual([]);
+        bg.stoppedByUser(["bash_2"]);
+        shells.get("bash_1").exitCode = 0;
+        shells.get("bash_2").exitCode = 143;
+        const news = bg.sync({ shells });
+        expect(news.map((t) => [t.id, t.status])).toEqual([["bash_1", "done"]]);
+        expect(endedText({ ...news[0]!, endedAt: 135_010 })).toBe("Background command finished: npm test (2m 15s)");
+        expect(bg.sync({ shells })).toEqual([]);
+        // Killed by the user: stopped, not failed.
+        expect(bg.shown({ shells }).map((t) => [t.id, t.status])).toEqual([["bash_1", "done"], ["bash_2", "stopped"]]);
+        bg.clearEnded();
+        expect(bg.shown({ shells })).toEqual([]);
+        // A delegated task a call waits on is the turn's own work: not listed.
+        const delegated = [{ id: "task-1", description: "Review", agent: "explore", model: "gemini:g", writes: false, status: "running", startedAt: 1, delivered: false, foreground: 1, settled: Promise.resolve(), controller: new AbortController() }] as any;
+        expect(bg.list({ delegated })).toEqual([]);
+        delegated[0].foreground = 0;
+        expect(bg.list({ delegated }).map((t) => t.id)).toEqual(["task-1"]);
+    });
+
     test("a SessionBackground made from the log has its running tasks as stopped when Harness quit, until they're told", async () => {
         const { SessionBackground, lostNote } = await import("../src/agent/background");
         const s = Session.create(project());

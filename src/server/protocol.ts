@@ -1238,7 +1238,17 @@ export type ServerEvent =
     | { type: "sessions.remove"; id: string }
     /** Its runtime was closed under the window (a delete that failed): open it again for a fresh snapshot, keeping the draft and view. */
     | { type: "session.reload"; sessionId: string }
-    | { type: "notify"; sessionId: string; kind: "done" | "permission" | "question" | "plan" | "error"; title: string; body: string }
+    | {
+          type: "notify";
+          sessionId: string;
+          /** background: a background task ended on its own (task says which, and how). */
+          kind: "done" | "permission" | "question" | "plan" | "error" | "background";
+          title: string;
+          body: string;
+          /** Names what it's about: one notification per tag (a background task's). */
+          tag?: string;
+          task?: { id: string; outcome: "done" | "failed" | "stopped" };
+      }
     | { type: "toast"; level: "info" | "warn" | "error"; message: string }
     /** What goes back into the session's input box (unsent messages after an interrupt, a rewound prompt). */
     | { type: "draft"; sessionId: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] }
@@ -1398,6 +1408,8 @@ export interface Methods {
     "session.killShell": { params: { id: string; shellId: string }; result: null };
     /** Stop background tasks (SessionState.backgroundTasks) by id, or every one running: how each went. */
     "session.stopBackground": { params: { id: string; ids?: string[] }; result: { results: Record<string, BackgroundStopResult> } };
+    /** Clear the finished tasks from the Background panel. */
+    "session.clearBackground": { params: { id: string }; result: null };
     "session.stopWatch": { params: { id: string; watchId: string }; result: null };
     /** New shells no longer get this secret. */
     "session.forgetSecret": { params: { id: string; name: string }; result: null };

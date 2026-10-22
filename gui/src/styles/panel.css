@@ -634,3 +634,10 @@ button.prow:active {
     margin-right: -2px;
     color: var(--stop);
 }
+
+.bg-sec .bg-clear {
+    display: block;
+    margin: 2px 0 0 auto;
+    padding: 4px 8px;
+    font-size: 0.821rem;
+}

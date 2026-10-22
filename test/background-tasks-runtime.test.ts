@@ -26,12 +26,18 @@ afterAll(() => {
     iso.cleanup();
 });
 
+/** Every event the engine sent, by client. */
+const sent = new WeakMap<object, ServerEvent[]>();
+
 function client(engine: InstanceType<typeof Engine>) {
     const events: ServerEvent[] = [];
     const c = { subs: new Set<string>(), send: (e: ServerEvent) => void events.push(e) };
     engine.clients.add(c as never);
+    sent.set(c, events);
     return c as never;
 }
+
+const notices = (c: object) => (sent.get(c) ?? []).flatMap((e) => (e.type === "notify" && e.kind === "background" ? [e] : []));
 
 async function session(cwd = createDemoProject(tempDir("harness-bg-proj-"), { git: false })) {
     const engine = new Engine();
@@ -119,11 +125,11 @@ test("the session's background list has an agent CLI's tasks and its own shells,
         // One by id: the CLI's goes to its backend, for this session.
         expect(await engine.handle(c, "session.stopBackground", { id, ids: ["task-cli-1"] })).toEqual({ results: { "task-cli-1": "stopped" } });
         expect(stops).toEqual([{ key: id, ids: ["task-cli-1"] }]);
-        expect(rt.snapshot().state.backgroundTasks!.map((t) => t.id)).toEqual(["bash_1"]);
+        expect(rt.snapshot().state.backgroundTasks!.filter((t) => t.status === "running").map((t) => t.id)).toEqual(["bash_1"]);
         // Every one running: the shell.
         expect(await engine.handle(c, "session.stopBackground", { id })).toEqual({ results: { bash_1: "stopped" } });
         expect(sh.killed).toBe(1);
-        expect(rt.snapshot().state.backgroundTasks).toEqual([]);
+        expect(rt.snapshot().state.backgroundTasks!.filter((t) => t.status === "running")).toEqual([]);
         expect(await engine.handle(c, "session.stopBackground", { id, ids: ["nope"] })).toEqual({ results: { nope: "unknown" } });
         await expect(engine.handle(c, "session.stopBackground", { id, ids: "bash_1" })).rejects.toThrow("ids must be a list");
         // Each start and end is in the session log.
@@ -132,7 +138,14 @@ test("the session's background list has an agent CLI's tasks and its own shells,
             ["task-cli-1", "running"],
             ["bash_1", "running"],
             ["task-cli-1", "stopped"],
-            ["bash_1", "failed"],
+            // Killed by the user's stop (exit 143): stopped, not failed.
+            ["bash_1", "stopped"],
+        ]);
+        // The user's own stops are no news; both are listed as finished until cleared.
+        expect(notices(c)).toEqual([]);
+        expect(rt.snapshot().state.backgroundTasks!.map((t) => [t.id, t.status])).toEqual([
+            ["task-cli-1", "stopped"],
+            ["bash_1", "stopped"],
         ]);
     } finally {
         await engine.stop();
@@ -163,6 +176,8 @@ test("a task running when Harness quit shows as stopped then when the session is
         const snap = (await engine.handle(c, "session.open", { id })) as SessionSnapshot;
         expect(snap.state.backgroundTasks).toMatchObject([{ id: "bash_1", kind: "shell", label: "npm run watch", status: "stopped", lost: true }]);
         const rt = engine.runtimes.get(id)!;
+        // What ended before isn't news again.
+        expect(notices(c)).toEqual([]);
         await rt.ready;
         await engine.handle(c, "session.send", { id, text: "what happened?" });
         await until(() => rt.idle && rt.session.messages.filter((m) => m.role === "assistant").length >= 2);
@@ -185,5 +200,38 @@ test("a task running when Harness quit shows as stopped then when the session is
         expect(snap.state.backgroundTasks).toEqual([]);
     } finally {
         await again.stop();
+    }
+});
+
+test("a task that ends on its own is news (a notify event, tagged per task), stays listed as finished, and can be cleared", async () => {
+    const { engine, c, id, rt } = await session();
+    try {
+        const done = shell("bash_1", "npm test");
+        const fails = shell("bash_2", "npm run lint");
+        rt.toolState.shells.set(done.id, done);
+        rt.toolState.shells.set(fails.id, fails);
+        await engine.handle(c, "session.stopBackground", { id, ids: [] });
+        expect(notices(c)).toEqual([]);
+        done.exitCode = 0;
+        fails.exitCode = 1;
+        await engine.handle(c, "session.stopBackground", { id, ids: [] });
+        const told = notices(c);
+        expect(told.map((e) => [e.body.replace(/ \(\d+s\)$/, ""), e.task, e.sessionId])).toEqual([
+            ["Background command finished: npm test", { id: "bash_1", outcome: "done" }, id],
+            ["Background command failed: npm run lint", { id: "bash_2", outcome: "failed" }, id],
+        ]);
+        expect(told[0]!.tag).toBe(`background:${id}:bash_1:${done.startedAt}`);
+        expect(new Set(told.map((e) => e.tag)).size).toBe(2);
+        // Said once: looking again says nothing more.
+        await engine.handle(c, "session.stopBackground", { id, ids: [] });
+        expect(notices(c)).toHaveLength(2);
+        expect(rt.snapshot().state.backgroundTasks!.map((t) => [t.id, t.status])).toEqual([
+            ["bash_1", "done"],
+            ["bash_2", "failed"],
+        ]);
+        await engine.handle(c, "session.clearBackground", { id });
+        expect(rt.snapshot().state.backgroundTasks).toEqual([]);
+    } finally {
+        await engine.stop();
     }
 });

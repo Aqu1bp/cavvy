@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "fs";
-import { backgroundOf, kindName, runnerName, runningCount, stopOutcome, taskMeta } from "../gui/src/lib/background";
+import { backgroundOf, finishedOf, kindName, noticeRoute, runnerName, runningCount, stopOutcome, taskMeta } from "../gui/src/lib/background";
+import { tagId } from "../gui/src/lib/platform";
 import type { BackgroundTaskInfo } from "../src/server/protocol";
 import { componentCode, elements } from "./gui-component-harness";
 import { plural } from "../gui/src/lib/format";
@@ -35,10 +36,12 @@ test("ordinary work and approval waiting keep their existing labels", () => {
 
 const task = (o: Partial<BackgroundTaskInfo> = {}): BackgroundTaskInfo => ({ id: "t1", provider: "claude-code", kind: "agent", label: "Map auth", startedAt: 0, status: "running", stoppable: true, ...o });
 
-test("the Background panel lists running tasks and those that stopped when Harness quit, not ended ones", () => {
-    const tasks = [task(), task({ id: "t2", status: "done" }), task({ id: "t3", status: "stopped", lost: true }), task({ id: "t4", status: "stopped" })];
-    expect(backgroundOf({ backgroundTasks: tasks, shells: [] }).map((t) => t.id)).toEqual(["t1", "t3"]);
-    expect(runningCount(backgroundOf({ backgroundTasks: tasks, shells: [] }))).toBe(1);
+test("the Background panel lists what the server keeps: running tasks, then the finished ones, most recent first", () => {
+    const tasks = [task(), task({ id: "t2", status: "done", endedAt: 50 }), task({ id: "t3", status: "stopped", lost: true, endedAt: 10 }), task({ id: "t4", status: "failed", endedAt: 90 })];
+    const listed = backgroundOf({ backgroundTasks: tasks, shells: [] });
+    expect(listed.map((t) => t.id)).toEqual(["t1", "t2", "t3", "t4"]);
+    expect(runningCount(listed)).toBe(1);
+    expect(finishedOf(listed).map((t) => t.id)).toEqual(["t4", "t2", "t3"]);
     expect(backgroundOf(undefined)).toEqual([]);
 });
 
@@ -65,8 +68,33 @@ test("a task's row says its kind, who runs it, and how long it's run (a monitor'
     const dur = (ms: number) => `${ms / 1000}s`;
     expect(taskMeta(task({ startedAt: 1000 }), [], 6000, dur)).toBe("5s");
     expect(taskMeta(task({ status: "stopped", lost: true }), [], 6000, dur)).toBe("Stopped when Harness quit");
+    // A finished one: how it ended, and after how long.
+    expect(taskMeta(task({ status: "done", startedAt: 1000, endedAt: 4000 }), [], 9000, dur)).toBe("Done · 3s");
+    expect(taskMeta(task({ status: "failed", startedAt: 1000, endedAt: 2000 }), [], 9000, dur)).toBe("Failed · 1s");
+    expect(taskMeta(task({ status: "stopped", startedAt: 1000, endedAt: 3000 }), [], 9000, dur)).toBe("Stopped · 2s");
     const shells = [{ id: "monitor_1", command: "x", running: true, exitCode: null, startedAt: 0, monitor: { description: "d", events: 0, expiresAt: 125_000 } }];
     expect(taskMeta(task({ id: "monitor_1", kind: "monitor" }), shells, 5000, dur)).toBe("2m left");
+});
+
+test("a task's end is a toast in its session's view, a desktop notification otherwise (if they're on), once", () => {
+    const route = (o: Partial<Parameters<typeof noticeRoute>[0]>) => noticeRoute({ focused: true, active: true, notifications: true, seen: false, ...o });
+    expect(route({})).toBe("toast");
+    // Another session open, or the window in the background: a notification, as for a turn's notices.
+    expect(route({ active: false })).toBe("desktop");
+    expect(route({ focused: false })).toBe("desktop");
+    expect(route({ focused: false, notifications: false })).toBe("none");
+    // The toast doesn't depend on the notifications setting.
+    expect(route({ notifications: false })).toBe("toast");
+    // Told already (another window, or the event again): nothing.
+    expect(route({ seen: true })).toBe("none");
+    // Each task's notification has an id of its own, the same each time.
+    expect(tagId("background:s1:bash_1:5")).toBe(tagId("background:s1:bash_1:5"));
+    expect(tagId("background:s1:bash_1:5")).not.toBe(tagId("background:s1:bash_2:5"));
+    expect(Number.isInteger(tagId("x".repeat(500))) && Math.abs(tagId("x".repeat(500))) < 2 ** 31).toBe(true);
+    // The app sends these through that route.
+    const appSrc = readFileSync(new URL("../gui/src/state/app.ts", import.meta.url), "utf8");
+    expect(appSrc).toContain('if (ev.kind === "background") return backgroundEnded(ev);');
+    expect(appSrc).toContain("void notify(ev.title, ev.body, reveal, { tag });");
 });
 
 test("a stop's toast says what stopped and what couldn't be", () => {
@@ -92,6 +120,7 @@ test("the side panel draws the Background section in place of the separate shell
 
 function renderSection(tasks: BackgroundTaskInfo[]) {
     const stops: { id: string; ids?: string[] }[] = [];
+    const cleared: string[] = [];
     const sets: unknown[] = [];
     const node = (tag: any, props: Record<string, any> | null, ...children: any[]): any => (typeof tag === "function" ? tag({ ...(props ?? {}), children: children.length === 1 ? children[0] : children }) : { tag, props: props ?? {}, children });
     const Section = componentCode("BackgroundTasks", {
@@ -99,12 +128,13 @@ function renderSection(tasks: BackgroundTaskInfo[]) {
         For: (p: { each: unknown[]; children: (x: unknown) => unknown }) => p.each.map((x) => p.children(x)),
         Show: (p: { when: unknown; children: unknown; fallback?: unknown }) => (p.when ? p.children : p.fallback),
         ConfirmDialog: (p: Record<string, any>) => ({ tag: "ConfirmDialog", props: p, children: [p.children] }),
-        Bot: "Bot", Layers: "Layers", Radar: "Radar", Terminal: "Terminal", Workflow: "Workflow",
+        Bot: "Bot", ChevronRight: "ChevronRight", Layers: "Layers", Radar: "Radar", Terminal: "Terminal", Workflow: "Workflow",
         app: { providers: [{ id: "claude-code", name: "Claude Code" }] },
         handleFor: () => undefined,
         openBackground() {},
         stopBackground: async (id: string, ids?: string[]) => void stops.push({ id, ids }),
-        backgroundOf, kindName, runnerName, runningCount, taskMeta,
+        clearBackground: async (id: string) => void cleared.push(id),
+        backgroundOf, finishedOf, kindName, runnerName, runningCount, taskMeta,
         duration: (ms: number) => `${Math.round(ms / 1000)}s`,
         plural,
         now: () => 10_000,
@@ -113,7 +143,7 @@ function renderSection(tasks: BackgroundTaskInfo[]) {
     });
     const tree = Section({ handle: { id: "s1", view: { state: { backgroundTasks: tasks, shells: [] } } } });
     const text = (t: any): string => (Array.isArray(t) ? t.map(text).join("") : t && typeof t === "object" ? text(t.children) : t == null || t === false ? "" : String(t));
-    return { tree, stops, sets, text: text(tree), buttons: elements(tree, "button") };
+    return { tree, stops, cleared, sets, text: text(tree), buttons: elements(tree, "button") };
 }
 
 test("the Background section: a row per task with its kind, runner and time, Stop on each that can stop, and Stop all behind a confirm", async () => {
@@ -146,4 +176,24 @@ test("with one task there's no Stop all, and one lost when Harness quit says so 
     expect(lost.text).toContain("Stopped when Harness quit");
     expect(lost.buttons.filter((b) => String(b.props["aria-label"] ?? "").startsWith("Stop "))).toEqual([]);
     expect(renderSection([]).text).toBe("");
+});
+
+test("finished tasks stay under the running ones, folded while something runs, with how they ended, and can be cleared", async () => {
+    const finished = [task({ id: "d1", label: "Write docs", status: "done", startedAt: 1000, endedAt: 4000 }), task({ id: "f1", label: "Lint", kind: "shell", provider: "harness", status: "failed", startedAt: 1000, endedAt: 2000 })];
+    const folded = renderSection([task(), ...finished]);
+    expect(folded.text).toContain("Finished (2)");
+    expect(folded.text).toContain("1 failed");
+    expect(folded.text).not.toContain("Write docs");
+    expect(folded.buttons.find((b) => b.props.class === "divi")!.props["aria-expanded"]).toBe(false);
+    folded.buttons.find((b) => b.props.class === "divi")!.props.onClick();
+    expect(folded.sets).toContain(true);
+    // With nothing running they show, each with its outcome and no Stop; Clear clears them.
+    const open = renderSection(finished);
+    expect(open.text).toContain("Write docs");
+    expect(open.text).toContain("Done · 3s");
+    expect(open.text).toContain("Failed · 1s");
+    expect(open.buttons.filter((b) => String(b.props["aria-label"] ?? "").startsWith("Stop "))).toEqual([]);
+    open.buttons.find((b) => text(b.children) === "Clear finished")!.props.onClick();
+    await Bun.sleep(0);
+    expect(open.cleared).toEqual(["s1"]);
 });

@@ -1748,6 +1748,7 @@ export class Runtime {
     /** Stop a delegated task by its sub-agent's id, or every one still running. Task sub-agents stop with the turn. */
     stopAgent(agentId?: string): number {
         if (!this.agent) return 0;
+        this.toolState.background?.stoppedByUser(agentId ? [this.view.agents.find((x) => x.id === agentId)?.taskId ?? ""] : this.agent.delegatedTasks.map((t) => t.id));
         if (!agentId) return this.agent.stopDelegated();
         const a = this.view.agents.find((x) => x.id === agentId);
         if (!a?.taskId) throw new Error(a ? "This sub-agent stops with the turn: interrupt it (Esc) to stop it." : "No such sub-agent.");
@@ -3140,7 +3141,8 @@ export class Runtime {
         const bg = this.toolState.background;
         if (!bg || this.closed) return;
         const src = { delegated: this.agent?.delegatedTasks, shells: this.toolState.shells };
-        bg.persist(src);
+        // One that ended on its own is news, in this window or as a notification (the GUI decides which).
+        for (const t of bg.sync(src)) this.engine.notifyBackground(this, { ...t, label: redact(t.label).slice(0, 300) });
         const tasks = bg.shown(src).map((t) => ({ ...t, label: redact(t.label).slice(0, 300) }));
         if (JSON.stringify(tasks) !== JSON.stringify(this.view.state.backgroundTasks ?? [])) this.setState({ backgroundTasks: tasks });
     }
@@ -3148,6 +3150,8 @@ export class Runtime {
     /** Stop background work from the panel or /tasks stop: these tasks, or every one running. How each went. */
     async stopBackground(ids?: string[]): Promise<Record<string, BackgroundStop>> {
         const agent = this.agent;
+        // The user's own stop: no notice when they end.
+        this.toolState.background?.stoppedByUser(ids ?? (this.view.state.backgroundTasks ?? []).filter((t) => t.status === "running").map((t) => t.id));
         let results: Record<string, BackgroundStop>;
         if (agent) results = await agent.stopBackground(ids);
         else {
@@ -3161,6 +3165,12 @@ export class Runtime {
         }
         this.syncShells();
         return results;
+    }
+
+    /** The user cleared the finished tasks from the Background panel. */
+    clearBackground() {
+        this.toolState.background?.clearEnded();
+        this.syncBackground();
     }
 
     /** The user stopped a watch from the panel: the agent hears of it with their next message. */
@@ -3181,6 +3191,7 @@ export class Runtime {
     async killShell(shellId: string) {
         const sh = this.toolState.shells.get(shellId);
         if (!sh) throw new Error(`No background shell ${shellId}`);
+        this.toolState.background?.stoppedByUser([shellId]);
         // The agent may be counting on it to wake it: it hears it was stopped with the next message.
         if (sh.monitor && sh.exitCode === null) this.agent?.addReminder(stoppedMonitorNote(sh));
         await sh.kill();
