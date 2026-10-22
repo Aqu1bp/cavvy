@@ -459,7 +459,8 @@ export function startMockLlm(o: MockOptions = {}) {
             }
             const promptMsg = messages[promptIdx] ?? {};
             // The harness's own notes ride along with prompts; only the user's words pick the script.
-            const prompt = (typeof promptMsg.content === "string" ? promptMsg.content : (promptMsg.content ?? []).map((c: Json) => c.text ?? "").join("\n")).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+            // A prompt after an interrupt arrives joined to the interrupted one (one user message): only what follows counts.
+            const prompt = (typeof promptMsg.content === "string" ? promptMsg.content : (promptMsg.content ?? []).map((c: Json) => c.text ?? "").join("\n")).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").split("[Request interrupted by user]").pop()!.trim();
             const images = Array.isArray(promptMsg.content) ? promptMsg.content.filter((c: Json) => c.type === "image_url").length : 0;
             const after = messages.slice(promptIdx + 1);
             const toolRounds = after.filter((m) => m.role === "assistant").length;
