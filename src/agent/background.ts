@@ -43,18 +43,22 @@ export class SessionBackground {
     private lost: BackgroundTaskInfo[] = [];
     /** The user cleared the finished ones from the list (the lost ones too, though the agent is still told of those). */
     private lostCleared = false;
-    /** Running as last looked at (sync), by id. */
+    /** Running as last looked at (sync), by id and start (taskKey): ids start again (a rebuilt Agent's task-1). */
     private live = new Map<string, BackgroundTaskInfo>();
     /** Ended since the session was opened, oldest first: listed until cleared. */
     private recent: BackgroundTaskInfo[] = [];
-    /** Stopped by the user: their end is no news, and however it ended (a killed shell's exit code), they were stopped. */
-    private byUser = new Set<string>();
+    /**
+     * Stopped by the user, by id, with the start of the task they stopped (undefined until a look finds it): their
+     * end is no news, and however it ended (a killed shell's exit code), they were stopped. A later task with
+     * the same id (a rebuilt Agent's task-1) isn't theirs.
+     */
+    private byUser = new Map<string, number | undefined>();
     /** The user asked these to stop, and the answer hasn't come: an end meanwhile is held until it does. */
     private stopping = new Set<string>();
     /** Ends held while their stop was pending, by id. */
     private held = new Map<string, BackgroundTaskInfo>();
-    /** The user's stop wasn't confirmed in time: ending stopped, it was theirs; ending any other way, it's news. */
-    private unconfirmed = new Set<string>();
+    /** The user's stop wasn't confirmed in time (by id, with the task's start): ending stopped, it was theirs; ending any other way, it's news. */
+    private unconfirmed = new Map<string, number | undefined>();
     /** Ends a stop that didn't go through let go: news at the next look (sync). */
     private released: BackgroundTaskInfo[] = [];
     /** Shells running when this session was bound that another session started (one terminal runs on across /new and /resume): not this session's. */
@@ -105,10 +109,7 @@ export class SessionBackground {
         // Not one a call is waiting on: that's the turn's own work, as a foreground sub-agent is.
         for (const t of src.delegated ?? []) if (!t.foreground) all.set(t.id, delegatedInfo(t));
         for (const s of src.shells?.values() ?? []) if (!this.foreign.has(shellKey(s))) all.set(s.id, shellInfo(s));
-        for (const id of this.byUser) {
-            const t = all.get(id);
-            if (t?.status === "failed") all.set(id, { ...t, status: "stopped" });
-        }
+        for (const t of all.values()) if (t.status === "failed" && this.stoppedBy(t)) all.set(t.id, { ...t, status: "stopped" });
         return [...all.values()].sort((a, b) => a.startedAt - b.startedAt);
     }
 
@@ -131,55 +132,78 @@ export class SessionBackground {
      */
     sync(src: BackgroundSources = {}): BackgroundTaskInfo[] {
         this.persist(src);
-        const all = new Map(this.list(src).map((t) => [t.id, t]));
+        const tasks = this.list(src);
+        const all = new Map(tasks.map((t) => [t.id, t]));
+        const byKey = new Map(tasks.map((t) => [taskKey(t), t]));
+        // The user's stops answered before a look found the task: theirs is the one listed now.
+        for (const [id, at] of this.byUser) if (at === undefined && all.has(id)) this.byUser.set(id, all.get(id)!.startedAt);
+        for (const [id, at] of this.unconfirmed) if (at === undefined && all.has(id)) this.unconfirmed.set(id, all.get(id)!.startedAt);
         const news: BackgroundTaskInfo[] = [];
         // A copy: one a call now waits on is put back as it's looked at (a Map would come to it again).
-        for (const [id, was] of [...this.live]) {
-            const now = all.get(id);
-            if (now?.status === "running" && now.startedAt === was.startedAt) continue;
-            this.live.delete(id);
+        for (const [key, was] of [...this.live]) {
+            const id = was.id;
+            const now = byKey.get(key);
+            if (now?.status === "running") continue;
+            this.live.delete(key);
             // A delegated task a call now waits on: the turn's own work for now, listed again when the wait ends.
             if (!now && src.delegated?.some((d) => d.id === id && d.foreground && d.startedAt === was.startedAt)) {
-                this.live.set(id, was);
+                this.live.set(key, was);
                 continue;
             }
             if (!now) {
-                // Taken out of its list while running (the agent's KillShell removes the shell it stops): it was
-                // stopped, by the agent. Kept so in the log, or reopening would say Harness's quitting stopped it.
+                // Taken out of its list while running (the agent's KillShell removes the shell it stops; a rebuilt
+                // Agent's delegated tasks go with the old one): it was stopped. Kept so in the log, or reopening
+                // would say Harness's quitting stopped it.
                 const ended: BackgroundTaskInfo = { ...was, status: "stopped", endedAt: this.now() };
                 const logged = this.log?.backgroundTasks.get(id);
                 if (logged?.status === "running" && logged.startedAt === was.startedAt) this.log!.recordBackgroundTask(ended);
-                this.recent = [...this.recent.filter((t) => t.id !== id), ended].slice(-RECENT_KEPT);
+                this.recent = [...this.recent.filter((t) => taskKey(t) !== key), ended].slice(-RECENT_KEPT);
                 continue;
             }
-            // Another task has its id now: of the one before, there's nothing more to say.
-            if (now.startedAt !== was.startedAt) continue;
             // A shell doesn't say when it ended: about now (it's looked at every few seconds while one runs).
             const ended = now.endedAt === undefined ? { ...now, endedAt: this.now() } : now;
-            this.recent = [...this.recent.filter((t) => t.id !== id), ended].slice(-RECENT_KEPT);
+            this.recent = [...this.recent.filter((t) => taskKey(t) !== key), ended].slice(-RECENT_KEPT);
             // Its stop not answered yet: whether this end is the user's depends on the answer.
             if (this.stopping.has(id)) this.held.set(id, ended);
-            else if (this.unconfirmed.delete(id)) {
-                if (ended.status === "stopped") this.byUser.add(id);
+            else if (this.unconfirmed.has(id) && matches(this.unconfirmed.get(id), ended)) {
+                this.unconfirmed.delete(id);
+                if (ended.status === "stopped") this.byUser.set(id, ended.startedAt);
                 else news.push(ended);
-            } else if (!this.byUser.has(id) && !ended.byUser) news.push(ended);
+            } else if (!this.stoppedBy(ended) && !ended.byUser) news.push(ended);
         }
         // One that ended and is now said to have ended otherwise (a sub-agent said to be done, then to have
         // failed): the list says so, and it's news again (the notice's tag has the outcome).
         this.recent = this.recent.map((t) => {
-            const now = all.get(t.id);
-            if (!now || now.status === "running" || now.status === t.status || now.startedAt !== t.startedAt) return t;
+            const now = byKey.get(taskKey(t));
+            if (!now || now.status === "running" || now.status === t.status) return t;
             const revised = { ...now, endedAt: now.endedAt ?? t.endedAt };
-            if (!this.stopping.has(t.id) && !this.byUser.has(t.id) && !now.byUser) news.push(revised);
+            // Its stop still pending: the end held for its answer is the revised one (a refused stop lets that go).
+            if (this.stopping.has(t.id)) {
+                const held = this.held.get(t.id);
+                if (held && taskKey(held) === taskKey(t)) this.held.set(t.id, revised);
+            } else if (!this.stoppedBy(t) && !now.byUser) news.push(revised);
             return revised;
         });
-        for (const t of all.values()) if (t.status === "running") this.live.set(t.id, t);
+        for (const t of tasks) if (t.status === "running") this.live.set(taskKey(t), t);
         return [...news, ...this.released.splice(0)];
+    }
+
+    /** The user's Stop is what ended this task (not another with its id). */
+    private stoppedBy(t: Pick<BackgroundTaskInfo, "id" | "startedAt">): boolean {
+        return this.byUser.has(t.id) && matches(this.byUser.get(t.id), t);
+    }
+
+    /** The running task with this id, as last looked at. */
+    private running(id: string): BackgroundTaskInfo | undefined {
+        return [...this.live.values()].findLast((t) => t.id === id);
     }
 
     /** The user stopped these, and it's certain to go through (a delegated task's abort, a shell's kill): when they end, it's no news. */
     stoppedByUser(ids: readonly string[]): void {
-        for (const id of ids) if (this.live.has(id)) this.byUser.add(id);
+        for (const id of ids) {
+            const t = this.running(id);
+            if (t) this.byUser.set(id, t.startedAt);
+        }
     }
 
     /**
@@ -205,11 +229,13 @@ export class SessionBackground {
         this.stopping.delete(id);
         const held = this.held.get(id);
         this.held.delete(id);
+        const startedAt = held?.startedAt ?? this.running(id)?.startedAt ?? this.reported.get(id)?.startedAt;
         if (r === "stopped" || (r === "timeout" && held?.status === "stopped")) {
-            this.byUser.add(id);
+            this.byUser.set(id, startedAt);
             // A killed shell's exit code said it failed: it was stopped.
-            if (held?.status === "failed") this.recent = this.recent.map((t) => (t.id === id && t.status === "failed" ? { ...t, status: "stopped" } : t));
-        } else if (r === "timeout" && !held) this.unconfirmed.add(id);
+            if (held?.status === "failed") this.recent = this.recent.map((t) => (t.id === id && t.startedAt === held.startedAt && t.status === "failed" ? { ...t, status: "stopped" } : t));
+        } else if (r === "timeout" && !held) this.unconfirmed.set(id, startedAt);
+        // Not stopped by it (refused, can't be, or it had ended on its own, "ended"): it ended as it ended, and that's news.
         else if (held) this.released.push(held);
     }
 
@@ -257,6 +283,16 @@ export class SessionBackground {
     }
 }
 
+/** A task by its id and start: ids start again (a shell's with each harness process, a delegated task's with each Agent). */
+function taskKey(t: Pick<BackgroundTaskInfo, "id" | "startedAt">): string {
+    return `${t.id}@${t.startedAt}`;
+}
+
+/** Whether a start noted for an id (undefined: not known yet, so any) is this task's. */
+function matches(at: number | undefined, t: Pick<BackgroundTaskInfo, "startedAt">): boolean {
+    return at === undefined || at === t.startedAt;
+}
+
 /** A shell by its id and start: ids start again with each harness process. */
 function shellKey(s: Pick<BackgroundShell, "id" | "startedAt">): string {
     return `${s.id}@${s.startedAt}`;
@@ -271,6 +307,17 @@ export function leaveShells(log: BackgroundLog, shells: ReadonlyMap<string, Back
     for (const s of shells.values()) {
         const t = log.backgroundTasks.get(s.id);
         if (s.exitCode === null && t?.status === "running" && t.startedAt === s.startedAt) log.recordBackgroundTask({ ...t, status: "stopped", endedAt: now });
+    }
+}
+
+/**
+ * Leaving the session (the TUI's /new and /resume) with an Agent that's replaced: the delegated tasks it runs stop
+ * with it, after the log is left. Its log has them stopped now, or reopening would say Harness's quitting stopped them.
+ */
+export function leaveDelegated(log: BackgroundLog, tasks: readonly DelegatedTask[], now = Date.now()): void {
+    for (const d of tasks) {
+        const t = log.backgroundTasks.get(d.id);
+        if (d.status === "running" && t?.status === "running" && t.startedAt === d.startedAt) log.recordBackgroundTask({ ...t, status: "stopped", endedAt: now });
     }
 }
 

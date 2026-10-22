@@ -2207,3 +2207,120 @@ describe("the terminal's background list across sessions and turns: #282 review 
         }
     });
 });
+
+describe("the background list across sessions, and the delegate tool's own tasks: #282 review round 3", () => {
+    function tui() {
+        const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
+        (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true, columns: 100, rows: 30 };
+        app.notice = () => {};
+        (app as any).makeAgent = () => {};
+        (app as any).replayTranscript = () => {};
+        (app as any).sessionSwitched = () => {};
+        return app;
+    }
+    const stopTimer = (app: InstanceType<typeof App>) => (app as any).backgroundTimer && clearInterval((app as any).backgroundTimer);
+
+    test("/new while a delegated task runs: the Agent it ran under goes, and the old session's log has it stopped then, not 'stopped when Harness quit'", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const app = tui();
+        try {
+            app.session = Session.create(cwd, { system: "sys" });
+            app.session.push({ role: "user", content: [{ type: "text", text: "review it in the background" }], meta: { kind: "prompt" } });
+            const task = { id: "task-1", description: "Review a.ts", model: "gemini:gemini-test", status: "running", startedAt: Date.now() - 1000, controller: new AbortController() };
+            // An Agent (model and client set): makeAgent replaces it, and its delegated tasks stop with it.
+            (app as any).agent = { delegatedTasks: [task], backgroundTasks: () => [] };
+            (app as any).model = GEMINI;
+            (app as any).client = {};
+            (app as any).bindBackground();
+            (app as any).persistBackground();
+            const pathA = app.session.path;
+            expect(Session.load(pathA).backgroundTasks.get("task-1")?.status).toBe("running");
+            app.newSession();
+            expect(Session.load(pathA).backgroundTasks.get("task-1")?.status).toBe("stopped");
+            expect(new SessionBackground(Session.load(pathA)).shown().filter((t) => t.lost)).toEqual([]);
+        } finally {
+            stopTimer(app);
+        }
+    });
+
+    test("after /new, a shell the old session started isn't listed in, or logged to, the new session (A3, its shells passed)", async () => {
+        const app = tui();
+        try {
+            app.session = Session.create(cwd, { system: "sys" });
+            app.session.push({ role: "user", content: [{ type: "text", text: "start the build" }], meta: { kind: "prompt" } });
+            (app as any).bindBackground();
+            const sh = { id: "bash_1", command: "npm run build", startedAt: Date.now() - 1000, output: "", readOffset: 0, exitCode: null as number | null, kill: async () => "stopped" as const };
+            app.toolState.shells.set(sh.id, sh as never);
+            (app as any).persistBackground();
+            app.newSession();
+            app.session.push({ role: "user", content: [{ type: "text", text: "something else" }], meta: { kind: "prompt" } });
+            (app as any).persistBackground();
+            expect(app.toolState.background!.shown({ shells: app.toolState.shells }).map((t) => `${t.id}:${t.status}`)).toEqual([]);
+            expect([...app.session.backgroundTasks.keys()]).toEqual([]);
+        } finally {
+            stopTimer(app);
+        }
+    });
+
+    test("the delegate tool's waited-on task is never listed, logged, or announced (A4/B5, through the tool)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        let finish!: (r: any) => void;
+        const logged = new Map<string, any>();
+        const recorded: string[] = [];
+        const bg = new SessionBackground({ backgroundTasks: logged, recordBackgroundTask: (t) => (recorded.push(`${t.id}:${t.status}`), void logged.set(t.id, t)) });
+        const listed: string[] = [];
+        const news: string[] = [];
+        let tasks!: InstanceType<typeof Delegations>;
+        const look = () => {
+            for (const n of bg.sync({ delegated: tasks.list() })) news.push(n.id);
+            for (const t of bg.shown({ delegated: tasks.list() })) listed.push(`${t.id}:${t.status}`);
+        };
+        tasks = new Delegations(() => new Promise((r) => (finish = r)), undefined, look);
+        const tools = orchestratorTools({
+            caller: () => "claude-code",
+            listings: () => [listing("claude-code", ["default"]), listing("gemini", ["gemini-test"])],
+            projectRoot: () => cwd,
+            checkModel: async () => ({}),
+            claimCall: async () => "call-1",
+            tasks,
+        } as never);
+        const call = tools.find((t) => t.name === "delegate")!.call({ task: "Review", description: "Review a.ts", model: "gemini:gemini-test", agent: "explore" }, { signal: new AbortController().signal, meta: {} } as never);
+        for (let i = 0; i < 100 && !finish; i++) await Bun.sleep(10);
+        expect(finish).toBeDefined();
+        look();
+        finish({ status: "done", report: "LGTM", model: "gemini:gemini-test", tokens: 1, durationMs: 5 });
+        await call;
+        look();
+        expect(listed).toEqual([]);
+        expect(recorded).toEqual([]);
+        expect(news).toEqual([]);
+    });
+
+    test("a delegate call whose wait runs out leaves its task in the background: listed running, and its end is news (A4/B5, through the tool)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const saved = DELEGATION_LIMITS.defaultWaitMs;
+        DELEGATION_LIMITS.defaultWaitMs = 30;
+        try {
+            let finish!: (r: any) => void;
+            const bg = new SessionBackground();
+            const tasks = new Delegations(() => new Promise((r) => (finish = r)));
+            const tools = orchestratorTools({
+                caller: () => "claude-code",
+                listings: () => [listing("claude-code", ["default"]), listing("gemini", ["gemini-test"])],
+                projectRoot: () => cwd,
+                checkModel: async () => ({}),
+                claimCall: async () => "call-1",
+                tasks,
+            } as never);
+            const r = await tools.find((t) => t.name === "delegate")!.call({ task: "Review", description: "Review a.ts", model: "gemini:gemini-test", agent: "explore" }, { signal: new AbortController().signal, meta: {} } as never);
+            expect(r.text).toContain("It keeps running");
+            expect(bg.shown({ delegated: tasks.list() }).map((t) => t.status)).toEqual(["running"]);
+            bg.sync({ delegated: tasks.list() });
+            finish({ status: "done", report: "LGTM", model: "gemini:gemini-test", tokens: 1, durationMs: 5 });
+            for (let i = 0; i < 100 && tasks.list()[0]!.status === "running"; i++) await Bun.sleep(5);
+            expect(bg.sync({ delegated: tasks.list() }).map((t) => t.status)).toEqual(["done"]);
+        } finally {
+            DELEGATION_LIMITS.defaultWaitMs = saved;
+        }
+    });
+});

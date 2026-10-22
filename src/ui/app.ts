@@ -24,7 +24,7 @@ import type { McpAsker } from "../mcp/elicitation";
 import { formatBytes } from "../util/files";
 import { loadImageFile, planPaste, prepareImage, readClipboardImage, type NamedImage, type Prepared, type PrepareOptions } from "./images";
 import { Agent, type Admitted, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
-import { describeTask, endedText, leaveShells, SessionBackground } from "../agent/background";
+import { describeTask, endedText, leaveDelegated, leaveShells, SessionBackground } from "../agent/background";
 import type { BackendWake } from "../backends/types";
 import { IdleCompactTimer } from "../agent/idle-compact";
 import { DELEGATE_TOOL } from "../agent/delegation";
@@ -858,6 +858,8 @@ export class App {
         if (!this.toolState.background || this.boundBackground !== session) return;
         this.persistBackground();
         leaveShells(session, this.toolState.shells);
+        // The Agent is replaced next (makeAgent), and the tasks it delegated stop with it.
+        if (this.agent && this.model && this.client) leaveDelegated(session, this.agent.delegatedTasks);
     }
 
     /** While a shell runs: looks at the background list now and then, so one that ends while idle is kept and said. */

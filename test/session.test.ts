@@ -81,6 +81,61 @@ describe("Session persistence", () => {
         expect(bg.list({ delegated }).map((t) => t.id)).toEqual(["task-1"]);
     });
 
+    test("the user's stop of task-1 doesn't cover a later task-1 (ids start again with a rebuilt Agent): its failure is shown and is news (#282 review round 3)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const bg = new SessionBackground(undefined, () => 100);
+        const task = (startedAt: number, status: string) => ({ id: "task-1", description: "Review", agent: "explore", model: "gemini:g", writes: false, status, startedAt, delivered: false, settled: Promise.resolve(), controller: new AbortController() }) as any;
+        bg.sync({ delegated: [task(1, "running")] });
+        bg.stoppedByUser(["task-1"]);
+        expect(bg.sync({ delegated: [task(1, "failed")] })).toEqual([]);
+        expect(bg.list({ delegated: [task(1, "failed")] }).map((t) => t.status)).toEqual(["stopped"]);
+        // The Agent is rebuilt (a settings change): its first delegated task is task-1 again, and it fails on its own.
+        expect(bg.sync({ delegated: [task(50, "running")] })).toEqual([]);
+        expect(bg.list({ delegated: [task(50, "failed")] }).map((t) => t.status)).toEqual(["failed"]);
+        expect(bg.sync({ delegated: [task(50, "failed")] }).map((t) => [t.id, t.startedAt, t.status])).toEqual([["task-1", 50, "failed"]]);
+    });
+
+    test("a stop answered 'ended' (the task had ended on its own first) leaves its outcome and its news (#282 review round 3)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const bg = new SessionBackground(undefined, () => 100);
+        const shells = new Map<string, any>([["bash_1", { id: "bash_1", command: "npm test", startedAt: 10, exitCode: null }]]);
+        bg.sync({ shells });
+        // It fails between looks; the user's Stop of it (from a list a moment old) finds it ended.
+        shells.get("bash_1").exitCode = 1;
+        expect(await bg.userStop(["bash_1"], async () => ({ bash_1: "ended" }))).toEqual({ bash_1: "ended" });
+        expect(bg.sync({ shells }).map((t) => [t.id, t.status])).toEqual([["bash_1", "failed"]]);
+        expect(bg.shown({ shells }).map((t) => [t.id, t.status])).toEqual([["bash_1", "failed"]]);
+        // Ended while the stop was pending (seen by a look then): the same.
+        const bg2 = new SessionBackground(undefined, () => 100);
+        shells.get("bash_1").exitCode = null;
+        bg2.sync({ shells });
+        const news: string[] = [];
+        await bg2.userStop(["bash_1"], async () => {
+            shells.get("bash_1").exitCode = 1;
+            news.push(...bg2.sync({ shells }).map((t) => t.status));
+            return { bash_1: "ended" };
+        });
+        expect(news).toEqual([]);
+        expect(bg2.sync({ shells }).map((t) => [t.id, t.status])).toEqual([["bash_1", "failed"]]);
+    });
+
+    test("a task said done, then failed, while the user's stop is pending: a refused stop lets the failure go as news, not the done (#282 review round 3, Astra P2)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const bg = new SessionBackground(undefined, () => 100);
+        const t = { id: "cli-1", provider: "fake-cli", kind: "agent" as const, label: "Map auth", startedAt: 5, status: "running" as const, stoppable: true };
+        bg.report(t);
+        bg.sync();
+        await bg.userStop(["cli-1"], async () => {
+            bg.report({ ...t, status: "done" });
+            expect(bg.sync()).toEqual([]);
+            bg.report({ ...t, status: "failed" });
+            expect(bg.sync()).toEqual([]);
+            return { "cli-1": "failed" };
+        });
+        expect(bg.sync().map((x) => [x.id, x.status])).toEqual([["cli-1", "failed"]]);
+        expect(bg.shown().map((x) => [x.id, x.status])).toEqual([["cli-1", "failed"]]);
+    });
+
     test("a SessionBackground made from the log has its running tasks as stopped when Harness quit, until they're told", async () => {
         const { SessionBackground, lostNote } = await import("../src/agent/background");
         const s = Session.create(project());
