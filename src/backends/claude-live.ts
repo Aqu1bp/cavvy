@@ -87,8 +87,6 @@ export const liveTiming = {
     controlMs: 10_000,
     /** After a background task's notification, for the turn that reports it; then the session counts as quiet again. */
     wakeDueMs: 15_000,
-    /** For a wake turn the session won't take over to end, so what it said can be its report (AgentBackendClient.wakeReport). */
-    wakeReportMs: 120_000,
     /** A background shell or monitor that leaves Claude Code's list without a word on how it ended: ended after this. */
     unlistedMs: 3000,
     /** How often a turn's /goal is looked at in its transcript. */
@@ -1624,7 +1622,8 @@ export class ClaudeLive {
     /** What a wake turn no session takes over said (AgentBackendClient.wakeReport), from whichever process has it. */
     async wakeReport(ref: string): Promise<string | undefined> {
         const live = this.pool.list().find((s) => s.hasWake(ref));
-        const text = await live?.wakeText(ref, liveTiming.wakeReportMs);
+        // However long its turn takes: what it says late isn't dropped.
+        const text = await live?.wakeText(ref);
         return text?.trim() ? redact(text.trim()) : undefined;
     }
 

@@ -310,6 +310,12 @@ function followUp(textOut: string): void | Promise<void> {
     // FAKE_BACKGROUND_ASK=1  a background sub-agent asks to run a command before it ends
 // FAKE_WAKE_TOOL=1: the report turn reads something first (a tool round, where messages can steer it).
     // (Each step takes a moment, as the model's requests do: time for the turn to be adopted, and a message to come in.)
+    // FAKE_WAKE_TEXT_MS: the report turn says its words that late.
+    if (process.env.FAKE_WAKE_TEXT_MS)
+        return Bun.sleep(Number(process.env.FAKE_WAKE_TEXT_MS)).then(() => {
+            text(textOut);
+            result("success", { result: textOut });
+        });
     if (process.env.FAKE_WAKE_TOOL === "1") {
         return Bun.sleep(200).then(async () => {
             toolUse("toolu_wake_read", "Read", { file_path: join(cwd, "README.md") });
@@ -744,7 +750,10 @@ async function turn(content: any[], uuid?: string) {
         let reports = 0;
         // Notifications start native report turns while the Monitor remains running.
         // Stdin keeps the fake alive; shutdown must also stop its report timer.
-        setInterval(() => followUp(`Monitor notification ${++reports}.`), 40).unref();
+        // FAKE_MONITOR_REPORTS: that many, then no more.
+        const most = Number(process.env.FAKE_MONITOR_REPORTS ?? Infinity);
+        const timer = setInterval(() => (reports < most ? followUp(`Monitor notification ${++reports}.`) : clearInterval(timer)), 40);
+        timer.unref();
         return;
     }
     if (scenario === "shell-cap-late") {

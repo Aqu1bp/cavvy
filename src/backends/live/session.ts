@@ -276,10 +276,11 @@ export class LiveCliSession {
     }
 
     /**
-     * A wake turn the session won't take over: the text it said (its events so far, then the rest), once it has
-     * ended or `maxMs` has passed; undefined if there's no such turn to take. Nothing else can take it after.
+     * A wake turn the session won't take over: all the text it said (its events so far, then the rest), once it has
+     * ended, however long that takes (it ends with the process at the latest); undefined if there's no such turn to
+     * take. Nothing else can take it after.
      */
-    async wakeText(ref: string, maxMs: number): Promise<string | undefined> {
+    async wakeText(ref: string): Promise<string | undefined> {
         const w = this.wakes.get(ref);
         if (!w || w.sink) return undefined;
         const parts: string[] = [];
@@ -291,9 +292,7 @@ export class LiveCliSession {
             this.wakes.delete(ref);
             this.changed();
         });
-        let timer: unknown;
-        await Promise.race([ended, new Promise<void>((resolve) => (timer = this.o.clock.setTimeout(resolve, maxMs)))]);
-        this.o.clock.clearTimeout(timer);
+        await ended;
         return parts.join("");
     }
 

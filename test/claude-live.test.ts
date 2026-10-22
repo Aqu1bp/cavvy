@@ -598,6 +598,22 @@ describe("background work across turns", () => {
         expect(reminders.some((r) => /Monitor notification \d/.test(r) && r.includes("Claude Code"))).toBe(true);
     });
 
+    test("#305: what a monitor's turn says late (past any deadline) still shows, and the model is told", async () => {
+        process.env.FAKE_SCENARIO = "monitor-repeated-reports";
+        process.env.FAKE_MONITOR_REPORTS = "1";
+        process.env.FAKE_WAKE_TEXT_MS = "800";
+        // A deadline it once had, shortened: the words come after it.
+        (liveTiming as any).wakeReportMs = 200;
+        const { run, wakes, adopt, agent, events } = await makeAgent();
+        expect(await run("watch the checks")).toBe("done");
+        await until(() => wakes.length > 0, 5000, "the monitor's wake");
+        agent.setModel({ provider: "openai", id: "gpt-x", name: "GPT X" } as any, {} as any);
+        expect(await adopt(wakes[0]!)).toBe("error");
+        await until(() => notices(events).some((n) => n.includes("Monitor notification 1.")), 5000, "what the monitor's turn said late");
+        const reminders: string[] = ((agent as any).pendingReminders as { text: string }[]).map((r) => r.text);
+        expect(reminders.some((r) => r.includes("Monitor notification 1."))).toBe(true);
+    });
+
     test("a permission prompt from a background sub-agent between turns is asked (no turn running), and its answer reaches it", async () => {
         process.env.FAKE_SCENARIO = "agent-background-ask";
         const asked: PermissionRequest[] = [];

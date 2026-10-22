@@ -369,7 +369,8 @@ export interface AgentBackendClient extends ProviderClient {
     restart?(sessionKey: string): Promise<void>;
     /**
      * A wake the session won't take over (it's on another model) that carries no report (a Claude Code monitor's
-     * event: only the turn it starts sees its output): what that turn said, once it has ended, or undefined for a
+     * event: only the turn it starts sees its output): what that turn said, once it has ended (however long that
+     * takes), or undefined for a
      * turn this backend doesn't have. Its events go nowhere else.
      */
     wakeReport?(w: BackendWake): Promise<string | undefined>;
