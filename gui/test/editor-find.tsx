@@ -73,7 +73,8 @@ export async function checkEditorFind(root: HTMLElement) {
         // File lookups are batched on a timer; two animation frames can finish
         // before that timer runs (especially on a fast display or a busy suite).
         for (let i = 0; i < 100 && !finishLookup; i++) await new Promise((r) => setTimeout(r, 20));
-        check(scope("prompt").querySelectorAll(".prompt-attachments .chip").length === 3, "prompt displays image, text and PDF attachment chips");
+        // Above the bubble, in its row (the bubble is what find searches; the chips are skipped).
+        check(scope("prompt").closest(".user-row")!.querySelectorAll(".prompt-attachments .chip").length === 3, "prompt displays image, text and PDF attachment chips");
         check(findMatches([turn], "files").length === 1 && textRanges(scope("prompt"), "files").length === 1, "attachment names do not duplicate a prompt match");
         for (const label of ["files.pdf", "1 KB", "1 image"]) {
             check(findMatches([turn], label).length === 0 && textRanges(col, label).length === 0, "attachment-only labels have no counted or painted matches");
