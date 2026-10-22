@@ -9,6 +9,7 @@
 // when the session is opened again stopped when Harness quit: it's shown as
 // such, and the agent is told with the next prompt.
 
+import type { BackgroundStop } from "../backends/types";
 import type { BackgroundTaskInfo } from "../backends/live/info";
 import { APP_TITLE } from "../config/paths";
 import { parseModelRef } from "../providers/types";
@@ -46,15 +47,36 @@ export class SessionBackground {
     private live = new Map<string, BackgroundTaskInfo>();
     /** Ended since the session was opened, oldest first: listed until cleared. */
     private recent: BackgroundTaskInfo[] = [];
-    /** Asked to stop by the user: their end is no news, and however it ended (a killed shell's exit code), they were stopped. */
+    /** Stopped by the user: their end is no news, and however it ended (a killed shell's exit code), they were stopped. */
     private byUser = new Set<string>();
+    /** The user asked these to stop, and the answer hasn't come: an end meanwhile is held until it does. */
+    private stopping = new Set<string>();
+    /** Ends held while their stop was pending, by id. */
+    private held = new Map<string, BackgroundTaskInfo>();
+    /** The user's stop wasn't confirmed in time: ending stopped, it was theirs; ending any other way, it's news. */
+    private unconfirmed = new Set<string>();
+    /** Ends a stop that didn't go through let go: news at the next look (sync). */
+    private released: BackgroundTaskInfo[] = [];
+    /** Shells running when this session was bound that another session started (one terminal runs on across /new and /resume): not this session's. */
+    private foreign = new Set<string>();
     private listeners = new Set<() => void>();
 
+    /**
+     * `carried`: the shells running when the session is bound, where they outlive a session switch (the TUI's
+     * /new and /resume). Those its log has are its own again, still running or not; the rest aren't its.
+     */
     constructor(
         private log?: BackgroundLog,
         private now: () => number = Date.now,
+        carried?: ReadonlyMap<string, BackgroundShell>,
     ) {
-        for (const t of log?.backgroundTasks.values() ?? []) if (t.status === "running") this.lost.push({ ...t, status: "stopped", lost: true, endedAt: t.endedAt ?? this.now() });
+        const own = new Set<string>();
+        for (const t of log?.backgroundTasks.values() ?? []) {
+            const shell = carried?.get(t.id);
+            if (shell && shell.startedAt === t.startedAt) own.add(shellKey(shell));
+            else if (t.status === "running") this.lost.push({ ...t, status: "stopped", lost: true, endedAt: t.endedAt ?? this.now() });
+        }
+        for (const s of carried?.values() ?? []) if (s.exitCode === null && !own.has(shellKey(s))) this.foreign.add(shellKey(s));
     }
 
     /** A task an agent CLI reported: new, or changed. */
@@ -82,7 +104,7 @@ export class SessionBackground {
         for (const t of this.reported.values()) all.set(t.id, { ...t });
         // Not one a call is waiting on: that's the turn's own work, as a foreground sub-agent is.
         for (const t of src.delegated ?? []) if (!t.foreground) all.set(t.id, delegatedInfo(t));
-        for (const s of src.shells?.values() ?? []) all.set(s.id, shellInfo(s));
+        for (const s of src.shells?.values() ?? []) if (!this.foreign.has(shellKey(s))) all.set(s.id, shellInfo(s));
         for (const id of this.byUser) {
             const t = all.get(id);
             if (t?.status === "failed") all.set(id, { ...t, status: "stopped" });
@@ -111,10 +133,16 @@ export class SessionBackground {
         this.persist(src);
         const all = new Map(this.list(src).map((t) => [t.id, t]));
         const news: BackgroundTaskInfo[] = [];
-        for (const [id, was] of this.live) {
+        // A copy: one a call now waits on is put back as it's looked at (a Map would come to it again).
+        for (const [id, was] of [...this.live]) {
             const now = all.get(id);
             if (now?.status === "running" && now.startedAt === was.startedAt) continue;
             this.live.delete(id);
+            // A delegated task a call now waits on: the turn's own work for now, listed again when the wait ends.
+            if (!now && src.delegated?.some((d) => d.id === id && d.foreground && d.startedAt === was.startedAt)) {
+                this.live.set(id, was);
+                continue;
+            }
             if (!now) {
                 // Taken out of its list while running (the agent's KillShell removes the shell it stops): it was
                 // stopped, by the agent. Kept so in the log, or reopening would say Harness's quitting stopped it.
@@ -129,15 +157,60 @@ export class SessionBackground {
             // A shell doesn't say when it ended: about now (it's looked at every few seconds while one runs).
             const ended = now.endedAt === undefined ? { ...now, endedAt: this.now() } : now;
             this.recent = [...this.recent.filter((t) => t.id !== id), ended].slice(-RECENT_KEPT);
-            if (!this.byUser.has(id)) news.push(ended);
+            // Its stop not answered yet: whether this end is the user's depends on the answer.
+            if (this.stopping.has(id)) this.held.set(id, ended);
+            else if (this.unconfirmed.delete(id)) {
+                if (ended.status === "stopped") this.byUser.add(id);
+                else news.push(ended);
+            } else if (!this.byUser.has(id) && !ended.byUser) news.push(ended);
         }
+        // One that ended and is now said to have ended otherwise (a sub-agent said to be done, then to have
+        // failed): the list says so, and it's news again (the notice's tag has the outcome).
+        this.recent = this.recent.map((t) => {
+            const now = all.get(t.id);
+            if (!now || now.status === "running" || now.status === t.status || now.startedAt !== t.startedAt) return t;
+            const revised = { ...now, endedAt: now.endedAt ?? t.endedAt };
+            if (!this.stopping.has(t.id) && !this.byUser.has(t.id) && !now.byUser) news.push(revised);
+            return revised;
+        });
         for (const t of all.values()) if (t.status === "running") this.live.set(t.id, t);
-        return news;
+        return [...news, ...this.released.splice(0)];
     }
 
-    /** The user asked for these to stop (the panel, /tasks stop): when they end, it's no news. */
+    /** The user stopped these, and it's certain to go through (a delegated task's abort, a shell's kill): when they end, it's no news. */
     stoppedByUser(ids: readonly string[]): void {
         for (const id of ids) if (this.live.has(id)) this.byUser.add(id);
+    }
+
+    /**
+     * The user's stop (the panel, /tasks stop): `stop` asks for it, and says how each went. Only those that
+     * stopped count as the user's; one that couldn't be stopped, or whose stop was refused, ends as it ends
+     * (news, as any other), and one whose stop wasn't confirmed in time is the user's only if it ends stopped.
+     */
+    async userStop(ids: readonly string[], stop: () => Promise<Record<string, BackgroundStop>>): Promise<Record<string, BackgroundStop>> {
+        const asked = ids.filter((id) => !this.stopping.has(id));
+        for (const id of asked) this.stopping.add(id);
+        let results: Record<string, BackgroundStop> = {};
+        try {
+            results = await stop();
+            return results;
+        } finally {
+            for (const id of asked) this.answered(id, results[id]);
+            // What a stop that didn't go through let go is news now; one that did may now say stopped, not failed.
+            this.changed();
+        }
+    }
+
+    private answered(id: string, r: BackgroundStop | undefined) {
+        this.stopping.delete(id);
+        const held = this.held.get(id);
+        this.held.delete(id);
+        if (r === "stopped" || (r === "timeout" && held?.status === "stopped")) {
+            this.byUser.add(id);
+            // A killed shell's exit code said it failed: it was stopped.
+            if (held?.status === "failed") this.recent = this.recent.map((t) => (t.id === id && t.status === "failed" ? { ...t, status: "stopped" } : t));
+        } else if (r === "timeout" && !held) this.unconfirmed.add(id);
+        else if (held) this.released.push(held);
     }
 
     /** The user cleared the finished tasks from the list. */
@@ -154,6 +227,8 @@ export class SessionBackground {
         for (const t of this.list(src)) {
             const was = this.log.backgroundTasks.get(t.id);
             if (!was && t.status !== "running") continue;
+            // Its stop not answered yet: how it ended is written once the answer says (a killed shell's exit code isn't a failure).
+            if (this.stopping.has(t.id) && t.status !== "running") continue;
             if (was && JSON.stringify(was) === JSON.stringify(t)) continue;
             this.log.recordBackgroundTask(t);
         }
@@ -179,6 +254,23 @@ export class SessionBackground {
 
     private changed() {
         for (const l of [...this.listeners]) l();
+    }
+}
+
+/** A shell by its id and start: ids start again with each harness process. */
+function shellKey(s: Pick<BackgroundShell, "id" | "startedAt">): string {
+    return `${s.id}@${s.startedAt}`;
+}
+
+/**
+ * Leaving the session while its shells run on (the TUI's /new and /resume): they're no longer followed here,
+ * so its log has them stopped. Otherwise, reopened in another process after they ended, the session would say
+ * Harness's quitting stopped them; opened again in this one while they run, they're its own again.
+ */
+export function leaveShells(log: BackgroundLog, shells: ReadonlyMap<string, BackgroundShell>, now = Date.now()): void {
+    for (const s of shells.values()) {
+        const t = log.backgroundTasks.get(s.id);
+        if (s.exitCode === null && t?.status === "running" && t.startedAt === s.startedAt) log.recordBackgroundTask({ ...t, status: "stopped", endedAt: now });
     }
 }
 
@@ -220,7 +312,7 @@ export function describeTask(t: Pick<BackgroundTaskInfo, "kind" | "label">): str
 export function endedText(t: BackgroundTaskInfo): string {
     const what = describeTask(t);
     const [kind, ...rest] = what.split(": ");
-    const how = t.status === "done" ? "finished" : t.status === "failed" ? "failed" : t.lost ? "stopped with its process" : "was stopped";
+    const how = t.status === "done" ? "finished" : t.status === "failed" ? "failed" : t.withProcess ? "stopped with its process" : t.lost ? `stopped when ${APP_TITLE} quit` : "was stopped";
     const ms = (t.endedAt ?? t.startedAt) - t.startedAt;
     return `${kind![0]!.toUpperCase()}${kind!.slice(1)} ${how}: ${rest.join(": ")}${ms > 0 ? ` (${span(ms)})` : ""}`;
 }

@@ -220,7 +220,7 @@ test("a task that ends on its own is news (a notify event, tagged per task), sta
             ["Background command finished: npm test", { id: "bash_1", outcome: "done" }, id],
             ["Background command failed: npm run lint", { id: "bash_2", outcome: "failed" }, id],
         ]);
-        expect(told[0]!.tag).toBe(`background:${id}:bash_1:${done.startedAt}`);
+        expect(told[0]!.tag).toBe(`background:${id}:bash_1:${done.startedAt}:done`);
         expect(new Set(told.map((e) => e.tag)).size).toBe(2);
         // Said once: looking again says nothing more.
         await engine.handle(c, "session.stopBackground", { id, ids: [] });
@@ -267,5 +267,167 @@ test("a shell the agent stops with KillShell is kept as stopped in the log, so r
         expect(snap.state.backgroundTasks).toEqual([]);
     } finally {
         await again.stop();
+    }
+});
+
+function stubCli(task: BackgroundTaskInfo, stopAnswer: BackgroundStop) {
+    const h: { session?: BackendTurn["session"] } = {};
+    const backend = {
+        agentBackend: true as const,
+        setMode() {},
+        listModels: async () => [],
+        stream: async () => {
+            throw new Error("not used");
+        },
+        compact: async () => ({ reason: "done" as const, text: "", actions: [] }),
+        runTurn: async (t: BackendTurn) => {
+            h.session = t.session;
+            t.session.emitSession?.({ type: "background_task", task });
+            return { reason: "done" as const, text: "Started.", actions: [] };
+        },
+        stopBackground: async (_key: string, ids?: string[]) => Object.fromEntries((ids ?? []).map((i) => [i, stopAnswer])),
+    };
+    return { backend, h };
+}
+
+test("review round 2, A1/B4: Stop all on a task that can't be stopped doesn't make it the user's: when it ends on its own, the user is told", async () => {
+    const { engine, c, id, rt } = await session();
+    try {
+        const task: BackgroundTaskInfo = { id: "cli-ns", provider: "fake-cli", kind: "agent", label: "Map auth", startedAt: Date.now(), status: "running", stoppable: false };
+        const { backend, h } = stubCli(task, "stopped");
+        rt.agent!.setModel(backendModel("fake-cli", "x"), backend as never);
+        await engine.handle(c, "session.send", { id, text: "go" });
+        await until(() => rt.idle);
+        expect(await engine.handle(c, "session.stopBackground", { id })).toEqual({ results: { "cli-ns": "not_stoppable" } });
+        h.session!.emitSession?.({ type: "background_task", task: { ...task, status: "done" } });
+        expect(notices(c).map((n) => [n.task?.id, n.task?.outcome])).toEqual([["cli-ns", "done"]]);
+    } finally {
+        await engine.stop?.();
+    }
+});
+
+test("review round 2, A1/B4: a stop the CLI refuses, then the task fails on its own: shown failed and announced", async () => {
+    const { engine, c, id, rt } = await session();
+    try {
+        const task: BackgroundTaskInfo = { id: "cli-rf", provider: "fake-cli", kind: "agent", label: "Map auth", startedAt: Date.now(), status: "running", stoppable: true };
+        const { backend, h } = stubCli(task, "failed");
+        rt.agent!.setModel(backendModel("fake-cli", "x"), backend as never);
+        await engine.handle(c, "session.send", { id, text: "go" });
+        await until(() => rt.idle);
+        expect(await engine.handle(c, "session.stopBackground", { id, ids: ["cli-rf"] })).toEqual({ results: { "cli-rf": "failed" } });
+        h.session!.emitSession?.({ type: "background_task", task: { ...task, status: "failed" } });
+        expect(rt.snapshot().state.backgroundTasks!.find((t) => t.id === "cli-rf")?.status).toBe("failed");
+        expect(notices(c).map((n) => [n.task?.id, n.task?.outcome])).toEqual([["cli-rf", "failed"]]);
+    } finally {
+        await engine.stop?.();
+    }
+});
+
+test("review round 2, A1/B4: a task that ends while its stop is being answered: the answer decides whether it's news", async () => {
+    const { engine, c, id, rt } = await session();
+    try {
+        const a: BackgroundTaskInfo = { id: "cli-a", provider: "fake-cli", kind: "agent", label: "Map auth", startedAt: Date.now(), status: "running", stoppable: true };
+        const b: BackgroundTaskInfo = { ...a, id: "cli-b", label: "Map billing" };
+        const { backend, h } = stubCli(a, "stopped");
+        const answers: Record<string, BackgroundStop> = { "cli-a": "failed", "cli-b": "stopped" };
+        // Each task ends while its stop is pending: a refused stop's end is news; a stop that went through, not.
+        backend.stopBackground = async (_key: string, ids?: string[]) => {
+            for (const i of ids ?? []) h.session!.emitSession?.({ type: "background_task", task: { ...(i === "cli-a" ? a : b), status: i === "cli-a" ? "done" : "stopped" } });
+            return Object.fromEntries((ids ?? []).map((i) => [i, answers[i]!]));
+        };
+        rt.agent!.setModel(backendModel("fake-cli", "x"), backend as never);
+        await engine.handle(c, "session.send", { id, text: "go" });
+        await until(() => rt.idle);
+        h.session!.emitSession?.({ type: "background_task", task: b });
+        expect(rt.snapshot().state.backgroundTasks!.filter((t) => t.status === "running").map((t) => t.id)).toEqual(["cli-a", "cli-b"]);
+        await engine.handle(c, "session.stopBackground", { id });
+        expect(notices(c).map((n) => [n.task?.id, n.task?.outcome])).toEqual([["cli-a", "done"]]);
+        expect(rt.snapshot().state.backgroundTasks!.map((t) => [t.id, t.status])).toEqual([["cli-a", "done"], ["cli-b", "stopped"]]);
+    } finally {
+        await engine.stop?.();
+    }
+});
+
+test("review round 2, A1/B4: a stop not confirmed in time: ending stopped it was the user's; ending done, it's news", async () => {
+    const { engine, c, id, rt } = await session();
+    try {
+        const a: BackgroundTaskInfo = { id: "cli-a", provider: "fake-cli", kind: "agent", label: "Map auth", startedAt: Date.now(), status: "running", stoppable: true };
+        const b: BackgroundTaskInfo = { ...a, id: "cli-b", label: "Map billing" };
+        const { backend, h } = stubCli(a, "timeout");
+        rt.agent!.setModel(backendModel("fake-cli", "x"), backend as never);
+        await engine.handle(c, "session.send", { id, text: "go" });
+        await until(() => rt.idle);
+        h.session!.emitSession?.({ type: "background_task", task: b });
+        expect(await engine.handle(c, "session.stopBackground", { id })).toEqual({ results: { "cli-a": "timeout", "cli-b": "timeout" } });
+        h.session!.emitSession?.({ type: "background_task", task: { ...a, status: "stopped" } });
+        h.session!.emitSession?.({ type: "background_task", task: { ...b, status: "done" } });
+        expect(notices(c).map((n) => [n.task?.id, n.task?.outcome])).toEqual([["cli-b", "done"]]);
+    } finally {
+        await engine.stop?.();
+    }
+});
+
+test("review round 2, A4/B5: a delegated task a call waits on is never listed, logged, or announced; one that runs on after the wait is background work", async () => {
+    const { Delegations } = await import("../src/agent/delegation");
+    const { engine, c, rt } = await session();
+    try {
+        const finish: ((r: any) => void)[] = [];
+        const d = new Delegations(
+            () => new Promise((r) => finish.push(r)),
+            undefined,
+            () => (rt as any).syncBackground(),
+        );
+        (rt.agent as any).delegations = d;
+        const recorded: string[] = [];
+        const orig = rt.session.recordBackgroundTask.bind(rt.session);
+        rt.session.recordBackgroundTask = (x) => (recorded.push(`${x.id}:${x.status}`), orig(x));
+        const done = { status: "done", report: "LGTM", model: "gemini:gemini-test", tokens: 1, durationMs: 5 };
+        // As the delegate tool does: started as the call's own work, then waited on.
+        const t = d.start({ description: "Review the diff", prompt: "review", agent: "explore", model: "gemini:gemini-test", writes: false, foreground: true }) as any;
+        const waiting = d.waitForeground(t, 10_000, undefined, true);
+        expect(rt.snapshot().state.backgroundTasks ?? []).toEqual([]);
+        finish[0]!(done);
+        await waiting;
+        expect(t.status).toBe("done");
+        expect(rt.snapshot().state.backgroundTasks ?? []).toEqual([]);
+        expect(recorded).toEqual([]);
+        // An older order (listed first, then waited on): never "stopped" either.
+        const u = d.start({ description: "Review the tests", prompt: "review", agent: "explore", model: "gemini:gemini-test", writes: false }) as any;
+        const waitingU = d.waitForeground(u, 10_000);
+        finish[1]!(done);
+        await waitingU;
+        expect(rt.snapshot().state.backgroundTasks!.map((x) => [x.id, x.status])).toEqual([[u.id, "done"]]);
+        expect(recorded).toEqual([`${u.id}:running`, `${u.id}:done`]);
+        // A wait that runs out: it's background work from then on.
+        const w = d.start({ description: "Review the docs", prompt: "review", agent: "explore", model: "gemini:gemini-test", writes: false, foreground: true }) as any;
+        await d.waitForeground(w, 10, undefined, true);
+        expect(rt.snapshot().state.backgroundTasks!.filter((x) => x.status === "running").map((x) => x.id)).toEqual([w.id]);
+        finish[2]!(done);
+        await w.settled;
+        expect(notices(c).map((n) => n.task?.id)).toEqual([u.id, w.id]);
+    } finally {
+        await engine.stop?.();
+    }
+});
+
+test("review round 2, B3: a task said to be done, then to have failed: Finished says failed, and that's news again (its own tag)", async () => {
+    const { engine, c, id, rt } = await session();
+    try {
+        const task: BackgroundTaskInfo = { id: "cli-rv", provider: "fake-cli", kind: "agent", label: "Map auth", startedAt: Date.now(), status: "running", stoppable: true };
+        const { backend, h } = stubCli(task, "stopped");
+        rt.agent!.setModel(backendModel("fake-cli", "x"), backend as never);
+        await engine.handle(c, "session.send", { id, text: "go" });
+        await until(() => rt.idle);
+        h.session!.emitSession?.({ type: "background_task", task: { ...task, status: "done" } });
+        expect(rt.snapshot().state.backgroundTasks!.map((t) => [t.id, t.status])).toEqual([["cli-rv", "done"]]);
+        h.session!.emitSession?.({ type: "background_task", task: { ...task, status: "failed" } });
+        expect(rt.snapshot().state.backgroundTasks!.map((t) => [t.id, t.status])).toEqual([["cli-rv", "failed"]]);
+        expect(notices(c).map((n) => [n.task?.id, n.task?.outcome])).toEqual([["cli-rv", "done"], ["cli-rv", "failed"]]);
+        expect(new Set(notices(c).map((n) => n.tag)).size).toBe(2);
+        // Said the same again: nothing new.
+        h.session!.emitSession?.({ type: "background_task", task: { ...task, status: "failed" } });
+        expect(notices(c).length).toBe(2);
+    } finally {
+        await engine.stop?.();
     }
 });

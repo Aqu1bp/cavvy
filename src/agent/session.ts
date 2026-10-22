@@ -660,6 +660,8 @@ function validTask(t: unknown): BackgroundTaskInfo | undefined {
         ...(typeof v.endedAt === "number" ? { endedAt: v.endedAt } : {}),
         stoppable: v.stoppable === true,
         ...(v.lost === true ? { lost: true } : {}),
+        ...(v.withProcess === true ? { withProcess: true } : {}),
+        ...(v.byUser === true ? { byUser: true } : {}),
     };
 }
 

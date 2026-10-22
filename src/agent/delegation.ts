@@ -218,7 +218,7 @@ export class Delegations {
      * Start a task; an explanation instead when a limit stops it, naming the
      * tools that wait for and stop one (the MCP tools by default; the Task tool's are others).
      */
-    start(req: ChildRequest & { model: string; writes: boolean; generation?: number }, tools: { status: string; cancel: string } = { status: "task_status", cancel: "task_cancel" }): DelegatedTask | string {
+    start(req: ChildRequest & { model: string; writes: boolean; generation?: number; /** A call waits on it (waitForeground with `held`): not background work from the start. */ foreground?: boolean }, tools: { status: string; cancel: string } = { status: "task_status", cancel: "task_cancel" }): DelegatedTask | string {
         if (this.closed) return "The session ended, so the task wasn't started.";
         if (req.generation !== undefined && req.generation !== this.generation) return "The user stopped the delegated tasks while this one was being set up, so it wasn't started.";
         const running = this.running();
@@ -226,8 +226,10 @@ export class Delegations {
         const writer = req.writes && running.find((t) => t.writes);
         if (writer) return `Task ${writer.id} "${writer.description}" can change files in this folder, and only one such task runs at a time. Wait for it with ${tools.status}, or use agent "explore" for read-only work (or an agent type with isolation: worktree).`;
         const controller = new AbortController();
-        const t: DelegatedTask = { id: `task-${++this.seq}`, description: req.description, agent: req.agent, model: req.model, effort: req.effort, writes: req.writes, status: "running", startedAt: Date.now(), callId: req.callId, delivered: false, controller, settled: Promise.resolve() };
-        t.settled = this.run(req, controller.signal)
+        const t: DelegatedTask = { id: `task-${++this.seq}`, description: req.description, agent: req.agent, model: req.model, effort: req.effort, writes: req.writes, status: "running", startedAt: Date.now(), callId: req.callId, delivered: false, controller, settled: Promise.resolve(), ...(req.foreground ? { foreground: 1 } : {}) };
+        // Whether a call waits on it is the session's business, not the child's.
+        const { foreground: _foreground, ...child } = req;
+        t.settled = this.run(child, controller.signal)
             .then(
                 (r) => {
                     t.result = r;
@@ -289,12 +291,15 @@ export class Delegations {
      * Wait for a task as the caller's turn's own work: interrupting that turn (cancelForeground) stops it. A
      * wait that runs out leaves it in the background, where only an explicit stop ends it.
      */
-    async waitForeground(t: DelegatedTask, ms: number, signal?: AbortSignal): Promise<void> {
-        t.foreground = (t.foreground ?? 0) + 1;
+    async waitForeground(t: DelegatedTask, ms: number, signal?: AbortSignal, held = false): Promise<void> {
+        // `held`: started as the call's (start's `foreground`), so it was never listed as background work.
+        if (!held) t.foreground = (t.foreground ?? 0) + 1;
         try {
             await this.wait([t], ms, signal);
         } finally {
-            t.foreground = (t.foreground ?? 1) - 1;
+            t.foreground = Math.max(0, (t.foreground ?? 1) - 1);
+            // Background work again, if it runs on (the session's list changed).
+            if (!t.foreground) this.onChange?.();
         }
     }
 
@@ -461,11 +466,12 @@ export function orchestratorTools(h: OrchestratorHost): ServerTool[] {
                 const callId = await h.claimCall(args, ctx.meta);
                 if (ctx.signal.aborted) return { text: "The call was cancelled before the task started.", isError: true };
                 // One in a worktree of its own doesn't change this folder's files.
-                const t = h.tasks.start({ description, prompt, agent: def.name, model, effort, callId, writes: !def.readOnly && def.isolation !== "worktree", generation });
+                const waits = !(args.wait === false || def.background);
+                const t = h.tasks.start({ description, prompt, agent: def.name, model, effort, callId, writes: !def.readOnly && def.isolation !== "worktree", generation, foreground: waits });
                 if (typeof t === "string") return { text: t, isError: true };
-                if (args.wait === false || def.background) return { text: `Started task ${t.id} "${t.description}" (${t.agent} on ${t.model}${t.effort ? `, ${t.effort} effort` : ""}). Get its result with task_status; cancel it with task_cancel.` };
+                if (!waits) return { text: `Started task ${t.id} "${t.description}" (${t.agent} on ${t.model}${t.effort ? `, ${t.effort} effort` : ""}). Get its result with task_status; cancel it with task_cancel.` };
                 const limit = waitMs(args.timeout_minutes, DELEGATION_LIMITS.defaultWaitMs);
-                await h.tasks.waitForeground(t, limit, ctx.signal);
+                await h.tasks.waitForeground(t, limit, ctx.signal, true);
                 if (t.status === "running") return { text: `${taskReport(t)} It keeps running: get its result with task_status (it can wait), or cancel it with task_cancel.` };
                 return { text: deliver(t, ctx.signal), isError: t.status === "failed" };
             },

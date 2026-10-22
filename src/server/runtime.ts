@@ -3210,21 +3210,25 @@ export class Runtime {
     /** Stop background work from the panel or /tasks stop: these tasks, or every one running. How each went. */
     async stopBackground(ids?: string[]): Promise<Record<string, BackgroundStop>> {
         const agent = this.agent;
-        // The user's own stop: no notice when they end.
-        this.toolState.background?.stoppedByUser(ids ?? (this.view.state.backgroundTasks ?? []).filter((t) => t.status === "running").map((t) => t.id));
-        let results: Record<string, BackgroundStop>;
-        if (agent) results = await agent.stopBackground(ids);
-        else {
+        const stop = async () => {
+            if (agent) return agent.stopBackground(ids);
             // No agent (no model yet): only its shells can be running.
-            results = {};
+            const results: Record<string, BackgroundStop> = {};
             for (const id of ids ?? [...this.toolState.shells.values()].filter((s) => s.exitCode === null).map((s) => s.id)) {
                 const sh = this.toolState.shells.get(id);
                 if (sh?.exitCode === null) await sh.kill();
                 results[id] = sh ? "stopped" : "unknown";
             }
+            return results;
+        };
+        // The user's own stop: no notice when one it stopped ends (but one it couldn't stop ends as it ends).
+        const asked = ids ?? (this.view.state.backgroundTasks ?? []).filter((t) => t.status === "running").map((t) => t.id);
+        const bg = this.toolState.background;
+        try {
+            return bg ? await bg.userStop(asked, stop) : await stop();
+        } finally {
+            this.syncShells();
         }
-        this.syncShells();
-        return results;
     }
 
     /** The user cleared the finished tasks from the Background panel. */

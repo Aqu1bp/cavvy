@@ -2123,3 +2123,87 @@ describe("a read-only agent on Claude Code or Codex", () => {
         }
     });
 });
+
+describe("the terminal's background list across sessions and turns: #282 review round 2", () => {
+    function tui() {
+        const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
+        (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true, columns: 100, rows: 30 };
+        const notes: string[] = [];
+        app.notice = (m: string, level = "info") => void notes.push(`${level}: ${m}`);
+        (app as any).makeAgent = () => {};
+        (app as any).replayTranscript = () => {};
+        (app as any).sessionSwitched = () => {};
+        return { app, notes };
+    }
+    const shell = (id: string, command: string) => ({ id, command, startedAt: Date.now() - 1000, output: "", readOffset: 0, exitCode: null as number | null, kill: async () => "stopped" as const });
+    const stopTimer = (app: App) => (app as any).backgroundTimer && clearInterval((app as any).backgroundTimer);
+
+    test("a shell left running by /new that then finishes isn't 'stopped when Harness quit' when its session is reopened (A3)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const { app } = tui();
+        try {
+            app.session = Session.create(cwd, { system: "sys" });
+            app.session.push({ role: "user", content: [{ type: "text", text: "start the build" }], meta: { kind: "prompt" } });
+            (app as any).bindBackground();
+            const sh = shell("bash_1", "npm run build");
+            app.toolState.shells.set(sh.id, sh);
+            (app as any).persistBackground();
+            const pathA = app.session.path;
+            app.newSession();
+            sh.exitCode = 0;
+            (app as any).persistBackground();
+            // Not the new session's either.
+            expect(app.toolState.background!.shown().map((t) => t.id)).toEqual([]);
+            const reopened = new SessionBackground(Session.load(pathA));
+            expect(reopened.shown().filter((t) => t.lost)).toEqual([]);
+        } finally {
+            stopTimer(app);
+        }
+    });
+
+    test("back in the session (/resume) while its shell still runs: the agent isn't told it stopped, and it's listed running (A3)", async () => {
+        const { app } = tui();
+        try {
+            app.session = Session.create(cwd, { system: "sys" });
+            app.session.push({ role: "user", content: [{ type: "text", text: "start the dev server" }], meta: { kind: "prompt" } });
+            (app as any).bindBackground();
+            const sh = shell("bash_7", "npm run dev");
+            app.toolState.shells.set(sh.id, sh);
+            (app as any).persistBackground();
+            const pathA = app.session.path;
+            app.newSession();
+            app.resume(pathA);
+            // What the next prompt's run() takes (agent.ts runInner: takeLost, then lostNote).
+            expect(app.toolState.background!.takeLost().map((t) => t.id)).toEqual([]);
+            expect(app.toolState.background!.shown({ shells: app.toolState.shells }).map((t) => [t.id, t.status])).toEqual([["bash_7", "running"]]);
+        } finally {
+            stopTimer(app);
+        }
+    });
+
+    test("the first shell a turn starts is looked at from its launch: one that ends before the turn does is kept and said (B6)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const { backgroundPoll } = await import("../src/ui/app");
+        const saved = backgroundPoll.ms;
+        backgroundPoll.ms = 20;
+        const { app, notes } = tui();
+        try {
+            const logged = new Map<string, any>();
+            app.toolState.background = new SessionBackground({ backgroundTasks: logged, recordBackgroundTask: (t) => void logged.set(t.id, t) });
+            (app as any).boundBackground = app.session;
+            (app as any).busy = true;
+            const sh = shell("bash_1", "npm run build");
+            app.toolState.shells.set(sh.id, sh);
+            // Its Bash call ends (the shell runs on); the turn goes on.
+            const call = { type: "tool_call", id: "b1", name: "Bash", input: { command: "npm run build", run_in_background: true } };
+            (app as any).onAgentEvent({ type: "tool_end", call, result: { content: "Started bash_1" }, durationMs: 5 });
+            expect(logged.get("bash_1")?.status).toBe("running");
+            sh.exitCode = 0;
+            await until(() => logged.get("bash_1")?.status === "done", 2000);
+            expect(notes).toContain("info: Background command finished: npm run build (1s)");
+        } finally {
+            backgroundPoll.ms = saved;
+            stopTimer(app);
+        }
+    });
+});

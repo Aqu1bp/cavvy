@@ -24,7 +24,7 @@ import type { McpAsker } from "../mcp/elicitation";
 import { formatBytes } from "../util/files";
 import { loadImageFile, planPaste, prepareImage, readClipboardImage, type NamedImage, type Prepared, type PrepareOptions } from "./images";
 import { Agent, type Admitted, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
-import { describeTask, endedText, SessionBackground } from "../agent/background";
+import { describeTask, endedText, leaveShells, SessionBackground } from "../agent/background";
 import type { BackendWake } from "../backends/types";
 import { IdleCompactTimer } from "../agent/idle-compact";
 import { DELEGATE_TOOL } from "../agent/delegation";
@@ -791,6 +791,7 @@ export class App {
 
     newSession() {
         const prev = this.session;
+        this.leaveBackground();
         this.session = Session.create(this.cwd);
         prev.release();
         this.bindBackground();
@@ -817,6 +818,7 @@ export class App {
             if (!prev) this.session = Session.create(this.cwd);
             return;
         }
+        if (prev) this.leaveBackground(prev);
         prev?.release();
         this.bindBackground();
         stopWatchers(this.toolState);
@@ -843,12 +845,20 @@ export class App {
         if (this.toolState.background && this.boundBackground === this.session) return;
         this.boundBackground = this.session;
         this.adopts = [];
-        this.toolState.background = new SessionBackground(this.session);
+        this.toolState.background = new SessionBackground(this.session, Date.now, this.toolState.shells);
+        this.toolState.background.onChange(() => this.persistBackground());
         const lost = this.toolState.background.shown().filter((t) => t.lost);
         if (lost.length) this.notice(`${lost.length === 1 ? "This background task" : `These ${lost.length} background tasks`} stopped when Harness quit: ${lost.map((t) => describeTask(t)).join("; ")}.`, "warn");
     }
 
     private boundBackground?: Session;
+
+    /** Leaving the session (/new, /resume): its list as it is now goes to its log, and the shells that run on aren't its any more. */
+    private leaveBackground(session = this.session) {
+        if (!this.toolState.background || this.boundBackground !== session) return;
+        this.persistBackground();
+        leaveShells(session, this.toolState.shells);
+    }
 
     /** While a shell runs: looks at the background list now and then, so one that ends while idle is kept and said. */
     private backgroundTimer?: ReturnType<typeof setInterval>;
@@ -1256,6 +1266,8 @@ export class App {
                 if (a && e.title) a.title = e.title;
                 this.printToolResult(e.call, e.result, e.durationMs);
                 this.active.delete(e.call.id);
+                // A shell it started (or stopped) is in the list now, and looked at from here on, not from the turn's end.
+                this.persistBackground();
                 break;
             }
             case "notice":

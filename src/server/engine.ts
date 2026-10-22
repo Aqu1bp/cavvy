@@ -457,7 +457,7 @@ export class Engine {
      */
     notifyBackground(rt: Runtime, task: BackgroundTaskInfo) {
         const outcome = task.status === "done" ? "done" : task.status === "failed" ? "failed" : "stopped";
-        this.broadcast({ type: "notify", sessionId: rt.id, kind: "background", title: this.notifyTitle(rt), body: endedText(task), tag: `background:${rt.id}:${task.id}:${task.startedAt}`, task: { id: task.id, outcome } });
+        this.broadcast({ type: "notify", sessionId: rt.id, kind: "background", title: this.notifyTitle(rt), body: endedText(task), tag: `background:${rt.id}:${task.id}:${task.startedAt}:${outcome}`, task: { id: task.id, outcome } });
     }
 
     notify(rt: Runtime, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
