@@ -11,7 +11,7 @@ import { agentCli, type AgentCliDef } from "../src/backends/defs";
 import { LiveCliPool, type PoolOptions } from "../src/backends/live/pool";
 import { EXIT_DRAIN_MS, LiveCliSession, spawnFingerprint } from "../src/backends/live/session";
 import { BackgroundTasks } from "../src/backends/live/tasks";
-import type { AgentCliAdapter, CliConnection, CliEventSink, LiveClock, LiveSettings, SessionHost, SpawnConfig, SpawnSpec, TurnInput } from "../src/backends/live/types";
+import type { AgentCliAdapter, CliConnection, CliEvent, CliEventSink, LiveClock, LiveSettings, SessionHost, SpawnConfig, SpawnSpec, TurnInput } from "../src/backends/live/types";
 import { backendModel } from "../src/backends/types";
 
 const FIXTURE = join(import.meta.dir, "fixtures", "fake-live-cli.ts");
@@ -51,6 +51,8 @@ class FakeConnection implements CliConnection {
     caps = DEF.caps;
     done: Promise<void>;
     opens: { resumeId?: string; fork?: boolean }[] = [];
+    /** The model its last settings change took. */
+    model?: string;
     private opened?: (id: string) => void;
     private n = 0;
 
@@ -75,6 +77,10 @@ class FakeConnection implements CliConnection {
     send(o: Record<string, unknown>) {
         this.proc.send(o);
     }
+    /** As if the connection read this from the CLI. */
+    inject(e: CliEvent) {
+        this.events(e);
+    }
     async open(o: { resumeId?: string; fork?: boolean }) {
         await this.adapter.hold.open;
         this.opens.push({ resumeId: o.resumeId, fork: o.fork });
@@ -97,10 +103,12 @@ class FakeConnection implements CliConnection {
     async apply(s: Partial<LiveSettings>) {
         this.adapter.applies++;
         const held = await this.adapter.hold.apply;
-        if (held) return held;
-        return s.model?.id === "needs-restart" ? ("restart" as const) : ("applied" as const);
+        if (held === "restart") return held;
+        if (s.model) this.model = s.model.id;
+        return held ?? (s.model?.id === "needs-restart" ? ("restart" as const) : ("applied" as const));
     }
     async close() {
+        await this.adapter.hold.close;
         this.proc.end();
     }
 }
@@ -110,7 +118,7 @@ class FakeAdapter implements AgentCliAdapter {
     connections: FakeConnection[] = [];
     bin = process.execPath;
     /** Calls that wait for these first (a CLI slow to answer them); apply's settles with its answer. */
-    hold: { open?: Promise<unknown>; prompt?: Promise<unknown>; apply?: Promise<"applied" | "restart"> } = {};
+    hold: { open?: Promise<unknown>; prompt?: Promise<unknown>; apply?: Promise<"applied" | "restart">; close?: Promise<unknown> } = {};
     applies = 0;
     spawn(cfg: SpawnConfig): SpawnSpec {
         return { bin: this.bin, args: [FIXTURE], cwd: cfg.cwd, fingerprint: spawnFingerprint({ system: cfg.appendSystemPrompt }) };
@@ -162,8 +170,8 @@ function sink() {
     return { texts, emit: (e: AgentEvent) => void (e.type === "text" && texts.push(e.text)) };
 }
 
-async function turn(s: LiveCliSession, text: string, o: { system?: string; model?: string; signal?: AbortSignal } = {}) {
-    const k = sink();
+async function turn(s: LiveCliSession, text: string, o: { system?: string; model?: string; signal?: AbortSignal; sink?: ReturnType<typeof sink> } = {}) {
+    const k = o.sink ?? sink();
     const spawn: SpawnConfig = { cwd: tmpdir(), model, mode: "default", additionalDirectories: [], trusted: true, rules: { deny: [], ask: [], root: tmpdir() }, appendSystemPrompt: o.system };
     const settings: LiveSettings = { model: o.model ? backendModel("fake", o.model) : model, mode: "default" };
     const r = await s.runTurn({ text, images: [] }, k, o.signal ?? new AbortController().signal, { spawn, settings, host });
@@ -598,16 +606,19 @@ test("aborting a turn while its process starts, or while it takes new settings, 
     const one = await turn(s, "one");
     expect(one.reason).toBe("done");
 
-    // A CLI that never answers a settings change: the turn ends, the process stays, and the next turn sends them again.
-    fake.hold.apply = new Promise(() => {});
+    // A CLI slow to answer a settings change: the turn ends, the process stays, and the next turn waits for
+    // that answer, then sends them all again.
+    let answer!: (r: "applied") => void;
+    fake.hold.apply = new Promise((r) => (answer = r));
     const esc2 = new AbortController();
     const applying = turn(s, "two", { model: "other", signal: esc2.signal });
     await until(() => fake.applies === 1);
     esc2.abort();
     expect(await applying).toMatchObject({ reason: "aborted" });
     fake.hold.apply = undefined;
-    const three = await turn(s, "three", { model: "other" });
-    expect(three.pid).toBe(one.pid);
+    const three = turn(s, "three", { model: "other" });
+    answer("applied");
+    expect((await three).pid).toBe(one.pid);
     expect(fake.applies).toBe(2);
 });
 
@@ -644,4 +655,125 @@ test("a CLI that can't be spawned ends the turn with the error and leaves the se
     expect(s.state).toBe("dead");
     fake.bin = process.execPath;
     expect((await turn(s, "two")).reason).toBe("done");
+});
+
+test("shutdown waits for a restart for new spawn settings to finish stopping the old process", async () => {
+    const { fake, pool } = setup({ stopGraceMs: 200 });
+    const s = pool.session("a", "fake");
+    const one = await turn(s, "one", { system: "v1" });
+    fake.hold.close = new Promise(() => {});
+    const two = turn(s, "two", { system: "v2" });
+    await until(() => s.state === "stopping");
+    await pool.shutdownAll();
+    expect(s.state).toBe("dead");
+    expect(alive(one.pid)).toBe(false);
+    expect(await two).toMatchObject({ reason: "aborted" });
+    expect(fake.connections).toHaveLength(1);
+});
+
+test("a settings change the CLI answers late isn't overtaken by a newer one", async () => {
+    const { fake, pool } = setup();
+    const s = pool.session("a", "fake");
+    await turn(s, "one");
+    let answerB!: (r: "applied") => void;
+    fake.hold.apply = new Promise((r) => (answerB = r));
+    const esc = new AbortController();
+    const b = turn(s, "two", { model: "B", signal: esc.signal });
+    await until(() => fake.applies === 1);
+    esc.abort();
+    expect(await b).toMatchObject({ reason: "aborted" });
+
+    fake.hold.apply = undefined;
+    const c = turn(s, "three", { model: "C" });
+    // Time for C's change to overtake B's, if it may.
+    await Bun.sleep(20);
+    answerB("applied");
+    expect((await c).reason).toBe("done");
+    expect((await turn(s, "four", { model: "C" })).reason).toBe("done");
+    expect(fake.of(s).model).toBe("C");
+});
+
+test("events held for a prompt the CLI took late stay that turn's", async () => {
+    const { clock, fake, pool } = setup();
+    const s = pool.session("a", "fake");
+    await turn(s, "one");
+    let take!: () => void;
+    fake.hold.prompt = new Promise<void>((r) => (take = r));
+    const esc = new AbortController();
+    const k = sink();
+    let done = false;
+    const old = turn(s, "two", { signal: esc.signal, sink: k }).finally(() => (done = true));
+    await until(() => s.state === "busy");
+    fake.of(s).inject({ t: "turn_event", event: { type: "text", text: "OLD TURN TEXT" } });
+    esc.abort();
+    await until(() => done, () => clock.advance(100));
+    expect(await old).toMatchObject({ reason: "aborted", unanswered: true });
+
+    fake.hold.prompt = undefined;
+    const esc2 = new AbortController();
+    const k2 = sink();
+    const next = turn(s, "hang", { signal: esc2.signal, sink: k2 });
+    await until(() => k2.texts.length === 1);
+    take();
+    await until(() => !s.unresponsive);
+    esc2.abort();
+    expect((await next).reason).toBe("aborted");
+    expect(k2.texts).toEqual([`echo hang (pid ${s.pid})`]);
+    expect(k.texts).toEqual([]);
+});
+
+test("a wake isn't held back by a prompt the CLI refuses, or never takes", async () => {
+    const { clock, fake, pool } = setup();
+    const s = pool.session("a", "fake");
+    const wakes: string[] = [];
+    s.onWake((w) => wakes.push(w.ref));
+    await turn(s, "bg t1");
+    await turn(s, "bg t2");
+    let refuse!: (e: Error) => void;
+    fake.hold.prompt = new Promise((_, reject) => (refuse = reject));
+    const refused = turn(s, "two");
+    await until(() => s.state === "busy");
+    fake.of(s).send({ type: "finish", task: "t1" });
+    await until(() => wakes.length === 1);
+    refuse(new Error("refused"));
+    expect(await refused).toMatchObject({ reason: "error", error: "refused" });
+    expect(await s.adopt("wake-t1", sink(), new AbortController().signal)).toMatchObject({ reason: "done" });
+
+    fake.hold.prompt = new Promise(() => {});
+    const esc = new AbortController();
+    let done = false;
+    const untaken = turn(s, "three", { signal: esc.signal }).finally(() => (done = true));
+    await until(() => s.state === "busy");
+    fake.of(s).send({ type: "finish", task: "t2" });
+    await until(() => wakes.length === 2);
+    esc.abort();
+    await until(() => done, () => clock.advance(100));
+    expect(await untaken).toMatchObject({ unanswered: true });
+    expect(await s.adopt("wake-t2", sink(), new AbortController().signal)).toMatchObject({ reason: "done" });
+    await until(() => s.tasks.running().length === 0 && s.quiet());
+});
+
+test("which turns a process ended doesn't carry over to the next process", async () => {
+    const { clock, fake, pool } = setup();
+    const s = pool.session("a", "fake");
+    await turn(s, "one");
+    // The old process ends a "p1" that's no turn here.
+    fake.of(s).inject({ t: "turn_ended", ref: "p1", reason: "done" });
+    await s.restart();
+
+    // The new process numbers its prompts afresh: its p1 is the deaf turn below.
+    let take!: () => void;
+    fake.hold.prompt = new Promise<void>((r) => (take = r));
+    const esc = new AbortController();
+    let done = false;
+    const deaf = turn(s, "deaf", { signal: esc.signal }).finally(() => (done = true));
+    await until(() => s.state === "busy");
+    esc.abort();
+    await until(() => done, () => clock.advance(100));
+    expect(await deaf).toMatchObject({ unanswered: true });
+    let seen = false;
+    s.onEvent((e) => void (e.t === "turn_event" && e.ref === "p1" && (seen = true)));
+    take();
+    await until(() => seen);
+    expect(s.unresponsive).toBe(true);
 });
