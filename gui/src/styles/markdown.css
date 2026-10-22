@@ -102,8 +102,9 @@
     color: var(--fg-2);
 }
 
-.md li > ul > li::marker {
-    content: "–  ";
+/* As list-style-type, not ::marker's content: WebKit (the app's WKWebView) ignores content there. */
+.md li > ul {
+    list-style-type: "–  ";
 }
 
 .md li > p {
