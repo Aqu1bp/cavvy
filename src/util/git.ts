@@ -66,15 +66,41 @@ function git(cwd: string, args: string[], timeoutMs = 3000): string | undefined 
     }
 }
 
-/** git() without blocking: the server goes on serving while it runs. */
-async function gitAsync(cwd: string, args: string[], timeoutMs = 3000): Promise<string | undefined> {
+/**
+ * git() without blocking: the server goes on serving while it runs. The timeout bounds the whole call,
+ * output included: git runs in a process group of its own, and at the deadline the group is killed
+ * (with anything it started that still holds the output open) and the read given up.
+ */
+export async function gitAsync(cwd: string, args: string[], timeoutMs = 3000): Promise<string | undefined> {
+    let p: Bun.Subprocess<"ignore", "pipe", "ignore">;
     try {
         const { argv, env } = gitCall(args);
-        const p = Bun.spawn(argv, { cwd, stdout: "pipe", stderr: "ignore", timeout: timeoutMs, env });
-        const [stdout] = await Promise.all([new Response(p.stdout).text(), p.exited]);
-        return gitOutput(args, p.exitCode, stdout);
+        p = Bun.spawn(argv, { cwd, stdin: "ignore", stdout: "pipe", stderr: "ignore", env, detached: true });
     } catch {
         return undefined;
+    }
+    const reader = p.stdout.getReader();
+    const read = async () => {
+        const chunks: Uint8Array[] = [];
+        for (let c = await reader.read(); !c.done; c = await reader.read()) chunks.push(c.value);
+        return Buffer.concat(chunks).toString();
+    };
+    let timer: Timer | undefined;
+    const deadline = new Promise<undefined>((resolve) => (timer = setTimeout(resolve, timeoutMs)));
+    try {
+        const done = await Promise.race([Promise.all([read(), p.exited]), deadline]);
+        if (done) return gitOutput(args, p.exitCode, done[0]);
+        try {
+            process.kill(-p.pid, "SIGKILL");
+        } catch {
+            // the group is gone already
+        }
+        return undefined;
+    } catch {
+        return undefined;
+    } finally {
+        clearTimeout(timer);
+        void reader.cancel().catch(() => undefined);
     }
 }
 

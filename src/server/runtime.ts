@@ -2861,7 +2861,16 @@ export class Runtime {
             const until = Date.now() + 5000;
             while (connecting() && Date.now() < until && !signal.aborted) await new Promise((r) => setTimeout(r, 100));
         }
-        this.session.setSystem(await buildSystemPrompt({ cwd: this.ws.cwd, model: this.model!, append: this.ws.mcp.instructions() || undefined }));
+        if (signal.aborted) return;
+        // Stopped (or closed) while its git snapshot is read: the turn ends now, not when git is done; the prompt is built again next time.
+        let stop!: () => void;
+        const stopped = new Promise<undefined>((r) => signal.addEventListener("abort", (stop = () => r(undefined)), { once: true }));
+        try {
+            const system = await Promise.race([buildSystemPrompt({ cwd: this.ws.cwd, model: this.model!, append: this.ws.mcp.instructions() || undefined }), stopped]);
+            if (system !== undefined && !signal.aborted && !this.closed) this.session.setSystem(system);
+        } finally {
+            signal.removeEventListener("abort", stop);
+        }
     }
 
     private async generateTitle(prompt: string) {

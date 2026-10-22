@@ -10,7 +10,7 @@ const inheritedGitConfig = Object.fromEntries(Object.entries(process.env).filter
 for (const key of Object.keys(inheritedGitConfig)) delete process.env[key];
 process.env.GIT_CONFIG_NOSYSTEM = "1";
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
-const { gitBranch, gitListFiles, gitSnapshot } = await import("../src/util/git");
+const { gitAsync, gitBranch, gitListFiles, gitSnapshot } = await import("../src/util/git");
 const { sessionContextBlock } = await import("../src/agent/system-prompt");
 const { trustFolder, trustForSession } = await import("../src/config/trust");
 const { Engine } = await import("../src/server/engine");
@@ -462,6 +462,43 @@ test("the snapshot's git calls run side by side, and the server goes on while th
     // Timers ran while git did: the event loop wasn't held.
     expect(ticks).toBeGreaterThan(10);
 }, 15_000);
+
+for (const exits of [true, false]) test(`the async git call's timeout holds when something it started keeps its output open (git ${exits ? "exits" : "hangs"})`, async () => {
+    const dir = freshRepo();
+    const bin = join(dir, ".git", "holding-bin");
+    mkdirSync(bin);
+    const pids = join(dir, ".git", "pids");
+    const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
+    // A descendant that inherits stdout and outlives the timeout by far; git itself exits at once, or waits for it.
+    writeFileSync(join(bin, "git"), `#!/bin/sh\nsleep 60 &\necho $! >> ${quote(pids)}\necho partial\n${exits ? "exit 0" : "wait"}\n`, { mode: 0o700 });
+    const before = process.env.PATH;
+    process.env.PATH = `${bin}:${before}`;
+    const started = performance.now();
+    let result: string | undefined = "unset";
+    try {
+        // The default timeout (3 s): long enough for the wrapper to have started its descendant, however busy the machine.
+        result = await gitAsync(dir, ["log"]);
+    } finally {
+        if (before === undefined) delete process.env.PATH;
+        else process.env.PATH = before;
+    }
+    const took = performance.now() - started;
+    expect(existsSync(pids)).toBe(true);
+    const pid = Number(readFileSync(pids, "utf8").trim());
+    // Killed, it may take a moment to be reaped; a zombie is gone too.
+    const running = () => /^[^Z]/.test(Bun.spawnSync(["ps", "-o", "stat=", "-p", String(pid)]).stdout.toString().trim());
+    let alive = running();
+    for (let i = 0; alive && i < 60; i++) {
+        await Bun.sleep(50);
+        alive = running();
+    }
+    if (alive) process.kill(pid, "SIGKILL");
+    // As spawnSync did: nothing, at the timeout (not when the descendant lets go, a minute later).
+    expect(result).toBeUndefined();
+    expect(took).toBeLessThan(6000);
+    // What it started went with it.
+    expect(alive).toBe(false);
+}, 20_000);
 
 test("a timed-out per-worktree config read skips status", async () => {
     const dir = freshRepo();

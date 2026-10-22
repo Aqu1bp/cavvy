@@ -1306,6 +1306,35 @@ describe("sessions", () => {
         c.close();
     });
 
+    test("stopping a first turn while its git snapshot is read ends it then, not when git is done", async () => {
+        const cwd = project();
+        commitRepo(cwd);
+        const bin = tempDir("harness-slow-git-");
+        const finished = join(bin, "log-finished");
+        // `git log` (the snapshot's recent commits) takes a while; everything else is git as usual.
+        writeFileSync(join(bin, "git"), `#!/bin/sh\ncase " $* " in *" log "*) sleep 1.5; touch '${finished}';; esac\nexec '${Bun.which("git")}' "$@"\n`, { mode: 0o700 });
+        const before = process.env.PATH;
+        process.env.PATH = `${bin}:${before}`;
+        try {
+            const c = await client();
+            const id = await c.open("session.create", { cwd });
+            await c.call("session.send", { id, text: "explain the layout" });
+            await c.until(id, (v) => v.state.busy);
+            await c.call("session.interrupt", { id });
+            await c.until(id, done, 5000);
+            expect(existsSync(finished)).toBe(false);
+            expect(lastTurn(c.view(id)).status).not.toBe("done");
+            // The next send builds the prompt, git snapshot and all.
+            await Bun.sleep(1600);
+            await c.call("session.send", { id, text: "explain the layout" });
+            await c.until(id, (v) => done(v) && lastTurn(v).status === "done", 10_000);
+            c.close();
+        } finally {
+            if (before === undefined) delete process.env.PATH;
+            else process.env.PATH = before;
+        }
+    }, 20_000);
+
     test("sessions.search finds a prompt and a reply, at the turn the session draws", async () => {
         const c = await client();
         const id = await c.open("session.create", { cwd: project() });
