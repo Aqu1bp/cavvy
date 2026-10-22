@@ -397,7 +397,7 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             const term: { threadId: string; turnId: string; item: any; timer?: ReturnType<typeof setTimeout> } = { threadId, turnId, item };
             terminals.set(processId, term);
             log({ terminalStarted: { processId, itemId: item.id } });
-            if (process.env.FAKE_BG_MS !== "never") term.timer = setTimeout(() => endTerminal(processId, Number(process.env.FAKE_BG_EXIT ?? 0) === 0 ? "completed" : "failed", Number(process.env.FAKE_BG_EXIT ?? 0), `bg ${i + 1} done\n`), Number(process.env.FAKE_BG_MS ?? 300) + i * Number(process.env.FAKE_BG_STAGGER_MS ?? 0));
+            if (process.env.FAKE_BG_MS !== "never") term.timer = setTimeout(() => endTerminal(processId, Number(process.env.FAKE_BG_EXIT ?? 0) === 0 ? "completed" : "failed", Number(process.env.FAKE_BG_EXIT ?? 0), process.env.FAKE_BG_OUTPUT ?? `bg ${i + 1} done\n`), Number(process.env.FAKE_BG_MS ?? 300) + i * Number(process.env.FAKE_BG_STAGGER_MS ?? 0));
         }
         notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg2-${turnId}`, text: "Started it in the background.", ...phase("final_answer") } });
         spend(threadId, turnId, tokens(120, 20, 30, 5));

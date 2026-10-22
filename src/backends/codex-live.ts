@@ -1055,7 +1055,8 @@ export class CodexLiveConnection extends CodexTurn {
         // Stopped, unless it had finished by itself first.
         const status = ok ? "done" : byStop ? "stopped" : "failed";
         this.reportTerminal(term, status);
-        const out = typeof item?.aggregatedOutput === "string" ? item.aggregatedOutput : "";
+        // Redacted whole, then cut: a secret across the cut would leave a piece of itself unredacted.
+        const out = typeof item?.aggregatedOutput === "string" ? redact(item.aggregatedOutput) : "";
         const tail = out.length > NOTE_OUTPUT_CHARS ? `…${out.slice(-NOTE_OUTPUT_CHARS)}` : out;
         const what = `\`${shown(term.command, 300)}\``;
         const text = byStop && !ok

@@ -138,6 +138,26 @@ describe("one app-server per session", () => {
 });
 
 describe("background terminals", () => {
+    test("a secret across the cut of a finished command's output isn't left in part: the output is redacted whole, then cut", async () => {
+        const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+        const secret = "sk-test-0a1b2c3d4e5f-Qw7Zk9Lp2X";
+        registerSecret(secret, "test key");
+        try {
+            process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
+            process.env.FAKE_BG_MS = "100";
+            // The cut keeps the last 4000 characters: the secret's last 10 are inside it.
+            process.env.FAKE_BG_OUTPUT = `start ${secret}${"x".repeat(3990)}`;
+            const a = await makeAgent();
+            expect(await a.run("start the build")).toBe("done");
+            expect(await a.adopt(await a.nextWake())).toBe("done");
+            const told = turnTexts()[1]!;
+            expect(told).toContain("xxxx");
+            expect(told).not.toContain("Qw7Zk9Lp2X");
+        } finally {
+            unregisterSecret(secret);
+        }
+    });
+
     test("a command still running when its turn ends is a background task; its end starts a turn the session adopts as a wake", async () => {
         process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
         process.env.FAKE_BG_MS = "500";
