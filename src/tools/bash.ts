@@ -1,5 +1,6 @@
-import { spawn } from "node:child_process";
-import { appendFileSync, createReadStream, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { Readable } from "node:stream";
+import { appendFileSync, closeSync, constants, createReadStream, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import type { BackgroundShell, Tool, ToolContext } from "./types";
@@ -228,6 +229,289 @@ const MAX_HOSTS = 30;
 /** Bound for unfinished background lines; larger Bash lines keep redacted ends. */
 export const MAX_PARTIAL_LINE = 64 * 1024;
 
+/** Read from each paced stream per turn of the event loop. */
+const PACED_CHUNK = 64 * 1024;
+/** Longest wait between polls of a quiet command's output. */
+const PACED_POLL_MS = 20;
+/** Most a reader catching up at once (drain) takes in. */
+const PACED_DRAIN = 1024 * 1024;
+
+/** A command's stdout or stderr: a FIFO its PacedOutput reads. */
+class PacedStream extends Readable {
+    /** Asked for more (_read) and not given it yet. */
+    wants = false;
+
+    constructor(private fd: number, private owner: PacedOutput) {
+        super({ highWaterMark: PACED_CHUNK });
+    }
+
+    get open() {
+        return this.fd >= 0;
+    }
+
+    override _read() {
+        this.wants = true;
+        this.owner.schedule();
+    }
+
+    /** One read of what's waiting, passed on: how many bytes. Unless `force`, only when asked for. */
+    readChunk(buf: Buffer, force = false): number {
+        if (this.fd < 0 || !(this.wants || force)) return 0;
+        let n = 0;
+        let eof = false;
+        try {
+            while (n < PACED_CHUNK) {
+                const got = readSync(this.fd, buf, n, PACED_CHUNK - n, null);
+                if (!got) {
+                    eof = true;
+                    break;
+                }
+                n += got;
+            }
+        } catch (e) {
+            const code = (e as NodeJS.ErrnoException).code;
+            // Anything but "nothing yet" ends it, as a closed pipe would.
+            if (code !== "EAGAIN" && code !== "EWOULDBLOCK") eof = true;
+        }
+        if (n) {
+            // Before push: the stream asks for more (_read) once this is taken, maybe within push.
+            this.wants = false;
+            this.push(Buffer.from(buf.subarray(0, n)));
+        }
+        // No writer left (the command and whatever it started closed it), unless a listener stopped reading as it took this.
+        if (eof && this.fd >= 0) {
+            closeSync(this.fd);
+            this.fd = -1;
+            this.push(null);
+        }
+        return n;
+    }
+
+    override _destroy(err: Error | null, cb: (err?: Error | null) => void) {
+        if (this.fd >= 0) closeSync(this.fd);
+        this.fd = -1;
+        cb(err);
+    }
+}
+
+/**
+ * A command's stdout and stderr, read at our own pace. Bun reads a pipe as fast as the
+ * command writes it, buffering without limit, and a command that floods its output
+ * (`yes`) keeps the event loop in that read: the server stops answering and its memory
+ * balloons (#298). These are FIFOs read without blocking, a chunk of each per turn of
+ * the event loop: when we fall behind, the kernel's pipe buffer fills and the command
+ * waits. Both are read at the same moments, so what one says keeps its order with the
+ * other's, to within a poll (or, in a flood, what the pipes' buffers hold).
+ */
+class PacedOutput {
+    readonly stdout: PacedStream;
+    readonly stderr: PacedStream;
+    private timer?: ReturnType<typeof setTimeout>;
+    private immediate?: ReturnType<typeof setImmediate>;
+    private idle = 0;
+    /** Time owed to the rest of the server, in ms (see read). */
+    private owed = 0;
+    private readonly buf = Buffer.allocUnsafe(PACED_CHUNK);
+
+    constructor(out: number, err: number) {
+        this.stdout = new PacedStream(out, this);
+        this.stderr = new PacedStream(err, this);
+    }
+
+    /** Read again: not in this turn (a chunk per turn lets the server answer in between), or after the rest owed. */
+    schedule() {
+        if (this.timer || this.immediate) return;
+        if (this.owed < 1) this.immediate = setImmediate(this.poll);
+        else {
+            this.timer = setTimeout(this.poll, this.owed);
+            this.owed = 0;
+        }
+    }
+
+    /** Its command ended: what it left is read now, not at the next poll. */
+    poke() {
+        if (!this.timer) return;
+        this.cancel();
+        this.idle = 0;
+        this.poll();
+    }
+
+    /** Take in what's waiting now (up to PACED_DRAIN), not at the next poll: for a reader of its output. */
+    drain() {
+        this.cancel();
+        for (let total = 0; total < PACED_DRAIN; ) {
+            const n = this.read(true);
+            if (!n) break;
+            total += n;
+        }
+        this.owed = 0;
+        if (this.waiting) this.schedule();
+    }
+
+    private get waiting() {
+        return (this.stdout.open && this.stdout.wants) || (this.stderr.open && this.stderr.wants);
+    }
+
+    private cancel() {
+        clearTimeout(this.timer);
+        if (this.immediate) clearImmediate(this.immediate);
+        this.timer = this.immediate = undefined;
+    }
+
+    private read(force = false): number {
+        const started = performance.now();
+        const n = this.stdout.readChunk(this.buf, force) + this.stderr.readChunk(this.buf, force);
+        if (n) {
+            this.idle = 0;
+            // Rest as long as handling it took (the 'data' listeners run in push) before reading
+            // more: a command that never stops printing gets at most half the thread.
+            this.owed += performance.now() - started;
+        }
+        return n;
+    }
+
+    private poll = () => {
+        this.timer = this.immediate = undefined;
+        const n = this.read();
+        if (!this.waiting) return;
+        if (n) return this.schedule();
+        // Nothing: once more next turn (more is often on its way), then less and less often.
+        this.owed = 0;
+        if (!this.idle++) this.immediate = setImmediate(this.poll);
+        else this.timer = setTimeout(this.poll, Math.min(PACED_POLL_MS, 2 ** (this.idle - 2)));
+    };
+}
+
+type FifoPair = [{ read: number; write: number }, { read: number; write: number }];
+/** FIFO pairs made ahead: mkfifo is a process of its own, and starting a command shouldn't wait for one. */
+const spareFifos: FifoPair[] = [];
+let makingFifos = false;
+
+/** Two FIFOs for a command's output, each open at both ends, with nothing left on disk; undefined where FIFOs can't be made. */
+function pacedFifos(): FifoPair | undefined {
+    const spare = spareFifos.pop();
+    if (!makingFifos && spareFifos.length < 2) makeSpareFifos();
+    if (spare) return spare;
+    let dir: string | undefined;
+    try {
+        const made = fifoPaths();
+        dir = made.dir;
+        return spawnSync("mkfifo", ["-m", "600", ...made.paths], { stdio: "ignore" }).status === 0 ? openFifos(made.paths) : undefined;
+    } catch {
+        return undefined;
+    } finally {
+        if (dir) rmSync(dir, { recursive: true, force: true });
+    }
+}
+
+function makeSpareFifos() {
+    makingFifos = true;
+    let made: { dir: string; paths: string[] };
+    try {
+        made = fifoPaths();
+    } catch {
+        makingFifos = false;
+        return;
+    }
+    const { dir, paths } = made;
+    let settled = false;
+    const done = (code: number | null) => {
+        if (settled) return;
+        settled = true;
+        try {
+            if (code === 0) spareFifos.push(openFifos(paths));
+        } catch {
+            // Made again, in its turn, by the next command.
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+            makingFifos = false;
+        }
+    };
+    const maker = spawn("mkfifo", ["-m", "600", ...paths], { stdio: "ignore" });
+    maker.once("error", () => done(null));
+    maker.once("exit", (code) => done(code));
+}
+
+function fifoPaths() {
+    const dir = mkdtempSync(join(tmpdir(), "harness-pipe-"));
+    return { dir, paths: [join(dir, "out"), join(dir, "err")] };
+}
+
+function openFifos(paths: string[]): FifoPair {
+    const fds: number[] = [];
+    try {
+        return paths.map((path) => {
+            // The read end first, without blocking; then the write end opens at once. The command's
+            // end must block: a command whose stdout doesn't wait gets EAGAIN errors.
+            const read = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+            fds.push(read);
+            const write = openSync(path, constants.O_WRONLY);
+            fds.push(write);
+            return { read, write };
+        }) as FifoPair;
+    } catch (e) {
+        for (const fd of fds) closeSync(fd);
+        throw e;
+    }
+}
+
+export interface PacedChild {
+    child: ChildProcess;
+    stdout: Readable;
+    stderr: Readable;
+    /** Like the child's "close": it exited (or failed to start) and both streams are closed. */
+    onClose: (cb: (code: number | null, signal: NodeJS.Signals | null) => void) => void;
+    /** Take in what it has printed so far, now (PacedOutput.drain); ordinary pipes deliver it as it comes. */
+    drain: () => void;
+}
+
+/**
+ * Spawn with stdin ignored and stdout and stderr in paced pipes (PacedOutput), or in
+ * ordinary pipes, as before, where FIFOs can't be made or `paced` is false.
+ */
+export function spawnPaced(file: string, args: string[], options: Omit<SpawnOptions, "stdio">, paced = true): PacedChild {
+    const fifos = paced ? pacedFifos() : undefined;
+    if (!fifos) {
+        const child = spawn(file, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
+        return { child, stdout: child.stdout!, stderr: child.stderr!, onClose: (cb) => void child.on("close", cb), drain: () => {} };
+    }
+    const [out, err] = fifos;
+    let child: ChildProcess;
+    try {
+        child = spawn(file, args, { ...options, stdio: ["ignore", out.write, err.write] });
+    } catch (e) {
+        closeSync(out.read);
+        closeSync(err.read);
+        throw e;
+    } finally {
+        // The command holds them now: the streams end when it (and what it started) closes them.
+        closeSync(out.write);
+        closeSync(err.write);
+    }
+    const output = new PacedOutput(out.read, err.read);
+    const { stdout, stderr } = output;
+    let left = 3;
+    let status: [number | null, NodeJS.Signals | null] = [null, null];
+    const waiting: ((code: number | null, signal: NodeJS.Signals | null) => void)[] = [];
+    const settle = () => {
+        if (--left === 0) for (const cb of waiting) cb(...status);
+    };
+    child.once("close", (code: number | null, signal: NodeJS.Signals | null) => {
+        status = [code, signal];
+        output.poke();
+        settle();
+    });
+    stdout.once("close", settle);
+    stderr.once("close", settle);
+    return {
+        child,
+        stdout,
+        stderr,
+        onClose: (cb) => void (left ? waiting.push(cb) : cb(...status)),
+        drain: () => output.drain(),
+    };
+}
+
 /** Strip terminal escapes across chunk boundaries without buffering unbounded OSC payloads. */
 type AnsiStripper = ((chunk: string) => string) & { fork: () => AnsiStripper };
 function ansiChunks(state = 0, stringState = 0): AnsiStripper {
@@ -290,25 +574,38 @@ function prefixAtEnd(pattern: string, text: string): number {
 function readBashStream(stream: NodeJS.ReadableStream, emit: (text: string, order: number, omitted?: number) => void, overflow: (text: string) => string, nextOrder: () => number, inspect?: (text: string) => void, progress?: (text: string) => void) {
     let pending: { text: string; order: number; omitted: number } | undefined;
     const stripChunk = ansiChunks();
+    // What readShellStream emits is redacted; again after stripping, which can join a secret's parts.
     readShellStream(stream, (text, order, omitted = 0) => {
-        const safe = redact(stripChunk(redact(text)));
+        const safe = redact(stripChunk(text));
         progress?.(safe);
-        const end = /[\r\n]$/.exec(safe)?.[0];
-        const body = end ? safe.slice(0, -1) : safe;
-        if (body || !pending) pending = { text: body, order: pending?.order ?? order, omitted };
-        if (end === "\n") {
-            emit(pending!.text + "\n", pending!.order, pending!.omitted);
-            pending = undefined;
+        // Whole lines (a chunk's worth comes at once) with no progress to collapse: as they are.
+        if (!pending && safe.endsWith("\n") && !safe.includes("\r")) return emit(safe, order, omitted);
+        const delimiter = /[\r\n]/g;
+        for (let start = 0; start < safe.length; ) {
+            const nl = delimiter.exec(safe)?.index ?? -1;
+            const segment = safe.slice(start, nl < 0 ? safe.length : nl + 1);
+            start += segment.length;
+            delimiter.lastIndex = start;
+            const end = nl < 0 ? undefined : segment.at(-1);
+            const body = end ? segment.slice(0, -1) : segment;
+            if (body || !pending) pending = { text: body, order: pending?.order ?? order, omitted };
+            if (end === "\n") {
+                emit(pending!.text + "\n", pending!.order, pending!.omitted);
+                pending = undefined;
+            }
         }
-    }, OUTPUT_FILE_LIMIT, overflow, nextOrder, inspect, true);
+    }, OUTPUT_FILE_LIMIT, overflow, nextOrder, inspect, true, true);
     stream.on("end", () => {
         if (pending) emit(pending.text, pending.order, pending.omitted);
         pending = undefined;
     });
 }
 
-/** Each pipe owns its decoder and pending line: stderr mustn't split a stdout secret (or vice versa). */
-export function readShellStream(stream: NodeJS.ReadableStream, emit: (text: string, order: number, omitted?: number) => void, maxLine: number, overflow: (text: string) => string, nextOrder = () => 0, inspect?: (text: string) => void, keepEnds = false) {
+/**
+ * Each pipe owns its decoder and pending line: stderr mustn't split a stdout secret (or vice versa).
+ * With `batch`, a chunk's complete lines go out together, in one emit (and redaction), not one per line.
+ */
+export function readShellStream(stream: NodeJS.ReadableStream, emit: (text: string, order: number, omitted?: number) => void, maxLine: number, overflow: (text: string) => string, nextOrder = () => 0, inspect?: (text: string) => void, keepEnds = false, batch = false) {
     let pending = "";
     let skipping = false;
     let order = 0;
@@ -375,12 +672,30 @@ export function readShellStream(stream: NodeJS.ReadableStream, emit: (text: stri
         // Cache both delimiters: searching for an absent CR again at every LF is quadratic.
         let lf = chunk.indexOf("\n");
         let cr = chunk.indexOf("\r");
+        // The batch: complete lines from runFrom to runTo, which started no line of their own.
+        let runFrom = -1;
+        let runTo = 0;
+        let runOrder = 0;
+        const flushRun = () => {
+            if (runFrom < 0) return;
+            const text = chunk.slice(runFrom, runTo);
+            runFrom = -1;
+            inspect?.(text);
+            emit(redact(text), runOrder);
+        };
         for (let start = 0; start < chunk.length; ) {
             // A reader that stopped listening (a monitor that's flooding) doesn't want the rest of this chunk either.
             if ((stream as { destroyed?: boolean }).destroyed) return;
             const nl = lf < 0 ? cr : cr < 0 ? lf : Math.min(lf, cr);
             const end = nl < 0 ? chunk.length : nl + 1;
-            if (!skipping) {
+            if (batch && !skipping && !pending && nl >= 0 && end - start <= maxLine) {
+                if (runFrom < 0) {
+                    runFrom = start;
+                    runOrder = nextOrder();
+                }
+                runTo = end;
+            } else if (!skipping) {
+                flushRun();
                 if (!pending) order = nextOrder();
                 pending += chunk.slice(start, end);
                 if (pending.length > maxLine) {
@@ -409,6 +724,7 @@ export function readShellStream(stream: NodeJS.ReadableStream, emit: (text: stri
             if (lf >= 0 && lf < start) lf = chunk.indexOf("\n", start);
             if (cr >= 0 && cr < start) cr = chunk.indexOf("\r", start);
         }
+        flushRun();
     });
     stream.on("end", () => {
         if (skipping && keepEnds) finishLong();
@@ -478,6 +794,8 @@ interface RunOpts {
     onData?: (chunk: string) => void;
     outputFile?: OutputFile;
     sandbox?: Sandbox;
+    /** Read its output at our pace (spawnPaced; the pacedOutput setting). */
+    paced?: boolean;
 }
 
 interface RunResult {
@@ -505,12 +823,7 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
     const script = `${opts.command}\n__harness_ec=$?\npwd -P > '${cwdFile}' 2>/dev/null\nexit $__harness_ec\n`;
     return new Promise((resolvePromise) => {
         const [file, ...args] = shellArgv(script, opts.sandbox);
-        const child = spawn(file!, args, {
-            cwd: opts.cwd,
-            env: withPwd(opts.env, opts.cwd),
-            detached: true,
-            stdio: ["ignore", "pipe", "pipe"],
-        });
+        const { child, stdout, stderr, onClose } = spawnPaced(file!, args, { cwd: opts.cwd, env: withPwd(opts.env, opts.cwd), detached: true }, opts.paced);
         const preview = new OutputPreview();
         let rawLength = 0;
         let outputTruncated = false;
@@ -549,10 +862,7 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
             outputTruncated = true;
             return `[Output line omitted: exceeds ${MAX_KEPT} characters]\n`;
         };
-        for (const stream of [child.stdout, child.stderr]) {
-            if (!stream) continue;
-            readBashStream(stream, onChunk, overflow, nextOrder, inspect, opts.onData);
-        }
+        for (const stream of [stdout, stderr]) readBashStream(stream, onChunk, overflow, nextOrder, inspect, opts.onData);
         const timer = setTimeout(() => {
             timedOut = true;
             killTree();
@@ -562,7 +872,7 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
             killTree();
         };
         opts.signal.addEventListener("abort", onAbort, { once: true });
-        child.on("close", (code, sig) => {
+        onClose((code, sig) => {
             clearTimeout(timer);
             opts.signal.removeEventListener("abort", onAbort);
             let newCwd: string | undefined;
@@ -662,11 +972,14 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
                 env,
                 outputFile,
                 sandbox: ctx.sandbox,
+                paced: ctx.settings.pacedOutput !== false,
                 onData: (chunk) => {
-                    ready = (ready + lines(chunk)).slice(-MAX_KEPT);
+                    // Cut it back now and then, not for every chunk: each cut copies what's kept.
+                    ready += lines(chunk);
+                    if (ready.length > 2 * MAX_KEPT) ready = ready.slice(-MAX_KEPT);
                     const now = Date.now();
                     if (!ready || now - lastProgress <= 100) return;
-                    ctx.onProgress?.(ready);
+                    ctx.onProgress?.(ready.slice(-MAX_KEPT));
                     ready = "";
                     lastProgress = now;
                 },
@@ -754,31 +1067,105 @@ export async function stopGroup(pid: number | undefined, graceMs: number): Promi
 /** A background line too long to keep. */
 export const overflowLine = () => "[Output line omitted: exceeds 64 KiB]\n";
 
+/**
+ * The last BG_BUFFER characters, kept in the pieces they came in. Appending costs the piece,
+ * not the buffer (one string would be copied whole for every line); reading joins them.
+ */
+export class OutputRing {
+    private parts: string[] = [];
+    private first = 0;
+    /** Evicted characters at the start of the first part. */
+    private skip = 0;
+    private joined?: string;
+    length = 0;
+
+    /** How many characters were evicted from the front. */
+    append(text: string): number {
+        if (!text) return 0;
+        this.parts.push(text);
+        this.length += text.length;
+        this.joined = undefined;
+        if (this.length <= BG_BUFFER) return 0;
+        let drop = this.length - BG_BUFFER;
+        // Only redacted, complete lines enter the ring; evict whole lines for readability.
+        const nl = this.newline(drop);
+        if (nl !== -1 && nl - drop < MAX_PARTIAL_LINE) drop = nl + 1;
+        this.length -= drop;
+        for (let left = drop; left; ) {
+            const rest = this.parts[this.first]!.length - this.skip;
+            if (left < rest) {
+                this.skip += left;
+                break;
+            }
+            left -= rest;
+            this.parts[this.first++] = "";
+            this.skip = 0;
+        }
+        if (this.first > 1024 && this.first * 2 > this.parts.length) {
+            this.parts = this.parts.slice(this.first);
+            this.first = 0;
+        }
+        return drop;
+    }
+
+    /** The first newline at or after `from`, looking no further than MAX_PARTIAL_LINE past it. */
+    private newline(from: number): number {
+        let base = 0;
+        for (let i = this.first; i < this.parts.length && base < from + MAX_PARTIAL_LINE; i++) {
+            const start = i === this.first ? this.skip : 0;
+            const part = this.parts[i]!;
+            const end = base + part.length - start;
+            if (end > from) {
+                const at = part.indexOf("\n", start + Math.max(0, from - base));
+                if (at !== -1) return base + at - start;
+            }
+            base = end;
+        }
+        return -1;
+    }
+
+    get text(): string {
+        if (this.joined === undefined) {
+            const live = this.parts.slice(this.first);
+            if (live.length) live[0] = live[0]!.slice(this.skip);
+            this.joined = live.join("");
+            this.parts = [this.joined];
+            this.first = this.skip = 0;
+        }
+        return this.joined;
+    }
+}
+
+const rings = new WeakMap<BackgroundShell, OutputRing>();
+
 /** Into a background shell's output ring, which keeps the last BG_BUFFER characters. */
 export function appendOutput(shell: BackgroundShell, text: string) {
-    shell.output += text;
-    if (shell.output.length > BG_BUFFER) {
-        let drop = shell.output.length - BG_BUFFER;
-        // Only redacted, complete lines enter the ring; evict whole lines for readability.
-        const nl = shell.output.indexOf("\n", drop);
-        if (nl !== -1 && nl - drop < MAX_PARTIAL_LINE) drop = nl + 1;
-        shell.output = shell.output.slice(drop);
-        shell.readOffset = Math.max(0, shell.readOffset - drop);
+    let ring = rings.get(shell);
+    if (!ring) {
+        const own = new OutputRing();
+        own.append(shell.output);
+        rings.set(shell, own);
+        // Its output is the ring's, joined when read.
+        Object.defineProperty(shell, "output", { get: () => own.text, enumerable: true, configurable: true });
+        ring = own;
     }
+    const drop = ring.append(text);
+    if (drop) shell.readOffset = Math.max(0, shell.readOffset - drop);
 }
 
 function startBackground(command: string, ctx: ToolContext, env: Record<string, string>, proxy: CommandProxy | undefined) {
     const id = `bash_${++shellCounter}`;
     const outputFile = new OutputFile(ctx.state.shells);
     const [file, ...args] = shellArgv(command, ctx.sandbox);
-    let child: ReturnType<typeof spawn>;
+    let spawned: PacedChild;
     try {
-        child = spawn(file!, args, { cwd: ctx.state.cwd, env: withPwd(env, ctx.state.cwd), detached: true, stdio: ["ignore", "pipe", "pipe"] });
+        spawned = spawnPaced(file!, args, { cwd: ctx.state.cwd, env: withPwd(env, ctx.state.cwd), detached: true }, ctx.settings.pacedOutput !== false);
     } catch (e) {
         proxy?.close();
         throw e;
     }
-    const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+    const { child, stdout, stderr, onClose, drain } = spawned;
+    const closed = new Promise<void>((resolve) => onClose(() => resolve()));
     const sandbox = ctx.sandbox;
     const shell: BackgroundShell = {
         id,
@@ -789,14 +1176,15 @@ function startBackground(command: string, ctx: ToolContext, env: Record<string, 
         exitCode: null,
         sandboxed: sandbox !== undefined,
         sandboxHint: sandbox ? () => sandboxOutputHint(sandbox, shell.output, proxy, shell.exitCode !== null && shell.exitCode !== 0) : undefined,
+        drain,
         kill: async (graceMs = KILL_GRACE_MS) => {
             const how = await stopGroup(child.pid, graceMs);
             let timer: ReturnType<typeof setTimeout> | undefined;
             await Promise.race([closed, new Promise<void>((resolve) => { timer = setTimeout(resolve, 250); })]);
             clearTimeout(timer);
             // A detached descendant can retain the pipes after the tracked group is gone.
-            child.stdout?.destroy();
-            child.stderr?.destroy();
+            stdout.destroy();
+            stderr.destroy();
             await closed;
             proxy?.close();
             return how;
@@ -811,12 +1199,9 @@ function startBackground(command: string, ctx: ToolContext, env: Record<string, 
         saved.preview.append(text, order, omitted);
         outputFile.append(text, omitted);
     };
-    for (const stream of [child.stdout, child.stderr]) {
-        if (!stream) continue;
-        readBashStream(stream, onChunk, overflowLine, nextOrder);
-    }
+    for (const stream of [stdout, stderr]) readBashStream(stream, onChunk, overflowLine, nextOrder);
     // The network goes with the shell: whatever it left running loses it.
-    child.on("close", (code) => {
+    onClose((code) => {
         outputFile.flush();
         shell.exitCode = code ?? -1;
         proxy?.close();
@@ -858,6 +1243,7 @@ export const BashOutputTool: Tool<{ bash_id: string; filter?: string }> = {
             return { content: `Invalid filter regex: ${(e as Error).message}`, isError: true };
         }
         // Validate first: a bad regex must not advance either cursor.
+        sh.drain?.();
         const saved = backgroundFiles.get(sh);
         let fresh: string;
         let outputNote = "";
