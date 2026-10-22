@@ -1387,7 +1387,7 @@ export class CodexTurn {
         }
         this.host.usage(usage, {});
         // Counted above: what the sub-agent's chip shows (kept until it's known whose thread this is).
-        const shown: AgentEvent = { type: "usage", usage, cost: { usd: 0, estimated: true, unknown: !this.billedToPlan }, contextTokens: 0 };
+        const shown: AgentEvent = { type: "usage", usage, cost: { usd: 0, estimated: true, unknown: !this.billedToPlan }, contextTokens: 0, displayOnly: true };
         const sub = this.subs.get(thread!);
         if (sub) this.subEmit(sub, shown);
         else this.keep(thread!, SHOWN_USAGE, shown);

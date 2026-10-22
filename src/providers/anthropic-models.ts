@@ -19,6 +19,8 @@ export interface AnthropicTraits {
     contextWindow: number;
     maxOutput: number;
     pricing: { input: number; output: number; cacheRead: number; cacheWrite: number };
+    pricingLong?: AnthropicTraits["pricing"];
+    longContextThreshold?: number;
 }
 
 const ALL: Effort[] = ["low", "medium", "high", "xhigh", "max"];
@@ -35,10 +37,10 @@ const TABLE: [RegExp, AnthropicTraits][] = [
     [/^claude-opus-5(?!-)/, { adaptive: true, effort: ALL, displayUpdates: false, fallbacks: true, webSearchVersion: "web_search_20260209", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(5, 25) }],
     [/^claude-opus-4-[78]/, { adaptive: true, effort: ALL, displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20260209", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(5, 25) }],
     [/^claude-opus-4-6/, { adaptive: true, effort: NO_XHIGH, displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20260209", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(5, 25) }],
-    [/^claude-sonnet-5-5/, { adaptive: true, effort: ALL, displayUpdates: true, thinkingOff: "between_tools", fallbacks: true, webSearchVersion: "web_search_20260209", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(2, 10, 0.2) }],
+    [/^claude-sonnet-5-5/, { adaptive: true, effort: ALL, displayUpdates: true, thinkingOff: "between_tools", fallbacks: true, webSearchVersion: "web_search_20260209", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(2, 10, 0.1) }],
     [/^claude-sonnet-5(?!-)/, { adaptive: true, effort: ALL, displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20260209", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(2, 10) }],
     [/^claude-sonnet-4-6/, { adaptive: true, effort: NO_XHIGH, displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20260209", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(3, 15) }],
-    [/^claude-haiku-5-5/, { adaptive: true, effort: ALL, displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20250305", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(0.1, 0.5) }],
+    [/^claude-haiku-5-5/, { adaptive: true, effort: ALL, displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20250305", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(0.1, 0.5), pricingLong: price(0.5, 2.5), longContextThreshold: 100_000 }],
     [/^claude-haiku-4-5/, { adaptive: false, effort: [], displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20250305", contextWindow: 200_000, maxOutput: 64_000, pricing: price(1, 5) }],
     [/^claude-opus-4-5/, { adaptive: false, effort: ["low", "medium", "high"], displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20250305", contextWindow: 200_000, maxOutput: 64_000, pricing: price(5, 25) }],
     [/^claude-sonnet-4-5/, { adaptive: false, effort: [], displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20250305", contextWindow: 200_000, maxOutput: 64_000, pricing: price(3, 15) }],
