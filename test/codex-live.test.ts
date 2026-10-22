@@ -209,13 +209,14 @@ describe("background terminals", () => {
         expect(pids()).toHaveLength(1);
     });
 
-    test("a stop racing the command's own end: it ended by itself (done), the stop settles, and no turn starts for it", async () => {
+    test("a stop racing the command's own end: it ended by itself (done), the stop says so (ended), and no turn starts for it", async () => {
         process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
         process.env.FAKE_BG_MS = "never";
         process.env.FAKE_TERMINATE_LATE = "1";
         const a = await makeAgent();
         expect(await a.run("start it")).toBe("done");
-        expect(await a.agent.stopBackground(["exec-turn-1-1"])).toEqual({ "exec-turn-1-1": "stopped" });
+        // Not terminated: it had ended by itself (BackgroundStop "ended").
+        expect(await a.agent.stopBackground(["exec-turn-1-1"])).toEqual({ "exec-turn-1-1": "ended" });
         expect(a.task("exec-turn-1-1")?.status).toBe("done");
         await Bun.sleep(300);
         expect(a.wakes).toEqual([]);

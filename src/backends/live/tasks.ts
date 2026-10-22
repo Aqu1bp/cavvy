@@ -6,15 +6,24 @@ import type { BackgroundTaskInfo } from "./info";
 import type { LiveClock } from "./types";
 
 /**
- * How a stop went: the task is no longer running (`stopped`, whatever its end), the CLI
- * didn't say so in time (`timeout`: offer a restart), the request failed, the task can't
- * be stopped on its own, or there's no such task.
+ * How a stop went (as BackgroundStop): the stop ended the task (`stopped`), it had ended on its own (`ended`:
+ * before the stop, or while it was asked and not taken), the CLI didn't say so in time (`timeout`: offer a
+ * restart), the request failed, the task can't be stopped on its own, or there's no such task.
  */
-export type StopResult = "stopped" | "timeout" | "failed" | "not_stoppable" | "unknown";
+export type StopResult = "stopped" | "timeout" | "failed" | "not_stoppable" | "unknown" | "ended";
+
+interface PendingStop {
+    promise: Promise<StopResult>;
+    settle(r: StopResult): void;
+    /** The CLI took the stop. */
+    answered?: boolean;
+    /** How the task ended, said before the CLI answered the stop (other than stopped): it counts if the stop doesn't go through. */
+    held?: BackgroundTaskInfo["status"];
+}
 
 export class BackgroundTasks {
     private tasks = new Map<string, BackgroundTaskInfo>();
-    private stops = new Map<string, { promise: Promise<StopResult>; settle(r: StopResult): void }>();
+    private stops = new Map<string, PendingStop>();
     private listeners = new Set<() => void>();
 
     constructor(
@@ -32,7 +41,11 @@ export class BackgroundTasks {
         const next = was && !(was.status !== "running" && task.status === "running") ? { ...was, ...task } : { ...task };
         if (next.status !== "running") next.endedAt ??= this.clock.now();
         this.tasks.set(task.id, next);
-        if (next.status !== "running") this.stops.get(task.id)?.settle("stopped");
+        const stop = this.stops.get(task.id);
+        // Ended stopped: the stop took. Ended otherwise (done, failed) while it was asked: held until the CLI
+        // answers the stop (#282): it took, or the task ended by itself and that's how it ended.
+        if (stop && next.status !== "running" && (next.status === "stopped" || stop.answered)) stop.settle("stopped");
+        else if (stop && next.status !== "running") stop.held = next.status;
         this.changed();
     }
 
@@ -44,18 +57,22 @@ export class BackgroundTasks {
 
     /**
      * Stop a task: `send` asks the CLI (none: the CLI can't stop one task). It counts as stopped
-     * once the CLI reports the task not running (report()), or its process goes away (lose()).
+     * once the CLI reports the task not running (report()), or its process goes away (lose()). An end
+     * other than stopped, said before the CLI answers the stop, is held: the stop refused, the task ended
+     * by itself (`ended`, and that end stands); taken, it's stopped.
      */
     stop(id: string, send: (() => Promise<void>) | undefined): Promise<StopResult> {
         const t = this.tasks.get(id);
         if (!t) return Promise.resolve("unknown");
-        if (t.status !== "running") return Promise.resolve("stopped");
+        if (t.status !== "running") return Promise.resolve("ended");
         if (!t.stoppable || !send) return Promise.resolve("not_stoppable");
         const pending = this.stops.get(id);
         if (pending) return pending.promise;
         let settle!: (r: StopResult) => void;
+        let entry!: PendingStop;
         const promise = new Promise<StopResult>((resolve) => {
-            const timer = this.clock.setTimeout(() => settle("timeout"), this.confirmMs);
+            // Unanswered in time: an end held meanwhile is how it ended (by itself); without one, a timeout.
+            const timer = this.clock.setTimeout(() => settle(entry.held !== undefined && entry.held !== "stopped" ? "ended" : "timeout"), this.confirmMs);
             settle = (r) => {
                 if (this.stops.get(id)?.promise !== promise) return;
                 this.clock.clearTimeout(timer);
@@ -64,8 +81,19 @@ export class BackgroundTasks {
                 this.changed();
             };
         });
-        this.stops.set(id, { promise, settle });
-        Promise.resolve().then(send).catch(() => settle("failed"));
+        entry = { promise, settle };
+        this.stops.set(id, entry);
+        Promise.resolve()
+            .then(send)
+            .then(
+                // It took: over once the CLI says the task ended (now, if it said so meanwhile).
+                () => {
+                    entry.answered = true;
+                    if (entry.held !== undefined) settle("stopped");
+                },
+                // Refused: with an end held, it had ended by itself (that's why); else the stop failed.
+                () => settle(entry.held !== undefined && entry.held !== "stopped" ? "ended" : "failed"),
+            );
         return promise;
     }
 
@@ -78,7 +106,8 @@ export class BackgroundTasks {
             this.tasks.set(t.id, { ...t, status: "stopped", endedAt: now, withProcess: true });
             any = true;
         }
-        for (const s of [...this.stops.values()]) s.settle("stopped");
+        // Unanswered stops: the process took the task with it, unless it had said it ended by itself first.
+        for (const s of [...this.stops.values()]) s.settle(s.held === undefined || s.held === "stopped" ? "stopped" : "ended");
         if (any) this.changed();
     }
 

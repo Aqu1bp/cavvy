@@ -464,13 +464,16 @@ export class CodexLiveConnection extends CodexTurn {
         const term = this.terminals.get(id);
         if (term && !term.ended) {
             term.stopping = true;
+            let r: any;
             try {
-                await this.rpc.request("thread/backgroundTerminals/terminate", { threadId: term.threadId, processId: term.processId });
+                r = await this.rpc.request("thread/backgroundTerminals/terminate", { threadId: term.threadId, processId: term.processId });
             } catch (e) {
                 term.stopping = false;
                 if (/experimentalApi/i.test((e as Error).message)) this.terminalsApi = false;
                 throw e;
             }
+            // Not terminated, having ended by itself first: the stop didn't end it (BackgroundStop "ended").
+            if (term.ended && r?.terminated === false) throw new Error("The command had already ended");
             if (term.ended) return;
             // Terminated, or it had ended: the list says which once its end hasn't come.
             const listed = await this.listTerminals(term.threadId);
