@@ -60,6 +60,7 @@ import { isAgentBackend, type AgentBackendClient, type BackendHost, type Backend
 import { getProvider } from "../providers/registry";
 import { ACCOUNT_PROVIDERS, account, accountRealPath } from "../providers/accounts";
 import { forBackend, pastedTexts, readsPdf } from "../providers/files";
+import { fitContent, fitToolImages, hasImages, imagesFor } from "../providers/images";
 import { cachedListings, type ProviderListing } from "../providers/models";
 import { registerTools, type Registration, type ServerTool, type ServerToolResult } from "../mcp/server";
 import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
@@ -316,6 +317,18 @@ function isContextOverflow(e: unknown): boolean {
 }
 
 /**
+ * A request refused for its images: too large, too many, not decodable, or a
+ * model that takes none. Anthropic's "many-image requests" is documented; the
+ * other wordings are the shapes such errors take (not each seen live).
+ */
+export function isImageRejection(e: unknown): boolean {
+    const err = e as ProviderError;
+    const msg = String(err?.message ?? "") + String(err?.body ?? "");
+    if (!(err?.status === 400 || err?.status === 404 || err?.status === 413 || err?.status === 422) || isContextOverflow(e)) return false;
+    return /many-image|\bimages?\b[^.\n]{0,80}\b(exceeds?|too (large|big|many)|dimensions?|invalid|could not|couldn't|unable to|not supported|unsupported|does not match|not (a )?valid)|\b(invalid|unsupported|could not process|cannot process|can't process)\b[^.\n]{0,30}\bimage|image_url|image input|image_parse_error/i.test(msg);
+}
+
+/**
  * What a read-only agent hears when it tries to change something. For a
  * command: what in it isn't read-only (so it doesn't send the same command
  * again), and which ones do run.
@@ -396,6 +409,8 @@ export class Agent {
     private autoCompactBlocked = false;
     /** The error the turn ended on, for StopFailure hooks. */
     private turnError?: string;
+    /** Messages whose images a provider refused: they're sent without them from then on. */
+    private rejectedImages = new WeakSet<Message>();
     private fileWatch?: FileWatchHooks;
     /** A backend turn that takes steering at once (Codex), told when a message to steer with arrives. */
     private queueListeners = new Set<() => void>();
@@ -535,6 +550,11 @@ export class Agent {
         return Boolean(this.fastModeChoice() && this.model.supportsFastMode);
     }
 
+    /** The conversation with its images as this model may be sent them (src/providers/images.ts). */
+    private sendable(messages: Message[]): Promise<Message[]> {
+        return imagesFor(messages, { readsImages: this.model.supportsImages !== false, rejected: this.rejectedImages });
+    }
+
     private request(messages: Message[], signal: AbortSignal, extra: Partial<ChatRequest> = {}): ChatRequest {
         const s = this.o.settings();
         return {
@@ -614,7 +634,8 @@ export class Agent {
 
         // Delegated tasks that ended during a turn on another model (not a backend's) go with this prompt.
         this.deliverTasks(false);
-        const parts: UserContent[] = [...content];
+        // Its images fitted to what providers take, before they're stored (and resent every turn). Claude Code and Codex take them as they came.
+        const parts: UserContent[] = [...(isAgentBackend(this.client) ? content : await fitContent(content))];
         // A /goal to Claude Code or Codex is their own command, sent as typed: Harness's notes wait for the next prompt.
         const goalCommand = isAgentBackend(this.client) && GOAL_COMMAND.test(promptText);
         for (const r of goalCommand ? [] : this.pendingReminders.splice(0)) parts.push(reminder(r.text));
@@ -632,6 +653,7 @@ export class Agent {
         let pauses = 0;
         let stopHookRounds = 0;
         let overflowCompacted = false;
+        let imagesRejected = false;
         /** The model has said or done something this turn. */
         let answered = false;
         const maxTurns = this.o.maxTurns ?? Infinity;
@@ -670,6 +692,14 @@ export class Agent {
                     } catch (ce) {
                         if (isAbort(ce, signal)) return this.interrupted(false);
                     }
+                }
+                // Refused for its images: once, they're left out (for good, or every later turn would be refused too) and it's sent again.
+                const carrying = isImageRejection(e) && !imagesRejected ? this.session.messages.filter((m) => hasImages(m) && !this.rejectedImages.has(m)) : [];
+                if (carrying.length) {
+                    imagesRejected = true;
+                    for (const m of carrying) this.rejectedImages.add(m);
+                    this.emit({ type: "notice", level: "warn", message: `The provider refused the conversation's images (${redact((e as Error).message)}); sending it again without them.` });
+                    continue;
                 }
                 this.endNotice("error", redact((e as Error).message || String(e)));
                 this.emit({ type: "turn_end", reason: "error" });
@@ -1086,7 +1116,7 @@ export class Agent {
                     // After any retries: the cache dates from the request that was answered.
                     this.sentAt = Date.now();
                     this.idleTried = false;
-                    return await this.client.stream(this.request(messages ?? this.session.messages, signal, extra), (e: StreamEvent) => this.forward(e));
+                    return await this.client.stream(this.request(await this.sendable(messages ?? this.session.messages), signal, extra), (e: StreamEvent) => this.forward(e));
                 } catch (e) {
                     if (isAbort(e, signal)) throw new ProviderError("aborted");
                     const pe = e instanceof ProviderError ? e : new ProviderError((e as Error)?.message ?? String(e), undefined, false);
@@ -1139,7 +1169,7 @@ export class Agent {
         if (history.length < 2) return false;
         if (!(await this.preCompact(opts))) return false;
         this.emit({ type: "compact_start", auto: opts.auto, ...(opts.idle ? { idle: true } : {}) });
-        const req = [...history, compactRequestMessage(opts.instructions)];
+        const req = await this.sendable([...history, compactRequestMessage(opts.instructions)]);
         let summary = "";
         try {
             // Same system prompt and tools as the session, so the cached prefix is reused.
@@ -1151,7 +1181,8 @@ export class Agent {
             }
         } catch (e) {
             if (isAbort(e, opts.signal)) throw e;
-            if (!isContextOverflow(e)) throw e;
+            // Refused for its images too: the text transcript below has none.
+            if (!isContextOverflow(e) && !isImageRejection(e)) throw e;
         }
         if (!summary.trim()) {
             // Too long even to summarize, or the model only called tools:
@@ -2476,6 +2507,8 @@ export class Agent {
         const durationMs = Date.now() - started;
         // Tools redact their own output; this catches any that print a secret (RequestSecret's) without doing so, before hooks, windows or the model.
         result = redactResult(result);
+        // Its images fitted to what providers take, before anything shows or stores them.
+        result = await fitToolImages(result);
         if (!this.o.isSubagent && this.state.cwd !== cwdBefore) void this.cwdChanged(cwdBefore);
         if (!result.isError && DIAGNOSED_TOOLS.has(tool.name) && this.state.lsp && !signal.aborted) result = await this.withDiagnostics(result, input, signal);
         // Succeeded: PostToolUse. Failed: PostToolUseFailure (a stopped tool runs neither, as in Claude Code).
