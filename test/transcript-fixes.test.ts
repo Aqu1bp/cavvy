@@ -27,7 +27,7 @@ const reply = (content: any[], stopReason = "end_turn") => ({ role: "assistant",
 const text = (t: string) => reply([{ type: "text", text: t }]);
 
 /** An agent on a scripted model, with a session saved to disk. */
-function scripted(script: (req: ChatRequest, n: number, on: (e: StreamEvent) => void) => any, o: { session?: any; mode?: string; model?: any } = {}) {
+function scripted(script: (req: ChatRequest, n: number, onEvent: (e: StreamEvent) => void) => any, o: { session?: any; mode?: string; model?: any; emit?: (e: any) => void } = {}) {
     const cwd = realpathSync(tempDir());
     const session = o.session ?? Session.create(cwd, { system: "SYSTEM" });
     const events: any[] = [];
@@ -38,13 +38,13 @@ function scripted(script: (req: ChatRequest, n: number, on: (e: StreamEvent) => 
     const agent = new Agent({
         session,
         model: o.model ?? ({ provider: "test", id: "test", name: "Test Model" } as any),
-        client: { stream: async (req: ChatRequest, on: (e: StreamEvent) => void) => (requests.push(structuredClone({ ...req, signal: undefined })), script(req, ++n, on)) } as any,
+        client: { stream: async (req: ChatRequest, onEvent: (e: StreamEvent) => void) => (requests.push(structuredClone({ ...req, signal: undefined })), script(req, ++n, onEvent)) } as any,
         settings: () => settings,
         checker: new PermissionChecker(() => settings, cwd),
         tools: [],
         mode: { get: () => mode as any, set: (m: any) => (mode = m) },
         toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() } as any,
-        host: { emit: (e: any) => events.push(e), ui: {} } as any,
+        host: { emit: (e: any) => { events.push(e); o.emit?.(e); }, ui: {} } as any,
     });
     const run = (prompt: string, signal = new AbortController().signal) => agent.run([{ type: "text", text: prompt }], { signal });
     return { agent, session, events, requests, run, cwd };
@@ -132,6 +132,335 @@ describe("a failed turn leaves its reason on disk", () => {
         expect(loaded.notices).toEqual([]);
         loaded.release();
         expect(Session.load(a.session.path).notices).toEqual([]);
+    });
+});
+
+describe("output token limit continuation", () => {
+    test("continues partial text once, without duplicating the transcript or reopened UI", async () => {
+        const a = scripted((_req, n) => n === 1 ? reply([{ type: "text", text: "The answer is " }], "max_tokens") : text("forty-two."));
+        expect(await a.run("answer")).toBe("done");
+        expect(a.requests).toHaveLength(2);
+        expect(a.requests[1]!.messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+        expect(a.requests[1]!.messages.at(-1)).toMatchObject({ role: "user", meta: { kind: "continuation" }, content: [{ type: "text", text: expect.stringContaining("Continue from where you stopped") }] });
+        const parts = a.session.messages.filter((m: any) => m.role === "assistant").flatMap((m: any) => m.content.map((p: any) => p.text));
+        expect(parts).toEqual(["The answer is ", "forty-two."]);
+        expect(a.events.filter((e) => e.type === "assistant").map((e) => e.message.content[0].text)).toEqual(parts);
+        expect(a.session.notices).toEqual([]);
+        a.session.release();
+        const turns = reopenTurns(a.session.path);
+        expect(turns).toHaveLength(1);
+        expect(turns[0]!.blocks.filter((b) => b.t === "text").map((b) => b.text)).toEqual([parts.join("")]);
+    });
+
+    test("streamed continuations appear once in the live UI", async () => {
+        const { Engine } = await import("../src/server/engine");
+        const engine = new Engine({ listModels: async () => [] });
+        try {
+            const rt = await engine.createSession(realpathSync(tempDir()));
+            await rt.ready;
+            rt.session.setTitle("Continuation test");
+            const a = scripted((_req, n, onEvent) => {
+                const part = n === 1 ? "The answer is " : "forty-two.";
+                onEvent({ type: "text", text: part });
+                return reply([{ type: "text", text: part }], n === 1 ? "max_tokens" : "end_turn");
+            }, { session: rt.session, emit: (e) => (rt as any).onEvent(e) });
+            Object.assign(rt, { model: a.agent.model, agent: a.agent });
+            await rt.startTurn("answer");
+            const turns = rt.snapshot().turns;
+            expect(turns).toHaveLength(1);
+            expect(turns[0]!.blocks.filter((b) => b.t === "text").map((b) => b.text)).toEqual(["The answer is forty-two."]);
+            expect(a.events.filter((e) => e.type === "text").map((e) => e.text)).toEqual(["The answer is ", "forty-two."]);
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test.each(["streamed", "unstreamed", "retry", "whitespace", "multiple text blocks"])("%s continuation stays one Markdown block after thinking, live and reopened", async (mode) => {
+        const { Engine } = await import("../src/server/engine");
+        const engine = new Engine({ listModels: async () => [] });
+        const intro = mode === "multiple text blocks" ? "Introduction.\n\n" : "";
+        const head = mode === "whitespace" ? "    " : "Here is the code:\n```ts\nconst ";
+        const tail = mode === "whitespace" ? "indented code" : "answer = 42;\n```";
+        try {
+            const rt = await engine.createSession(realpathSync(tempDir()));
+            await rt.ready;
+            rt.session.setTitle("Continuation with reasoning");
+            const a = scripted((_req, n, onEvent) => {
+                if (n > 1) onEvent({ type: "thinking", text: "Continue the code" });
+                if (mode === "retry" && n === 2) {
+                    onEvent({ type: "text", text: "discard this tail" });
+                    throw new ProviderError("temporary", 503, true, 1);
+                }
+                const part = n === 1 ? head : tail;
+                if (n === 1 && intro) {
+                    onEvent({ type: "text", text: intro });
+                    onEvent({ type: "thinking", text: "Compose the code" });
+                }
+                if (mode !== "unstreamed") onEvent({ type: "text", text: part });
+                return reply([...(n === 1 && intro ? [{ type: "text", text: intro }, { type: "thinking", text: "Compose the code" }] : []), ...(n > 1 ? [{ type: "thinking", text: "Continue the code" }] : []), { type: "text", text: part }], n === 1 ? "max_tokens" : "end_turn");
+            }, { session: rt.session, emit: (e) => (rt as any).onEvent(e) });
+            Object.assign(rt, { model: a.agent.model, agent: a.agent });
+            await rt.startTurn("code");
+            const check = (turns: ReturnType<typeof reopenTurns>) => {
+                expect(turns).toHaveLength(1);
+                const blocks = turns[0]!.blocks;
+                expect(blocks.filter((b) => b.t === "text").map((b) => b.text)).toEqual([intro + head + tail]);
+                expect(blocks.findLastIndex((b) => b.t === "text")).toBeGreaterThan(blocks.findLastIndex((b) => b.t === "thinking"));
+            };
+            check(rt.snapshot().turns);
+            await engine.stop();
+            check(reopenTurns(a.session.path));
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("auto-compaction waits for a continued answer, keeping its text in requests, results and the GUI", async () => {
+        const { Engine } = await import("../src/server/engine");
+        const { TurnTally } = await import("../src/sdk/messages");
+        const engine = new Engine({ listModels: async () => [] });
+        const tally = new TurnTally();
+        const head = "PART-ONE: const value = ";
+        const tail = "42; PART-TWO.";
+        try {
+            const rt = await engine.createSession(realpathSync(tempDir()));
+            await rt.ready;
+            rt.session.setTitle("Continuation at the compaction threshold");
+            for (const n of [1, 2]) {
+                rt.session.push({ role: "user", content: [{ type: "text", text: `earlier ${n}` }], meta: { kind: "prompt" } });
+                rt.session.push(text(`ok ${n}`));
+            }
+            const a = scripted((_req, n, onEvent) => {
+                if (n > 1) onEvent({ type: "thinking", text: "finish the answer" });
+                onEvent({ type: "text", text: n === 1 ? head : tail });
+                return { ...reply([...(n > 1 ? [{ type: "thinking", text: "finish the answer" }] : []), { type: "text", text: n === 1 ? head : tail }], n === 1 ? "max_tokens" : "end_turn"), usage: { inputTokens: 9000, outputTokens: 1000 } };
+            }, { session: rt.session, model: { provider: "test", id: "test", contextWindow: 10_000, maxOutput: 1000 }, emit: (e) => { tally.observe(e); (rt as any).onEvent(e); } });
+            const settings = a.agent.options.settings() as any;
+            settings.autoCompact = true;
+            settings.hooks = { Stop: [{}] };
+            let stopped: any;
+            (a.agent as any).hooks = async (event: string, input: any) => { if (event === "Stop") stopped = input; };
+            Object.assign(rt, { model: a.agent.model, agent: a.agent });
+            await rt.startTurn("write the report");
+            expect(a.requests).toHaveLength(2);
+            expect(a.events.some((e) => e.type === "compact_start")).toBe(false);
+            expect(a.requests[1]!.messages.at(-2)).toMatchObject({ role: "assistant", content: [{ type: "text", text: head }] });
+            expect(a.requests[1]!.messages.at(-1)).toMatchObject({ role: "user", meta: { kind: "continuation" } });
+            expect(tally.result("done", "s", "m").result).toBe(head + tail);
+            expect(stopped.last_assistant_message).toBe(head + tail);
+            expect((a.agent as any).lastAssistantText()).toBe(head + tail);
+            expect(a.events.filter((e) => e.type === "request_start").map((e) => !!e.continuation)).toEqual([false, true]);
+            // The guard applies only while continuing, not to the next ordinary request.
+            expect((a.agent as any).shouldAutoCompact()).toBe(true);
+            const check = (turns: ReturnType<typeof reopenTurns>) => {
+                const blocks = turns.at(-1)!.blocks;
+                expect(blocks.filter((b) => b.t === "text").map((b) => b.text)).toEqual([head + tail]);
+                expect(blocks.findLastIndex((b) => b.t === "text")).toBeGreaterThan(blocks.findLastIndex((b) => b.t === "thinking"));
+            };
+            check(rt.snapshot().turns);
+            await engine.stop();
+            check(reopenTurns(a.session.path));
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("a kept prompt can start a continued answer without moving or splitting it again", async () => {
+        const { Engine } = await import("../src/server/engine");
+        const engine = new Engine({ listModels: async () => [] });
+        const head = "PART-ONE: ```ts\nconst value = ";
+        const tail = "42;\n```";
+        try {
+            const rt = await engine.createSession(realpathSync(tempDir()));
+            await rt.ready;
+            rt.session.setTitle("Kept prompt and continuation");
+            // Two earlier exchanges: auto-compaction needs more than four messages, and this much context is over the threshold.
+            for (const n of [1, 2]) {
+                rt.session.push({ role: "user", content: [{ type: "text", text: `old context ${n} `.repeat(2000) }], meta: { kind: "prompt" } });
+                rt.session.push(text(`old answer ${n}`));
+            }
+            const a = scripted((_req, n, onEvent) => {
+                if (n === 1) return text("Earlier work.");
+                if (n === 3) onEvent({ type: "thinking", text: "finish the answer" });
+                onEvent({ type: "text", text: n === 2 ? head : tail });
+                return { ...reply([...(n === 3 ? [{ type: "thinking", text: "finish the answer" }] : []), { type: "text", text: n === 2 ? head : tail }], n === 2 ? "max_tokens" : "end_turn"), usage: { inputTokens: 9000, outputTokens: 1000 } };
+            }, { session: rt.session, model: { provider: "test", id: "test", contextWindow: 10_000, maxOutput: 1000 }, emit: (e) => (rt as any).onEvent(e) });
+            (a.agent.options.settings() as any).autoCompact = true;
+            Object.assign(rt, { model: a.agent.model, agent: a.agent });
+            await rt.startTurn("write the report");
+            expect(a.requests).toHaveLength(3);
+            expect(a.events.filter((e) => e.type === "compact_end")).toMatchObject([{ kept: true }]);
+            expect(JSON.stringify(a.requests[0]!.messages)).not.toContain("write the report");
+            expect(a.requests[1]!.messages.map((m) => m.role === "user" ? m.meta?.kind : m.role)).toEqual(["summary", "prompt"]);
+            expect(a.requests[2]!.messages.at(-1)).toMatchObject({ role: "user", meta: { kind: "continuation" } });
+            expect(a.events.filter((e) => e.type === "request_start").map((e) => !!e.continuation)).toEqual([false, true]);
+            const check = (turns: ReturnType<typeof reopenTurns>) => {
+                const matches = turns.filter((t) => t.prompt?.text === "write the report");
+                expect(matches).toHaveLength(1);
+                const turn = matches[0]!;
+                expect(turn.pos).toEqual({ seg: 1, index: 1 });
+                expect(turn.prompt?.index).toBe(1);
+                expect(turn.blocks.filter((b) => b.t === "text").map((b) => b.text)).toEqual([head + tail]);
+                expect(turn.blocks.findLastIndex((b) => b.t === "text")).toBeGreaterThan(turn.blocks.findLastIndex((b) => b.t === "thinking"));
+            };
+            check(rt.snapshot().turns);
+            await engine.stop();
+            check(reopenTurns(a.session.path));
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test.each(["error", "stop reason"])("a real context overflow (%s) during continuation still compacts reactively", async (kind) => {
+        const a = scripted((_req, n) => {
+            if (n === 1) return { ...reply([{ type: "text", text: "PART-ONE " }], "max_tokens"), usage: { inputTokens: 9000, outputTokens: 1000 } };
+            if (n === 2) {
+                if (kind === "error") throw new ProviderError("context window exceeded", 400, false);
+                return reply([], "context_window_exceeded");
+            }
+            return text(n === 3 ? "summary" : "finished");
+        }, { model: { provider: "test", id: "test", contextWindow: 10_000, maxOutput: 1000 } });
+        (a.agent.options.settings() as any).autoCompact = true;
+        for (const n of [1, 2]) {
+            a.session.push({ role: "user", content: [{ type: "text", text: `earlier ${n}` }], meta: { kind: "prompt" } });
+            a.session.push(text(`earlier context ${n} `.repeat(100)));
+        }
+        expect(await a.run("write")).toBe("done");
+        expect(a.requests).toHaveLength(4);
+        expect(a.requests[1]!.messages.at(-1)).toMatchObject({ role: "user", meta: { kind: "continuation" } });
+        expect(a.requests[1]!.messages.at(-2)).toMatchObject({ role: "assistant", content: [{ type: "text", text: "PART-ONE " }] });
+        expect(a.events.filter((e) => e.type === "compact_start")).toHaveLength(1);
+        expect(a.requests[3]!.messages[0]).toMatchObject({ role: "user", meta: { kind: "summary" } });
+        // The continuation isn't a prompt waiting for its answer: it's folded into the summary, not kept after it.
+        expect(JSON.stringify(a.requests[2]!.messages)).toContain("output token limit");
+        expect(a.events.find((e) => e.type === "compact_end")).not.toHaveProperty("kept");
+        expect(a.requests[3]!.messages.map((m) => m.meta?.kind ?? m.role)).toEqual(["summary"]);
+    });
+
+    test("the GUI Agents panel report uses the complete continued answer", async () => {
+        const { Engine } = await import("../src/server/engine");
+        const engine = new Engine({ listModels: async () => [] });
+        try {
+            const rt = await engine.createSession(realpathSync(tempDir()));
+            await rt.ready;
+            const a = scripted((_req, n, onEvent) => {
+                const part = n === 1 ? "REPORT HEAD " : "TAIL";
+                onEvent({ type: "text", text: part });
+                return reply([{ type: "text", text: part }], n === 1 ? "max_tokens" : "end_turn");
+            }, { session: rt.session, emit: (e) => (rt as any).onEvent(e) });
+            (rt as any).onEvent({ type: "tool_start", call: { type: "tool_call", id: "c1", name: "Task", input: { description: "probe" } }, title: "probe" });
+            const child = await (a.agent as any).runChild("c1", { prompt: "answer", description: "probe", agent: "general-purpose" }, new AbortController().signal);
+            expect(child.report).toBe("REPORT HEAD TAIL");
+            expect(rt.snapshot().agents.find((a) => a.id === "c1")?.report).toBe("REPORT HEAD TAIL");
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("the SDK result, Stop hooks and sub-agent report keep the whole continued answer", async () => {
+        const { TurnTally } = await import("../src/sdk/messages");
+        const tally = new TurnTally();
+        const a = scripted((_req, n) => reply([{ type: "text", text: n % 2 ? "HEAD " : "TAIL" }], n % 2 ? "max_tokens" : "end_turn"), { emit: (e) => tally.observe(e) });
+        (a.agent.options.settings() as any).hooks = { Stop: [{}] };
+        let stopped: any;
+        (a.agent as any).hooks = async (event: string, input: any) => { if (event === "Stop") stopped = input; };
+        await a.run("answer");
+        expect(tally.result("done", "s", "m").result).toBe("HEAD TAIL");
+        expect(stopped.last_assistant_message).toBe("HEAD TAIL");
+        expect((a.agent as any).lastAssistantText()).toBe("HEAD TAIL");
+        const child = await (a.agent as any).runChild("c1", { prompt: "answer", description: "probe", agent: "general-purpose" }, new AbortController().signal);
+        expect(child.report).toBe("HEAD TAIL");
+    });
+
+    test("only explicit continuation links join assistant text", async () => {
+        const { assistantText } = await import("../src/providers/types");
+        const user = (kind: any) => ({ role: "user", content: [{ type: "text", text: "go" }], meta: { kind } }) as any;
+        const chain = [user("prompt"), text("HEAD "), user("continuation"), reply([{ type: "thinking", text: "hmm" }]), user("continuation"), text("TAIL")];
+        expect(assistantText(chain)).toBe("HEAD TAIL");
+        for (const kind of ["prompt", "tool_results", "reminder", "wake"]) expect(assistantText([...chain, user(kind), text("new answer")])).toBe("new answer");
+        expect(assistantText([...chain, user("prompt")])).toBe("");
+        expect(assistantText([...chain, user("interrupt")])).toBe("HEAD TAIL");
+    });
+
+    test.each(["text", "thinking"])("preserves raw %s and appends a user continuation in every wire format", async (kind) => {
+        const { toAnthropicMessages } = await import("../src/providers/anthropic");
+        const { toOpenAIMessages } = await import("../src/providers/openai-compat");
+        const { toResponsesInput } = await import("../src/providers/openai-responses");
+        const { BUILTIN_PROVIDERS } = await import("../src/providers/registry");
+        const anthropic = kind === "text" ? [{ type: "text", text: "partial" }] : [{ type: "thinking", thinking: "partial", signature: "signed" }];
+        const openai = kind === "text" ? { role: "assistant", content: "partial" } : { role: "assistant", content: null, reasoning_content: "partial" };
+        const responses = kind === "text"
+            ? [{ type: "message", id: "msg_1", role: "assistant", status: "incomplete", content: [{ type: "output_text", text: "partial", annotations: [] }] }]
+            : [{ type: "reasoning", id: "rs_1", status: "incomplete", summary: [], encrypted_content: "encrypted" }];
+        const a = scripted((_req, n) => n === 1 ? { ...reply([{ type: kind, text: "partial" }], "max_tokens"), raw: { anthropic, openai, responses } } : text("finished"));
+        await a.run("answer");
+        expect(a.requests).toHaveLength(2);
+        const messages = a.requests[1]!.messages;
+        const def = { ...BUILTIN_PROVIDERS.find((p) => p.id === "openai")!, id: "test" };
+        const ant = toAnthropicMessages(messages);
+        expect(ant.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+        expect(ant[1]!.content).toEqual(anthropic);
+        const chat = toOpenAIMessages("", messages, def);
+        expect(chat.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+        expect(chat[1]).toEqual(kind === "thinking" ? { role: "assistant", content: null } : openai);
+        if (kind === "thinking") {
+            // Main strips DeepSeek-only reasoning from standard Chat Completions,
+            // while the DeepSeek dialect preserves it across the same boundary.
+            const deepseek = toOpenAIMessages("", messages, { ...def, deepseekCompat: true });
+            expect(deepseek.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+            expect(deepseek[1]).toEqual(openai);
+        }
+        const resp = toResponsesInput(messages, def, "test");
+        expect(resp[1]).toEqual(responses[0]);
+        for (const wire of [ant, chat, resp]) {
+            expect(wire).toHaveLength(3);
+            expect(wire.at(-1)).toMatchObject({ role: "user" });
+            expect(JSON.stringify(wire.at(-1))).toContain("Continue from where you stopped");
+        }
+        // Anthropic's existing signature fallback drops thinking and merges the user messages.
+        if (kind === "thinking") expect(toAnthropicMessages(messages, true).map((m) => m.role)).toEqual(["user"]);
+    });
+
+    test.each(["text", "thinking", "empty"])("bounds repeated %s cut-offs to three continuations per user turn", async (kind) => {
+        const a = scripted((_req, n) => reply(kind === "empty" ? [] : [{ type: kind, text: `part ${n}` }], "max_tokens"));
+        for (let turn = 1; turn <= 2; turn++) {
+            expect(await a.run("answer")).toBe("done");
+            expect(a.requests).toHaveLength(turn * 4);
+            expect(a.session.messages.filter((m: any) => m.meta?.kind === "continuation")).toHaveLength(turn * 3);
+            expect(a.session.notices.map((n: any) => n.text)).toEqual(Array(turn).fill("Response was cut off at the output token limit."));
+        }
+    });
+
+    test("a thinking-only cut-off can continue to a visible answer", async () => {
+        const a = scripted((_req, n) => n === 1 ? reply([{ type: "thinking", text: "Working it out" }], "max_tokens") : text("42"));
+        expect(await a.run("answer")).toBe("done");
+        expect(a.requests).toHaveLength(2);
+        expect(a.session.messages.at(-1).content).toEqual([{ type: "text", text: "42" }]);
+        expect(a.session.notices).toEqual([]);
+    });
+
+    test("abort during a continuation stops requests and discards its partial response", async () => {
+        const ac = new AbortController();
+        const a = scripted((_req, n) => {
+            if (n === 2) ac.abort();
+            return reply([{ type: "text", text: `part ${n}` }], "max_tokens");
+        });
+        expect(await a.run("answer", ac.signal)).toBe("aborted");
+        expect(a.requests).toHaveLength(2);
+        expect(a.events.filter((e) => e.type === "assistant").map((e) => e.message.content[0].text)).toEqual(["part 1"]);
+        expect(a.session.messages.at(-1).meta.kind).toBe("interrupt");
+    });
+
+    test("truncated tool calls still get error results and their own strike limit", async () => {
+        const a = scripted((_req, n) => n % 2 === 1
+            ? reply([{ type: "text", text: "partial" }], "max_tokens")
+            : reply([{ type: "tool_call", id: `c${n}`, name: "Nope", input: {} }], "max_tokens"));
+        expect(await a.run("answer")).toBe("error");
+        expect(a.requests).toHaveLength(6);
+        const results = a.session.messages.filter((m: any) => m.meta?.kind === "tool_results").flatMap((m: any) => m.content);
+        expect(results).toHaveLength(3);
+        for (const r of results) expect(r).toMatchObject({ type: "tool_result", isError: true, content: expect.stringContaining("was not run") });
+        expect(a.events.some((e) => e.type === "tool_start")).toBe(false);
     });
 });
 

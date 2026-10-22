@@ -443,7 +443,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const model = () => st()?.model ?? app.models.flatMap((g) => g.models).find((m) => m.ref === app.settings.model);
     // Run members are validated separately by the server; the default model is irrelevant.
     const readsPdf = () => Boolean(runPicks()) || model()?.supportsPdf !== false;
-    const blocked = createMemo(() => blockedBy(attachments(), readsPdf()));
+    // Unknown isn't text-only: only a model known to take no images is refused them.
+    const readsImages = () => Boolean(runPicks()) || model()?.supportsImages !== false;
+    const blocked = createMemo(() => blockedBy(attachments(), readsPdf(), readsImages()));
 
     /** A queued message back into the box, out of the queue. */
     // By the message's id, so a queue that moved on meanwhile doesn't lose a different one. Edited, it

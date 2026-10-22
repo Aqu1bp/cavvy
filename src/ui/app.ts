@@ -55,7 +55,7 @@ import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveMode
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { account } from "../providers/accounts";
 import { RpcError } from "../server/rpc-error";
-import { modelRef, parseModelRef, textOf, type ImagePart, type Message, type ModelInfo, type ProviderClient, type TextPart, type ToolCallPart, type UserContent } from "../providers/types";
+import { assistantText, modelRef, parseModelRef, textOf, type ImagePart, type Message, type ModelInfo, type ProviderClient, type TextPart, type ToolCallPart, type UserContent } from "../providers/types";
 import { formatCost, formatTokens } from "../providers/pricing";
 import { attachmentsNote } from "../providers/files";
 import { configuredProviders, storageDescription } from "../auth/credentials";
@@ -192,6 +192,8 @@ export class App {
     private mdEntries: Entry[] = [];
     private mdSource = "";
     private mdCols = 0;
+    /** Accepted text held open while an output-limited answer is continued. */
+    private continuationSource?: string;
     private thinking = "";
     private receiving = new Map<string, { name: string; chars: number }>();
     private active = new Map<string, ActiveTool>();
@@ -1021,8 +1023,17 @@ export class App {
                     }
                 } else {
                     // A Claude Code or Codex turn ends with what it did ("[Codex used: …]"): shown as its actions, one a line.
-                    const { text: t, actions } = splitActionsNote(m);
-                    if (t) {
+                    // Replay one Markdown document for the answer, even when the
+                    // history tail begins halfway through its continuation chain.
+                    const at = from + i;
+                    const link = msgs[at + 1];
+                    const continues = link?.role === "user" && link.meta?.kind === "continuation" && msgs[at + 2]?.role === "assistant";
+                    const previous = msgs[at - 1];
+                    const display = previous?.role === "user" && previous.meta?.kind === "continuation"
+                        ? { ...m, content: [{ type: "text" as const, text: assistantText(msgs.slice(0, at - 1)) }, ...m.content] }
+                        : m;
+                    const { text: t, actions } = splitActionsNote(display);
+                    if (t && !continues) {
                         const md = renderMarkdown(t, cols - 2);
                         out.push("", ...md.slice(0, 30).map((l, i) => (i === 0 ? `${BULLET} ` : "  ") + l));
                         if (md.length > 30) out.push(theme.subtle(`  … +${md.length - 30} lines`));
@@ -1094,6 +1105,7 @@ export class App {
         this.mdLines = 0;
         this.mdEntries = [];
         this.mdSource = "";
+        this.continuationSource = undefined;
         this.flushThinking();
     }
 
@@ -1129,12 +1141,15 @@ export class App {
                 this.status = e.text;
                 break;
             case "request_start":
+                if (!e.continuation && this.continuationSource !== undefined) this.flushStream();
                 this.status = undefined;
                 this.thinkingNow = false;
                 break;
             case "text": {
                 this.thinkingNow = false;
-                if (this.thinking) this.flushThinking();
+                // Reasoning between continuation fragments must not split their Markdown
+                // (the previous fragment can end inside a line or a code fence).
+                if (this.thinking && this.continuationSource === undefined) this.flushThinking();
                 if (!this.md) {
                     this.mdCols = termCols();
                     this.md = new MarkdownStream(this.mdCols - 2);
@@ -1152,7 +1167,7 @@ export class App {
                 break;
             case "tool_call_start":
                 this.thinkingNow = false;
-                this.flushStream();
+                if (this.continuationSource === undefined) this.flushStream();
                 this.receiving.set(e.id, { name: e.name, chars: 0 });
                 break;
             case "tool_call_delta": {
@@ -1163,7 +1178,7 @@ export class App {
             }
             case "server_tool":
                 this.thinkingNow = false;
-                this.flushStream();
+                if (this.continuationSource === undefined) this.flushStream();
                 if (e.name === "web_search") this.screen.print(["", toolLine("Web Search", "ok")]);
                 else if (e.name === "web_search_result") {
                     const detail = e.detail;
@@ -1171,9 +1186,11 @@ export class App {
                 }
                 break;
             case "assistant": {
-                this.flushStream();
+                if (e.message.stopReason === "max_tokens" && !e.message.content.some((p) => p.type === "tool_call")) {
+                    this.continuationSource = this.mdSource;
+                } else this.flushStream();
                 this.receiving.clear();
-                const t = textOf(e.message).trim();
+                const t = (e.answer ?? textOf(e.message)).trim();
                 if (t) this.lastResponse = t;
                 break;
             }
@@ -1203,11 +1220,16 @@ export class App {
                 break;
             }
             case "notice":
-                this.flushStream();
+                // An in-flight continuation can still fail after a tool header or
+                // notice; keep the accepted prefix and renderer available to retry.
+                if (this.continuationSource === undefined) this.flushStream();
                 this.notice(e.message, e.level);
                 break;
             case "retry":
                 if (this.md?.hasContent || this.mdLines) this.notice("(connection problem; the partial response above was discarded and is being retried)", "warn");
+                // A retry discards only this request's partial output. Rebuild the
+                // renderer with the accepted prefix, including its open Markdown state.
+                if (this.continuationSource !== undefined) this.screen.replace(this.mdEntries, []);
                 this.md = undefined;
                 this.mdLines = 0;
                 this.mdEntries = [];
@@ -1215,6 +1237,13 @@ export class App {
                 this.thinking = "";
                 this.thinkingNow = false;
                 this.receiving.clear();
+                if (this.continuationSource !== undefined) {
+                    this.mdCols = termCols();
+                    this.md = new MarkdownStream(this.mdCols - 2);
+                    this.mdSource = this.continuationSource;
+                    this.printAssistant(this.md.push(this.mdSource));
+                    this.screen.redraw();
+                }
                 this.status = `${e.reason.slice(0, 80)} · retrying in ${Math.ceil(e.delayMs / 1000)}s (attempt ${e.attempt})`;
                 break;
             case "goal":
