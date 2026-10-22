@@ -2521,7 +2521,7 @@ export class Runtime {
         for (const n of notices) say(n, "warn");
         if (attached.length) say(`Attached ${attached.join(", ")}`, "info");
         if (opts.attachments?.length) {
-            if (this.model?.supportsImages === false && opts.attachments.some((a) => a.type === "image")) say(`${this.model.name ?? this.model.id} may not accept images.`, "warn");
+            if (this.model?.supportsImages === false && opts.attachments.some((a) => a.type === "image")) say(`${this.model.name ?? this.model.id} can't read images: it's told one was attached, not what's in it.`, "warn");
             // Checked when it was sent; the model may have changed while it waited in the queue.
             if (this.model && !readsPdf(this.model) && opts.attachments.some((a) => a.type === "file" && a.kind === "pdf")) say(`${this.model.name ?? this.model.id} can't read PDFs: it's told one was attached, not what's in it.`, "warn");
             parts.push(...opts.attachments);

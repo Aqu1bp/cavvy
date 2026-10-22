@@ -4,13 +4,14 @@ import { isUtf8 } from "buffer";
 import { randomBytes } from "crypto";
 import { dirname, isAbsolute } from "path";
 import type { Tool, ToolContext, ToolResult } from "./types";
-import { displayPath, expandPath, imageMediaType, looksBinary, numberLines } from "../util/files";
+import { displayPath, expandPath, imageMediaType, looksBinary, numberLines, sniffImage } from "../util/files";
 import { redact } from "../util/redact";
 import { diffLines, diffStats } from "../util/diff";
 import { writeTracked } from "../agent/checkpoints";
 
 const MAX_LINES = 2000;
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+/** Larger images are read and scaled down to what providers take (src/providers/images.ts) on their way to the model. */
+const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
 const MAX_TEXT_BYTES = 10 * 1024 * 1024;
 
 function rel(p: string, ctx: ToolContext) {
@@ -108,11 +109,14 @@ Usage:
         const media = imageMediaType(abs);
         if (media) {
             if (st.size > MAX_IMAGE_BYTES) return { content: `Image is too large (${st.size} bytes, max ${MAX_IMAGE_BYTES}).`, isError: true };
-            const data = Buffer.from(await readFile(abs)).toString("base64");
+            const bytes = await readFile(abs);
+            // Typed by its content: a .png that's really a JPEG goes as a JPEG.
+            const type = sniffImage(bytes);
+            if (!type) return { content: `${abs} isn't a PNG, JPEG, GIF or WebP image, whatever its name says.`, isError: true };
             await recordRead(ctx, abs, false);
             return {
-                content: `Image file: ${abs} (${media}, ${st.size} bytes)`,
-                images: [{ type: "image", mediaType: media, data }],
+                content: `Image file: ${abs} (${type}, ${st.size} bytes)`,
+                images: [{ type: "image", mediaType: type, data: bytes.toString("base64") }],
                 display: { summary: `Read image (${Math.round(st.size / 1024)} KB)` },
             };
         }

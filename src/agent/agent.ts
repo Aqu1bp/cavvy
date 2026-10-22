@@ -57,9 +57,10 @@ import { redact } from "../util/redact";
 import type { Skill } from "./skills";
 import { claudeAgents } from "../backends/claude-agents";
 import { isAgentBackend, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "../backends/types";
-import { getProvider } from "../providers/registry";
+import { getProvider, imageTypesOf } from "../providers/registry";
 import { ACCOUNT_PROVIDERS, account, accountRealPath } from "../providers/accounts";
 import { forBackend, pastedTexts, readsPdf } from "../providers/files";
+import { fitContent, fitToolImages, hasImages, imagesFor } from "../providers/images";
 import { cachedListings, type ProviderListing } from "../providers/models";
 import { registerTools, type Registration, type ServerTool, type ServerToolResult } from "../mcp/server";
 import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
@@ -330,6 +331,23 @@ function isContextOverflow(e: unknown): boolean {
 }
 
 /**
+ * A request refused for its images: too large, too many, not decodable, or a
+ * model that takes none. Anthropic's "many-image requests" is documented,
+ * and its "image dimensions exceed max allowed size" seen live; OpenRouter's
+ * "No endpoints found that support image input" and the other wordings are
+ * the shapes such errors take. "image" counts as a word only, not inside a
+ * name (a tool called image_lookup), and an error about a tool's or
+ * function's schema is never about the conversation's images.
+ */
+export function isImageRejection(e: unknown): boolean {
+    const err = e as ProviderError;
+    const msg = String(err?.message ?? "") + String(err?.body ?? "");
+    if (!(err?.status === 400 || err?.status === 404 || err?.status === 413 || err?.status === 422) || isContextOverflow(e)) return false;
+    if (/\b(tool|function)s?\b[^\n]{0,40}\b(schema|parameters)\b|\b(schema|parameters)\b[^\n]{0,40}\b(tool|function)s?\b|input_schema|\btools\.\d/i.test(msg)) return false;
+    return /many-image|(?<![\w-])images?(?![\w-])[^.\n]{0,80}\b(exceeds?|too (large|big|many)|dimensions?|invalid|could not|couldn't|unable to|not supported|unsupported|does not match|not (a )?valid)|\b(invalid|unsupported|could not process|cannot process|can't process)\b[^.\n]{0,30}(?<![\w-])images?(?![\w-])|image_url|image input|image_parse_error/i.test(msg);
+}
+
+/**
  * What a read-only agent hears when it tries to change something. For a
  * command: what in it isn't read-only (so it doesn't send the same command
  * again), and which ones do run.
@@ -410,6 +428,12 @@ export class Agent {
     private autoCompactBlocked = false;
     /** The error the turn ended on, for StopFailure hooks. */
     private turnError?: string;
+    /**
+     * Messages whose images the model refused this turn, sent again without
+     * them: recorded on the session (Session.refuseImages) once that's
+     * answered, forgotten if it isn't (the images weren't the trouble then).
+     */
+    private refusing?: { model: string; messages: Set<Message> };
     private fileWatch?: FileWatchHooks;
     /** A backend turn that takes steering at once (Codex), told when a message to steer with arrives. */
     private queueListeners = new Set<() => void>();
@@ -549,6 +573,14 @@ export class Agent {
         return Boolean(this.fastModeChoice() && this.model.supportsFastMode);
     }
 
+    /** The conversation with its images as this model may be sent them (src/providers/images.ts). */
+    private sendable(messages: Message[]): Promise<Message[]> {
+        const model = modelRef(this.model);
+        const refusing = this.refusing?.model === model ? this.refusing.messages : undefined;
+        const def = getProvider(this.model.provider);
+        return imagesFor(messages, { readsImages: this.model.supportsImages !== false, types: imageTypesOf(def), maxBase64: def?.imageBase64PerRequest, refused: (m) => Boolean(refusing?.has(m) || (m.role === "user" && m.meta?.imagesRefused?.includes(model))) });
+    }
+
     private request(messages: Message[], signal: AbortSignal, extra: Partial<ChatRequest> = {}): ChatRequest {
         const s = this.o.settings();
         return {
@@ -602,6 +634,9 @@ export class Agent {
             }
             return reason;
         } finally {
+            // A refusal is kept only once the retry is answered. A turn that ends first (stopped, max turns, an error) keeps
+            // nothing out: a compaction or another request after it sends the images again.
+            this.refusing = undefined;
             await this.turnSnapshots?.end();
             opts.signal.removeEventListener("abort", onAbort);
             this.running = false;
@@ -630,7 +665,8 @@ export class Agent {
 
         // Delegated tasks that ended during a turn on another model (not a backend's) go with this prompt.
         this.deliverTasks(false);
-        const parts: UserContent[] = [...content];
+        // Its images fitted to what providers take, before they're stored (and resent every turn). Claude Code and Codex take them as they came.
+        const parts: UserContent[] = [...(isAgentBackend(this.client) ? content : await fitContent(content))];
         // A /goal to Claude Code or Codex is their own command, sent as typed: Harness's notes wait for the next prompt.
         const goalCommand = isAgentBackend(this.client) && GOAL_COMMAND.test(promptText);
         for (const r of goalCommand ? [] : this.pendingReminders.splice(0)) parts.push(reminder(r.text));
@@ -648,6 +684,8 @@ export class Agent {
         let maxTokenContinuations = 0;
         let pauses = 0;
         let stopHookRounds = 0;
+        let imagesRejected = false;
+        this.refusing = undefined;
         /** Compactions since the model last answered: the first keeps a message waiting for that answer out of the summary; after two, this turn stops compacting. */
         let compactions = 0;
         /** A compaction didn't shrink the history: compacting again won't help until the model has added to it. */
@@ -703,6 +741,16 @@ export class Agent {
                         if (isAbort(ce, signal)) return this.interrupted(false);
                     }
                 }
+                // Refused for its images: once, they're left out and it's sent again. Answered, they stay out for this model (every later turn would be refused too).
+                const model = modelRef(this.model);
+                const carrying = isImageRejection(e) && !imagesRejected ? this.session.messages.filter((m) => hasImages(m) && !(m.role === "user" && m.meta?.imagesRefused?.includes(model))) : [];
+                if (carrying.length) {
+                    imagesRejected = true;
+                    this.refusing = { model, messages: new Set(carrying) };
+                    this.emit({ type: "notice", level: "warn", message: `The provider refused the conversation's images (${redact((e as Error).message)}); sending it again without them.` });
+                    continue;
+                }
+                this.refusing = undefined;
                 this.endNotice("error", redact((e as Error).message || String(e)));
                 this.emit({ type: "turn_end", reason: "error" });
                 return "error";
@@ -714,6 +762,12 @@ export class Agent {
             if (msg.stopReason !== "context_window_exceeded") {
                 compactions = 0;
                 unshrinkable = false;
+            }
+
+            // Answered without the images it refused: they stay out for this model.
+            if (this.refusing) {
+                this.session.refuseImages([...this.refusing.messages], this.refusing.model);
+                this.refusing = undefined;
             }
 
             // From here on, the redacted copy: it's what gets shown and what tools run with.
@@ -1214,13 +1268,14 @@ export class Agent {
     // Model calls with retries
 
     private callModel(signal: AbortSignal, extra: Partial<ChatRequest> = {}, messages?: Message[]): Promise<AssistantMessage> {
-        return this.withRetries(signal, () => {
+        return this.withRetries(signal, async () => {
             const last = (messages ?? this.session.messages).at(-1);
             this.emit({ type: "request_start", ...(last?.role === "user" && last.meta?.kind === "continuation" ? { continuation: true } : {}) });
+            const sendable = await this.sendable(messages ?? this.session.messages);
             // After any retries: the cache dates from the request that was answered.
             this.sentAt = Date.now();
             this.idleTried = false;
-            return this.client.stream(this.request(messages ?? this.session.messages, signal, { maxTokens: this.turnMaxTokens(), ...extra }), (e: StreamEvent) => this.forward(e));
+            return this.client.stream(this.request(sendable, signal, { maxTokens: this.turnMaxTokens(), ...extra }), (e: StreamEvent) => this.forward(e));
         });
     }
 
@@ -1295,7 +1350,7 @@ export class Agent {
         if (history.length < 2) return false;
         if (!(await this.preCompact(opts))) return false;
         this.emit({ type: "compact_start", auto: opts.auto, ...(opts.idle ? { idle: true } : {}) });
-        const req = [...history, compactRequestMessage(opts.instructions)];
+        const req = await this.sendable([...history, compactRequestMessage(opts.instructions)]);
         // Each summary request (the transcript fallback's too) is retried like a turn's, and its spend recorded.
         // An idle compaction is worth it only before the cache expires, so it gets one try.
         const send = async (r: ChatRequest) => {
@@ -1318,7 +1373,8 @@ export class Agent {
             summary = res.stopReason === "context_window_exceeded" ? "" : textOf(res);
         } catch (e) {
             if (isAbort(e, opts.signal)) throw e;
-            if (!isContextOverflow(e)) throw e;
+            // Refused for its images too: the text transcript below has none.
+            if (!isContextOverflow(e) && !isImageRejection(e)) throw e;
         }
         if (!summary.trim()) {
             // Too long even to summarize, or the model only called tools:
@@ -2652,6 +2708,8 @@ export class Agent {
         const durationMs = Date.now() - started;
         // Tools redact their own output; this catches any that print a secret (RequestSecret's) without doing so, before hooks, windows or the model.
         result = redactResult(result);
+        // Its images fitted to what providers take, before anything shows or stores them.
+        result = await fitToolImages(result);
         if (!this.o.isSubagent && this.state.cwd !== cwdBefore) void this.cwdChanged(cwdBefore);
         if (!result.isError && DIAGNOSED_TOOLS.has(tool.name) && this.state.lsp && !signal.aborted) result = await this.withDiagnostics(result, input, signal);
         // Succeeded: PostToolUse. Failed: PostToolUseFailure (a stopped tool runs neither, as in Claude Code).

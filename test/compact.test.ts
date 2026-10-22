@@ -442,7 +442,7 @@ describe("the agent loop's compaction", () => {
         await run([{ type: "text", text: "start" }]);
         session.push({ role: "user", content: [{ type: "text", text: "more" }] });
         session.push(say("ok"));
-        const img = { type: "image" as const, mediaType: "image/png", data: "iVBORw0KGgo=" };
+        const img = { type: "image" as const, mediaType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==" }; // a real 1×1 PNG: images are decoded on their way in
         // 160K tokens in context, over (200K - 32K) * 0.92: this turn compacts before its first request.
         expect(await run([{ type: "text", text: "What is wrong in this screenshot?" }, img])).toBe("done");
         expect(events.filter((e) => e.type === "compact_start").length).toBe(1);

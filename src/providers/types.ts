@@ -69,6 +69,8 @@ export interface UserMessage {
         checkpoint?: number;
         /** Brought in from a Claude Code or Codex session started elsewhere: shown, never rewound to. */
         imported?: boolean;
+        /** Models (modelRef) that refused a request for this message's images: they're sent it without them. The images stay. */
+        imagesRefused?: string[];
         /** State at a compaction boundary, restored before replaying later tool calls. */
         compactedState?: { todos: TodoItem[]; approvedPlan?: string };
     };

@@ -1534,7 +1534,7 @@ describe("sessions", () => {
         const c = await client();
         const dir = project();
         const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
-        const gif = "R0lGODlhAQABAAAAACw=";
+        const gif = "R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=="; // a real 1×1 GIF: images are decoded on their way in
         writeFileSync(join(dir, "shot.gif"), Buffer.from(gif, "base64"));
         const id = await c.open("session.create", { cwd: dir });
         await c.call("session.send", { id, text: "compare @shot.gif with this", images: [{ mediaType: "image/png", data: png }] });
