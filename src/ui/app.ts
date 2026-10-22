@@ -23,7 +23,7 @@ import { expandMcpMentions, searchResources } from "../mcp/mentions";
 import type { McpAsker } from "../mcp/elicitation";
 import { formatBytes } from "../util/files";
 import { loadImageFile, planPaste, prepareImage, readClipboardImage, type NamedImage, type Prepared, type PrepareOptions } from "./images";
-import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
+import { Agent, type Admitted, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
 import { IdleCompactTimer } from "../agent/idle-compact";
 import { DELEGATE_TOOL } from "../agent/delegation";
 import { fireHooks, type HookEvent } from "../agent/hooks";
@@ -732,7 +732,7 @@ export class App {
                     approvePlan: (plan) => this.approvePlan(plan),
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
                 },
-                drainQueued: () => this.drainQueued(),
+                drainQueued: (_record, admit) => this.drainQueued(admit),
             },
             helpers: {
                 complete: (s, p, sig) => this.complete(s, p, sig),
@@ -2406,8 +2406,47 @@ export class App {
      * gets a turn of its own). Like a message queued for the turn's end, one of
      * those doesn't hold a steer back: steering is joining the turn now.
      */
-    private drainQueued(): string[] {
-        const take = this.queued.filter((d) => d.mode === "steer" && steers(d));
+    private drainQueued(admit?: (text: string) => Promise<Admitted>): string[] | Promise<Admitted[]> {
+        const steering = () => this.queued.filter((d) => d.mode === "steer" && steers(d));
+        const take = steering();
+        if (!take.length) return [];
+        return admit ? this.admitQueued(take, admit, steering) : this.steerWith(take);
+    }
+
+    /**
+     * Their UserPromptSubmit hooks run while they stay queued: an interrupt meanwhile hands them back to the
+     * prompt. One a hook blocks comes back now, to change or drop (the hook's warning says why), unless
+     * something new has been typed (then it's in history, ↑); the rest go.
+     */
+    private async admitQueued(take: QueuedDraft[], admit: (text: string) => Promise<Admitted>, steering: () => QueuedDraft[]): Promise<Admitted[]> {
+        const blocked: QueuedDraft[] = [];
+        const admitted = new Map<QueuedDraft, Admitted>();
+        for (const d of take) {
+            const a = await admit(plainText(d.text));
+            if (a.admission === "stopped") return [];
+            if (a.admission === "blocked") blocked.push(d);
+            else admitted.set(d, a);
+        }
+        const back = blocked.filter((d) => this.queued.includes(d));
+        if (back.length) {
+            this.queued = this.queued.filter((d) => !back.includes(d));
+            this.queueUpdated();
+            if (this.editor.isEmpty && this.inputMode === "prompt") this.editor.restore(back);
+            else {
+                for (const d of back) this.editor.pushHistory(plainText(d.text), d);
+                this.notice(`What you've typed since stays; the blocked message is in history (↑).`, "warn");
+            }
+            this.renderLive();
+        }
+        // One taken back meanwhile (Esc) doesn't go.
+        const still = steering();
+        const go = take.filter((d) => admitted.has(d) && still.includes(d));
+        this.steerWith(go);
+        // Each with what its own hooks added (two alike are still two).
+        return go.map((d) => admitted.get(d)!);
+    }
+
+    private steerWith(take: QueuedDraft[]): string[] {
         if (!take.length) return [];
         this.queued = this.queued.filter((d) => !take.includes(d));
         this.queueUpdated();

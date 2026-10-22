@@ -11,7 +11,7 @@ import { WakeQueue, WatcherMap, formatWakes, stopWatchers, wakeDisplay, type Wak
 import { turnDuration } from "./duration";
 import { existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
-import { Agent, type Admission, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
+import { Agent, type Admission, type Admitted, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
 import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, rewindTargets, untrackedChangesNote, type RestoreItem } from "../agent/checkpoints";
 import { beforeFork, forkCut, forkTargets } from "../agent/fork";
 import { fireHooks, type HookEvent } from "../agent/hooks";
@@ -1192,7 +1192,7 @@ export class Runtime {
                     approvePlan: (plan) => this.approvePlan(plan),
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
                 },
-                drainQueued: (record) => this.drainQueued(record),
+                drainQueued: (record, admit) => this.drainQueued(record, admit),
                 drainWaiting: (record) => this.drainWaiting(record),
             },
             helpers: {
@@ -2091,9 +2091,43 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Prompts
 
-    private drainQueued(record?: () => void): string[] {
+    private drainQueued(record?: () => void, admit?: (text: string) => Promise<Admitted>): string[] | Promise<Admitted[]> {
         // Messages to steer with; queued ones, held ones and those with images or files wait for their own turn.
-        const take = this.queued.filter((q) => q.mode === "steer" && !q.held && steerable(q));
+        const steering = () => this.queued.filter((q) => q.mode === "steer" && !q.held && steerable(q));
+        const take = steering();
+        if (!take.length) return [];
+        return admit ? this.admitQueued(take, admit, steering, record) : this.steerWith(take, record);
+    }
+
+    /**
+     * Their UserPromptSubmit hooks run while they stay in the queue (on disk too): an interrupt meanwhile hands
+     * them back to the composer. One a hook blocks goes back to the composer now, to change or drop (the hook's
+     * warning says why); the rest go.
+     */
+    private async admitQueued(take: Queued[], admit: (text: string) => Promise<Admitted>, steering: () => Queued[], record?: () => void): Promise<Admitted[]> {
+        const blocked: Queued[] = [];
+        const admitted = new Map<Queued, Admitted>();
+        for (const q of take) {
+            const a = await admit(q.text);
+            if (a.admission === "stopped") return [];
+            if (a.admission === "blocked") blocked.push(q);
+            else admitted.set(q, a);
+        }
+        const back = blocked.filter((q) => this.queued.includes(q));
+        if (back.length) {
+            this.queued = this.queued.filter((q) => !back.includes(q));
+            this.queueUpdated();
+            this.engine.draft(this, back.map((q) => q.text).join("\n\n"));
+        }
+        // One the user took out or held meanwhile doesn't go.
+        const still = steering();
+        const go = take.filter((q) => admitted.has(q) && still.includes(q));
+        this.steerWith(go, record);
+        // Each with what its own hooks added (two alike are still two).
+        return go.map((q) => admitted.get(q)!);
+    }
+
+    private steerWith(take: Queued[], record?: () => void): string[] {
         if (!take.length) return [];
         this.queued = this.queued.filter((q) => !take.includes(q));
         this.queueUpdated();
