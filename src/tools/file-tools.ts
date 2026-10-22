@@ -5,7 +5,7 @@ import { randomBytes } from "crypto";
 import { dirname, isAbsolute } from "path";
 import type { Tool, ToolContext, ToolResult } from "./types";
 import { displayPath, expandPath, imageMediaType, looksBinary, numberLines } from "../util/files";
-import { redact } from "../util/redact";
+import { knownSecrets, redact, redactPrefix } from "../util/redact";
 import { diffLines, diffStats } from "../util/diff";
 import { writeTracked } from "../agent/checkpoints";
 
@@ -168,8 +168,10 @@ Usage:
 };
 
 interface LineRange {
-    /** The lines from offset on, each cut to MAX_LINE_BYTES. */
+    /** The lines from offset on, each cut to MAX_LINE_BYTES and redacted. */
     lines: string[];
+    /** A secret was redacted from one of them. */
+    redacted: boolean;
     /** The file's line count, when the read reached its end. */
     total?: number;
     /** Stopped at MAX_RANGE_BYTES before the limit. */
@@ -188,16 +190,26 @@ async function streamLines(abs: string, start: number, limit: number, signal: Ab
     const end = start - 1 + limit; // 0-based index of the first line not wanted
     let line = 0; // 0-based index of the line being read
     let lineBytes = 0; // bytes seen of that line
-    let head: Buffer[] = []; // its first MAX_LINE_BYTES, when it's in range
+    // A line in range is kept past MAX_LINE_BYTES, by the longest secret it could
+    // hold, so a secret across the cut is still recognised and redacted whole.
+    const keepBytes = MAX_LINE_BYTES + knownSecrets().reduce((n, s) => Math.max(n, Buffer.byteLength(s)), MAX_LINE_BYTES);
+    let head: Buffer[] = []; // its first keepBytes, when it's in range
     let headBytes = 0;
     let kept = 0;
     let first = true;
+    let redacted = false;
     let why: LineRange["why"];
     const keep = () => {
-        const b = Buffer.concat(head);
+        let b = Buffer.concat(head);
+        // A character the cut split isn't an encoding error.
+        if (lineBytes > b.length) b = b.subarray(0, wholeChars(b));
         if (!why && !isUtf8(b)) why = "not_utf8";
-        lines.push(b.toString("utf-8"));
-        kept += b.length + 8; // and the line number and tab numberLines adds
+        const text = b.toString("utf-8");
+        const shown = b.length > MAX_LINE_BYTES ? b.subarray(0, wholeChars(b.subarray(0, MAX_LINE_BYTES))).toString("utf-8").length : text.length;
+        const line = redactPrefix(text, shown);
+        if (line !== text.slice(0, shown)) redacted = true;
+        lines.push(line);
+        kept += Math.min(b.length, MAX_LINE_BYTES) + 8; // and the line number and tab numberLines adds
         head = [];
         headBytes = 0;
     };
@@ -207,7 +219,7 @@ async function streamLines(abs: string, start: number, limit: number, signal: Ab
             if (signal.aborted) return undefined;
             if (first) {
                 first = false;
-                if (looksBinary(chunk)) return { lines: [], capped: false, binary: true };
+                if (looksBinary(chunk)) return { lines: [], redacted: false, capped: false, binary: true };
                 if ((chunk[0] === 0xff && chunk[1] === 0xfe) || (chunk[0] === 0xfe && chunk[1] === 0xff)) why = "utf16";
             }
             let pos = 0;
@@ -215,8 +227,8 @@ async function streamLines(abs: string, start: number, limit: number, signal: Ab
                 const nl = chunk.indexOf(10, pos);
                 const stop = nl === -1 ? chunk.length : nl;
                 lineBytes += stop - pos;
-                if (line >= start - 1 && headBytes < MAX_LINE_BYTES) {
-                    const take = chunk.subarray(pos, Math.min(stop, pos + MAX_LINE_BYTES - headBytes));
+                if (line >= start - 1 && headBytes < keepBytes) {
+                    const take = chunk.subarray(pos, Math.min(stop, pos + keepBytes - headBytes));
                     head.push(Buffer.from(take));
                     headBytes += take.length;
                 }
@@ -225,8 +237,8 @@ async function streamLines(abs: string, start: number, limit: number, signal: Ab
                 line++;
                 lineBytes = 0;
                 pos = nl + 1;
-                if (line >= end) return { lines, capped: false, binary: false, why };
-                if (kept >= MAX_RANGE_BYTES && lines.length) return { lines, capped: true, binary: false, why };
+                if (line >= end) return { lines, redacted, capped: false, binary: false, why };
+                if (kept >= MAX_RANGE_BYTES && lines.length) return { lines, redacted, capped: true, binary: false, why };
             }
         }
     } finally {
@@ -238,7 +250,17 @@ async function streamLines(abs: string, start: number, limit: number, signal: Ab
         if (line >= start - 1) keep();
         line++;
     }
-    return { lines, total: line, capped: false, binary: false, why };
+    return { lines, redacted, total: line, capped: false, binary: false, why };
+}
+
+/** The length of b without a last character it cuts short. */
+function wholeChars(b: Buffer): number {
+    let i = b.length - 1;
+    while (i >= 0 && i > b.length - 4 && (b[i]! & 0xc0) === 0x80) i--; // back over continuation bytes to the lead
+    if (i < 0) return b.length;
+    const lead = b[i]!;
+    const size = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1;
+    return i + size > b.length ? i : b.length;
 }
 
 /** An offset/limit Read of a text file over MAX_TEXT_BYTES, without loading it. */
@@ -259,12 +281,11 @@ async function readLargeRange(abs: string, size: number, input: { offset?: numbe
     const shownEnd = start - 1 + r.lines.length;
     const partial = start > 1 || r.total === undefined || shownEnd < r.total;
     await recordRead(ctx, abs, partial);
-    const redacted = r.lines.map((line) => redact(line));
-    let out = numberLines(redacted, start);
+    let out = numberLines(r.lines, start);
     const of = r.total !== undefined ? ` of ${r.total}` : "";
     if (r.capped) out += `\n\n(Output capped at ${MAX_RANGE_BYTES / 1024} KB: showing lines ${start}-${shownEnd}${of}. Use offset ${shownEnd + 1} to read on.)`;
     else if (partial && (r.total === undefined || shownEnd < r.total)) out += `\n\n(Showing lines ${start}-${shownEnd}${of}. Use offset/limit to read more.)`;
-    if (redacted.some((line, i) => line !== r.lines[i])) out += "\n\n<system-reminder>Some secrets in this file were redacted.</system-reminder>";
+    if (r.redacted) out += "\n\n<system-reminder>Some secrets in this file were redacted.</system-reminder>";
     if (r.why) {
         const shown = r.why === "not_utf8" ? " Its undecodable bytes show above as U+FFFD (\uFFFD)." : "";
         out += `\n\n<system-reminder>This file ${NOT_TEXT[r.why]}.${shown} Edit and Write will refuse it: change it with a shell command that keeps its encoding, or ask the user whether to convert it to UTF-8.</system-reminder>`;

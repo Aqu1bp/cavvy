@@ -145,6 +145,59 @@ describe("Read of a text file over 10 MiB", () => {
         });
     });
 
+    // A first line, read from a file over 10 MiB and as a small file shows it.
+    async function firstLine(first: string, name: string) {
+        const ctx = toolCtx(tempDir());
+        const small = join(ctx.state.cwd, `small-${name}`);
+        writeFileSync(small, first + "\nx\n");
+        const expected = await ReadTool.run({ file_path: small, offset: 1, limit: 1 }, ctx);
+        const file_path = big(name, first + "\n" + "x\n".repeat(5 * 1024 * 1024 + 1));
+        const result = await withoutReadFile(() => ReadTool.run({ file_path, offset: 1, limit: 1 }, toolCtx(dirname(file_path))));
+        return { result, expected };
+    }
+    const lineOne = (content: string) => content.split("\n")[0]!;
+
+    test("a secret across the 8 KiB line cut is redacted whole, as in a small file", async () => {
+        // The Google-format key starts at byte 8154: cut at 8192, it loses its last character and no pattern matches it.
+        const key = "AIza" + "Z".repeat(35);
+        const first = ("sk-ant-api03-" + "Q".repeat(249) + " ").repeat(31) + " " + key;
+        expect(Buffer.byteLength(first.slice(0, first.indexOf(key)))).toBe(8154);
+        const { result, expected } = await firstLine(first, "secret-at-cut.log");
+        expect(result.isError).toBeFalsy();
+        expect(result.content).not.toContain("AIzaZ");
+        expect(result.content).toContain("[REDACTED google-key]");
+        expect(result.content).toContain("Some secrets in this file were redacted");
+        expect(lineOne(result.content)).toBe(lineOne(expected.content));
+    });
+
+    test("a registered secret longer than the cut's lookahead is still redacted whole", async () => {
+        const { registerSecret } = await import("../src/util/redact");
+        const secret = "s3cr3t-" + "k".repeat(20_000);
+        registerSecret(secret, "long-token");
+        // Starts at byte 7890, before the cut, and runs past 16 KiB; the redacted keys before it leave it in the 2000 characters shown.
+        const { result } = await firstLine(("sk-ant-api03-" + "Q".repeat(249) + " ").repeat(30) + secret, "long-secret.log");
+        expect(result.isError).toBeFalsy();
+        expect(result.content).not.toContain("s3cr3t");
+        expect(result.content).not.toContain("kkkk");
+        expect(result.content).toContain("[REDACTED long-token]");
+    });
+
+    test("a long line of valid UTF-8 cut mid-character isn't called non-UTF-8", async () => {
+        for (const n of [3000, 30_000]) {
+            // 8192 isn't a multiple of 3: the cut splits a "€".
+            const { result } = await firstLine("€".repeat(n), `euro-${n}.log`);
+            expect(result.isError).toBeFalsy();
+            expect(result.content).not.toContain("UTF-8");
+            expect(result.content).not.toContain("�");
+            expect(result.content).toBe(`     1\t${"€".repeat(2000)}… [line truncated]\n\n(Showing lines 1-1. Use offset/limit to read more.)`);
+        }
+        // Invalid bytes before the cut are still reported.
+        const bad = Buffer.concat([Buffer.from("€".repeat(100)), Buffer.from([0xff]), Buffer.from("€".repeat(3000) + "\n"), Buffer.from("x\n".repeat(5 * 1024 * 1024 + 1))]);
+        const file_path = big("euro-bad.log", bad);
+        const result = await withoutReadFile(() => ReadTool.run({ file_path, offset: 1, limit: 1 }, toolCtx(dirname(file_path))));
+        expect(result.content).toContain("is not valid UTF-8");
+    });
+
     test("small files still read ranges in memory", async () => {
         const file_path = big("small.log", "first\nsecond\nthird\n");
         const ctx = toolCtx(dirname(file_path));
