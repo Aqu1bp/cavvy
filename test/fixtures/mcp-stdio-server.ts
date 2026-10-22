@@ -60,6 +60,7 @@ const TOOLS: Json[] = [
     { name: "roots", description: "Asks the client for its roots", inputSchema: { type: "object", properties: {} } },
     { name: "notify_lists", description: "Sends resources and prompts list_changed", inputSchema: { type: "object", properties: {} } },
 ];
+if (process.env.MCP_FIXTURE_ECHO_SCHEMA) TOOLS[0]!.inputSchema = JSON.parse(process.env.MCP_FIXTURE_ECHO_SCHEMA);
 
 const RESOURCES: Json[] = [
     { uri: "fixture://readme", name: "readme", title: "Read me", description: "A short text", mimeType: "text/markdown" },

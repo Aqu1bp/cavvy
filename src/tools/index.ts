@@ -44,6 +44,31 @@ export function toSchema(t: Tool<any>): ToolSchema {
     return { name: t.name, description: t.description, parameters: t.parameters };
 }
 
+interface PropertySchema {
+    type?: string | string[];
+    nullable?: boolean;
+    enum?: unknown[];
+    const?: unknown;
+    anyOf?: (PropertySchema | boolean)[];
+    oneOf?: (PropertySchema | boolean)[];
+    allOf?: (PropertySchema | boolean)[];
+    not?: PropertySchema | boolean;
+}
+
+/** Null is a value, not a missing key; check the constraints that can exclude it. */
+function allowsNull(prop: PropertySchema | boolean): boolean {
+    if (typeof prop === "boolean") return prop;
+    const types = Array.isArray(prop.type) ? prop.type : prop.type ? [prop.type] : [];
+    if (types.length && !types.includes("null") && !prop.nullable) return false;
+    if (prop.enum && !prop.enum.includes(null)) return false;
+    if ("const" in prop && prop.const !== null) return false;
+    if (prop.anyOf && !prop.anyOf.some(allowsNull)) return false;
+    if (prop.oneOf && prop.oneOf.filter(allowsNull).length !== 1) return false;
+    if (prop.allOf && !prop.allOf.every(allowsNull)) return false;
+    if (prop.not !== undefined && allowsNull(prop.not)) return false;
+    return true;
+}
+
 /**
  * Minimal JSON-Schema check for tool input: required keys and top-level
  * primitive types. Catches truncated or malformed calls before they run.
@@ -52,13 +77,21 @@ export function validateInput(t: Tool<any>, input: unknown): string | undefined 
     if (!input || typeof input !== "object" || Array.isArray(input)) return "Tool input must be a JSON object";
     const obj = input as Record<string, unknown>;
     if ("__invalid_json" in obj) return `The tool arguments were not valid JSON: ${String(obj.__invalid_json).slice(0, 200)}`;
-    const schema = t.parameters as { properties?: Record<string, { type?: string | string[]; enum?: unknown[] }>; required?: string[] };
+    const schema = t.parameters as { properties?: Record<string, PropertySchema | boolean>; required?: string[] };
     for (const key of schema.required ?? []) {
-        if (obj[key] === undefined || obj[key] === null) return `Missing required parameter "${key}"`;
+        if (!Object.hasOwn(obj, key) || obj[key] === undefined) return `Missing required parameter "${key}"`;
     }
     for (const [key, val] of Object.entries(obj)) {
         const prop = schema.properties?.[key];
-        if (!prop || val === undefined || val === null) continue;
+        if (prop === undefined || val === undefined) continue;
+        if (val === null) {
+            if (!allowsNull(prop)) return `Parameter "${key}" does not allow null`;
+            continue;
+        }
+        if (typeof prop === "boolean") {
+            if (!prop) return `Parameter "${key}" is not allowed`;
+            continue;
+        }
         const types = Array.isArray(prop.type) ? prop.type : prop.type ? [prop.type] : [];
         if (types.length && !types.some((ty) => typeMatches(ty, val))) {
             return `Parameter "${key}" should be ${types.join(" or ")}, got ${Array.isArray(val) ? "array" : typeof val}`;
@@ -81,7 +114,9 @@ function typeMatches(ty: string, v: unknown): boolean {
         case "array":
             return Array.isArray(v);
         case "object":
-            return typeof v === "object" && !Array.isArray(v);
+            return v !== null && typeof v === "object" && !Array.isArray(v);
+        case "null":
+            return v === null;
         default:
             return true;
     }
