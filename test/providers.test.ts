@@ -5,7 +5,7 @@ const iso = isolate();
 const { OpenAICompatProvider, toOpenAIMessages, httpError } = await import("../src/providers/openai-compat");
 const { OpenAIResponsesProvider, toResponsesInput } = await import("../src/providers/openai-responses");
 const { toAnthropicMessages, sanitizeToolId } = await import("../src/providers/anthropic");
-const { BUILTIN_PROVIDERS } = await import("../src/providers/registry");
+const { BUILTIN_PROVIDERS, customProviders, writeProvidersFile } = await import("../src/providers/registry");
 const { ProviderError } = await import("../src/providers/types");
 const { stall } = await import("../src/providers/sse");
 const { costOf, promptTokens, usageCostParts } = await import("../src/providers/pricing");
@@ -214,6 +214,70 @@ describe("Chat Completions: message conversion", () => {
 
 describe("Chat Completions: streaming", () => {
     const model: ModelInfo = { provider: "custom-x", id: "test-model", maxOutput: 8000, supportsTools: true };
+
+    test("custom DeepSeek: reasoning survives storage and the next tool turn, but stays out of other dialects", async () => {
+        writeProvidersFile({ custom: [{ id: CUSTOM.id, name: CUSTOM.name, baseUrl: BASE, deepseekCompat: true }] });
+        try {
+            const def = customProviders()[0]!;
+            respond = () => sse([
+                { choices: [{ delta: { reasoning_content: "Check " } }] },
+                { choices: [{ delta: { reasoning_content: "the file.", tool_calls: [{ index: 0, id: "c1", type: "function", function: { name: "read_file", arguments: "{}" } }] }, finish_reason: "tool_calls" }] },
+            ]);
+            const { events, on } = collect();
+            const first = await new OpenAICompatProvider(def, undefined).stream(req(model, []), on);
+            const stored: AssistantMessage = JSON.parse(JSON.stringify(first));
+            expect(stored.raw?.openai?.reasoning_content).toBe("Check the file.");
+            expect(events.filter((e) => e.type === "thinking").map((e) => e.text).join("")).toBe("Check the file.");
+            const result: Message = { role: "user", content: [{ type: "tool_result", toolCallId: "c1", toolName: "read_file", content: "body" }] };
+            respond = () => sse([{ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }]);
+            await new OpenAICompatProvider(def, undefined).stream(req(model, [stored, result]), () => {});
+            expect(seen.at(-1)!.body.messages.find((m: Json) => m.role === "assistant").reasoning_content).toBe("Check the file.");
+            expect(toOpenAIMessages("", [{ ...stored, raw: undefined }], def)[0]!.reasoning_content).toBe("Check the file.");
+            for (const target of [CUSTOM, builtin("groq"), builtin("gemini")]) {
+                expect(toOpenAIMessages("", [stored], target)[0]).not.toHaveProperty("reasoning_content");
+            }
+            expect(stored.raw?.openai?.reasoning_content).toBe("Check the file.");
+        } finally {
+            writeProvidersFile({});
+        }
+    });
+
+    test("reasoning_content is retained even for unknown dialects, including empty values", async () => {
+        for (const reasoning of ["received", ""]) {
+            respond = () => sse([{ choices: [{ delta: { reasoning_content: reasoning, content: "answer" }, finish_reason: "stop" }] }]);
+            const msg = await new OpenAICompatProvider(CUSTOM, undefined).stream(req(model, []), () => {});
+            expect(msg.raw?.openai?.reasoning_content).toBe(reasoning);
+            expect(toOpenAIMessages("", [msg], CUSTOM)[0]).not.toHaveProperty("reasoning_content");
+        }
+    });
+
+    test("DeepSeek host detection is exact and explicit configuration overrides it", () => {
+        const msg: AssistantMessage = { role: "assistant", provider: CUSTOM.id, model: "m", content: [{ type: "thinking", text: "thought" }, { type: "text", text: "answer" }], raw: { openai: { role: "assistant", content: "answer" } } };
+        const direct = { ...CUSTOM, baseUrl: "https://api.deepseek.com/v1" };
+        expect(toOpenAIMessages("", [msg], direct)[0]!.reasoning_content).toBe("thought");
+        for (const def of [{ ...direct, deepseekCompat: false }, { ...direct, baseUrl: "https://api.deepseek.com.example/v1" }]) {
+            expect(toOpenAIMessages("", [msg], def)[0]).not.toHaveProperty("reasoning_content");
+        }
+    });
+
+    test("DeepSeek detection uses the effective constructor base URL", async () => {
+        const previousFetch = globalThis.fetch;
+        const bodies: Json[] = [];
+        globalThis.fetch = (async (_url, init) => {
+            bodies.push(JSON.parse(String(init?.body)));
+            return sse([{ choices: [{ delta: { content: "answer" }, finish_reason: "stop" }] }]);
+        }) as typeof fetch;
+        try {
+            const prior: AssistantMessage = { role: "assistant", provider: CUSTOM.id, model: "m", content: [{ type: "text", text: "previous" }] };
+            await new OpenAICompatProvider(CUSTOM, undefined, "https://api.deepseek.com/v1").stream(req(model, [prior]), () => {});
+            expect(bodies[0]!.messages.find((m: Json) => m.role === "assistant").reasoning_content).toBe("");
+            await new OpenAICompatProvider({ ...CUSTOM, baseUrl: "https://api.deepseek.com/v1" }, undefined, BASE).stream(req(model, [prior]), () => {});
+            expect(bodies[1]!.messages.find((m: Json) => m.role === "assistant")).not.toHaveProperty("reasoning_content");
+        } finally {
+            globalThis.fetch = previousFetch;
+        }
+    });
+
 
     test("text deltas, a chunked tool call, finish_reason and usage", async () => {
         respond = () =>
@@ -638,6 +702,112 @@ describe("Chat Completions: streaming", () => {
 });
 
 // ---------------------------------------------------------------------------
+
+describe("Chat Completions: effort discovery", () => {
+    for (const [provider, id] of [
+        ["groq", "openai/gpt-oss-120b"], ["groq", "openai/gpt-oss-20b"],
+        ["together", "openai/gpt-oss-120b"],
+        ["fireworks", "accounts/fireworks/models/gpt-oss-120b"], ["fireworks", "accounts/fireworks/models/gpt-oss-20b"],
+        ["cerebras", "gpt-oss-120b"], ["ollama", "gpt-oss:20b"], ["ollama", "gpt-oss:120b"],
+    ] as const) {
+        test(`${provider} ${id}: discovered levels control the wire request`, async () => {
+            respond = () => Response.json({ data: [{ id }, { id: "llama-plain" }, { id: `${id}-unknown` }] });
+            const client = new OpenAICompatProvider(builtin(provider), undefined);
+            const models = await client.listModels();
+            expect(models[0]).toMatchObject({ supportsReasoning: true, effortLevels: ["low", "medium", "high"] });
+            respond = () => sse([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]);
+            for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
+                await client.stream(req(models[0]!, [], { effort }), () => {});
+                expect(seen.at(-1)!.body.reasoning_effort).toBe(effort === "max" || effort === "xhigh" ? "high" : effort);
+            }
+            for (const model of models.slice(1)) {
+                expect(model.supportsReasoning).not.toBe(true);
+                await client.stream(req(model, [], { effort: "high" }), () => {});
+                expect(seen.at(-1)!.body).not.toHaveProperty("reasoning_effort");
+            }
+        });
+    }
+
+    test("xAI uses advertised levels rather than forwarding max", async () => {
+        respond = () => Response.json({ data: [
+            { id: "grok-4.7", capabilities: { reasoning_effort: ["low", "medium", "high", "xhigh"] } },
+            { id: "grok-4.5", capabilities: { reasoning_effort: ["low", "medium", "high"] } },
+            { id: "no-effort" },
+        ] });
+        const client = new OpenAICompatProvider(builtin("xai"), undefined);
+        const models = await client.listModels();
+        expect(models[0]!.effortLevels).toEqual(["low", "medium", "high", "xhigh"]);
+        expect(models[1]!.effortLevels).toEqual(["low", "medium", "high"]);
+        respond = () => sse([{ choices: [{ delta: {}, finish_reason: "stop" }] }]);
+        for (const [i, expected] of [[0, "xhigh"], [1, "high"], [2, undefined]] as const) {
+            await client.stream(req(models[i]!, [], { effort: "max" }), () => {});
+            expect(seen.at(-1)!.body.reasoning_effort).toBe(expected);
+        }
+    });
+
+    test("custom per-model effort configuration works with listings, appended models and a missing listing", async () => {
+        writeProvidersFile({ custom: [{ id: CUSTOM.id, name: CUSTOM.name, baseUrl: BASE, models: ["configured", "plain"], modelEffortLevels: { configured: ["low", "high"], listed: ["medium", "high"] } }] });
+        try {
+            const def = customProviders()[0]!;
+            for (const status of [200, 404]) {
+                respond = () => status === 200 ? Response.json({ data: [{ id: "listed" }, { id: "openai/gpt-oss-120b" }] }) : new Response("no models", { status });
+                const client = new OpenAICompatProvider(def, undefined);
+                const models = await client.listModels();
+                expect(models.find((m) => m.id === "configured")).toMatchObject({ supportsReasoning: true, effortLevels: ["low", "high"] });
+                respond = () => sse([{ choices: [{ delta: {}, finish_reason: "stop" }] }]);
+                for (const model of models) {
+                    await client.stream(req(model, [], { effort: "max" }), () => {});
+                    expect(seen.at(-1)!.body.reasoning_effort).toBe(["configured", "listed"].includes(model.id) ? "high" : undefined);
+                }
+            }
+        } finally {
+            writeProvidersFile({});
+        }
+    });
+
+    test("LM Studio and arbitrary custom endpoints do not infer effort from model names", async () => {
+        respond = () => Response.json({ data: [{ id: "openai/gpt-oss-20b" }, { id: "deepseek-reasoner" }] });
+        for (const def of [builtin("lmstudio"), CUSTOM]) {
+            expect((await new OpenAICompatProvider(def, undefined).listModels()).some((m) => m.supportsReasoning)).toBe(false);
+        }
+    });
+
+    test("custom configuration changes invalidate clients and every cached model lookup", async () => {
+        const { listAllModels, cachedListings, resolveModelInfo, lookupModel, clientFor, forgetClient } = await import("../src/providers/models");
+        const previousFetch = globalThis.fetch;
+        const bodies: Json[] = [];
+        globalThis.fetch = (async (url, init) => {
+            if (String(url) === "https://gateway.example/v1/models") return Response.json({ data: [{ id: "configured" }] });
+            if (String(url) === "https://gateway.example/v1/chat/completions") {
+                bodies.push(JSON.parse(String(init?.body)));
+                return sse([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]);
+            }
+            return new Response("not configured", { status: 404 });
+        }) as typeof fetch;
+        try {
+            writeProvidersFile({ custom: [{ id: CUSTOM.id, name: CUSTOM.name, baseUrl: "https://gateway.example/v1", requiresKey: false, deepseekCompat: true, modelEffortLevels: { configured: ["low", "high"] } }] });
+            expect(resolveModelInfo(`${CUSTOM.id}:configured`)).toMatchObject({ supportsReasoning: true, effortLevels: ["low", "high"] });
+            await listAllModels({ refresh: true });
+            expect(cachedListings().find((l) => l.provider.id === CUSTOM.id)?.models[0]?.supportsReasoning).toBe(true);
+            const oldClient = await clientFor(CUSTOM.id);
+            writeProvidersFile({ custom: [{ id: CUSTOM.id, name: CUSTOM.name, baseUrl: "https://gateway.example/v1", requiresKey: false }] });
+            expect(cachedListings().find((l) => l.provider.id === CUSTOM.id)).toBeUndefined();
+            expect(resolveModelInfo(`${CUSTOM.id}:configured`)?.supportsReasoning).toBeUndefined();
+            expect((await lookupModel(`${CUSTOM.id}:configured`))?.supportsReasoning).toBeUndefined();
+            const client = await clientFor(CUSTOM.id);
+            expect(client).not.toBe(oldClient);
+            const m = resolveModelInfo(`${CUSTOM.id}:configured`)!;
+            const prior: AssistantMessage = { role: "assistant", provider: CUSTOM.id, model: m.id, content: [{ type: "text", text: "previous" }], raw: { openai: { role: "assistant", content: "previous", reasoning_content: "thought" } } };
+            await client.stream(req(m, [prior], { effort: "high" }), () => {});
+            expect(bodies[0]).not.toHaveProperty("reasoning_effort");
+            expect(bodies[0]!.messages.find((m: Json) => m.role === "assistant")).not.toHaveProperty("reasoning_content");
+        } finally {
+            globalThis.fetch = previousFetch;
+            forgetClient(CUSTOM.id);
+            writeProvidersFile({});
+        }
+    });
+});
 
 describe("Responses API", () => {
     const def = builtin("openai");
