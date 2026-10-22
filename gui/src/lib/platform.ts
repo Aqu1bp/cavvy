@@ -49,6 +49,20 @@ async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
     return invoke<T>(cmd, args);
 }
 
+let windowShown = !isTauri;
+/**
+ * The desktop window is created hidden, so its glass never shows only the desktop behind it:
+ * the app shows it once the first screen is drawn (or after a while, whatever there is).
+ */
+export function showWindow() {
+    if (windowShown) return;
+    windowShown = true;
+    void tauriInvoke("window_ready").catch(() => undefined);
+}
+
+/** Whether the window is on screen yet (in a browser, it always is). */
+export const isWindowShown = () => windowShown;
+
 /** How to reach the server: ask the desktop app, use the dev server's settings, or trade the link's code. */
 export async function credentials(): Promise<Credentials | undefined> {
     if (isTauri) {

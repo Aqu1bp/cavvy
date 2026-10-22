@@ -10,6 +10,11 @@
 //! to the server's WebSocket on 127.0.0.1 directly.
 //!
 //! The webview gets no shell access: only this file starts processes.
+//!
+//! The window is created hidden: shown before the page has drawn, its glass
+//! shows only the desktop, blurred. The page shows it with `window_ready`
+//! once its first screen is in place; if that never comes, it's shown anyway
+//! after `SHOW_ANYWAY`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -19,7 +24,11 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, RunEvent, State};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
+use tauri_plugin_window_state::StateFlags;
 use tokio::sync::watch;
+
+/// How long the window may stay hidden waiting for the page (a page that failed to load).
+const SHOW_ANYWAY: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Debug, Serialize)]
 pub struct SidecarInfo {
@@ -58,6 +67,26 @@ async fn sidecar_info(state: State<'_, Sidecar>) -> Result<SidecarInfo, String> 
         Err(_) => Err("the harness server didn't start in time".into()),
     }
 }
+
+/// The page has drawn its first screen: the window comes up.
+#[tauri::command]
+fn window_ready(app: AppHandle) {
+    show_window(&app);
+}
+
+/// Shows the main window the first time it's asked; later calls (the fallback) do nothing.
+fn show_window(app: &AppHandle) {
+    if app.state::<Shown>().0.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+/// Whether the main window has been shown.
+struct Shown(AtomicBool);
 
 fn spawn_sidecar(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<Sidecar>();
@@ -184,15 +213,22 @@ pub fn run() {
     }
 
     builder
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // Not its visibility: restoring that would show the window before the page has drawn.
+        .plugin(tauri_plugin_window_state::Builder::default().with_state_flags(StateFlags::all() - StateFlags::VISIBLE).build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .manage(Sidecar { info, child: Mutex::new(None), starts: Mutex::new(Vec::new()), exiting: AtomicBool::new(false), exited: AtomicBool::new(false) })
-        .invoke_handler(tauri::generate_handler![sidecar_info])
+        .manage(Shown(AtomicBool::new(false)))
+        .invoke_handler(tauri::generate_handler![sidecar_info, window_ready])
         .setup(|app| {
             spawn_sidecar(app.handle()).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            let app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(SHOW_ANYWAY).await;
+                show_window(&app);
+            });
             Ok(())
         })
         .build(tauri::generate_context!())

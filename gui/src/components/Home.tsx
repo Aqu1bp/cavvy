@@ -7,6 +7,7 @@ import { app, refreshProjects, reportError, rpc } from "../state/app";
 import { chooseProject, connectCli, openProject, trustAndContinue } from "../state/actions";
 import { columnHeight, requestComposerFocus, setSettingsTab } from "../state/ui";
 import { ago, basename, tildify } from "../lib/format";
+import { isWindowShown } from "../lib/platform";
 import { now } from "../lib/clock";
 import { CliSessions } from "./CliSessions";
 import { Composer } from "./Composer";
@@ -60,9 +61,11 @@ export function Home() {
         if (path) await openProject(path);
     };
     let composer: HTMLDivElement | undefined;
+    // Drawn before the desktop window came up (at launch): the window appearing is its entrance.
+    const instant = !isWindowShown();
 
     return (
-        <div class="home">
+        <div class="home" classList={{ instant }}>
             <div class="home-col" style={{ "--column-h": columnHeight() }}>
                 <div class="home-hero">
                     <Logo size={44} />
