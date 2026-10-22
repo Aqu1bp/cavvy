@@ -631,7 +631,23 @@ export class Agent {
         let maxTokenStrikes = 0;
         let pauses = 0;
         let stopHookRounds = 0;
-        let overflowCompacted = false;
+        /** Compactions since the model last answered: the first keeps a message waiting for that answer out of the summary; after two, this turn stops compacting. */
+        let compactions = 0;
+        /** A compaction didn't shrink the history: compacting again won't help, so this turn doesn't. */
+        let unshrinkable = false;
+        /** Compacts in this turn: true when that shrank the history, or kept a message the next one can fold in. */
+        const compactInTurn = async (): Promise<boolean> => {
+            // The history alone, estimated the same way on both sides: the system prompt and tools don't change.
+            const before = estimateTokens(this.session.messages);
+            if (!(await this.compact({ auto: true, signal, continuing: true, keepLast: compactions === 0 }))) return false;
+            compactions++;
+            if (estimateTokens(this.session.messages) < before) return true;
+            // A message kept after the summary may be what's too big.
+            const last = this.session.messages.at(-1);
+            if (last?.role === "user" && last.meta?.kind !== "summary") return true;
+            unshrinkable = true;
+            return false;
+        };
         /** The model has said or done something this turn. */
         let answered = false;
         const maxTurns = this.o.maxTurns ?? Infinity;
@@ -645,16 +661,14 @@ export class Agent {
             }
 
             // A PreCompact hook that refused once this turn isn't asked again on every request.
-            if (!this.autoCompactBlocked && this.shouldAutoCompact()) {
-                let ok = false;
+            if (!this.autoCompactBlocked && !unshrinkable && !compactions && this.shouldAutoCompact()) {
                 try {
-                    ok = await this.compact({ auto: true, signal, continuing: true, keepLast: true });
+                    await compactInTurn();
                 } catch (e) {
                     // Stopped while compacting: an interrupt like any other, not an unexpected error.
                     if (isAbort(e, signal)) return this.interrupted(false);
                     this.emit({ type: "notice", level: "warn", message: `Auto-compact failed: ${(e as Error).message}` });
                 }
-                if (ok) overflowCompacted = true;
             }
 
             let msg: AssistantMessage;
@@ -662,11 +676,12 @@ export class Agent {
                 msg = await this.callModel(signal);
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);
-                if (isContextOverflow(e) && !overflowCompacted) {
-                    overflowCompacted = true;
+                // As often as the model answers in between, and once more straight after a compaction (which folds in
+                // the message the first kept); never again after one that didn't shrink the history.
+                if (isContextOverflow(e) && !unshrinkable && compactions < 2) {
                     this.emit({ type: "notice", level: "warn", message: "The conversation exceeded the model's context window; compacting and retrying." });
                     try {
-                        if (await this.compact({ auto: true, signal, continuing: true, keepLast: true })) continue;
+                        if (await compactInTurn()) continue;
                     } catch (ce) {
                         if (isAbort(ce, signal)) return this.interrupted(false);
                     }
@@ -679,6 +694,7 @@ export class Agent {
             // A provider that returns (rather than throws) after an abort hands
             // back a cut-off response; drop it like any other partial response.
             if (signal.aborted) return this.interrupted(false);
+            compactions = 0;
 
             // From here on, the redacted copy: it's what gets shown and what tools run with.
             msg = this.session.push(msg);
@@ -1063,7 +1079,7 @@ export class Agent {
 
     private shouldAutoCompact(): boolean {
         const s = this.o.settings();
-        if (s.autoCompact === false || this.o.isSubagent) return false;
+        if (s.autoCompact === false) return false;
         // Agent backends manage their own context.
         if (isAgentBackend(this.client)) return false;
         const window = this.model.contextWindow;

@@ -383,6 +383,78 @@ describe("the agent loop's compaction", () => {
         expect(session.messages.length).toBe(1);
     });
 
+    const overflow = () => new ProviderError("prompt is too long: 210000 tokens > 200000 maximum", 400, false);
+
+    test("a sub-agent compacts ahead of the window, by the same threshold, as often as it fills it", async () => {
+        let rounds = 0;
+        const { run, compactions, events } = setup(
+            (req) => {
+                if (isSummary(req)) return say("SUMMARY", usage(1000, 50));
+                // Each tool round adds 60K tokens; over the window, the provider refuses.
+                const since = req.messages.filter((m) => m.role === "assistant").length;
+                if (since >= 4) throw overflow();
+                return ++rounds <= 10 ? todo(`c${rounds}`, usage(60_000 * (since + 1), 50)) : say("done");
+            },
+            { subagent: true },
+        );
+        expect(await run([{ type: "text", text: "long task" }])).toBe("done");
+        expect(compactions()).toBeGreaterThanOrEqual(3);
+        // Never had to wait for the provider to refuse.
+        expect(events.filter((e) => e.type === "notice" && /exceeded the model's context window/.test(e.message))).toEqual([]);
+    });
+
+    test("an overflow compacts again whenever the last compaction shrank the history (here, a model with no known window)", async () => {
+        let rounds = 0;
+        const { run, compactions, requests } = setup(
+            (req) => {
+                if (isSummary(req)) return say("SUMMARY", usage(1000, 50));
+                if (req.messages.length > 6) throw overflow();
+                return ++rounds <= 8 ? todo(`c${rounds}`) : say("done");
+            },
+            { model: { provider: "anthropic", id: "claude-x" }, subagent: true },
+        );
+        expect(await run([{ type: "text", text: "long task" }])).toBe("done");
+        expect(compactions()).toBeGreaterThanOrEqual(2);
+        expect(requests.filter((r) => !isSummary(r) && r.messages.length > 6).length).toBe(compactions());
+    });
+
+    test("a prompt kept after a summary that still overflows is folded in by a second compaction", async () => {
+        const { run, session, requests, compactions } = setup((req) => {
+            if (isSummary(req)) return say("SUMMARY", usage(1000, 50));
+            if (req.messages.some((m) => m.meta?.kind === "prompt" && JSON.stringify(m.content).includes("HUGE"))) throw overflow();
+            return say("done");
+        });
+        session.push({ role: "user", content: [{ type: "text", text: "a" }] });
+        session.push(say("b"));
+        session.push({ role: "user", content: [{ type: "text", text: "c" }] });
+        session.push(say("d"));
+        expect(await run([{ type: "text", text: "HUGE " + "x".repeat(5000) }])).toBe("done");
+        expect(compactions()).toBe(2);
+        // The first kept the prompt; the second summarized it.
+        const [first, second] = requests.filter(isSummary);
+        expect(JSON.stringify(first!.messages)).not.toContain("HUGE");
+        expect(JSON.stringify(second!.messages)).toContain("HUGE");
+        expect(requests.at(-1)!.messages.length).toBe(1);
+        expect(session.messages.map((m) => m.meta?.kind ?? m.role)).toEqual(["summary", "assistant"]);
+    });
+
+    test("a request that overflows however much is compacted stops after two compactions, not in a loop", async () => {
+        const { run, session, requests, compactions } = setup(
+            (req) => {
+                if (isSummary(req)) return say("SUMMARY");
+                throw overflow();
+            },
+            { model: { provider: "anthropic", id: "claude-x" } },
+        );
+        session.push({ role: "user", content: [{ type: "text", text: "a" }] });
+        session.push(say("b"));
+        session.push({ role: "user", content: [{ type: "text", text: "c" }] });
+        session.push(say("d"));
+        expect(await run([{ type: "text", text: "go" }])).toBe("error");
+        expect(compactions()).toBeLessThanOrEqual(2);
+        expect(requests.length).toBeLessThanOrEqual(5);
+    });
+
     test("an error that isn't transient isn't retried", async () => {
         const { agent, session, requests } = setup(() => {
             throw new ProviderError("invalid x-api-key", 401, false);
