@@ -208,6 +208,8 @@ export class Delegations {
     constructor(
         private run: (req: ChildRequest, signal: AbortSignal) => Promise<ChildResult>,
         private onSettled?: (t: DelegatedTask) => void,
+        /** A task started or settled (the session's background list changed). */
+        private onChange?: () => void,
     ) {}
 
     /**
@@ -234,8 +236,12 @@ export class Delegations {
                     t.result = { status: t.status, report: redact((e as Error).message ?? String(e)), model: req.model, tokens: 0, durationMs: Date.now() - t.startedAt };
                 },
             )
-            .finally(() => this.onSettled?.(t));
+            .finally(() => {
+                this.onSettled?.(t);
+                this.onChange?.();
+            });
         this.tasks.set(t.id, t);
+        this.onChange?.();
         return t;
     }
 

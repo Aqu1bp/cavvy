@@ -10,6 +10,7 @@ import { ensureDir, paths, projectStateDir, APP_TITLE, APP_VERSION } from "../co
 import type { Message, Usage } from "../providers/types";
 import type { PlanLink } from "../server/protocol";
 import type { GoalRecord } from "./goal";
+import type { BackgroundTaskInfo } from "../backends/live/info";
 import { textOf } from "../providers/types";
 import { redact, redactedJson } from "../util/redact";
 import { defaultAccount, validAccountId } from "../providers/accounts";
@@ -109,7 +110,9 @@ export type Line =
     /** Its durable schedules as they are now (the last line wins). */
     | { t: "schedules"; jobs: ScheduledJob[] }
     /** The /goal set in this session; null when it ended. Older versions skip these lines. */
-    | { t: "goal"; goal: GoalRecord | null };
+    | { t: "goal"; goal: GoalRecord | null }
+    /** A background task as it is now (the last line for its id wins): started, or ended. Older versions skip these lines. */
+    | { t: "bgtask"; task: BackgroundTaskInfo };
 
 /**
  * Where an imported session came from. It stays in the file for good, so the
@@ -215,6 +218,8 @@ export class Session {
     /** Durable schedules as last saved (src/agent/schedule.ts), for restoring when it's opened again. */
     schedules: ScheduledJob[] = [];
     private savedSchedules = "[]";
+    /** Its background tasks as the log has them, by id (src/agent/background.ts). A fork doesn't take them. */
+    readonly backgroundTasks = new Map<string, BackgroundTaskInfo>();
     /** The /goal still set when the session was last written (src/agent/goal.ts). */
     goal?: GoalRecord;
     /**
@@ -349,6 +354,12 @@ export class Session {
         this.savedSchedules = text;
         this.schedules = durable;
         this.write({ t: "schedules", jobs: durable });
+    }
+
+    /** Keep a background task's state in the log (SessionBackground.persist decides when). */
+    recordBackgroundTask(task: BackgroundTaskInfo) {
+        this.backgroundTasks.set(task.id, { ...task });
+        this.write({ t: "bgtask", task });
     }
 
     setSystem(system: string) {
@@ -613,6 +624,10 @@ export class Session {
             else if (l.t === "planLink" && validLink(l.link)) s.planLinks = [...s.planLinks, l.link].slice(-PLANS_KEPT);
             else if (l.t === "import" && typeof l.source === "string" && typeof l.id === "string") s.imported = { source: l.source, id: l.id, startedAt: l.startedAt, importedAt: l.importedAt, messages: l.messages, omitted: l.omitted };
             else if (l.t === "usage") s.accumulate(l.model, l.usage, l.cost, l.unknown === true);
+            else if (l.t === "bgtask") {
+                const task = validTask(l.task);
+                if (task) s.backgroundTasks.set(task.id, task);
+            }
             else if (l.t === "schedules" && Array.isArray(l.jobs)) {
                 s.schedules = l.jobs.map(validJob).filter((j): j is ScheduledJob => Boolean(j));
                 s.savedSchedules = JSON.stringify(s.schedules);
@@ -621,6 +636,29 @@ export class Session {
         repairTail(s);
         return s;
     }
+}
+
+const TASK_KINDS = ["agent", "shell", "monitor", "workflow", "other"];
+const TASK_STATUSES = ["running", "done", "failed", "stopped"];
+
+/** A background task as read from disk, or undefined if it isn't one. */
+function validTask(t: unknown): BackgroundTaskInfo | undefined {
+    const v = t as Partial<BackgroundTaskInfo> | undefined;
+    if (!v || typeof v.id !== "string" || !v.id || typeof v.provider !== "string" || typeof v.label !== "string" || typeof v.startedAt !== "number") return undefined;
+    if (!TASK_KINDS.includes(v.kind as string) || !TASK_STATUSES.includes(v.status as string)) return undefined;
+    return {
+        id: v.id,
+        provider: v.provider,
+        kind: v.kind!,
+        label: v.label,
+        ...(typeof v.toolUseId === "string" ? { toolUseId: v.toolUseId } : {}),
+        ...(typeof v.turnId === "string" ? { turnId: v.turnId } : {}),
+        startedAt: v.startedAt,
+        status: v.status!,
+        ...(typeof v.endedAt === "number" ? { endedAt: v.endedAt } : {}),
+        stoppable: v.stoppable === true,
+        ...(v.lost === true ? { lost: true } : {}),
+    };
 }
 
 /** A notice line as read from disk, or undefined if it isn't one. */

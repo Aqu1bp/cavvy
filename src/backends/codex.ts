@@ -34,7 +34,7 @@ import { codexInput, codexSkills, pastedPrompt, skillFolder, type CodexSkill } f
 import { accountEnv, defaultAccount } from "../providers/accounts";
 import { accountPermissionConfig, accountPermissionProfile, watchAccountFolders } from "./account-permissions";
 import { askForm } from "../mcp/elicitation";
-import { backendModel, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendQuestion, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "./types";
+import { backendModel, type AgentBackendClient, type SessionHost, type TurnSink, type BackendPermission, type BackendQuestion, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "./types";
 import type { HookEvent } from "../agent/hooks";
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
 import { parseGoalCommand, type GoalCommand, type NativeGoal } from "../agent/goal";
@@ -618,7 +618,7 @@ export class CodexTurn {
     private restartIfStale(): boolean {
         if (this.restartFor) return true;
         if (!this.turnId || this.aborted || this.completedTurns.has(this.turnId)) return false;
-        const m = this.host.mode();
+        const m = this.cliSession.mode();
         if (!this.stale(m)) return false;
         this.restartFor = m;
         this.goalOnRestart = this.goal?.status === "active";
@@ -634,7 +634,7 @@ export class CodexTurn {
      */
     modeChanged(_m: PermissionMode) {
         if (this.aborted) return;
-        const m = this.host.mode();
+        const m = this.cliSession.mode();
         if (this.goal?.status === "active" && !this.goalPausedForMode && this.threadId && this.threadMode !== undefined && this.differs(m, this.threadMode)) {
             this.goalPausedForMode = true;
             void this.rpc.request("thread/goal/set", { threadId: this.threadId, status: "paused" }).then((r) => this.setGoal(r?.goal), () => {});
@@ -650,7 +650,7 @@ export class CodexTurn {
      */
     private stopStale() {
         if (this.aborted) return;
-        const m = this.host.mode();
+        const m = this.cliSession.mode();
         for (const [id, known] of this.running) {
             const mode = known ?? (this.starting ? this.leastStrict(this.startingThreadMode, this.startingMode) : undefined);
             if (this.ownTurns.has(id) || mode === undefined || this.stoppedForMode.has(id) || this.completedTurns.has(id) || !this.differs(m, mode)) continue;
@@ -665,7 +665,7 @@ export class CodexTurn {
         for (const [id, m] of this.running) if (m === undefined) this.running.set(id, id === own ? mode : this.startingThreadMode);
         // Stopped while it was taken for one of Codex's: it was this one, so it's restarted under the mode.
         if (own && this.stoppedForMode.delete(own)) {
-            this.restartFor ??= this.host.mode();
+            this.restartFor ??= this.cliSession.mode();
             this.goalOnRestart ||= this.goal?.status === "active";
         }
         this.stopStale();
@@ -694,13 +694,19 @@ export class CodexTurn {
         while (!this.aborted && [...this.stoppedForMode].some((id) => this.running.has(id)) && Date.now() < deadline) await Bun.sleep(10);
     }
 
-    private get host(): BackendHost {
-        return this.t.host;
+    /** The session's side of the host: permissions, usage, background tasks. */
+    private get cliSession(): SessionHost {
+        return this.t.session;
+    }
+
+    /** This turn's events and steering. */
+    private get sink(): TurnSink {
+        return this.t.sink;
     }
 
     /** The mode of the agent running this turn, as it is now. */
     agentMode(): PermissionMode {
-        return this.host.mode();
+        return this.cliSession.mode();
     }
 
     async run(opts: { compact?: boolean } = {}): Promise<BackendResult> {
@@ -735,7 +741,7 @@ export class CodexTurn {
         };
         t.signal.addEventListener("abort", onAbort, { once: true });
         // A message to steer with goes into the running turn as it's sent (turn/steer), not at its end.
-        const stopSteering = opts.compact ? undefined : this.host.onQueued?.(() => this.steerQueued());
+        const stopSteering = opts.compact ? undefined : this.sink.onQueued?.(() => this.steerQueued());
         try {
             await withTimeout(handshake(this.rpc, Boolean(accountPermissions)), 30_000, "Codex didn't start (no answer to initialize)");
             const account = parseAccount(await this.rpc.request("account/read", {}));
@@ -747,19 +753,19 @@ export class CodexTurn {
             if (this.billedToPlan) void this.readLimits();
             if (this.hookServer) this.nativeHooks = await this.hooksTaken(t.cwd);
             // The thread's policy, from one reading of the mode: what Codex's own goal turns run under (threadMode).
-            const startMode = this.host.mode();
+            const startMode = this.cliSession.mode();
             const model = t.model.id === "default" ? undefined : t.model.id;
             let o = t.orchestrator;
             const overrides = await this.mcpOverrides(t.cwd, Boolean(t.readOnly), [o?.name, this.nativeHooks ? CODEX_HOOK_SERVER : undefined].filter((n): n is string => Boolean(n)));
             if (typeof overrides === "string") return { reason: "error", text: "", actions: [], error: overrides };
             const off = overrides.config;
             if (overrides.collisions.includes(CODEX_HOOK_SERVER)) {
-                this.host.emit({ type: "notice", level: "warn", message: `Codex already has a server named ${CODEX_HOOK_SERVER}; it is disabled, and ${APP_TITLE} runs your hooks the older way this turn${this.nativeEvents.includes("PreToolUse") ? ", asking about every command so your PreToolUse hooks see them" : ""}.` });
+                this.sink.emit({ type: "notice", level: "warn", message: `Codex already has a server named ${CODEX_HOOK_SERVER}; it is disabled, and ${APP_TITLE} runs your hooks the older way this turn${this.nativeEvents.includes("PreToolUse") ? ", asking about every command so your PreToolUse hooks see them" : ""}.` });
                 this.nativeHooks = false;
             }
             const policy = codexPolicy(startMode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks);
             if (o && overrides.collisions.includes(o.name)) {
-                this.host.emit({ type: "notice", level: "warn", message: "Codex already has a server named harness; it is disabled and this turn runs without Harness delegation to avoid merging server configurations." });
+                this.sink.emit({ type: "notice", level: "warn", message: "Codex already has a server named harness; it is disabled and this turn runs without Harness delegation to avoid merging server configurations." });
                 o = undefined;
             }
             const baseInstructions = [t.appendSystemPrompt, LISTENER_NOTE].filter(Boolean).join("\n\n") || undefined;
@@ -785,7 +791,7 @@ export class CodexTurn {
                     if (this.aborted || !o || accountPermissions) throw e;
                     const kept = this.nativeHooks && this.hookServer ? { ...off, mcp_servers: { ...off?.mcp_servers, ...hookServerConfig(this.hookServer) } } : off;
                     const r = await this.rpc.request(method, { ...params, config: kept, developerInstructions: baseInstructions });
-                    this.host.emit({ type: "notice", level: "warn", message: `Codex didn't accept ${APP_TITLE}'s delegation tools (${redact((e as Error).message).replace(/^Codex:\s*/, "")}); this turn runs without them, preserving MCP restrictions.` });
+                    this.sink.emit({ type: "notice", level: "warn", message: `Codex didn't accept ${APP_TITLE}'s delegation tools (${redact((e as Error).message).replace(/^Codex:\s*/, "")}); this turn runs without them, preserving MCP restrictions.` });
                     return r;
                 }
             };
@@ -811,7 +817,7 @@ export class CodexTurn {
                 tierNow = r?.serviceTier;
                 if (!this.threadId) throw new ProviderError("Codex didn't start a thread");
             }
-            this.host.sessionId(this.threadId!);
+            this.cliSession.sessionId(this.threadId!);
             // /goal goes to Codex's own thread goal. A set or a resume runs a turn here (a resume's has no input, as
             // T3 Code's), under the mode, model and speed as they are now; the goal is made active once it has started.
             const goalCommand = opts.compact ? undefined : codexGoalCommand(t.prompt);
@@ -841,7 +847,7 @@ export class CodexTurn {
                     // Paused in Codex for a mode change: active again once this turn (under the mode) has started.
                     if (this.goalPausedForMode && !adopt) activate = true;
                     // The policy for the mode as it is now: it may have changed since the last turn.
-                    const mode = this.host.mode();
+                    const mode = this.cliSession.mode();
                     const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks);
                     const note = modeNote(mode, Boolean(t.readOnly));
                     const asked = skills ? codexInput(text, request, skills, t.skills, after) : { text: pastedPrompt(text, request, t.skills ?? [], after), items: [] };
@@ -849,7 +855,7 @@ export class CodexTurn {
                     const effort = t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort)) ? t.effort : undefined;
                     this.turnMode = mode;
                     // The speed as it is now too: a sub-agent's session may have changed it since (its turn restarting, a queued message).
-                    const tier = tierFor(this.host.fastMode?.() ?? t.fastMode);
+                    const tier = tierFor(this.cliSession.fastMode?.() ?? t.fastMode);
                     const serviceTier = tier ?? (typeof tierNow === "string" && FAST_TIERS.has(tierNow) ? null : undefined);
                     // Queued and restarted turns explicitly request this model again, even after a reroute.
                     if (model) this.threadModels.set(this.threadId!, model);
@@ -934,22 +940,22 @@ export class CodexTurn {
                     await this.steering;
                     const followUp = this.followUp && this.followUps++ < 5 ? this.followUp : undefined;
                     this.followUp = undefined;
-                    const next = followUp ? [followUp] : this.unsteered.length ? this.unsteered.splice(0) : await this.host.drainQueued(() => this.progress());
+                    const next = followUp ? [followUp] : this.unsteered.length ? this.unsteered.splice(0) : await this.sink.drainQueued(() => this.progress());
                     if (!next.length) {
                         // The goal still active: Codex goes on with it in a turn of its own, which this run waits for.
                         if (this.goal?.status === "active") adopt = await this.nextGoalTurn();
                         if (adopt) continue;
                         // Paused for a mode change (before or while waiting): it goes on here, under the mode.
                         if (this.goalPausedForMode && !this.aborted) {
-                            text = modeSwitched(this.host.mode());
+                            text = modeSwitched(this.cliSession.mode());
                             queued = undefined;
                             continue;
                         }
                         break;
                     }
                     // The user's words name skills; a watch's events (others' words, such as a PR comment) come after and don't.
-                    const typed = next.filter((x) => !this.host.fromWake?.(x));
-                    const woke = next.filter((x) => this.host.fromWake?.(x));
+                    const typed = next.filter((x) => !this.sink.fromWake?.(x));
+                    const woke = next.filter((x) => this.sink.fromWake?.(x));
                     request = typed.length ? typed.join("\n\n") : undefined;
                     after = woke.length ? `${typed.length ? "\n\n" : ""}${woke.join("\n\n")}` : "";
                     text = queued = [...typed, ...woke].join("\n\n");
@@ -972,7 +978,7 @@ export class CodexTurn {
             // Paused for a mode change that no turn took up: shown as it is.
             if (this.goalPausedForMode) {
                 this.goalPausedForMode = false;
-                this.host.emit({ type: "goal", goal: this.goal ?? null });
+                this.sink.emit({ type: "goal", goal: this.goal ?? null });
             }
             if (this.threadId && this.goal?.status === "active") await withTimeout(this.rpc.request("thread/goal/set", { threadId: this.threadId, status: "paused" }), 2000, "").catch(() => {});
             stopAccountWatch();
@@ -986,7 +992,7 @@ export class CodexTurn {
             // Settled once Codex is gone (its pending requests fail): nothing records a prompt after the turn's end.
             await this.steering;
             // Recorded as sent but never taken (the turn failed or was stopped): saved for the next turn.
-            if (this.unsteered.length) this.host.undelivered?.(this.unsteered.splice(0));
+            if (this.unsteered.length) this.sink.undelivered?.(this.unsteered.splice(0));
         }
         for (const [id, it] of this.items) this.endItem(id, it, this.aborted ? "Interrupted by user" : it.sub ? "Stopped with the sub-agent." : "Codex stopped before this finished.", true);
         // Sub-agents still working stopped with Codex.
@@ -1002,7 +1008,7 @@ export class CodexTurn {
         this.goal = codexGoal(raw);
         // Paused for a mode change only until the goal's next turn has started: still going, as the user sees it.
         const shown = this.goalPausedForMode && this.goal?.status === "paused" ? { ...this.goal, status: "active" as const } : this.goal;
-        this.host.emit({ type: "goal", goal: shown });
+        this.sink.emit({ type: "goal", goal: shown });
         this.goalWake?.();
     }
 
@@ -1018,7 +1024,7 @@ export class CodexTurn {
 
     /** /goal on Codex: answered here (a notice), or the text of the goal's first turn. */
     private async goalCommand(c: GoalCommand): Promise<{ text: string } | undefined> {
-        const say = (message: string, level: "info" | "warn" | "error" = "info") => void this.host.emit({ type: "notice", level, message });
+        const say = (message: string, level: "info" | "warn" | "error" = "info") => void this.sink.emit({ type: "notice", level, message });
         if (c.kind === "invalid") return void say(c.message, "error");
         const threadId = this.threadId;
         let raw: unknown;
@@ -1055,7 +1061,7 @@ export class CodexTurn {
         if (ended !== undefined && stopped) {
             // Stopped as it started, for the mode: restarted under it, with the messages.
             this.status = ended.status;
-            this.restartFor = this.host.mode();
+            this.restartFor = this.cliSession.mode();
             this.goalOnRestart = this.goal?.status === "active";
             if (text) this.unsteered.push(text);
             this.turnDone?.();
@@ -1089,7 +1095,7 @@ export class CodexTurn {
             const left = deadline - Date.now();
             if (left <= 0) {
                 if (!warn) return undefined;
-                this.host.emit({ type: "notice", level: "warn", message: "Codex didn't go on with the goal by itself, so it's paused. /goal resume continues it." });
+                this.sink.emit({ type: "notice", level: "warn", message: "Codex didn't go on with the goal by itself, so it's paused. /goal resume continues it." });
                 return undefined;
             }
             const gone = await Promise.race([new Promise<boolean>((r) => (this.goalWake = () => r(false))), this.rpc.done.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), left))]);
@@ -1118,7 +1124,7 @@ export class CodexTurn {
 
     private noteLimits(limits: PlanLimits, partial: boolean) {
         this.limits = mergeLimits(this.limits, limits, partial);
-        this.host.emit({ type: "limits", limits, partial });
+        this.cliSession.limits?.(limits, partial);
     }
 
     private fail(error: any, fallback: string) {
@@ -1143,7 +1149,7 @@ export class CodexTurn {
             const r: any = await withTimeout(this.rpc.request("skills/list", { cwds: [t.cwd] }), 10_000, "Codex didn't answer skills/list");
             const listed: CodexSkill[] = (Array.isArray(r?.data) ? r.data : []).flatMap((e: any) => (Array.isArray(e?.skills) ? e.skills : [])).filter((x: any) => typeof x?.name === "string" && typeof x?.path === "string");
             const { skills, own } = codexSkills(listed, t.skills ?? [], folder);
-            this.host.emit({ type: "cli_commands", provider: this.def.id, names: own.map((n) => n.toLowerCase()) });
+            this.sink.emit({ type: "cli_commands", provider: this.def.id, names: own.map((n) => n.toLowerCase()) });
             return skills;
         } catch (e) {
             if (this.aborted) throw e;
@@ -1185,7 +1191,7 @@ export class CodexTurn {
         const thread = typeof p?.threadId === "string" ? p.threadId : undefined;
         if (method === "hook/completed" && this.nativeHooks && codexHookFailed(p)) {
             // Codex goes on with a call whose hook didn't run: the turn stops instead.
-            this.host.emit({ type: "notice", level: "error", message: "Your PreToolUse hooks couldn't run for a Codex tool call, so the turn was stopped." });
+            this.sink.emit({ type: "notice", level: "error", message: "Your PreToolUse hooks couldn't run for a Codex tool call, so the turn was stopped." });
             this.interrupt(this.origin(p));
         }
         if (method === "thread/started" && typeof p?.thread?.id === "string" && typeof p.thread.model === "string") this.threadModels.set(p.thread.id, p.thread.model);
@@ -1206,7 +1212,7 @@ export class CodexTurn {
         if (thread && this.threadId && thread !== this.threadId && !ANY_THREAD.has(method)) return this.onSubThread(method, p, thread);
         switch (method) {
             case "turn/started":
-                this.host.emit({ type: "request_start" });
+                this.sink.emit({ type: "request_start" });
                 // One Codex started itself, for the goal (it may start as the last ends, before that end is taken in).
                 if (typeof p.turn?.id === "string" && p.turn.id !== this.turnId) {
                     this.startedTurns.push(p.turn.id);
@@ -1228,18 +1234,18 @@ export class CodexTurn {
             case "item/agentMessage/delta":
                 if (p.delta) {
                     this.streamed.add(p.itemId);
-                    this.host.emit({ type: "text", text: p.delta });
+                    this.sink.emit({ type: "text", text: p.delta });
                 }
                 break;
             case "item/reasoning/summaryTextDelta":
             case "item/reasoning/textDelta":
-                if (p.delta) this.host.emit({ type: "thinking", text: p.delta });
+                if (p.delta) this.sink.emit({ type: "thinking", text: p.delta });
                 break;
             case "item/reasoning/summaryPartAdded":
-                this.host.emit({ type: "thinking", text: "\n\n" });
+                this.sink.emit({ type: "thinking", text: "\n\n" });
                 break;
             case "item/commandExecution/outputDelta":
-                if (p.delta) this.host.emit({ type: "tool_progress", id: p.itemId, text: p.delta });
+                if (p.delta) this.sink.emit({ type: "tool_progress", id: p.itemId, text: p.delta });
                 break;
             case "item/fileChange/patchUpdated":
                 this.patchUpdated(p);
@@ -1259,21 +1265,21 @@ export class CodexTurn {
                 this.turnDone?.();
                 break;
             case "thread/compacted":
-                this.host.emit({ type: "notice", level: "info", message: "Codex compacted its context." });
+                this.sink.emit({ type: "notice", level: "info", message: "Codex compacted its context." });
                 // One the harness asked for (compact) runs the hooks itself.
-                if (!this.compacting && this.hooked("PostCompact")) void this.host.hooks!("PostCompact", { trigger: "auto", compact_summary: "" });
+                if (!this.compacting && this.hooked("PostCompact")) void this.cliSession.hooks!("PostCompact", { trigger: "auto", compact_summary: "" });
                 this.status ??= "completed";
                 this.turnDone?.();
                 break;
             case "error":
-                if (p.willRetry) this.host.emit({ type: "retry", attempt: 1, delayMs: 0, reason: redact(String(p.error?.message ?? "Codex is retrying")) });
+                if (p.willRetry) this.sink.emit({ type: "retry", attempt: 1, delayMs: 0, reason: redact(String(p.error?.message ?? "Codex is retrying")) });
                 else this.fail(p.error, "Codex reported an error");
                 break;
             case "warning":
             case "configWarning":
             case "deprecationNotice": {
                 const msg = String(p.message ?? p.summary ?? "").trim();
-                if (msg) this.host.emit({ type: "notice", level: "info", message: `Codex: ${msg}` });
+                if (msg) this.sink.emit({ type: "notice", level: "info", message: `Codex: ${msg}` });
                 break;
             }
             case "item/autoApprovalReview/completed": {
@@ -1297,7 +1303,7 @@ export class CodexTurn {
                 const what = reviewedAction(p.action);
                 const why = typeof p.review?.rationale === "string" ? p.review.rationale.trim() : "";
                 const verdict = status === "denied" ? "Codex's reviewer blocked" : "Codex's reviewer ran out of time on";
-                this.host.emit({ type: "notice", level: "warn", message: redact(`${verdict} ${what}${why ? `: ${why}` : "."}`) });
+                this.sink.emit({ type: "notice", level: "warn", message: redact(`${verdict} ${what}${why ? `: ${why}` : "."}`) });
                 if (why) {
                     const key = verdictKey(p.threadId, why);
                     this.noesShown.set(key, (this.noesShown.get(key) ?? 0) + 1);
@@ -1316,11 +1322,11 @@ export class CodexTurn {
                     else this.noesShown.set(key, shown - 1);
                     break;
                 }
-                this.host.emit({ type: "notice", level: "warn", message: redact(`Codex's reviewer: ${msg}`) });
+                this.sink.emit({ type: "notice", level: "warn", message: redact(`Codex's reviewer: ${msg}`) });
                 break;
             }
             case "model/rerouted":
-                this.host.emit({ type: "notice", level: "info", message: `Codex switched models: ${String(p.reason ?? p.toModel ?? "").trim() || "rerouted"}` });
+                this.sink.emit({ type: "notice", level: "info", message: `Codex switched models: ${String(p.reason ?? p.toModel ?? "").trim() || "rerouted"}` });
                 break;
             case "account/rateLimits/updated": {
                 this.limitUpdates.revision++;
@@ -1329,7 +1335,7 @@ export class CodexTurn {
                 const reached = codexReachedType(p.rateLimits);
                 if (reached && !this.limitNoted) {
                     this.limitNoted = true;
-                    this.host.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached (${reached}). ${resetSentence(this.limits?.resetsAt, "Codex")}` });
+                    this.sink.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached (${reached}). ${resetSentence(this.limits?.resetsAt, "Codex")}` });
                 }
                 break;
             }
@@ -1339,7 +1345,7 @@ export class CodexTurn {
     private emitApproval(id: string, reason: string, sub?: SubAgent) {
         const e: AgentEvent = { type: "tool_approved", id, reason, sandboxed: false };
         if (sub) this.subEmit(sub, e);
-        else this.host.emit(e);
+        else this.sink.emit(e);
     }
 
     /**
@@ -1382,10 +1388,10 @@ export class CodexTurn {
         const main = !thread || !this.threadId || thread === this.threadId;
         if (main) {
             const context = last ? last.inputTokens + last.outputTokens : undefined;
-            this.host.usage(usage, { contextTokens: context, contextWindow: typeof u.modelContextWindow === "number" ? u.modelContextWindow : undefined });
+            this.cliSession.usage(usage, { contextTokens: context, contextWindow: typeof u.modelContextWindow === "number" ? u.modelContextWindow : undefined });
             return;
         }
-        this.host.usage(usage, {});
+        this.cliSession.usage(usage, {});
         // Counted above: what the sub-agent's chip shows (kept until it's known whose thread this is).
         const shown: AgentEvent = { type: "usage", usage, cost: { usd: 0, estimated: true, unknown: !this.billedToPlan }, contextTokens: 0 };
         const sub = this.subs.get(thread!);
@@ -1454,7 +1460,7 @@ export class CodexTurn {
     }
 
     private subEmit(sub: SubAgent, e: AgentEvent) {
-        this.host.emit({ type: "subagent", parentId: sub.call, label: sub.label, event: e });
+        this.sink.emit({ type: "subagent", parentId: sub.call, label: sub.label, event: e });
     }
 
     /** A sub-agent's turn is over: what it answered is its report, and its chip says how it ended. */
@@ -1465,7 +1471,7 @@ export class CodexTurn {
         if (sub.nested) return;
         if (reason === "done" && this.hooked("SubagentStop") && !this.nativeHooks) {
             const thread = [...this.subs].find(([, s]) => s === sub)?.[0];
-            void this.host.hooks!("SubagentStop", { agent_id: thread, agent_type: "codex", description: sub.label, stop_hook_active: false, last_assistant_message: said });
+            void this.cliSession.hooks!("SubagentStop", { agent_id: thread, agent_type: "codex", description: sub.label, stop_hook_active: false, last_assistant_message: said });
         }
         if (said.trim()) this.subEmit(sub, { type: "text", text: said });
         this.subEmit(sub, { type: "turn_end", reason });
@@ -1550,7 +1556,7 @@ export class CodexTurn {
         this.items.set(id, open);
         const e: AgentEvent = { type: "tool_start", call: { type: "tool_call", id, name: open.name, input: open.input }, title: open.title };
         if (sub) this.subEmit(sub, e);
-        else this.host.emit(e);
+        else this.sink.emit(e);
         const approval = this.pendingApprovals.get(id);
         if (approval) this.emitApproval(id, approval, sub);
         this.pendingApprovals.delete(id);
@@ -1564,13 +1570,13 @@ export class CodexTurn {
             // A sub-agent's answer is its report, when its turn ends; what it says on the way isn't the main agent's.
             noteMessage(sub ? sub.answer : this.answer, turn, item.phase, text);
             if (sub) return;
-            if (!this.streamed.has(id)) this.host.emit({ type: "text", text });
+            if (!this.streamed.has(id)) this.sink.emit({ type: "text", text });
             this.texts.push(text);
-            this.host.emit({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text }], provider: this.def.id, model: this.t.model.id } });
+            this.sink.emit({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text }], provider: this.def.id, model: this.t.model.id } });
             return;
         }
         if (item.type === "contextCompaction") {
-            if (!sub) this.host.emit({ type: "notice", level: "info", message: "Codex compacted its context." });
+            if (!sub) this.sink.emit({ type: "notice", level: "info", message: "Codex compacted its context." });
             return;
         }
         if (item.type === "subAgentActivity") {
@@ -1617,7 +1623,7 @@ export class CodexTurn {
                     this.endItem(id, open, failed ? "Codex couldn't start the sub-agent." : "The sub-agent started; what it does shows under it.", failed);
                     if (!failed) {
                         this.claimThreads(threads, id, String(open.input.description ?? "sub-agent"), sub);
-                        if (!sub && this.hooked("SubagentStart") && !this.nativeHooks) for (const thread of Array.isArray(threads) ? threads : []) void this.host.hooks!("SubagentStart", { agent_id: String(thread), agent_type: "codex", description: String(open.input.description ?? "") });
+                        if (!sub && this.hooked("SubagentStart") && !this.nativeHooks) for (const thread of Array.isArray(threads) ? threads : []) void this.cliSession.hooks!("SubagentStart", { agent_id: String(thread), agent_type: "codex", description: String(open.input.description ?? "") });
                     }
                     break;
                 }
@@ -1651,7 +1657,7 @@ export class CodexTurn {
         const open: OpenItem = { name: "Task", input: { description: label, prompt: "" }, title: `Task(${label})`, started: Date.now(), sub };
         const e: AgentEvent = { type: "tool_start", call: { type: "tool_call", id, name: open.name, input: open.input }, title: open.title };
         if (sub) this.subEmit(sub, e);
-        else this.host.emit(e);
+        else this.sink.emit(e);
         // Over at once, as a spawn call is; then what its sub-agent did shows under it.
         this.endItem(id, open, item.kind === "started" ? "The sub-agent started; what it does shows under it." : "Codex went back to the sub-agent; what it does shows under it.", false);
         this.claimThreads([thread], id, label, sub);
@@ -1669,7 +1675,7 @@ export class CodexTurn {
         const e: AgentEvent = { type: "tool_end", call: { type: "tool_call", id, name: open.name, input: open.input }, result: { content, isError, display }, durationMs: Date.now() - open.started, ...(retitled ? { title: open.title } : {}) };
         if (open.sub) return this.subEmit(open.sub, e);
         this.actions.push(open.title);
-        this.host.emit(e);
+        this.sink.emit(e);
         if (ran) {
             const run = this.postToolUse(id, open, content, isError, e.durationMs).finally(() => this.hookRuns.delete(run));
             this.hookRuns.add(run);
@@ -1678,7 +1684,7 @@ export class CodexTurn {
 
     /** The harness has hooks for this event. */
     private hooked(event: HookEvent): boolean {
-        return Boolean(this.t.hooks?.[event]?.length && this.host.hooks);
+        return Boolean(this.t.hooks?.[event]?.length && this.cliSession.hooks);
     }
 
     /** Codex took the harness's PreToolUse hook, trusted (an older Codex doesn't list hooks, or doesn't run them). */
@@ -1688,7 +1694,7 @@ export class CodexTurn {
         } catch (e) {
             if (this.aborted) throw e;
         }
-        if (!saidNoNativeHooks) this.host.emit({ type: "notice", level: "info", message: this.nativeEvents.includes("PreToolUse") ? `This Codex doesn't run ${APP_TITLE}'s hooks itself, so it asks about every command and your PreToolUse hooks see only those. Codex 0.160 or later runs them before every tool call.` : `This Codex doesn't run ${APP_TITLE}'s hooks itself, so your SubagentStart and SubagentStop hooks can't add context or keep a sub-agent going. Codex 0.160 or later can.` });
+        if (!saidNoNativeHooks) this.sink.emit({ type: "notice", level: "info", message: this.nativeEvents.includes("PreToolUse") ? `This Codex doesn't run ${APP_TITLE}'s hooks itself, so it asks about every command and your PreToolUse hooks see only those. Codex 0.160 or later runs them before every tool call.` : `This Codex doesn't run ${APP_TITLE}'s hooks itself, so your SubagentStart and SubagentStop hooks can't add context or keep a sub-agent going. Codex 0.160 or later can.` });
         saidNoNativeHooks = true;
         return false;
     }
@@ -1701,7 +1707,7 @@ export class CodexTurn {
         const title = call.toolName === "Bash" ? commandTitle(target) : target ? `${call.toolName}(${target})` : call.toolName;
         for (const e of [{ type: "tool_start", call: c, title }, { type: "tool_end", call: c, result: { content: reason, isError: true }, durationMs: 0 }] as AgentEvent[]) {
             if (from?.sub) this.subEmit(from.sub, e);
-            else this.host.emit(e);
+            else this.sink.emit(e);
         }
     }
 
@@ -1719,7 +1725,7 @@ export class CodexTurn {
                 } catch (e) {
                     // Refused rather than let through: Codex goes on with a call whose hook failed.
                     if (pre) return { text: preToolUseAnswer({ deny: `PreToolUse hooks couldn't run: ${redact((e as Error).message)}` }) };
-                    this.host.emit({ type: "notice", level: "warn", message: `${event} hooks couldn't run: ${redact((e as Error).message)}` });
+                    this.sink.emit({ type: "notice", level: "warn", message: `${event} hooks couldn't run: ${redact((e as Error).message)}` });
                     return { text: "" };
                 }
             },
@@ -1738,9 +1744,9 @@ export class CodexTurn {
         const description = this.subs.get(agentId)?.label ?? this.labels.get(agentId) ?? "";
         const said = typeof args.last_assistant_message === "string" ? args.last_assistant_message : "";
         const input = event === "SubagentStart" ? { agent_id: agentId, agent_type: "codex", description } : { agent_id: agentId, agent_type: "codex", description, stop_hook_active: args.stop_hook_active === true, last_assistant_message: said };
-        const h = await this.host.hooks!(event, input);
+        const h = await this.cliSession.hooks!(event, input);
         if (h?.stop) {
-            this.host.emit({ type: "notice", level: "warn", message: `Stopped by a hook: ${h.stop}` });
+            this.sink.emit({ type: "notice", level: "warn", message: `Stopped by a hook: ${h.stop}` });
             this.interrupt(this.origin({ threadId: meta.threadId }));
             return "";
         }
@@ -1760,20 +1766,20 @@ export class CodexTurn {
         const agentLabel = from ? (from.sub?.label ?? "Codex sub-agent") : undefined;
         const id = typeof args.tool_use_id === "string" ? args.tool_use_id : undefined;
         const call = nativeCall(String(args.tool_name ?? ""), args.tool_input, this.t.cwd);
-        const h = await this.host.hooks!("PreToolUse", { tool_name: call.toolName, tool_input: call.input, ...(id ? { tool_use_id: id } : {}) });
+        const h = await this.cliSession.hooks!("PreToolUse", { tool_name: call.toolName, tool_input: call.input, ...(id ? { tool_use_id: id } : {}) });
         const context = h?.additionalContext;
         const deny = (reason: string) => {
             this.refusedCall(id, call, reason, from);
             return preToolUseAnswer({ deny: reason, context });
         };
         if (h?.stop) {
-            this.host.emit({ type: "notice", level: "warn", message: `Stopped by a hook: ${h.stop}` });
+            this.sink.emit({ type: "notice", level: "warn", message: `Stopped by a hook: ${h.stop}` });
             this.interrupt(from);
             return deny(`Stopped by PreToolUse hook: ${h.stop}`);
         }
         if (h?.blocked) return deny(`Blocked by PreToolUse hook: ${h.blocked}`);
         if (h?.decision === "deny") return deny(`Denied by PreToolUse hook${h.reason ? `: ${h.reason}` : ""}`);
-        const bypass = (this.turnMode ?? this.host.mode()) === "bypassPermissions";
+        const bypass = (this.turnMode ?? this.cliSession.mode()) === "bypassPermissions";
         const hookDecision = h?.decision === "allow" || h?.decision === "ask" ? h.decision : undefined;
         // Codex runs a rewrite in the call's place only where its input is the harness's (a command, an MCP call).
         const runnable = (input: Record<string, unknown>) => call.rewritable && (call.toolName !== "Bash" || typeof input.command === "string");
@@ -1783,7 +1789,7 @@ export class CodexTurn {
             // asks gets the user now, since Codex may not ask (bypass never does). Either way a PermissionRequest
             // hook may answer, and may rewrite it again: what it approved is what runs.
             const input = h?.updatedInput ?? call.input;
-            const a = await this.host.permission({ toolName: call.toolName, input, callId: id, hookDecision, hooksOnly: h?.updatedInput ? bypass : undefined, agentLabel });
+            const a = await this.cliSession.permission({ toolName: call.toolName, input, callId: id, hookDecision, hooksOnly: h?.updatedInput ? bypass : undefined, agentLabel });
             if (!a.allow) {
                 if (a.stop) this.interrupt(from);
                 return deny(a.message || "Denied.");
@@ -1803,21 +1809,21 @@ export class CodexTurn {
      * mode Codex asks only so they see it, and the mode decides as before.
      */
     private async ask(req: BackendPermission): Promise<PermissionAnswer> {
-        if (!this.hooked("PreToolUse")) return this.host.permission(req);
+        if (!this.hooked("PreToolUse")) return this.cliSession.permission(req);
         // Codex ran them already, before the call: what they said of it goes with the ask.
         if (this.nativeHooks) {
             const said = req.callId ? this.hookAnswers.get(req.callId) : undefined;
             if (req.callId) this.hookAnswers.delete(req.callId);
-            return this.host.permission(said ? { ...req, hookDecision: said } : req);
+            return this.cliSession.permission(said ? { ...req, hookDecision: said } : req);
         }
-        const h = await this.host.hooks!("PreToolUse", { tool_name: req.toolName, tool_input: req.input, ...(req.callId ? { tool_use_id: req.callId } : {}) });
+        const h = await this.cliSession.hooks!("PreToolUse", { tool_name: req.toolName, tool_input: req.input, ...(req.callId ? { tool_use_id: req.callId } : {}) });
         // continue: false first, so a deny that also says it ends the turn.
         if (h?.stop) return { allow: false, message: `Stopped by PreToolUse hook: ${h.stop}`, stop: true };
         if (h?.blocked) return { allow: false, message: `Blocked by PreToolUse hook: ${h.blocked}`, stop: false };
         if (h?.decision === "deny") return { allow: false, message: `Denied by PreToolUse hook${h.reason ? `: ${h.reason}` : ""}`, stop: false };
         if (h?.updatedInput) return { allow: false, message: CANT_REWRITE, stop: false };
         const hookDecision = h?.decision === "allow" || h?.decision === "ask" ? h.decision : undefined;
-        return this.host.permission({ ...req, hookDecision, hooksOnly: (this.turnMode ?? this.host.mode()) === "bypassPermissions" });
+        return this.cliSession.permission({ ...req, hookDecision, hooksOnly: (this.turnMode ?? this.cliSession.mode()) === "bypassPermissions" });
     }
 
     /** Harness's Monitor tools run the hooks themselves, as Monitor, BashOutput or KillShell: Codex's run would be a second one. */
@@ -1831,11 +1837,11 @@ export class CodexTurn {
         const event: HookEvent = isError ? "PostToolUseFailure" : "PostToolUse";
         if (!this.hooked(event) || this.aborted || this.hooksItself(open.name)) return;
         const base = { tool_name: open.name, tool_input: open.input, tool_use_id: id, duration_ms: durationMs, ...(open.mcp ? { mcp_server: open.mcp.server } : {}) };
-        const h = await this.host.hooks!(event, isError ? { ...base, error: content.slice(0, 20_000), is_interrupt: false } : { ...base, tool_response: { content: content.slice(0, 20_000), is_error: false } });
+        const h = await this.cliSession.hooks!(event, isError ? { ...base, error: content.slice(0, 20_000), is_interrupt: false } : { ...base, tool_response: { content: content.slice(0, 20_000), is_error: false } });
         const notes = [h?.blocked ? `${event} hook feedback on ${open.title}:\n${h.blocked}` : "", h?.additionalContext ? `Context from a ${event} hook (${open.name}):\n${h.additionalContext}` : ""].filter(Boolean);
         if (notes.length) this.steer(`<system-reminder>\n${notes.join("\n\n")}\n</system-reminder>`);
         if (h?.stop) {
-            this.host.emit({ type: "notice", level: "warn", message: `Stopped by a hook: ${h.stop}` });
+            this.sink.emit({ type: "notice", level: "warn", message: `Stopped by a hook: ${h.stop}` });
             this.interrupt();
         }
     }
@@ -1844,7 +1850,7 @@ export class CodexTurn {
     private async mcpOverrides(cwd: string, readOnly: boolean, reservedName?: string | string[]) {
         try {
             const r = codexMcpOverrides(await this.rpc.request("config/read", { cwd, includeLayers: true }), readOnly, reservedName);
-            if (r.missingProvenance) this.host.emit({ type: "notice", level: "warn", message: "Codex did not identify its config layers; all configured MCP servers are disabled for this turn, plugins included." });
+            if (r.missingProvenance) this.sink.emit({ type: "notice", level: "warn", message: "Codex did not identify its config layers; all configured MCP servers are disabled for this turn, plugins included." });
             return r;
         } catch (e) {
             if (this.aborted) throw e;
@@ -1871,7 +1877,7 @@ export class CodexTurn {
                 // Codex 0.162 asks about every command in untrusted mode, `cat` included. One that wants the
                 // network says something. One in another folder is checked as `cd <folder> && …`, where it runs,
                 // and only inside the workspace: a search there (`rg --hidden .`) reads what the checker can't see.
-                const asksAlways = !net && insideWorkspace(dir, this.t.cwd, this.t.additionalDirectories) && codexPolicy(this.turnMode ?? this.host.mode(), [], Boolean(this.t.readOnly)).approvalPolicy === "untrusted";
+                const asksAlways = !net && insideWorkspace(dir, this.t.cwd, this.t.additionalDirectories) && codexPolicy(this.turnMode ?? this.cliSession.mode(), [], Boolean(this.t.readOnly)).approvalPolicy === "untrusted";
                 const a = await this.ask({ toolName: "Bash", input: { command, description: typeof p.reason === "string" ? p.reason : undefined }, reason: `${typeof p.reason === "string" ? p.reason : ""}${net}`.trim() || undefined, asksAlways, agentLabel, callId: typeof p.itemId === "string" ? p.itemId : undefined });
                 return { decision: this.decision(a, p.itemId, from) };
             }
@@ -1880,13 +1886,13 @@ export class CodexTurn {
                 // A sub-agent's change Codex asks about before saying whose thread it is: the change as it was announced.
                 const changes = open?.changes ?? this.unclaimedChanges(p.threadId, p.itemId);
                 if (!changes.length && typeof p.grantRoot === "string") {
-                    const a = await this.host.permission({ toolName: "Edit", input: { file_path: join(p.grantRoot, "*") }, title: `Write access to ${p.grantRoot}`, reason: p.reason ?? undefined, agentLabel });
+                    const a = await this.cliSession.permission({ toolName: "Edit", input: { file_path: join(p.grantRoot, "*") }, title: `Write access to ${p.grantRoot}`, reason: p.reason ?? undefined, agentLabel });
                     return { decision: this.decision(a, p.itemId, from) };
                 }
                 if (!changes.length) {
                     // Nothing to check against the rules (or to show): refused, not approved blind.
                     const a: PermissionAnswer = { allow: false, message: `${APP_TITLE} doesn't know which files this change writes, so it can't check it against your rules.`, stop: false };
-                    this.host.emit({ type: "notice", level: "warn", message: `Refused a change Codex asked about: ${a.message}` });
+                    this.sink.emit({ type: "notice", level: "warn", message: `Refused a change Codex asked about: ${a.message}` });
                     return { decision: this.decision(a, p.itemId, from) };
                 }
                 const first = changes[0];
@@ -1909,11 +1915,11 @@ export class CodexTurn {
                 const want = requestedPaths(p.permissions, [this.t.cwd, ...this.t.additionalDirectories]);
                 if (want.unknown.length) {
                     // Access it can't map to folders can't be checked against the rules: refused, without asking.
-                    this.host.emit({ type: "notice", level: "warn", message: `Refused Codex's request for access to ${want.unknown.join(", ")}: ${APP_TITLE} can't tell which folders that covers, so it can't check it against your rules.` });
+                    this.sink.emit({ type: "notice", level: "warn", message: `Refused Codex's request for access to ${want.unknown.join(", ")}: ${APP_TITLE} can't tell which folders that covers, so it can't check it against your rules.` });
                     return { permissions: {}, scope: "turn" };
                 }
                 const asks = [...want.write.map((x) => `write ${x}`), ...want.read.map((x) => `read ${x}`), ...(want.network ? ["network access"] : [])];
-                const a = await this.host.permission({
+                const a = await this.cliSession.permission({
                     toolName: "Codex permissions",
                     input: { permissions: p.permissions ?? {} },
                     title: "Codex asks for more permissions",
@@ -1923,7 +1929,7 @@ export class CodexTurn {
                 });
                 // Codex grants exactly what it asked for, so a hook's rewrite of the request can't be granted; nothing is.
                 if (a.allow && a.updatedInput) {
-                    this.host.emit({ type: "notice", level: "warn", message: `Refused Codex's request for ${asks.join(", ")}: a hook rewrote the request, and Codex can only be granted what it asked for, so nothing was granted.` });
+                    this.sink.emit({ type: "notice", level: "warn", message: `Refused Codex's request for ${asks.join(", ")}: a hook rewrote the request, and Codex can only be granted what it asked for, so nothing was granted.` });
                     return { permissions: {}, scope: "turn" };
                 }
                 // Granting nothing lets the turn go on without them; what the user said goes in with it.
@@ -1933,7 +1939,7 @@ export class CodexTurn {
             }
             case "item/tool/requestUserInput": {
                 const qs: any[] = Array.isArray(p.questions) ? p.questions : [];
-                const answers = await this.host.askQuestions(
+                const answers = await this.cliSession.askQuestions(
                     qs.map((q) => ({ question: String(q?.question ?? ""), header: typeof q?.header === "string" ? q.header : undefined, options: (Array.isArray(q?.options) ? q.options : []).map((o: any) => ({ label: String(o?.label ?? ""), description: typeof o?.description === "string" ? o.description : undefined })) })),
                 );
                 return { answers: Object.fromEntries(qs.map((q, i) => [String(q?.id ?? i), { answers: answers?.[i] ?? [] }])) };
@@ -1960,7 +1966,7 @@ export class CodexTurn {
         const meta = p._meta && typeof p._meta === "object" && !Array.isArray(p._meta) ? p._meta : {};
         if (typeof meta.codex_approval_kind === "string") {
             const call = meta.codex_approval_kind === "mcp_tool_call" ? this.mcpCall(server, meta.tool_params, message, from) : undefined;
-            const a = await this.host.permission(
+            const a = await this.cliSession.permission(
                 call
                     ? { toolName: call.name, input: call.input, title: call.title, reason: message || undefined, agentLabel }
                     : { toolName: "Codex approval", input: { server, kind: meta.codex_approval_kind, message }, title: message || `Codex asks for approval (${String(meta.codex_approval_kind)})`, agentLabel },
@@ -1976,10 +1982,10 @@ export class CodexTurn {
         const intro = `${server ? `The ${server} MCP server` : "An MCP server"} asks${message ? `: ${message}` : "."}`;
         if (p.mode === "url") {
             const url = typeof p.url === "string" ? p.url : "";
-            const answers = await this.host.askQuestions([{ question: `${intro}\n\nOpen this link to continue: ${url}`, options: [{ label: "Done", description: "I opened the link and finished there" }, { label: "Decline" }] }]);
+            const answers = await this.cliSession.askQuestions([{ question: `${intro}\n\nOpen this link to continue: ${url}`, options: [{ label: "Done", description: "I opened the link and finished there" }, { label: "Decline" }] }]);
             return answers?.[0]?.[0] === "Done" ? reply("accept") : reply("decline");
         }
-        const r = await askForm(intro, p.requestedSchema, (qs) => this.host.askQuestions(qs), (message) => this.host.emit({ type: "notice", level: "warn", message }), server);
+        const r = await askForm(intro, p.requestedSchema, (qs) => this.cliSession.askQuestions(qs), (message) => this.sink.emit({ type: "notice", level: "warn", message }), server);
         return r.action === "accept" ? reply("accept", r.content ?? {}) : reply("decline");
     }
 
@@ -2055,7 +2061,7 @@ export class CodexTurn {
             const turnId = this.turnId;
             this.steerWaiting = !turnId;
             if (this.aborted || !this.threadId || !turnId) return;
-            const texts = await this.host.drainQueued(() => this.progress());
+            const texts = await this.sink.drainQueued(() => this.progress());
             if (!texts.length) return;
             const text = texts.join("\n\n");
             // Into a turn that runs as the mode says, or into its restart (also when it changed while draining).
@@ -2085,8 +2091,8 @@ export class CodexTurn {
     private diagnose(changes: FileChange[]) {
         const paths = changes.filter((c) => c.kind !== "delete").map((c) => resolve(this.t.cwd, c.movePath ?? c.path));
         const turnId = this.turnId;
-        if (!paths.length || !turnId || !this.host.diagnose) return;
-        void this.host.diagnose(paths).then(
+        if (!paths.length || !turnId || !this.sink.diagnose) return;
+        void this.sink.diagnose(paths).then(
             (note) => {
                 if (note && !this.aborted && this.turnId === turnId) this.steer(`<system-reminder>\n${note}\n</system-reminder>`, false);
             },

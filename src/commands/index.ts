@@ -5,6 +5,7 @@ import { join, resolve } from "path";
 import { spawnSync } from "bun";
 import type { App, QueuedDraft } from "../ui/app";
 import type { Draft } from "../ui/editor";
+import { describeTask } from "../agent/background";
 import { renderTodos } from "../ui/app";
 import { InputDialog, MessageDialog, SelectDialog } from "../ui/dialogs";
 import { bold, padEnd, termCols, theme, truncate, width } from "../ui/ansi";
@@ -1080,25 +1081,49 @@ function costCommand(app: App) {
     app.print(lines);
 }
 
-/** /tasks: what Claude Code or Codex delegated to other models; /tasks stop [id] stops them. */
-function tasksCommand(app: App, args: string) {
+/**
+ * /tasks: the session's background work (src/agent/background.ts): tasks delegated to other models, an agent
+ * CLI's background sub-agents, shells and monitors, and the harness's own background shells. /tasks stop
+ * <id|all> stops them; Esc doesn't (#228).
+ */
+async function tasksCommand(app: App, args: string) {
     const agent = app.agent;
-    const tasks = agent?.delegatedTasks ?? [];
     const [verb, id] = args.trim().split(/\s+/);
     if (verb === "stop") {
-        const n = agent?.stopDelegated(id) ?? 0;
-        return app.notice(n ? `Stopping ${n} task${n === 1 ? "" : "s"}.` : id ? `No running task ${id}.` : "No background or delegated tasks are running.");
+        const running = (agent?.backgroundTasks() ?? []).filter((t) => t.status === "running");
+        if (!id || id === "all") {
+            if (!running.length) return app.notice("No background tasks are running.");
+        } else if (!running.some((t) => t.id === id)) return app.notice(`No running background task ${id}. /tasks lists them.`, "error");
+        const results = (await agent?.stopBackground(!id || id === "all" ? undefined : [id])) ?? {};
+        const ok = Object.values(results).filter((r) => r === "stopped").length;
+        const bad = Object.entries(results).filter(([, r]) => r !== "stopped");
+        if (ok) app.notice(`Stopping ${ok} background task${ok === 1 ? "" : "s"}.`);
+        for (const [t, r] of bad) app.notice(`Couldn't stop ${t}: ${r === "not_stoppable" ? "it can't be stopped on its own" : r === "timeout" ? "it didn't confirm in time" : r === "failed" ? "the CLI refused" : "no such task"}.`, "warn");
+        return;
     }
-    if (verb) return app.notice("Usage: /tasks, or /tasks stop [task-id]", "error");
-    if (!tasks.length) return app.notice("No background or delegated tasks in this session. Sub-agents run in the background when the model asks (Task with run_in_background) or their definition says background: true; Claude Code and Codex can hand tasks to other providers' models.");
-    const lines = ["", heading("Background and delegated tasks")];
-    for (const t of tasks) {
-        const r = t.result;
-        const state = t.status === "running" ? theme.warning(`running ${formatDuration(Date.now() - t.startedAt)}`) : t.status === "done" ? theme.success("done") : t.status === "failed" ? theme.error("failed") : theme.muted("stopped");
-        const spend = r ? theme.muted(` · ${formatTokens(r.tokens)} tokens${r.cost ? ` · ${formatUsd(r.cost)}` : ""} · ${formatDuration(r.durationMs)}`) : "";
-        lines.push(`  ${bold(t.id)}  ${truncate(t.description, 50)}  ${theme.muted(`${t.agent} on ${t.model}${t.effort ? `, ${t.effort} effort` : ""}`)}  ${state}${spend}`);
+    if (verb) return app.notice("Usage: /tasks, or /tasks stop <task-id|all>", "error");
+    const delegated = agent?.delegatedTasks ?? [];
+    const others = (agent?.backgroundTasks() ?? []).filter((t) => !delegated.some((d) => d.id === t.id));
+    if (!delegated.length && !others.length) return app.notice("No background tasks in this session. Sub-agents run in the background when the model asks (Task with run_in_background) or their definition says background: true; Claude Code and Codex can hand tasks to other providers' models, and run sub-agents and commands in the background.");
+    const lines = [""];
+    if (delegated.length) {
+        lines.push(heading("Background and delegated tasks"));
+        for (const t of delegated) {
+            const r = t.result;
+            const state = t.status === "running" ? theme.warning(`running ${formatDuration(Date.now() - t.startedAt)}`) : t.status === "done" ? theme.success("done") : t.status === "failed" ? theme.error("failed") : theme.muted("stopped");
+            const spend = r ? theme.muted(` · ${formatTokens(r.tokens)} tokens${r.cost ? ` · ${formatUsd(r.cost)}` : ""} · ${formatDuration(r.durationMs)}`) : "";
+            lines.push(`  ${bold(t.id)}  ${truncate(t.description, 50)}  ${theme.muted(`${t.agent} on ${t.model}${t.effort ? `, ${t.effort} effort` : ""}`)}  ${state}${spend}`);
+        }
     }
-    if (tasks.some((t) => t.status === "running")) lines.push(theme.subtle("  /tasks stop stops them all; /tasks stop <id> stops one."));
+    const shown = others.filter((t) => t.status === "running").slice(-20);
+    if (shown.length) {
+        lines.push(heading("Running in the background"));
+        for (const t of shown) {
+            const by = getProvider(t.provider)?.name ?? (t.provider === "harness" ? "" : t.provider);
+            lines.push(`  ${bold(t.id)}  ${truncate(describeTask(t), 60)}  ${theme.muted(by)}  ${theme.warning(`running ${formatDuration(Date.now() - t.startedAt)}`)}${t.stoppable ? "" : theme.muted(" · can't be stopped on its own")}`);
+        }
+    }
+    if ((agent?.backgroundTasks() ?? []).some((t) => t.status === "running")) lines.push(theme.subtle("  /tasks stop all stops them all; /tasks stop <id> stops one. Esc stops only the current turn."));
     app.print(lines);
 }
 
@@ -2048,7 +2073,7 @@ const BUILTIN: Command[] = [
     },
     { name: "cost", description: "Token usage and cost for this session", whileBusy: true, run: (app) => costCommand(app) },
     { name: "queue", description: "Messages waiting for the turn: send one now, reorder, edit or remove", whileBusy: true, run: (app) => queueCommand(app) },
-    { name: "tasks", description: "Background sub-agents, and tasks Claude Code or Codex delegated to other models (stop them with /tasks stop)", args: "[stop [task-id]]", whileBusy: true, run: (app, args) => tasksCommand(app, args) },
+    { name: "tasks", description: "Background work: sub-agents, shells and monitors, and tasks delegated to other models (stop them with /tasks stop)", args: "[stop <task-id|all>]", whileBusy: true, run: (app, args) => tasksCommand(app, args) },
     { name: "context", description: "How much of the context window is used", whileBusy: true, run: (app) => contextCommand(app) },
     { name: "status", description: "Version, model, key source, mode, MCP, memory", whileBusy: true, run: (app) => statusCommand(app) },
     { name: "resume", aliases: ["continue"], description: "Resume an earlier conversation", args: "[session-id]", run: resumeCommand },

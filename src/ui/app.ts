@@ -24,6 +24,8 @@ import type { McpAsker } from "../mcp/elicitation";
 import { formatBytes } from "../util/files";
 import { loadImageFile, planPaste, prepareImage, readClipboardImage, type NamedImage, type Prepared, type PrepareOptions } from "./images";
 import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
+import { describeTask, SessionBackground } from "../agent/background";
+import type { BackendWake } from "../backends/types";
 import { IdleCompactTimer } from "../agent/idle-compact";
 import { DELEGATE_TOOL } from "../agent/delegation";
 import { fireHooks, type HookEvent } from "../agent/hooks";
@@ -359,6 +361,7 @@ export class App {
 
         if (this.init.resumeFile) this.resume(this.init.resumeFile);
         else this.session = Session.create(this.cwd);
+        this.bindBackground();
         this.schedules.restore();
         this.bindGoal();
         if (this.init.fastMode !== undefined) this.session.setFastMode(this.init.fastMode);
@@ -733,6 +736,8 @@ export class App {
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
                 },
                 drainQueued: () => this.drainQueued(),
+                wake: (w) => this.adoptWake(w),
+                backgroundChanged: () => this.persistBackground(),
             },
             helpers: {
                 complete: (s, p, sig) => this.complete(s, p, sig),
@@ -783,6 +788,7 @@ export class App {
         const prev = this.session;
         this.session = Session.create(this.cwd);
         prev.release();
+        this.bindBackground();
         stopWatchers(this.toolState);
         this.toolState.wakes?.drainRunning();
         this.toolState.fileState.clear();
@@ -807,6 +813,7 @@ export class App {
             return;
         }
         prev?.release();
+        this.bindBackground();
         stopWatchers(this.toolState);
         this.toolState.wakes?.drainRunning();
         this.toolState.fileState.clear();
@@ -822,6 +829,36 @@ export class App {
             this.schedules.switchSession();
             this.sessionSwitched(prev, "resume");
         }
+    }
+
+    /**
+     * The session's background list (src/agent/background.ts), from its log: what ran when Harness last quit on
+     * it is said once here, and to the agent with the next prompt.
+     */
+    private bindBackground() {
+        if (this.toolState.background && this.boundBackground === this.session) return;
+        this.boundBackground = this.session;
+        this.adopts = [];
+        this.toolState.background = new SessionBackground(this.session);
+        const lost = this.toolState.background.shown().filter((t) => t.lost);
+        if (lost.length) this.notice(`${lost.length === 1 ? "This background task" : `These ${lost.length} background tasks`} stopped when Harness quit: ${lost.map((t) => describeTask(t)).join("; ")}.`, "warn");
+    }
+
+    private boundBackground?: Session;
+
+    /** Keep the background list in the session log (what started, what ended). */
+    private persistBackground() {
+        this.toolState.background?.persist({ delegated: this.agent?.delegatedTasks, shells: this.toolState.shells });
+    }
+
+    /** Turns agent CLIs started by themselves, waiting for the session to be free to adopt them (wake). */
+    private adopts: BackendWake[] = [];
+
+    /** An agent CLI started a turn by itself: it becomes a wake turn, when nothing else runs. */
+    adoptWake(w: BackendWake) {
+        if (this.exiting) return;
+        this.adopts.push(w);
+        this.wake();
     }
 
     /** A controller for the current session's /goal; a resumed session's goal comes back paused. */
@@ -2113,7 +2150,8 @@ export class App {
     /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files and MCP resources (a skill's or an MCP prompt's text is sent as written). */
     /** `extra`: parts that go with the prompt as they are (an MCP prompt's images). */
     /** `goal`: a turn the goal started (src/agent/goal.ts). */
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; draft?: Draft; extra?: UserContent[]; mentionsIn?: string; wakes?: Wake[]; goal?: boolean } = {}) {
+    /** `adopt`: a wake turn its agent CLI started by itself (adoptWake): nothing is sent, the turn takes its events. */
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; draft?: Draft; extra?: UserContent[]; mentionsIn?: string; wakes?: Wake[]; goal?: boolean; adopt?: BackendWake } = {}) {
         if (!this.agent) {
             this.notice("No model is selected. Pick one with /model (or add an API key with /login).", "error");
             return;
@@ -2151,7 +2189,8 @@ export class App {
             if (ac.signal.aborted) {
                 // Nothing was sent: events go back in their queue; a message back in the prompt rather than dropped.
                 if (opts.wakes) this.toolState.wakes?.requeue(opts.wakes);
-                else {
+                // The CLI's own turn goes on without it: nothing is put back.
+                else if (!opts.adopt) {
                     this.screen.print(theme.error(`  ⎿  Interrupted before sending; your message is back in the prompt.`));
                     this.queued.unshift({ ...(opts.draft ?? { text: opts.kind === "command" ? (opts.display ?? text) : text, attachments: new Map() }), mode: "queue" });
                 }
@@ -2172,13 +2211,14 @@ export class App {
                 notices.push(...res.notices);
                 for (const n of notices) this.notice(n, "warn");
                 if (attached.length) this.notice(`Attached ${attached.join(", ")}`);
-                reason = await agent.run(parts, { signal: ac.signal, display: opts.display ?? text, kind: opts.kind });
+                reason = await agent.run(parts, { signal: ac.signal, display: opts.display ?? text, kind: opts.kind, ...(opts.adopt ? { adopt: opts.adopt } : {}) });
             }
         } catch (e) {
             this.notice(`Unexpected error: ${redact((e as Error).message)}`, "error");
             reason = "error";
         } finally {
             this.busy = false;
+            this.persistBackground();
             this.takeBackBlockedAt = 0;
             this.abort = undefined;
             this.stopTicker();
@@ -2204,6 +2244,7 @@ export class App {
             // Nothing the user typed is waiting: the goal decides whether another turn starts; then a schedule, or
             // events a watch raised meanwhile, can have their turn.
             if (reason && goal === this.goal) await goal?.afterTurn(reason, from, Boolean(opts.goal), this.turnStart);
+            if (this.adopts.length) this.wake();
             this.toolState.wakes?.poke();
             this.schedules.poke();
             // Nothing followed it: from here the conversation is idle.
@@ -2324,6 +2365,12 @@ export class App {
         if (this.switching || !this.agent || this.dialogs.length || this.goalPending()) {
             setTimeout(() => this.toolState.wakes?.poke(), 1000).unref?.();
             return;
+        }
+        // A turn an agent CLI started by itself goes first: it's running already, its events held until it's taken.
+        const adopt = this.adopts.shift();
+        if (adopt) {
+            const label = adopt.label?.trim() || `${getProvider(adopt.provider)?.name ?? adopt.provider} reported back`;
+            return void this.startTurn(label, { display: label, kind: "wake", adopt });
         }
         const wakes = this.toolState.wakes!.takeForTurn();
         if (!wakes.length) return;

@@ -6,6 +6,7 @@ import type { Sandbox } from "../permissions/sandbox";
 import type { FileHistory } from "../agent/checkpoints";
 import type { Scheduler } from "../agent/schedule";
 import type { WakeQueue } from "../agent/wakes";
+import type { SessionBackground } from "../agent/background";
 import type { LspManager } from "../lsp/manager";
 import type { DiagnosticReport } from "../lsp/diagnostics";
 
@@ -86,6 +87,8 @@ export interface ToolState {
     wakes?: WakeQueue;
     /** Things watching in the background for this session, by id; the host stops them when the session closes. */
     watchers?: Map<string, Watcher>;
+    /** The session's background work as one list: what agent CLIs report, beside its delegated tasks and shells (src/agent/background.ts). */
+    background?: SessionBackground;
 }
 
 /** Something a tool left running that raises wakes (a pull request watch, a monitor). */

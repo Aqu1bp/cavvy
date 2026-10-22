@@ -43,6 +43,8 @@ const COPIED: Record<Line["t"], boolean> = {
     // Plans shown before the cut can still be saved or implemented from the fork; links say where the original's went.
     plan: true,
     planLink: false,
+    // The original's background work stays its own: the fork doesn't inherit it.
+    bgtask: false,
     // A fork doesn't take the original's schedules: they'd run twice.
     schedules: false,
     // A goal belongs to the run that set it: the fork starts without one.

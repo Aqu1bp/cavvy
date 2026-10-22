@@ -1827,7 +1827,7 @@ export class Engine {
             { name: "rewind", description: "Go back to before an earlier prompt" },
             { name: "fork", description: "Continue in a new session from the latest response, keeping this one as it is" },
             { name: "mcp", description: "MCP servers: status, approval, reconnect", args: "[server]" },
-            { name: "tasks", description: "Sub-agents and tasks delegated to other models (/tasks stop stops them)", args: "[stop [task-id]]" },
+            { name: "tasks", description: "Background work: sub-agents, shells, monitors and delegated tasks (/tasks stop stops them)", args: "[stop <task-id|all>]" },
             { name: "rename", description: "Rename this session", args: "<title>" },
             { name: "new", description: "Start a new session in this project" },
             { name: "export", description: "Copy the conversation as markdown" },
@@ -2221,6 +2221,10 @@ export class Engine {
             case "session.killShell":
                 await this.runtime(p.id).killShell(str(p.shellId, "shellId"));
                 return null;
+            case "session.stopBackground": {
+                if (p.ids !== undefined && (!Array.isArray(p.ids) || p.ids.length > 500 || p.ids.some((x: unknown) => typeof x !== "string" || !x || x.length > 500))) throw new RpcError("ids must be a list of task ids", "invalid");
+                return { results: await this.runtime(p.id).stopBackground(p.ids as string[] | undefined) };
+            }
             case "session.stopWatch":
                 this.runtime(p.id).stopWatch(str(p.watchId, "watchId"));
                 return null;

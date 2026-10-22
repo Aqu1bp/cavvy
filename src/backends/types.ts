@@ -14,6 +14,8 @@ import type { HookConfig } from "../config/settings";
 import type { HookEvent, HookOutcome, HookResult } from "../agent/hooks";
 import type { Skill } from "../agent/skills";
 import type { ClaudeAgentDefinition } from "./claude-agents";
+import type { PlanLimits } from "../server/protocol";
+import type { BackgroundTaskInfo } from "./live/info";
 
 /** A permission prompt raised by the backend's own permission system. */
 export interface BackendPermission {
@@ -88,8 +90,26 @@ export interface BackendPrompt {
     requestAfter?: string;
 }
 
-export interface BackendHost {
-    emit(e: AgentEvent): void;
+/** Something a backend reports about the session rather than a turn: its background work, a notice when no turn runs. */
+export type SessionEvent = { type: "background_task"; task: BackgroundTaskInfo } | { type: "notice"; level: "info" | "warn" | "error"; message: string };
+
+/** A turn the CLI started by itself (a background task's report, a goal's next step), for the host to adopt as a wake turn. */
+export interface BackendWake {
+    /** The agent CLI it's in. */
+    provider: string;
+    /** The turn, as the backend names it (BackendTurn.adopt). */
+    ref: string;
+    /** What it's about, for the wake's row: "Background task finished: Map auth". */
+    label?: string;
+}
+
+/**
+ * What a backend asks of the harness about the session, whichever turn is running or none (a background
+ * sub-agent's permission prompt between turns): permissions, questions, the mode, hooks, usage, its own
+ * session id, plan limits, session-level events and wakes. Bound once a live session (#219); the per-turn
+ * backends get one with each turn.
+ */
+export interface SessionHost {
     /** The harness's permission mode now (it can change during a turn). */
     mode(): PermissionMode;
     /** Fast mode now: a sub-agent's follows its session, which can change during its turn. BackendTurn.fastMode otherwise. */
@@ -106,6 +126,21 @@ export interface BackendHost {
     context?(contextTokens: number): void;
     /** The backend's own session or thread id, for resuming it next turn. */
     sessionId(id: string): void;
+    /** The plan's usage limits, as the CLI reported them (`partial`: only some windows). */
+    limits?(limits: PlanLimits, partial: boolean): void;
+    /** Run the harness's hooks for something the backend did (Codex's items). */
+    hooks?(event: HookEvent, payload: Record<string, unknown>): Promise<HookOutcome | undefined>;
+    /** Run one hook handler the backend called back for (Claude Code's hook_callback), with the backend's input. */
+    hookHandler?(event: HookEvent, h: HookConfig, input: Record<string, unknown>, signal: AbortSignal): Promise<HookResult>;
+    /** Session-level news: a background task started, changed or ended; a notice outside any turn. */
+    emitSession?(e: SessionEvent): void;
+    /** The CLI started a turn by itself: the host starts a wake turn that adopts it (BackendTurn.adopt). */
+    onWake?(w: BackendWake): void;
+}
+
+/** Where one turn's events go, and what the turn takes in while it runs (messages to steer with). */
+export interface TurnSink {
+    emit(e: AgentEvent): void;
     /** Messages the user typed while the backend was working. If any are drained,
      * consume and record preceding output before recording the queued prompt. */
     drainQueued(progress?: () => BackendResult): string[] | Promise<string[]>;
@@ -118,10 +153,6 @@ export interface BackendHost {
      * checked last before it's taken; from then to the send nothing is awaited.
      */
     drainWaiting?(progress?: () => BackendResult, live?: () => boolean): Promise<BackendPrompt | undefined>;
-    /** Run the harness's hooks for something the backend did (Codex's items). */
-    hooks?(event: HookEvent, payload: Record<string, unknown>): Promise<HookOutcome | undefined>;
-    /** Run one hook handler the backend called back for (Claude Code's hook_callback), with the backend's input. */
-    hookHandler?(event: HookEvent, h: HookConfig, input: Record<string, unknown>, signal: AbortSignal): Promise<HookResult>;
     /** A drained message is an event a watch raised (others' words, such as a PR comment), not the user's. */
     fromWake?(text: string): boolean;
     /** Called when a message to steer with arrives mid-turn, for a backend that can take it at once (Codex). Returns the unsubscribe. */
@@ -208,7 +239,17 @@ export interface BackendTurn {
      */
     agents?: Record<string, ClaudeAgentDefinition>;
     signal: AbortSignal;
-    host: BackendHost;
+    /** The harness session (or child agent) the turn belongs to: a live CLI process is kept per key. */
+    sessionKey: string;
+    /**
+     * Send nothing: the CLI started this turn itself (BackendWake.ref), and this run takes its events
+     * until it ends. Only for a backend with adoptsTurns.
+     */
+    adopt?: string;
+    /** The session's side: permissions, usage, background tasks, wakes. */
+    session: SessionHost;
+    /** This turn's events and steering. */
+    sink: TurnSink;
 }
 
 export interface OrchestratorServer {
@@ -248,7 +289,17 @@ export interface AgentBackendClient extends ProviderClient {
     compact(t: Omit<BackendTurn, "prompt" | "images"> & { instructions?: string }): Promise<BackendResult>;
     /** The user changed the permission mode while a turn runs. */
     setMode(m: PermissionMode): void;
+    /** It can take over a turn its CLI started by itself (BackendTurn.adopt). */
+    readonly adoptsTurns?: boolean;
+    /**
+     * Ask for background tasks of a session to stop (these, or every one): how each went. A stop counts once
+     * the task is reported not running (SessionEvent background_task); none here means the backend can't.
+     */
+    stopBackground?(sessionKey: string, ids?: string[]): Promise<Record<string, BackgroundStop>>;
 }
+
+/** How a request to stop a background task went (see src/backends/live/tasks.ts StopResult). */
+export type BackgroundStop = "stopped" | "timeout" | "failed" | "not_stoppable" | "unknown";
 
 export function isAgentBackend(c: ProviderClient | undefined): c is AgentBackendClient {
     return Boolean(c && (c as Partial<AgentBackendClient>).agentBackend === true);
