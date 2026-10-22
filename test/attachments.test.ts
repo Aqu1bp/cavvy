@@ -33,6 +33,7 @@ const { App } = await import("../src/ui/app");
 const { stripAnsi } = await import("../src/ui/ansi");
 const { expandMentions } = await import("../src/ui/mentions");
 const gui = await import("../gui/src/lib/attachments");
+import type { Admitted } from "../src/agent/agent";
 import type { FilePart, Message, ToolResultPart, UserMessage } from "../src/providers/types";
 import type { ServerEvent, SessionSnapshot } from "../src/server/protocol";
 
@@ -599,11 +600,11 @@ describe("nothing gets lost", () => {
         const { engine, c, id, rt, events } = await busySession();
         try {
             for (const text of ["say forbidden things", "a fine one"]) await engine.handle(c, "session.send", { id, text, mode: "steer" });
-            const inner = rt as unknown as { drainQueued(record?: () => void, admit?: (text: string) => Promise<"go" | "blocked" | "stopped">): Promise<string[]> };
+            const inner = rt as unknown as { drainQueued(record?: () => void, admit?: (text: string) => Promise<Admitted>): Promise<Admitted[]> };
             const turns = rt.snapshot().turns.length;
             const queuedMeanwhile: string[][] = [];
-            const drained = await inner.drainQueued(undefined, async (text) => (queuedMeanwhile.push(rt.snapshot().state.queued), text.includes("forbidden") ? "blocked" : "go"));
-            expect(drained).toEqual(["a fine one"]);
+            const drained = await inner.drainQueued(undefined, async (text) => (queuedMeanwhile.push(rt.snapshot().state.queued), { text, admission: text.includes("forbidden") ? "blocked" : "go" }));
+            expect(drained).toEqual([{ text: "a fine one", admission: "go" }]);
             expect(queuedMeanwhile).toEqual([["say forbidden things", "a fine one"], ["say forbidden things", "a fine one"]]);
             expect(rt.snapshot().state.queued).toEqual([]);
             expect(events.filter((e) => e.type === "draft").map((e) => (e as Extract<ServerEvent, { type: "draft" }>).text)).toEqual(["say forbidden things"]);
@@ -620,16 +621,35 @@ describe("nothing gets lost", () => {
         const { engine, c, id, rt } = await busySession();
         try {
             for (const text of ["A", "B", "C"]) await engine.handle(c, "session.send", { id, text, mode: "steer" });
-            const inner = rt as unknown as { drainQueued(record?: () => void, admit?: (text: string) => Promise<"go" | "blocked" | "stopped">): Promise<string[]> };
+            const inner = rt as unknown as { drainQueued(record?: () => void, admit?: (text: string) => Promise<Admitted>): Promise<Admitted[]> };
             const [, b] = rt.snapshot().state.queueIds;
-            expect(await inner.drainQueued(undefined, async (text) => (text === "B" ? "stopped" : "go"))).toEqual([]);
+            expect(await inner.drainQueued(undefined, async (text) => ({ text, admission: text === "B" ? "stopped" : "go" }))).toEqual([]);
             expect(rt.snapshot().state.queued).toEqual(["A", "B", "C"]);
             const drained = await inner.drainQueued(undefined, async (text) => {
                 // While A's hooks run, the user takes B out of the queue.
                 if (text === "A") await engine.handle(c, "session.dequeue", { id, queueId: b });
-                return "go";
+                return { text, admission: "go" };
             });
-            expect(drained).toEqual(["A", "C"]);
+            expect(drained.map((a) => a.text)).toEqual(["A", "C"]);
+            expect(rt.snapshot().state.queued).toEqual([]);
+        } finally {
+            await engine.handle(c, "session.interrupt", { id }).catch(() => undefined);
+            await engine.stop();
+        }
+    });
+
+    test("two alike, the first taken out while the second's hooks run: what goes has the second's hook context", async () => {
+        const { engine, c, id, rt } = await busySession();
+        try {
+            for (let i = 0; i < 2; i++) await engine.handle(c, "session.send", { id, text: "same", mode: "steer" });
+            const inner = rt as unknown as { drainQueued(record?: () => void, admit?: (text: string) => Promise<Admitted>): Promise<Admitted[]> };
+            const [first] = rt.snapshot().state.queueIds;
+            let n = 0;
+            const drained = await inner.drainQueued(undefined, async (text) => {
+                if (++n === 2) await engine.handle(c, "session.dequeue", { id, queueId: first });
+                return { text, admission: "go", context: `context ${n}` };
+            });
+            expect(drained).toEqual([{ text: "same", admission: "go", context: "context 2" }]);
             expect(rt.snapshot().state.queued).toEqual([]);
         } finally {
             await engine.handle(c, "session.interrupt", { id }).catch(() => undefined);

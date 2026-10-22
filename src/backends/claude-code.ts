@@ -744,8 +744,14 @@ class ClaudeTurn {
 
     private async forwardQueued(): Promise<boolean> {
         if (this.aborted || this.finishing) return false;
-        const queued = await this.host.drainQueued(() => this.progress());
-        if (!queued.length || this.aborted || this.finishing) return false;
+        // Their hooks run first: they're taken only if it can still send them.
+        const queued = await this.host.drainQueued(() => this.progress(), () => !this.aborted && !this.finishing);
+        if (!queued.length) return false;
+        if (this.aborted || this.finishing) {
+            // Stopped once they were taken (they're in the transcript): the next turn is told of them rather than them vanishing.
+            this.host.undelivered?.(queued);
+            return false;
+        }
         this.reason = undefined;
         // The user's messages as they typed them; a watch's events (others' words) apart, read as written.
         const typed = queued.filter((t) => !this.host.fromWake?.(t));

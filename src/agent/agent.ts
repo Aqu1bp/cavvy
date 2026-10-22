@@ -170,10 +170,11 @@ export interface AgentHost {
      * given, is run once some are taken and before their turn starts, so the output before them is recorded first.
      * `admit`, when given, runs one's UserPromptSubmit hooks, while the host still has it queued: "blocked" (a
      * hook blocked it, and the user is told) means it doesn't go and goes back to the user, "stopped" (the turn
-     * was interrupted) that none go and they stay queued, "go" that it goes. Those handed over without it have
-     * their hooks run after.
+     * was interrupted, or the backend can't take it) that none go and they stay queued, "go" that it goes: the
+     * host hands back what admit gave for each that goes, in order. Those handed over without it (as strings)
+     * have their hooks run after.
      */
-    drainQueued?(record?: () => void, admit?: (text: string) => Promise<Admission>): string[] | Promise<string[]>;
+    drainQueued?(record?: () => void, admit?: (text: string) => Promise<Admitted>): string[] | Promise<string[] | Admitted[]>;
     /**
      * For a backend's CLI that's between its turns, waiting only on its background work: the first queued
      * message that can go now, as a prompt of its own, whatever its mode, prepared as a sent one is (its
@@ -188,6 +189,13 @@ export interface AgentHost {
 
 /** What a queued message's hooks, and whether it can still go, decided (AgentHost.drainWaiting). */
 export type Admission = "go" | "blocked" | "stopped";
+
+/** A message to steer with, through its hooks (AgentHost.drainQueued): whether it goes, and what they add if it does. */
+export interface Admitted {
+    text: string;
+    admission: Admission;
+    context?: string;
+}
 
 export interface Helpers {
     /** One-shot completion on a cheap model (classifier, summaries). */
@@ -730,8 +738,9 @@ export class Agent {
 
                 // Messages typed while the model was answering: deliver them now.
                 const steer = await this.drainSteering(signal);
-                if (signal.aborted) return this.interrupted(false);
                 const queued = steer.texts;
+                // Stopped while their hooks ran: they stay queued.
+                if (signal.aborted && !queued.length) return this.interrupted(false);
                 if (queued.length) {
                     await this.checkpoint(queued.join("\n"), false, (checkpoint) => {
                         this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }, ...steer.context.map(reminder)], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
@@ -862,29 +871,41 @@ export class Agent {
     /**
      * Messages the user sent to steer the running turn (AgentHost.drainQueued), each through its
      * UserPromptSubmit hooks as a prompt sent on its own is (runInner): one a hook blocks doesn't join the
-     * turn, and what they add goes with them.
+     * turn, and what they add goes with them. `live`: whether the backend can still take them.
      */
-    private async drainSteering(signal: AbortSignal, record?: () => void): Promise<{ texts: string[]; context: string[] }> {
+    private async drainSteering(signal: AbortSignal, record?: () => void, live?: () => boolean): Promise<{ texts: string[]; context: string[] }> {
         const hooked = !this.o.isSubagent && Boolean(this.hookSettings().hooks?.UserPromptSubmit?.length);
-        const admitted: { text: string; context?: string }[] = [];
-        const admit = async (text: string): Promise<Admission> => {
+        const stopped = () => this.cutOff || signal.aborted || live?.() === false;
+        const admit = async (text: string): Promise<Admitted> => {
             const h = await this.promptHooks(text, signal);
-            if (this.cutOff || signal.aborted) return "stopped";
-            if (h.blocked) return "blocked";
-            admitted.push({ text, context: h.context });
-            return "go";
+            if (stopped()) return { text, admission: "stopped" };
+            return h.blocked ? { text, admission: "blocked" } : { text, admission: "go", context: h.context };
         };
         const drained = (await this.o.host.drainQueued?.(record, hooked ? admit : undefined)) ?? [];
         const texts: string[] = [];
         const context: string[] = [];
-        for (const text of drained) {
-            const i = admitted.findIndex((a) => a.text === text);
-            // From a host that hands them over without running them (a script's steering): they run now.
-            const h: { blocked?: boolean; context?: string } = i >= 0 ? admitted.splice(i, 1)[0]! : hooked ? await this.promptHooks(text, signal) : {};
-            if (h.blocked) continue;
-            texts.push(text);
-            if (h.context) context.push(h.context);
+        const lost: string[] = [];
+        for (const d of drained) {
+            if (typeof d !== "string") {
+                if (d.admission !== "go") continue;
+                texts.push(d.text);
+                if (d.context) context.push(d.context);
+                continue;
+            }
+            // From a host that hands them over without running them (a script's steering): they run now. Those
+            // stopped meanwhile can't go back to it, nor go unchecked: the user is told.
+            if (!hooked) {
+                texts.push(d);
+                continue;
+            }
+            const h = lost.length ? undefined : await this.promptHooks(d, signal);
+            if (!h || stopped()) lost.push(d);
+            else if (!h.blocked) {
+                texts.push(d);
+                if (h.context) context.push(h.context);
+            }
         }
+        if (lost.length) this.emit({ type: "notice", level: "warn", message: `Not sent (stopped while its UserPromptSubmit hooks ran): ${lost.join("\n\n")}` });
         return { texts, context };
     }
 
@@ -1591,6 +1612,8 @@ export class Agent {
         let declined = false;
         /** What drainQueued handed over that came from wakes, not the user. */
         const wakeTexts = new Set<string>();
+        /** What drainQueued handed over from the user, to the words they typed (what hooks added follows). */
+        const typed = new Map<string, string>();
         const host: BackendHost = {
             ...this.backendHooks(signal),
             emit: (e) => this.emitFromBackend(e),
@@ -1637,7 +1660,8 @@ export class Agent {
                 if (news.length) this.backendStopReminders.push(`This arrived while you were working, but your turn ended before it reached you:\n${news.join("\n\n")}`);
             },
             fromWake: (text) => wakeTexts.has(text),
-            drainQueued: async (progress) => {
+            requestOf: (text) => typed.get(text),
+            drainQueued: async (progress, live) => {
                 if (this.cutOff) return [];
                 // What the backend said before them goes first: the host places their turn after it.
                 let recorded = false;
@@ -1646,7 +1670,7 @@ export class Agent {
                     recorded = true;
                     this.recordBackendTurn(provider, name, progress());
                 };
-                const steer = await this.drainSteering(signal, record);
+                const steer = await this.drainSteering(signal, record, live);
                 const queued = steer.texts;
                 // Events a watch raised join the running turn as the user's messages do (Codex steers with them at once).
                 const woke = this.takeWakes();
@@ -1657,7 +1681,9 @@ export class Agent {
                     await this.checkpoint(queued.join("\n"), false, (checkpoint) => {
                         const m = this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }, ...steer.context.map(reminder)], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
                         // With what hooks add after it, apart, as a prompt sent on its own is (forBackend).
-                        out.push(forBackend(m.content, false).text);
+                        const text = forBackend(m.content, false).text;
+                        typed.set(text, queued.join("\n\n"));
+                        out.push(text);
                     });
                 }
                 if (woke) {

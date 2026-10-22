@@ -77,8 +77,8 @@ describe("steer or queue", () => {
         await app.submitText("say forbidden things");
         await app.submitText("a fine one");
         const queuedMeanwhile: string[][] = [];
-        const admit = async (text: string) => (queuedMeanwhile.push(queued(app).map(([t]: string[]) => t)), text.includes("forbidden") ? "blocked" : "go");
-        expect(await (app as any).drainQueued(admit)).toEqual(["a fine one"]);
+        const admit = async (text: string) => (queuedMeanwhile.push(queued(app).map(([t]: string[]) => t)), { text, admission: text.includes("forbidden") ? "blocked" : "go", context: "hook says hi" });
+        expect(await (app as any).drainQueued(admit)).toEqual([{ text: "a fine one", admission: "go", context: "hook says hi" }]);
         expect(queuedMeanwhile).toEqual([["say forbidden things", "a fine one"], ["say forbidden things", "a fine one"]]);
         expect(queued(app)).toEqual([]);
         expect(app.editor.text).toBe("say forbidden things");
@@ -94,10 +94,10 @@ describe("steer or queue", () => {
         const turn = app.submitText("first");
         await Bun.sleep(10);
         await app.submitText("say forbidden things");
-        expect(await (app as any).drainQueued(async () => "stopped")).toEqual([]);
+        expect(await (app as any).drainQueued(async (text: string) => ({ text, admission: "stopped" }))).toEqual([]);
         expect(queued(app)).toEqual([["say forbidden things", "steer"]]);
         app.editor.set("half typed");
-        expect(await (app as any).drainQueued(async () => "blocked")).toEqual([]);
+        expect(await (app as any).drainQueued(async (text: string) => ({ text, admission: "blocked" }))).toEqual([]);
         expect(queued(app)).toEqual([]);
         expect(app.editor.text).toBe("half typed");
         expect(printed.join("\n")).toContain("the blocked message is in history (↑)");

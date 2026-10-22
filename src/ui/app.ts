@@ -23,7 +23,7 @@ import { expandMcpMentions, searchResources } from "../mcp/mentions";
 import type { McpAsker } from "../mcp/elicitation";
 import { formatBytes } from "../util/files";
 import { loadImageFile, planPaste, prepareImage, readClipboardImage, type NamedImage, type Prepared, type PrepareOptions } from "./images";
-import { Agent, type Admission, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
+import { Agent, type Admitted, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
 import { IdleCompactTimer } from "../agent/idle-compact";
 import { DELEGATE_TOOL } from "../agent/delegation";
 import { fireHooks, type HookEvent } from "../agent/hooks";
@@ -2407,7 +2407,7 @@ export class App {
      * gets a turn of its own). Like a message queued for the turn's end, one of
      * those doesn't hold a steer back: steering is joining the turn now.
      */
-    private drainQueued(admit?: (text: string) => Promise<Admission>): string[] | Promise<string[]> {
+    private drainQueued(admit?: (text: string) => Promise<Admitted>): string[] | Promise<Admitted[]> {
         const steering = () => this.queued.filter((d) => d.mode === "steer" && steers(d));
         const take = steering();
         if (!take.length) return [];
@@ -2419,12 +2419,14 @@ export class App {
      * prompt. One a hook blocks comes back now, to change or drop (the hook's warning says why), unless
      * something new has been typed (then it's in history, ↑); the rest go.
      */
-    private async admitQueued(take: QueuedDraft[], admit: (text: string) => Promise<Admission>, steering: () => QueuedDraft[]): Promise<string[]> {
+    private async admitQueued(take: QueuedDraft[], admit: (text: string) => Promise<Admitted>, steering: () => QueuedDraft[]): Promise<Admitted[]> {
         const blocked: QueuedDraft[] = [];
+        const admitted = new Map<QueuedDraft, Admitted>();
         for (const d of take) {
-            const admitted = await admit(plainText(d.text));
-            if (admitted === "stopped") return [];
-            if (admitted === "blocked") blocked.push(d);
+            const a = await admit(plainText(d.text));
+            if (a.admission === "stopped") return [];
+            if (a.admission === "blocked") blocked.push(d);
+            else admitted.set(d, a);
         }
         const back = blocked.filter((d) => this.queued.includes(d));
         if (back.length) {
@@ -2439,7 +2441,10 @@ export class App {
         }
         // One taken back meanwhile (Esc) doesn't go.
         const still = steering();
-        return this.steerWith(take.filter((d) => !blocked.includes(d) && still.includes(d)));
+        const go = take.filter((d) => admitted.has(d) && still.includes(d));
+        this.steerWith(go);
+        // Each with what its own hooks added (two alike are still two).
+        return go.map((d) => admitted.get(d)!);
     }
 
     private steerWith(take: QueuedDraft[]): string[] {

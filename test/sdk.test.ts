@@ -568,6 +568,30 @@ describe("streaming input", () => {
     });
 });
 
+// #222: a steered message's UserPromptSubmit hooks run while it's still queued.
+describe("UserPromptSubmit on steer()", () => {
+    test("interrupted while its hooks run, it isn't lost: it's the next turn", async () => {
+        const cwd = project();
+        const marker = join(cwd, "hook-started");
+        // Slow only the first time, so the turn it starts doesn't wait too.
+        const settings = { hooks: { UserPromptSubmit: [{ command: `grep -q steered || exit 0; [ -f ${marker} ] && exit 0; touch ${marker}; exec sleep 10` }] } };
+        script = (req) => (lastSentOf(req).includes("steered") ? { text: "got the steer" } : { text: "first answer", delayMs: 300 });
+        const input = channel();
+        const q = query({ prompt: input, options: { cwd, model: MODEL, persistSession: false, settings } });
+        input.send("start");
+        const reading = collect(q);
+        await until(() => requests.length === 1);
+        expect(await q.steer("the steered one")).toBe(true);
+        await until(() => existsSync(marker));
+        await q.interrupt();
+        await until(() => requests.length === 2);
+        input.end();
+        const ms = await reading;
+        expect(lastSent()).toContain("the steered one");
+        expect(results(ms).map((r) => r.result)).toContain("got the steer");
+    });
+});
+
 describe("concurrent queries", () => {
     test("two at once keep their own sessions, messages and tool state", async () => {
         const a = project();

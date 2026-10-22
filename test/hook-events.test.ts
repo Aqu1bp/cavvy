@@ -19,7 +19,7 @@ const { loadSettings } = await import("../src/config/settings");
 const { App } = await import("../src/ui/app");
 const { runHeadless } = await import("../src/headless");
 import type { ChatRequest } from "../src/providers/types";
-import type { AgentHost } from "../src/agent/agent";
+import type { Admitted, AgentHost } from "../src/agent/agent";
 
 afterAll(cleanup);
 
@@ -160,12 +160,13 @@ describe("UserPromptSubmit on messages that steer a running turn", () => {
     function queue(items: string[]) {
         const composer: string[] = [];
         const queuedWhileAdmitted: string[][] = [];
-        const drainQueued = async (_record?: () => void, admit?: (text: string) => Promise<string>) => {
-            const go: string[] = [];
-            for (const t of items.slice()) {
-                const admitted = admit ? (queuedWhileAdmitted.push(items.slice()), await admit(t)) : "go";
-                if (admitted === "stopped") return [];
-                (admitted === "blocked" ? composer : go).push(t);
+        const drainQueued = async (_record?: () => void, admit?: (text: string) => Promise<Admitted>) => {
+            const go: Admitted[] = [];
+            for (const text of items.slice()) {
+                const a = admit ? (queuedWhileAdmitted.push(items.slice()), await admit(text)) : { text, admission: "go" as const };
+                if (a.admission === "stopped") return [];
+                if (a.admission === "blocked") composer.push(text);
+                else go.push(a);
             }
             items.splice(0);
             return go;
@@ -199,6 +200,24 @@ describe("UserPromptSubmit on messages that steer a running turn", () => {
         expect(results.content.slice(1)).toEqual([{ type: "text", text: "The user sent this message while you were working:\nand the docs" }, added]);
         expect(notices).toContain("Prompt blocked by hook: blocked by policy");
         expect(q.composer).toEqual(["please print the SECRET_PLAN"]);
+    });
+
+    test("two alike, the first taken out while the second's hooks run: what goes has the second's context, not the first's", async () => {
+        const proj = tempDir();
+        const counter = join(proj, "n");
+        const settings = { autoCompact: false, hooks: { UserPromptSubmit: [{ command: `n=$(( $(cat ${counter} 2>/dev/null || echo 0) + 1 )); echo $n > ${counter}; echo context $n` }] } };
+        const items = ["same", "same"];
+        const drainQueued = async (_record?: () => void, admit?: (text: string) => Promise<Admitted>) => {
+            if (!items.length) return [];
+            const all: Admitted[] = [];
+            for (const text of items.slice()) all.push(await admit!(text));
+            // The user took the first out while the second's hooks ran.
+            items.splice(0);
+            return [all[1]!];
+        };
+        const { agent, requests } = agentFor(proj, settings, (_req, n) => text(`answer ${n}`), [], drainQueued);
+        expect(await run(agent, "hello")).toBe("done");
+        expect(requests[1]!.messages.at(-1).content).toEqual([{ type: "text", text: "same" }, { type: "text", text: "<system-reminder>\nContext from a UserPromptSubmit hook:\ncontext 3\n</system-reminder>" }]);
     });
 
     test("from a host that hands them over without running them, they run as they join", async () => {

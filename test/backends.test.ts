@@ -8,6 +8,7 @@ import { homedir, tmpdir } from "os";
 import { join } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
 import { secretsSnapshot } from "./helpers/secrets";
+import type { Admitted } from "../src/agent/agent";
 
 const { cleanup } = isolate();
 const restoreSecrets = await secretsSnapshot();
@@ -772,13 +773,14 @@ describe("Claude Code's background work (live test findings)", () => {
                 waits,
                 blocked,
                 // Their hooks (admit) run while they're still queued, as the runtime has them.
-                drainQueued: async (_record?: () => void, admit?: (text: string) => Promise<string>) => {
+                drainQueued: async (_record?: () => void, admit?: (text: string) => Promise<Admitted>) => {
                     const steer = items.filter((q) => q.mode === "steer" && !q.held && !q.images?.length && !command(q.text));
-                    const go: string[] = [];
+                    const go: Admitted[] = [];
                     for (const q of steer) {
-                        const admitted = admit ? await admit(q.text) : "go";
-                        if (admitted === "stopped") return [];
-                        (admitted === "blocked" ? blocked : go).push(q.text);
+                        const a = admit ? await admit(q.text) : { text: q.text, admission: "go" as const };
+                        if (a.admission === "stopped") return [];
+                        if (a.admission === "blocked") blocked.push(q.text);
+                        else go.push(a);
                     }
                     take((q) => steer.includes(q));
                     return go;
@@ -1017,6 +1019,46 @@ describe("Claude Code's background work (live test findings)", () => {
             expect(notices(a.events)).toContainEqual(expect.stringMatching(/^warn: Prompt blocked by hook: .*no forbidden words/));
             expect(q.blocked).toEqual(["say forbidden things"]);
             expect(q.items).toEqual([]);
+        });
+
+        test("during a step, stopped (a served tool's stop) while a steer message's hooks run: it isn't taken, and stays queued", async () => {
+            process.env.FAKE_SCENARIO = "steering";
+            const settings = { hooks: { UserPromptSubmit: [{ command: "echo branch is main" }] } };
+            const q = queue([{ text: "steer now", mode: "steer" }]);
+            let agent: any;
+            const a = await makeAgent({
+                provider: "claude-code",
+                settings,
+                drainQueued: (record, admit) => q.drainQueued(record, admit && (async (text) => (agent.stopServedTurn?.(), admit(text)))),
+                drainWaiting: q.drainWaiting,
+            });
+            agent = a.agent;
+            await a.run("start");
+            expect(q.items.map((x) => x.text)).toEqual(["steer now"]);
+            expect(JSON.stringify(received())).not.toContain("steer now");
+            expect(JSON.stringify(a.session.messages)).not.toContain("steer now");
+        });
+
+        test("during a step, stopped once a steer message is taken: the next turn is told of it rather than it vanishing", async () => {
+            process.env.FAKE_SCENARIO = "steering";
+            const settings = { hooks: { UserPromptSubmit: [{ command: "echo branch is main" }] } };
+            const q = queue([{ text: "steer now", mode: "steer" }]);
+            let agent: any;
+            const a = await makeAgent({
+                provider: "claude-code",
+                settings,
+                drainQueued: async (record, admit) => {
+                    const taken = await q.drainQueued(record, admit);
+                    if (taken.length) agent.stopServedTurn?.();
+                    return taken;
+                },
+                drainWaiting: q.drainWaiting,
+            });
+            agent = a.agent;
+            await a.run("start");
+            expect(q.items).toEqual([]);
+            expect(JSON.stringify(received())).not.toContain("steer now");
+            expect(JSON.stringify(a.session.messages.at(-1))).toContain("your turn ended before it reached you:\\nsteer now");
         });
     });
 
