@@ -714,3 +714,39 @@ test("review #295 P1-3: a second Esc while the first one's stop is under way han
         await engine.stop();
     }
 });
+
+test("final review, blocker 1: Esc doesn't send at once a queued message naming an MCP resource (it would go without it)", async () => {
+    const { engine, c, id, rt } = await session();
+    try {
+        const sentNow: string[] = [];
+        let turns = 0;
+        const backend = {
+            agentBackend: true as const,
+            setMode() {},
+            listModels: async () => [],
+            stream: async () => {
+                throw new Error("not used");
+            },
+            compact: async () => ({ reason: "done" as const, text: "", actions: [] }),
+            runTurn: async (t: BackendTurn) => {
+                turns++;
+                if (turns === 1 && !t.signal.aborted) await new Promise<void>((r) => t.signal.addEventListener("abort", () => r(), { once: true }));
+                return { reason: t.signal.aborted ? ("aborted" as const) : ("done" as const), text: "ok", actions: [] };
+            },
+            sendNow: (_key: string, text: string) => (sentNow.push(text), true),
+        };
+        // A configured MCP server named "photos".
+        (rt as any).ws.mcp.servers.set("photos", { status: "connected" });
+        rt.agent!.setModel(backendModel("fake-cli", "x"), backend as never);
+        await engine.handle(c, "session.send", { id, text: "go" });
+        await until(() => rt.busy && turns === 1);
+        await engine.handle(c, "session.send", { id, text: "analyze @photos:resource://diagram" });
+        await engine.handle(c, "session.interrupt", { id });
+        await until(() => !rt.busy);
+        expect(sentNow).toEqual([]);
+        expect((sent.get(c) ?? []).some((e) => e.type === "draft" && (e as { text?: string }).text?.includes("@photos:resource://diagram"))).toBe(true);
+    } finally {
+        (rt as any).ws.mcp.servers.delete("photos");
+        await engine.stop();
+    }
+});

@@ -46,7 +46,7 @@ import { account } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
 import { continuationGroups, modelRef, parseModelRef, textOf, toolCallsOf, assistantText, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
 import { expandMentions } from "../ui/mentions";
-import { expandMcpMentions } from "../mcp/mentions";
+import { expandMcpMentions, findMcpMentions } from "../mcp/mentions";
 import type { McpAsker } from "../mcp/elicitation";
 import { notifyAfterMs } from "../ui/notify";
 import { displayPath } from "../util/files";
@@ -2834,7 +2834,10 @@ export class Runtime {
             // Esc with a message sent meanwhile: a backend that can sends it at once in place of the turn it stops
             // (Claude Code's send-now, which spares its background sub-agents); its turn comes back as the user's.
             // Only with the first Esc: once the stop is under way, nothing would send another.
-            const q = this.abort.signal.aborted ? undefined : this.queued.find((x) => !x.held && !isCommand(x) && !x.attachments?.length && x.text.trim());
+            // Not one naming an MCP resource (@server:uri): sent now, it would go as typed, without the resource,
+            // which only a prompt of the harness's attaches.
+            const servers = [...this.ws.mcp.servers.keys()];
+            const q = this.abort.signal.aborted ? undefined : this.queued.find((x) => !x.held && !isCommand(x) && !x.attachments?.length && x.text.trim() && !findMcpMentions(x.text, servers).length);
             if (q && this.agent?.sendNow(q.text)) {
                 this.queued = this.queued.filter((x) => x !== q);
                 this.queueUpdated();
