@@ -40,6 +40,7 @@ import { clientFor, defaultModelFrom, lookupModel, resolveModelInfo, reviewTarge
 import { costOf } from "../providers/pricing";
 import { isAgentBackend } from "../backends/types";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
+import { agentCli } from "../backends/defs";
 import { account } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
 import { modelRef, parseModelRef, textOf, toolCallsOf, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
@@ -60,7 +61,7 @@ import { gitChanges } from "./git-changes";
 import { sessionWorktree, sessionWorktrees } from "./session-worktrees";
 import { gitPublishInfo, gitPublish, gitPrState } from "./git-publish";
 import { COMMIT_MESSAGE_SYSTEM, gitCommit, gitCommitPrompt } from "./git-commit";
-import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, isPrompt, runsAgent, promptKey, promptText, readSegments, replay, resultPatch, shownStep, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
+import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, isPrompt, runsAgent, promptKey, promptText, readSegments, replay, resultPatch, shownStep, STEERING, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
 import { TurnSnapshots } from "../agent/turn-snapshots";
 import { IdleCompactTimer } from "../agent/idle-compact";
 import type {
@@ -120,9 +121,12 @@ interface Queued {
     held?: boolean;
 }
 
-/** A message the running turn can take: text only (images, files, commands and `!commands` get a turn of their own), read as dispatch reads it. */
-function steerable(q: Queued): boolean {
-    if (q.attachments?.length) return false;
+/**
+ * A message the running turn can take, read as dispatch reads it: not a command or `!command` (those get a turn
+ * of their own), and with images or files only when what runs the turn can take them mid-turn (`attachments`).
+ */
+function steerable(q: Queued, attachments: boolean): boolean {
+    if (q.attachments?.length && !attachments) return false;
     if (q.literal) return true;
     const t = q.text.trim();
     return !t.startsWith("!") && (!t.startsWith("/") || t.startsWith("//"));
@@ -544,6 +548,12 @@ export class Runtime {
     /** session.schedule: one of the composer's schedule buttons. */
     scheduleAction(scheduleId: string, action: ScheduleAction): boolean {
         return Boolean(this.schedules.act(scheduleId, action));
+    }
+
+    /** Whether a message steering the running turn can carry images and files: API models' can, an agent CLI's if it takes them mid-turn. */
+    private steersAttachments(): boolean {
+        const provider = this.agent?.model.provider ?? this.model?.provider ?? "";
+        return getProvider(provider)?.kind !== "agent" || Boolean(agentCli(provider)?.caps.steersAttachments);
     }
 
     /** Claude Code or Codex: an agent backend runs this session's turns. */
@@ -2091,9 +2101,9 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Prompts
 
-    private drainQueued(record?: () => void, admit?: (text: string) => Promise<Admitted>): string[] | Promise<Admitted[]> {
-        // Messages to steer with; queued ones, held ones and those with images or files wait for their own turn.
-        const steering = () => this.queued.filter((q) => q.mode === "steer" && !q.held && steerable(q));
+    private drainQueued(record?: () => void, admit?: (text: string) => Promise<Admitted>): (string | Admitted)[] | Promise<Admitted[]> {
+        // Messages to steer with; queued ones, held ones, commands, and those with images or files where the turn can't take them wait for their own turn.
+        const steering = () => this.queued.filter((q) => q.mode === "steer" && !q.held && steerable(q, this.steersAttachments()));
         const take = steering();
         if (!take.length) return [];
         return admit ? this.admitQueued(take, admit, steering, record) : this.steerWith(take, record);
@@ -2117,25 +2127,28 @@ export class Runtime {
         if (back.length) {
             this.queued = this.queued.filter((q) => !back.includes(q));
             this.queueUpdated();
-            this.engine.draft(this, back.map((q) => q.text).join("\n\n"));
+            this.engine.draft(this, back.map((q) => q.text).join("\n\n"), back.flatMap((q) => q.attachments ?? []));
         }
         // One the user took out or held meanwhile doesn't go.
         const still = steering();
         const go = take.filter((q) => admitted.has(q) && still.includes(q));
         this.steerWith(go, record);
-        // Each with what its own hooks added (two alike are still two).
-        return go.map((q) => admitted.get(q)!);
+        // Each with what its own hooks added (two alike are still two), and what's attached to it.
+        return go.map((q) => ({ ...admitted.get(q)!, ...(q.attachments?.length ? { attachments: q.attachments } : {}) }));
     }
 
-    private steerWith(take: Queued[], record?: () => void): string[] {
+    /** Taken out of the queue to steer with: each one's text, or with what's attached, the text and that (its hooks ran already, or there are none). */
+    private steerWith(take: Queued[], record?: () => void): (string | Admitted)[] {
         if (!take.length) return [];
         this.queued = this.queued.filter((q) => !take.includes(q));
         this.queueUpdated();
-        const texts = take.map((q) => q.text);
+        const attachments = take.flatMap((q) => q.attachments ?? []);
         // What the agent CLI said before them goes first, so their prompt's place in the session is where it lands.
         record?.();
-        this.drainedTurn(texts.join("\n\n"));
-        return texts;
+        this.drainedTurn(take.map((q) => q.text).filter((t) => t.trim()).join("\n\n"), attachments);
+        // Prepared as a sent prompt's are: the user hears what the model may not take (said in their turn).
+        this.attachmentWarnings(attachments, (text, level) => this.notice(text, level));
+        return take.map((q) => (q.attachments?.length ? { text: q.text, admission: "go" as const, attachments: q.attachments } : q.text));
     }
 
     /**
@@ -2236,7 +2249,7 @@ export class Runtime {
             const q: Queued = { id: ++this.queueSeq, text, attachments, literal: literal || undefined, mode: mode ?? followUpDefault(this.settings().followUpBehavior) };
             this.queued.push(q);
             this.queueUpdated();
-            if (q.mode === "steer" && steerable(q)) this.agent?.queueChanged();
+            if (q.mode === "steer" && steerable(q, this.steersAttachments())) this.agent?.queueChanged();
             // Back before an idle compaction is done: it stops, and this runs on the cache that's still warm.
             if (this.idleCompacting) this.abort?.abort();
             return { queued: true };
@@ -2485,12 +2498,17 @@ export class Runtime {
         for (const n of notices) say(n, "warn");
         if (attached.length) say(`Attached ${attached.join(", ")}`, "info");
         if (opts.attachments?.length) {
-            if (this.model?.supportsImages === false && opts.attachments.some((a) => a.type === "image")) say(`${this.model.name ?? this.model.id} may not accept images.`, "warn");
-            // Checked when it was sent; the model may have changed while it waited in the queue.
-            if (this.model && !readsPdf(this.model) && opts.attachments.some((a) => a.type === "file" && a.kind === "pdf")) say(`${this.model.name ?? this.model.id} can't read PDFs: it's told one was attached, not what's in it.`, "warn");
+            this.attachmentWarnings(opts.attachments, say);
             parts.push(...opts.attachments);
         }
         return parts;
+    }
+
+    /** What the session's model may not take of what's attached to a prompt, or to a message steering a turn. */
+    private attachmentWarnings(attachments: readonly AttachedPart[], say: (text: string, level: "info" | "warn") => void) {
+        if (this.model?.supportsImages === false && attachments.some((a) => a.type === "image")) say(`${this.model.name ?? this.model.id} may not accept images.`, "warn");
+        // Checked when it was sent; the model may have changed while it waited in the queue.
+        if (this.model && !readsPdf(this.model) && attachments.some((a) => a.type === "file" && a.kind === "pdf")) say(`${this.model.name ?? this.model.id} can't read PDFs: it's told one was attached, not what's in it.`, "warn");
     }
 
     /** The queue ran dry without starting a turn: the goal goes on from the turn that ended before it (or pauses, if it was stopped). */
@@ -2553,7 +2571,7 @@ export class Runtime {
             queued: this.queued.map((q) => q.text),
             queueIds: this.queued.map((q) => q.id),
             queuedAttached: this.queued.map((q) => attachedLabel(q.attachments)),
-            queuedModes: this.queued.map((q): QueuedMode => (q.held ? "held" : !steerable(q) ? "turn" : q.mode)),
+            queuedModes: this.queued.map((q): QueuedMode => (q.held ? "held" : !steerable(q, this.steersAttachments()) ? "turn" : q.mode)),
         };
     }
 
@@ -2583,8 +2601,8 @@ export class Runtime {
             void this.dispatch(q.text, q.attachments, q.literal).catch((e) => this.notice(redact((e as Error).message), "error"));
             return { sent: true, started: true };
         }
-        if (!steerable(q)) {
-            if (!q.held) throw new RpcError("Messages with images or files, and commands, can't join a running turn: they run after it.", "not_steerable");
+        if (!steerable(q, this.steersAttachments())) {
+            if (!q.held) throw new RpcError(isCommand(q) || q.text.trim().startsWith("!") ? "Commands can't join a running turn: they run after it." : `${this.model?.name ?? "This model"} can't take images or files in a running turn: this runs after it.`, "not_steerable");
             q.held = undefined;
             this.queueUpdated();
             return { sent: true };
@@ -3122,6 +3140,10 @@ export class Runtime {
                 const kind = msg.meta?.kind ?? "prompt";
                 if (kind === "tool_results") {
                     for (const p of msg.content) if (p.type === "tool_result") out.push(`<details><summary>Result: ${p.toolName}${p.isError ? " (error)" : ""}</summary>`, "", "```", p.content.slice(0, 4000), "```", "</details>", "");
+                    // A message the user steered with rides along with the results, with what was attached to it.
+                    const steered = msg.content.flatMap((p) => (p.type === "text" && p.text.startsWith(STEERING) ? [p.text.slice(STEERING.length).trim()] : []));
+                    const note = steered.length ? attachmentsNote(msg.content) : "";
+                    if (steered.length) out.push("## User", "", ...steered, ...(note ? ["", `*${note}*`] : []), "");
                     continue;
                 }
                 const t = promptText(msg);

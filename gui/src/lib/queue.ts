@@ -42,12 +42,12 @@ export function queueRow(mode: QueuedMode | undefined, busy: boolean): QueueRowI
         case "queue":
             return { hint: "After this turn", detail: "Runs as a turn of its own once this one ends, or at once while the turn only waits on background work", action: busy ? STEER : SEND_NOW };
         case "turn":
-            return { hint: "After this turn", detail: "Images, files and commands can't join a running turn: this runs once it ends. While the turn only waits on background work, images and files go at once; commands run after the background work ends", ...(busy ? {} : { action: SEND_NOW }) };
+            return { hint: "After this turn", detail: "Commands, and images or files this model can't take in a running turn, don't join it: this runs once it ends. While the turn only waits on background work, images and files go at once; commands run after the background work ends", ...(busy ? {} : { action: SEND_NOW }) };
         case "held":
             return {
                 hint: "Held",
                 detail: "Not sent before Harness restarted. It waits for you: send it, edit it or remove it",
-                action: busy ? { label: "Steer", title: "Add to the current turn at its next step (with images, files or a command, it runs right after the turn)" } : { label: "Send now", title: "Send now: run it as a new turn" },
+                action: busy ? { label: "Steer", title: "Add to the current turn at its next step (a command runs right after the turn)" } : { label: "Send now", title: "Send now: run it as a new turn" },
             };
     }
 }

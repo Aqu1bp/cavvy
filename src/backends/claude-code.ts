@@ -756,7 +756,14 @@ class ClaudeTurn {
         // The user's messages as they typed them; a watch's events (others' words) apart, read as written.
         const typed = queued.filter((t) => !this.host.fromWake?.(t));
         const woke = queued.filter((t) => this.host.fromWake?.(t));
-        if (typed.length) this.sendUser([{ type: "text", text: typed.join("\n\n") }]);
+        // Their images and PDFs first, as a prompt's (runTurn); the text last.
+        const media = typed.flatMap((t) => {
+            const m = this.host.mediaOf?.(t);
+            return m ? mediaBlocks(m.images, m.documents) : [];
+        });
+        // One with only images or files has no text block (the API refuses an empty one).
+        const words = typed.filter((t) => t).join("\n\n");
+        if (typed.length) this.sendUser([...media, ...(words ? [{ type: "text", text: words }] : [])]);
         if (woke.length) this.sendUser([{ type: "text", text: woke.join("\n\n") }], true);
         return true;
     }

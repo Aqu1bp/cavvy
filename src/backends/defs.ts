@@ -14,6 +14,8 @@ import type { CliInfo } from "./cli";
 export interface CliCapabilities {
     /** How a message sent mid-turn reaches it: folded in between tool rounds (Claude Code's stdin), at once (Codex's turn/steer), or not at all. */
     steering: "between-tool-rounds" | "immediate" | "none";
+    /** A message steering a running turn can carry images (and files, as the prompt carries them); otherwise one with any waits for its own turn. */
+    steersAttachments: boolean;
     /** It runs work that outlives a turn (background shells, sub-agents, monitors). */
     backgroundTasks: boolean;
     /** One background task can be stopped on its own. */
@@ -123,6 +125,9 @@ const CLAUDE_CODE: AgentCliDef = {
     delegation: { providers: ["claude-code", "anthropic"], vendorPrefix: "anthropic/", models: "Claude models", own: "your own Agent tool" },
     caps: {
         steering: "between-tool-rounds",
+        // Mid-turn user messages on stdin take the same content blocks as a prompt (images and documents first).
+        // Not yet checked live that Claude Code hands their images to the model (see the PR's live checks).
+        steersAttachments: true,
         backgroundTasks: true,
         stopTask: true,
         // background_tasks {tool_use_id} exists in 2.1.304; nothing sends it yet.
@@ -175,6 +180,8 @@ const CODEX: AgentCliDef = {
     delegation: { providers: ["codex", "openai"], vendorPrefix: "openai/", models: "OpenAI models", own: "your own sub-agents" },
     caps: {
         steering: "immediate",
+        // turn/steer takes the same UserInput items as turn/start, images included (codex app-server generate-ts, 0.163).
+        steersAttachments: true,
         backgroundTasks: true,
         // thread/backgroundTerminals/terminate and turn/interrupt on a sub-agent's thread; neither is sent yet.
         stopTask: false,

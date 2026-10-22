@@ -9,11 +9,13 @@
 //   - an interrupted (partial) model response is discarded, never stored
 
 import type {
+    AttachedPart,
     AssistantMessage,
     ChatRequest,
     ImagePart,
     Message,
     ModelInfo,
+    PdfPart,
     ProviderClient,
     StreamEvent,
     TextPart,
@@ -173,9 +175,10 @@ export interface AgentHost {
      * hook blocked it, and the user is told) means it doesn't go and goes back to the user, "stopped" (the turn
      * was interrupted, or the backend can't take it) that none go and they stay queued, "go" that it goes: the
      * host hands back what admit gave for each that goes, in order. Those handed over without it (as strings)
-     * have their hooks run after.
+     * have their hooks run after; one handed over with what's attached (an Admitted that goes) had them run
+     * already, or there are none.
      */
-    drainQueued?(record?: () => void, admit?: (text: string) => Promise<Admitted>): string[] | Promise<string[] | Admitted[]>;
+    drainQueued?(record?: () => void, admit?: (text: string) => Promise<Admitted>): (string | Admitted)[] | Promise<(string | Admitted)[]>;
     /**
      * For a backend's CLI that's between its turns, waiting only on its background work: the first queued
      * message that can go now, as a prompt of its own, whatever its mode, prepared as a sent one is (its
@@ -196,6 +199,8 @@ export interface Admitted {
     text: string;
     admission: Admission;
     context?: string;
+    /** Images and files sent with it: they go into the turn with its text, as a prompt's do. */
+    attachments?: AttachedPart[];
 }
 
 export interface Helpers {
@@ -274,6 +279,11 @@ const MAX_STALL_RETRIES = 2;
 const TOOL_INTERRUPT = "[Request interrupted by user for tool use]";
 /** Starts the text of a message the user sent while tools were running. */
 const STEERING = "The user sent this message while you were working:\n";
+
+/** Messages steered with, as one text: one with only images or files adds none. */
+function joinSteered(texts: readonly string[], sep: string): string {
+    return texts.filter((t) => t.trim()).join(sep);
+}
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -763,8 +773,8 @@ export class Agent {
                 // Stopped while their hooks ran: they stay queued.
                 if (signal.aborted && !queued.length) return this.interrupted(false);
                 if (queued.length) {
-                    await this.checkpoint(queued.join("\n"), false, (checkpoint) => {
-                        this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }, ...steer.context.map(reminder)], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
+                    await this.checkpoint(joinSteered(queued, "\n"), false, (checkpoint) => {
+                        this.session.push({ role: "user", content: [{ type: "text", text: joinSteered(queued, "\n\n") }, ...steer.attachments, ...steer.context.map(reminder)], meta: { kind: "prompt", display: joinSteered(queued, "\n"), checkpoint } });
                     });
                     if (this.cutOff) return "aborted";
                     continue;
@@ -818,10 +828,10 @@ export class Agent {
                 const queued = steer.texts;
                 // Not into a round the user denied: that ends the turn, and the wake would go unanswered.
                 const woke = denied ? undefined : this.takeWakes();
-                if (queued.length) extra.push({ type: "text", text: `${STEERING}${queued.join("\n\n")}` }, ...steer.context.map(reminder));
+                if (queued.length) extra.push({ type: "text", text: `${STEERING}${joinSteered(queued, "\n\n")}` }, ...steer.attachments, ...steer.context.map(reminder));
                 if (woke) extra.push(reminder(woke));
                 // Steering's checkpoint records the results: everything to go with them is in by then.
-                if (queued.length) await this.checkpoint(queued.join("\n"), true, record);
+                if (queued.length) await this.checkpoint(joinSteered(queued, "\n"), true, record);
             }
             if (this.cutOff) return "aborted";
             // Steering saved the completed results before its capture: an interrupt is a new message.
@@ -894,7 +904,7 @@ export class Agent {
      * UserPromptSubmit hooks as a prompt sent on its own is (runInner): one a hook blocks doesn't join the
      * turn, and what they add goes with them. `live`: whether the backend can still take them.
      */
-    private async drainSteering(signal: AbortSignal, record?: () => void, live?: () => boolean): Promise<{ texts: string[]; context: string[] }> {
+    private async drainSteering(signal: AbortSignal, record?: () => void, live?: () => boolean): Promise<{ texts: string[]; context: string[]; attachments: AttachedPart[] }> {
         const hooked = !this.o.isSubagent && Boolean(this.hookSettings().hooks?.UserPromptSubmit?.length);
         const stopped = () => this.cutOff || signal.aborted || live?.() === false;
         const admit = async (text: string): Promise<Admitted> => {
@@ -905,12 +915,14 @@ export class Agent {
         const drained = (await this.o.host.drainQueued?.(record, hooked ? admit : undefined)) ?? [];
         const texts: string[] = [];
         const context: string[] = [];
+        const attachments: AttachedPart[] = [];
         const lost: string[] = [];
         for (const d of drained) {
             if (typeof d !== "string") {
                 if (d.admission !== "go") continue;
                 texts.push(d.text);
                 if (d.context) context.push(d.context);
+                if (d.attachments) attachments.push(...d.attachments);
                 continue;
             }
             // From a host that hands them over without running them (a script's steering): they run now. Those
@@ -927,7 +939,7 @@ export class Agent {
             }
         }
         if (lost.length) this.emit({ type: "notice", level: "warn", message: `Not sent (stopped while its UserPromptSubmit hooks ran): ${lost.join("\n\n")}` });
-        return { texts, context };
+        return { texts, context, attachments };
     }
 
     private async checkpoint(prompt: string, snapshotOnly = false, record?: (checkpoint: number | undefined) => void): Promise<number | undefined> {
@@ -1648,6 +1660,14 @@ export class Agent {
     }
 
     private backendStopReminders: string[] = [];
+    /** The images and PDFs of messages to steer with that the backend never received: they go with its next turn's prompt. */
+    private backendStopMedia: { images: ImagePart[]; documents: PdfPart[] } = { images: [], documents: [] };
+
+    private takeStopMedia(): { images: ImagePart[]; documents: PdfPart[] } {
+        const m = this.backendStopMedia;
+        this.backendStopMedia = { images: [], documents: [] };
+        return m;
+    }
 
     /** How a backend runs the harness's hooks: whole events (Codex's items), or one handler Claude Code calls back for. */
     private backendHooks(signal: AbortSignal): Pick<BackendHost, "hooks" | "hookHandler"> {
@@ -1686,6 +1706,8 @@ export class Agent {
         const wakeTexts = new Set<string>();
         /** What drainQueued handed over from the user, to the words they typed (what hooks added follows). */
         const typed = new Map<string, string>();
+        /** The images and PDFs of what drainQueued handed over from the user, which the backend sends beside its text. */
+        const steeredMedia = new Map<string, { images: ImagePart[]; documents: PdfPart[] }>();
         const host: BackendHost = {
             ...this.backendHooks(signal),
             emit: (e) => this.emitFromBackend(e),
@@ -1728,11 +1750,20 @@ export class Agent {
             undelivered: (texts) => {
                 const news = texts.filter((t) => wakeTexts.has(t));
                 const typed = texts.filter((t) => !wakeTexts.has(t));
-                if (typed.length) this.backendStopReminders.push(`The user sent this while you were working, but your turn ended before it reached you:\n${typed.join("\n\n")}`);
+                // What was attached to them goes with the next turn's prompt.
+                const media = typed.flatMap((t) => (steeredMedia.has(t) ? [steeredMedia.get(t)!] : []));
+                for (const m of media) {
+                    this.backendStopMedia.images.push(...m.images);
+                    this.backendStopMedia.documents.push(...m.documents);
+                }
+                const count = media.reduce((n, m) => n + m.images.length + m.documents.length, 0);
+                const attachedNote = count ? ` (with ${count === 1 ? "an attachment" : `${count} attachments`}, sent with this message)` : "";
+                if (typed.length) this.backendStopReminders.push(`The user sent this while you were working${attachedNote}, but your turn ended before it reached you:\n${typed.join("\n\n")}`);
                 if (news.length) this.backendStopReminders.push(`This arrived while you were working, but your turn ended before it reached you:\n${news.join("\n\n")}`);
             },
             fromWake: (text) => wakeTexts.has(text),
             requestOf: (text) => typed.get(text),
+            mediaOf: (text) => steeredMedia.get(text),
             drainQueued: async (progress, live) => {
                 if (this.cutOff) return [];
                 // What the backend said before them goes first: the host places their turn after it.
@@ -1750,13 +1781,15 @@ export class Agent {
                 record();
                 const out: string[] = [];
                 if (queued.length) {
-                    await this.checkpoint(queued.join("\n"), false, (checkpoint) => {
-                        const m = this.session.push({ role: "user", content: [{ type: "text", text: queued.join("\n\n") }, ...steer.context.map(reminder)], meta: { kind: "prompt", display: queued.join("\n"), checkpoint } });
-                        // With what hooks add after it, apart, as a prompt sent on its own is (forBackend).
-                        const text = forBackend(m.content, false).text;
+                    await this.checkpoint(joinSteered(queued, "\n"), false, (checkpoint) => {
+                        const m = this.session.push({ role: "user", content: [{ type: "text", text: joinSteered(queued, "\n\n") }, ...steer.attachments, ...steer.context.map(reminder)], meta: { kind: "prompt", display: joinSteered(queued, "\n"), checkpoint } });
+                        // With what hooks add after it, apart, as a prompt sent on its own is (forBackend); its
+                        // images and PDFs (for a backend that reads them) apart too, the rest of what's attached as text.
+                        const { text, images, documents } = forBackend(m.content, readsPdf(this.model));
+                        if (images.length || documents.length) steeredMedia.set(text, { images, documents });
                         // The stored (redacted) text, so the request stays a prefix of what the backend gets.
                         const first = m.content[0];
-                        typed.set(text, first?.type === "text" ? first.text : queued.join("\n\n"));
+                        typed.set(text, first?.type === "text" ? first.text : joinSteered(queued, "\n\n"));
                         out.push(text);
                     });
                 }
@@ -1833,8 +1866,10 @@ export class Agent {
         const goalCommand = GOAL_COMMAND.test(text);
         const toSend = (r?: { synced: number }) =>
             goalCommand && prompt === text ? { prompt, goalContext: this.backendPrompt("", promptIndex, r).trim() || undefined } : { prompt: this.backendPrompt(prompt, promptIndex, r) };
-        let promptImages = images;
-        let promptDocuments = documents;
+        // What was attached to messages the backend's last turn never took goes first.
+        const carried = this.takeStopMedia();
+        let promptImages = [...carried.images, ...images];
+        let promptDocuments = [...carried.documents, ...documents];
         while (true) {
             const resume = this.backendResume(provider, folder);
             this.emit({ type: "request_start" });
@@ -1892,8 +1927,9 @@ export class Agent {
                 if (h?.blocked) {
                     stopRounds++;
                     prompt = reminder([`A ${stopEvent} hook asked you to keep going:\n${redact(h.blocked)}`, ...this.backendStopReminders.splice(0)].join("\n\n")).text;
-                    promptImages = [];
-                    promptDocuments = [];
+                    const carried = this.takeStopMedia();
+                    promptImages = carried.images;
+                    promptDocuments = carried.documents;
                     this.session.push({ role: "user", content: [{ type: "text", text: prompt }], meta: { kind: "reminder" } });
                     promptIndex = this.session.messages.length - 1;
                     this.syncBackend(provider, 1);

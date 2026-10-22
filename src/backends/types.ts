@@ -127,6 +127,8 @@ export interface BackendHost {
     fromWake?(text: string): boolean;
     /** The words the user typed of a drained message of theirs, which it starts with: what a hook added follows. */
     requestOf?(text: string): string | undefined;
+    /** The images and PDFs (for a backend that reads them) attached to a drained message of the user's, sent beside its text. */
+    mediaOf?(text: string): { images: ImagePart[]; documents: PdfPart[] } | undefined;
     /** Called when a message to steer with arrives mid-turn, for a backend that can take it at once (Codex). Returns the unsubscribe. */
     onQueued?(listener: () => void): () => void;
     /**

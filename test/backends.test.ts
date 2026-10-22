@@ -3154,6 +3154,74 @@ describe("Codex mid-turn steering", () => {
         expect(a.session.messages[2]!.meta?.kind).toBe("prompt");
     });
 
+    const PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const withImage = (text: string) => ({ text, admission: "go" as const, attachments: [{ type: "image" as const, mediaType: "image/png", data: PIXEL }] });
+    const imageItem = { type: "image", url: `data:image/png;base64,${PIXEL}` };
+
+    test("steered with an image while the turn runs: turn/steer carries it (as turn/start would), and the session keeps it", async () => {
+        process.env.FAKE_SCENARIO = "slow";
+        process.env.FAKE_STEER_WAKES = "1";
+        const host: ReturnType<typeof withImage>[] = [];
+        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
+        const done = a.run("start");
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        await Bun.sleep(50);
+        host.push(withImage("look at this"));
+        a.agent.queueChanged();
+        expect(await done).toBe("done");
+        expect(steers()).toHaveLength(1);
+        expect(steers()[0]!.input).toEqual([{ type: "text", text: "look at this", text_elements: [] }, imageItem]);
+        expect(turnStarts()).toHaveLength(1);
+        const m = a.session.messages.find((x) => x.role === "user" && JSON.stringify(x.content).includes("look at this"))!;
+        expect(m.content.filter((p) => p.type === "image")).toEqual([{ type: "image", mediaType: "image/png", data: PIXEL }]);
+        expect(m.meta?.kind).toBe("prompt");
+    });
+
+    test("a steer with an image Codex refuses (its turn just ended) starts the next turn with the image", async () => {
+        process.env.FAKE_SCENARIO = "steps";
+        process.env.FAKE_STEER_FAIL = "1";
+        process.env.FAKE_SLOW_TURN_START = "200";
+        const host: ReturnType<typeof withImage>[] = [];
+        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
+        const done = a.run("start");
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        host.push(withImage("late words"));
+        a.agent.queueChanged();
+        expect(await done).toBe("done");
+        expect(steers()).toHaveLength(1);
+        expect(steers()[0]!.input).toContainEqual(imageItem);
+        expect(turnStarts()).toHaveLength(2);
+        expect(turnStarts()[1].input).toContainEqual(imageItem);
+        expect(turnStarts()[1].input.find((i: any) => i.type === "text").text).toEndWith("late words");
+    });
+
+    test("a steer with an image refused before the turn was stopped: the thread's next turn gets the image too", async () => {
+        process.env.FAKE_SCENARIO = "slow";
+        process.env.FAKE_STEER_FAIL = "1";
+        const host: ReturnType<typeof withImage>[] = [];
+        const ac = new AbortController();
+        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
+        const done = a.run("start", ac.signal);
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        await Bun.sleep(50);
+        host.push(withImage("refused words"));
+        a.agent.queueChanged();
+        await until(() => steers().length === 1);
+        await Bun.sleep(20);
+        ac.abort();
+        expect(await done).toBe("aborted");
+        delete process.env.FAKE_SCENARIO;
+        expect(await a.run("next")).toBe("done");
+        expect(turnStarts()).toHaveLength(2);
+        expect(turnStarts()[1].input).toContainEqual(imageItem);
+        const text = turnStarts()[1].input.find((i: any) => i.type === "text").text;
+        expect(text).toContain("with an attachment, sent with this message");
+        expect(text).toContain("refused words");
+        // One turn later it's gone: it went once.
+        expect(await a.run("after")).toBe("done");
+        expect(turnStarts()[2].input).not.toContainEqual(imageItem);
+    });
+
     test("a wake while the turn runs steers it at once, marked as the harness's and not as a prompt", async () => {
         process.env.FAKE_SCENARIO = "slow";
         process.env.FAKE_STEER_WAKES = "1";
