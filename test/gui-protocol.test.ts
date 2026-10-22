@@ -634,6 +634,32 @@ describe("replay", () => {
             ["new prompt", false, 1],
         ]);
     });
+
+    test("a prompt a compaction kept is shown once, where it went on: rewindable, with its snapshot and times", () => {
+        const kept = user("look at this", "prompt", { meta: { kind: "prompt", checkpoint: 7 } } as Partial<Message>);
+        const summary = user("Summary.", "prompt", { meta: { kind: "summary" } } as Partial<Message>);
+        const answer: Message = { role: "assistant", content: [{ type: "text", text: "Looked." }] };
+        const segs = [{ messages: [user("old prompt"), { role: "assistant", content: [{ type: "text", text: "old answer" }] } as Message, kept] }, { summary: "Summary.", kept: true, messages: [summary, kept, answer] }];
+        // A log written before the prompt moved: its turn's record is where it was sent.
+        const ui = new UiLog(join(tempDir(), "kept.jsonl"), "kept", false);
+        ui.write({ t: "turn", seg: 0, index: 2, at: 10 });
+        ui.write({ t: "turn", seg: 0, index: 2, at: 10, end: 20, status: "done" });
+        let n = 0;
+        const show = (current: Message[]) => replay({ segments: segs, current, ui, meta: (c) => ({ title: c.name }), newId: () => `k${++n}` });
+        const turns = show(segs[1]!.messages);
+        expect(turns.map((t) => [t.prompt?.text ?? t.blocks[0]?.t, Boolean(t.archived), t.prompt?.index, t.snapshotId, t.startedAt, t.endedAt])).toEqual([
+            ["old prompt", true, undefined, undefined, undefined, undefined],
+            ["compact", false, undefined, undefined, undefined, undefined],
+            ["look at this", false, 1, 7, 10, 20],
+        ]);
+        expect(turns.at(-1)!.pos).toEqual({ seg: 1, index: 1 });
+        expect(turns.at(-1)!.blocks.map((b) => (b.t === "text" ? b.text : b.t))).toEqual(["Looked."]);
+        // Its record where it went on (the server writes one when it moves) comes first.
+        ui.write({ t: "turn", seg: 1, index: 1, at: 11 });
+        expect(show(segs[1]!.messages).at(-1)!.startedAt).toBe(11);
+        // Rewound to it: it's gone, not left behind in the archive.
+        expect(show([summary]).filter((t) => t.prompt?.text === "look at this")).toEqual([]);
+    });
 });
 
 describe("sessions across projects", () => {

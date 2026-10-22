@@ -4,7 +4,7 @@
 
 import { dirname, resolve } from "path";
 import { existsSync, statSync } from "fs";
-import type { Agent, AgentEvent, PermissionRequest, PermissionResponse, TurnEndReason } from "../agent/agent";
+import type { Admitted, Agent, AgentEvent, PermissionRequest, PermissionResponse, TurnEndReason } from "../agent/agent";
 import { findSession, listSessions } from "../agent/session";
 import { loadHarnessEnv, preloadKeys } from "../auth/credentials";
 import { harnessHome } from "../config/paths";
@@ -124,6 +124,19 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
     const pending: string[] = [];
     /** Messages for the running turn (steer()), taken between its steps. */
     const steering: string[] = [];
+    /** Those `steering` holds that their hooks let go; one they block is dropped (the hook's warning says so). */
+    const admitSteering = async (admit: (text: string) => Promise<Admitted>): Promise<Admitted[]> => {
+        const take = steering.slice();
+        const admitted: Admitted[] = [];
+        for (const text of take) {
+            const a = await admit(text);
+            if (a.admission === "stopped") return [];
+            admitted.push(a);
+        }
+        // Only steer() adds to it meanwhile, at the end.
+        steering.splice(0, take.length);
+        return admitted.filter((a) => a.admission === "go");
+    };
     let wake: (() => void) | undefined;
     const poke = () => {
         const w = wake;
@@ -293,7 +306,8 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
                         askQuestion: async () => undefined,
                         approvePlan: async () => ({ approved: false, feedback: "This run can't approve plans. Give the complete plan as your final answer." }),
                     },
-                    drainQueued: () => steering.splice(0),
+                    // Their UserPromptSubmit hooks run while they're still here: stopped meanwhile, they start the next turn.
+                    drainQueued: (_record, admit) => (admit ? admitSteering(admit) : steering.splice(0)),
                 },
             });
 

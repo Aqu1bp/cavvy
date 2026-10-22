@@ -68,6 +68,46 @@ describe("steer or queue", () => {
         await turn;
     });
 
+    // #222: their UserPromptSubmit hooks (the agent's admit) run while they're still queued.
+    test("one its hooks block comes back to the prompt, unprinted; the rest join the turn", async () => {
+        const { app, printed } = testApp();
+        const { end } = workingAgent(app);
+        const turn = app.submitText("first");
+        await Bun.sleep(10);
+        await app.submitText("say forbidden things");
+        await app.submitText("a fine one");
+        const queuedMeanwhile: string[][] = [];
+        const admit = async (text: string) => (queuedMeanwhile.push(queued(app).map(([t]: string[]) => t)), { text, admission: text.includes("forbidden") ? "blocked" : "go", context: "hook says hi" });
+        expect(await (app as any).drainQueued(admit)).toEqual([{ text: "a fine one", admission: "go", context: "hook says hi" }]);
+        expect(queuedMeanwhile).toEqual([["say forbidden things", "a fine one"], ["say forbidden things", "a fine one"]]);
+        expect(queued(app)).toEqual([]);
+        expect(app.editor.text).toBe("say forbidden things");
+        expect(printed.join("\n")).toContain("a fine one");
+        expect(printed.join("\n")).not.toContain("say forbidden things");
+        end();
+        await turn;
+    });
+
+    test("one its hooks block with something typed since goes to history instead, and the user is told; stopped meanwhile, they stay queued", async () => {
+        const { app, printed } = testApp();
+        const { end } = workingAgent(app);
+        const turn = app.submitText("first");
+        await Bun.sleep(10);
+        await app.submitText("say forbidden things");
+        expect(await (app as any).drainQueued(async (text: string) => ({ text, admission: "stopped" }))).toEqual([]);
+        expect(queued(app)).toEqual([["say forbidden things", "steer"]]);
+        app.editor.set("half typed");
+        expect(await (app as any).drainQueued(async (text: string) => ({ text, admission: "blocked" }))).toEqual([]);
+        expect(queued(app)).toEqual([]);
+        expect(app.editor.text).toBe("half typed");
+        expect(printed.join("\n")).toContain("the blocked message is in history (↑)");
+        app.editor.clear();
+        (app as any).handleEditorKey({ name: "up" });
+        expect(app.editor.text).toBe("say forbidden things");
+        end();
+        await turn;
+    });
+
     test("with followUpBehavior queue it waits for the turn's end, then runs as a turn of its own", async () => {
         const { app } = testApp({ settings: { followUpBehavior: "queue" } });
         const { agent, runs, end } = workingAgent(app);

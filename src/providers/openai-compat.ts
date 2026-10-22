@@ -7,6 +7,7 @@ import { resolveBaseUrl, customProviderModels } from "./registry";
 import { parseSse, stallError, stallTimer } from "./sse";
 import { fileAsText, fitRequest, frameName, providerReadsPdf } from "./files";
 import {
+    splitSystemPrompt,
     ProviderError,
     type AssistantContent,
     type AssistantMessage,
@@ -26,10 +27,22 @@ type Json = Record<string, any>;
 /** Gemini accepts this documented placeholder for tool calls it didn't produce. */
 const GEMINI_FOREIGN_SIGNATURE = "skip_thought_signature_validator";
 
+/** Permanent quota exhaustion, distinct from a rate limit that resets with time. */
+export function isUsageLimit(error: Json): boolean {
+    // Gemini and gateways can reuse billing language for quotas that reset.
+    if (/RetryInfo|Please retry in|quotaId[^,}]*Per(?:Minute|Day)/i.test(JSON.stringify(error))) return false;
+    return error.code === "insufficient_quota" || error.type === "insufficient_quota"
+        || /credit balance (?:is )?(?:too low|exhausted)|(?:out of|insufficient) credits/i.test(String(error.message ?? ""));
+}
+
+export const usageLimitHint = ". Usage limit / billing: check your plan and credit balance.";
+
 export function httpError(status: number, statusText: string, body: string, retryAfter: string | null, providerName: string, authHint = "Check the API key with /login."): ProviderError {
     let message = `${providerName} API error ${status} ${statusText}`;
+    let usageLimit = false;
     try {
         const j = JSON.parse(body);
+        usageLimit = isUsageLimit(j?.error ?? j ?? {});
         const m = j?.error?.message ?? j?.message ?? j?.detail ?? (Array.isArray(j) ? j[0]?.error?.message : undefined);
         if (m) message = `${providerName}: ${typeof m === "string" ? m : JSON.stringify(m)} (${status})`;
     } catch {
@@ -40,7 +53,8 @@ export function httpError(status: number, statusText: string, body: string, retr
     // A quota of 0 (Gemini's free tier for a model it doesn't include) never frees up: no use retrying.
     const noQuota = status === 429 && /\blimit:\s*0\b/.test(body);
     if (noQuota) message += ". Not retried: the quota for this model is 0 on this key's plan.";
-    const retryable = !noQuota && [408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524, 529].includes(status);
+    if (usageLimit) message += usageLimitHint;
+    const retryable = !usageLimit && !noQuota && [408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524, 529].includes(status);
     const ra = retryAfter ? Number(retryAfter) * 1000 || Date.parse(retryAfter) - Date.now() : undefined;
     return new ProviderError(message, status, retryable, ra && ra > 0 ? ra : undefined, body);
 }
@@ -80,6 +94,8 @@ export function toOpenAIMessages(system: string, messages: Message[], def: Provi
     const out: Json[] = [];
     const deepseek = usesDeepSeekDialect(def);
     if (system) out.push({ role: "system", content: system });
+    /** The last user message out, and its parts: one straight after it joins it. */
+    let lastUser: { m: Json; parts: Json[] } | undefined;
     for (const msg of messages) {
         if (msg.role === "user") {
             const extraImages: Json[] = [];
@@ -105,8 +121,12 @@ export function toOpenAIMessages(system: string, messages: Message[], def: Provi
             }
             if (extraImages.length) parts.unshift({ type: "text", text: "Images returned by the tool calls above:" }, ...extraImages);
             if (parts.length) {
-                const onlyText = parts.every((x) => x.type === "text");
-                out.push({ role: "user", content: onlyText ? parts.map((x) => x.text).join("\n\n") : parts });
+                // Consecutive user messages (a summary and the prompt it kept, a prompt after an interrupt) go as one, in
+                // order: chat templates that want roles to alternate (Mistral's, many local models') refuse two in a row.
+                if (lastUser && out[out.length - 1] === lastUser.m) lastUser.parts.push(...parts);
+                else out.push((lastUser = { m: { role: "user" }, parts }).m);
+                const all = lastUser.parts;
+                lastUser.m.content = all.every((x) => x.type === "text") ? all.map((x) => x.text).join("\n\n") : all;
             }
             continue;
         }
@@ -249,7 +269,9 @@ export class OpenAICompatProvider implements ProviderClient {
         const payload = fitRequest(req.messages, providerReadsPdf(def), (messages) => {
             const converted = toOpenAIMessages(req.system, messages, def);
             if (cacheClaude && req.cacheSystem && req.system) {
-                converted[0]!.content = [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }];
+                // The breakpoint goes before the session context (date, git), so sessions share the prefix.
+                const { shared, session } = splitSystemPrompt(req.system);
+                converted[0]!.content = [{ type: "text", text: shared, cache_control: { type: "ephemeral" } }, ...(session ? [{ type: "text", text: session }] : [])];
             }
             return JSON.stringify({ ...body, messages: converted });
         });
@@ -314,7 +336,8 @@ export class OpenAICompatProvider implements ProviderClient {
                 }
                 if (chunk.error) {
                     const code = Number(chunk.error.code) || undefined;
-                    throw new ProviderError(`${def.name}: ${chunk.error.message ?? JSON.stringify(chunk.error)}`, code, code === 429 || (code ?? 0) >= 500);
+                    const usageLimit = isUsageLimit(chunk.error);
+                    throw new ProviderError(`${def.name}: ${chunk.error.message ?? JSON.stringify(chunk.error)}${usageLimit ? usageLimitHint : ""}`, code, !usageLimit && (code === 429 || (code ?? 0) >= 500));
                 }
                 if (chunk.model) model = chunk.model;
                 const u = chunk.usage ?? chunk.x_groq?.usage;
