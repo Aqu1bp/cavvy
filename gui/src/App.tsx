@@ -71,14 +71,15 @@ function Disconnected() {
 
 /** A session: the conversation, and the composer floating over its end. (Its inspector is the sheet's other column.) */
 function SessionView(p: { handle: SessionHandle }) {
-    let stage: HTMLDivElement | undefined;
     let dock: HTMLDivElement | undefined;
+    // Unmeasured: the transcript's boxes have --dock-h's initial value (stage.css).
+    const [dockH, setDockH] = createSignal<number>();
     onMount(() => {
         // The transcript scrolls under the composer and keeps that much room at its end;
         // a floating inspector ends above it.
         const ro = new ResizeObserver(() => {
             const h = dock?.offsetHeight ?? 0;
-            stage?.style.setProperty("--dock-h", `${h}px`);
+            setDockH(h);
             setDockHeight(h);
         });
         if (dock) ro.observe(dock);
@@ -90,8 +91,8 @@ function SessionView(p: { handle: SessionHandle }) {
     return (
         <>
             <Header handle={p.handle} />
-            <div ref={stage} class="stage">
-                <Transcript handle={p.handle} />
+            <div class="stage">
+                <Transcript handle={p.handle} dock={dockH()} />
                 <div class="composer-dock" ref={dock}>
                     <div class="composer-col">
                         <Composer sessionId={p.handle.id} />
@@ -379,7 +380,8 @@ export function App() {
     const panelKept = () => Boolean(prefs.panel && active() && !agent() && app.opening?.id !== app.activeId);
     // The sizes go on the elements that use them, not on .app: a custom property changing on an
     // element restyles everything under it, so on .app each frame of a drag restyled the window.
-    // (shell.css registers them as not inherited; the few children that need one inherit it explicitly.)
+    // shell.css registers them as not inherited, and nothing takes one with `inherit` (WebKit keeps a
+    // stale value there): each element that reads a size has it set here, on itself.
     const railWidth = () => railDrag() ?? prefs.sidebarWidth;
 
     return (
@@ -400,7 +402,7 @@ export function App() {
                     <div class="win-drag" data-tauri-drag-region />
                     <div class="rail-scrim" aria-hidden="true" onClick={() => setRailOpen(false)} />
                     {/* The rail sits straight on the window glass; in narrow windows it's a drawer over the sheet. */}
-                    <div class="win-rail" inert={!layout().railShown}>
+                    <div class="win-rail" inert={!layout().railShown} style={{ "--rail-w": `${railWidth()}px` }}>
                         <Show when={prefs.sidebar || layout().railMode === "overlay"}>
                             <div class="settings-host">
                                 <Show when={settingsTab()}>

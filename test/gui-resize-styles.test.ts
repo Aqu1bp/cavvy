@@ -1,6 +1,7 @@
 // Dragging an edge changes a size on every frame. A custom property that inherits restyles every
 // element under the one it's set on, so on <html> or .app each frame restyled the whole window.
-// The sizes the shell keeps don't inherit, and go on the elements that use them.
+// The sizes the shell keeps don't inherit, and go on the elements that use them (each box that reads
+// one sets it itself, no `inherit`: test/gui-layout-sizes.test.ts).
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "fs";
 import { join } from "path";
@@ -20,15 +21,6 @@ test("the sizes App.tsx sets are registered as not inherited", () => {
     }
 });
 
-test("the few children that use one inherit it explicitly", () => {
-    // .win holds --rail-w; the rail's column and the sidebar in it take it from there.
-    expect(decl(".win-rail", "--rail-w")).toBe("inherit");
-    expect(decl(".sidebar", "--rail-w")).toBe("inherit");
-    expect(decl(".sidebar", "width")).toBe("var(--rail-w)");
-    // .insp holds --insp-w; its content keeps that width while the column opens and closes.
-    expect(decl(".insp > :not(.insp-resizer)", "--insp-w")).toBe("inherit");
-});
-
 test("nothing in the app writes to <html>'s style but the preferences", () => {
     const files = (dir: string): string[] => readdirSync(join(gui, dir), { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : /\.tsx?$/.test(e.name) ? [join(dir, e.name)] : []));
     const writers = files(".").filter((f) => /documentElement\.style|documentElement\)\.style/.test(read(f)));
@@ -38,14 +30,13 @@ test("nothing in the app writes to <html>'s style but the preferences", () => {
     expect(read("components/Toasts.tsx")).toContain('"--bar-start"');
 });
 
-test("the composer dock's height doesn't inherit: only the transcript's boxes that use it take it", () => {
-    // Set on .stage as the composer grows; inherited, each new line restyled every turn under it.
+test("the composer dock's height doesn't inherit: only the transcript's boxes that use it have it", () => {
+    // Set as the composer grows; inherited, each new line restyled every turn under it.
     const stage = parseRules(read("styles/stage.css"));
     const at = (selector: string, property: string) => stage.findLast((r) => r.selectors.includes(selector) && r.decls.has(property))?.decls.get(property);
     expect(at("@property --dock-h", "inherits")).toBe("false");
     expect(at("@property --dock-h", "syntax")).toBe('"<length>"');
-    // The chain from .stage down to the two boxes that read it (.transcript-end, .jump), and .transcript, which FindBar reads.
-    for (const box of [".transcript-wrap", ".transcript", ".transcript-col", ".transcript-end", ".jump"]) expect({ box, value: at(`.stage ${box}`, "--dock-h") }).toEqual({ box, value: "inherit" });
+    // Set on the two boxes that read it (Transcript.tsx, Agents.tsx), not passed down from .stage.
     const users = readdirSync(join(gui, "styles")).flatMap((f) => parseRules(read(`styles/${f}`)).filter((r) => [...r.decls.values()].some((v) => v.includes("var(--dock-h)"))).flatMap((r) => r.selectors));
     expect(new Set(users)).toEqual(new Set([".transcript-end", ".jump"]));
 });
