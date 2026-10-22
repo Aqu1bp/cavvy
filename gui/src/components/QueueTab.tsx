@@ -238,12 +238,16 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
                             const dy = (slot() - i()) * s.pitch;
                             return dy ? `translateY(${dy}px)` : undefined;
                         };
+                        let el!: HTMLDivElement;
+                        // One that comes in later rises into place: by the Web Animations API, once it's in the
+                        // document, so moving the row afterwards doesn't replay it (a CSS animation would).
+                        const late = mounted;
+                        onMount(() => {
+                            if (late && !reducedMotion()) el.animate?.([{ opacity: 0, transform: "translateY(8px) scale(0.98)" }, { opacity: 1, transform: "none" }], { duration: 260, easing: "cubic-bezier(0.22, 1, 0.36, 1)" });
+                        });
                         return (
                             <div
-                                ref={(el) => {
-                                    // Coming in: rises into place (by the Web Animations API, so moving the row later doesn't replay it).
-                                    if (mounted && !reducedMotion()) el.animate([{ opacity: 0, transform: "translateY(8px) scale(0.98)" }, { opacity: 1, transform: "none" }], { duration: 260, easing: "cubic-bezier(0.22, 1, 0.36, 1)" });
-                                }}
+                                ref={el}
                                 class={`uq-row q-${mode() ?? "steer"}`}
                                 classList={{ lifted: held() && sort()!.phase === "drag", settling: held() && sort()!.phase === "settle", movable: many() }}
                                 style={{ transform: transform() }}

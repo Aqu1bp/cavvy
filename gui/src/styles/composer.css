@@ -335,14 +335,17 @@
     pointer-events: none;
 }
 
+/* On the row, or on it (or a button in it) from the keyboard: a row a click or a drag left focused keeps its hint. */
 .uq-row:hover .uq-acts,
-.uq-row:focus-within .uq-acts {
+.uq-row:focus-visible .uq-acts,
+.uq-row:has(:focus-visible) .uq-acts {
     opacity: 1;
     pointer-events: auto;
 }
 
 .uq-row:hover .uq-hint,
-.uq-row:focus-within .uq-hint {
+.uq-row:focus-visible .uq-hint,
+.uq-row:has(:focus-visible) .uq-hint {
     opacity: 0;
 }
 
