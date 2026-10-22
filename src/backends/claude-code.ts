@@ -354,7 +354,8 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         try {
             // The text goes last: Claude Code reads a /command only from the last block (what's before it goes along with it),
             // so with images or PDFs first, /skill and its own commands run with them attached instead of reaching the model as words.
-            return await turn.run([...mediaBlocks(t.images, t.documents ?? []), { type: "text", text: prompt }]);
+            const r = await turn.run([...mediaBlocks(t.images, t.documents ?? []), { type: "text", text: prompt }]);
+            return turn.taken ? r : { ...r, notTaken: true };
         } finally {
             this.turns.delete(turn);
             const s = turn.spending();
@@ -419,6 +420,8 @@ class ClaudeTurn {
     private controls = new Map<string, (response: Record<string, any>) => void>();
     /** The prompt has been sent. */
     private prompted = false;
+    /** The model took the prompt: it said something after it, or a result answered it (BackendResult.notTaken). */
+    taken = false;
     /** Verified UUID aggregation for mid-turn input (older CLIs keep between-turn delivery). */
     private midTurnInput = false;
     /** Prompts sent and not answered yet, by the uuid they were sent with (a result names the ones it answers). */
@@ -906,11 +909,13 @@ class ClaudeTurn {
                     this.commandWaitingSince.clear();
                     this.busy = false;
                     const ours = this.answers(m);
+                    if (ours && this.prompted) this.taken = true;
                     this.onResult(m, ours);
                     if (ours && !this.unanswered.size) this.answered = true;
                     if (this.aborted || (await this.idle())) break;
                     continue;
                 }
+                if (m.type === "assistant" && this.prompted) this.taken = true;
                 this.onMessage(m);
                 // stream-json accepts user messages while running; Claude Code consumes
                 // them between tool rounds. Await recording/snapshots before reading

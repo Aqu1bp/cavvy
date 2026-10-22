@@ -1003,13 +1003,23 @@ export class Agent {
         this.cutOff = true;
         const stopping = this.turnSnapshots?.stop() ?? Promise.resolve();
         // Not running, or its prompt isn't in yet (then nothing of the turn is).
-        if (!this.running || !this.prompted) return stopping;
+        if (this.running && this.prompted) this.noteInterrupted();
+        // What an agent CLI holds and never got (Codex's refused steers), with what's attached, and what this
+        // turn's prompt carried if the CLI hasn't taken it: saved now, as the run's end would, which is too late.
+        const held = this.backendHolding?.() ?? [];
+        if (held.length) this.backendUndelivered?.([...held]);
+        this.saveBackendStop();
+        return stopping;
+    }
+
+    /** The interrupt, as the turn would note it (noteStopped). */
+    private noteInterrupted() {
         const last = this.session.messages.at(-1);
-        if (last?.role === "user" && (last.meta?.kind === "interrupt" || last.content.some((p) => p.type === "text" && p.text === TOOL_INTERRUPT))) return stopping;
+        if (last?.role === "user" && (last.meta?.kind === "interrupt" || last.content.some((p) => p.type === "text" && p.text === TOOL_INTERRUPT))) return;
         const calls = last?.role === "assistant" ? toolCallsOf(last) : [];
         if (!calls.length) {
             this.interrupted(false);
-            return stopping;
+            return;
         }
         // Tools still running: their calls get results, or the next request is refused.
         this.session.push({
@@ -1018,7 +1028,6 @@ export class Agent {
             meta: { kind: "tool_results" },
         });
         this.emit({ type: "turn_end", reason: "aborted" });
-        return stopping;
     }
 
     /**
@@ -1653,16 +1662,51 @@ export class Agent {
         } finally {
             stopWaking?.();
             this.delegateCalls = [];
-            // Written after the backend sync cursor: a resumed CLI must see this
-            // on its next prompt, including after reopening or switching models.
-            // What was attached to messages it never received is saved with it (see pendingBackendMedia).
-            const media = this.takeStopMedia();
-            if (this.backendStopReminders.length) {
-                const undeliveredMedia = media.images.length || media.documents.length ? media : undefined;
-                this.session.push({ role: "user", content: [reminder(this.backendStopReminders.splice(0).join("\n"))], meta: { kind: "reminder", ...(undeliveredMedia ? { undeliveredMedia } : {}) } });
-            }
+            this.backendHolding = this.backendUndelivered = undefined;
+            this.saveBackendStop();
         }
     }
+
+    /**
+     * What the backend never received, as a reminder written after its sync cursor: a resumed CLI must see it
+     * on its next prompt, including after reopening or switching models. What was attached to those messages is
+     * saved with it (see pendingBackendMedia), and so is what this run's prompt carried for earlier ones if the
+     * backend never took that prompt. At the run's end, or before the session is let go of (noteStopped).
+     */
+    private saveBackendStop() {
+        const carried = this.carrying;
+        this.carrying = undefined;
+        if (carried && !carried.taken) this.carryBack(carried);
+        const media = this.takeStopMedia();
+        if (!this.backendStopReminders.length) return;
+        const undeliveredMedia = media.images.length || media.documents.length ? media : undefined;
+        this.session.push({ role: "user", content: [reminder(this.backendStopReminders.splice(0).join("\n"))], meta: { kind: "reminder", ...(undeliveredMedia ? { undeliveredMedia } : {}) } });
+    }
+
+    /**
+     * The prompt that carried what was attached to messages the backend never received didn't reach it either
+     * (BackendResult.notTaken, or the CLI failed): that goes on to the next prompt, on a reminder written after
+     * this one. With its words where the turn's end counted their reminder as seen, so they still go together.
+     */
+    private carryBack(c: NonNullable<Agent["carrying"]>) {
+        const synced = this.session.backends.get(c.provider)?.synced ?? 0;
+        const passed = c.from.flatMap((i) => {
+            const m = this.session.messages[i];
+            return i < synced && m?.role === "user" && m.meta?.kind === "reminder" ? [textOf(m).replace(/^<system-reminder>\n|\n<\/system-reminder>$/g, "")] : [];
+        });
+        this.backendStopReminders.unshift(...(passed.length ? passed : ["What was attached to the user's messages that your turn ended before reaching (said above) is sent with this message."]));
+        this.backendStopMedia.images.unshift(...c.media.images);
+        this.backendStopMedia.documents.unshift(...c.media.documents);
+    }
+
+    /** What this run's prompt carries for messages a backend never received (pendingBackendMedia): where from, and whether the backend took it. */
+    private carrying?: { provider: string; media: { images: ImagePart[]; documents: PdfPart[] }; from: number[]; taken: boolean };
+    /** Reads what the running backend holds and hasn't delivered (BackendHost.holding). */
+    private backendHolding?: () => readonly SteerMessage[];
+    /** The running backend's host's undelivered(), for noteStopped. */
+    private backendUndelivered?: (messages: SteerMessage[]) => void;
+    /** Drained messages already saved as undelivered: not saved twice (noteStopped, then the run's end). */
+    private savedUndelivered = new WeakSet<SteerMessage>();
 
     private backendStopReminders: string[] = [];
     /**
@@ -1679,21 +1723,22 @@ export class Agent {
     }
 
     /**
-     * What was attached to messages an agent CLI never received, saved on the reminders of them (runBackend)
+     * What was attached to messages an agent CLI never received, saved on the reminders of them (saveBackendStop)
      * that nothing has been sent since: those just before the prompt at `promptIndex`, back to the last message
-     * that went to a model. From the session, so they're there after it's reopened, and gone once rewound away.
+     * that went to a model (one whose prompt never reached it wrote another reminder: carryBack). From the
+     * session, so they're there after it's reopened, and gone once rewound away. Only those past the backend's
+     * sync cursor, whose words go with this prompt too (backendPrompt): never an image without them.
      */
-    private pendingBackendMedia(promptIndex: number): { images: ImagePart[]; documents: PdfPart[] } {
-        const out: { images: ImagePart[]; documents: PdfPart[] } = { images: [], documents: [] };
-        const found: { images: ImagePart[]; documents: PdfPart[] }[] = [];
-        for (let i = promptIndex - 1; i >= 0; i--) {
+    private pendingBackendMedia(promptIndex: number, provider: string): { images: ImagePart[]; documents: PdfPart[]; from: number[] } {
+        const out: { images: ImagePart[]; documents: PdfPart[]; from: number[] } = { images: [], documents: [], from: [] };
+        const floor = this.session.backends.get(provider)?.synced ?? 0;
+        for (let i = promptIndex - 1; i >= floor; i--) {
             const m = this.session.messages[i]!;
             if (m.role !== "user" || (m.meta?.kind !== "reminder" && m.meta?.kind !== "interrupt")) break;
-            if (m.meta.undeliveredMedia) found.unshift(m.meta.undeliveredMedia);
-        }
-        for (const f of found) {
-            out.images.push(...f.images);
-            out.documents.push(...f.documents);
+            if (!m.meta.undeliveredMedia) continue;
+            out.images.unshift(...m.meta.undeliveredMedia.images);
+            out.documents.unshift(...m.meta.undeliveredMedia.documents);
+            out.from.unshift(i);
         }
         return out;
     }
@@ -1774,7 +1819,10 @@ export class Agent {
             },
             // Saved past the sync cursor (see runBackend), so the next turn is sent them, after a restart too.
             diagnose: (paths) => this.diagnoseBackendEdits(paths, signal),
-            undelivered: (messages) => {
+            undelivered: (all) => {
+                // Not those saved already, before the session was let go of (noteStopped).
+                const messages = all.filter((m) => !this.savedUndelivered.has(m));
+                for (const m of messages) this.savedUndelivered.add(m);
                 const news = messages.filter((m) => wakeTexts.has(m.text)).map((m) => m.text);
                 const typed = messages.filter((m) => !wakeTexts.has(m.text));
                 // What was attached to each goes with the next turn's prompt (saved with this reminder at the run's end).
@@ -1788,6 +1836,7 @@ export class Agent {
                 if (typed.length) this.backendStopReminders.push(`The user sent this while you were working${attachedNote}, but your turn ended before it reached you${words.length ? `:\n${words.join("\n\n")}` : "."}`);
                 if (news.length) this.backendStopReminders.push(`This arrived while you were working, but your turn ended before it reached you:\n${news.join("\n\n")}`);
             },
+            holding: (get) => (this.backendHolding = get),
             fromWake: (text) => wakeTexts.has(text),
             requestOf: (text) => typed.get(text),
             drainQueued: async (progress, live) => {
@@ -1892,9 +1941,12 @@ export class Agent {
         const goalCommand = GOAL_COMMAND.test(text);
         const toSend = (r?: { synced: number }) =>
             goalCommand && prompt === text ? { prompt, goalContext: this.backendPrompt("", promptIndex, r).trim() || undefined } : { prompt: this.backendPrompt(prompt, promptIndex, r) };
+        this.backendUndelivered = host.undelivered;
         // What was attached to messages the backend's last turn never took goes first: saved in the session
-        // (pendingBackendMedia), so reopening keeps it and a rewind past it drops it.
-        const carried = this.pendingBackendMedia(promptIndex);
+        // (pendingBackendMedia), so reopening keeps it and a rewind past it drops it. Until the backend takes
+        // this prompt it's still owed (carryBack).
+        const carried = this.pendingBackendMedia(promptIndex, provider);
+        this.carrying = carried.from.length ? { provider, media: carried, from: carried.from, taken: false } : undefined;
         let promptImages = [...carried.images, ...images];
         let promptDocuments = [...carried.documents, ...documents];
         while (true) {
@@ -1912,6 +1964,8 @@ export class Agent {
                     const fresh = toSend();
                     result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...fresh, synthetic: woken || fresh.prompt !== prompt, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: undefined });
                 }
+                // The prompt that carried them reached the model: they're delivered.
+                if (this.carrying && !result.notTaken) this.carrying.taken = true;
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);
                 this.endNotice("error", redact((e as Error).message || String(e)));

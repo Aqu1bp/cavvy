@@ -71,7 +71,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS"]) delete process.env[k];
+    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_IGNORE_INTERRUPT", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -3385,6 +3385,92 @@ describe("Codex mid-turn steering", () => {
         // The draft sent again: its image goes once.
         expect(await a.agent.run([{ type: "text", text: "refused words" }, { type: "image", mediaType: "image/png", data: PIXEL }], { signal: new AbortController().signal })).toBe("done");
         expect(turnStarts()[2].input.filter((i: any) => i.type === "image")).toEqual([imageItem]);
+    });
+
+    /** A turn on Codex that refuses an image steer ("refused words") and is then interrupted, as the user does. */
+    async function refusedImage(session?: InstanceType<typeof Session>) {
+        process.env.FAKE_SCENARIO = "slow";
+        process.env.FAKE_STEER_FAIL = "1";
+        const host: ReturnType<typeof withImage>[] = [];
+        const ac = new AbortController();
+        const a = await makeAgent({ provider: "codex", session, drainQueued: () => host.splice(0) });
+        const done = a.run("start", ac.signal);
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        await Bun.sleep(50);
+        host.push(withImage("refused words"));
+        a.agent.queueChanged();
+        await until(() => steers().length === 1);
+        await Bun.sleep(20);
+        return { a, ac, done };
+    }
+    const imagesIn = (start: any) => start.input.filter((i: any) => i.type === "image");
+
+    // Review round 2 of #299, finding 1: delivery is what the backend confirms, not a later prompt.
+    test("a refused steer's image waits through a prompt Codex never started (it couldn't start), and goes with the next", async () => {
+        const { a, ac, done } = await refusedImage();
+        ac.abort();
+        expect(await done).toBe("aborted");
+        delete process.env.FAKE_SCENARIO;
+        process.env.FAKE_ACCOUNT = "none";
+        expect(await a.run("try this")).toBe("error");
+        expect(turnStarts()).toHaveLength(1);
+        delete process.env.FAKE_ACCOUNT;
+        expect(await a.run("again")).toBe("done");
+        expect(turnStarts()).toHaveLength(2);
+        expect(imagesIn(turnStarts()[1])).toEqual([imageItem]);
+        // Its words go too: the image isn't sent without what the user said with it.
+        expect(turnStarts()[1].input.find((i: any) => i.type === "text").text).toContain("refused words");
+        expect(await a.run("after")).toBe("done");
+        expect(imagesIn(turnStarts()[2])).toEqual([]);
+    });
+
+    test("a refused steer's image waits through /goal's status (answered without a turn), and goes with the next prompt", async () => {
+        const { a, ac, done } = await refusedImage();
+        ac.abort();
+        expect(await done).toBe("aborted");
+        delete process.env.FAKE_SCENARIO;
+        // /goal with nothing after it: the goal's status, which Codex's client answers itself.
+        expect(await a.run("/goal")).toBe("done");
+        expect(turnStarts()).toHaveLength(1);
+        expect(await a.run("next")).toBe("done");
+        expect(imagesIn(turnStarts()[1])).toEqual([imageItem]);
+        expect(turnStarts()[1].input.find((i: any) => i.type === "text").text).toContain("refused words");
+    });
+
+    // Finding 2: the session is let go of before Codex has stopped (Runtime's close): what it never got is saved first.
+    test("a refused steer's image is saved when the session is closed while Codex is still stopping, and goes after reopening", async () => {
+        const session = Session.create(cwd, { persist: true });
+        process.env.FAKE_IGNORE_INTERRUPT = "1";
+        const { a, ac, done } = await refusedImage(session);
+        ac.abort();
+        // As Runtime.close does once the turn is slow to stop: noted, then the file let go of.
+        await a.agent.noteStopped();
+        const path = session.path;
+        session.release();
+        expect(await done).toBe("aborted");
+        delete process.env.FAKE_IGNORE_INTERRUPT;
+        forgetClient("codex");
+        delete process.env.FAKE_SCENARIO;
+        delete process.env.FAKE_STEER_FAIL;
+        const b = await makeAgent({ provider: "codex", session: Session.load(path) });
+        expect(await b.run("next")).toBe("done");
+        const start = turnStarts().at(-1);
+        expect(imagesIn(start)).toEqual([imageItem]);
+        expect(start.input.find((i: any) => i.type === "text").text).toContain("refused words");
+    }, 20_000);
+
+    // Round 2's note on compaction: Codex's own compaction moves its cursor past the reminder (its words then
+    // don't go: that predates this), so its image doesn't either: never an image without what was said with it.
+    test("after Codex compacts its thread, a refused steer's image doesn't go without its words", async () => {
+        const { a, ac, done } = await refusedImage();
+        ac.abort();
+        expect(await done).toBe("aborted");
+        delete process.env.FAKE_SCENARIO;
+        expect(await a.agent.compact({ auto: false, signal: new AbortController().signal })).toBe(true);
+        expect(await a.run("next")).toBe("done");
+        const start = turnStarts().at(-1);
+        const said = start.input.find((i: any) => i.type === "text").text.includes("refused words");
+        expect(imagesIn(start).length > 0).toBe(said);
     });
 
     test("a wake while the turn runs steers it at once, marked as the harness's and not as a prompt", async () => {

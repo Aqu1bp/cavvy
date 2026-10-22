@@ -147,6 +147,12 @@ export interface BackendHost {
      */
     undelivered?(messages: SteerMessage[]): void;
     /**
+     * Lets the host read, while the turn runs, the drained messages the backend holds and hasn't delivered (Codex's
+     * refused steers, kept for its next turn): a session closed before the backend has stopped saves them then,
+     * rather than when undelivered() comes, after the file is let go of. Those it saves aren't saved again.
+     */
+    holding?(get: () => readonly SteerMessage[]): void;
+    /**
      * Files the backend changed (absolute paths): the language servers' new
      * problems in them, as a note for the model, or undefined when there's
      * nothing new. The user is told either way (a notice). For a backend
@@ -253,6 +259,11 @@ export interface BackendResult {
     resumeFailed?: boolean;
     /** It stopped on the plan's usage limit; `resetsAt` (ms) when the backend said when that lifts. */
     limit?: { resetsAt?: number };
+    /**
+     * The turn's prompt never reached the model, with what it carried: the CLI didn't start or start a turn, or it
+     * answered the prompt itself without one (Codex's /goal status). What it carried for earlier messages goes with the next.
+     */
+    notTaken?: boolean;
 }
 
 export interface AgentBackendClient extends ProviderClient {

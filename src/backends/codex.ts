@@ -397,7 +397,8 @@ export class CodexBackend implements AgentBackendClient {
         const turn = new CodexTurn(this.def, t, this.labels, this.limitOrdering(t.accountId));
         this.turns.add(turn);
         try {
-            return await turn.run();
+            const r = await turn.run();
+            return turn.taken ? r : { ...r, notTaken: true };
         } finally {
             this.turns.delete(turn);
         }
@@ -548,6 +549,8 @@ export class CodexTurn {
     private steering: Promise<void> = Promise.resolve();
     /** Steered messages the turn ended before taking, each with what's attached to it: they start the next. */
     private unsteered: SteerMessage[] = [];
+    /** Codex took the prompt: a turn started with it (turn/start), or a turn Codex started took it (turn/steer). */
+    taken = false;
     /** One came while no turn was running (it was starting): steered once it is. */
     private steerWaiting = false;
     /** Why an approval was refused, by item, for the item's result. */
@@ -746,6 +749,8 @@ export class CodexTurn {
         t.signal.addEventListener("abort", onAbort, { once: true });
         // A message to steer with goes into the running turn as it's sent (turn/steer), not at its end.
         const stopSteering = opts.compact ? undefined : this.host.onQueued?.(() => this.steerQueued());
+        // What it holds and hasn't delivered, for a session closed before it has stopped (BackendHost.holding).
+        if (!opts.compact) this.host.holding?.(() => this.unsteered);
         try {
             await withTimeout(handshake(this.rpc, Boolean(accountPermissions)), 30_000, "Codex didn't start (no answer to initialize)");
             const account = parseAccount(await this.rpc.request("account/read", {}));
@@ -901,6 +906,7 @@ export class CodexTurn {
                             }
                         }
                         this.turnId = r?.turn?.id;
+                        if (this.turnId) this.taken = true;
                         this.threadMode = mode;
                         // Which turn that started meanwhile was this one: the others were Codex's own.
                         this.settleStarted(this.turnId, mode);
@@ -1094,7 +1100,11 @@ export class CodexTurn {
             if (some) this.unsteered.push(...messages!);
             return;
         }
-        if (some) await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: id, input: this.input(joined(messages!), imagesOf(messages!)) }).catch(() => this.unsteered.push(...messages!));
+        if (some)
+            await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: id, input: this.input(joined(messages!), imagesOf(messages!)) }).then(
+                () => (this.taken = true),
+                () => this.unsteered.push(...messages!),
+            );
         // Sent while no turn was running (waiting for this one): it can take them now.
         if (this.steerWaiting) this.steerQueued();
     }
