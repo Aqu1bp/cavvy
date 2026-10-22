@@ -1,10 +1,10 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, rmSync } from "fs";
+import { appendFileSync, createReadStream, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import type { BackgroundShell, Tool, ToolContext } from "./types";
 import { stripAnsi } from "../ui/ansi";
-import { redact, lineRedactor } from "../util/redact";
+import { redact, redactPrefix, knownSecrets, lineRedactor } from "../util/redact";
 import { truncateMiddle, isInside } from "../util/files";
 import { childEnv } from "../util/env";
 import { blockedBySandbox, sandboxArgv, sandboxCacheEnv, sandboxHint, type Sandbox } from "../permissions/sandbox";
@@ -14,8 +14,131 @@ import { finalSearch } from "../permissions/bash-safety";
 export { childEnv };
 
 const MAX_OUTPUT = 30_000;
-/** Kept of a command's output before the rest is dropped. */
+/** Bound for the retained head and rolling tail, and for unfinished lines. */
 const MAX_KEPT = MAX_OUTPUT * 20;
+/** Session output files share the background shells' teardown, including foreground-only sessions. */
+const outputDirs = new WeakMap<Map<string, BackgroundShell>, string>();
+const backgroundFiles = new WeakMap<BackgroundShell, { file: OutputFile; offset: number }>();
+let outputCounter = 0;
+
+class OutputFile {
+    readonly path: string;
+    readonly previewPath: string;
+    private pending = "";
+    size = 0;
+    error?: string;
+
+    constructor(shells: Map<string, BackgroundShell>) {
+        let dir = outputDirs.get(shells);
+        if (!dir) {
+            dir = mkdtempSync(join(tmpdir(), "harness-output-"));
+            outputDirs.set(shells, dir);
+        }
+        this.path = join(dir, `${++outputCounter}.txt`);
+        this.previewPath = `${this.path}.preview`;
+        writeFileSync(this.path, "", { mode: 0o600 });
+        writeFileSync(this.previewPath, "", { mode: 0o600 });
+    }
+
+    capture(stream: NodeJS.ReadableStream) {
+        // Synchronous chunk writes provide backpressure without an unbounded write queue.
+        stream.on("data", (chunk: string) => this.write(this.path, chunk));
+    }
+
+    private write(path: string, text: string) {
+        if (this.error) return false;
+        try {
+            appendFileSync(path, text);
+            return true;
+        } catch (e) {
+            this.error = `Could not save complete output: ${redact((e as Error).message)}`;
+            return false;
+        }
+    }
+
+    append(text: string, order: number, omitted = 0) {
+        this.pending += JSON.stringify([text, order, omitted]) + "\n";
+        if (this.pending.length >= MAX_PARTIAL_LINE) this.flush();
+    }
+
+    flush() {
+        if (!this.pending) return;
+        if (this.write(this.previewPath, this.pending)) this.size += Buffer.byteLength(this.pending);
+        this.pending = "";
+    }
+}
+
+interface OutputPart { text: string; order: number }
+
+/** An ordered, bounded end of the output. Pending stdout can finish after later stderr. */
+class OutputWindow {
+    private parts: OutputPart[] = [];
+    private start = 0;
+    length = 0;
+    constructor(private limit: number, private head: boolean) {}
+
+    append(part: OutputPart) {
+        const last = this.parts.at(-1);
+        if (this.head && this.length === this.limit && last && part.order > last.order) return;
+        if (!last || part.order >= last.order) this.parts.push(part);
+        else {
+            let at = this.parts.length;
+            while (at > this.start && this.parts[at - 1]!.order > part.order) at--;
+            this.parts.splice(at, 0, part);
+        }
+        this.length += part.text.length;
+        while (this.length > this.limit) {
+            const at = this.head ? this.parts.length - 1 : this.start;
+            const p = this.parts[at]!;
+            const drop = Math.min(p.text.length, this.length - this.limit);
+            this.length -= drop;
+            if (drop === p.text.length) {
+                if (this.head) this.parts.pop();
+                else {
+                    this.parts[this.start++] = { text: "", order: 0 };
+                }
+            } else this.parts[at] = { order: p.order, text: this.head ? p.text.slice(0, -drop) : p.text.slice(drop) };
+        }
+        if (this.start > 1024) {
+            this.parts = this.parts.slice(this.start);
+            this.start = 0;
+        }
+    }
+
+    get text() { return this.parts.slice(this.start).map((p) => p.text).join(""); }
+}
+
+/** Only redacted text enters these buffers, before either end is cut. */
+class OutputPreview {
+    private head = new OutputWindow(MAX_KEPT * 0.4, true);
+    private tail = new OutputWindow(MAX_KEPT * 0.6, false);
+    private length = 0;
+    private missing = 0;
+    private sequence = 0;
+
+    append(text: string, order = this.sequence++, omitted = 0) {
+        this.length += text.length;
+        this.missing += omitted;
+        this.head.append({ text, order });
+        this.tail.append({ text, order });
+    }
+
+    get truncated() { return this.length + this.missing >= MAX_KEPT; }
+    get text() {
+        const overlap = Math.max(0, this.head.length + this.tail.length - this.length);
+        return this.head.text + this.tail.text.slice(overlap);
+    }
+
+    render() {
+        const text = cleanOutput(this.text);
+        const missing = this.missing + Math.max(0, this.length - MAX_KEPT);
+        if (!missing) return truncateMiddle(text, MAX_OUTPUT);
+        const head = Math.min(Math.floor(MAX_OUTPUT * 0.4), text.length);
+        const tail = Math.min(MAX_OUTPUT - head, text.length - head);
+        return `${text.slice(0, head)}\n\n… [${missing + text.length - head - tail} characters omitted] …\n\n${tail ? text.slice(-tail) : ""}`;
+    }
+}
+
 /**
  * The shell's own error (a glob with no match, a file it couldn't open, a
  * missing command), anywhere: after output with no newline it starts mid-line
@@ -28,14 +151,51 @@ function shellComplaintPattern(shell = pickShell()): RegExp {
 const MAX_TIMEOUT = 600_000;
 export const BG_BUFFER = 1_000_000;
 const MAX_HOSTS = 30;
-/** Background lines beyond this bound are omitted, never released in raw pieces. */
+/** Bound for unfinished background lines; larger Bash lines keep redacted ends. */
 export const MAX_PARTIAL_LINE = 64 * 1024;
 
 /** Each pipe owns its decoder and pending line: stderr mustn't split a stdout secret (or vice versa). */
-export function readShellStream(stream: NodeJS.ReadableStream, emit: (text: string, order: number) => void, maxLine: number, overflow: (text: string) => string, nextOrder = () => 0, inspect?: (text: string) => void) {
+export function readShellStream(stream: NodeJS.ReadableStream, emit: (text: string, order: number, omitted?: number) => void, maxLine: number, overflow: (text: string) => string, nextOrder = () => 0, inspect?: (text: string) => void, keepEnds = false) {
     let pending = "";
     let skipping = false;
     let order = 0;
+    let longHead = "";
+    let longTail = "";
+    let longLength = 0;
+    let tailTokenSecret = false;
+    const context = Math.max(1, ...knownSecrets().map((s) => s.length));
+    const window = Math.max(maxLine, context + MAX_OUTPUT);
+    const appendTail = (text: string) => {
+        const joined = longTail + text;
+        const cut = Math.max(0, joined.length - window);
+        if (cut) {
+            let start = cut;
+            while (start > 0 && /[A-Za-z0-9_.-]/.test(joined[start - 1]!)) start--;
+            const prefix = joined.slice(start, start + 128);
+            tailTokenSecret = (start === 0 && tailTokenSecret) || redact(prefix) !== prefix;
+        }
+        longTail = joined.slice(cut);
+    };
+    const finishLong = () => {
+        // Context catches secrets crossing a display cut. Suppress a leading token fragment
+        // in the tail too: known-format tokens can have unbounded length.
+        const headSource = stripAnsi(longHead);
+        const tailSource = stripAnsi(longTail);
+        const head = redactPrefix(redact(longHead) === longHead ? headSource : stripAnsi(redact(longHead)), MAX_OUTPUT);
+        let cut = Math.max(0, tailSource.length - MAX_OUTPUT);
+        if (tailTokenSecret) {
+            const tokenEnd = /^[A-Za-z0-9_.-]*/.exec(tailSource)![0].length;
+            if (tokenEnd > cut) cut = tokenEnd;
+        }
+        const safeTail = redact(tailSource).slice(redactPrefix(tailSource, cut).length);
+        const omitted = Math.max(0, longLength - MAX_OUTPUT - (tailSource.length - cut));
+        inspect?.(longHead);
+        inspect?.(longTail);
+        emit(head + safeTail, order, omitted);
+        longHead = longTail = "";
+        longLength = 0;
+        tailTokenSecret = false;
+    };
     stream.setEncoding("utf8");
     stream.on("data", (chunk: string) => {
         // Cache both delimiters: searching for an absent CR again at every LF is quadratic.
@@ -50,7 +210,12 @@ export function readShellStream(stream: NodeJS.ReadableStream, emit: (text: stri
                 if (!pending) order = nextOrder();
                 pending += chunk.slice(start, end);
                 if (pending.length > maxLine) {
-                    emit(overflow(pending), order);
+                    if (keepEnds) {
+                        longHead = pending.slice(0, window);
+                        appendTail(pending);
+                        longLength = pending.length;
+                        overflow(pending);
+                    } else emit(overflow(pending), order);
                     pending = "";
                     skipping = true;
                 } else if (nl >= 0) {
@@ -58,14 +223,23 @@ export function readShellStream(stream: NodeJS.ReadableStream, emit: (text: stri
                     emit(redact(pending), order);
                     pending = "";
                 }
+            } else if (keepEnds) {
+                const text = chunk.slice(start, end);
+                longLength += text.length;
+                if (longHead.length < window) longHead += text.slice(0, window - longHead.length);
+                appendTail(text);
             }
-            if (nl >= 0) skipping = false;
+            if (nl >= 0) {
+                if (skipping && keepEnds) finishLong();
+                skipping = false;
+            }
             start = end;
             if (lf >= 0 && lf < start) lf = chunk.indexOf("\n", start);
             if (cr >= 0 && cr < start) cr = chunk.indexOf("\r", start);
         }
     });
     stream.on("end", () => {
+        if (skipping && keepEnds) finishLong();
         if (pending) {
             inspect?.(pending);
             emit(redact(pending), order);
@@ -130,11 +304,13 @@ interface RunOpts {
     signal: AbortSignal;
     env: Record<string, string>;
     onData?: (chunk: string) => void;
+    outputFile?: OutputFile;
     sandbox?: Sandbox;
 }
 
 interface RunResult {
     output: string;
+    preview: string;
     /** Capture facts before redaction can shrink output or hide a shell diagnostic. */
     outputTruncated: boolean;
     shellError: boolean;
@@ -162,8 +338,7 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
             detached: true,
             stdio: ["ignore", "pipe", "pipe"],
         });
-        const parts: { order: number; text: string }[] = [];
-        let retained = 0;
+        const preview = new OutputPreview();
         let rawLength = 0;
         let outputTruncated = false;
         let shellError = false;
@@ -173,10 +348,6 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
             if (rawLength >= MAX_KEPT) outputTruncated = true;
             if (!shellError) shellError = complaint.test(stripAnsi(text));
         };
-        let sequence = 0;
-        const nextOrder = () => sequence++;
-        // Pending lines can finish out of order (notably stdout without a final newline).
-        const output = () => parts.sort((a, b) => a.order - b.order).map((p) => p.text).join("");
         let timedOut = false;
         let aborted = false;
         const killTree = () => {
@@ -194,26 +365,22 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
                 }
             }, 2000).unref?.();
         };
-        let capped = false;
-        const onChunk = (s: string, order: number) => {
-            if (!capped) {
-                // The stream has redacted complete lines before this display-only cut.
-                const text = s.slice(0, MAX_KEPT - retained);
-                parts.push({ order, text });
-                retained += text.length;
-                capped = retained >= MAX_KEPT;
-                if (capped) outputTruncated = true;
-            }
-            opts.onData?.(s);
+        let sequence = 0;
+        const nextOrder = () => sequence++;
+        const onChunk = (text: string, order: number, omitted = 0) => {
+            preview.append(text, order, omitted);
+            if (preview.truncated) outputTruncated = true;
+            opts.onData?.(text);
         };
-        // An unfinished outer secret may contain a shorter match whose marker expands.
-        // Dropping the whole oversized line avoids mixing raw and redacted cut positions.
         const overflow = () => {
             outputTruncated = true;
             return `[Output line omitted: exceeds ${MAX_KEPT} characters]\n`;
         };
-        if (child.stdout) readShellStream(child.stdout, onChunk, MAX_KEPT, overflow, nextOrder, inspect);
-        if (child.stderr) readShellStream(child.stderr, onChunk, MAX_KEPT, overflow, nextOrder, inspect);
+        for (const stream of [child.stdout, child.stderr]) {
+            if (!stream) continue;
+            opts.outputFile?.capture(stream);
+            readShellStream(stream, onChunk, MAX_KEPT, overflow, nextOrder, inspect, true);
+        }
         const timer = setTimeout(() => {
             timedOut = true;
             killTree();
@@ -235,11 +402,11 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
             } catch {
                 // ignore
             }
-            resolvePromise({ output: output(), outputTruncated, shellError, exitCode: code, signal: sig, timedOut, aborted, newCwd });
+            resolvePromise({ output: preview.text, preview: preview.render(), outputTruncated, shellError, exitCode: code, signal: sig, timedOut, aborted, newCwd });
         });
         child.on("error", (err) => {
             clearTimeout(timer);
-            resolvePromise({ output: output() + `\n${err.message}`, outputTruncated, shellError, exitCode: 127, signal: null, timedOut, aborted, newCwd: undefined });
+            resolvePromise({ output: preview.text + `\n${err.message}`, preview: preview.render() + `\n${err.message}`, outputTruncated, shellError, exitCode: 127, signal: null, timedOut, aborted, newCwd: undefined });
         });
     });
 }
@@ -274,7 +441,7 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
 - Commands run non-interactively with no stdin: avoid editors, pagers and prompts (use -y / --yes / --no-edit flags).
 - timeout is in milliseconds (default 120000, max 600000).
 - run_in_background: true starts long-running processes (dev servers, watchers) and returns immediately; read their output with BashOutput and stop them with KillShell. Don't use '&' yourself.
-- Output over ${MAX_OUTPUT} characters is truncated in the middle.
+- Output over ${MAX_OUTPUT} characters shows the head and tail, with a path to the complete output file for Read/Grep.
 - Never run git commands that rewrite history or push unless the user asked. Never skip hooks (--no-verify) unless asked.
 - In auto mode commands run in a sandbox with no network except localhost. A command that needs the network (installing packages, cloning, downloading) lists the hosts it needs in allowedHosts: ["registry.npmjs.org"] for npm, pnpm or bun, ["pypi.org", "files.pythonhosted.org"] for pip or uv, the host in the URL for curl or git clone. They're reviewed with the command and open for it alone; a refused connection names the host to add.
 - Always write a short description (5-10 words) of what the command does.`,
@@ -308,6 +475,7 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
         const { env, proxy } = await commandEnv(ctx, input.allowedHosts);
         if (input.run_in_background) return startBackground(input.command, ctx, env, proxy);
         const timeoutMs = Math.min(MAX_TIMEOUT, Math.max(1000, input.timeout ?? ctx.settings.bashTimeout ?? 120_000));
+        const outputFile = new OutputFile(ctx.state.shells);
         let lastProgress = 0;
         const lines = lineRedactor(stripAnsi);
         let ready = "";
@@ -319,9 +487,10 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
                 timeoutMs,
                 signal: ctx.signal,
                 env,
+                outputFile,
                 sandbox: ctx.sandbox,
                 onData: (chunk) => {
-                    ready += lines(chunk);
+                    ready = (ready + lines(chunk)).slice(-MAX_KEPT);
                     const now = Date.now();
                     if (!ready || now - lastProgress <= 100) return;
                     ctx.onProgress?.(ready);
@@ -340,7 +509,9 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
                 ctx.state.cwd = ctx.state.projectRoot;
             }
         }
-        let out = truncateMiddle(cleanOutput(res.output), MAX_OUTPUT);
+        let out = res.preview;
+        if (outputFile.error) out += `\n\n${outputFile.error}`;
+        else if (res.outputTruncated || cleanOutput(res.output).length > MAX_OUTPUT) out += `\n\nFull output: ${outputFile.path}`;
         const failed = res.timedOut || (res.exitCode !== 0 && res.exitCode !== null);
         // A last grep that found nothing exits 1: that's the answer, not a failure of what came before it.
         // Unless the shell complained (then the 1 may be its own), or output was dropped where it could have,
@@ -361,7 +532,7 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
         const lineCount = out.trim() ? out.trim().split("\n").length : 0;
         return {
             content: out.trim() || "(no output)",
-            isError: failed && !res.aborted && !search,
+            isError: !!outputFile.error || (failed && !res.aborted && !search),
             display: {
                 summary: res.timedOut ? "Timed out" : res.aborted ? "Interrupted" : lineCount === 0 ? (failed ? `Exit code ${res.exitCode}` : "(no output)") : undefined,
                 body: out.trim() || undefined,
@@ -425,6 +596,7 @@ export function appendOutput(shell: BackgroundShell, text: string) {
 
 function startBackground(command: string, ctx: ToolContext, env: Record<string, string>, proxy: CommandProxy | undefined) {
     const id = `bash_${++shellCounter}`;
+    const outputFile = new OutputFile(ctx.state.shells);
     const [file, ...args] = shellArgv(command, ctx.sandbox);
     let child: ReturnType<typeof spawn>;
     try {
@@ -433,6 +605,7 @@ function startBackground(command: string, ctx: ToolContext, env: Record<string, 
         proxy?.close();
         throw e;
     }
+    const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
     const sandbox = ctx.sandbox;
     const shell: BackgroundShell = {
         id,
@@ -445,20 +618,38 @@ function startBackground(command: string, ctx: ToolContext, env: Record<string, 
         sandboxHint: sandbox ? () => sandboxOutputHint(sandbox, shell.output, proxy, shell.exitCode !== null && shell.exitCode !== 0) : undefined,
         kill: async (graceMs = KILL_GRACE_MS) => {
             const how = await stopGroup(child.pid, graceMs);
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            await Promise.race([closed, new Promise<void>((resolve) => { timer = setTimeout(resolve, 250); })]);
+            clearTimeout(timer);
+            // A detached descendant can retain the pipes after the tracked group is gone.
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            await closed;
             proxy?.close();
             return how;
         },
     };
-    const onChunk = (text: string) => appendOutput(shell, text);
-    if (child.stdout) readShellStream(child.stdout, onChunk, MAX_PARTIAL_LINE, overflowLine);
-    if (child.stderr) readShellStream(child.stderr, onChunk, MAX_PARTIAL_LINE, overflowLine);
+    backgroundFiles.set(shell, { file: outputFile, offset: 0 });
+    let sequence = 0;
+    const nextOrder = () => sequence++;
+    const onChunk = (text: string, order = nextOrder(), omitted = 0) => {
+        appendOutput(shell, text);
+        outputFile.append(text, order, omitted);
+    };
+    for (const stream of [child.stdout, child.stderr]) {
+        if (!stream) continue;
+        outputFile.capture(stream);
+        readShellStream(stream, onChunk, MAX_PARTIAL_LINE, overflowLine, nextOrder, undefined, true);
+    }
     // The network goes with the shell: whatever it left running loses it.
     child.on("close", (code) => {
+        outputFile.flush();
         shell.exitCode = code ?? -1;
         proxy?.close();
     });
     child.on("error", (e) => {
-        shell.output += `\n${e.message}`;
+        onChunk(`\n${redact(e.message)}`);
+        outputFile.flush();
         shell.exitCode = 127;
         proxy?.close();
     });
@@ -473,7 +664,7 @@ export const BashOutputTool: Tool<{ bash_id: string; filter?: string }> = {
     name: "BashOutput",
     category: "read",
     readOnly: true,
-    description: "Retrieves new output from a background shell started with Bash run_in_background, or from a monitor (stdout and stderr). Returns only output produced since the last check, plus the shell's status. Optional filter is a regex; only matching lines are returned.",
+    description: "Retrieves new output from a background shell started with Bash run_in_background, or from a monitor (stdout and stderr). Returns only output produced since the last check, plus the shell's status. Optional filter is a regex; only matching lines are returned. Large output shows its head and tail, with the complete output file path for Read/Grep.",
     parameters: {
         type: "object",
         properties: {
@@ -486,23 +677,55 @@ export const BashOutputTool: Tool<{ bash_id: string; filter?: string }> = {
     async run(input, ctx) {
         const sh = ctx.state.shells.get(input.bash_id);
         if (!sh) return { content: `No background shell with id ${input.bash_id}. Active: ${[...ctx.state.shells.keys()].join(", ") || "none"}`, isError: true };
-        // The stream only publishes redacted complete lines (or its final line at EOF).
-        const end = sh.output.length;
-        let fresh = cleanOutput(sh.output.slice(sh.readOffset, end));
-        sh.readOffset = end;
-        if (input.filter) {
-            try {
-                const re = new RegExp(input.filter);
-                fresh = fresh.split("\n").filter((l) => re.test(l)).join("\n");
-            } catch (e) {
-                return { content: `Invalid filter regex: ${(e as Error).message}`, isError: true };
-            }
+        let re: RegExp | undefined;
+        try {
+            if (input.filter) re = new RegExp(input.filter);
+        } catch (e) {
+            return { content: `Invalid filter regex: ${(e as Error).message}`, isError: true };
         }
+        // Validate first: a bad regex must not advance either cursor.
+        const saved = backgroundFiles.get(sh);
+        let fresh: string;
+        let outputPath: string | undefined;
+        let outputError: string | undefined;
+        if (saved) {
+            saved.file.flush();
+            const start = saved.offset;
+            const end = saved.file.size;
+            // Reserve this snapshot before yielding so concurrent reads cannot consume it twice.
+            saved.offset = end;
+            const preview = new OutputPreview();
+            if (end > start) {
+                const stream = createReadStream(saved.file.previewPath, { start, end: end - 1, encoding: "utf8" });
+                let pending = "";
+                for await (const chunk of stream) {
+                    const records = (pending + chunk).split("\n");
+                    pending = records.pop()!;
+                    for (const record of records) {
+                        const [text, order, omitted] = JSON.parse(record) as [string, number, number];
+                        if (!re) preview.append(text, order, omitted);
+                        else {
+                            const matching = text.split(/[\r\n]/).filter((line) => re.test(cleanOutput(line))).join("\n");
+                            if (matching) preview.append(matching + "\n", order, omitted);
+                        }
+                    }
+                }
+            }
+            fresh = preview.render();
+            outputError = saved.file.error;
+            if (!outputError && end > start) outputPath = saved.file.path;
+        } else {
+            fresh = cleanOutput(sh.output.slice(sh.readOffset));
+            if (re) fresh = fresh.split("\n").filter((line) => re.test(line)).join("\n");
+            fresh = truncateMiddle(fresh, MAX_OUTPUT);
+        }
+        sh.readOffset = sh.output.length;
         const status = sh.exitCode === null ? "running" : `exited with code ${sh.exitCode}`;
         const outputHint = sh.sandboxed ? sh.sandboxHint?.() : undefined;
         const hint = outputHint ? `\n${outputHint}` : "";
         return {
-            content: `<status>${status}</status>\n<output>\n${truncateMiddle(fresh, MAX_OUTPUT) || "(no new output)"}\n</output>${hint}`,
+            content: `<status>${status}</status>\n<output>\n${fresh || "(no new output)"}\n</output>${outputPath ? `\n\nFull output: ${outputPath}` : ""}${outputError ? `\n\n${outputError}` : ""}${hint}`,
+            isError: !!outputError,
             display: { summary: `${status}${fresh ? `, ${fresh.split("\n").length} new lines` : ""}`, body: fresh || undefined },
         };
     },
@@ -535,4 +758,9 @@ export async function killAllShells(ctx: { state: { shells: Map<string, Backgrou
     const shells = [...ctx.state.shells.values()];
     ctx.state.shells.clear();
     await Promise.all(shells.map((sh) => sh.kill(graceMs)));
+    const dir = outputDirs.get(ctx.state.shells);
+    if (dir) {
+        rmSync(dir, { recursive: true, force: true });
+        outputDirs.delete(ctx.state.shells);
+    }
 }
