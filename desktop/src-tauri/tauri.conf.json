@@ -24,6 +24,7 @@
                 "hiddenTitle": true,
                 "dragDropEnabled": false,
                 "transparent": true,
+                "visible": false,
                 "windowEffects": {
                     "effects": ["liquidGlassRegular", "sidebar"],
                     "state": "followsWindowActiveState"

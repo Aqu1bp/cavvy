@@ -8,7 +8,7 @@ import { planLimitKey, type PlanLimits } from "@shared/protocol";
 import type { GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
-import { credentials, focused, notify, isTauri, windowKey } from "../lib/platform";
+import { credentials, focused, notify, isTauri, showWindow, windowKey } from "../lib/platform";
 import { prefs, setPrefs } from "./prefs";
 import { COALESCE_MS, combineEnded, noticeRoute } from "../lib/background";
 import { mayCreateFiles } from "../lib/pathcache";
@@ -733,7 +733,11 @@ export function revealBackground() {
     requestAnimationFrame(() => document.getElementById("background-tasks")?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
 }
 
+/** How long the window waits for the first screen before it shows what there is (the splash, while the server starts). */
+const SHOW_WINDOW_MS = 1000;
+
 export function start() {
+    setTimeout(showWindow, SHOW_WINDOW_MS);
     document.addEventListener("visibilitychange", () => {
         for (const t of toasts) pauseToast(t.id, "hidden", document.hidden);
     });
@@ -745,6 +749,8 @@ export function start() {
             if (s !== "open") for (const h of handles.values()) h.setReady(false);
             setApp("conn", s);
         });
+        // A screen that won't change by itself (a link that needs the terminal, a server that's gone) shows at once.
+        if (s === "unauthorized" || s === "unavailable") showWindow();
         if (s !== "open") return;
         void (async () => {
             try {
@@ -760,6 +766,8 @@ export function start() {
             } catch (e) {
                 reportError(e);
             }
+            // The first screen is drawn, with what it shows: the window comes up on it.
+            showWindow();
         })();
     });
     void rpc.connect();

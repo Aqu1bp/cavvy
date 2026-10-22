@@ -30,7 +30,7 @@
 
 .home-hero .logo {
     margin-bottom: 16px;
-    animation: home-in 500ms var(--ease) both;
+    animation: home-in 320ms var(--ease) both;
 }
 
 .home-q {
@@ -42,7 +42,7 @@
     letter-spacing: -0.02em;
     line-height: 1.25;
     color: var(--fg);
-    animation: home-in 500ms 40ms var(--ease) both;
+    animation: home-in 320ms 30ms var(--ease) both;
 }
 
 /* Where the session runs: the project, then its branch or worktree. */
@@ -54,7 +54,7 @@
     gap: 6px;
     padding: 0 16px;
     max-width: 100%;
-    animation: home-in 500ms 80ms var(--ease) both;
+    animation: home-in 320ms 60ms var(--ease) both;
 }
 
 .home-where .pillbtn,
@@ -94,7 +94,7 @@
 }
 
 .home-composer {
-    animation: home-in 500ms 120ms var(--ease) both;
+    animation: home-in 320ms 90ms var(--ease) both;
 }
 
 /* Ways to start: a click puts the prompt in the composer. */
@@ -105,7 +105,7 @@
     gap: 8px;
     margin-top: 12px;
     padding: 0 12px;
-    animation: home-in 500ms 160ms var(--ease) both;
+    animation: home-in 320ms 120ms var(--ease) both;
 }
 
 .home-starts button {
@@ -145,6 +145,11 @@
     .home-col {
         padding-top: 64px;
     }
+}
+
+/* Drawn before the window came up, at launch: it's all there when the window is. */
+.home.instant :is(.home-hero .logo, .home-q, .home-where, .home-composer, .home-starts) {
+    animation: none;
 }
 
 @keyframes home-in {
