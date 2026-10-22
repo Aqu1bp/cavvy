@@ -18,6 +18,8 @@ export function FindBar(p: {
     turns: () => readonly Turn[];
     scroller: () => HTMLElement | undefined;
     col: () => HTMLElement | undefined;
+    /** The composer dock's height: a match is shown above it. */
+    dock: () => number;
     /** Draws the turn (its page) and stops following the end. */
     show: (turnId: string) => void;
     anchor: () => FindAnchor | undefined;
@@ -92,7 +94,7 @@ export function FindBar(p: {
         if (current) revealInBoxes(current, scroller);
         const box = (current ?? el).getBoundingClientRect();
         const view = scroller.getBoundingClientRect();
-        const dock = parseFloat(getComputedStyle(scroller).getPropertyValue("--dock-h")) || 0;
+        const dock = p.dock();
         // Below the bar, above the composer.
         if (box.top >= view.top + BAR_ROOM && box.bottom <= view.bottom - dock - 24) { p.onNavigate?.(); return; }
         // With its prompt when the turn fits that far, else a third of the way down.

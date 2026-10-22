@@ -15,7 +15,10 @@ import { BAR_ROOM, FindBar, type FindAnchor } from "./FindBar";
 /** How quickly a glide closes the distance to the end: about 63% of it in this long. */
 const GLIDE_MS = 70;
 
-export function Transcript(p: { handle: SessionHandle }) {
+/** `dock`: the composer dock's height (undefined until it's measured). */
+export function Transcript(p: { handle: SessionHandle; dock?: number }) {
+    // --dock-h goes on each box that reads it (stage.css): not inherited, and not passed down with `inherit`.
+    const dock = () => (p.dock === undefined ? undefined : `${p.dock}px`);
     let scroller: HTMLDivElement | undefined;
     let content: HTMLDivElement | undefined;
     // SessionView is keyed by handle; save on disposal, restore on the next mount.
@@ -269,14 +272,14 @@ export function Transcript(p: { handle: SessionHandle }) {
                             <LiveHead state={p.handle.view.state} tail hint={p.handle.view.state.activity?.idle ? "send a message to stop it" : undefined} />
                         </div>
                     </Show>
-                    <div class="transcript-end" />
+                    <div class="transcript-end" style={{ "--dock-h": dock() }} />
                 </div>
             </div>
             <Show when={findOpen()}>
-                <FindBar turns={turns} scroller={() => scroller} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={() => { reading = capture(); }} />
+                <FindBar turns={turns} scroller={() => scroller} dock={() => p.dock ?? 0} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={() => { reading = capture(); }} />
             </Show>
             <Show when={!stick()}>
-                <button class="jump glass" title="Jump to latest" aria-label="Jump to latest" onClick={() => { setStick(true); toBottom(true); }}>
+                <button class="jump glass" style={{ "--dock-h": dock() }} title="Jump to latest" aria-label="Jump to latest" onClick={() => { setStick(true); toBottom(true); }}>
                     <ArrowDown size={14} /> Latest
                 </button>
             </Show>

@@ -71,14 +71,15 @@ function Disconnected() {
 
 /** A session: the conversation, and the composer floating over its end. (Its inspector is the sheet's other column.) */
 function SessionView(p: { handle: SessionHandle }) {
-    let stage: HTMLDivElement | undefined;
     let dock: HTMLDivElement | undefined;
+    // Unmeasured: the transcript's boxes have --dock-h's initial value (stage.css).
+    const [dockH, setDockH] = createSignal<number>();
     onMount(() => {
         // The transcript scrolls under the composer and keeps that much room at its end;
         // a floating inspector ends above it.
         const ro = new ResizeObserver(() => {
             const h = dock?.offsetHeight ?? 0;
-            stage?.style.setProperty("--dock-h", `${h}px`);
+            setDockH(h);
             setDockHeight(h);
         });
         if (dock) ro.observe(dock);
@@ -90,8 +91,8 @@ function SessionView(p: { handle: SessionHandle }) {
     return (
         <>
             <Header handle={p.handle} />
-            <div ref={stage} class="stage">
-                <Transcript handle={p.handle} />
+            <div class="stage">
+                <Transcript handle={p.handle} dock={dockH()} />
                 <div class="composer-dock" ref={dock}>
                     <div class="composer-col">
                         <Composer sessionId={p.handle.id} />
