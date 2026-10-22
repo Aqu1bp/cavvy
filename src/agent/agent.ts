@@ -1179,7 +1179,7 @@ export class Agent {
             }
         }
         if (!summary.trim()) throw new Error("The model returned an empty summary");
-        const keep: Message[] = [summaryMessage(summary, Boolean(opts.continuing))];
+        const keep: Message[] = [summaryMessage(summary, Boolean(opts.continuing), this.state)];
         this.session.compact(summary, keep, opts.idle);
         this.contextTokens = 0;
         this.lastUsageTotal = 0;

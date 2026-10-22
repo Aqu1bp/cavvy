@@ -1,6 +1,7 @@
 import type { Message, UserMessage } from "../providers/types";
 import { truncateMiddle } from "../util/files";
 import { framedText } from "../providers/files";
+import { redactedJson } from "../util/redact";
 
 export const COMPACT_PROMPT = `Your task is to write a detailed summary of the conversation so far. The summary replaces the conversation history, so it must preserve everything needed to continue the work without losing context.
 
@@ -169,11 +170,14 @@ export function transcriptCompactRequest(transcript: string, extra?: string): Us
 }
 
 /** The message that replaces history after compaction. */
-export function summaryMessage(summary: string, continuing: boolean): UserMessage {
+export function summaryMessage(summary: string, continuing: boolean, state?: NonNullable<UserMessage["meta"]>["compactedState"]): UserMessage {
+    // Own a redacted snapshot: later tool updates must not change this rewind boundary.
+    const compactedState: typeof state = state ? JSON.parse(redactedJson({ todos: state.todos, approvedPlan: state.approvedPlan })) : undefined;
+    const tasks = compactedState && (compactedState.todos.length || compactedState.approvedPlan) ? `\n\nCurrent task state at compaction (authoritative if the summary differs):\n${JSON.stringify({ todos: compactedState.todos, approvedPlan: compactedState.approvedPlan ?? null }, null, 2)}` : "";
     const text =
-        `This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n${summary.trim()}` +
+        `This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n${summary.trim()}${tasks}` +
         (continuing ? `\n\nContinue the work from where it left off without asking the user any further questions. Pick up the last task as if the break never happened.` : "");
-    return { role: "user", content: [{ type: "text", text }], meta: { kind: "summary", display: "(conversation summary)" } };
+    return { role: "user", content: [{ type: "text", text }], meta: { kind: "summary", display: "(conversation summary)", ...(compactedState ? { compactedState } : {}) } };
 }
 
 /** Rough token estimate for messages we have no usage figures for. */

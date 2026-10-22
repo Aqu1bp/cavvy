@@ -8,7 +8,7 @@
 import { createHash } from "crypto";
 import { existsSync } from "fs";
 import { AnthropicProvider } from "./anthropic";
-import { OpenAICompatProvider } from "./openai-compat";
+import { OpenAICompatProvider, compatModelInfo } from "./openai-compat";
 import { apiFastModeInfo } from "./fast-mode";
 import { OpenAIResponsesProvider, responsesModelInfo } from "./openai-responses";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, resolveBaseUrl, type ProviderDef } from "./registry";
@@ -55,7 +55,11 @@ async function credentialFingerprint(def: ProviderDef): Promise<{ fp: string; ke
     }
     const key = def.requiresKey ? await getKey(def.id) : undefined;
     if (def.requiresKey && !key) return undefined;
-    return { fp: fingerprint(key?.value) + "|" + def.baseUrl, key: key?.value };
+    return { fp: fingerprint(key?.value) + "|" + (def.kind === "openai" ? providerConfiguration(def) : def.baseUrl), key: key?.value };
+}
+
+function providerConfiguration(def: ProviderDef): string {
+    return JSON.stringify([resolveBaseUrl(def), def.deepseekCompat, def.modelEffortLevels]);
 }
 
 /** A client for a provider, with its stored key. Throws if a key is required but missing. */
@@ -97,6 +101,7 @@ interface CacheEntry {
     fetchedAt: number;
     fp: string;
     models: ModelInfo[];
+    configuration?: string;
 }
 
 interface CacheFile {
@@ -107,6 +112,11 @@ interface CacheFile {
 function readCache(): CacheFile {
     const c = readJson<CacheFile>(paths.modelCache());
     if (!c || c.version !== CACHE_VERSION || typeof c.providers !== "object") return { version: CACHE_VERSION, providers: {} };
+    // Chat Completions capabilities depend on dialect/model configuration. Also
+    // refresh old listings made before these capabilities were discovered.
+    for (const def of allProviders()) {
+        if (def.kind === "openai" && c.providers[def.id]?.configuration !== providerConfiguration(def)) delete c.providers[def.id];
+    }
     // Anthropic prices come from our catalog, not the API's cached metadata.
     for (const [provider, entry] of Object.entries(c.providers)) {
         if (getProvider(provider)?.kind !== "anthropic") continue;
@@ -173,7 +183,7 @@ export async function listAllModels(opts: ListOptions = {}): Promise<ProviderLis
                 const listed = await client.listModels(signal);
                 const models = def.sorted ? listed : sortModels(listed);
                 if (!def.local) {
-                    cache.providers[def.id] = { fetchedAt: Date.now(), fp, models };
+                    cache.providers[def.id] = { fetchedAt: Date.now(), fp, models, configuration: providerConfiguration(def) };
                     dirty = true;
                 }
                 const l: ProviderListing = { provider: def, models, status: "ok", fetchedAt: Date.now() };
@@ -289,7 +299,7 @@ export function resolveModelInfo(ref: string): ModelInfo | undefined {
             effortLevels: t.effort,
         };
     }
-    return { provider: def.id, id: parsed.id };
+    return compatModelInfo(def, parsed.id);
 }
 
 /** Look up a model live if it isn't cached (used when switching to a model typed by hand). */
