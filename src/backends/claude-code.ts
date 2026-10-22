@@ -354,8 +354,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         try {
             // The text goes last: Claude Code reads a /command only from the last block (what's before it goes along with it),
             // so with images or PDFs first, /skill and its own commands run with them attached instead of reaching the model as words.
-            const r = await turn.run([...mediaBlocks(t.images, t.documents ?? []), { type: "text", text: prompt }]);
-            return turn.taken ? r : { ...r, notTaken: true };
+            return await turn.run([...mediaBlocks(t.images, t.documents ?? []), { type: "text", text: prompt }]);
         } finally {
             this.turns.delete(turn);
             const s = turn.spending();
@@ -420,8 +419,6 @@ class ClaudeTurn {
     private controls = new Map<string, (response: Record<string, any>) => void>();
     /** The prompt has been sent. */
     private prompted = false;
-    /** The model took the prompt: it said something after it, or a result answered it (BackendResult.notTaken). */
-    taken = false;
     /** Verified UUID aggregation for mid-turn input (older CLIs keep between-turn delivery). */
     private midTurnInput = false;
     /** Prompts sent and not answered yet, by the uuid they were sent with (a result names the ones it answers). */
@@ -758,8 +755,11 @@ class ClaudeTurn {
         const queued = await this.host.drainQueued(() => this.progress(), () => !this.aborted && !this.finishing);
         if (!queued.length) return false;
         if (this.aborted || this.finishing) {
-            // Stopped once they were taken (they're in the transcript): the next turn is told of them rather than them vanishing.
-            this.host.undelivered?.(queued);
+            // Stopped once they were taken (they're in the transcript): the next turn is told of them rather than them
+            // vanishing. One with attachments isn't in it yet: it stays queued, to go as a prompt of its own.
+            for (const m of queued) await m.settle?.(false);
+            const told = queued.filter((m) => !m.settle);
+            if (told.length) this.host.undelivered?.(told);
             return false;
         }
         this.reason = undefined;
@@ -772,6 +772,8 @@ class ClaudeTurn {
         const words = typed.map((m) => m.text).filter((t) => t).join("\n\n");
         if (typed.length) this.sendUser([...media, ...(words ? [{ type: "text", text: words }] : [])]);
         if (woke.length) this.sendUser([{ type: "text", text: woke.map((m) => m.text).join("\n\n") }], true);
+        // Written to its stdin, as text steers are: one with attachments is the host's to record now.
+        for (const m of typed) await m.settle?.(true);
         return true;
     }
 
@@ -917,13 +919,11 @@ class ClaudeTurn {
                     this.commandWaitingSince.clear();
                     this.busy = false;
                     const ours = this.answers(m);
-                    if (ours && this.prompted) this.taken = true;
                     this.onResult(m, ours);
                     if (ours && !this.unanswered.size) this.answered = true;
                     if (this.aborted || (await this.idle())) break;
                     continue;
                 }
-                if (m.type === "assistant" && this.prompted) this.taken = true;
                 this.onMessage(m);
                 // stream-json accepts user messages while running; Claude Code consumes
                 // them between tool rounds. Await recording/snapshots before reading

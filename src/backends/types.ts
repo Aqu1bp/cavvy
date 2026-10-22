@@ -91,12 +91,19 @@ export interface BackendPrompt {
 /**
  * A message drained to steer with (BackendHost.drainQueued): its text, and the images and PDFs (for a backend
  * that reads them) attached to it, which the backend sends beside its text. They belong to this message alone,
- * however many say the same words: they go where it goes, and back with it if it never arrives (undelivered).
+ * however many say the same words.
  */
 export interface SteerMessage {
     text: string;
     images: ImagePart[];
     documents: PdfPart[];
+    /**
+     * For one with attachments (it comes alone): it's still the host's until the backend has it. The backend calls
+     * this once: true once it's gone (Codex accepted its turn/steer; written to Claude Code's stdin), and the host
+     * records it then; false when it doesn't go (refused, the turn ended or was stopped first), and the host keeps
+     * it queued, attachments and all, to go as a prompt of its own. Never given to undelivered().
+     */
+    settle?(sent: boolean): Promise<void>;
 }
 
 export interface BackendHost {
@@ -146,12 +153,6 @@ export interface BackendHost {
      * host saves them, attachments too, for the next turn, so they reach it even after a restart.
      */
     undelivered?(messages: SteerMessage[]): void;
-    /**
-     * Lets the host read, while the turn runs, the drained messages the backend holds and hasn't delivered (Codex's
-     * refused steers, kept for its next turn): a session closed before the backend has stopped saves them then,
-     * rather than when undelivered() comes, after the file is let go of. Those it saves aren't saved again.
-     */
-    holding?(get: () => readonly SteerMessage[]): void;
     /**
      * Files the backend changed (absolute paths): the language servers' new
      * problems in them, as a note for the model, or undefined when there's
@@ -259,11 +260,6 @@ export interface BackendResult {
     resumeFailed?: boolean;
     /** It stopped on the plan's usage limit; `resetsAt` (ms) when the backend said when that lifts. */
     limit?: { resetsAt?: number };
-    /**
-     * The turn's prompt never reached the model, with what it carried: the CLI didn't start or start a turn, or it
-     * answered the prompt itself without one (Codex's /goal status). What it carried for earlier messages goes with the next.
-     */
-    notTaken?: boolean;
 }
 
 export interface AgentBackendClient extends ProviderClient {

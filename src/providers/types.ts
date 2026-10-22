@@ -73,12 +73,6 @@ export interface UserMessage {
         imagesRefused?: string[];
         /** State at a compaction boundary, restored before replaying later tool calls. */
         compactedState?: { todos: TodoItem[]; approvedPlan?: string };
-        /**
-         * On a reminder of messages an agent CLI never received: the images and PDFs attached to them, which go
-         * with its next prompt. Saved here, not only in memory, so they still go after the session is reopened;
-         * and dropped with the reminder when it's rewound away. Copies: the messages they came with keep theirs.
-         */
-        undeliveredMedia?: { images: ImagePart[]; documents: PdfPart[] };
     };
 }
 

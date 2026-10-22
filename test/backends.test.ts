@@ -71,7 +71,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_IGNORE_INTERRUPT", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS"]) delete process.env[k];
+    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_IGNORE_INTERRUPT", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_MS", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -3169,38 +3169,81 @@ describe("Codex mid-turn steering", () => {
     });
 
     const PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
-    const withImage = (text: string) => ({ text, admission: "go" as const, attachments: [{ type: "image" as const, mediaType: "image/png", data: PIXEL }] });
     const imageItem = { type: "image", url: `data:image/png;base64,${PIXEL}` };
+    const OTHER = Buffer.from("another picture").toString("base64");
+    type Attached = import("../src/providers/types").AttachedPart;
+    const image = (data = PIXEL): Attached => ({ type: "image", mediaType: "image/png", data });
+    const imagesIn = (input: any[]) => input.filter((i: any) => i.type === "image");
+    /** Every image Codex took: in the turns it started, and in the steers it accepted (`accepted`: none were refused). */
+    const delivered = (accepted: boolean) => [...turnStarts().flatMap((t) => imagesIn(t.input)), ...(accepted ? steers().flatMap((s) => imagesIn(s.input)) : [])];
+    /** The session's messages with an image in them. */
+    const withImages = (session: InstanceType<typeof Session>) => session.messages.filter((m) => m.content.some((p) => p.type === "image"));
 
-    test("steered with an image while the turn runs: turn/steer carries it (as turn/start would), and the session keeps it", async () => {
+    /**
+     * The runtime's queue as it hands over to an agent CLI (Runtime.drainQueued): one with only words leaves it when
+     * taken; one with attachments goes alone, and leaves it (recorded) only once Codex has it (Admitted.transaction).
+     */
+    function queue() {
+        const items: { text: string; attachments?: Attached[] }[] = [];
+        const recorded: string[] = [];
+        const drainQueued = async (record?: () => void) => {
+            const words = items.filter((q) => !q.attachments?.length);
+            if (words.length) {
+                for (const q of words) items.splice(items.indexOf(q), 1);
+                record?.();
+                return words.map((q) => q.text);
+            }
+            const q = items[0];
+            if (!q) return [];
+            let open = true;
+            const transaction = {
+                accepted: () => {
+                    if (!open) return false;
+                    open = false;
+                    items.splice(items.indexOf(q), 1);
+                    record?.();
+                    recorded.push(q.text);
+                    return true;
+                },
+                refused: () => void (open = false),
+            };
+            return [{ text: q.text, admission: "go" as const, attachments: q.attachments, transaction }];
+        };
+        return { items, recorded, drainQueued };
+    }
+
+    test("steered with an image while the turn runs: Codex accepts it, and only then does it leave the queue, recorded with its image", async () => {
         process.env.FAKE_SCENARIO = "slow";
         process.env.FAKE_STEER_WAKES = "1";
-        const host: ReturnType<typeof withImage>[] = [];
-        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
+        const q = queue();
+        const a = await makeAgent({ provider: "codex", drainQueued: q.drainQueued });
         const done = a.run("start");
         await until(() => logLines().some((l) => l.received?.method === "turn/start"));
         await Bun.sleep(50);
-        host.push(withImage("look at this"));
+        q.items.push({ text: "look at this", attachments: [image()] });
         a.agent.queueChanged();
         expect(await done).toBe("done");
         expect(steers()).toHaveLength(1);
         expect(steers()[0]!.input).toEqual([{ type: "text", text: "look at this", text_elements: [] }, imageItem]);
         expect(turnStarts()).toHaveLength(1);
+        expect(q.items).toEqual([]);
+        expect(q.recorded).toEqual(["look at this"]);
         const m = a.session.messages.find((x) => x.role === "user" && JSON.stringify(x.content).includes("look at this"))!;
-        expect(m.content.filter((p) => p.type === "image")).toEqual([{ type: "image", mediaType: "image/png", data: PIXEL }]);
+        expect(m.content.filter((p) => p.type === "image")).toEqual([image()]);
         expect(m.meta?.kind).toBe("prompt");
+        expect(delivered(true)).toEqual([imageItem]);
     });
 
     test("a steer's text file and PDF go to Codex as turn/start sends them: the file as text, the PDF as a note (it has no document item)", async () => {
         process.env.FAKE_SCENARIO = "slow";
         process.env.FAKE_STEER_WAKES = "1";
         const pdf = Buffer.from("%PDF-1.4\n%%EOF\n").toString("base64");
-        const host: { text: string; admission: "go"; attachments: import("../src/providers/types").AttachedPart[] }[] = [];
-        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
+        const q = queue();
+        const a = await makeAgent({ provider: "codex", drainQueued: q.drainQueued });
         const done = a.run("start");
         await until(() => logLines().some((l) => l.received?.method === "turn/start"));
         await Bun.sleep(50);
-        host.push({ text: "see these", admission: "go", attachments: [{ type: "file", kind: "text", name: "notes.md", size: 9, lines: 1, text: "# notes\n" }, { type: "file", kind: "pdf", name: "spec.pdf", size: 14, mediaType: "application/pdf", data: pdf }] });
+        q.items.push({ text: "see these", attachments: [{ type: "file", kind: "text", name: "notes.md", size: 9, lines: 1, text: "# notes\n" }, { type: "file", kind: "pdf", name: "spec.pdf", size: 14, mediaType: "application/pdf", data: pdf }] });
         a.agent.queueChanged();
         expect(await done).toBe("done");
         const input = steers()[0]!.input;
@@ -3209,104 +3252,40 @@ describe("Codex mid-turn steering", () => {
         expect(input[0].text).toContain("# notes");
         expect(input[0].text).toContain("spec.pdf");
         expect(input[0].text).not.toContain(pdf);
-    });
-
-    test("a steer with an image Codex refuses (its turn just ended) starts the next turn with the image", async () => {
-        process.env.FAKE_SCENARIO = "steps";
-        process.env.FAKE_STEER_FAIL = "1";
-        process.env.FAKE_SLOW_TURN_START = "200";
-        const host: ReturnType<typeof withImage>[] = [];
-        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
-        const done = a.run("start");
-        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
-        host.push(withImage("late words"));
-        a.agent.queueChanged();
-        expect(await done).toBe("done");
-        expect(steers()).toHaveLength(1);
-        expect(steers()[0]!.input).toContainEqual(imageItem);
-        expect(turnStarts()).toHaveLength(2);
-        expect(turnStarts()[1].input).toContainEqual(imageItem);
-        expect(turnStarts()[1].input.find((i: any) => i.type === "text").text).toEndWith("late words");
-    });
-
-    test("a steer with an image refused before the turn was stopped: the thread's next turn gets the image too", async () => {
-        process.env.FAKE_SCENARIO = "slow";
-        process.env.FAKE_STEER_FAIL = "1";
-        const host: ReturnType<typeof withImage>[] = [];
-        const ac = new AbortController();
-        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
-        const done = a.run("start", ac.signal);
-        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
-        await Bun.sleep(50);
-        host.push(withImage("refused words"));
-        a.agent.queueChanged();
-        await until(() => steers().length === 1);
-        await Bun.sleep(20);
-        ac.abort();
-        expect(await done).toBe("aborted");
-        delete process.env.FAKE_SCENARIO;
-        expect(await a.run("next")).toBe("done");
-        expect(turnStarts()).toHaveLength(2);
-        expect(turnStarts()[1].input).toContainEqual(imageItem);
-        const text = turnStarts()[1].input.find((i: any) => i.type === "text").text;
-        expect(text).toContain("with an attachment, sent with this message");
-        expect(text).toContain("refused words");
-        // One turn later it's gone: it went once.
-        expect(await a.run("after")).toBe("done");
-        expect(turnStarts()[2].input).not.toContainEqual(imageItem);
+        expect(q.recorded).toEqual(["see these"]);
     });
 
     // Review of e47c004c, finding 1: an image sent with no words was a steer with nothing in it.
     test("an image steered with no words: turn/steer carries the image alone", async () => {
         process.env.FAKE_SCENARIO = "slow";
         process.env.FAKE_STEER_WAKES = "1";
-        const host: ReturnType<typeof withImage>[] = [];
-        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
+        const q = queue();
+        const a = await makeAgent({ provider: "codex", drainQueued: q.drainQueued });
         const done = a.run("start");
         await until(() => logLines().some((l) => l.received?.method === "turn/start"));
         await Bun.sleep(50);
-        host.push(withImage(""));
+        q.items.push({ text: "", attachments: [image()] });
         a.agent.queueChanged();
         expect(await done).toBe("done");
         expect(steers()).toHaveLength(1);
         expect(steers()[0]!.input).toEqual([imageItem]);
-    });
-
-    test("an image with no words Codex refuses (its turn just ended) starts the next turn with the image", async () => {
-        process.env.FAKE_SCENARIO = "steps";
-        process.env.FAKE_STEER_FAIL = "1";
-        process.env.FAKE_SLOW_TURN_START = "200";
-        const host: ReturnType<typeof withImage>[] = [];
-        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
-        const done = a.run("start");
-        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
-        host.push(withImage(""));
-        a.agent.queueChanged();
-        expect(await done).toBe("done");
-        expect(steers()).toHaveLength(1);
-        expect(steers()[0]!.input).toEqual([imageItem]);
-        expect(turnStarts()).toHaveLength(2);
-        expect(turnStarts()[1].input).toContainEqual(imageItem);
+        expect(delivered(true)).toEqual([imageItem]);
     });
 
     // Finding 2: what's attached belongs to one message, not to every message with the same words.
-    const OTHER = Buffer.from("another picture").toString("base64");
-    const otherItem = { type: "image", url: `data:image/png;base64,${OTHER}` };
-    const withOther = (text: string) => ({ text, admission: "go" as const, attachments: [{ type: "image" as const, mediaType: "image/png", data: OTHER }] });
-
     test("the same words steered again without an image don't send the first one's image again", async () => {
         // The turn goes on after each steer (no FAKE_STEER_WAKES), so both go into it.
         process.env.FAKE_SCENARIO = "slow";
-        const host: (string | ReturnType<typeof withImage>)[] = [];
+        const q = queue();
         const ac = new AbortController();
-        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
+        const a = await makeAgent({ provider: "codex", drainQueued: q.drainQueued });
         const done = a.run("start", ac.signal);
         await until(() => logLines().some((l) => l.received?.method === "turn/start"));
         await Bun.sleep(50);
-        host.push(withImage("check this"));
+        q.items.push({ text: "check this", attachments: [image()] });
         a.agent.queueChanged();
         await until(() => steers().length === 1);
-        host.push("check this");
+        q.items.push({ text: "check this" });
         a.agent.queueChanged();
         await until(() => steers().length === 2);
         ac.abort();
@@ -3315,176 +3294,115 @@ describe("Codex mid-turn steering", () => {
         expect(steers()[1]!.input).toEqual([{ type: "text", text: "check this", text_elements: [] }]);
     });
 
-    test("two refused steers with the same words and different images: the next turn gets each image once", async () => {
+    /** A turn whose steer with an image Codex refuses (its turn just ended): the run ends, the message still queued. */
+    async function refused(o: { settings?: any } = {}) {
+        process.env.FAKE_SCENARIO = "steps";
+        process.env.FAKE_STEER_FAIL = "1";
+        process.env.FAKE_SLOW_TURN_START = "200";
+        const q = queue();
+        const a = await makeAgent({ provider: "codex", drainQueued: q.drainQueued, ...o });
+        const done = a.run("start");
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        q.items.push({ text: "late words", attachments: [image()] });
+        a.agent.queueChanged();
+        return { a, q, done };
+    }
+    /** What the runtime does with it after the run: a prompt of its own, with its image. */
+    const ownPrompt = (a: Awaited<ReturnType<typeof refused>>["a"], q: Awaited<ReturnType<typeof refused>>["q"]) => {
+        const m = q.items.shift()!;
+        return a.agent.run([{ type: "text", text: m.text }, ...m.attachments!], { signal: new AbortController().signal });
+    };
+
+    // Rounds 2 and 3 of the review: a steer with attachments is the queue's until Codex has it, so nothing of it is
+    // kept anywhere else, to be lost or sent twice.
+    test("a steer with an image Codex refuses stays queued, image and all, and nothing of it is recorded; then it goes once, as its own prompt", async () => {
+        const { a, q, done } = await refused();
+        expect(await done).toBe("done");
+        expect(steers()).toHaveLength(1);
+        expect(imagesIn(steers()[0]!.input)).toEqual([imageItem]);
+        // Not taken into the next turn either: the run ended, and the message is the queue's.
+        expect(turnStarts()).toHaveLength(1);
+        expect(q.items).toEqual([{ text: "late words", attachments: [image()] }]);
+        expect(q.recorded).toEqual([]);
+        expect(withImages(a.session)).toEqual([]);
+        expect(JSON.stringify(a.session.messages)).not.toContain("late words");
+        expect(await ownPrompt(a, q)).toBe("done");
+        expect(delivered(false)).toEqual([imageItem]);
+    });
+
+    test("one with an image queued as the turn ends isn't taken into the next turn (nor into a turn Codex starts for a goal): it stays queued", async () => {
+        process.env.FAKE_SCENARIO = "steps";
+        const q = queue();
+        // Waiting before the turn ends: the end of the turn drains it (no steer is tried).
+        q.items.push({ text: "with a picture", attachments: [image()] });
+        const a = await makeAgent({ provider: "codex", drainQueued: q.drainQueued });
+        expect(await a.run("start")).toBe("done");
+        expect(turnStarts()).toHaveLength(1);
+        expect(steers()).toEqual([]);
+        expect(q.items).toHaveLength(1);
+        expect(withImages(a.session)).toEqual([]);
+    });
+
+    test("two refused steers with the same words and different images both stay queued, each with its own image", async () => {
         process.env.FAKE_SCENARIO = "slow";
         process.env.FAKE_STEER_FAIL = "1";
-        const host: ReturnType<typeof withImage>[] = [];
+        const q = queue();
         const ac = new AbortController();
-        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
+        const a = await makeAgent({ provider: "codex", drainQueued: q.drainQueued });
         const done = a.run("start", ac.signal);
         await until(() => logLines().some((l) => l.received?.method === "turn/start"));
         await Bun.sleep(50);
-        host.push(withImage("check this"));
+        q.items.push({ text: "check this", attachments: [image()] });
         a.agent.queueChanged();
         await until(() => steers().length === 1);
-        host.push(withOther("check this"));
+        q.items.push({ text: "check this", attachments: [image(OTHER)] });
         a.agent.queueChanged();
         await until(() => steers().length === 2);
-        expect(steers()[1]!.input).toContainEqual(otherItem);
-        expect(steers()[1]!.input).not.toContainEqual(imageItem);
-        await Bun.sleep(20);
         ac.abort();
         expect(await done).toBe("aborted");
-        delete process.env.FAKE_SCENARIO;
-        expect(await a.run("next")).toBe("done");
-        const images = turnStarts()[1].input.filter((i: any) => i.type === "image");
-        expect(images).toEqual([imageItem, otherItem]);
-        expect(turnStarts()[1].input.find((i: any) => i.type === "text").text).toContain("with 2 attachments");
+        expect(q.items).toEqual([{ text: "check this", attachments: [image()] }, { text: "check this", attachments: [image(OTHER)] }]);
+        expect(withImages(a.session)).toEqual([]);
     });
 
-    // Finding 3: the reminder says an image goes with it; after a restart, it still does.
-    test("a refused steer's image reaches Codex after Harness restarts, as its words do", async () => {
-        process.env.FAKE_SCENARIO = "slow";
-        process.env.FAKE_STEER_FAIL = "1";
-        const host: ReturnType<typeof withImage>[] = [];
-        const ac = new AbortController();
-        const session = Session.create(cwd, { persist: true });
-        const a = await makeAgent({ provider: "codex", session, drainQueued: () => host.splice(0) });
-        const done = a.run("start", ac.signal);
-        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
-        await Bun.sleep(50);
-        host.push(withImage("refused before restart"));
-        a.agent.queueChanged();
-        await until(() => steers().length === 1);
-        await Bun.sleep(20);
-        ac.abort();
-        expect(await done).toBe("aborted");
-        const path = session.path;
-        session.release();
-        forgetClient("codex");
-        delete process.env.FAKE_SCENARIO;
-        const b = await makeAgent({ provider: "codex", session: Session.load(path) });
-        expect(await b.run("next")).toBe("done");
-        expect(turnStarts()).toHaveLength(2);
-        const text = turnStarts()[1].input.find((i: any) => i.type === "text").text;
-        expect(text).toContain("with an attachment, sent with this message");
-        expect(turnStarts()[1].input.filter((i: any) => i.type === "image")).toEqual([imageItem]);
-        // And once only.
-        expect(await b.run("after")).toBe("done");
-        expect(turnStarts()[2].input).not.toContainEqual(imageItem);
-    });
-
-    // Finding 4: rewound away, it's gone: not sent with an unrelated prompt, nor twice with the draft sent again.
-    test("a refused steer's image rewound away isn't sent with the next prompt; the restored draft sends it once", async () => {
-        process.env.FAKE_SCENARIO = "slow";
-        process.env.FAKE_STEER_FAIL = "1";
-        const host: ReturnType<typeof withImage>[] = [];
-        const ac = new AbortController();
-        const a = await makeAgent({ provider: "codex", drainQueued: () => host.splice(0) });
-        const done = a.run("start", ac.signal);
-        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
-        await Bun.sleep(50);
-        host.push(withImage("refused words"));
-        a.agent.queueChanged();
-        await until(() => steers().length === 1);
-        await Bun.sleep(20);
-        ac.abort();
-        expect(await done).toBe("aborted");
-        delete process.env.FAKE_SCENARIO;
-        const at = a.session.messages.findIndex((m) => m.role === "user" && m.meta?.kind === "prompt" && JSON.stringify(m.content).includes("refused words"));
-        expect(at).toBeGreaterThan(0);
-        a.agent.rewind(at);
-        expect(await a.run("unrelated")).toBe("done");
-        expect(turnStarts()[1].input).not.toContainEqual(imageItem);
-        // The draft sent again: its image goes once.
-        expect(await a.agent.run([{ type: "text", text: "refused words" }, { type: "image", mediaType: "image/png", data: PIXEL }], { signal: new AbortController().signal })).toBe("done");
-        expect(turnStarts()[2].input.filter((i: any) => i.type === "image")).toEqual([imageItem]);
-    });
-
-    /** A turn on Codex that refuses an image steer ("refused words") and is then interrupted, as the user does. */
-    async function refusedImage(session?: InstanceType<typeof Session>) {
-        process.env.FAKE_SCENARIO = "slow";
-        process.env.FAKE_STEER_FAIL = "1";
-        const host: ReturnType<typeof withImage>[] = [];
-        const ac = new AbortController();
-        const a = await makeAgent({ provider: "codex", session, drainQueued: () => host.splice(0) });
-        const done = a.run("start", ac.signal);
-        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
-        await Bun.sleep(50);
-        host.push(withImage("refused words"));
-        a.agent.queueChanged();
-        await until(() => steers().length === 1);
-        await Bun.sleep(20);
-        return { a, ac, done };
-    }
-    const imagesIn = (start: any) => start.input.filter((i: any) => i.type === "image");
-
-    // Review round 2 of #299, finding 1: delivery is what the backend confirms, not a later prompt.
-    test("a refused steer's image waits through a prompt Codex never started (it couldn't start), and goes with the next", async () => {
-        const { a, ac, done } = await refusedImage();
-        ac.abort();
-        expect(await done).toBe("aborted");
-        delete process.env.FAKE_SCENARIO;
-        process.env.FAKE_ACCOUNT = "none";
-        expect(await a.run("try this")).toBe("error");
-        expect(turnStarts()).toHaveLength(1);
-        delete process.env.FAKE_ACCOUNT;
-        expect(await a.run("again")).toBe("done");
-        expect(turnStarts()).toHaveLength(2);
-        expect(imagesIn(turnStarts()[1])).toEqual([imageItem]);
-        // Its words go too: the image isn't sent without what the user said with it.
-        expect(turnStarts()[1].input.find((i: any) => i.type === "text").text).toContain("refused words");
-        expect(await a.run("after")).toBe("done");
-        expect(imagesIn(turnStarts()[2])).toEqual([]);
-    });
-
-    test("a refused steer's image waits through /goal's status (answered without a turn), and goes with the next prompt", async () => {
-        const { a, ac, done } = await refusedImage();
-        ac.abort();
-        expect(await done).toBe("aborted");
-        delete process.env.FAKE_SCENARIO;
-        // /goal with nothing after it: the goal's status, which Codex's client answers itself.
-        expect(await a.run("/goal")).toBe("done");
-        expect(turnStarts()).toHaveLength(1);
-        expect(await a.run("next")).toBe("done");
-        expect(imagesIn(turnStarts()[1])).toEqual([imageItem]);
-        expect(turnStarts()[1].input.find((i: any) => i.type === "text").text).toContain("refused words");
-    });
-
-    // Finding 2: the session is let go of before Codex has stopped (Runtime's close): what it never got is saved first.
-    test("a refused steer's image is saved when the session is closed while Codex is still stopping, and goes after reopening", async () => {
-        const session = Session.create(cwd, { persist: true });
-        process.env.FAKE_IGNORE_INTERRUPT = "1";
-        const { a, ac, done } = await refusedImage(session);
-        ac.abort();
-        // As Runtime.close does once the turn is slow to stop: noted, then the file let go of.
-        await a.agent.noteStopped();
-        const path = session.path;
-        session.release();
-        expect(await done).toBe("aborted");
-        delete process.env.FAKE_IGNORE_INTERRUPT;
-        forgetClient("codex");
+    test("a refused steer's image waits, queued, through a prompt Codex never started (it couldn't start), and goes once after", async () => {
+        const { a, q, done } = await refused();
+        expect(await done).toBe("done");
         delete process.env.FAKE_SCENARIO;
         delete process.env.FAKE_STEER_FAIL;
-        const b = await makeAgent({ provider: "codex", session: Session.load(path) });
-        expect(await b.run("next")).toBe("done");
-        const start = turnStarts().at(-1);
-        expect(imagesIn(start)).toEqual([imageItem]);
-        expect(start.input.find((i: any) => i.type === "text").text).toContain("refused words");
-    }, 20_000);
+        process.env.FAKE_ACCOUNT = "none";
+        expect(await a.run("try this")).toBe("error");
+        expect(q.items).toHaveLength(1);
+        delete process.env.FAKE_ACCOUNT;
+        expect(await a.run("again")).toBe("done");
+        expect(delivered(false)).toEqual([]);
+        expect(await ownPrompt(a, q)).toBe("done");
+        expect(delivered(false)).toEqual([imageItem]);
+    });
 
-    // Round 2's note on compaction: Codex's own compaction moves its cursor past the reminder (its words then
-    // don't go: that predates this), so its image doesn't either: never an image without what was said with it.
-    test("after Codex compacts its thread, a refused steer's image doesn't go without its words", async () => {
-        const { a, ac, done } = await refusedImage();
-        ac.abort();
-        expect(await done).toBe("aborted");
+    test("a refused steer's image isn't in a Stop hook's continuation: it stays queued, and goes once after", async () => {
+        const counter = join(tempDir(), "stopped");
+        const settings = { hooks: { Stop: [{ command: `[ -e '${counter}' ] && exit 0; touch '${counter}'; echo 'keep going' >&2; exit 2` }] } };
+        const { a, q, done } = await refused({ settings });
+        expect(await done).toBe("done");
+        expect(existsSync(counter)).toBe(true);
+        // The continuation is a turn of its own, without the image.
+        expect(turnStarts()).toHaveLength(2);
+        expect(delivered(false)).toEqual([]);
+        expect(q.items).toHaveLength(1);
+        delete process.env.FAKE_STEER_FAIL;
+        expect(await ownPrompt(a, q)).toBe("done");
+        expect(delivered(false)).toEqual([imageItem]);
+    });
+
+    test("a refused steer's image is the queue's through Codex's compaction: nothing of it is in the history to lose, and it goes once after", async () => {
+        const { a, q, done } = await refused();
+        expect(await done).toBe("done");
         delete process.env.FAKE_SCENARIO;
+        delete process.env.FAKE_STEER_FAIL;
         expect(await a.agent.compact({ auto: false, signal: new AbortController().signal })).toBe(true);
-        expect(await a.run("next")).toBe("done");
-        const start = turnStarts().at(-1);
-        const said = start.input.find((i: any) => i.type === "text").text.includes("refused words");
-        expect(imagesIn(start).length > 0).toBe(said);
+        expect(q.items).toHaveLength(1);
+        expect(await ownPrompt(a, q)).toBe("done");
+        expect(delivered(false)).toEqual([imageItem]);
     });
 
     test("a wake while the turn runs steers it at once, marked as the harness's and not as a prompt", async () => {

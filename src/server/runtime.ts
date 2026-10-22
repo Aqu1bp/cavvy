@@ -119,6 +119,8 @@ interface Queued {
     mode: FollowUp;
     /** Restored after a restart: it waits for the user (Send now) rather than run on its own. */
     held?: boolean;
+    /** With attachments, on its way into the running turn: it stays queued until that has it (steerAttached). */
+    sending?: boolean;
 }
 
 const ALL_KINDS: readonly AttachmentKind[] = ["image", "text", "pdf"];
@@ -2150,10 +2152,59 @@ export class Runtime {
 
     private drainQueued(record?: () => void, admit?: (text: string, attachments?: readonly AttachedPart[]) => Promise<Admitted>): (string | Admitted)[] | Promise<Admitted[]> {
         // Messages to steer with; queued ones, held ones, commands, and those with images or files where the turn can't take them wait for their own turn.
-        const steering = () => this.queued.filter((q) => q.mode === "steer" && !q.held && !this.waits(q));
-        const take = steering();
-        if (!take.length) return [];
-        return admit ? this.admitQueued(take, admit, steering, record) : this.steerWith(take, record);
+        const steering = () => this.queued.filter((q) => q.mode === "steer" && !q.held && !q.sending && !this.waits(q));
+        // An API model's request takes them all at once, attachments too.
+        const provider = this.agent?.model.provider ?? this.model?.provider ?? "";
+        if (getProvider(provider)?.kind !== "agent") {
+            const take = steering();
+            if (!take.length) return [];
+            return admit ? this.admitQueued(take, admit, steering, record) : this.steerWith(take, record);
+        }
+        // An agent CLI's: those with only words as they always have; one with attachments alone, once they've gone.
+        const words = () => steering().filter((q) => !q.attachments?.length);
+        const take = words();
+        if (take.length) return admit ? this.admitQueued(take, admit, words, record) : this.steerWith(take, record);
+        const attached = steering()[0];
+        return attached ? this.steerAttached(attached, record, admit) : [];
+    }
+
+    /**
+     * One with attachments steers alone, and only once what runs the turn has it (Admitted.transaction): until
+     * then it stays in the queue (on disk too), marked as on its way so no other drain takes it. Taken out of the
+     * queue and recorded when it's accepted; left there, attachments and all, if it's refused (Codex refused its
+     * turn/steer, or the turn ended or stopped first), to go as a prompt of its own after the run (or back to the
+     * composer, after an interrupt). Its hooks run first, as the others' do.
+     */
+    private async steerAttached(q: Queued, record?: () => void, admit?: (text: string, attachments?: readonly AttachedPart[]) => Promise<Admitted>): Promise<Admitted[]> {
+        q.sending = true;
+        const a: Admitted = admit ? await admit(q.text, q.attachments) : { text: q.text, admission: "go" };
+        if (a.admission !== "go" || !this.queued.includes(q) || q.held) {
+            q.sending = undefined;
+            // One a hook blocked goes back to the composer, to change or drop (the hook's warning says why).
+            if (a.admission === "blocked" && this.queued.includes(q)) {
+                this.queued = this.queued.filter((x) => x !== q);
+                this.queueUpdated();
+                this.engine.draft(this, q.text, q.attachments ?? []);
+            }
+            return [];
+        }
+        let open = true;
+        const transaction = {
+            accepted: () => {
+                if (!open) return false;
+                open = false;
+                q.sending = undefined;
+                // The session is being let go of: it stays queued (on disk), to go once it's reopened.
+                if (this.closed) return false;
+                this.steerWith([q], record);
+                return true;
+            },
+            refused: () => {
+                open = false;
+                q.sending = undefined;
+            },
+        };
+        return [{ ...a, attachments: q.attachments, transaction }];
     }
 
     /**
@@ -2196,6 +2247,8 @@ export class Runtime {
         this.drainedTurn(take.map((q) => q.text).filter((t) => t.trim()).join("\n\n"), attachments);
         // Prepared as a sent prompt's are: the user hears what the model may not take (said in their turn).
         this.attachmentWarnings(attachments, (text, level) => this.notice(text, level));
+        // An agent CLI's turn: one with attachments that waited for these (it goes alone, after them) can go next.
+        if (getProvider(this.agent?.model.provider ?? this.model?.provider ?? "")?.kind === "agent" && this.queued.some((q) => q.attachments?.length && q.mode === "steer" && !q.held && !q.sending && !this.waits(q))) queueMicrotask(() => this.agent?.queueChanged());
         return take.map((q) => (q.attachments?.length ? { text: q.text, admission: "go" as const, attachments: q.attachments } : q.text));
     }
 
@@ -2206,7 +2259,7 @@ export class Runtime {
      * compacts), and only once the run is over. Held ones wait for the user.
      */
     private async drainWaiting(steps: { record(): void; admit(parts: UserContent[], display: string): Promise<Admission> }): Promise<{ parts: UserContent[]; display: string } | undefined> {
-        const q = this.queued.find((x) => !x.held && !isCommand(x));
+        const q = this.queued.find((x) => !x.held && !x.sending && !isCommand(x));
         if (!q) return undefined;
         // It stays in the queue (on disk too) while it's prepared and its hooks run: an interrupt meanwhile
         // hands it back to the composer as it is, attachments and place included.
@@ -2611,7 +2664,7 @@ export class Runtime {
 
     /** What runs when the turn ends: the first message that isn't held. */
     nextQueued(): Queued | undefined {
-        return this.queued.find((q) => !q.held);
+        return this.queued.find((q) => !q.held && !q.sending);
     }
 
     private queueState() {

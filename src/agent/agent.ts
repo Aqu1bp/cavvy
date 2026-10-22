@@ -15,7 +15,6 @@ import type {
     ImagePart,
     Message,
     ModelInfo,
-    PdfPart,
     ProviderClient,
     StreamEvent,
     TextPart,
@@ -44,7 +43,7 @@ import { isReadOnlyCommand, notReadOnly } from "../permissions/bash-safety";
 import { mcpToolMatches } from "../permissions/rules";
 import { toolNameFor } from "../mcp/manager";
 import { costOf, promptTokens, type CostEstimate } from "../providers/pricing";
-import { Session } from "./session";
+import { redactMessage, Session } from "./session";
 import { hookApplies, isAsync, matcherFn, runHandler, runHooks, runInBackground, type HookEvent, type HookOutcome, type HookServices } from "./hooks";
 import { FileWatchHooks, type FileEvent } from "./file-watch-hooks";
 import { instructionsLoadedHooks, sessionStartHooks } from "./session-hooks";
@@ -203,6 +202,19 @@ export interface Admitted {
     context?: string;
     /** Images and files sent with it: they go into the turn with its text, as a prompt's do. */
     attachments?: AttachedPart[];
+    /**
+     * For one with attachments: it's still the host's (queued, attachments and all) until what runs the turn has
+     * it. `accepted` once it does (an API model's request: at once; an agent CLI: SteerMessage.settle): the host
+     * takes it out of its queue and records it, and it's stored; false when the host can't any more (it's closing:
+     * it stays queued, on disk). `refused` when it doesn't go: it stays queued, to go as a prompt of its own.
+     */
+    transaction?: SteerTransaction;
+}
+
+/** A message with attachments steering a turn: the host's until it has gone (Admitted.transaction). */
+export interface SteerTransaction {
+    accepted(): boolean;
+    refused(): void;
 }
 
 export interface Helpers {
@@ -989,7 +1001,7 @@ export class Agent {
      * UserPromptSubmit hooks as a prompt sent on its own is (runInner): one a hook blocks doesn't join the
      * turn, and what they add goes with them. `live`: whether the backend can still take them.
      */
-    private async drainSteering(signal: AbortSignal, record?: () => void, live?: () => boolean): Promise<{ texts: string[]; context: string[]; attachments: AttachedPart[] }> {
+    private async drainSteering(signal: AbortSignal, record?: () => void, live?: () => boolean, defer = false): Promise<{ texts: string[]; context: string[]; attachments: AttachedPart[]; transaction?: SteerTransaction }> {
         const hooked = !this.o.isSubagent && Boolean(this.hookSettings().hooks?.UserPromptSubmit?.length);
         const stopped = () => this.cutOff || signal.aborted || live?.() === false;
         const admit = async (text: string, attachments?: readonly AttachedPart[]): Promise<Admitted> => {
@@ -1003,9 +1015,19 @@ export class Agent {
         const context: string[] = [];
         const attachments: AttachedPart[] = [];
         const lost: string[] = [];
+        let transaction: SteerTransaction | undefined;
         for (const d of drained) {
             if (typeof d !== "string") {
-                if (d.admission !== "go") continue;
+                if (d.admission !== "go") {
+                    d.transaction?.refused();
+                    continue;
+                }
+                // One with attachments goes once the turn has it: an API model's request takes it now; a CLI's
+                // backend says when (`defer`, SteerMessage.settle).
+                if (d.transaction) {
+                    if (defer) transaction = d.transaction;
+                    else if (!d.transaction.accepted()) continue;
+                }
                 texts.push(d.text);
                 if (d.context) context.push(d.context);
                 if (d.attachments) attachments.push(...d.attachments);
@@ -1025,7 +1047,7 @@ export class Agent {
             }
         }
         if (lost.length) this.emit({ type: "notice", level: "warn", message: `Not sent (stopped while its UserPromptSubmit hooks ran): ${lost.join("\n\n")}` });
-        return { texts, context, attachments };
+        return { texts, context, attachments, ...(transaction ? { transaction } : {}) };
     }
 
     private async checkpoint(prompt: string, snapshotOnly = false, record?: (checkpoint: number | undefined) => void): Promise<number | undefined> {
@@ -1087,23 +1109,13 @@ export class Agent {
         this.cutOff = true;
         const stopping = this.turnSnapshots?.stop() ?? Promise.resolve();
         // Not running, or its prompt isn't in yet (then nothing of the turn is).
-        if (this.running && this.prompted) this.noteInterrupted();
-        // What an agent CLI holds and never got (Codex's refused steers), with what's attached, and what this
-        // turn's prompt carried if the CLI hasn't taken it: saved now, as the run's end would, which is too late.
-        const held = this.backendHolding?.() ?? [];
-        if (held.length) this.backendUndelivered?.([...held]);
-        this.saveBackendStop();
-        return stopping;
-    }
-
-    /** The interrupt, as the turn would note it (noteStopped). */
-    private noteInterrupted() {
+        if (!this.running || !this.prompted) return stopping;
         const last = this.session.messages.at(-1);
-        if (last?.role === "user" && (last.meta?.kind === "interrupt" || last.content.some((p) => p.type === "text" && p.text === TOOL_INTERRUPT))) return;
+        if (last?.role === "user" && (last.meta?.kind === "interrupt" || last.content.some((p) => p.type === "text" && p.text === TOOL_INTERRUPT))) return stopping;
         const calls = last?.role === "assistant" ? toolCallsOf(last) : [];
         if (!calls.length) {
             this.interrupted(false);
-            return;
+            return stopping;
         }
         // Tools still running: their calls get results, or the next request is refused.
         this.session.push({
@@ -1112,6 +1124,7 @@ export class Agent {
             meta: { kind: "tool_results" },
         });
         this.emit({ type: "turn_end", reason: "aborted" });
+        return stopping;
     }
 
     /**
@@ -1758,87 +1771,15 @@ export class Agent {
         } finally {
             stopWaking?.();
             this.delegateCalls = [];
-            this.backendHolding = this.backendUndelivered = undefined;
-            this.saveBackendStop();
+            // Written after the backend sync cursor: a resumed CLI must see this
+            // on its next prompt, including after reopening or switching models.
+            if (this.backendStopReminders.length) {
+                this.session.push({ role: "user", content: [reminder(this.backendStopReminders.splice(0).join("\n"))], meta: { kind: "reminder" } });
+            }
         }
     }
-
-    /**
-     * What the backend never received, as a reminder written after its sync cursor: a resumed CLI must see it
-     * on its next prompt, including after reopening or switching models. What was attached to those messages is
-     * saved with it (see pendingBackendMedia), and so is what this run's prompt carried for earlier ones if the
-     * backend never took that prompt. At the run's end, or before the session is let go of (noteStopped).
-     */
-    private saveBackendStop() {
-        const carried = this.carrying;
-        this.carrying = undefined;
-        if (carried && !carried.taken) this.carryBack(carried);
-        const media = this.takeStopMedia();
-        if (!this.backendStopReminders.length) return;
-        const undeliveredMedia = media.images.length || media.documents.length ? media : undefined;
-        this.session.push({ role: "user", content: [reminder(this.backendStopReminders.splice(0).join("\n"))], meta: { kind: "reminder", ...(undeliveredMedia ? { undeliveredMedia } : {}) } });
-    }
-
-    /**
-     * The prompt that carried what was attached to messages the backend never received didn't reach it either
-     * (BackendResult.notTaken, or the CLI failed): that goes on to the next prompt, on a reminder written after
-     * this one. With its words where the turn's end counted their reminder as seen, so they still go together.
-     */
-    private carryBack(c: NonNullable<Agent["carrying"]>) {
-        const synced = this.session.backends.get(c.provider)?.synced ?? 0;
-        const passed = c.from.flatMap((i) => {
-            const m = this.session.messages[i];
-            return i < synced && m?.role === "user" && m.meta?.kind === "reminder" ? [textOf(m).replace(/^<system-reminder>\n|\n<\/system-reminder>$/g, "")] : [];
-        });
-        this.backendStopReminders.unshift(...(passed.length ? passed : ["What was attached to the user's messages that your turn ended before reaching (said above) is sent with this message."]));
-        this.backendStopMedia.images.unshift(...c.media.images);
-        this.backendStopMedia.documents.unshift(...c.media.documents);
-    }
-
-    /** What this run's prompt carries for messages a backend never received (pendingBackendMedia): where from, and whether the backend took it. */
-    private carrying?: { provider: string; media: { images: ImagePart[]; documents: PdfPart[] }; from: number[]; taken: boolean };
-    /** Reads what the running backend holds and hasn't delivered (BackendHost.holding). */
-    private backendHolding?: () => readonly SteerMessage[];
-    /** The running backend's host's undelivered(), for noteStopped. */
-    private backendUndelivered?: (messages: SteerMessage[]) => void;
-    /** Drained messages already saved as undelivered: not saved twice (noteStopped, then the run's end). */
-    private savedUndelivered = new WeakSet<SteerMessage>();
 
     private backendStopReminders: string[] = [];
-    /**
-     * The images and PDFs of messages to steer with that the backend never received, during its run: a Stop
-     * hook's next round takes them, and otherwise the run's end saves them on its reminder (runBackend).
-     * Nothing is kept here between runs.
-     */
-    private backendStopMedia: { images: ImagePart[]; documents: PdfPart[] } = { images: [], documents: [] };
-
-    private takeStopMedia(): { images: ImagePart[]; documents: PdfPart[] } {
-        const m = this.backendStopMedia;
-        this.backendStopMedia = { images: [], documents: [] };
-        return m;
-    }
-
-    /**
-     * What was attached to messages an agent CLI never received, saved on the reminders of them (saveBackendStop)
-     * that nothing has been sent since: those just before the prompt at `promptIndex`, back to the last message
-     * that went to a model (one whose prompt never reached it wrote another reminder: carryBack). From the
-     * session, so they're there after it's reopened, and gone once rewound away. Only those past the backend's
-     * sync cursor, whose words go with this prompt too (backendPrompt): never an image without them.
-     */
-    private pendingBackendMedia(promptIndex: number, provider: string): { images: ImagePart[]; documents: PdfPart[]; from: number[] } {
-        const out: { images: ImagePart[]; documents: PdfPart[]; from: number[] } = { images: [], documents: [], from: [] };
-        const floor = this.session.backends.get(provider)?.synced ?? 0;
-        for (let i = promptIndex - 1; i >= floor; i--) {
-            const m = this.session.messages[i]!;
-            if (m.role !== "user" || (m.meta?.kind !== "reminder" && m.meta?.kind !== "interrupt")) break;
-            if (!m.meta.undeliveredMedia) continue;
-            out.images.unshift(...m.meta.undeliveredMedia.images);
-            out.documents.unshift(...m.meta.undeliveredMedia.documents);
-            out.from.unshift(i);
-        }
-        return out;
-    }
-
     /** How a backend runs the harness's hooks: whole events (Codex's items), or one handler Claude Code calls back for. */
     private backendHooks(signal: AbortSignal): Pick<BackendHost, "hooks" | "hookHandler"> {
         return {
@@ -1915,24 +1856,13 @@ export class Agent {
             },
             // Saved past the sync cursor (see runBackend), so the next turn is sent them, after a restart too.
             diagnose: (paths) => this.diagnoseBackendEdits(paths, signal),
-            undelivered: (all) => {
-                // Not those saved already, before the session was let go of (noteStopped).
-                const messages = all.filter((m) => !this.savedUndelivered.has(m));
-                for (const m of messages) this.savedUndelivered.add(m);
+            // Messages with attachments never get here: they go only once the backend has them (SteerMessage.settle).
+            undelivered: (messages) => {
                 const news = messages.filter((m) => wakeTexts.has(m.text)).map((m) => m.text);
-                const typed = messages.filter((m) => !wakeTexts.has(m.text));
-                // What was attached to each goes with the next turn's prompt (saved with this reminder at the run's end).
-                for (const m of typed) {
-                    this.backendStopMedia.images.push(...m.images);
-                    this.backendStopMedia.documents.push(...m.documents);
-                }
-                const count = typed.reduce((n, m) => n + m.images.length + m.documents.length, 0);
-                const attachedNote = count ? ` (with ${count === 1 ? "an attachment" : `${count} attachments`}, sent with this message)` : "";
-                const words = typed.map((m) => m.text).filter((t) => t.trim());
-                if (typed.length) this.backendStopReminders.push(`The user sent this while you were working${attachedNote}, but your turn ended before it reached you${words.length ? `:\n${words.join("\n\n")}` : "."}`);
+                const typed = messages.filter((m) => !wakeTexts.has(m.text)).map((m) => m.text);
+                if (typed.length) this.backendStopReminders.push(`The user sent this while you were working, but your turn ended before it reached you:\n${typed.join("\n\n")}`);
                 if (news.length) this.backendStopReminders.push(`This arrived while you were working, but your turn ended before it reached you:\n${news.join("\n\n")}`);
             },
-            holding: (get) => (this.backendHolding = get),
             fromWake: (text) => wakeTexts.has(text),
             requestOf: (text) => typed.get(text),
             drainQueued: async (progress, live) => {
@@ -1944,34 +1874,56 @@ export class Agent {
                     recorded = true;
                     this.recordBackendTurn(provider, name, progress());
                 };
-                const steer = await this.drainSteering(signal, record, live);
+                const steer = await this.drainSteering(signal, record, live, true);
                 const queued = steer.texts;
                 // Events a watch raised join the running turn as the user's messages do (Codex steers with them at once).
                 const woke = this.takeWakes();
                 if (!queued.length && !woke) return [];
-                record();
+                const display = joinSteered(queued, "\n");
+                const content: UserContent[] = [{ type: "text", text: joinSteered(queued, "\n\n") }, ...steer.attachments, ...steer.context.map(reminder)];
+                /** Its place in the session, after what the backend said before it, as the prompt it is. */
+                const store = () => this.checkpoint(display, false, (checkpoint) => void this.session.push({ role: "user", content, meta: { kind: "prompt", display, checkpoint } }));
                 const out: SteerMessage[] = [];
+                const t = steer.transaction;
                 if (queued.length) {
-                    await this.checkpoint(joinSteered(queued, "\n"), false, (checkpoint) => {
-                        const m = this.session.push({ role: "user", content: [{ type: "text", text: joinSteered(queued, "\n\n") }, ...steer.attachments, ...steer.context.map(reminder)], meta: { kind: "prompt", display: joinSteered(queued, "\n"), checkpoint } });
-                        // With what hooks add after it, apart, as a prompt sent on its own is (forBackend); its
-                        // images and PDFs (for a backend that reads them) apart too, the rest of what's attached as
-                        // text. They go with this message alone (not with others in the same words).
-                        const { text, images, documents } = forBackend(m.content, readsPdf(this.model));
-                        // The stored (redacted) text, so the request stays a prefix of what the backend gets.
-                        const first = m.content[0];
-                        typed.set(text, first?.type === "text" ? first.text : joinSteered(queued, "\n\n"));
+                    // As it's stored (redacted), with what hooks add after it, apart, as a prompt sent on its own is
+                    // (forBackend); its images and PDFs (for a backend that reads them) apart too, the rest of what's
+                    // attached as text. The stored text, so the request stays a prefix of what the backend gets.
+                    const sent = redactMessage({ role: "user", content }).content as UserContent[];
+                    const { text, images, documents } = forBackend(sent, readsPdf(this.model));
+                    const first = sent[0];
+                    typed.set(text, first?.type === "text" ? first.text : joinSteered(queued, "\n\n"));
+                    if (t) {
+                        // With attachments: the host's until the backend has it (settle). Then it's recorded, after
+                        // what the backend said before it; if it never goes, it stays queued, attachments and all.
+                        let settled = false;
+                        const settle = async (sentIt: boolean) => {
+                            if (settled) return;
+                            settled = true;
+                            if (!sentIt || this.cutOff) return t.refused();
+                            if (!t.accepted()) return;
+                            record();
+                            await store();
+                        };
+                        out.push({ text, images, documents, settle });
+                    } else {
+                        record();
+                        await store();
                         out.push({ text, images, documents });
-                    });
-                }
+                    }
+                } else record();
                 if (woke) {
                     // Not a prompt: no checkpoint, and the auto-mode reviewer doesn't read it as the user's request.
+                    if (t) record();
                     const m = this.session.push({ role: "user", content: [reminder(woke)], meta: { kind: "reminder" } });
                     const text = textOf(m);
                     wakeTexts.add(text);
                     out.push({ text, images: [], documents: [] });
                 }
-                if (this.cutOff) return [];
+                if (this.cutOff) {
+                    t?.refused();
+                    return [];
+                }
                 return out;
             },
             drainWaiting: async (progress, live) => {
@@ -2037,14 +1989,8 @@ export class Agent {
         const goalCommand = GOAL_COMMAND.test(text);
         const toSend = (r?: { synced: number }) =>
             goalCommand && prompt === text ? { prompt, goalContext: this.backendPrompt("", promptIndex, r).trim() || undefined } : { prompt: this.backendPrompt(prompt, promptIndex, r) };
-        this.backendUndelivered = host.undelivered;
-        // What was attached to messages the backend's last turn never took goes first: saved in the session
-        // (pendingBackendMedia), so reopening keeps it and a rewind past it drops it. Until the backend takes
-        // this prompt it's still owed (carryBack).
-        const carried = this.pendingBackendMedia(promptIndex, provider);
-        this.carrying = carried.from.length ? { provider, media: carried, from: carried.from, taken: false } : undefined;
-        let promptImages = [...carried.images, ...images];
-        let promptDocuments = [...carried.documents, ...documents];
+        let promptImages = images;
+        let promptDocuments = documents;
         while (true) {
             const resume = this.backendResume(provider, folder);
             this.emit({ type: "request_start" });
@@ -2060,8 +2006,6 @@ export class Agent {
                     const fresh = toSend();
                     result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...fresh, synthetic: woken || fresh.prompt !== prompt, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: undefined });
                 }
-                // The prompt that carried them reached the model: they're delivered.
-                if (this.carrying && !result.notTaken) this.carrying.taken = true;
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);
                 this.endNotice("error", redact((e as Error).message || String(e)));
@@ -2104,9 +2048,8 @@ export class Agent {
                 if (h?.blocked) {
                     stopRounds++;
                     prompt = reminder([`A ${stopEvent} hook asked you to keep going:\n${redact(h.blocked)}`, ...this.backendStopReminders.splice(0)].join("\n\n")).text;
-                    const carried = this.takeStopMedia();
-                    promptImages = carried.images;
-                    promptDocuments = carried.documents;
+                    promptImages = [];
+                    promptDocuments = [];
                     this.session.push({ role: "user", content: [{ type: "text", text: prompt }], meta: { kind: "reminder" } });
                     promptIndex = this.session.messages.length - 1;
                     this.syncBackend(provider, 1);

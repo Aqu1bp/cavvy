@@ -397,8 +397,7 @@ export class CodexBackend implements AgentBackendClient {
         const turn = new CodexTurn(this.def, t, this.labels, this.limitOrdering(t.accountId));
         this.turns.add(turn);
         try {
-            const r = await turn.run();
-            return turn.taken ? r : { ...r, notTaken: true };
+            return await turn.run();
         } finally {
             this.turns.delete(turn);
         }
@@ -549,8 +548,6 @@ export class CodexTurn {
     private steering: Promise<void> = Promise.resolve();
     /** Steered messages the turn ended before taking, each with what's attached to it: they start the next. */
     private unsteered: SteerMessage[] = [];
-    /** Codex took the prompt: a turn started with it (turn/start), or a turn Codex started took it (turn/steer). */
-    taken = false;
     /** One came while no turn was running (it was starting): steered once it is. */
     private steerWaiting = false;
     /** Why an approval was refused, by item, for the item's result. */
@@ -749,8 +746,6 @@ export class CodexTurn {
         t.signal.addEventListener("abort", onAbort, { once: true });
         // A message to steer with goes into the running turn as it's sent (turn/steer), not at its end.
         const stopSteering = opts.compact ? undefined : this.host.onQueued?.(() => this.steerQueued());
-        // What it holds and hasn't delivered, for a session closed before it has stopped (BackendHost.holding).
-        if (!opts.compact) this.host.holding?.(() => this.unsteered);
         try {
             await withTimeout(handshake(this.rpc, Boolean(accountPermissions)), 30_000, "Codex didn't start (no answer to initialize)");
             const account = parseAccount(await this.rpc.request("account/read", {}));
@@ -906,7 +901,6 @@ export class CodexTurn {
                             }
                         }
                         this.turnId = r?.turn?.id;
-                        if (this.turnId) this.taken = true;
                         this.threadMode = mode;
                         // Which turn that started meanwhile was this one: the others were Codex's own.
                         this.settleStarted(this.turnId, mode);
@@ -951,7 +945,8 @@ export class CodexTurn {
                     await this.steering;
                     const followUp = this.followUp && this.followUps++ < 5 ? this.followUp : undefined;
                     this.followUp = undefined;
-                    const next: SteerMessage[] = followUp ? [{ text: followUp, images: [], documents: [] }] : this.unsteered.length ? this.unsteered.splice(0) : await this.host.drainQueued(() => this.progress());
+                    // One with attachments isn't taken here: it stays queued, and goes as a prompt of its own once this run ends.
+                    const next: SteerMessage[] = followUp ? [{ text: followUp, images: [], documents: [] }] : this.unsteered.length ? this.unsteered.splice(0) : await this.holdOver(await this.host.drainQueued(() => this.progress()));
                     if (!next.length) {
                         // The goal still active: Codex goes on with it in a turn of its own, which this run waits for.
                         if (this.goal?.status === "active") adopt = await this.nextGoalTurn();
@@ -1100,11 +1095,7 @@ export class CodexTurn {
             if (some) this.unsteered.push(...messages!);
             return;
         }
-        if (some)
-            await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: id, input: this.input(joined(messages!), imagesOf(messages!)) }).then(
-                () => (this.taken = true),
-                () => this.unsteered.push(...messages!),
-            );
+        if (some) await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: id, input: this.input(joined(messages!), imagesOf(messages!)) }).catch(() => this.unsteered.push(...messages!));
         // Sent while no turn was running (waiting for this one): it can take them now.
         if (this.steerWaiting) this.steerQueued();
     }
@@ -2090,18 +2081,30 @@ export class CodexTurn {
             if (!messages.length) return;
             // Into a turn that runs as the mode says, or into its restart (also when it changed while draining).
             if (this.turnId !== turnId || this.restartIfStale()) {
-                // Each as it was queued, with what's attached to it, so the user's words, a hook's additions and a watch's events stay told apart.
-                this.unsteered.push(...messages);
+                // Each as it was queued, so the user's words, a hook's additions and a watch's events stay told apart.
+                this.unsteered.push(...(await this.holdOver(messages)));
                 return;
             }
             try {
                 // With what's attached to them: turn/steer takes the same input items as turn/start (an image alone too).
                 await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: turnId, input: this.input(joined(messages), imagesOf(messages)) });
             } catch {
-                // Each as it was queued, with what's attached to it, so the user's words and a watch's events stay told apart.
-                this.unsteered.push(...messages);
+                // Each as it was queued, so the user's words and a watch's events stay told apart.
+                this.unsteered.push(...(await this.holdOver(messages)));
+                return;
             }
+            // Codex has it: one with attachments is the host's to record now.
+            for (const m of messages) await m.settle?.(true);
         }).catch(() => {});
+    }
+
+    /**
+     * Drained messages kept here for the next turn: not one with attachments, which stays the host's (queued, to go
+     * as a prompt of its own) unless Codex took it in a turn/steer (SteerMessage.settle).
+     */
+    private async holdOver(messages: SteerMessage[]): Promise<SteerMessage[]> {
+        for (const m of messages) await m.settle?.(false);
+        return messages.filter((m) => !m.settle);
     }
 
     /** Several hooks finishing after the turn all reach the next one. */
