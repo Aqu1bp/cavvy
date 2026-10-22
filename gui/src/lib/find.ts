@@ -4,7 +4,8 @@
 
 import { foldCase, type Block, type Turn } from "@shared/protocol";
 import { cardOf } from "../components/blocks/Activity";
-import { toolLabel } from "./tool-words";
+import { commandDescription, toolLabel } from "./tool-words";
+import { commandMeta, outputLines } from "./command-row";
 import { stripAnsi } from "./format";
 import { renderMarkdown } from "./markdown";
 import { splitComments } from "./review-comments";
@@ -36,7 +37,7 @@ function plain(md: string): string {
 
 /**
  * What a block shows, as find sees it. Thinking isn't searched; a tool row is its title and summary, not its
- * output (its details are for reading, not searching); a finished command's card is its output too.
+ * output (its details are for reading, not searching); a finished command's row is its command and output too.
  */
 function blockText(b: Block): string | undefined {
     switch (b.t) {
@@ -46,18 +47,25 @@ function blockText(b: Block): string | undefined {
             const l = toolLabel(b);
             // A sub-agent's row starts with its task, not the word "Agent", running or not.
             if (b.agent) return typeof b.input?.description === "string" && b.input.description.trim() ? b.input.description.trim() : l.arg;
+            if (cardOf(b) === "command") {
+                // As its row reads: what it's for, the command, what it came to; opened, all of the command and its output.
+                if (b.status === "streaming") return undefined;
+                const desc = commandDescription(b);
+                // Under way, the turn's live line shows it: its command is what find counts there (its description is the line's label).
+                if (b.status === "running" || b.status === "queued" || b.status === "awaiting") return l.arg;
+                const head = [desc, l.arg, commandMeta(b)].filter(Boolean).join(" ");
+                const command = String(b.input?.command ?? "").trim();
+                // Its output as the opened row draws it (without the exit code the tool adds: the footer, which find skips, says it).
+                const output = outputLines(b.output).join("\n");
+                return [head, command || undefined, output.trim() ? output : undefined].filter(Boolean).join("\n");
+            }
             // Still running: its argument, which its live row shows as long as it runs (nothing while the call is still arriving).
             if (b.status === "running" || b.status === "queued" || b.status === "awaiting") return l.arg;
             if (b.status === "streaming") return undefined;
             // As the row reads, a space between each part (ToolRow puts one there): verb, argument, summary.
             // A card (an edit, a command) doesn't show its verb: it's there for the screen reader only.
             const meta = b.status === "denied" ? "Declined" : b.diff && b.status === "ok" ? undefined : b.summary;
-            const head = [cardOf(b) ? undefined : l.verb, l.arg, meta].filter(Boolean).join(" ");
-            if (cardOf(b) !== "command") return head;
-            // A finished command's card opens on what it ran (all of it, when it's more than one line) and what it printed.
-            const command = String(b.input?.command ?? "").trim();
-            const output = stripAnsi(b.output ?? "");
-            return [head, command.includes("\n") ? command : undefined, output.trim() ? output : undefined].filter(Boolean).join("\n");
+            return [cardOf(b) ? undefined : l.verb, l.arg, meta].filter(Boolean).join(" ");
         }
         case "notice":
             // As it reads unfolded: the line, then each of its details.

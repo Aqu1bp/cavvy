@@ -34,13 +34,16 @@ import {
     X, GitCommitHorizontal, ArrowUpFromLine, GitPullRequestArrow } from "lucide-solid";
 import type { AgentRun, Block, ThinkingBlock, TodoEntry, ToolBlock } from "@shared/protocol";
 import { duration, firstChangedLine, plural, sleepSeconds, stripAnsi, tokens } from "../../lib/format";
-import { isLive, runningVerb, shortModelRef, toolLabel } from "../../lib/tool-words";
+import { commandDescription, isLive, runningVerb, shortModelRef, toolLabel } from "../../lib/tool-words";
+import { commandMeta, exitCode, highlightShell, outputLines, passTally, taskOf } from "../../lib/command-row";
+import { lineTone } from "../../lib/live-line";
+import { backgroundOf } from "../../lib/background";
 import { now } from "../../lib/clock";
-import { app, reportError, rpc } from "../../state/app";
+import { app, handleFor, reportError, rpc } from "../../state/app";
 import { prefs } from "../../state/prefs";
-import { openAgents, openInEditor, openReview } from "../../state/actions";
+import { openAgents, openInEditor, openReview, stopBackground } from "../../state/actions";
 import { findReveal } from "../../state/ui";
-import { Spinner } from "../ui/bits";
+import { CopyButton, Spinner } from "../ui/bits";
 import { CodeBlock } from "./CodeBlock";
 import { DiffView } from "./DiffView";
 import { Markdown } from "./Markdown";
@@ -673,16 +676,6 @@ function ToolRowContent(p: { tool: ToolBlock; activity?: boolean; detailsOnly?: 
 // card's header as the argument and the summary; the verb is there for the
 // screen reader only, and like the rest it isn't searched, since it isn't seen.
 
-/** "Done", or a test run's tally ("14 pass") when its output ends with one. */
-function okLabel(t: ToolBlock): string {
-    const lines = stripAnsi(t.output ?? "").split("\n");
-    for (let i = lines.length - 1; i >= Math.max(0, lines.length - 8); i--) {
-        const m = /^\s*(\d+ pass)\b/.exec(lines[i]!);
-        if (m) return m[1]!;
-    }
-    return "Done";
-}
-
 /** The state of a call as a small pill at the end of its card's header. */
 function StatusPill(p: { tool: ToolBlock; done?: string }) {
     return (
@@ -819,8 +812,8 @@ function EditCardContent(p: { tool: ToolBlock }) {
 /** The last lines of a running command's output; the whole of it once it's done. */
 const LIVE_LINES = 40;
 
-/** Which command cards the reader opened (or folded again), by call id. */
-type CardFolds = { get(id: string): boolean | undefined; set(id: string, open: boolean): void };
+/** Which command rows the reader opened (or folded again), by call id; and the session they're in. */
+type CardFolds = { get(id: string): boolean | undefined; set(id: string, open: boolean): void; sessionId?: string };
 
 function cardFolds(): CardFolds {
     const open = new Map<string, Signal<boolean | undefined>>();
@@ -832,7 +825,7 @@ function cardFolds(): CardFolds {
     return { get: (id) => of(id)[0](), set: (id, value) => of(id)[1](value) };
 }
 
-/** Each session's, kept while the app runs: a card drawn again (the work log folded and opened, another session and back) is as it was left. */
+/** Each session's, kept while the app runs: a row drawn again (the work log folded and opened, another session and back) is as it was left. */
 const sessionFolds = new Map<string, CardFolds>();
 function foldsOf(sessionId: string): CardFolds {
     let folds = sessionFolds.get(sessionId);
@@ -843,18 +836,24 @@ function foldsOf(sessionId: string): CardFolds {
     return folds;
 }
 
-/** Outside a session's views (a test, a preview), the cards share one set. */
+/** Outside a session's views (a test, a preview), the rows share one set. */
 const CardFoldsContext = createContext<CardFolds>(cardFolds());
 
-/** The command cards under it keep their open state in `sessionId`'s set. */
+/** The command rows under it keep their open state in `sessionId`'s set, and find their background tasks there. */
 export function CardFoldsProvider(p: { sessionId: string; children: JSX.Element }) {
-    const folds: CardFolds = { get: (id) => foldsOf(p.sessionId).get(id), set: (id, open) => foldsOf(p.sessionId).set(id, open) };
+    const folds: CardFolds = {
+        get: (id) => foldsOf(p.sessionId).get(id),
+        set: (id, open) => foldsOf(p.sessionId).set(id, open),
+        get sessionId() {
+            return p.sessionId;
+        },
+    };
     return <CardFoldsContext.Provider value={folds}>{p.children}</CardFoldsContext.Provider>;
 }
 
 /**
  * The last line a command printed: the latest of its live output, or of its output once it failed,
- * passing over the exit code the tool adds at the end ("Exit code: 1"), which the pill already says.
+ * passing over the exit code the tool adds at the end ("Exit code: 1"), which the row already says.
  */
 function lastLine(text: string | undefined): string | undefined {
     if (!text) return undefined;
@@ -868,9 +867,10 @@ function lastLine(text: string | undefined): string | undefined {
 }
 
 /**
- * A command: what ran and how it went, on one line; what it printed (and the whole command, when it
- * has more than one line) when the reader opens it. Folded, a running command shows the last line it
- * printed, and a failed one the last line of its output.
+ * A command, as a quiet row: what it's for (Claude Code's description) then the command, faint; or the command
+ * alone (Codex). On the right, what it came to: a test run's tally, or a red "Exit 1" with its last line under
+ * the row; and its time. One run in the background says so, with Stop on hover. Opened (a click, Enter or Space),
+ * the whole command, highlighted, over its output, each with Copy, and a footer with the exit and the time.
  */
 export function CommandCard(p: { tool: ToolBlock }) {
     return <RenderBoundary raw={() => p.tool}><CommandCardContent {...p} /></RenderBoundary>;
@@ -882,81 +882,217 @@ function CommandCardContent(p: { tool: ToolBlock }) {
     const label = createMemo(() => toolLabel(t()));
     const live = () => isLive(t());
     const command = () => String(t().input?.command ?? "").trim();
-    const multiline = () => command().includes("\n");
-    const meta = () => (t().status === "denied" ? undefined : t().summary);
+    const description = () => commandDescription(t());
+    const meta = () => commandMeta(t());
+    // The task it started in the background (Claude Code's run_in_background, Codex's terminals, Harness's shells).
+    const task = createMemo(() => {
+        const id = folds.sessionId;
+        if (!id) return undefined;
+        return taskOf(t(), backgroundOf(handleFor(id)?.view.state));
+    });
+    const background = () => task()?.status === "running";
+    const failed = () => t().status === "error";
+    const code = createMemo(() => (failed() ? exitCode(t()) : undefined));
+    const exitText = () => (code() !== undefined ? `Exit ${code()}` : "Failed");
     // Folded until the reader opens it (or asked for activity open in Settings); find opens it on a match.
     const open = () => folds.get(t().id) ?? prefs.expandActivity;
     const setOpen = (value: boolean) => folds.set(t().id, value);
     createEffect(on(findReveal, (r) => r?.part === p.tool.id && setOpen(true)));
     const running = () => t().status === "running";
-    const progress = () => (open() && running() && t().progress ? stripAnsi(t().progress!).trimEnd().split("\n").slice(-LIVE_LINES).join("\n") : "");
-    const hasBody = () => multiline() || Boolean((running() && t().progress?.trim()) || (!live() && t().output?.trim()));
-    const tail = createMemo(() => (open() ? undefined : running() ? lastLine(t().progress) : t().status === "error" ? lastLine(t().output) : undefined));
-    let out: HTMLPreElement | undefined;
-    // Follow the output while it runs, unless the reader has scrolled up in it. Whether they're at
-    // the end is taken as they scroll: measured after new lines arrive, a burst would look like a scroll away.
-    let atEnd = true;
-    const onScroll = () => {
-        if (out) atEnd = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
+    const hasBody = () => Boolean(command()) && t().status !== "streaming";
+    const shown = () => open() && hasBody();
+    const tail = createMemo(() => (shown() ? undefined : running() ? lastLine(t().progress) : failed() ? lastLine(t().output) : undefined));
+    // Its time: a background task's own (so far, or how long it ran), else the call's.
+    const time = () => {
+        const tk = task();
+        if (tk) return tk.status === "running" ? elapsed(now() - tk.startedAt) : tk.endedAt !== undefined ? duration(tk.endedAt - tk.startedAt) : undefined;
+        return live() ? liveTime(t()) : t().durationMs !== undefined ? duration(t().durationMs!) : undefined;
     };
-    createEffect(on(progress, () => {
-        if (out && atEnd) out.scrollTop = out.scrollHeight;
-    }));
+    // What became of its background task, as its tag and footer say it.
+    const taskWord = () => {
+        const s = task()?.status;
+        return s === undefined ? undefined : s === "running" ? "In the background" : s === "done" ? "Finished" : s === "failed" ? "Failed" : "Stopped";
+    };
+    const toggle = () => hasBody() && setOpen(!open());
+    const [stopping, setStopping] = createSignal(false);
+    const stop = async (e: MouseEvent) => {
+        e.stopPropagation();
+        const id = folds.sessionId;
+        const tk = task();
+        if (!id || !tk) return;
+        setStopping(true);
+        try {
+            await stopBackground(id, [tk.id]);
+        } finally {
+            setStopping(false);
+        }
+    };
     return (
-        <div class={`tcard cmd-card st-${t().status} ${open() && hasBody() ? "open" : ""} ${findReveal()?.part === t().id ? "found" : ""}`} data-find={t().id}>
-            <button class={`tcard-h cmd-h ${tail() ? "has-tail" : ""}`} disabled={!hasBody()} aria-expanded={hasBody() ? open() : undefined} onClick={() => setOpen(!open())}>
-                <span class="tcard-ic">
-                    <SquareTerminal size={14} />
+        <div class={`tcard cmd-card cmd-row st-${t().status} ${shown() ? "open" : ""} ${failed() ? "fail" : ""} ${background() ? "bg" : ""} ${findReveal()?.part === t().id ? "found" : ""}`} data-find={t().id}>
+            <div
+                class="cmd-h"
+                role="button"
+                tabindex={hasBody() ? 0 : -1}
+                aria-expanded={hasBody() ? shown() : undefined}
+                aria-disabled={hasBody() ? undefined : true}
+                title={command() || undefined}
+                onClick={toggle}
+                onKeyDown={(e) => {
+                    if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
+                    e.preventDefault();
+                    toggle();
+                }}
+            >
+                <span class="ic">
+                    <Show when={live() || background()} fallback={<SquareTerminal size={14} />}>
+                        <Spinner size={12} />
+                    </Show>
                 </span>
                 <span class="sr-only" data-find-skip>{label().verb}{" "}</span>
+                {/* Under way, find counts only the command (as on the live line, whose label the description is). */}
+                <Show when={description() && t().status !== "streaming"}>
+                    <span class="cmd-l" data-find-skip={live() || undefined}>{description()}</span>{" "}
+                </Show>
                 <Show when={label().arg && t().status !== "streaming"}>
-                    <span class="tcard-p truncate" title={command()}>{label().arg}</span>{!live() && " "}
+                    <span class={`cmd-c ${description() ? "" : "solo"} ${command().includes("\n") ? "more" : ""}`}>{label().arg}</span>{" "}
                 </Show>
                 <Show when={t().status === "streaming" && t().receiving}>
-                    <span class="tcard-dim" data-find-skip>{tokens(t().receiving!)} chars</span>
+                    <span class="cmd-dim" data-find-skip>{tokens(t().receiving!)} chars</span>
                 </Show>
-                <Show when={meta()}>
-                    <span class="tcard-dim truncate" data-find-skip={live() || undefined}>{meta()}</span>
-                </Show>
-                {/* A glimpse of the output, which find counts in the body it opens. */}
-                <Show when={tail()}>
-                    <span class={`tcard-tail truncate ${t().status === "error" ? "err" : ""}`} title={tail()} data-find-skip>{tail()}</span>
-                </Show>
-                <span class="grow" />
-                <Show when={t().sandboxed}>
-                    <span class="tcard-dim" title="Ran in the sandbox" data-find-skip>
-                        <ShieldCheck size={12} /> sandbox
-                    </span>
-                </Show>
-                <Approved tool={t()} />
-                <Show when={live() && t().job}>
-                    {(job) => <span class="tcard-dim num" data-find-skip title="How long ago the background command started">started {elapsed(now() - job().startedAt)} ago</span>}
-                </Show>
-                <Show when={live() ? liveTime(t()) : t().durationMs !== undefined && duration(t().durationMs!)}>
-                    {(time) => <span class="tcard-dim num" data-find-skip>{time()}</span>}
-                </Show>
-                <StatusPill tool={t()} done={okLabel(t())} />
-                <span class="tcard-chev" aria-hidden="true">
+                <span class="meta">
+                    <Show when={meta()}>
+                        <span class={`cmd-dim ${t().status === "denied" ? "exit" : ""}`} data-find-skip={live() || undefined}>{meta()}</span>
+                    </Show>
+                    <Show when={t().sandboxed}>
+                        <span class="cmd-tag" title="Ran in the sandbox" data-find-skip>
+                            <ShieldCheck size={12} /> sandbox
+                        </span>
+                    </Show>
+                    <Approved tool={t()} />
+                    {/* Started in the background: how its task is doing, when the session still lists it. */}
+                    <Show when={task()} fallback={<Show when={t().input?.run_in_background === true && t().status === "ok"}><span class="cmd-tag badge" data-find-skip>Started in the background</span></Show>}>
+                        {(tk) => (
+                            <span class="cmd-tag badge" data-find-skip title={tk().label}>
+                                {taskWord()}
+                            </span>
+                        )}
+                    </Show>
+                    <Show when={t().status === "awaiting"}>
+                        <span class="cmd-tag warn" data-find-skip>
+                            <Hand size={12} /> {runningVerb(t())}
+                        </span>
+                    </Show>
+                    <Show when={failed()}>
+                        <span class="exit" data-find-skip>{exitText()}</span>
+                    </Show>
+                    <Show when={t().status === "ok" && !task() && passTally(t())}>{(sum) => <span class="sum" data-find-skip>{sum()}</span>}</Show>
+                    <Show when={time()}>{(tm) => <span class="num" data-find-skip>{tm()}</span>}</Show>
+                </span>
+                <span class="cmd-tools" data-find-skip>
+                    <Show when={background() && task()!.stoppable && folds.sessionId}>
+                        <button class="icon-btn stop" title="Stop this task" aria-label={`Stop the background command: ${task()!.label}`} disabled={stopping()} onClick={(e) => void stop(e)}>
+                            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                                <rect x="1" y="1" width="8" height="8" rx="2" fill="currentColor" />
+                            </svg>
+                        </button>
+                    </Show>
+                    <Show when={command()}>
+                        <CopyButton text={command} label="Copy command" class="cp" />
+                    </Show>
+                </span>
+                <span class="chev-w" aria-hidden="true">
                     <Show when={hasBody()}>
                         <ChevronRight size={14} class="chev" />
                     </Show>
                 </span>
-            </button>
-            <Show when={open() && hasBody()}>
+            </div>
+            {/* Its last line, under the row while it's folded: a failure's, or what it's printing. Find counts it in the body it opens. */}
+            <Show when={tail()}>
+                <div class={`cmd-tail ${failed() ? "err" : ""}`} title={tail()} data-find-skip>{tail()}</div>
+            </Show>
+            <Show when={shown()}>
                 {/* Find counts a finished command's body (see blockText): a line between it and the header, as there. */}
                 {"\n"}
-                <div class="tcard-body" data-find-skip={live() || undefined}>
-                    <Show when={multiline()}>
-                        <pre class="tcard-out cmd">{command()}</pre>
-                        {"\n"}
-                    </Show>
-                    <Show when={live()} fallback={<Output tool={t()} bare />}>
-                        <Show when={progress()}>
-                            <pre ref={(el) => ((out = el), (atEnd = true))} class="tcard-out" onScroll={onScroll}>{progress()}</pre>
-                        </Show>
-                    </Show>
-                </div>
+                <CommandBody tool={t()} live={live()} running={running()} code={code()} task={background() ? "Running" : taskWord()} time={time()} />
             </Show>
+        </div>
+    );
+}
+
+/** An opened command: the whole of it after "$", highlighted, over its output; then how it ended. Built when first opened. */
+function CommandBody(p: { tool: ToolBlock; live: boolean; running: boolean; code: number | undefined; task: string | undefined; time: string | undefined }) {
+    const command = () => String(p.tool.input?.command ?? "").trim();
+    const tokens = createMemo(() => highlightShell(command()));
+    const [full, setFull] = createSignal<string>();
+    const [loading, setLoading] = createSignal(false);
+    const lines = createMemo(() => outputLines(full() ?? p.tool.output));
+    const progress = () => (p.running && p.tool.progress ? stripAnsi(p.tool.progress).trimEnd().split("\n").slice(-LIVE_LINES).join("\n") : "");
+    const load = async () => {
+        setLoading(true);
+        try {
+            setFull((await rpc.call("session.toolOutput", { id: app.activeId!, toolId: p.tool.id })).output);
+        } catch (e) {
+            reportError(e);
+        } finally {
+            setLoading(false);
+        }
+    };
+    let out: HTMLPreElement | undefined;
+    // Follow the output while it runs, unless the reader has scrolled up in it. Whether they're at
+    // the end is taken as they scroll: measured after new lines arrive, a burst would look like a scroll away.
+    let atEnd = true;
+    createEffect(on(progress, () => {
+        if (out && atEnd) out.scrollTop = out.scrollHeight;
+    }));
+    const failed = () => p.tool.status === "error";
+    return (
+        <div class="cmd-body" data-find-skip={p.live || undefined}>
+            <div class="cmd-in">
+                <span class="ps" aria-hidden="true" data-find-skip>$</span>
+                <pre>
+                    <For each={tokens()}>{(tk) => (tk.cls ? <span class={tk.cls}>{tk.text}</span> : tk.text)}</For>
+                </pre>
+                <span data-find-skip>
+                    <CopyButton text={command} label="Copy command" class="cp" />
+                </span>
+            </div>
+            {"\n"}
+            <div class="cmd-out">
+                <Show
+                    when={p.live}
+                    fallback={
+                        <Show when={lines().length} fallback={<pre><span class="none" data-find-skip>{p.tool.status === "ok" || failed() ? "No output" : p.tool.status === "denied" ? "It didn't run" : "Nothing yet"}</span></pre>}>
+                            <pre class={failed() ? "err" : ""}>
+                                <For each={lines()}>{(l, i) => <>{i() > 0 && "\n"}<span class={lineTone(l) ?? ""}>{l}</span></>}</For>
+                            </pre>
+                            <span data-find-skip>
+                                <CopyButton text={() => lines().join("\n")} label="Copy output" class="cp" />
+                            </span>
+                        </Show>
+                    }
+                >
+                    <pre ref={(el) => ((out = el), (atEnd = true))} onScroll={() => out && (atEnd = out.scrollHeight - out.scrollTop - out.clientHeight < 40)}>
+                        {progress() || <span class="none">Nothing yet</span>}
+                    </pre>
+                </Show>
+            </div>
+            <div class="cmd-foot" data-find-skip>
+                <span class={failed() ? "exit" : ""}>{p.live ? "Running" : p.task ? p.task : p.tool.status === "denied" ? "Declined" : p.code !== undefined ? `Exit ${p.code}` : failed() ? "Failed" : "Exit 0"}</span>
+                <Show when={p.time}>
+                    <span>·</span>
+                    <span class="num">{p.time}</span>
+                </Show>
+                <Show when={!p.live && lines().length > 8}>
+                    <span>·</span>
+                    <span class="num">{plural(lines().length, "line")}</span>
+                </Show>
+                <span class="grow" />
+                <Show when={!p.live && p.tool.outputTruncated && !full()}>
+                    <button class="link-btn" disabled={loading()} onClick={(e) => (e.stopPropagation(), void load())}>
+                        {loading() ? "Loading…" : "Show full output"}
+                    </button>
+                </Show>
+            </div>
         </div>
     );
 }

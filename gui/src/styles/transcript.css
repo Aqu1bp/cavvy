@@ -1466,58 +1466,315 @@
     height: 26px;
 }
 
-/* A command's header is the button that opens it: one line, the output only on demand. */
-.cmd-h {
-    width: 100%;
-    padding-right: 8px;
-    text-align: left;
+/* ---- A command: a quiet row like any other step, no card; opened, one block on the sheet,
+   the whole command over its output, each with its own Copy, and how it ended. */
+
+.tcard.cmd-row {
+    margin: 0;
+    border-radius: 8px;
+    background: none;
+    box-shadow: none;
+    overflow: visible;
+    animation: step-in 320ms var(--ease);
+}
+
+.cmd-row > .cmd-h {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    /* One line, always the same height: a glyph from a fallback font (✓) doesn't make one row taller. */
+    height: 30px;
+    min-width: 0;
+    padding: 0 4px 0 2px;
+    border-radius: 8px;
+    font-size: 0.964rem;
+    color: var(--fg-2);
+    white-space: nowrap;
+    cursor: default;
+    outline: none;
     transition: background 140ms;
 }
 
-.cmd-h:hover:not(:disabled) {
+.cmd-row > .cmd-h:hover,
+.cmd-row > .cmd-h:focus-visible {
     background: var(--hover);
 }
 
-/* Inside the card's rounded clip. */
-.cmd-h:focus-visible {
-    outline-offset: -2px;
-    border-radius: var(--r-card);
+.cmd-row > .cmd-h:focus-visible {
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
-/* Beside a glimpse of the output, the command keeps at most half the line; the glimpse takes the rest. */
-.cmd-h.has-tail .tcard-p {
-    max-width: 50%;
-}
-
-.cmd-h.has-tail .grow {
-    display: none;
-}
-
-/* Folded: the last line a running command printed, or a failed one's last line of output. */
-.tcard-tail {
-    flex: 1 1 0;
-    font: 0.786rem var(--font-mono);
+.cmd-h .ic {
+    width: 22px;
+    height: 22px;
+    flex: none;
+    display: grid;
+    place-items: center;
     color: var(--fg-3);
 }
 
-.tcard-tail.err {
-    color: color-mix(in srgb, var(--danger) 75%, var(--fg-3));
+.cmd-row.bg .cmd-h .ic {
+    color: var(--accent);
 }
 
-.tcard-chev {
+/* What it's for, in the model's words; then the command, faint. */
+.cmd-l {
+    flex: none;
+    max-width: 60%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--fg);
+}
+
+.cmd-c {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font: 0.857rem var(--font-mono);
+    color: var(--fg-3);
+}
+
+/* No description (Codex): the command is the label. */
+.cmd-c.solo {
+    font-size: 0.893rem;
+    color: var(--fg);
+}
+
+/* More than one line: the first, and a hint there's more. */
+.cmd-c.more::after {
+    content: " …";
+    color: var(--fg-4);
+}
+
+.cmd-h .meta {
+    margin-left: auto;
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-left: 8px;
+    font-size: 0.857rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-3);
+}
+
+.cmd-h .meta > .tcard-dim {
+    max-width: 14rem;
+}
+
+.cmd-h .sum {
+    color: var(--fg-2);
+}
+
+.cmd-dim {
+    max-width: 14rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.cmd-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+/* "In the background", "Finished": said plainly, as the summary is. */
+.cmd-tag.badge {
+    color: var(--fg-3);
+}
+
+.cmd-tag.warn {
+    color: var(--warn);
+}
+
+.cmd-row .exit {
+    color: var(--danger);
+    font-weight: 600;
+}
+
+/* Copy (and Stop) come in on hover or focus; until then they take no room. */
+.cmd-tools {
+    display: none;
+    align-items: center;
+    gap: 2px;
+}
+
+.cmd-h:hover .cmd-tools,
+.cmd-h:focus-within .cmd-tools {
+    display: flex;
+    animation: cmd-tools-in var(--dur-fast) ease-out;
+}
+
+@keyframes cmd-tools-in {
+    from {
+        opacity: 0;
+    }
+}
+
+.cmd-row .icon-btn {
+    width: 26px;
+    height: 26px;
+    border-radius: 7px;
+    color: var(--fg-3);
+}
+
+.cmd-row .icon-btn:hover:not(:disabled) {
+    background: var(--press);
+    color: var(--fg);
+}
+
+.cmd-row .icon-btn.stop:hover:not(:disabled) {
+    color: var(--danger);
+}
+
+.chev-w {
     display: grid;
     place-items: center;
     flex: none;
     width: 18px;
-    color: var(--fg-3);
+    color: var(--fg-4);
 }
 
-.tcard-chev .chev {
-    transition: transform 220ms var(--ease);
+.chev-w .chev {
+    transition: transform var(--dur-panel) var(--ease);
 }
 
-.cmd-h[aria-expanded="true"] .chev {
+.cmd-row.open .chev-w .chev {
     transform: rotate(90deg);
+}
+
+/* Its last line, under the row while it's folded: a failure's (red), or what it's printing. */
+.cmd-tail {
+    margin: -2px 0 4px 33px;
+    font: 0.857rem/1.6 var(--font-mono);
+    color: var(--fg-3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.cmd-tail.err {
+    color: var(--danger);
+}
+
+.cmd-body {
+    margin: 4px 0 8px 33px;
+    border-radius: 12px;
+    background: var(--sheet-2);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+    overflow: hidden;
+    font: 0.857rem/1.65 var(--font-mono);
+    animation: cmd-open var(--dur-panel) var(--ease);
+}
+
+@keyframes cmd-open {
+    from {
+        opacity: 0;
+        transform: translateY(-4px);
+    }
+}
+
+.cmd-in,
+.cmd-out {
+    position: relative;
+    display: flex;
+    gap: 8px;
+    padding: 10px 40px 10px 14px;
+}
+
+.cmd-in {
+    border-bottom: 0.5px solid var(--line);
+}
+
+.cmd-in .ps {
+    color: var(--fg-4);
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.cmd-body pre {
+    margin: 0;
+    min-width: 0;
+    flex: 1;
+    font: inherit;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    tab-size: 4;
+    color: var(--fg);
+}
+
+.cmd-in .f { color: var(--syn-function); }
+.cmd-in .s { color: var(--syn-string); }
+.cmd-in .k { color: var(--syn-keyword); }
+.cmd-in .t { color: var(--syn-type); }
+.cmd-in .c { color: var(--syn-comment); }
+.cmd-in .hd { color: var(--fg-2); }
+
+.cmd-out pre {
+    max-height: 240px;
+    overflow: auto;
+    color: var(--fg-2);
+}
+
+.cmd-out .er {
+    color: var(--danger);
+}
+
+.cmd-out .ok {
+    color: var(--ok);
+}
+
+.cmd-out .none {
+    color: var(--fg-3);
+    font-family: var(--font-ui);
+}
+
+/* Each block's Copy, in its top-right corner. */
+.cmd-in .cp,
+.cmd-out .cp {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    opacity: 0.55;
+}
+
+.cmd-in:hover .cp,
+.cmd-out:hover .cp,
+.cmd-body .cp:focus-visible {
+    opacity: 1;
+}
+
+.cmd-foot {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 30px;
+    padding: 2px 8px 2px 14px;
+    border-top: 0.5px solid var(--line);
+    font: 0.821rem var(--font-ui);
+    color: var(--fg-3);
+    font-variant-numeric: tabular-nums;
+}
+
+.cmd-foot .grow {
+    flex: 1;
+}
+
+.cmd-foot .exit {
+    color: var(--danger);
+    font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .cmd-body,
+    .cmd-h:hover .cmd-tools,
+    .cmd-h:focus-within .cmd-tools {
+        animation: none;
+    }
+
+    .chev-w .chev {
+        transition: none;
+    }
 }
 
 /* "You ran": a command from the composer's "!". */
@@ -1547,15 +1804,6 @@
     max-height: 180px;
     overflow: auto;
     tab-size: 4;
-}
-
-.tcard-out.cmd {
-    color: var(--fg);
-    max-height: 120px;
-}
-
-.tcard-out.cmd + .tcard-out {
-    border-top: 0.5px solid var(--line);
 }
 
 .tcard-out.err {

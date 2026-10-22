@@ -20,6 +20,7 @@
 //   "emptyreply"     a response with no text and no tool calls
 //   "untitled"       the request for the session's title is refused (HTTP 400)
 //   "stubborn"       runs a command that ignores being told to stop (SIGTERM)
+//   "cmdrows"        commands as rows: a passing test run, one without a description, a heredoc, a failure, one in the background
 //   "waitcheck"      starts a background command, then waits and checks it in one response
 //   "use the x skill" loads skill x (Skill tool), then quotes the start of its instructions
 //   "schedule"       schedules the test suite for weekday mornings (CronCreate)
@@ -325,6 +326,27 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
     if (/\bgoaldemo\b/.test(p)) {
         if (toolRounds === 0) return { text: "Running the auth tests.", calls: [{ name: "Bash", args: { command: "echo 'test/auth: 12 pass, 0 fail'", description: "Run the auth tests" } }] };
         return { text: `The auth tests pass: ${lastResult.trim() || "12 pass, 0 fail"}.` };
+    }
+    // Command rows: a test run that passes, one without a description (as Codex's are), a heredoc, a failure, then one left in the background.
+    if (/\bcmdrows\b/.test(p)) {
+        const steps: Step[] = [
+            {
+                text: "Checking the auth module.",
+                calls: [
+                    { name: "Bash", args: { command: "printf '✓ signs in with email\\n✓ rejects a bad password\\n✓ locks after 5 tries\\n\\n 14 pass\\n 0 fail\\nRan 14 tests across 3 files.\\n'", description: "Run the auth tests" } },
+                    { name: "Bash", args: { command: "ls src/auth" } },
+                ],
+            },
+            {
+                calls: [
+                    { name: "Bash", args: { command: "cat <<'EOF' > notes.txt\nSSO: SAML first, then OIDC\nGate enforcement on verified domains\nEOF\nwc -l notes.txt", description: "Write the rollout notes" } },
+                    { name: "Bash", args: { command: "printf 'Checking 12 files\\nsrc/auth/sso.ts(14,3): error TS2304: Cannot find name loadSamlConfig.\\n' && exit 2", description: "Typecheck the auth module" } },
+                ],
+            },
+            { text: "Starting the dev server to try it.", calls: [{ name: "Bash", args: { command: "for i in $(seq 1 600); do echo \"tick $i\"; sleep 1; done", description: "Start the dev server", run_in_background: true } }] },
+            { text: "The tests pass, the typecheck has one error to fix in `src/auth/sso.ts`, and the dev server is running in the background." },
+        ];
+        return steps[toolRounds];
     }
     if (/\bstubborn\b/.test(p)) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: "trap '' TERM; sleep 3", description: "Wait, ignoring SIGTERM" } }] } : { text: "Done." };
     if (/\bstreamdemo\b/.test(p)) return { reasoning: "They want the session flow explained with an example.", text: STREAM_DEMO, paced: true };
