@@ -803,7 +803,8 @@ export class ClaudeConnection implements CliConnection {
             id,
             provider: this.def.id,
             kind: running && !o.type && !agent ? running.kind : taskKind(o.type ?? "", agent),
-            label: (o.label || running?.label || (toolUseId ? this.agentLabels.get(toolUseId) : undefined) || "background task").slice(0, 300),
+            // Redacted whole, then cut: a secret across the cut would leave a piece of itself unredacted.
+            label: redact(o.label || running?.label || (toolUseId ? this.agentLabels.get(toolUseId) : undefined) || "background task").slice(0, 300),
             ...(toolUseId ? { toolUseId } : {}),
             startedAt: running?.startedAt ?? Date.now(),
             status: "running",

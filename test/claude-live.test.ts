@@ -121,6 +121,25 @@ async function makeAgent(o: Opts = {}) {
     return { agent, events, wakes, session, run, adopt, background, client: client as ClaudeCodeBackend, setMode: (m: typeof mode) => (mode = m), queued };
 }
 
+describe("final review, blocker 3: a task's label is redacted whole, then cut", () => {
+    test("a secret across the 300th character of a sub-agent's description leaves no piece of itself in the label", async () => {
+        const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+        const secret = "zz9-PLURAL-Z-ALPHA-6tb2kq8wqe";
+        registerSecret(secret, "test key");
+        try {
+            process.env.FAKE_SCENARIO = "agent-background";
+            process.env.FAKE_AGENT_DESC = `${"x".repeat(290)} ${secret}`;
+            const { run, agent } = await makeAgent();
+            expect(await run("map auth in the background")).toBe("done");
+            const task = agent.backgroundTasks().find((t) => t.id === "agent-1");
+            expect(task?.label.startsWith("xxxx")).toBe(true);
+            expect(task?.label).not.toContain("zz9-PLURA");
+        } finally {
+            unregisterSecret(secret);
+        }
+    });
+});
+
 describe("a prompt with Harness's catch-up (after a model switch) goes as the user's", () => {
     test("not synthetic; the catch-up is a block of its own before the user's words, the last block", async () => {
         const session = Session.create(cwd, { persist: false });

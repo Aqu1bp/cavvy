@@ -385,7 +385,8 @@ const SUB_TOKEN = "ya29.subagentWroteThisToken1234567890";
  */
 function agentCall(background: boolean, late = false, stuck = false) {
     const id = "toolu_agent";
-    const input = { description: "Map auth", prompt: "Read src/auth and report.", subagent_type: "general-purpose", ...(background ? { run_in_background: true } : {}) };
+    // FAKE_AGENT_DESC: the call's description (the task's label).
+    const input = { description: process.env.FAKE_AGENT_DESC ?? "Map auth", prompt: "Read src/auth and report.", subagent_type: "general-purpose", ...(background ? { run_in_background: true } : {}) };
     const launched = () =>
         out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: [{ type: "text", text: "Async agent launched successfully. (This tool result is internal metadata.)\nagentId: agent-1" }] }] }, parent_tool_use_id: null, session_id: sessionId, tool_use_result: { isAsync: true, status: "async_launched", agentId: "agent-1" } });
     toolUse(id, "Agent", input);
