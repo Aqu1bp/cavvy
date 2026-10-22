@@ -463,41 +463,89 @@ test("the snapshot's git calls run side by side, and the server goes on while th
     expect(ticks).toBeGreaterThan(10);
 }, 15_000);
 
-for (const exits of [true, false]) test(`the async git call's timeout holds when something it started keeps its output open (git ${exits ? "exits" : "hangs"})`, async () => {
+/** A fake git on PATH whose call never ends by itself: a descendant holds its output open; it exits at once, or waits for that. */
+function hungGit(exits: boolean) {
     const dir = freshRepo();
-    const bin = join(dir, ".git", "holding-bin");
+    const bin = join(dir, ".git", "hung-bin");
     mkdirSync(bin);
     const pids = join(dir, ".git", "pids");
     const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
-    // A descendant that inherits stdout and outlives the timeout by far; git itself exits at once, or waits for it.
-    writeFileSync(join(bin, "git"), `#!/bin/sh\nsleep 60 &\necho $! >> ${quote(pids)}\necho partial\n${exits ? "exit 0" : "wait"}\n`, { mode: 0o700 });
+    // Its pids are written once both are running: the fixture is ready.
+    writeFileSync(join(bin, "git"), `#!/bin/sh\nsleep 60 &\necho "$$ $!" > ${quote(pids)}.tmp\nmv ${quote(pids)}.tmp ${quote(pids)}\necho partial\n${exits ? "exit 0" : "wait"}\n`, { mode: 0o700 });
+    const ready = () => (existsSync(pids) ? readFileSync(pids, "utf8").trim().split(" ").map(Number) : undefined);
+    return { dir, bin, ready };
+}
+
+/** Waits (up to 3 s) for these processes to be gone: killed, they may take a moment to be reaped (a zombie is gone too). Kills what's left. */
+async function gone(pids: number[]) {
+    const running = () => pids.filter((pid) => /^[^Z]/.test(Bun.spawnSync(["ps", "-o", "stat=", "-p", String(pid)]).stdout.toString().trim()));
+    for (let i = 0; running().length && i < 60; i++) await Bun.sleep(50);
+    const left = running();
+    for (const pid of left) process.kill(pid, "SIGKILL");
+    return left.length === 0;
+}
+
+async function withPath<T>(bin: string, fn: () => Promise<T>): Promise<T> {
     const before = process.env.PATH;
     process.env.PATH = `${bin}:${before}`;
-    const started = performance.now();
-    let result: string | undefined = "unset";
     try {
-        // The default timeout (3 s): long enough for the wrapper to have started its descendant, however busy the machine.
-        result = await gitAsync(dir, ["log"]);
+        return await fn();
     } finally {
         if (before === undefined) delete process.env.PATH;
         else process.env.PATH = before;
     }
-    const took = performance.now() - started;
-    expect(existsSync(pids)).toBe(true);
-    const pid = Number(readFileSync(pids, "utf8").trim());
-    // Killed, it may take a moment to be reaped; a zombie is gone too.
-    const running = () => /^[^Z]/.test(Bun.spawnSync(["ps", "-o", "stat=", "-p", String(pid)]).stdout.toString().trim());
-    let alive = running();
-    for (let i = 0; alive && i < 60; i++) {
-        await Bun.sleep(50);
-        alive = running();
+}
+
+for (const exits of [true, false]) test(`the async git call's timeout holds when something it started keeps its output open (git ${exits ? "exits" : "hangs"})`, async () => {
+    // A machine too busy to start the fake git before the deadline proves nothing: it's tried again with a longer one.
+    for (const timeoutMs of [1000, 5000, 15_000]) {
+        const git = hungGit(exits);
+        let readyAt: number | undefined;
+        const poll = setInterval(() => (readyAt ??= git.ready() ? performance.now() : undefined), 5);
+        const started = performance.now();
+        const result = await withPath(git.bin, () => gitAsync(git.dir, ["log"], { timeoutMs }));
+        const ended = performance.now();
+        clearInterval(poll);
+        const pids = git.ready();
+        if (!pids || readyAt === undefined) continue;
+        // As spawnSync did: nothing, at the timeout (not when the descendant lets go, a minute later).
+        expect(result).toBeUndefined();
+        expect(ended - started).toBeLessThan(timeoutMs + 1500);
+        // What it started went with it.
+        expect(await gone(pids)).toBe(true);
+        return;
     }
-    if (alive) process.kill(pid, "SIGKILL");
-    // As spawnSync did: nothing, at the timeout (not when the descendant lets go, a minute later).
-    expect(result).toBeUndefined();
-    expect(took).toBeLessThan(6000);
-    // What it started went with it.
-    expect(alive).toBe(false);
+    throw new Error("the fake git never started");
+}, 40_000);
+
+test("aborting an async git call kills it and what it started, at once", async () => {
+    const git = hungGit(false);
+    const ac = new AbortController();
+    const call = withPath(git.bin, () => gitAsync(git.dir, ["log"], { timeoutMs: 60_000, signal: ac.signal }));
+    for (let i = 0; !git.ready() && i < 600; i++) await Bun.sleep(10);
+    const pids = git.ready()!;
+    expect(pids).toHaveLength(2);
+    const aborted = performance.now();
+    ac.abort();
+    expect(await call).toBeUndefined();
+    expect(performance.now() - aborted).toBeLessThan(1000);
+    expect(await gone(pids)).toBe(true);
+}, 20_000);
+
+for (const end of ["exit", "SIGINT", "SIGTERM"] as const) test(`async git calls still running are killed when the harness ends (${end})`, async () => {
+    const git = hungGit(false);
+    const child = Bun.spawn([process.execPath, "--no-env-file", join(import.meta.dir, "fixtures", "git-groups.ts"), git.dir, end], {
+        env: { ...process.env, PATH: `${git.bin}:${process.env.PATH}` }, stdout: "pipe", stderr: "pipe",
+    });
+    for (let i = 0; !git.ready() && i < 1000; i++) await Bun.sleep(10);
+    const pids = git.ready()!;
+    expect(pids).toHaveLength(2);
+    if (end !== "exit") child.kill(end);
+    await child.exited;
+    // The signal still ends it, as it would have without the handler.
+    if (end === "exit") expect(child.exitCode).toBe(0);
+    else expect(child.signalCode).toBe(end);
+    expect(await gone(pids)).toBe(true);
 }, 20_000);
 
 test("a timed-out per-worktree config read skips status", async () => {

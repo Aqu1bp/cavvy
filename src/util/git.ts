@@ -67,11 +67,53 @@ function git(cwd: string, args: string[], timeoutMs = 3000): string | undefined 
 }
 
 /**
- * git() without blocking: the server goes on serving while it runs. The timeout bounds the whole call,
- * output included: git runs in a process group of its own, and at the deadline the group is killed
- * (with anything it started that still holds the output open) and the read given up.
+ * The process groups of async git calls still running. Out of the harness's own group, they'd miss the
+ * terminal's Ctrl-C and outlive their deadline should the harness end first: they're killed with it.
  */
-export async function gitAsync(cwd: string, args: string[], timeoutMs = 3000): Promise<string | undefined> {
+const liveGroups = new Set<number>();
+const killGroup = (pgid: number) => {
+    try {
+        process.kill(-pgid, "SIGKILL");
+    } catch {
+        // the group is gone already
+    }
+};
+/** Kills every async git call still running (the process is ending). */
+export function killGitGroups() {
+    for (const pgid of liveGroups) killGroup(pgid);
+    untrack();
+}
+const onSigint = () => onSignal("SIGINT");
+const onSigterm = () => onSignal("SIGTERM");
+function onSignal(sig: NodeJS.Signals) {
+    killGitGroups();
+    // No one else handles it: it ends the process, as it would have without this handler.
+    if (process.listenerCount(sig) === 0) process.kill(process.pid, sig);
+}
+function track(pgid: number) {
+    if (!liveGroups.size) {
+        process.on("exit", killGitGroups);
+        process.on("SIGINT", onSigint);
+        process.on("SIGTERM", onSigterm);
+    }
+    liveGroups.add(pgid);
+}
+function untrack(pgid?: number) {
+    if (pgid === undefined) liveGroups.clear();
+    else liveGroups.delete(pgid);
+    if (liveGroups.size) return;
+    process.off("exit", killGitGroups);
+    process.off("SIGINT", onSigint);
+    process.off("SIGTERM", onSigterm);
+}
+
+/**
+ * git() without blocking: the server goes on serving while it runs. The timeout bounds the whole call,
+ * output included: git runs in a process group of its own, and at the deadline (or once `signal` aborts)
+ * the group is killed, with anything it started that still holds the output open, and the read given up.
+ */
+export async function gitAsync(cwd: string, args: string[], o: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<string | undefined> {
+    if (o.signal?.aborted) return undefined;
     let p: Bun.Subprocess<"ignore", "pipe", "ignore">;
     try {
         const { argv, env } = gitCall(args);
@@ -79,6 +121,7 @@ export async function gitAsync(cwd: string, args: string[], timeoutMs = 3000): P
     } catch {
         return undefined;
     }
+    track(p.pid);
     const reader = p.stdout.getReader();
     const read = async () => {
         const chunks: Uint8Array[] = [];
@@ -86,20 +129,22 @@ export async function gitAsync(cwd: string, args: string[], timeoutMs = 3000): P
         return Buffer.concat(chunks).toString();
     };
     let timer: Timer | undefined;
-    const deadline = new Promise<undefined>((resolve) => (timer = setTimeout(resolve, timeoutMs)));
+    let stop: (() => void) | undefined;
+    const deadline = new Promise<undefined>((resolve) => {
+        timer = setTimeout(resolve, o.timeoutMs ?? 3000);
+        o.signal?.addEventListener("abort", (stop = () => resolve(undefined)), { once: true });
+    });
     try {
         const done = await Promise.race([Promise.all([read(), p.exited]), deadline]);
         if (done) return gitOutput(args, p.exitCode, done[0]);
-        try {
-            process.kill(-p.pid, "SIGKILL");
-        } catch {
-            // the group is gone already
-        }
+        killGroup(p.pid);
         return undefined;
     } catch {
         return undefined;
     } finally {
         clearTimeout(timer);
+        if (stop) o.signal?.removeEventListener("abort", stop);
+        untrack(p.pid);
         void reader.cancel().catch(() => undefined);
     }
 }
@@ -152,12 +197,12 @@ const STATUS_EXEC_CONFIG = [/^filter\./, /^core\.(fsmonitor|hookspath)$/, /^subm
 const USER_EXEC_CONFIG = [/^filter\..*\.(clean|smudge|process)$/, /^diff\..*\.(textconv|command)$/, /^diff\.external$/, /^core\.fsmonitor$/];
 
 /** Shared by status and transport audits; includes retain their owning scope. */
-async function repositoryConfigKeys(cwd: string): Promise<string[] | undefined> {
+async function repositoryConfigKeys(cwd: string, signal?: AbortSignal): Promise<string[] | undefined> {
     // Repository-owned settings and includes require trust regardless of value.
     // Resolve conditional includes with all scopes present, then retain repo keys.
     const [scoped, file] = await Promise.all([
-        gitAsync(cwd, ["config", "--includes", "--show-scope", "--name-only", "--list", "-z"]),
-        gitAsync(cwd, ["rev-parse", "--path-format=absolute", "--git-path", "config.worktree"]),
+        gitAsync(cwd, ["config", "--includes", "--show-scope", "--name-only", "--list", "-z"], { signal }),
+        gitAsync(cwd, ["rev-parse", "--path-format=absolute", "--git-path", "config.worktree"], { signal }),
     ]);
     if (scoped === undefined) return undefined;
     const names = scoped.split("\0");
@@ -169,7 +214,7 @@ async function repositoryConfigKeys(cwd: string): Promise<string[] | undefined> 
     let worktree = "";
     try {
         lstatSync(file);
-        const keys = await gitAsync(cwd, ["config", "--file", file, "--includes", "--name-only", "--list", "-z"]);
+        const keys = await gitAsync(cwd, ["config", "--file", file, "--includes", "--name-only", "--list", "-z"], { signal });
         if (keys === undefined) return undefined;
         worktree = keys;
     } catch (error) {
@@ -198,16 +243,16 @@ export async function gitNetworkSkipReason(cwd: string): Promise<string | undefi
     }
 }
 
-async function statusSkipReason(cwd: string): Promise<string | undefined> {
+async function statusSkipReason(cwd: string, signal?: AbortSignal): Promise<string | undefined> {
     const unreadable = "repository configuration could not be checked";
-    const keys = await repositoryConfigKeys(cwd);
+    const keys = await repositoryConfigKeys(cwd, signal);
     if (!keys) return unreadable;
     let key = keys.find((key) => STATUS_EXEC_CONFIG.some((pattern) => pattern.test(key)))
         ?? keys.find((key) => /^(include|includeif)\./.test(key));
     if (!key) {
         // User-owned scopes (including their includes) may use installed programs.
         // Only relative-path drivers can select programs controlled by this repo.
-        const effective = await gitAsync(cwd, ["config", "--includes", "--show-scope", "-z", "--get-regexp", "^(filter|diff|core)\\."]);
+        const effective = await gitAsync(cwd, ["config", "--includes", "--show-scope", "-z", "--get-regexp", "^(filter|diff|core)\\."], { signal });
         if (effective === undefined) return unreadable;
         const fields = effective.split("\0");
         for (let i = 0; i < fields.length - 1; i += 2) {
@@ -238,15 +283,15 @@ async function statusSkipReason(cwd: string): Promise<string | undefined> {
  * Point-in-time git info; untrusted folders only get status after repository config checks.
  * Its git calls run at once, side by side (status only once the checks have passed).
  */
-export async function gitSnapshot(cwd: string): Promise<GitSnapshot | undefined> {
+export async function gitSnapshot(cwd: string, signal?: AbortSignal): Promise<GitSnapshot | undefined> {
     if (!gitRoot(cwd)) return undefined;
     const [branch, main, statusSkipped, recentCommits] = await Promise.all([
-        gitAsync(cwd, ["branch", "--show-current"]).then((b) => b || undefined),
-        mainBranch(cwd),
+        gitAsync(cwd, ["branch", "--show-current"], { signal }).then((b) => b || undefined),
+        mainBranch(cwd, signal),
         // Implicit session trust (no Harness configuration) says nothing about .git/config.
         (async () => {
             try {
-                if (!trustedByUser(cwd)) return await statusSkipReason(cwd);
+                if (!trustedByUser(cwd)) return await statusSkipReason(cwd, signal);
             } catch {
                 return "folder trust could not be checked";
             }
@@ -258,19 +303,19 @@ export async function gitSnapshot(cwd: string): Promise<GitSnapshot | undefined>
         // https://git-scm.com/docs/git-log (diff formatting, --show-signature)
         // https://git-scm.com/docs/git-config (log.showSignature, gpg.program, log.mailmap, mailmap.blob)
         // https://git-scm.com/docs/git (GIT_NO_LAZY_FETCH, --paginate)
-        gitAsync(cwd, ["log", "--no-show-signature", "--oneline", "-n", "5"]).then((l) => l ?? ""),
+        gitAsync(cwd, ["log", "--no-show-signature", "--oneline", "-n", "5"], { signal }).then((l) => l ?? ""),
     ]);
     if (statusSkipped) return { branch, mainBranch: main, statusSkipped, recentCommits };
-    let status = (await gitAsync(cwd, ["status", "--short", "--ignore-submodules=all"])) ?? "";
+    let status = (await gitAsync(cwd, ["status", "--short", "--ignore-submodules=all"], { signal })) ?? "";
     const lines = status.split("\n");
     if (lines.length > 40) status = [...lines.slice(0, 40), `… and ${lines.length - 40} more`].join("\n");
     return { branch, mainBranch: main, status: status || "(clean)", recentCommits };
 }
 
 /** What origin/HEAD points at; else master, else main, if there's one. */
-async function mainBranch(cwd: string): Promise<string | undefined> {
-    const head = (await gitAsync(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]))?.replace(/^origin\//, "");
+async function mainBranch(cwd: string, signal?: AbortSignal): Promise<string | undefined> {
+    const head = (await gitAsync(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], { signal }))?.replace(/^origin\//, "");
     if (head) return head;
-    const [main, master] = await Promise.all(["main", "master"].map((b) => gitAsync(cwd, ["rev-parse", "--verify", "--quiet", b])));
+    const [main, master] = await Promise.all(["main", "master"].map((b) => gitAsync(cwd, ["rev-parse", "--verify", "--quiet", b], { signal })));
     return master !== undefined ? "master" : main !== undefined ? "main" : undefined;
 }

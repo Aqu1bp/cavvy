@@ -2866,7 +2866,7 @@ export class Runtime {
         let stop!: () => void;
         const stopped = new Promise<undefined>((r) => signal.addEventListener("abort", (stop = () => r(undefined)), { once: true }));
         try {
-            const system = await Promise.race([buildSystemPrompt({ cwd: this.ws.cwd, model: this.model!, append: this.ws.mcp.instructions() || undefined }), stopped]);
+            const system = await Promise.race([buildSystemPrompt({ cwd: this.ws.cwd, model: this.model!, append: this.ws.mcp.instructions() || undefined, signal }), stopped]);
             if (system !== undefined && !signal.aborted && !this.closed) this.session.setSystem(system);
         } finally {
             signal.removeEventListener("abort", stop);

@@ -1306,7 +1306,7 @@ describe("sessions", () => {
         c.close();
     });
 
-    test("stopping a first turn while its git snapshot is read ends it then, not when git is done", async () => {
+    test("stopping a first turn while its git snapshot is read ends it then, and stops its git calls", async () => {
         const cwd = project();
         commitRepo(cwd);
         const bin = tempDir("harness-slow-git-");
@@ -1324,8 +1324,10 @@ describe("sessions", () => {
             await c.until(id, done, 5000);
             expect(existsSync(finished)).toBe(false);
             expect(lastTurn(c.view(id)).status).not.toBe("done");
-            // The next send builds the prompt, git snapshot and all.
+            // Its git calls were stopped with it, not left to finish.
             await Bun.sleep(1600);
+            expect(existsSync(finished)).toBe(false);
+            // The next send builds the prompt, git snapshot and all.
             await c.call("session.send", { id, text: "explain the layout" });
             await c.until(id, (v) => done(v) && lastTurn(v).status === "done", 10_000);
             c.close();
