@@ -277,30 +277,6 @@ describe("Chat Completions: streaming", () => {
         }
     });
 
-    test("Gemini requests thought summaries alongside effort without overlapping controls", async () => {
-        const def = builtin("gemini");
-        const m = { provider: def.id, id: "gemini-2.5-flash", supportsReasoning: true };
-        // The compat docs do not specify the summary response shape; exercise the
-        // existing reasoning delta parser without claiming this is Google's format.
-        respond = () => sse([{ choices: [{ delta: { reasoning: "summary", content: "answer" }, finish_reason: "stop" }] }]);
-        const { events, on } = collect();
-        const msg = await new OpenAICompatProvider(def, undefined).stream(req(m, [], { effort: "high", showThinking: true }), on);
-        expect(seen.at(-1)!.body.extra_body).toEqual({ google: { thinking_config: { include_thoughts: true } } });
-        expect(seen.at(-1)!.body.reasoning_effort).toBe("high");
-        expect(events).toContainEqual({ type: "thinking", text: "summary" });
-        expect(msg.content).toContainEqual({ type: "thinking", text: "summary" });
-        for (const extra of [{ showThinking: false }, {}, { showThinking: true, noThinking: true }]) {
-            await new OpenAICompatProvider(def, undefined).stream(req(m, [], extra), () => {});
-            expect(seen.at(-1)!.body).not.toHaveProperty("extra_body");
-        }
-        await new OpenAICompatProvider(def, undefined).stream(req(m, [], { showThinking: true }), () => {});
-        expect(seen.at(-1)!.body.extra_body.google.thinking_config).toEqual({ include_thoughts: true });
-        expect(seen.at(-1)!.body).not.toHaveProperty("reasoning_effort");
-        for (const target of [CUSTOM, builtin("vertex"), def]) {
-            await new OpenAICompatProvider(target, undefined).stream(req({ ...m, supportsReasoning: target !== def }, [], { showThinking: true }), () => {});
-            expect(seen.at(-1)!.body).not.toHaveProperty("extra_body");
-        }
-    });
 
     test("text deltas, a chunked tool call, finish_reason and usage", async () => {
         respond = () =>

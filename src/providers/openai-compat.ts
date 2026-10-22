@@ -241,11 +241,6 @@ export class OpenAICompatProvider implements ProviderClient {
             if (def.reasoning === "openrouter") body.reasoning = { effort };
             else body.reasoning_effort = effort;
         }
-        if (def.id === "gemini" && m.supportsReasoning && req.showThinking && !req.noThinking) {
-            // include_thoughts can accompany reasoning_effort; thinking_level and
-            // thinking_budget cannot. https://ai.google.dev/gemini-api/docs/openai
-            body.extra_body = { google: { thinking_config: { include_thoughts: true } } };
-        }
 
         const payload = fitRequest(req.messages, providerReadsPdf(def), (messages) => JSON.stringify({ ...body, messages: toOpenAIMessages(req.system, messages, def) }));
         // A request that stops sending anything is retried instead of waited on forever.
