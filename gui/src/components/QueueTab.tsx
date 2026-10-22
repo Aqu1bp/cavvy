@@ -23,6 +23,17 @@ interface Sort {
 }
 
 const same = (a: readonly number[], b: readonly number[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+/** After the next frame is drawn; or soon, where none is (a hidden window doesn't draw, so it would never come). */
+function nextFrame(fn: () => void) {
+    let done = false;
+    const once = () => {
+        if (done) return;
+        done = true;
+        fn();
+    };
+    requestAnimationFrame(once);
+    setTimeout(once, 100);
+}
 const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /**
@@ -73,7 +84,7 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
             setSaid(movedAnnouncement(s.to, s.ids.length));
             // The rows are in their new order and every transform is back at none, with no transition
             // (the tray is "still"): nothing moved on screen. Transitions come back a frame later.
-            requestAnimationFrame(() => {
+            nextFrame(() => {
                 if (sort()?.token === s.token) setSort(undefined);
                 afterMove(s.id);
             });
