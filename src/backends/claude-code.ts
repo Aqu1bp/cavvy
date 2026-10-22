@@ -386,7 +386,9 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         // before. So too a turn nothing takes reports after (-p, the SDK runner, a sub-agent): its run waits for its
         // background work, with the bounded wait below (servers stopped at the answer, #193's timeouts), until the
         // live layer has that policy (#219 PR 5).
-        if (t.liveSessions !== false && !t.untilQuiet) return this.live.runTurn(t);
+        // A turn Claude Code started by itself (a wake) is on the live process, whatever the setting says now: its
+        // report is taken there, never asked again of a new process.
+        if (t.adopt || (t.liveSessions !== false && !t.untilQuiet)) return this.live.runTurn(t);
         // A process still kept for the session (live sessions turned off since): it goes first, or it would go on
         // beside this run in the same Claude Code session (its background work reporting there).
         const kept = this._live?.get(t.sessionKey);

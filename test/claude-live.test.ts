@@ -165,6 +165,19 @@ describe("one Claude Code process per session", () => {
         expect(starts().length).toBe(2);
     });
 
+    test("review #295 P1-5: live sessions turned off with a wake waiting: adopting it still takes its report from the live process", async () => {
+        process.env.FAKE_SCENARIO = "agent-background";
+        process.env.FAKE_BACKGROUND_MS = "200";
+        const settings: any = {};
+        const { run, events, wakes, adopt } = await makeAgent({ settings });
+        expect(await run("map auth")).toBe("done");
+        await until(() => wakes.length > 0, 5000, "a wake");
+        settings.agentCli = { liveSessions: false };
+        expect(await adopt(wakes[0]!)).toBe("done");
+        expect(texts(events)).toContain("The explorer reported back: sign-in strategies are registered in one list.");
+        expect(starts().length).toBe(1);
+    });
+
     test("live sessions turned off with a process kept for the session: it goes (its background sub-agent stopped with it) before the per-run process runs", async () => {
         process.env.FAKE_SCENARIO = "agent-background";
         process.env.FAKE_BACKGROUND_MS = "20000";
