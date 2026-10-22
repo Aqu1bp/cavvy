@@ -164,6 +164,22 @@ describe("one Claude Code process per session", () => {
         expect(await run("again")).toBe("done");
         expect(starts().length).toBe(2);
     });
+
+    test("live sessions turned off with a process kept for the session: it goes (its background sub-agent stopped with it) before the per-run process runs", async () => {
+        process.env.FAKE_SCENARIO = "agent-background";
+        process.env.FAKE_BACKGROUND_MS = "20000";
+        const settings: any = {};
+        const { run, events, background } = await makeAgent({ settings });
+        expect(await run("map auth")).toBe("done");
+        const pid = starts()[0].pid as number;
+        expect(background.list().find((t) => t.kind === "agent")?.status).toBe("running");
+        settings.agentCli = { liveSessions: false };
+        process.env.FAKE_SCENARIO = "silent";
+        expect(await run("again")).toBe("done");
+        expect(() => process.kill(pid, 0)).toThrow();
+        expect(background.list().find((t) => t.kind === "agent")).toMatchObject({ status: "stopped", withProcess: true });
+        expect(notices(events).join("\n")).toContain("agentCli.liveSessions");
+    });
 });
 
 /** Start a turn and wait until the fake is in its long-running step (a command, or mid-answer). */

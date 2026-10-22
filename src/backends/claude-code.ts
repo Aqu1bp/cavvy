@@ -387,6 +387,14 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         // background work, with the bounded wait below (servers stopped at the answer, #193's timeouts), until the
         // live layer has that policy (#219 PR 5).
         if (t.liveSessions !== false && !t.untilQuiet) return this.live.runTurn(t);
+        // A process still kept for the session (live sessions turned off since): it goes first, or it would go on
+        // beside this run in the same Claude Code session (its background work reporting there).
+        const kept = this._live?.get(t.sessionKey);
+        if (kept) {
+            const tasks = kept.tasks.running().length;
+            await this._live!.release(t.sessionKey);
+            if (tasks) t.sink.emit({ type: "notice", level: "warn", message: `Live sessions are off (agentCli.liveSessions), so Claude Code's process for this session was stopped, and ${tasks === 1 ? "its background task" : `its ${tasks} background tasks`} with it.` });
+        }
         const bin = requireCli(this.def.id, CLAUDE_CLI);
         const key = (id: string) => `${t.accountId ?? "default"}:${id}`;
         // The harness's skills Claude Code doesn't read itself come as a plugin of their own, so it runs them like its own.
