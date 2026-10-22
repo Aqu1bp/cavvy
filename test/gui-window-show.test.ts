@@ -28,6 +28,17 @@ test("the window is created hidden, and nothing but the page (or the fallback) s
     expect(lib).toMatch(/sleep\(SHOW_ANYWAY\)\.await;\s*show_window\(&app\);/);
 });
 
+test("a second launch that raises the window marks it shown, so neither the page nor the fallback raises it again", () => {
+    const lib = readFileSync(join(root, "desktop/src-tauri/src/lib.rs"), "utf8");
+    const body = (name: string) => lib.slice(lib.indexOf(`fn ${name}(`), lib.indexOf("\n}\n", lib.indexOf(`fn ${name}(`)));
+    // Every way the window is shown goes through raise_window, which sets the latch first.
+    expect(body("raise_window")).toMatch(/Shown>\(\)\.0\.store\(true[^)]*\);[\s\S]*\.show\(\)/);
+    expect(body("show_window")).toMatch(/if app\.state::<Shown>\(\)\.0\.load\([^)]*\) \{\s*return;\s*\}\s*raise_window\(app\);/);
+    expect(lib).toMatch(/single_instance::init\(\|app, _args, _cwd\| raise_window\(app\)\)/);
+    // Nothing else shows it.
+    expect(lib.match(/\.show\(\)/g)).toHaveLength(1);
+});
+
 test("Home's entrance is short, and doesn't play when Home was drawn before the window came up", () => {
     const rules = parseRules(readFileSync(join(root, "gui/src/styles/home.css"), "utf8"));
     const entrance = rules.filter((r) => /^home-in /.test(r.decls.get("animation") ?? "") && r.selectors.some((s) => !s.startsWith(".trust-callout")));

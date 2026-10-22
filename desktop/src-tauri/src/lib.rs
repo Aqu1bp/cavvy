@@ -74,12 +74,19 @@ fn window_ready(app: AppHandle) {
     show_window(&app);
 }
 
-/// Shows the main window the first time it's asked; later calls (the fallback) do nothing.
+/// Shows the main window the first time it's asked; once it's up, by any way, later calls (the fallback) do nothing.
 fn show_window(app: &AppHandle) {
-    if app.state::<Shown>().0.swap(true, Ordering::SeqCst) {
+    if app.state::<Shown>().0.load(Ordering::SeqCst) {
         return;
     }
+    raise_window(app);
+}
+
+/// Shows and focuses the main window, and marks it shown: the page and the fallback won't raise it again.
+fn raise_window(app: &AppHandle) {
+    app.state::<Shown>().0.store(true, Ordering::SeqCst);
     if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
     }
@@ -203,13 +210,8 @@ pub fn run() {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         // A second launch focuses the window that's already open.
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.unminimize();
-                let _ = w.show();
-                let _ = w.set_focus();
-            }
-        }));
+        // Every time, even before the page has asked (it may never).
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| raise_window(app)));
     }
 
     builder
