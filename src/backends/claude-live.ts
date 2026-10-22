@@ -182,10 +182,10 @@ export class ClaudeConnection implements CliConnection {
     /** The prompt command_lifecycle said started, before its system/init. */
     private startedUuid?: string;
     /** What each wake is about, for its row; and whether it answers a message of the user's. */
-    readonly wakeInfo = new Map<string, { label?: string; prompt?: boolean }>();
+    readonly wakeInfo = new Map<string, { label?: string; prompt?: boolean; report?: string }>();
     /** A report Claude Code will start a turn for, said by a task_notification while no turn ran. */
     /** Reports Claude Code said it will start a turn for, oldest first: each wake takes the first. */
-    private dues: { label?: string; timer: ReturnType<typeof setTimeout>; task: BackgroundTaskInfo }[] = [];
+    private dues: { label?: string; report?: string; timer: ReturnType<typeof setTimeout>; task: BackgroundTaskInfo }[] = [];
     /** The message the user sent while the turn ran, to send at once in its place on Esc (sendNow). */
     followUp?: string;
     private hookAbort = new AbortController();
@@ -575,10 +575,10 @@ export class ClaudeConnection implements CliConnection {
             }
             return;
         }
-        this.startWake(`wake-${++wakeRefs}`, { label: this.dues[0]?.label });
+        this.startWake(`wake-${++wakeRefs}`, { label: this.dues[0]?.label, ...(this.dues[0]?.report ? { report: this.dues[0].report } : {}) });
     }
 
-    private startWake(ref: string, info: { label?: string; prompt?: boolean }) {
+    private startWake(ref: string, info: { label?: string; prompt?: boolean; report?: string }) {
         const due = this.dues.shift();
         if (due) clearTimeout(due.timer);
         this.wakeInfo.set(ref, info);
@@ -831,7 +831,7 @@ export class ClaudeConnection implements CliConnection {
      * Claude Code said a background task ended while no turn ran: it starts one with the report, which the
      * session waits for. Several at once each get a turn, one after another (as 2.1.304 runs them).
      */
-    private reportDue(task: BackgroundTaskInfo, label: string | undefined) {
+    private reportDue(task: BackgroundTaskInfo, label: string | undefined, report?: string) {
         const was = this.dues.find((d) => d.task.id === task.id);
         if (was) clearTimeout(was.timer);
         const timer = setTimeout(() => {
@@ -842,8 +842,8 @@ export class ClaudeConnection implements CliConnection {
             // The session's flag is one for all of them: cleared only once none is due.
             if (!this.dues.length) this.events({ t: "task", task: this.tasks.get(task.id) ?? task, wakeDue: false });
         }, liveTiming.wakeDueMs);
-        if (was) Object.assign(was, { label, timer, task });
-        else this.dues.push({ label, timer, task });
+        if (was) Object.assign(was, { label, report, timer, task });
+        else this.dues.push({ label, report, timer, task });
     }
 
     /** A report that won't come after all (the notification went to a sub-agent). */
@@ -937,7 +937,9 @@ export class ClaudeConnection implements CliConnection {
         const reports = Boolean(known && !this.cur && (status === "completed" || status === "failed") && m.owned_by_subagent !== true);
         if (taskId) this.taskEnded(taskId, ended);
         if (reports && known) {
-            this.reportDue(known, dueLabel(known, ended));
+            // What it reported, for the wake (shown and told if the session can't take it over, #305).
+            const said = (typeof m.handback_report?.text === "string" ? m.handback_report.text : undefined) ?? (toolUseId ? this.lastWords.get(toolUseId) : undefined) ?? (summary || undefined);
+            this.reportDue(known, dueLabel(known, ended), said?.trim() ? redact(said.trim()) : undefined);
             liveDebug("claude", "report due", { task: taskId, due: this.dues.length });
             this.events({ t: "task", task: this.tasks.get(taskId)!, wakeDue: true });
         } else if (taskId) this.dropDue(taskId);
@@ -1521,7 +1523,7 @@ export class ClaudeLive {
         live.onWake((w) => {
             const info = this.adapter(key)?.conn?.wakeInfo.get(w.ref);
             liveDebug("claude", "wake → host", { key, ref: w.ref, prompt: info?.prompt });
-            this.hosts.get(key)?.onWake?.({ provider: this.provider.id, ref: w.ref, ...(info?.label ? { label: info.label } : {}), ...(info?.prompt ? { prompt: true } : {}) });
+            this.hosts.get(key)?.onWake?.({ provider: this.provider.id, ref: w.ref, ...(info?.label ? { label: info.label } : {}), ...(info?.prompt ? { prompt: true } : {}), ...(info?.report ? { report: info.report } : {}) });
         });
         live.onEvent((e: CliEvent) => {
             const host = this.hosts.get(key);

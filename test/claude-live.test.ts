@@ -533,6 +533,20 @@ describe("background work across turns", () => {
         expect(notices(events).join("\n")).not.toMatch(/error/i);
     });
 
+    test("#305: a wake the session can't take over (it's on another model): its report shows, and the model is told", async () => {
+        process.env.FAKE_SCENARIO = "agent-background";
+        process.env.FAKE_BACKGROUND_MS = "100";
+        const { run, wakes, adopt, agent, events } = await makeAgent();
+        expect(await run("map auth")).toBe("done");
+        await until(() => wakes.length > 0, 5000, "the wake");
+        expect(wakes[0]!.report).toContain("sign-in strategies");
+        agent.setModel({ provider: "openai", id: "gpt-x", name: "GPT X" } as any, {} as any);
+        expect(await adopt(wakes[0]!)).toBe("error");
+        expect(notices(events).find((n) => n.includes("can't take it over now"))).toContain("sign-in strategies");
+        const reminders: string[] = ((agent as any).pendingReminders as { text: string }[]).map((r) => r.text);
+        expect(reminders.some((r) => r.includes("sign-in strategies") && r.includes("Claude Code"))).toBe(true);
+    });
+
     test("a permission prompt from a background sub-agent between turns is asked (no turn running), and its answer reaches it", async () => {
         process.env.FAKE_SCENARIO = "agent-background-ask";
         const asked: PermissionRequest[] = [];
