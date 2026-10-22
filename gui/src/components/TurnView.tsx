@@ -481,8 +481,8 @@ type TurnViewProps = {
     onToggleWork?: (el: HTMLElement, toggle: () => void) => void;
     /** Ended by a steer whose turn (or one after it) still runs: its work stays open until that chain ends. */
     held?: boolean;
-    /** The turn's element, once (Transcript tracks how far it is from the view). */
-    onElement?: (el: HTMLElement) => void;
+    /** The turn's element, once (Transcript tracks how far it is from the view, and finds it by id). */
+    onElement?: (el: HTMLElement, turnId: string) => void;
 };
 
 export function TurnView(p: TurnViewProps) {
@@ -567,7 +567,7 @@ function TurnViewContent(p: TurnViewProps) {
     );
 
     return (
-        <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""} ${p.held ? "chained" : ""} ${foldable() ? "done" : ""}`} data-turn={p.turn.id} aria-busy={running()} ref={(el) => p.onElement?.(el)}>
+        <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""} ${p.held ? "chained" : ""} ${foldable() ? "done" : ""}`} data-turn={p.turn.id} aria-busy={running()} ref={(el) => p.onElement?.(el, p.turn.id)}>
             <Show when={p.turn.prompt}>
                 <h2 class="sr-only" data-find-skip>You said</h2>
                 <UserPrompt turn={p.turn} sessionId={p.state.id} onRewind={p.onRewind} />

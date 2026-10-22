@@ -5,7 +5,7 @@ import { fork, forkAnchor } from "../state/actions";
 import { activate, toast, type SessionHandle } from "../state/app";
 import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setJumpTarget, setRewindOpen } from "../state/ui";
 import { prefs } from "../state/prefs";
-import { anchoredTop, atBottom, FAR, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
+import { anchoredTop, atBottom, FAR, firstBelow, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
 import { glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
 import { TurnView } from "./TurnView";
@@ -159,7 +159,9 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         if (!scroller || !content) return;
         // Where things are, not where a running glide draws them (the reader may have scrolled away from it).
         const top = scroller.getBoundingClientRect().top;
-        const turn = [...content.querySelectorAll<HTMLElement>("[data-turn]")].find((el) => el.getBoundingClientRect().bottom - shiftOf(el) > top);
+        // The first turn reaching into the view: they're in order, so a few are measured, not all of them.
+        const els = visible().flatMap((t) => turnEls.get(t.id) ?? []);
+        const turn = els[firstBelow(els.length, (i) => els[i]!.getBoundingClientRect().bottom - shiftOf(els[i]!), top)];
         if (!turn) return;
         const moved = shiftOf(turn);
         // A block anchor also survives replacing the live head with a work-log toggle.
@@ -172,7 +174,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     };
     const restore = () => {
         if (!scroller || !content || !reading) return;
-        const turn = content.querySelector<HTMLElement>(`[data-turn="${CSS.escape(reading.turnId)}"]`);
+        const turn = turnEls.get(reading.turnId);
         if (!turn) return;
         const part = reading.part?.startsWith("worklog:")
             ? turn.querySelectorAll<HTMLElement>(".worklog")[Number(reading.part.slice(8))]
@@ -192,9 +194,15 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     // A turn a screen or more from the view is marked far: it skips its layout and paint (transcript.css), at the
     // size it was last drawn at. Each is drawn once before it can be (not far until the observer says so).
     let far: IntersectionObserver | undefined;
-    const track = (el: HTMLElement) => {
+    /** Each turn's element (TurnView gives it), so finding one doesn't search the whole column. */
+    const turnEls = new Map<string, HTMLElement>();
+    const track = (el: HTMLElement, turnId: string) => {
+        turnEls.set(turnId, el);
         far?.observe(el);
-        onCleanup(() => far?.unobserve(el));
+        onCleanup(() => {
+            if (turnEls.get(turnId) === el) turnEls.delete(turnId);
+            far?.unobserve(el);
+        });
     };
 
     onMount(() => {
@@ -220,7 +228,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                 }
             };
             far = new IntersectionObserver(relay(to), { root: scroller, rootMargin: "100% 0px" });
-            for (const el of content.querySelectorAll<HTMLElement>("[data-turn]")) far.observe(el);
+            for (const el of turnEls.values()) far.observe(el);
             onCleanup(() => {
                 far?.disconnect();
                 to.fn = undefined;
@@ -253,7 +261,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         // A running log can finish while this keyed view is unmounted.
         if (!stick()) for (const turn of visible()) if (turn.status === "running") openWork.add(turn.id);
         transcriptPositions.set(id, {
-            shown: shown(), bottom: stick(), top: (ready ? scroller?.scrollTop : saved?.top) ?? 0,
+            bottom: stick(), top: (ready ? scroller?.scrollTop : saved?.top) ?? 0,
             anchor: reading, openWork: [...openWork],
         });
     });
@@ -326,7 +334,8 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         else if (atBottom(top, scroller.scrollHeight, scroller.clientHeight) && (gap <= 1 || top > lastTop + 0.5)) setStick(true);
         lastTop = top;
         lastGap = gap;
-        reading = capture();
+        // Following the end, nothing is anchored (every way out of it takes its own reading).
+        if (!stick()) reading = capture();
     };
     /** Find moved to a match: up from the end, it stops following (its scroll may come just after a write of ours). */
     const navigated = () => {
@@ -403,7 +412,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             setFindQuery(j.query);
             openFind();
             afterLayout(() => {
-                const el = content?.querySelector<HTMLElement>(`[data-turn="${CSS.escape(turn.id)}"]`);
+                const el = turnEls.get(turn.id);
                 if (!el || !scroller) return;
                 scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - BAR_ROOM;
                 wrote();
