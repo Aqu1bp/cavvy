@@ -48,6 +48,7 @@ export async function checkTranscriptScroll(target: HTMLElement) {
         const matchTop = y('[data-find="b2"]');
         check(matchTop >= 0 && matchTop < 500, "find navigates and does not get restored away");
         setFindOpen(false);
+        await checkFar();
 
         const blocks: any[] = [];
         for (let i = 0; i < 25; i++) {
@@ -87,6 +88,30 @@ export async function checkTranscriptScroll(target: HTMLElement) {
     }
 }
 
+/** Far from the view, a turn skips layout and paint at the size it was last drawn at; back near, what's in view stays put. */
+async function checkFar() {
+    await scroll(scroller().scrollHeight);
+    const far = [...root.querySelectorAll<HTMLElement>("[data-turn][data-far]")];
+    check(far.length > 60 && getComputedStyle(far[0]!).contentVisibility === "auto", `far turns skip their layout (${far.length} far)`);
+    // Turns near the end drawn narrower, then skipped: back near at the full width, they're shorter.
+    root.style.width = "600px"; await settle();
+    for (let i = 0; i < 6; i++) await scroll(scroller().scrollTop - 500);
+    root.style.width = "900px"; await scroll(scroller().scrollHeight);
+    // A little each frame, as a wheel or trackpad does (a scroll event every frame), written between frames.
+    for (let i = 0; i < 40; i++) {
+        await new Promise((resolve) => setTimeout(resolve));
+        const view = scroller().getBoundingClientRect().top;
+        const el = [...root.querySelectorAll<HTMLElement>("[data-turn]")].find((t) => t.getBoundingClientRect().bottom > view + 300)!;
+        const before = el.getBoundingClientRect().top;
+        scroller().dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true }));
+        const was = scroller().scrollTop;
+        scroller().scrollTop = was - 100;
+        const moved = was - scroller().scrollTop;
+        await frames(1);
+        near(el.getBoundingClientRect().top - before, moved, `scrolling up past turns skipped at another width, what's in view moves only with the scroll (frame ${i})`);
+    }
+}
+
 const frames = (n = 2) => new Promise<void>((resolve) => { const step = () => (--n <= 0 ? resolve() : requestAnimationFrame(step)); requestAnimationFrame(step); });
 
 /** Pinned to the end while a turn runs: growth lands at the end in one write, and the column glides in, clipped. */
@@ -104,7 +129,8 @@ async function checkGlide() {
     // A frame to lay it out (the observer asks for a pin), the next to write it.
     await frames(3);
     near(scroller().scrollTop, end(), "glide: growth while pinned is at the end at once");
-    check(col.getAnimations().length === 1, `glide: the column glides into place (${col.getAnimations().length} animations)`);
+    const moving = row('[data-turn="glide"]').getAnimations().length;
+    check(!col.getAnimations().length && moving === 1, `glide: the rows in sight glide into place, not the column (${col.getAnimations().length} on it, ${moving} on the turn)`);
     check(scroller().scrollHeight === row(".transcript-glide").offsetHeight, "glide: its translate adds nothing to what the conversation scrolls through");
     await settle();
     check(!row(".jump"), "glide: our own scroll keeps it pinned");

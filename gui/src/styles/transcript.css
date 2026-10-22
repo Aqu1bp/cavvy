@@ -217,6 +217,14 @@
     display: flex;
     flex-direction: column;
     padding-bottom: 26px;
+    /* Skipped (far, below), it keeps the size it was last drawn at. */
+    contain-intrinsic-size: auto 600px;
+}
+
+/* A screen or more from the view (Transcript.tsx): no layout or paint until it comes near, so a long
+   conversation costs what its last screens do. Auto, not hidden: one scrolled to before it's marked near is drawn. */
+.turn[data-far] {
+    content-visibility: auto;
 }
 
 /* A turn a steer ended: the next one carries straight on, so they sit close. */

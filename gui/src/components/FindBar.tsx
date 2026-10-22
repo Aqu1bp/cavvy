@@ -2,6 +2,7 @@ import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show, u
 import { ChevronLeft, ChevronRight, Search, X } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { clearPaint, findMatches, MAX_MATCHES, paintMatches, revealInBoxes, textRanges, type FindMatch } from "../lib/find";
+import { FAR } from "../lib/transcript-scroll";
 import { findFocus, findQuery, setFindOpen, setFindQuery, setFindReveal } from "../state/ui";
 
 /** The top of the view the bar covers: the title bar's row (52px) and the find pill under it (58px down, 38px tall), with a little air. */
@@ -86,6 +87,8 @@ export function FindBar(p: {
         const turn = col.querySelector(`[data-turn="${CSS.escape(m.turnId)}"]`);
         const el = turn?.querySelector(`[data-find="${CSS.escape(m.part)}"]`) ?? turn;
         if (!el) return;
+        // Drawn now, if it was skipped far from the view, so the boxes it scrolls in are measured.
+        turn?.removeAttribute(FAR);
         const ranges = textRanges(el, findQuery());
         current = ranges[Math.min(m.n, ranges.length - 1)];
         repaint();
