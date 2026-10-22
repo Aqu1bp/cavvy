@@ -9,8 +9,10 @@
    The composer and request cards go in .composer-dock > .composer-col.
 
    --dock-h changes whenever the composer grows or shrinks (a prompt wrapping
-   to another line, say), so it isn't inherited: the transcript's few boxes
-   that use it inherit it explicitly, and its turns aren't restyled with it. */
+   to another line, say), so it isn't inherited: it's set on the two boxes
+   that use it (.transcript-end, .jump; Transcript.tsx, Agents.tsx), and its
+   turns aren't restyled with it. Not passed down with `--dock-h: inherit`
+   either: WebKit doesn't recompute that when the parent's value changes. */
 
 @property --dock-h {
     syntax: "<length>";
@@ -18,20 +20,11 @@
     initial-value: 140px;
 }
 
-.stage .transcript-wrap,
-.stage .transcript,
-.stage .transcript-col,
-.stage .transcript-end,
-.stage .jump {
-    --dock-h: inherit;
-}
-
 .stage {
     position: absolute;
     inset: 0;
     --lane-l: 32px;
     --lane-r: 32px;
-    --dock-h: 140px;
     --stage-top: calc(var(--bar-h, 52px) + 14px);
     /* The composer's width: the text column and a little more. */
     --dock-w: calc(var(--column-w) + 100px);

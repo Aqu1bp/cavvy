@@ -7,7 +7,7 @@ import type { Session } from "./session";
 import { fireHooks, type HookNotice, type HookServices } from "./hooks";
 import { toolNameFor } from "../mcp/manager";
 import type { Tool } from "../tools/types";
-import { loadMemory } from "./memory";
+import { loadMemory, type MemoryFile } from "./memory";
 
 const MEMORY_TYPE = { user: "User", project: "Project", local: "Local" } as const;
 
@@ -30,7 +30,9 @@ async function run(settings: Settings, session: Session, source: string, cwd: st
 export async function instructionsLoadedHooks(settings: Settings, session: Session, source: string, cwd: string, warn: HookNotice, services?: HookServices, extra: Record<string, unknown> = {}): Promise<void> {
     if (!settings.hooks?.InstructionsLoaded?.length) return;
     const loadReason = source === "compact" ? "compact" : "session_start";
-    await Promise.all(loadMemory(cwd).map((f) => fireHooks(settings, "InstructionsLoaded", { session_id: session.meta.id, ...extra, file_path: f.path, memory_type: MEMORY_TYPE[f.scope], load_reason: loadReason }, cwd, warn, services)));
+    // A file another one imports is an "include" (but for compaction), with the file that imported it, as in Claude Code.
+    const reason = (f: MemoryFile) => ({ load_reason: f.importedBy && loadReason !== "compact" ? "include" : loadReason, ...(f.importedBy ? { parent_file_path: f.importedBy } : {}) });
+    await Promise.all(loadMemory(cwd).map((f) => fireHooks(settings, "InstructionsLoaded", { session_id: session.meta.id, ...extra, file_path: f.path, memory_type: MEMORY_TYPE[f.scope], ...reason(f) }, cwd, warn, services)));
 }
 
 /**

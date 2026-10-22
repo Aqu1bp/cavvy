@@ -41,3 +41,4 @@ test("toggling the sidebar below 900px opens and closes the drawer, leaving the 
     expect(prefs.sidebar).toBe(false);
     expect(at(720, 480).railShown).toBe(true);
 });
+

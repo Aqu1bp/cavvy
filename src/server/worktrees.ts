@@ -237,10 +237,15 @@ interface GitRun {
     stdout: string;
     stderr: string;
     timedOut: boolean;
+    /** Output past `maxBytes` wasn't read (Git was stopped there). */
+    cut?: boolean;
 }
 
-/** Waits for Git itself (killed at the timeout), not for its pipes to close. `lazyFetch` only for the checkout itself. Exported for tests. */
-export async function runGitAsync(cwd: string, args: string[], timeoutMs: number, o: { lazyFetch?: boolean } = {}): Promise<GitRun> {
+/**
+ * Waits for Git itself (killed at the timeout), not for its pipes to close. `lazyFetch` only for the checkout itself.
+ * `maxBytes`: at most that much of its output is kept, and Git is stopped once it writes more (`cut`). Exported for tests.
+ */
+export async function runGitAsync(cwd: string, args: string[], timeoutMs: number, o: { lazyFetch?: boolean; maxBytes?: number } = {}): Promise<GitRun> {
     const proc = spawn(gitArgv(args), { cwd, env: o.lazyFetch ? cwdGitEnv() : noLazyFetch(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     let timedOut = false;
     const timer = setTimeout(() => {
@@ -248,22 +253,31 @@ export async function runGitAsync(cwd: string, args: string[], timeoutMs: number
         proc.kill();
     }, timeoutMs);
     const readers: { cancel(): Promise<void> }[] = [];
-    const collect = async (stream: ReadableStream<Uint8Array>) => {
+    let cut = false;
+    const collect = async (stream: ReadableStream<Uint8Array>, max = Infinity) => {
         const reader = stream.getReader();
         readers.push(reader);
         const chunks: Uint8Array[] = [];
+        let kept = 0;
         try {
             for (;;) {
                 const { done, value } = await reader.read();
                 if (done) break;
+                if (kept + value.length > max) {
+                    chunks.push(value.subarray(0, max - kept));
+                    cut = true;
+                    proc.kill();
+                    break;
+                }
                 chunks.push(value);
+                kept += value.length;
             }
         } catch {
             // cancelled below
         }
         return chunks;
     };
-    const out = collect(proc.stdout);
+    const out = collect(proc.stdout, o.maxBytes);
     const err = collect(proc.stderr);
     let code: number | null;
     try {
@@ -277,7 +291,7 @@ export async function runGitAsync(cwd: string, args: string[], timeoutMs: number
     clearTimeout(drained);
     for (const reader of readers) reader.cancel().catch(() => undefined);
     const text = async (p: Promise<Uint8Array[]>) => Buffer.concat(await p).toString();
-    return { code, stdout: await text(out), stderr: await text(err), timedOut };
+    return { code, stdout: await text(out), stderr: await text(err), timedOut, ...(cut ? { cut } : {}) };
 }
 
 function logFailure(log: Log | undefined, what: string, stderr: string) {

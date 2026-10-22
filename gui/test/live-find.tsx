@@ -1,8 +1,9 @@
 // Browser regression fixture: actual Solid rows, find ranges and transcript CSS.
 import { render } from "solid-js/web";
 import { createStore } from "solid-js/store";
-import type { ToolBlock, Turn } from "@shared/protocol";
+import type { NoticeBlock, ToolBlock, Turn } from "@shared/protocol";
 import { ActivityGroup } from "../src/components/blocks/Activity";
+import { Notice } from "../src/components/TurnView";
 import { findMatches, textRanges } from "../src/lib/find";
 import { setFindReveal } from "../src/state/ui";
 import { checkEditorFind } from "./editor-find";
@@ -205,8 +206,34 @@ async function checkCommandFollow() {
     }
 }
 
-run().then(() => checkCommandFollow()).then(() => checkEditorFind(root)).then(() => checkPaletteDelete(root)).then(() => checkTranscriptScroll(root)).then(() => checkDiffComments(root)).then(() => {
-    result.textContent = "PASS: live tool find; command output follows; deferred file links and ranges; editor actions and find keys; deleted palette hits; transcript scroll; diff comments";
+/** A notice's folded details (#300): find counts them as the lines they're drawn on, and opens the fold to show one. */
+async function checkNoticeDetails() {
+    const box = root.appendChild(document.createElement("div"));
+    const block: NoticeBlock = { t: "notice", id: "stopped", level: "warn", text: "Stopped 2 background tasks", details: ["top", "Stop checks"] };
+    const dispose = render(() => <Notice block={block} />, box);
+    const notice = () => box.querySelector<HTMLElement>('[data-find="stopped"]')!;
+    try {
+        await frame();
+        const counted = findMatches([{ id: "notice", blocks: [block], status: "done" }], "stop");
+        // "Stopped" and "Stop checks": not "tasks" and "top" run together (the heading's end and the first name).
+        check(counted.length === 2, `notice: counted ${counted.length} matches of "stop"`);
+        check(textRanges(notice(), "stop").length === 1, "notice: folded, only the heading is drawn (the names' preview isn't counted)");
+        setFindReveal({ turnId: "notice", part: "stopped" });
+        await frame();
+        check(notice().querySelector(".notice-h")?.getAttribute("aria-expanded") === "true", "notice: find opens the fold");
+        const drawn = textRanges(notice(), "stop");
+        check(drawn.length === counted.length, `notice: drawn matches (${drawn.length}) equal counted (${counted.length})`);
+        check(drawn.map((r) => r.toString()).join("|") === "Stop|Stop", `notice: each match is within one line (${drawn.map((r) => r.toString()).join("|")})`);
+        check(drawn[1]!.startContainer.parentElement?.closest("li")?.textContent?.includes("Stop checks"), "notice: the second match is in the second name");
+    } finally {
+        setFindReveal(undefined);
+        dispose();
+        box.remove();
+    }
+}
+
+run().then(() => checkNoticeDetails()).then(() => checkCommandFollow()).then(() => checkEditorFind(root)).then(() => checkPaletteDelete(root)).then(() => checkTranscriptScroll(root)).then(() => checkDiffComments(root)).then(() => {
+    result.textContent = "PASS: live tool find; notice details; command output follows; deferred file links and ranges; editor actions and find keys; deleted palette hits; transcript scroll; diff comments";
     result.dataset.status = "passed";
 }).catch((error) => {
     result.textContent = String(error.stack ?? error);

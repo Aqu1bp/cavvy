@@ -104,11 +104,12 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
     const provider = () => (a().model ?? st().model?.ref)?.split(":")[0];
     /** What it's waiting on you for (its own sub-agents' requests too): answered here as in the session. */
     const asks = () => st().interactions.filter((i) => i.kind === "permission" && i.agentId !== undefined && within(p.handle.view.agents, i.agentId, a().id));
-    // The transcript keeps room at its end for the dock, which grows while it asks.
-    let stage: HTMLDivElement | undefined;
+    // The transcript keeps room at its end for the dock, which grows while it asks. (--dock-h goes on
+    // the box that reads it: not inherited, and not passed down with `inherit`; stage.css.)
     let dock: HTMLDivElement | undefined;
+    const [dockH, setDockH] = createSignal(72);
     onMount(() => {
-        const ro = new ResizeObserver(() => stage?.style.setProperty("--dock-h", `${dock?.offsetHeight ?? 0}px`));
+        const ro = new ResizeObserver(() => setDockH(dock?.offsetHeight ?? 0));
         if (dock) ro.observe(dock);
         onCleanup(() => ro.disconnect());
     });
@@ -141,7 +142,7 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                     <span class="truncate">{a().description || "Sub-agent"}</span>
                 </span>
             </TitleBar>
-            <div ref={stage} class="stage" style={{ "--dock-h": "72px" }}>
+            <div class="stage">
                 <div class="transcript-wrap">
                     <div class="transcript-fade" />
                     <section class="transcript" aria-label="Sub-agent transcript">
@@ -201,7 +202,7 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                                     </button>
                                 </Show>
                             </div>
-                            <div class="transcript-end" />
+                            <div class="transcript-end" style={{ "--dock-h": `${dockH()}px` }} />
                         </div>
                     </section>
                 </div>

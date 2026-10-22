@@ -5,9 +5,8 @@
    one is a raised translucent pill. */
 
 .sidebar {
-    /* The rail's width (shell.css: set on .win, live while its edge is dragged). */
-    --rail-w: inherit;
-    width: var(--rail-w);
+    /* The rail's width: it fills .win-rail's track (shell.css), which keeps it while the column opens and closes. */
+    width: 100%;
     flex: none;
     display: flex;
     flex-direction: column;

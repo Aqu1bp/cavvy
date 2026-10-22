@@ -357,6 +357,24 @@ describe("SessionStart context and InstructionsLoaded", () => {
         expect(JSON.stringify(requests[0]!.messages.at(-1).content)).toContain("Context from a SessionStart hook:\\non branch main");
         expect(JSON.stringify(requests[1]!.messages.at(-1).content)).not.toContain("SessionStart");
     });
+    test("a file a memory file imports runs InstructionsLoaded as an include, with the file that imported it (#246)", async () => {
+        const proj = tempDir();
+        mkdirSync(join(proj, ".git"));
+        writeFileSync(join(proj, "CLAUDE.md"), "See @docs/style.md\n");
+        mkdirSync(join(proj, "docs"));
+        writeFileSync(join(proj, "docs", "style.md"), "Use tabs.\n");
+        trust.trustFolder(proj);
+        const out = join(proj, "loaded.jsonl");
+        // The two hooks run at once: each appends its line in one write, so they can't interleave.
+        const settings = { autoCompact: false, hooks: { InstructionsLoaded: [{ command: `line=$(cat); printf '%s\\n' "$line" >> '${out}'` }] } };
+        const { session } = agentFor(proj, settings, () => text("ok"));
+        await sessionStartHooks(settings as any, session, "startup", proj, () => {});
+        const got = lines(out);
+        expect(got).toHaveLength(2);
+        expect(got).toContainEqual(expect.objectContaining({ file_path: join(proj, "docs", "style.md"), memory_type: "Project", load_reason: "include", parent_file_path: join(proj, "CLAUDE.md") }));
+        expect(got).toContainEqual(expect.objectContaining({ file_path: join(proj, "CLAUDE.md"), load_reason: "session_start" }));
+        expect(got.find((l) => l.file_path === join(proj, "CLAUDE.md")).parent_file_path).toBeUndefined();
+    });
 });
 
 describe("SessionStart and the first turn (review of #173)", () => {

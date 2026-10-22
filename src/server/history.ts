@@ -557,7 +557,7 @@ export function replay(o: ReplayInput): Turn[] {
                 // A notice can be the first block after compaction; it still needs a
                 // position for search, even when flushed after the last message.
                 const t = ensure(n.index);
-                t.blocks.push({ t: "notice", id: o.newId(), level: n.level, text: n.text });
+                t.blocks.push({ t: "notice", id: o.newId(), level: n.level, text: n.text, ...(n.details ? { details: n.details } : {}) });
                 if (n.level === "error" && t.status === "done") t.status = "error";
             }
         };
