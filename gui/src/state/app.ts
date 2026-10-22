@@ -10,7 +10,7 @@ import { applyOp, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
 import { credentials, focused, notify, isTauri, windowKey } from "../lib/platform";
 import { prefs, setPrefs } from "./prefs";
-import { noticeRoute } from "../lib/background";
+import { COALESCE_MS, combineEnded, noticeRoute } from "../lib/background";
 import { mayCreateFiles } from "../lib/pathcache";
 // filelinks imports rpc from here: used only once events arrive, so the cycle is harmless.
 import { paths } from "./filelinks";
@@ -704,7 +704,25 @@ function backgroundEnded(ev: Extract<ServerEvent, { type: "notify" }>) {
         revealBackground();
     };
     if (route === "toast") toast(ev.body, ev.task?.outcome === "failed" ? "warn" : ev.task?.outcome === "done" ? "success" : "info", { label: "Show", run: reveal });
-    else void notify(ev.title, ev.body, reveal, { tag });
+    else desktopEnded(ev.sessionId, ev.title, ev.body, tag, reveal);
+}
+
+/** A session's task endings waiting a moment to go out as one desktop notification. */
+const gathering = new Map<string, { title: string; bodies: string[]; tags: string[] }>();
+
+/** A desktop notification for task endings: those close together (a burst) go as one, so they don't pile up. */
+function desktopEnded(sessionId: string, title: string, body: string, tag: string, reveal: () => void) {
+    let g = gathering.get(sessionId);
+    if (!g) {
+        const batch = (g = { title, bodies: [], tags: [] });
+        gathering.set(sessionId, batch);
+        setTimeout(() => {
+            gathering.delete(sessionId);
+            void notify(batch.title, combineEnded(batch.bodies), reveal, { tag: batch.tags.length === 1 ? batch.tags[0] : `background:${sessionId}` });
+        }, COALESCE_MS);
+    }
+    g.bodies.push(body);
+    g.tags.push(tag);
 }
 
 /** The side panel, on its Background section. */

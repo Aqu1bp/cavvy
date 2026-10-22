@@ -17,7 +17,7 @@ import { prefs, setPrefs } from "./prefs";
 import { railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setDeleteRequest, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, setReview, setRewindOpen, setSettingsTab, shellLayout } from "./ui";
 import { clientAction, slashName } from "../lib/commands";
 import { forkAnchor } from "../lib/fork";
-import { backgroundOf, stopOutcome } from "../lib/background";
+import { backgroundOf, stopOutcome, stopTasks } from "../lib/background";
 export { forkAnchor } from "../lib/fork";
 
 export type { Attachment } from "../lib/attachments";
@@ -174,7 +174,7 @@ export async function stopAgent(sessionId: string, agentId?: string) {
 /** Stop background tasks (the Background panel, /tasks stop): these, or every one running. */
 export async function stopBackground(sessionId: string, ids?: string[]) {
     try {
-        const { results } = await rpc.call("session.stopBackground", { id: sessionId, ids });
+        const results = await stopTasks(rpc.call.bind(rpc) as never, sessionId, handleFor(sessionId)?.view.state, ids);
         const { message, level } = stopOutcome(results);
         toast(message, level);
     } catch (e) {

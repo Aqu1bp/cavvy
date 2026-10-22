@@ -1199,6 +1199,8 @@ export class Runtime {
                 drainWaiting: (record) => this.drainWaiting(record),
                 wake: (w) => this.adoptWake(w),
                 backgroundChanged: () => this.syncBackground(),
+                // A task's end is a notice of the window's (notifyBackground), not a line in the transcript too.
+                announcesBackgroundEnds: true,
             },
             helpers: {
                 complete: (s, p, sig) => this.complete(s, p, sig),
@@ -2574,14 +2576,18 @@ export class Runtime {
 
     /** Events a tool asked to be woken for (a watched PR): a turn of their own when nothing else is going on. */
     private wake() {
+        // Looked at again later: the turns a CLI started itself (adopts) are looked for here, not in the
+        // WakeQueue, whose poke does nothing without events of its own.
+        const again = () => (this.adopts.length ? this.wake() : this.toolState.wakes?.poke());
         // An idle compaction stops: the wake runs on the cache that's still warm, not after a summary nobody asked for.
-        if (this.idleCompacting) return void this.yieldIdleCompaction().then(() => this.toolState.wakes?.poke());
-        // Busy or with messages queued, the turn's end looks again (runQueued).
-        if (this.closed || this.busy || this.queued.length) return;
+        if (this.idleCompacting) return void this.yieldIdleCompaction().then(again);
+        // Busy or with messages queued, the turn's end looks again (runQueued). Messages held back (after a stop or
+        // a restart) don't hold up a CLI's own turn: it's running already, whatever the user sends next.
+        if (this.closed || this.busy || (this.adopts.length ? this.nextQueued() : this.queued.length)) return;
         // A model switch, a commit, the agent still starting, a goal between its turns (it goes first, as with
         // scheduled prompts): look again in a moment.
         if (this.switching || this.commitDone || !this.agent || this.goal.pending()) {
-            const t = setTimeout(() => this.toolState.wakes?.poke(), 1000);
+            const t = setTimeout(again, 1000);
             t.unref?.();
             return;
         }

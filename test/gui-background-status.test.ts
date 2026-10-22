@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "fs";
-import { backgroundOf, finishedOf, kindName, noticeRoute, runnerName, runningCount, stopOutcome, taskMeta } from "../gui/src/lib/background";
+import { backgroundOf, finishedOf, kindName, noticeRoute, runnerName, runningCount, stopOutcome, stopTasks, taskMeta, combineEnded } from "../gui/src/lib/background";
 import { tagId } from "../gui/src/lib/platform";
 import type { BackgroundTaskInfo } from "../src/server/protocol";
 import { componentCode, elements } from "./gui-component-harness";
@@ -94,7 +94,7 @@ test("a task's end is a toast in its session's view, a desktop notification othe
     // The app sends these through that route.
     const appSrc = readFileSync(new URL("../gui/src/state/app.ts", import.meta.url), "utf8");
     expect(appSrc).toContain('if (ev.kind === "background") return backgroundEnded(ev);');
-    expect(appSrc).toContain("void notify(ev.title, ev.body, reveal, { tag });");
+    expect(appSrc).toContain("else desktopEnded(ev.sessionId, ev.title, ev.body, tag, reveal);");
 });
 
 test("a stop's toast says what stopped and what couldn't be", () => {
@@ -196,4 +196,48 @@ test("finished tasks stay under the running ones, folded while something runs, w
     open.buttons.find((b) => text(b.children) === "Clear finished")!.props.onClick();
     await Bun.sleep(0);
     expect(open.cleared).toEqual(["s1"]);
+});
+
+test("Stop and Stop all against a server without backgroundTasks stop its shells with session.killShell (#282 review 8)", async () => {
+    const calls: [string, any][] = [];
+    const call = (async (method: string, params: any) => {
+        calls.push([method, params]);
+        if (method === "session.stopBackground") return { results: Object.fromEntries((params.ids ?? ["all"]).map((id: string) => [id, "stopped"])) };
+        if (params.shellId === "bash_9") throw new Error("No background shell bash_9");
+        return null;
+    }) as never;
+    const shells = [
+        { id: "bash_1", command: "npm run dev", running: true, exitCode: null, startedAt: 5 },
+        { id: "bash_2", command: "ls", running: false, exitCode: 0, startedAt: 6 },
+        { id: "monitor_1", command: "tail -f log", running: true, exitCode: null, startedAt: 7, monitor: { description: "Watch the log", events: 2, expiresAt: 100_000 } },
+    ];
+    const old = { shells };
+    expect(await stopTasks(call, "s1", old, ["bash_1"])).toEqual({ bash_1: "stopped" });
+    expect(await stopTasks(call, "s1", old)).toEqual({ bash_1: "stopped", monitor_1: "stopped" });
+    expect(await stopTasks(call, "s1", old, ["bash_9"])).toEqual({ bash_9: "failed" });
+    expect(calls.map(([m, p]) => [m, p.shellId])).toEqual([
+        ["session.killShell", "bash_1"],
+        ["session.killShell", "bash_1"],
+        ["session.killShell", "monitor_1"],
+        ["session.killShell", "bash_9"],
+    ]);
+    // A current server: session.stopBackground, by id or for all.
+    calls.length = 0;
+    expect(await stopTasks(call, "s1", { shells, backgroundTasks: [task()] }, ["t1"])).toEqual({ t1: "stopped" });
+    await stopTasks(call, "s1", { shells, backgroundTasks: [task()] });
+    expect(calls).toEqual([
+        ["session.stopBackground", { id: "s1", ids: ["t1"] }],
+        ["session.stopBackground", { id: "s1", ids: undefined }],
+    ]);
+    // The panel's Stop goes through it.
+    const actions = readFileSync(new URL("../gui/src/state/actions.ts", import.meta.url), "utf8");
+    expect(actions).toContain("await stopTasks(rpc.call.bind(rpc) as never, sessionId, handleFor(sessionId)?.view.state, ids)");
+});
+
+test("task endings close together go as one desktop notification, since the desktop app's can't replace one another on macOS", () => {
+    expect(combineEnded(["Background command finished: npm test (3s)"])).toBe("Background command finished: npm test (3s)");
+    expect(combineEnded(["A", "B"])).toBe("2 background tasks ended:\nA\nB");
+    expect(combineEnded(["A", "B", "C", "D", "E"])).toBe("5 background tasks ended:\nA\nB\nC\nand 2 more");
+    const appSrc = readFileSync(new URL("../gui/src/state/app.ts", import.meta.url), "utf8");
+    expect(appSrc).toContain("void notify(batch.title, combineEnded(batch.bodies), reveal, { tag: batch.tags.length === 1 ? batch.tags[0] : `background:${sessionId}` });");
 });

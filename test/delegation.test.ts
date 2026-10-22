@@ -154,6 +154,8 @@ const { gitToolDeps } = await import("../src/tools/git-tools");
 const calls = (list: { server?: string; tool: string; args: Record<string, unknown> }[]) => (process.env.FAKE_MCP_CALLS = JSON.stringify(list));
 
 interface Opts {
+    /** The host says when a background task ends (the GUI). */
+    announces?: boolean;
     approvedMcpServers?: () => import("../src/mcp/manager").ApprovedMcpServers;
     provider: string;
     model?: Partial<ModelInfo>;
@@ -193,6 +195,7 @@ async function makeAgent(o: Opts) {
         listings: () => listings,
         host: {
             emit: (e) => events.push(e),
+            ...(o.announces ? { announcesBackgroundEnds: true } : {}),
             ui: o.ui ?? {},
             askPermission: o.headless
                 ? undefined
@@ -714,6 +717,25 @@ describe("Claude Code as the main agent", () => {
         await agent.delegatedTasks[0]!.settled;
         expect(agent.delegatedTasks[0]!.status).toBe("done");
         expect(childRequests.map((r) => r.fastMode)).toEqual([true, false]);
+    });
+
+    test("where the host says when a background task ends (the GUI), the agent doesn't say it again: one notice, not two (#282)", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "delegate", args: { task: "Review the code", description: "Review", model: "gemini:gemini-test", agent: "explore", wait: false } }]);
+        const g = gate();
+        script = async (req) => {
+            await g.wait(req.signal);
+            return say("Looks fine.");
+        };
+        const { run, events, agent } = await makeAgent({ provider: "claude-code", announces: true });
+        expect(await run("start a review")).toBe("done");
+        g.open();
+        await agent.delegatedTasks[0]!.settled;
+        expect(notices(events).filter((n) => n.includes("finished"))).toEqual([]);
+        // Its result still goes with the next prompt.
+        calls([]);
+        expect(await run("anything back?")).toBe("done");
+        expect(userTexts().at(-1)).toContain("Looks fine.");
     });
 
     test("a background task's result comes with the next prompt", async () => {
@@ -1701,7 +1723,93 @@ describe("harness models", () => {
     });
 });
 
+describe("tasks that stopped when Harness quit", () => {
+    test("a /goal doesn't take the reminder of them (it leaves reminders for later): the next prompt does, and only then are they kept stopped (#282 review 6)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const prompts: string[] = [];
+        const backend = {
+            agentBackend: true as const,
+            setMode() {},
+            listModels: async () => [],
+            stream: async () => say(""),
+            compact: async () => ({ reason: "done" as const, text: "", actions: [] }),
+            runTurn: async (t: { prompt: string }) => (prompts.push(t.prompt), { reason: "done" as const, text: "ok", actions: [] }),
+        };
+        const { run, agent } = await makeAgent({ provider: "fake-cli", client: backend });
+        const logged = new Map([["bash_1", { id: "bash_1", provider: "harness", kind: "shell" as const, label: "npm run dev", startedAt: 5, status: "running" as const, stoppable: true }]]);
+        const log = { backgroundTasks: logged, recordBackgroundTask: (t: any) => void logged.set(t.id, t) };
+        agent.state.background = new SessionBackground(log);
+        expect(await run("/goal ship the release")).toBe("done");
+        expect(prompts[0]).not.toContain("stopped when Harness quit");
+        // Not taken: the log still has it running, so a reopen now would still tell.
+        expect(logged.get("bash_1")!.status).toBe("running");
+        expect(agent.state.background.shown().map((t) => t.lost)).toEqual([true]);
+        expect(await run("how's it going?")).toBe("done");
+        expect(prompts[1]).toContain("These background tasks stopped when Harness quit: background command: npm run dev (bash_1)");
+        expect(logged.get("bash_1")).toMatchObject({ status: "stopped", lost: true });
+    });
+});
+
 describe("the app", () => {
+    function tuiApp() {
+        const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
+        (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true, columns: 100, rows: 30 };
+        app.session = Session.create(cwd, { persist: false, system: "sys" });
+        const notes: string[] = [];
+        app.notice = (m: string, level = "info") => void notes.push(`${level}: ${m}`);
+        return { app, notes };
+    }
+
+    test("in the terminal, a background shell that ends while nothing else happens is kept in the log and said (#282 review 5)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const { backgroundPoll } = await import("../src/ui/app");
+        const saved = backgroundPoll.ms;
+        backgroundPoll.ms = 20;
+        const { app, notes } = tuiApp();
+        try {
+            const logged = new Map<string, any>();
+            app.toolState.background = new SessionBackground({ backgroundTasks: logged, recordBackgroundTask: (t) => void logged.set(t.id, t) });
+            const sh = { id: "bash_1", command: "npm run build", startedAt: Date.now() - 1000, output: "", readOffset: 0, exitCode: null as number | null, kill: async () => "stopped" as const };
+            app.toolState.shells.set(sh.id, sh);
+            // As a turn's end does.
+            (app as any).persistBackground();
+            expect(logged.get("bash_1")?.status).toBe("running");
+            // It ends with no turn going.
+            sh.exitCode = 0;
+            await until(() => logged.get("bash_1")?.status === "done", 2000);
+            expect(notes).toContain("info: Background command finished: npm run build (1s)");
+            // Nothing runs: it stops looking.
+            await until(() => (app as any).backgroundTimer === undefined, 2000);
+        } finally {
+            backgroundPoll.ms = saved;
+            if ((app as any).backgroundTimer) clearInterval((app as any).backgroundTimer);
+        }
+    });
+
+    test("in the terminal, a CLI's own turn that arrives during a model switch is adopted once it's over (#282 review 7)", async () => {
+        const { app } = tuiApp();
+        const turns: any[] = [];
+        const backend = {
+            agentBackend: true as const,
+            adoptsTurns: true,
+            setMode() {},
+            listModels: async () => [],
+            stream: async () => say(""),
+            compact: async () => ({ reason: "done" as const, text: "", actions: [] }),
+            runTurn: async (t: any) => (turns.push(t), { reason: "done" as const, text: "Auth is mapped.", actions: [] }),
+        };
+        const { agent } = await makeAgent({ provider: "fake-cli", client: backend });
+        app.agent = agent;
+        (app as any).switching = true;
+        app.adoptWake({ provider: "fake-cli", ref: "turn-3", label: "Background task finished: Map auth" });
+        await Bun.sleep(200);
+        expect(turns).toEqual([]);
+        (app as any).switching = false;
+        await until(() => turns.length === 1 && !app.busy, 5000);
+        expect(turns[0].adopt).toBe("turn-3");
+        expect(agent.session.messages.find((m) => m.role === "user")?.meta).toMatchObject({ kind: "wake", display: "Background task finished: Map auth" });
+    });
+
     test("/tasks lists the session's background work beside its delegated tasks, and /tasks stop <id|all> stops it", async () => {
         process.env.FAKE_SCENARIO = "mcp";
         calls([{ tool: "delegate", args: { task: "Review", description: "Review the diff", model: "gemini:gemini-test", agent: "explore", wait: false } }]);

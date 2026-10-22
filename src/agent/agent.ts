@@ -185,6 +185,8 @@ export interface AgentHost {
     wake?(w: BackendWake): void;
     /** The session's background work changed (a delegated task started or settled, a CLI reported a task). */
     backgroundChanged?(): void;
+    /** The host tells the user itself when a background task ends (the GUI's notices): the agent doesn't say it too. */
+    announcesBackgroundEnds?: boolean;
 }
 
 /** How each task asked to stop went (Agent.stopBackground). */
@@ -628,15 +630,17 @@ export class Agent {
         }
         // SessionStart hooks' context goes with the first prompt after them.
         for (const c of this.o.isSubagent ? [] : this.session.hookContext.splice(0)) this.addReminder(c);
-        // Background tasks that stopped when Harness quit (the session was open with them running): said once.
-        const lost = this.o.isSubagent ? [] : (this.state.background?.takeLost() ?? []);
-        if (lost.length) this.addReminder(lostNote(lost));
 
         // Delegated tasks that ended during a turn on another model (not a backend's) go with this prompt.
         this.deliverTasks(false);
         const parts: UserContent[] = [...content];
         // A /goal to Claude Code or Codex is their own command, sent as typed: Harness's notes wait for the next prompt.
         const goalCommand = isAgentBackend(this.client) && GOAL_COMMAND.test(promptText);
+        // Background tasks that stopped when Harness quit (the session was open with them running): said once, with
+        // a prompt that takes the reminders now (it's stored just below). Taking them writes them stopped in the
+        // log, so not for a /goal, which leaves its reminders for the next prompt (kept in memory only).
+        const lost = this.o.isSubagent || goalCommand ? [] : (this.state.background?.takeLost() ?? []);
+        if (lost.length) this.addReminder(lostNote(lost));
         for (const r of goalCommand ? [] : this.pendingReminders.splice(0)) parts.push(reminder(r.text));
         // Codex's edits are checked too: what came after their wait goes with this prompt (after a /goal, with the next).
         const late = goalCommand ? undefined : this.lateDiagnostics();
@@ -1409,7 +1413,7 @@ export class Agent {
         for (const t of this.delegations?.undelivered() ?? []) {
             t.delivered = true;
             this.addReminder(taskEndedNote(t, backend));
-            if (notify) this.emit({ type: "notice", level: "info", message: `${backend ? "Delegated" : "Background"} task ${t.id} "${t.description}" (${t.model}) ${t.status === "done" ? "finished" : t.status}. Its result goes to ${name} with your next message.` });
+            if (notify && !this.o.host.announcesBackgroundEnds) this.emit({ type: "notice", level: "info", message: `${backend ? "Delegated" : "Background"} task ${t.id} "${t.description}" (${t.model}) ${t.status === "done" ? "finished" : t.status}. Its result goes to ${name} with your next message.` });
         }
     }
 

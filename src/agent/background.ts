@@ -115,10 +115,21 @@ export class SessionBackground {
             const now = all.get(id);
             if (now?.status === "running" && now.startedAt === was.startedAt) continue;
             this.live.delete(id);
-            // Gone with no word of how it ended (another task has its id now): nothing to say.
-            if (!now || now.startedAt !== was.startedAt) continue;
-            this.recent = [...this.recent.filter((t) => t.id !== id), now].slice(-RECENT_KEPT);
-            if (!this.byUser.has(id)) news.push(now);
+            if (!now) {
+                // Taken out of its list while running (the agent's KillShell removes the shell it stops): it was
+                // stopped, by the agent. Kept so in the log, or reopening would say Harness's quitting stopped it.
+                const ended: BackgroundTaskInfo = { ...was, status: "stopped", endedAt: this.now() };
+                const logged = this.log?.backgroundTasks.get(id);
+                if (logged?.status === "running" && logged.startedAt === was.startedAt) this.log!.recordBackgroundTask(ended);
+                this.recent = [...this.recent.filter((t) => t.id !== id), ended].slice(-RECENT_KEPT);
+                continue;
+            }
+            // Another task has its id now: of the one before, there's nothing more to say.
+            if (now.startedAt !== was.startedAt) continue;
+            // A shell doesn't say when it ended: about now (it's looked at every few seconds while one runs).
+            const ended = now.endedAt === undefined ? { ...now, endedAt: this.now() } : now;
+            this.recent = [...this.recent.filter((t) => t.id !== id), ended].slice(-RECENT_KEPT);
+            if (!this.byUser.has(id)) news.push(ended);
         }
         for (const t of all.values()) if (t.status === "running") this.live.set(t.id, t);
         return news;

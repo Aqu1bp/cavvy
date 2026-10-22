@@ -19,6 +19,31 @@ export function backgroundOf(state: Pick<SessionState, "backgroundTasks" | "shel
         .map((s) => ({ id: s.id, provider: "harness", kind: s.monitor ? "monitor" : "shell", label: s.monitor?.description ?? s.command, startedAt: s.startedAt, status: "running", stoppable: true }));
 }
 
+/** The server calls a stop needs: the RPCs it uses, as Rpc.call has them (a test passes its own). */
+type StopCall = {
+    (method: "session.stopBackground", params: { id: string; ids?: string[] }): Promise<{ results: Record<string, BackgroundStopResult> }>;
+    (method: "session.killShell", params: { id: string; shellId: string }): Promise<null>;
+};
+
+/**
+ * Stop these tasks, or every running one, and how each went. A server without SessionState.backgroundTasks
+ * has no session.stopBackground: its rows are its shells, stopped one by one with session.killShell.
+ */
+export async function stopTasks(call: StopCall, sessionId: string, state: Pick<SessionState, "backgroundTasks" | "shells"> | undefined, ids?: string[]): Promise<Record<string, BackgroundStopResult>> {
+    if (state?.backgroundTasks || !state) return (await call("session.stopBackground", { id: sessionId, ids })).results;
+    const shellIds = ids ?? backgroundOf(state).filter((t) => t.status === "running").map((t) => t.id);
+    const out: Record<string, BackgroundStopResult> = {};
+    await Promise.all(
+        shellIds.map(async (shellId) => {
+            out[shellId] = await call("session.killShell", { id: sessionId, shellId }).then(
+                () => "stopped" as const,
+                () => "failed" as const,
+            );
+        }),
+    );
+    return out;
+}
+
 /** The finished ones, most recent first. */
 export function finishedOf(tasks: readonly BackgroundTaskInfo[]): BackgroundTaskInfo[] {
     return tasks.filter((t) => t.status !== "running").sort((a, b) => (b.endedAt ?? b.startedAt) - (a.endedAt ?? a.startedAt));
@@ -74,4 +99,17 @@ export function noticeRoute(o: { focused: boolean; active: boolean; notification
     if (o.seen) return "none";
     if (o.focused && o.active) return "toast";
     return o.notifications ? "desktop" : "none";
+}
+
+/** How long a session's task endings are gathered into one desktop notification. */
+export const COALESCE_MS = 800;
+
+/**
+ * Task endings close together as one notification's text. The desktop app's notifications can't replace one
+ * another on macOS (tauri-plugin-notification ignores the id there), so several at once would pile up.
+ */
+export function combineEnded(bodies: readonly string[]): string {
+    if (bodies.length <= 1) return bodies[0] ?? "";
+    const shown = bodies.slice(0, 3);
+    return [`${bodies.length} background tasks ended:`, ...shown, ...(bodies.length > shown.length ? [`and ${bodies.length - shown.length} more`] : [])].join("\n");
 }

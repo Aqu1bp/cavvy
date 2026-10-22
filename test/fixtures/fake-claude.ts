@@ -30,6 +30,8 @@
 // FAKE_HOLD_STDOUT=1  starts a command that keeps its stdout open for a while after it exits
 // FAKE_COMMAND      the "bash" scenario's command (default: npm test)
 // FAKE_TIMEOUT      shell-background*: the background Bash call's timeout (ms; default none)
+// FAKE_SHELL_STATUS shell-background*: how its task_notification says it ended (default completed; after it left the list)
+// FAKE_STOP_TASK    hang: stop_task unanswered; reject: refused; complete-reject: the task completes, then the stop is refused
 // FAKE_SHELL_MS     shell-background*: the background command finishes this long after the answer (default 150; the
 //                   stuck, mixed and nested ones finish only when it's set)
 // FAKE_API_KEY_SOURCE  system/init apiKeySource (default "none": a plan)
@@ -680,7 +682,7 @@ async function turn(content: any[], uuid?: string) {
             backgroundChanged();
             await Bun.sleep(80);
             // Shell/Monitor notifications may have no tool_use_id.
-            out({ type: "system", subtype: "task_notification", task_id: "background-1", status: "completed", summary: "Checks passed", session_id: sessionId });
+            out({ type: "system", subtype: "task_notification", task_id: "background-1", status: process.env.FAKE_SHELL_STATUS ?? "completed", summary: "Checks passed", session_id: sessionId });
             await Bun.sleep(80);
             followUp("Background checks passed.");
         }, Number(process.env.FAKE_SHELL_MS ?? 150));
@@ -830,6 +832,14 @@ for await (const chunk of Bun.stdin.stream()) {
                 out({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response: { added: [...mcpServers.keys()], removed: [], errors } } });
             } else if (sub === "stop_task") {
                 if (process.env.FAKE_STOP_TASK === "hang") continue;
+                // The task completes just as it's asked to stop: it leaves the list, says it completed, and the stop fails.
+                if (process.env.FAKE_STOP_TASK === "complete-reject") {
+                    bgTasks.delete(m.request.task_id);
+                    backgroundChanged();
+                    out({ type: "system", subtype: "task_notification", task_id: m.request.task_id, ...(m.request.task_id === "agent-1" ? { tool_use_id: "toolu_agent" } : {}), status: "completed", summary: "Finished just now", session_id: sessionId });
+                    out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "No running task" } });
+                    continue;
+                }
                 if (process.env.FAKE_STOP_TASK === "reject") {
                     out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "stop failed" } });
                     continue;

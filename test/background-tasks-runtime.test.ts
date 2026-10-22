@@ -235,3 +235,37 @@ test("a task that ends on its own is news (a notify event, tagged per task), sta
         await engine.stop();
     }
 });
+
+test("a shell the agent stops with KillShell is kept as stopped in the log, so reopening doesn't say Harness's quitting stopped it (#282 review 4)", async () => {
+    const { KillShellTool } = await import("../src/tools/bash");
+    const first = await session();
+    const { id } = first;
+    let path: string;
+    try {
+        await first.engine.handle(first.c, "session.send", { id, text: "hello" });
+        await until(() => first.rt.idle && first.rt.session.messages.some((m) => m.role === "assistant"));
+        const sh = shell("bash_1", "npm run watch");
+        first.rt.toolState.shells.set(sh.id, sh);
+        await first.engine.handle(first.c, "session.stopBackground", { id, ids: [] });
+        // The agent's own KillShell: it stops the shell and takes it out of the list.
+        await KillShellTool.run({ shell_id: "bash_1" }, { state: first.rt.toolState } as never);
+        expect(first.rt.toolState.shells.has("bash_1")).toBe(false);
+        // The tool's end looks at the shells again (as any look does).
+        await first.engine.handle(first.c, "session.stopBackground", { id, ids: [] });
+        path = first.rt.session.path;
+        expect(logLines(path).filter((l) => l.t === "bgtask").map((l) => l.task.status)).toEqual(["running", "stopped"]);
+        expect(first.rt.snapshot().state.backgroundTasks!.map((t) => [t.id, t.status])).toEqual([["bash_1", "stopped"]]);
+        // The agent stopped it: that's no news.
+        expect(notices(first.c)).toEqual([]);
+    } finally {
+        await first.engine.stop();
+    }
+    const again = new Engine();
+    const c = client(again);
+    try {
+        const snap = (await again.handle(c, "session.open", { id })) as SessionSnapshot;
+        expect(snap.state.backgroundTasks).toEqual([]);
+    } finally {
+        await again.stop();
+    }
+});

@@ -72,7 +72,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS"]) delete process.env[k];
+    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS", "FAKE_SHELL_STATUS"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -2675,6 +2675,50 @@ describe("Claude Code turn reliability (#60, #61, #64)", () => {
         // With its run over, there's nothing left to stop.
         expect(await a.agent.stopBackground(["background-1"])).toEqual({ "background-1": "stopped" });
         expect(await a.agent.stopBackground(["nope"])).toEqual({ nope: "unknown" });
+    });
+
+    test("a background task Claude Code says failed after it left its list is reported failed, not done (#282 review 3)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background";
+        process.env.FAKE_SHELL_STATUS = "failed";
+        const a = await makeAgent({ provider: "claude-code" });
+        a.agent.state.background = new SessionBackground();
+        expect(await a.run("run checks and wait")).toBe("done");
+        expect(a.agent.backgroundTasks().map((t) => [t.id, t.status])).toEqual([["background-1", "failed"]]);
+    });
+
+    test("the user's stop that Claude Code doesn't answer in time never ends its process: the rest runs on and reports (#282 review 1)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background";
+        process.env.FAKE_STOP_TASK = "hang";
+        process.env.FAKE_SHELL_MS = "700";
+        const saved = { ...backgroundTiming };
+        Object.assign(backgroundTiming, { stopTimeoutMs: 60, pollMs: 10 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            a.agent.state.background = new SessionBackground();
+            const done = a.run("run checks and wait");
+            for (let i = 0; i < 500 && !a.agent.backgroundTasks().some((t) => t.status === "running"); i++) await Bun.sleep(10);
+            expect(await a.agent.stopBackground(["background-1"])).toEqual({ "background-1": "timeout" });
+            expect(await done).toBe("done");
+            expect(notices(a.events).join("\n")).not.toContain("did not confirm a task stop");
+            expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
+            expect(a.agent.backgroundTasks().map((t) => [t.id, t.status])).toEqual([["background-1", "done"]]);
+        } finally { Object.assign(backgroundTiming, saved); }
+    });
+
+    test("a task that completes as the user's stop is refused is over: the run doesn't wait on it for good (#282 review 2)", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
+        process.env.FAKE_STOP_TASK = "complete-reject";
+        const saved = { ...backgroundTiming };
+        Object.assign(backgroundTiming, { pollMs: 10, settleMs: 50 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            a.agent.state.background = new SessionBackground();
+            const done = a.run("map auth in the background");
+            for (let i = 0; i < 500 && !a.agent.backgroundTasks().some((t) => t.status === "running" && t.stoppable); i++) await Bun.sleep(10);
+            expect(await a.agent.stopBackground(["toolu_agent"])).toEqual({ toolu_agent: "failed" });
+            expect(await Promise.race([done, Bun.sleep(3000).then(() => "stuck")])).toBe("done");
+            expect(a.agent.backgroundTasks().map((t) => [t.id, t.status])).toEqual([["toolu_agent", "done"]]);
+        } finally { Object.assign(backgroundTiming, saved); }
     });
 
     test("a never-ending shell has a bounded wait and the model knows its lifetime", async () => {

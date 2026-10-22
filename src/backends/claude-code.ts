@@ -464,7 +464,12 @@ class ClaudeTurn {
     private taskCommands = new Map<string, { command: string; timeoutMs?: number; started: number }>();
     private stoppedTaskIds = new Set<string>();
     private stoppedBackground = new Set<string>();
-    private pendingStops = new Map<string, { task: BackgroundWork; since: number }>();
+    /** Stops asked of Claude Code and not answered yet, by task id; `byUser`: the user's (a timeout of theirs never ends the run). */
+    private pendingStops = new Map<string, { task: BackgroundWork; since: number; byUser: boolean }>();
+    /** A task's end Claude Code said while its stop was pending: taken as said if the stop doesn't go through. */
+    private heldEnds = new Map<string, Record<string, any>>();
+    /** Background tasks that left Claude Code's list before it said how they ended (by the id they're reported with). */
+    private leftList = new Set<string>();
     private stopFailed = false;
     private pollTimer?: ReturnType<typeof setInterval>;
     private settleTimer?: ReturnType<typeof setTimeout>;
@@ -509,10 +514,14 @@ class ClaudeTurn {
         const emit = this.cliSession.emitSession;
         if (!emit) return;
         const seen = new Set<string>();
+        const calls = new Set(this.agentLabels.values());
+        const mapped = new Set(this.agentTasks.values());
         for (const w of gone ? [] : this.inBackground()) {
             // A sub-agent by its Agent call (its task id may come later), the rest by task id.
             const id = w.toolUseId ?? w.id;
             if (!id) continue;
+            // Listed before its task_started ties it to its Agent call: it's that call's, reported as such once tied.
+            if (w.agent && !w.toolUseId && !mapped.has(id) && calls.has(w.label)) continue;
             seen.add(id);
             const was = this.reportedBackground.get(id);
             const task: BackgroundTaskInfo = {
@@ -532,14 +541,30 @@ class ClaudeTurn {
         }
         for (const [id, t] of this.reportedBackground) {
             if (seen.has(id)) continue;
-            this.reportedBackground.delete(id);
             const taskId = t.toolUseId ? this.agentTasks.get(t.toolUseId) : id;
             const said = taskId ? this.taskEnds.get(taskId) : undefined;
             const launch = t.toolUseId ? this.closedLaunches.get(t.toolUseId)?.reason : undefined;
-            // One being stopped leaves Claude Code's list before its stop is answered.
-            const stopped = (taskId !== undefined && (this.stoppedTaskIds.has(taskId) || this.pendingStops.has(taskId))) || said === "stopped" || launch === "aborted";
-            const status: BackgroundTaskInfo["status"] = gone && !stopped && !said && !launch ? "stopped" : stopped ? "stopped" : said === "failed" || launch === "error" ? "failed" : "done";
-            emit({ type: "background_task", task: { ...t, status, endedAt: Date.now(), ...(gone && !stopped && !said && !launch ? { lost: true } : {}) } });
+            const stopped = (taskId !== undefined && this.stoppedTaskIds.has(taskId)) || said === "stopped" || launch === "aborted";
+            let status: BackgroundTaskInfo["status"] | undefined = stopped ? "stopped" : said === "failed" || launch === "error" ? "failed" : said || launch ? "done" : undefined;
+            let lost = false;
+            if (!status) {
+                // Off Claude Code's list with no word yet of how it ended (its task_notification comes after the
+                // list changes, or its stop is still being answered): it's said once that word comes.
+                if (!gone) {
+                    this.leftList.add(id);
+                    continue;
+                }
+                // The process is gone: one that had left the list (its stop not pending) ended before; the rest went with it.
+                const stopping = taskId !== undefined && this.pendingStops.has(taskId);
+                if (this.leftList.has(id) && !stopping) status = "done";
+                else {
+                    status = "stopped";
+                    lost = !stopping;
+                }
+            }
+            this.reportedBackground.delete(id);
+            this.leftList.delete(id);
+            emit({ type: "background_task", task: { ...t, status, endedAt: Date.now(), ...(lost ? { lost: true } : {}) } });
         }
     }
 
@@ -708,7 +733,8 @@ class ClaudeTurn {
         // A timer may have awaited a snapshot while the message loop received fresh work.
         if (this.busy || this.unanswered.size || !this.answered) return false;
         const left = this.inBackground();
-        if (this.stopFailed || [...this.pendingStops.values()].some((p) => Date.now() - p.since >= backgroundTiming.stopTimeoutMs)) {
+        // Only Harness's own stops end the run when they go unanswered; the user's never do.
+        if (this.stopFailed || [...this.pendingStops.values()].some((p) => !p.byUser && Date.now() - p.since >= backgroundTiming.stopTimeoutMs)) {
             this.noteStopped(left, "Claude Code did not confirm a task stop; ending its process");
             this.toldStopped = true;
             return true;
@@ -859,15 +885,26 @@ class ClaudeTurn {
         }
         const id = task.id;
         const request = requestId();
-        this.pendingStops.set(id, { task, since: Date.now() });
+        const pending = { task, since: Date.now(), byUser };
+        this.pendingStops.set(id, pending);
+        /** The stop didn't go through (refused, or the user's not answered in time): the task's end, if Claude Code said it meanwhile, counts. */
+        const notStopped = () => {
+            if (this.pendingStops.get(id) === pending) this.pendingStops.delete(id);
+            const held = this.heldEnds.get(id);
+            this.heldEnds.delete(id);
+            if (held) this.onSystem(held);
+            this.syncBackground();
+        };
         const answered = new Promise<BackgroundStop>((resolve) => {
             this.controls.set(request, (response) => {
                 this.controls.delete(request);
-                this.pendingStops.delete(id);
                 if (response.subtype !== "success") {
                     if (!byUser) this.stopFailed = true;
+                    notStopped();
                     return resolve("failed");
                 }
+                if (this.pendingStops.get(id) === pending) this.pendingStops.delete(id);
+                this.heldEnds.delete(id);
                 this.stoppedTaskIds.add(id);
                 // A sub-agent stopped (at the overall cap, or by the user): over, without a report.
                 if (task.toolUseId) this.endAgent(task.toolUseId, "aborted");
@@ -880,7 +917,15 @@ class ClaudeTurn {
         let timer: ReturnType<typeof setTimeout> | undefined;
         // Its process gone, the task went with it.
         const gone = this.proc.exited.then(() => "stopped" as const);
-        const late = new Promise<BackgroundStop>((resolve) => (timer = setTimeout(() => resolve("timeout"), backgroundTiming.stopTimeoutMs)));
+        const late = new Promise<BackgroundStop>(
+            (resolve) =>
+                (timer = setTimeout(() => {
+                    // The user's: the task runs on as far as Harness knows, and the run with it (an automatic
+                    // stop's timeout ends the run, checkIdle). A late answer still counts.
+                    if (byUser) notStopped();
+                    resolve("timeout");
+                }, backgroundTiming.stopTimeoutMs)),
+        );
         return Promise.race([answered, gone, late]).finally(() => clearTimeout(timer));
     }
 
@@ -1183,7 +1228,12 @@ class ClaudeTurn {
                 // was waiting on, or how it ended).
                 const id = String(m.tool_use_id ?? "");
                 const summary = typeof m.summary === "string" ? m.summary.trim() : "";
-                if (this.pendingStops.has(m.task_id) || this.stoppedTaskIds.has(m.task_id)) break;
+                if (this.stoppedTaskIds.has(m.task_id)) break;
+                // Its stop is being answered: if it doesn't go through, this is how the task ended.
+                if (this.pendingStops.has(m.task_id)) {
+                    this.heldEnds.set(m.task_id, m);
+                    break;
+                }
                 const listed = this.background?.find((t) => t.id === m.task_id);
                 if (listed && !this.agentLabels.has(id)) {
                     this.background = this.background!.filter((t) => t.id !== m.task_id);

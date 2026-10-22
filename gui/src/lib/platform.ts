@@ -147,7 +147,8 @@ let notifyAllowed: boolean | undefined;
 /** A system notification, if the user allows them. */
 /**
  * A desktop notification. `tag` names what it's about: a browser replaces an earlier one with the same tag
- * rather than adding another; the desktop app passes it on as the notification's id and thread.
+ * rather than adding another. The desktop app passes it on as the notification's id and thread, which only
+ * Linux uses (tauri-plugin-notification 2.7 ignores both on macOS and Windows): callers gather bursts instead.
  */
 export async function notify(title: string, body: string, onClick?: () => void, opts: { tag?: string } = {}) {
     if (isTauri) {

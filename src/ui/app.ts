@@ -117,6 +117,9 @@ interface ActiveTool {
 
 type InputMode = "prompt" | "bash" | "memory";
 
+/** How often the TUI looks at its background shells while one runs (tests shorten it). */
+export const backgroundPoll = { ms: 2000 };
+
 export class App {
     screen = new Screen();
     editor = new Editor();
@@ -414,6 +417,8 @@ export class App {
         this.abort?.abort();
         stopWatchers(this.toolState);
         this.toolState.wakes?.dispose();
+        if (this.backgroundTimer) clearInterval(this.backgroundTimer);
+        this.backgroundTimer = undefined;
         const disposed = this.agent?.dispose();
         for (const d of [...this.dialogs, ...this.dialogQueue]) d.cancel();
         this.stopTicker();
@@ -846,8 +851,19 @@ export class App {
 
     private boundBackground?: Session;
 
+    /** While a shell runs: looks at the background list now and then, so one that ends while idle is kept and said. */
+    private backgroundTimer?: ReturnType<typeof setInterval>;
+
     /** Keep the background list in the session log (what started, what ended), and say what ended on its own. */
     private persistBackground() {
+        const shellsRunning = [...this.toolState.shells.values()].some((s) => s.exitCode === null);
+        if (shellsRunning && !this.backgroundTimer && !this.exiting) {
+            this.backgroundTimer = setInterval(() => this.persistBackground(), backgroundPoll.ms);
+            this.backgroundTimer.unref?.();
+        } else if (!shellsRunning && this.backgroundTimer) {
+            clearInterval(this.backgroundTimer);
+            this.backgroundTimer = undefined;
+        }
         const delegated = this.agent?.delegatedTasks;
         const ended = this.toolState.background?.sync({ delegated, shells: this.toolState.shells }) ?? [];
         // A delegated task's end is said already, with where its result goes (Agent.deliverTasks).
@@ -2361,14 +2377,17 @@ export class App {
 
     /** Events a tool asked to be woken for (a watched PR): a turn of their own when nothing else is going on. */
     private wake() {
+        // Looked at again later: the turns a CLI started itself (adopts) are looked for here, not in the
+        // WakeQueue, whose poke does nothing without events of its own.
+        const again = () => (this.adopts.length ? this.wake() : this.toolState.wakes?.poke());
         // An idle compaction stops: the wake runs on the cache that's still warm, not after a summary nobody asked for.
-        if (this.idleCompacting) return void this.yieldIdleCompaction().then(() => this.toolState.wakes?.poke());
+        if (this.idleCompacting) return void this.yieldIdleCompaction().then(again);
         // Busy or with messages queued, the turn's end looks again.
         if (this.exiting || this.busy || this.queued.length) return;
         // A model switch, a dialog open, no agent yet, a goal between its turns (it goes first, as with scheduled
         // prompts): look again in a moment.
         if (this.switching || !this.agent || this.dialogs.length || this.goalPending()) {
-            setTimeout(() => this.toolState.wakes?.poke(), 1000).unref?.();
+            setTimeout(again, 1000).unref?.();
             return;
         }
         // A turn an agent CLI started by itself goes first: it's running already, its events held until it's taken.

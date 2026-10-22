@@ -169,3 +169,23 @@ test("a turn an agent CLI started by itself becomes a wake turn that adopts it: 
         await engine.stop();
     }
 });
+
+test("a CLI's own turn that arrives while the session can't start one (a model switch) is adopted once it can (#282 review 7)", async () => {
+    const { engine, rt } = await session();
+    try {
+        await rt.ready;
+        const turns: BackendTurn[] = [];
+        rt.agent!.setModel(backendModel("fake-cli", "x"), adoptingBackend(turns) as never);
+        (rt as any).switching = true;
+        rt.adoptWake({ provider: "fake-cli", ref: "turn-9", label: "Background task finished: Map auth" });
+        await Bun.sleep(300);
+        expect(turns).toEqual([]);
+        (rt as any).switching = false;
+        // No watch event is waiting: only the adoption queue brings it on.
+        expect(rt.toolState.wakes!.size).toBe(0);
+        await until(() => turns.length === 1 && rt.idle, 5000);
+        expect(turns[0]!.adopt).toBe("turn-9");
+    } finally {
+        await engine.stop();
+    }
+});
