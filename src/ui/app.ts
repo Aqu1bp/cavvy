@@ -35,7 +35,7 @@ import { SessionSchedules } from "../agent/schedule-host";
 import { CRON_TOOLS } from "../agent/schedule-tools";
 import { shortTime } from "../agent/schedule";
 import { appendPromptHistory, loadPromptHistory } from "../agent/session";
-import { rewindTargets } from "../agent/checkpoints";
+import { resetToolState, rewindTargets } from "../agent/checkpoints";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { addMemoryNote } from "../agent/memory";
 import type { Effort, Settings } from "../config/settings";
@@ -809,8 +809,7 @@ export class App {
         prev?.release();
         stopWatchers(this.toolState);
         this.toolState.wakes?.drainRunning();
-        this.toolState.fileState.clear();
-        this.toolState.todos = [];
+        resetToolState(this.toolState, this.session.messages);
         this.toolState.secrets?.clear();
         this.checker.resetSession();
         if (this.agent) this.makeAgent();
