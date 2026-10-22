@@ -11,6 +11,7 @@ const { stall } = await import("../src/providers/sse");
 const { costOf, promptTokens, usageCostParts } = await import("../src/providers/pricing");
 import type { ProviderDef } from "../src/providers/registry";
 import type { AssistantMessage, ChatRequest, Message, ModelInfo, StreamEvent } from "../src/providers/types";
+import { SESSION_CONTEXT_HEADING } from "../src/providers/types";
 
 type Json = Record<string, any>;
 
@@ -427,6 +428,20 @@ describe("Chat Completions: streaming", () => {
         await p.stream(req(m, HISTORY, { ...flags, system: "", tools: [] }), () => {});
         expect(seen[1]!.body.messages).toEqual(toOpenAIMessages("", HISTORY, builtin("openrouter")));
         expect(seen[1]!.body.tools).toBeUndefined();
+    });
+
+    test("openrouter: the Claude system breakpoint stops before the session context, so sessions share the prefix", async () => {
+        respond = () => sse([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]);
+        const m: ModelInfo = { provider: "openrouter", id: "anthropic/claude-sonnet-4.6" };
+        const system = (date: string) => `You are a test.\n\n${SESSION_CONTEXT_HEADING}\nToday's date: ${date}`;
+        const p = new OpenAICompatProvider(builtin("openrouter"), FAKE.openrouter);
+        for (const date of ["2026-10-21", "2026-10-22"]) await p.stream(req(m, HISTORY, { cacheSystem: true, system: system(date) }), () => {});
+        const [a, b] = [seen[0]!.body.messages[0].content, seen[1]!.body.messages[0].content];
+        expect(a[0]).toEqual({ type: "text", text: "You are a test.", cache_control: { type: "ephemeral" } });
+        expect(b[0]).toEqual(a[0]);
+        expect(a[1].text).toContain("2026-10-21");
+        expect(b[1].text).toContain("2026-10-22");
+        expect(a[1].cache_control).toBeUndefined();
     });
 
     test.each([
