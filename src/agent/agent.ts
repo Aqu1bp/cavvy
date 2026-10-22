@@ -512,6 +512,12 @@ export class Agent {
     /** The backend's open delegate calls: a delegated agent's work shows under the call that started it. */
     private delegateCalls: { id: string; input: Record<string, unknown>; claimed: boolean }[] = [];
     private disposed = false;
+    /**
+     * The agent backends this agent ran turns on, each of which may keep a CLI process for its session (release).
+     * Not just the current client: a switch of model, provider or account (a new client) leaves the old one's
+     * process, and what runs in it, until the agent is done.
+     */
+    private backendsUsed = new Set<AgentBackendClient>();
     /** Sub-agents running now (Task, delegated tasks). */
     private children = new Set<Agent>();
 
@@ -1535,6 +1541,8 @@ export class Agent {
             fastMode: this.fastMode(),
             appendSystemPrompt: this.o.appendSystemPrompt,
             backgroundWaitSec: s.claudeCode?.backgroundWaitSec,
+            liveSessions: s.agentCli?.liveSessions !== false,
+            wakeOnBackgroundCommand: s.codex?.wakeOnBackgroundCommand !== false,
             additionalDirectories: s.permissions?.additionalDirectories ?? [],
             trusted,
             // The backend registers a project's own only where the user trusted it (the list may come from implicit trust).
@@ -1743,6 +1751,9 @@ export class Agent {
 
     /** Session-level news from a backend: its background tasks, a notice outside any turn. */
     private sessionEvent(e: SessionEvent) {
+        // Disposed: the session is let go, or another took its place (the TUI's /new rebinds the background list
+        // first), and what its CLI reports now (its tasks stopping with the process, say) is no longer this one's.
+        if (this.disposed) return;
         if (e.type === "notice") return this.emit(e);
         this.state.background?.report(e.task);
         this.o.host.backgroundChanged?.();
@@ -1833,15 +1844,30 @@ export class Agent {
         return id ? Number(this.delegations.cancel(id)) : this.delegations.cancelAll();
     }
 
-    /** The session is done with this agent: stop its delegated tasks (waiting a moment for them) and revoke its MCP token. */
+    /**
+     * The session is done with this agent: stop its delegated tasks (waiting a moment for them), let go of the
+     * CLI processes its backends keep for the session (releaseBackends), and revoke its MCP token.
+     */
     async dispose(graceMs = 3000): Promise<void> {
         this.disposed = true;
+        const released = this.releaseBackends();
         this.fileWatch?.close();
         this.fileWatch = undefined;
         this.registration?.close();
         this.registration = undefined;
         const running = this.delegations?.close() ?? [];
         if (running.length) await Promise.race([Promise.all(running.map((t) => t.settled)), Bun.sleep(graceMs)]);
+        await released;
+    }
+
+    /**
+     * Let go of the CLI processes the backends this agent used keep for its session: what runs in them stops.
+     * Called when it's disposed, and when a sub-agent's run is over.
+     */
+    async releaseBackends(): Promise<void> {
+        const used = [...this.backendsUsed];
+        this.backendsUsed.clear();
+        await Promise.all(used.map((b) => b.release?.(this.session.meta.id).catch(() => undefined)));
     }
 
     /** Whether a model can run a delegated task: its provider is set up, and the model exists there. */
@@ -1958,6 +1984,7 @@ export class Agent {
 
     /** `adopt`: the turn the CLI started by itself to take (BackendTurn.adopt), sending nothing. */
     private async runBackendTurn(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal, woken: boolean, adopt?: string): Promise<TurnEndReason> {
+        this.backendsUsed.add(backend);
         // Its first request goes with the prompt.
         this.backendRequestAt = Date.now();
         this.idleTried = false;
@@ -2335,6 +2362,7 @@ export class Agent {
             },
             drainQueued: () => [],
         };
+        this.backendsUsed.add(backend);
         const r = await backend.compact({ ...this.backendTurn(opts.signal, session, sink), resumeId: resume.id, forkSession: resume.fork, instructions: opts.instructions });
         if (r.reason === "aborted") throw new ProviderError("aborted");
         if (r.reason === "error") throw new Error(r.error ?? "Compaction failed");
@@ -3310,6 +3338,9 @@ export class Agent {
             lastError ??= redact((e as Error).message ?? String(e));
         } finally {
             this.children.delete(child);
+            // Nothing takes a sub-agent's later turns: the CLI process kept for it goes, with what it left running.
+            // Before its servers close, so nothing still running there finds them gone.
+            await child.releaseBackends();
             await servers?.close().catch(() => undefined);
         }
         // Stopped: so is what it left running (a watcher writing files, say), even where the shell itself has exited.

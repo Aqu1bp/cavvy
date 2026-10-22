@@ -216,6 +216,13 @@ export interface BackendTurn {
     appendSystemPrompt?: string;
     /** Grace for Claude Code background shells without a timeout of their own, and monitors (seconds, default 1800). */
     backgroundWaitSec?: number;
+    /**
+     * Run on the session's live CLI process, kept between turns (#219), rather than one process per turn: the
+     * agentCli.liveSessions setting (on unless it's false). A backend without live sessions ignores it.
+     */
+    liveSessions?: boolean;
+    /** Start a turn that tells the CLI when a background command it started ends after its turn (Codex; default true). */
+    wakeOnBackgroundCommand?: boolean;
     additionalDirectories: string[];
     /** The user trusts this folder's configuration. */
     trusted: boolean;
@@ -318,6 +325,16 @@ export interface AgentBackendClient extends ProviderClient {
      * the task is reported not running (SessionEvent background_task); none here means the backend can't.
      */
     stopBackground?(sessionKey: string, ids?: string[]): Promise<Record<string, BackgroundStop>>;
+    /**
+     * The harness is done with this session (closed, cleared or replaced, the harness quitting) or sub-agent
+     * (its run is over): stop the CLI process kept for it. What ran in it stopped with it, and is reported so
+     * (SessionEvent background_task, status stopped, withProcess), as any loss of the process is. A session
+     * already let go records nothing more: its log keeps those tasks running, so when it's opened again they
+     * show as stopped when Harness quit, and the agent is told (src/agent/background.ts).
+     */
+    release?(sessionKey: string): Promise<void>;
+    /** Stop every live CLI process it keeps (the client is dropped, or the harness quits), reported as release's are. */
+    shutdown?(): Promise<void>;
 }
 
 /**
