@@ -66,6 +66,7 @@ export async function* parseSse(body: ReadableStream<Uint8Array>, signal?: Abort
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
+    let skipLf = false;
     let event: string | undefined;
     let data: string[] = [];
     const onAbort = () => reader.cancel().catch(() => {});
@@ -78,11 +79,18 @@ export async function* parseSse(body: ReadableStream<Uint8Array>, signal?: Abort
             if (signal?.aborted) throw new DOMException("The operation was aborted.", "AbortError");
             if (done) break;
             onData?.();
-            buf += decoder.decode(value, { stream: true });
+            let chunk = decoder.decode(value, { stream: true });
+            if (skipLf && chunk.length) {
+                if (chunk.startsWith("\n")) chunk = chunk.slice(1);
+                skipLf = false;
+            }
+            buf += chunk;
             let nl: number;
-            while ((nl = buf.search(/\r?\n/)) >= 0) {
+            while ((nl = buf.search(/[\r\n]/)) >= 0) {
                 const line = buf.slice(0, nl);
-                buf = buf.slice(buf[nl] === "\r" ? nl + 2 : nl + 1);
+                // A trailing CR ends the line now; swallow its LF if it arrives later.
+                skipLf = buf[nl] === "\r" && nl === buf.length - 1;
+                buf = buf.slice(buf[nl] === "\r" && buf[nl + 1] === "\n" ? nl + 2 : nl + 1);
                 if (line === "") {
                     if (data.length) yield { event, data: data.join("\n") };
                     event = undefined;

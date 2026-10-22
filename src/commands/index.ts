@@ -40,7 +40,7 @@ import {
 import { GcloudError } from "../providers/vertex";
 import { checkVertex, enableVertexApi, gcloudAccounts, gcloudProjects, type VertexCheck } from "../auth/gcloud";
 import { forgetClient, defaultModelFrom, type ProviderListing } from "../providers/models";
-import { modelRef, parseModelRef, textOf, type ModelInfo } from "../providers/types";
+import { continuationGroups, modelRef, parseModelRef, textOf, type ModelInfo } from "../providers/types";
 import { formatCost, formatPrice, formatTokens, formatUsd } from "../providers/pricing";
 import { attachmentsNote } from "../providers/files";
 import { getKey, removeKey, setKey, storageDescription } from "../auth/credentials";
@@ -1169,7 +1169,8 @@ function contextCommand(app: App) {
 
 async function exportCommand(app: App, args: string) {
     const out: string[] = [`# ${APP_TITLE} session ${app.session.meta.id}`, "", `- Directory: ${app.cwd}`, `- Model: ${app.session.model ?? "?"}`, `- Exported: ${new Date().toISOString()}`, ""];
-    for (const msg of app.session.messages) {
+    for (const group of continuationGroups(app.session.messages)) {
+        const msg = group[0]!;
         if (msg.role === "user") {
             const kind = msg.meta?.kind ?? "prompt";
             if (kind === "tool_results") {
@@ -1180,9 +1181,9 @@ async function exportCommand(app: App, args: string) {
             const note = attachmentsNote(msg.content);
             if (t || note) out.push(kind === "summary" ? "## Summary of earlier conversation" : "## User", "", ...(t ? [t] : []), ...(note ? [`*${note}*`] : []), "");
         } else {
-            const t = textOf(msg).trim();
+            const t = group.map(textOf).join("").trim();
             if (t) out.push("## Assistant", "", t, "");
-            for (const p of msg.content) if (p.type === "tool_call") out.push(`**${p.name}** \`${truncate(JSON.stringify(p.input), 300)}\``, "");
+            for (const part of group) for (const p of part.content) if (p.type === "tool_call") out.push(`**${p.name}** \`${truncate(JSON.stringify(p.input), 300)}\``, "");
         }
     }
     const text = redact(out.join("\n"));

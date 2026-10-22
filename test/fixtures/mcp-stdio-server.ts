@@ -60,6 +60,8 @@ const TOOLS: Json[] = [
     { name: "roots", description: "Asks the client for its roots", inputSchema: { type: "object", properties: {} } },
     { name: "notify_lists", description: "Sends resources and prompts list_changed", inputSchema: { type: "object", properties: {} } },
 ];
+if (process.env.MCP_FIXTURE_ECHO_SCHEMA) TOOLS[0]!.inputSchema = JSON.parse(process.env.MCP_FIXTURE_ECHO_SCHEMA);
+if (process.env.MCP_FIXTURE_EMPTY_RESOURCES) TOOLS.push({ name: "generate_report", inputSchema: { type: "object", properties: {} } });
 
 const RESOURCES: Json[] = [
     { uri: "fixture://readme", name: "readme", title: "Read me", description: "A short text", mimeType: "text/markdown" },
@@ -133,6 +135,8 @@ async function callTool(id: unknown, params: Json) {
     switch (params.name) {
         case "echo":
             return result(id, text(`echo: ${args.text}`));
+        case "generate_report":
+            return result(id, { content: [{ type: "resource_link", name: "Report", uri: "report://generated/123" }] });
         case "image":
             return result(id, { content: [{ type: "text", text: "here is an image" }, { type: "image", data: PNG, mimeType: "image/png" }] });
         case "fail":
@@ -232,9 +236,9 @@ function handleRequest(id: unknown, method: string, params: Json) {
 function other(id: unknown, method: string, params: Json) {
     switch (method) {
         case "resources/list":
-            return page(id, params, RESOURCES, "resources");
+            return page(id, params, process.env.MCP_FIXTURE_EMPTY_RESOURCES ? [] : RESOURCES, "resources");
         case "resources/templates/list":
-            return result(id, { resourceTemplates: TEMPLATES });
+            return result(id, { resourceTemplates: process.env.MCP_FIXTURE_EMPTY_RESOURCES ? [] : TEMPLATES });
         case "resources/read":
             return void readResource(id, params);
         case "prompts/list":
@@ -249,6 +253,7 @@ function other(id: unknown, method: string, params: Json) {
 async function readResource(id: unknown, params: Json) {
     const uri = String(params.uri ?? "");
     const one = (c: Json) => result(id, { contents: [{ uri, ...c }] });
+    if (uri === "report://generated/123") return one({ mimeType: "text/plain", text: "Generated report contents" });
     if (uri === "fixture://readme") return one({ mimeType: "text/markdown", text: "# Fixture\nHello from a resource." });
     if (uri === "fixture://big") return one({ mimeType: "text/plain", text: "x".repeat(100_000) });
     if (uri === "fixture://pixel") return one({ mimeType: "image/png", blob: PNG });

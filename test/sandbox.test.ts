@@ -599,6 +599,14 @@ describe.skipIf(!seatbelt)("a sandboxed Bash command (Seatbelt)", () => {
 
     afterAll(() => killAllShells({ state }));
 
+    test("saved Bash output is readable through tail in the sandbox", async () => {
+        const out = await bash("seq 1 10000", null);
+        const path = /Full output: (.+)/.exec(out.content)![1]!;
+        const read = await bash(`tail -n 2 "${path}"`);
+        expect(read.isError).toBeFalsy();
+        expect(read.content).toBe("9999\n10000");
+    });
+
     test("a blocked write followed by success carries a tentative hint", async () => {
         const command = "touch .git/hooks/blocked; true";
         const result = await bash(command);
