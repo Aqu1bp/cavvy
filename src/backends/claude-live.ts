@@ -22,7 +22,7 @@
 // one process per turn, as before.
 
 import { createHash, randomUUID } from "crypto";
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { HookConfig } from "../config/settings";
 import { harnessHome } from "../config/paths";
@@ -42,6 +42,7 @@ import { CLAUDE_CLI, cliMessage, requireCli, type JsonLinesProcess } from "./cli
 import { agentCli, type AgentCliDef, type CliCapabilities } from "./defs";
 import type { AgentCliStatus } from "./index";
 import { limitAccountLabel, limitNews, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
+import { liveDebug } from "./live/debug";
 import { LiveCliPool } from "./live/pool";
 import { EXIT_DRAIN_MS, spawnFingerprint, type LiveCliSession, type LiveOptions, type LiveTurnResult } from "./live/session";
 import type { AgentCliAdapter, CliConnection, CliEvent, CliEventSink, LiveSettings, SpawnConfig, SpawnSpec, TurnInput } from "./live/types";
@@ -93,25 +94,6 @@ export const liveTiming = {
     /** A stopped background task: confirmed by Claude Code's notification within this, or the stop timed out. */
     stopConfirmMs: 5000,
 };
-
-/** Debug lines for the live layer's control traffic and turn routing: HARNESS_DEBUG=1 (stderr) or a file path. */
-export function liveDebug(what: string, data?: unknown): void {
-    const to = process.env.HARNESS_DEBUG;
-    if (!to) return;
-    let body = "";
-    try {
-        body = data === undefined ? "" : ` ${redact(JSON.stringify(data)).slice(0, 2000)}`;
-    } catch {
-        body = " (unprintable)";
-    }
-    const line = `${new Date().toISOString()} claude-live ${what}${body}\n`;
-    try {
-        if (to === "1" || to === "true") process.stderr.write(line);
-        else appendFileSync(to, line);
-    } catch {
-        // debugging must never break a turn
-    }
-}
 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
@@ -274,7 +256,7 @@ export class ClaudeConnection implements CliConnection {
             const res = r.response ?? {};
             this.midTurnInput = claudeVersionAtLeast(res.claude_code_version, 301);
             this.noteCapabilities(res.capabilities);
-            liveDebug("initialized", { version: res.claude_code_version, sendNow: this.sendNowCap, pid: this.proc.pid });
+            liveDebug("claude", "initialized", { version: res.claude_code_version, sendNow: this.sendNowCap, pid: this.proc.pid });
             if (!this.midTurnInput) this.emit({ type: "notice", level: "info", message: "This Claude Code version has no verified mid-turn input acknowledgements. Queued messages will be delivered when its current turn ends." });
         })());
     }
@@ -297,7 +279,7 @@ export class ClaudeConnection implements CliConnection {
         this.outstanding.set(uuid, new Set([uuid]));
         this.answeredBy.set(uuid, []);
         this.sendUser(uuid, content, input.synthetic);
-        liveDebug("prompt", { uuid, chars: input.text.length, images: input.images.length });
+        liveDebug("claude", "prompt", { uuid, chars: input.text.length, images: input.images.length });
         return { ref: uuid };
     }
 
@@ -311,7 +293,7 @@ export class ClaudeConnection implements CliConnection {
         this.followUp = undefined;
         if (this.cur?.ref !== ref) {
             const waiting = [...this.prompts.entries()].filter(([, p]) => p.ref === ref && (p.state === "sent" || p.state === "queued"));
-            liveDebug("interrupt: not running", { ref, waiting: waiting.length });
+            liveDebug("claude", "interrupt: not running", { ref, waiting: waiting.length });
             if (!waiting.length) return;
             // Not started yet (Claude Code is on another turn, or about to start it): withdrawn, and the turn ends here.
             for (const [uuid, p] of waiting) {
@@ -327,7 +309,7 @@ export class ClaudeConnection implements CliConnection {
         if (this.sendNowCap && (followUp !== undefined || agents.length)) {
             const r = await this.sendNow(ref, followUp);
             if (r === "stopped" || this.cur?.ref !== ref) return;
-            liveDebug("interrupt: send_now didn't stop it", { ref, r });
+            liveDebug("claude", "interrupt: send_now didn't stop it", { ref, r });
         }
         if (this.cur?.ref !== ref) return;
         const left = this.runningAgents();
@@ -338,7 +320,7 @@ export class ClaudeConnection implements CliConnection {
             const why = this.sendNowCap ? "Claude Code couldn't stop the turn on its own" : "this Claude Code version can't stop a turn without them";
             this.emit({ type: "notice", level: "warn", message: `Stopped ${what} when you pressed Esc (${why}). ${left.length === 1 ? "It won't" : "They won't"} report back. Background commands and monitors keep running.` });
         }
-        liveDebug("interrupt", { ref, agents: left.length });
+        liveDebug("claude", "interrupt", { ref, agents: left.length });
         void this.control({ subtype: "interrupt" });
     }
 
@@ -355,13 +337,13 @@ export class ClaudeConnection implements CliConnection {
             };
         });
         if (!queued || this.cur?.ref !== ref) {
-            liveDebug("send_now: carrier not queued", { ref, uuid, queued });
+            liveDebug("claude", "send_now: carrier not queued", { ref, uuid, queued });
             return undefined;
         }
         for (let attempt = 0; attempt < 2; attempt++) {
             const r = await this.control({ subtype: "interrupt", send_now: true, message_uuid: uuid });
             const said = r?.subtype === "success" ? String(r.response?.send_now ?? "") : undefined;
-            liveDebug("send_now", { ref, uuid, said, attempt });
+            liveDebug("claude", "send_now", { ref, uuid, said, attempt });
             if (said === "stopped") return said;
             // Taken without stopping the turn (it wasn't under way yet): once more, in a moment.
             if (said === "delivering" && attempt === 0 && this.cur?.ref === ref) {
@@ -378,12 +360,12 @@ export class ClaudeConnection implements CliConnection {
         const uuid = randomUUID();
         this.prompts.set(uuid, { ref: uuid, kind: "carrier", state: "sent", hidden: text === undefined, text });
         this.sendUser(uuid, [{ type: "text", text: text ?? CARRIER_COMMAND }]);
-        liveDebug("carrier", { uuid, followUp: text !== undefined });
+        liveDebug("claude", "carrier", { uuid, followUp: text !== undefined });
         return uuid;
     }
 
     async stopTask(id: string): Promise<void> {
-        liveDebug("stop_task", { id });
+        liveDebug("claude", "stop_task", { id });
         const r = await this.control({ subtype: "stop_task", task_id: id });
         // Success says nothing (it comes for an unknown id too): the task's own notification does.
         if (r?.subtype !== "success") throw new Error(String(r?.error ?? "stop_task failed"));
@@ -392,7 +374,7 @@ export class ClaudeConnection implements CliConnection {
     async apply(s: Partial<LiveSettings>): Promise<"applied" | "restart"> {
         const ok = (r: Record<string, any> | undefined) => r?.subtype === "success";
         const model: ModelInfo = s.model ?? this.cfg.model;
-        liveDebug("apply", { model: s.model?.id, effort: s.effort, mode: s.mode, fastMode: s.fastMode });
+        liveDebug("claude", "apply", { model: s.model?.id, effort: s.effort, mode: s.mode, fastMode: s.fastMode });
         if (s.model && !ok(await this.control({ subtype: "set_model", model: s.model.id }))) return "restart";
         const flags: Record<string, unknown> = {};
         if ("effort" in s) {
@@ -429,7 +411,7 @@ export class ClaudeConnection implements CliConnection {
                 try {
                     await this.onFrame(m);
                 } catch (e) {
-                    liveDebug("frame failed", { type: m.type, error: (e as Error).message });
+                    liveDebug("claude", "frame failed", { type: m.type, error: redact((e as Error).message) });
                 }
             }
         } finally {
@@ -440,7 +422,7 @@ export class ClaudeConnection implements CliConnection {
             for (const t of this.unlisted.values()) clearTimeout(t);
             for (const resolve of [...this.controls.values()]) resolve(undefined);
             this.controls.clear();
-            liveDebug("output ended", { pid: this.proc.pid });
+            liveDebug("claude", "output ended", { pid: this.proc.pid });
         }
     }
 
@@ -500,7 +482,7 @@ export class ClaudeConnection implements CliConnection {
             if (!this.outstanding.has(cur.ref)) this.outstanding.set(cur.ref, new Set());
             this.outstanding.get(cur.ref)!.add(uuid);
             this.sendUser(uuid, [{ type: "text", text: m.text }], m.synthetic);
-            liveDebug("steer", { ref: cur.ref, uuid });
+            liveDebug("claude", "steer", { ref: cur.ref, uuid });
         }
     }
 
@@ -549,7 +531,7 @@ export class ClaudeConnection implements CliConnection {
             this.startedUuid = undefined;
             this.withdrawn.delete(withdrawn);
             this.cur = { ref: withdrawn, kind: "hidden" };
-            liveDebug("turn: withdrawn prompt started; stopping it", { uuid: withdrawn });
+            liveDebug("claude", "turn: withdrawn prompt started; stopping it", { uuid: withdrawn });
             void this.interruptHidden();
             return;
         }
@@ -568,7 +550,7 @@ export class ClaudeConnection implements CliConnection {
         if (first?.kind === "carrier") {
             if (first.hidden) {
                 this.cur = { ref: uuids[0]!, kind: "hidden" };
-                liveDebug("turn: carrier (hidden)", { uuid: uuids[0] });
+                liveDebug("claude", "turn: carrier (hidden)", { uuid: uuids[0] });
                 return;
             }
             // The user's message, sent in place of the turn Esc stopped: theirs, adopted as a wake.
@@ -579,7 +561,7 @@ export class ClaudeConnection implements CliConnection {
             const ref = first.ref;
             this.cur = { ref, kind: this.wakeInfo.has(ref) ? "wake" : "user" };
             this.startGoalWatch();
-            liveDebug("turn: started", { ref, uuids, continued: first.kind === "steer" });
+            liveDebug("claude", "turn: started", { ref, uuids, continued: first.kind === "steer" });
             if (first.kind === "prompt") {
                 this.events({ t: "turn_started", ref, origin: "user", answers: uuids });
                 this.stillDue();
@@ -595,7 +577,7 @@ export class ClaudeConnection implements CliConnection {
         this.wakeInfo.set(ref, info);
         this.cur = { ref, kind: "wake" };
         this.startGoalWatch();
-        liveDebug("turn: wake", { ref, ...info });
+        liveDebug("claude", "turn: wake", { ref, prompt: info.prompt });
         this.events({ t: "turn_started", ref, origin: "wake" });
         this.stillDue();
     }
@@ -655,7 +637,7 @@ export class ClaudeConnection implements CliConnection {
         this.cur = undefined;
         const ids = [m.user_message_uuid, ...(Array.isArray(m.user_message_uuids) ? m.user_message_uuids : [])].filter((x): x is string => typeof x === "string" && x !== "");
         if (turn?.kind === "hidden") {
-            liveDebug("turn: hidden ended", { ref: turn.ref });
+            liveDebug("claude", "turn: hidden ended", { ref: turn.ref });
             for (const id of [turn.ref, ...ids]) {
                 const p = this.prompts.get(id);
                 if (p) p.state = "done";
@@ -667,7 +649,7 @@ export class ClaudeConnection implements CliConnection {
         if (!turn) {
             // A result with no turn: an error before one started (a session it can't resume) ends the prompt waiting.
             const waiting = [...this.prompts.entries()].find(([, p]) => p.kind === "prompt" && (p.state === "sent" || p.state === "queued"));
-            liveDebug("result with no turn", { subtype: m.subtype, waiting: waiting?.[0] });
+            liveDebug("claude", "result with no turn", { subtype: m.subtype, waiting: waiting?.[0] });
             if (!waiting) {
                 this.failure ??= failure;
                 return;
@@ -698,7 +680,7 @@ export class ClaudeConnection implements CliConnection {
             return s === "sent" || s === "queued";
         });
         if (left.length && reason !== "aborted" && reason !== "error") {
-            liveDebug("turn: result, steering still to come", { ref, left });
+            liveDebug("claude", "turn: result, steering still to come", { ref, left });
             return;
         }
         this.endTurn(ref, reason, reason === "error" ? failure : undefined, reason === "error" && this.limitHit ? { resetsAt: this.limits?.reached ? this.limits.resetsAt : undefined } : undefined);
@@ -716,7 +698,7 @@ export class ClaudeConnection implements CliConnection {
         this.answeredBy.delete(ref);
         this.stopping.delete(ref);
         for (const [id, p] of this.prompts) if (p.ref === ref && (p.state === "done" || p.state === "cancelled" || p.state === "started")) this.prompts.delete(id);
-        liveDebug("turn: ended", { ref, reason, error });
+        liveDebug("claude", "turn: ended", { ref, reason, ...(error === undefined ? {} : { error: redact(error) }) });
         this.events({ t: "turn_ended", ref, answers: answers.length ? answers : [ref], reason, ...(error ? { error } : {}), ...(limit ? { limit } : {}) });
         this.stillDue();
     }
@@ -848,7 +830,7 @@ export class ClaudeConnection implements CliConnection {
             const i = this.dues.findIndex((d) => d.timer === timer);
             if (i < 0) return;
             this.dues.splice(i, 1);
-            liveDebug("wake didn't come", { task: task.id, left: this.dues.length });
+            liveDebug("claude", "wake didn't come", { task: task.id, left: this.dues.length });
             // The session's flag is one for all of them: cleared only once none is due.
             if (!this.dues.length) this.events({ t: "task", task: this.tasks.get(task.id) ?? task, wakeDue: false });
         }, liveTiming.wakeDueMs);
@@ -948,7 +930,7 @@ export class ClaudeConnection implements CliConnection {
         if (taskId) this.taskEnded(taskId, ended);
         if (reports && known) {
             this.reportDue(known, dueLabel(known, ended));
-            liveDebug("report due", { task: taskId, due: this.dues.length });
+            liveDebug("claude", "report due", { task: taskId, due: this.dues.length });
             this.events({ t: "task", task: this.tasks.get(taskId)!, wakeDue: true });
         } else if (taskId) this.dropDue(taskId);
         if (!this.agentLabels.has(toolUseId)) {
@@ -1208,18 +1190,18 @@ export class ClaudeConnection implements CliConnection {
     private control(request: Record<string, unknown>, timeoutMs = liveTiming.controlMs): Promise<Record<string, any> | undefined> {
         if (this.ended) return Promise.resolve(undefined);
         const id = requestId();
-        if (request.subtype !== "initialize") liveDebug("control", request);
+        if (request.subtype !== "initialize") liveDebug("claude", "control", { subtype: request.subtype });
         return new Promise((resolve) => {
             const timer = Number.isFinite(timeoutMs)
                 ? setTimeout(() => {
                       this.controls.delete(id);
-                      liveDebug("control: no answer", { subtype: request.subtype });
+                      liveDebug("claude", "control: no answer", { subtype: request.subtype });
                       resolve(undefined);
                   }, timeoutMs)
                 : undefined;
             this.controls.set(id, (r) => {
                 clearTimeout(timer);
-                if (request.subtype !== "initialize") liveDebug("control: answer", { subtype: request.subtype, ok: r?.subtype, response: r?.response });
+                if (request.subtype !== "initialize") liveDebug("claude", "control: answer", { subtype: request.subtype, ok: r?.subtype });
                 resolve(r);
             });
             this.proc.send({ type: "control_request", request_id: id, request });
@@ -1326,7 +1308,7 @@ export class ClaudeConnection implements CliConnection {
         const { name, input } = toHarness(String(req.tool_name ?? ""), raw);
         const reason = typeof req.decision_reason === "string" && req.decision_reason.trim() ? req.decision_reason : undefined;
         const agentType = typeof req.agent_id === "string" ? this.agentTypes.get(req.agent_id) : undefined;
-        liveDebug("permission", { tool: name, between: !this.cur, agent: req.agent_id });
+        liveDebug("claude", "permission", { tool: name, between: !this.cur, agent: req.agent_id });
         const a = await this.host.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ...(agentType ? { agentType } : {}) });
         if (a.allow) return { behavior: "allow", updatedInput: a.updatedInput ?? raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
         return { behavior: "deny", message: a.message, interrupt: a.stop };
@@ -1368,7 +1350,7 @@ class ClaudeCliAdapter implements AgentCliAdapter {
     async connect(proc: JsonLinesProcess, events: CliEventSink, host: SessionHost): Promise<CliConnection> {
         const conn = new ClaudeConnection(proc, events, host, this.def, () => this.current!, this.spending, this.limitSeen);
         this.conn = conn;
-        liveDebug("spawned", { pid: proc.pid });
+        liveDebug("claude", "spawned", { pid: proc.pid });
         await conn.initialize();
         return conn;
     }
@@ -1458,7 +1440,7 @@ export class ClaudeLive {
         // the old one couldn't be resumed): the old process goes, and what runs under it.
         if (!t.adopt && live.sessionId && t.resumeId !== live.sessionId) {
             const tasks = live.tasks.running().length;
-            liveDebug("session changed: releasing", { key, was: live.sessionId, now: t.resumeId, tasks });
+            liveDebug("claude", "session changed: releasing", { key, was: live.sessionId, now: t.resumeId, tasks });
             await this.release(key);
             if (tasks) t.sink.emit({ type: "notice", level: "warn", message: `Claude Code's earlier session was let go: ${plural(tasks, "background task")} stopped with it.` });
             live = this.pool.session(key, this.provider.id);
@@ -1468,7 +1450,7 @@ export class ClaudeLive {
         // the next one forks it; with work running that would stop it, so the turn goes on in place.
         if (!t.adopt && t.forkSession && live.sessionId && t.resumeId === live.sessionId && live.state !== "dead") {
             const quiet = live.quiet();
-            liveDebug(quiet ? "fork asked: releasing to fork" : "fork asked with background work running: continuing in place", { key, id: live.sessionId, tasks: live.tasks.running().length });
+            liveDebug("claude", quiet ? "fork asked: releasing to fork" : "fork asked with background work running: continuing in place", { key, id: live.sessionId, tasks: live.tasks.running().length });
             if (quiet) {
                 await this.release(key);
                 live = this.pool.session(key, this.provider.id);
@@ -1499,7 +1481,7 @@ export class ClaudeLive {
             r = await live.runTurn({ text: prompt, images: t.images, documents: t.documents, synthetic: t.synthetic }, rec.sink, t.signal, { spawn: t, settings: { model: t.model, mode: t.mode, effort: t.effort, fastMode: t.fastMode }, host: t.session });
         }
         if (adapter.current?.t === t) adapter.current = { t };
-        liveDebug("turn result", { key, ref: r.ref, reason: r.reason, unanswered: r.unanswered, deferred: r.deferred });
+        liveDebug("claude", "turn result", { key, ref: r.ref, reason: r.reason, unanswered: r.unanswered, deferred: r.deferred });
         if (this.accountChanged.delete(key) && r.reason !== "done") r = { ...r, reason: "error", error: "Account folders changed while Claude Code was running. Send again to apply their updated protections." };
         if (r.unanswered) t.sink.emit({ type: "notice", level: "warn", message: "Claude Code didn't answer the stop in time. The turn ended here; its process is kept, with what it runs in the background. If it stays busy, restart it with /tasks restart (that stops its background work)." });
         if (r.deferred) t.sink.emit({ type: "notice", level: "info", message: `New Claude Code settings apply once its background work ends (${plural(r.deferred.tasks, "task")} running). /tasks restart applies them now, stopping it.` });
@@ -1517,7 +1499,7 @@ export class ClaudeLive {
         this.bound.add(live);
         live.onWake((w) => {
             const info = this.adapter(key)?.conn?.wakeInfo.get(w.ref);
-            liveDebug("wake → host", { key, ref: w.ref, label: info?.label, prompt: info?.prompt });
+            liveDebug("claude", "wake → host", { key, ref: w.ref, prompt: info?.prompt });
             this.hosts.get(key)?.onWake?.({ provider: this.provider.id, ref: w.ref, ...(info?.label ? { label: info.label } : {}), ...(info?.prompt ? { prompt: true } : {}) });
         });
         live.onEvent((e: CliEvent) => {
@@ -1539,7 +1521,7 @@ export class ClaudeLive {
                 if (live.state === "dead") return;
                 if (live.state === "busy") this.accountChanged.add(key);
                 const tasks = live.tasks.running().length;
-                liveDebug("account folders changed: restarting", { key, tasks });
+                liveDebug("claude", "account folders changed: restarting", { key, tasks });
                 if (tasks) this.hosts.get(key)?.emitSession?.({ type: "notice", level: "warn", message: `Account folders changed: Claude Code was restarted to apply their protections, and ${plural(tasks, "background task")} stopped with it.` });
                 void live.restart();
             }),
@@ -1557,7 +1539,7 @@ export class ClaudeLive {
         const live = this.get(key);
         if (!conn || !live || live.state !== "busy" || !conn.sendNowCap || !conn.running()) return false;
         conn.followUp = text;
-        liveDebug("sendNow", { key, chars: text.length });
+        liveDebug("claude", "sendNow", { key, chars: text.length });
         return true;
     }
 
@@ -1575,7 +1557,7 @@ export class ClaudeLive {
     }
 
     async release(key: string): Promise<void> {
-        liveDebug("release", { key, tasks: this.get(key)?.tasks.running().length ?? 0 });
+        liveDebug("claude", "release", { key, tasks: this.get(key)?.tasks.running().length ?? 0 });
         this.accountWatches.get(key)?.();
         this.accountWatches.delete(key);
         const live = this.get(key);
