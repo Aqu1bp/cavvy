@@ -46,6 +46,7 @@ function scripted(script: Record<string, Call[]>) {
     return {
         async stream(req: { messages: Message[] }) {
             const last = req.messages[req.messages.length - 1]!;
+            if (last.role === "user" && last.meta?.kind === "command") return reply([{ type: "text", text: "A summary that omits the task list and plan." }]);
             const prompt = [...req.messages].reverse().find((m) => m.role === "user" && (m.meta?.kind === "prompt" || !m.meta)) as UserMessage | undefined;
             const first = prompt?.content[0];
             const text = first?.type === "text" ? first.text : "";
@@ -60,7 +61,7 @@ function scripted(script: Record<string, Call[]>) {
     };
 }
 
-function setup(proj: string, script: Record<string, Call[]>, opts: { mode?: PermissionMode; classifier?: unknown; queue?: string[] } = {}) {
+function setup(proj: string, script: Record<string, Call[]>, opts: { mode?: PermissionMode; classifier?: unknown; queue?: string[]; approvePlan?: boolean } = {}) {
     const session = Session.create(proj, { system: "test system" });
     const settings = { autoCompact: false } as any;
     const state: ToolState = { cwd: proj, projectRoot: proj, fileState: new Map(), todos: [], shells: new Map() };
@@ -75,7 +76,7 @@ function setup(proj: string, script: Record<string, Call[]>, opts: { mode?: Perm
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
         toolState: state,
-        host: { emit() {}, ui: {}, drainQueued: () => opts.queue?.splice(0) ?? [] },
+        host: { emit() {}, ui: { approvePlan: async () => ({ approved: opts.approvePlan ?? false, mode: "bypassPermissions" }) }, drainQueued: () => opts.queue?.splice(0) ?? [] },
     });
     const run = (text: string) => agent.run([{ type: "text", text }], { signal: new AbortController().signal, display: text });
     const history = state.fileHistory!;
@@ -508,6 +509,118 @@ describe("rewinding the conversation", () => {
         expect(state.todos).toEqual([{ content: "kept", status: "pending", activeForm: undefined }]);
         expect(state.approvedPlan).toBe("approved plan");
         expect(state.fileState.size).toBe(0);
+    });
+
+    for (const continuing of [false, true]) test(`compaction preserves tasks and the approved plan on reopen (continuing: ${continuing})`, async () => {
+        const todos: ToolState["todos"] = [
+            { content: "Inspect the bug", status: "completed" },
+            { content: "Fix the bug", status: "in_progress", activeForm: "Fixing the bug" },
+            { content: "Run regression tests", status: "pending" },
+        ];
+        const plan = "Update the restore path, then run regression tests.";
+        const s = setup(project(), { start: [{ name: "TodoWrite", input: { todos } }, { name: "ExitPlanMode", input: { plan } }] }, { mode: "plan", approvePlan: true });
+        await s.run("start");
+        expect(s.state.todos).toEqual(todos);
+        expect(s.state.approvedPlan).toBe(plan);
+        await s.agent.compact({ auto: continuing, continuing, signal: new AbortController().signal });
+        s.session.release();
+        const reopened = Session.load(s.session.path);
+        try {
+            resetToolState(s.state, reopened.messages);
+            expect(s.state.todos).toEqual(todos);
+            expect(s.state.approvedPlan).toBe(plan);
+            expect(reopened.messages).toHaveLength(1);
+            expect(reopened.messages[0]!.content.every((p) => p.type === "text")).toBe(true);
+            const { toAnthropicMessages } = await import("../src/providers/anthropic");
+            const { toOpenAIMessages } = await import("../src/providers/openai-compat");
+            const { toResponsesInput } = await import("../src/providers/openai-responses");
+            const { getProvider } = await import("../src/providers/registry");
+            for (const wire of [toAnthropicMessages(reopened.messages), toOpenAIMessages("", reopened.messages, getProvider("openai")!), toResponsesInput(reopened.messages, getProvider("openai")!, "gpt-test")]) {
+                const text = JSON.stringify(wire);
+                for (const todo of todos) {
+                    expect(text).toContain(todo.content);
+                    expect(text).toContain(todo.status);
+                }
+                expect(text).toContain("Fixing the bug");
+                expect(text).toContain(plan);
+                expect(text).not.toContain("tool_call");
+                expect(text).not.toContain("tool_result");
+            }
+        } finally {
+            reopened.release();
+        }
+        const { Engine } = await import("../src/server/engine");
+        const engine = new Engine({ listModels: async () => [] });
+        try {
+            const rt = engine.openSession(s.session.meta.id);
+            await rt.ready;
+            expect(rt.snapshot().state.todos).toEqual(todos);
+            expect(rt.toolState.approvedPlan).toBe(plan);
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("later updates override the compaction snapshot; rewind, forks and repeated compaction preserve it", async () => {
+        const todos: ToolState["todos"] = [{ content: "Finish the work", status: "pending" }];
+        const plan = "The approved plan";
+        const s = setup(project(), {
+            start: [{ name: "TodoWrite", input: { todos } }, { name: "ExitPlanMode", input: { plan } }],
+            clear: [{ name: "TodoWrite", input: { todos: [] } }, { name: "ExitPlanMode", input: { plan: "Not approved" } }],
+        }, { mode: "plan", approvePlan: true });
+        await s.run("start");
+        await s.agent.compact({ auto: false, signal: new AbortController().signal });
+        s.state.todos[0]!.content = "An in-memory mutation";
+        resetToolState(s.state, s.session.messages);
+        expect(s.state.todos).toEqual(todos);
+        // Restoration must not hand out the snapshot's mutable array or items either.
+        s.state.todos[0]!.status = "completed";
+        resetToolState(s.state, s.session.messages);
+        expect(s.state.todos).toEqual(todos);
+        await s.run("clear");
+        resetToolState(s.state, s.session.messages);
+        expect(s.state.todos).toEqual([]);
+        expect(s.state.approvedPlan).toBe(plan);
+        s.agent.rewind(1);
+        expect(s.state.todos).toEqual(todos);
+        expect(s.state.approvedPlan).toBe(plan);
+        const fork = s.session.fork({ persist: false });
+        resetToolState(s.state, fork.messages);
+        expect(s.state.todos).toEqual(todos);
+        expect(s.state.approvedPlan).toBe(plan);
+        await s.run("clear");
+        await s.agent.compact({ auto: true, idle: true, signal: new AbortController().signal });
+        s.session.release();
+        const reopened = Session.load(s.session.path);
+        try {
+            resetToolState(s.state, reopened.messages);
+            expect(s.state.todos).toEqual([]);
+            expect(s.state.approvedPlan).toBe(plan);
+            expect(JSON.stringify(reopened.messages)).not.toContain("Finish the work");
+            expect(JSON.stringify(reopened.messages)).not.toContain("Not approved");
+        } finally {
+            reopened.release();
+        }
+    });
+
+    test("compaction snapshots redact secrets in memory and on disk", async () => {
+        const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+        const secret = "compaction-secret-value-0123456789";
+        registerSecret(secret, "compaction-test");
+        try {
+            const s = setup(project(), {});
+            await s.run("start");
+            s.state.todos = [{ content: `Use ${secret}`, status: "pending", activeForm: `Using ${secret}` }];
+            s.state.approvedPlan = `Plan with ${secret}`;
+            await s.agent.compact({ auto: false, signal: new AbortController().signal });
+            expect(JSON.stringify(s.session.messages)).not.toContain(secret);
+            expect(readFileSync(s.session.path, "utf8")).not.toContain(secret);
+            resetToolState(s.state, s.session.messages);
+            expect(s.state.todos[0]!.content).toContain("[REDACTED");
+            expect(s.state.approvedPlan).toContain("[REDACTED");
+        } finally {
+            unregisterSecret(secret);
+        }
     });
 
     test("rewind targets are prompts and commands, with what the user typed", () => {

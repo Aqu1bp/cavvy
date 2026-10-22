@@ -5,11 +5,13 @@ const iso = isolate();
 const { OpenAICompatProvider, toOpenAIMessages, httpError } = await import("../src/providers/openai-compat");
 const { OpenAIResponsesProvider, toResponsesInput } = await import("../src/providers/openai-responses");
 const { toAnthropicMessages, sanitizeToolId } = await import("../src/providers/anthropic");
-const { BUILTIN_PROVIDERS } = await import("../src/providers/registry");
+const { BUILTIN_PROVIDERS, customProviders, writeProvidersFile } = await import("../src/providers/registry");
 const { ProviderError } = await import("../src/providers/types");
 const { stall } = await import("../src/providers/sse");
+const { costOf, promptTokens, usageCostParts } = await import("../src/providers/pricing");
 import type { ProviderDef } from "../src/providers/registry";
 import type { AssistantMessage, ChatRequest, Message, ModelInfo, StreamEvent } from "../src/providers/types";
+import { SESSION_CONTEXT_HEADING } from "../src/providers/types";
 
 type Json = Record<string, any>;
 
@@ -159,8 +161,8 @@ describe("Chat Completions: message conversion", () => {
             },
             { role: "tool", tool_call_id: "toolu_01", content: "file body\n[1 image(s) attached in the next message]" },
             { role: "tool", tool_call_id: "toolu_02", content: "Error: not found" },
-            { role: "user", content: [{ type: "text", text: "Images returned by the tool calls above:" }, { type: "image_url", image_url: { url: `data:image/png;base64,${PNG}` } }] },
-            { role: "user", content: "Thanks" },
+            // The message after them joins the tool calls' images: roles alternate, as strict chat templates want.
+            { role: "user", content: [{ type: "text", text: "Images returned by the tool calls above:" }, { type: "image_url", image_url: { url: `data:image/png;base64,${PNG}` } }, { type: "text", text: "Thanks" }] },
         ]);
     });
 
@@ -213,6 +215,70 @@ describe("Chat Completions: message conversion", () => {
 
 describe("Chat Completions: streaming", () => {
     const model: ModelInfo = { provider: "custom-x", id: "test-model", maxOutput: 8000, supportsTools: true };
+
+    test("custom DeepSeek: reasoning survives storage and the next tool turn, but stays out of other dialects", async () => {
+        writeProvidersFile({ custom: [{ id: CUSTOM.id, name: CUSTOM.name, baseUrl: BASE, deepseekCompat: true }] });
+        try {
+            const def = customProviders()[0]!;
+            respond = () => sse([
+                { choices: [{ delta: { reasoning_content: "Check " } }] },
+                { choices: [{ delta: { reasoning_content: "the file.", tool_calls: [{ index: 0, id: "c1", type: "function", function: { name: "read_file", arguments: "{}" } }] }, finish_reason: "tool_calls" }] },
+            ]);
+            const { events, on } = collect();
+            const first = await new OpenAICompatProvider(def, undefined).stream(req(model, []), on);
+            const stored: AssistantMessage = JSON.parse(JSON.stringify(first));
+            expect(stored.raw?.openai?.reasoning_content).toBe("Check the file.");
+            expect(events.filter((e) => e.type === "thinking").map((e) => e.text).join("")).toBe("Check the file.");
+            const result: Message = { role: "user", content: [{ type: "tool_result", toolCallId: "c1", toolName: "read_file", content: "body" }] };
+            respond = () => sse([{ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }]);
+            await new OpenAICompatProvider(def, undefined).stream(req(model, [stored, result]), () => {});
+            expect(seen.at(-1)!.body.messages.find((m: Json) => m.role === "assistant").reasoning_content).toBe("Check the file.");
+            expect(toOpenAIMessages("", [{ ...stored, raw: undefined }], def)[0]!.reasoning_content).toBe("Check the file.");
+            for (const target of [CUSTOM, builtin("groq"), builtin("gemini")]) {
+                expect(toOpenAIMessages("", [stored], target)[0]).not.toHaveProperty("reasoning_content");
+            }
+            expect(stored.raw?.openai?.reasoning_content).toBe("Check the file.");
+        } finally {
+            writeProvidersFile({});
+        }
+    });
+
+    test("reasoning_content is retained even for unknown dialects, including empty values", async () => {
+        for (const reasoning of ["received", ""]) {
+            respond = () => sse([{ choices: [{ delta: { reasoning_content: reasoning, content: "answer" }, finish_reason: "stop" }] }]);
+            const msg = await new OpenAICompatProvider(CUSTOM, undefined).stream(req(model, []), () => {});
+            expect(msg.raw?.openai?.reasoning_content).toBe(reasoning);
+            expect(toOpenAIMessages("", [msg], CUSTOM)[0]).not.toHaveProperty("reasoning_content");
+        }
+    });
+
+    test("DeepSeek host detection is exact and explicit configuration overrides it", () => {
+        const msg: AssistantMessage = { role: "assistant", provider: CUSTOM.id, model: "m", content: [{ type: "thinking", text: "thought" }, { type: "text", text: "answer" }], raw: { openai: { role: "assistant", content: "answer" } } };
+        const direct = { ...CUSTOM, baseUrl: "https://api.deepseek.com/v1" };
+        expect(toOpenAIMessages("", [msg], direct)[0]!.reasoning_content).toBe("thought");
+        for (const def of [{ ...direct, deepseekCompat: false }, { ...direct, baseUrl: "https://api.deepseek.com.example/v1" }]) {
+            expect(toOpenAIMessages("", [msg], def)[0]).not.toHaveProperty("reasoning_content");
+        }
+    });
+
+    test("DeepSeek detection uses the effective constructor base URL", async () => {
+        const previousFetch = globalThis.fetch;
+        const bodies: Json[] = [];
+        globalThis.fetch = (async (_url, init) => {
+            bodies.push(JSON.parse(String(init?.body)));
+            return sse([{ choices: [{ delta: { content: "answer" }, finish_reason: "stop" }] }]);
+        }) as typeof fetch;
+        try {
+            const prior: AssistantMessage = { role: "assistant", provider: CUSTOM.id, model: "m", content: [{ type: "text", text: "previous" }] };
+            await new OpenAICompatProvider(CUSTOM, undefined, "https://api.deepseek.com/v1").stream(req(model, [prior]), () => {});
+            expect(bodies[0]!.messages.find((m: Json) => m.role === "assistant").reasoning_content).toBe("");
+            await new OpenAICompatProvider({ ...CUSTOM, baseUrl: "https://api.deepseek.com/v1" }, undefined, BASE).stream(req(model, [prior]), () => {});
+            expect(bodies[1]!.messages.find((m: Json) => m.role === "assistant")).not.toHaveProperty("reasoning_content");
+        } finally {
+            globalThis.fetch = previousFetch;
+        }
+    });
+
 
     test("text deltas, a chunked tool call, finish_reason and usage", async () => {
         respond = () =>
@@ -320,6 +386,104 @@ describe("Chat Completions: streaming", () => {
         expect(msg.usage?.cost).toBe(0.0012);
         expect(msg.content[0]).toEqual({ type: "thinking", text: "thinking..." });
         expect(msg.raw?.openai?.reasoning_details).toEqual([{ type: "reasoning.text", index: 0, text: "thinking..." }]);
+    });
+
+    test.each(["anthropic/claude-sonnet-4.6", "anthropic/claude-sonnet-4.6:thinking", "~anthropic/claude-sonnet-latest"])("openrouter: Claude caching preserves the prefix across turns (%s)", async (id) => {
+        respond = () => sse([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]);
+        const def = builtin("openrouter");
+        const m: ModelInfo = { provider: def.id, id };
+        const p = new OpenAICompatProvider(def, FAKE.openrouter);
+        const request = req(m, HISTORY, { cacheSystem: true });
+        const original = JSON.stringify(request);
+        const first = await p.stream(request, () => {});
+        await p.stream({ ...request, messages: [...HISTORY, first, { role: "user", content: [{ type: "text", text: "Continue" }] }] }, () => {});
+        const a = seen[0]!.body;
+        const b = seen[1]!.body;
+        expect(a.cache_control).toEqual({ type: "ephemeral" });
+        expect(b.cache_control).toEqual(a.cache_control);
+        expect(a.messages[0]).toEqual({ role: "system", content: [{ type: "text", text: request.system, cache_control: { type: "ephemeral" } }] });
+        expect(JSON.stringify(b.messages.slice(0, a.messages.length))).toBe(JSON.stringify(a.messages));
+        expect(JSON.stringify(b.tools)).toBe(JSON.stringify(a.tools));
+        expect(a.tools).toEqual(request.tools.map((t) => ({ type: "function", function: t })));
+        expect(a.messages.slice(1)).toEqual(toOpenAIMessages("", HISTORY, def));
+        expect(b.messages.slice(a.messages.length)).toEqual([first.raw!.openai, { role: "user", content: "Continue" }]);
+        // One system breakpoint plus the automatic breakpoint, with no TTL override.
+        expect(JSON.stringify(b).match(/"cache_control"/g)).toHaveLength(2);
+        expect(JSON.stringify(request)).toBe(original);
+    });
+
+    test.each([
+        { lightweight: false, cacheSystem: false },
+        { lightweight: false, cacheSystem: true },
+        { lightweight: true, cacheSystem: false },
+        { lightweight: true, cacheSystem: true },
+    ])("openrouter: Claude honors lightweight and cacheSystem (%j)", async (flags) => {
+        respond = () => sse([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]);
+        const m: ModelInfo = { provider: "openrouter", id: "anthropic/claude-sonnet-4.6" };
+        const p = new OpenAICompatProvider(builtin("openrouter"), FAKE.openrouter);
+        await p.stream(req(m, HISTORY, flags), () => {});
+        const b = seen[0]!.body;
+        expect(b.cache_control).toEqual(flags.lightweight ? undefined : { type: "ephemeral" });
+        expect(b.messages[0].content).toEqual(flags.cacheSystem ? [{ type: "text", text: "You are a test.", cache_control: { type: "ephemeral" } }] : "You are a test.");
+        await p.stream(req(m, HISTORY, { ...flags, system: "", tools: [] }), () => {});
+        expect(seen[1]!.body.messages).toEqual(toOpenAIMessages("", HISTORY, builtin("openrouter")));
+        expect(seen[1]!.body.tools).toBeUndefined();
+    });
+
+    test("openrouter: the Claude system breakpoint stops before the session context, so sessions share the prefix", async () => {
+        respond = () => sse([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]);
+        const m: ModelInfo = { provider: "openrouter", id: "anthropic/claude-sonnet-4.6" };
+        const system = (date: string) => `You are a test.\n\n${SESSION_CONTEXT_HEADING}\nToday's date: ${date}`;
+        const p = new OpenAICompatProvider(builtin("openrouter"), FAKE.openrouter);
+        for (const date of ["2026-10-21", "2026-10-22"]) await p.stream(req(m, HISTORY, { cacheSystem: true, system: system(date) }), () => {});
+        const [a, b] = [seen[0]!.body.messages[0].content, seen[1]!.body.messages[0].content];
+        expect(a[0]).toEqual({ type: "text", text: "You are a test.", cache_control: { type: "ephemeral" } });
+        expect(b[0]).toEqual(a[0]);
+        expect(a[1].text).toContain("2026-10-21");
+        expect(b[1].text).toContain("2026-10-22");
+        expect(a[1].cache_control).toBeUndefined();
+    });
+
+    test.each([
+        ["openrouter", "openai/gpt-5"],
+        ["openrouter", "google/gemini-2.5-pro"],
+        ["openrouter", "google/gemini-3-pro-preview"],
+        ["openrouter", "google/gemini-2.0-flash-001"],
+        ["openrouter", "vendor/claude-sonnet-4.6"],
+        ["openrouter", "openrouter/auto"],
+        ["groq", "anthropic/claude-sonnet-4.6"],
+        ["custom-x", "anthropic/claude-sonnet-4.6"],
+    ])("cache_control is absent for %s / %s", async (provider, id) => {
+        respond = () => sse([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]);
+        const def = provider === "custom-x" ? CUSTOM : builtin(provider);
+        await new OpenAICompatProvider(def, FAKE.openrouter).stream(req({ provider, id }, HISTORY, { cacheSystem: true }), () => {});
+        expect(JSON.stringify(seen[0]!.body)).not.toContain('"cache_control"');
+        expect(seen[0]!.body.messages).toEqual(toOpenAIMessages("You are a test.", HISTORY, def));
+    });
+
+    test.each([
+        { details: { cached_tokens: 6000, cache_write_tokens: 2000 }, reportedCost: 0.0123 },
+        { details: { cached_tokens: 6000, cache_write_tokens: 2000 }, reportedCost: undefined },
+        { details: { cached_tokens: 6000 }, reportedCost: undefined },
+        { details: { cache_write_tokens: 2000 }, reportedCost: undefined },
+        { details: undefined, reportedCost: 0 },
+    ])("openrouter: cache usage and cost are accounted for without assuming a one-hour TTL (%j)", async ({ details, reportedCost }) => {
+        respond = () => sse([
+            { choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] },
+            { choices: [], usage: { prompt_tokens: 10000, completion_tokens: 100, prompt_tokens_details: details, cost: reportedCost } },
+        ]);
+        const m: ModelInfo = { provider: "openrouter", id: "anthropic/claude-sonnet-4.6", pricing: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } };
+        const msg = await new OpenAICompatProvider(builtin("openrouter"), FAKE.openrouter).stream(req(m, HISTORY), () => {});
+        const reads = details?.cached_tokens ?? 0;
+        const writes = details?.cache_write_tokens ?? 0;
+        expect(msg.usage).toEqual({ inputTokens: 10000 - reads - writes, outputTokens: 100, cacheReadTokens: reads, cacheWriteTokens: writes, reasoningTokens: undefined, cost: reportedCost });
+        expect(msg.usage!.cacheWrite1hTokens).toBeUndefined();
+        expect(promptTokens(msg.usage!)).toBe(10000);
+        expect(usageCostParts(msg.usage!, m)).toMatchObject({ cacheRead: reads * 0.3 / 1e6, cacheWrite: writes * 3.75 / 1e6 });
+        const cost = costOf(msg.usage!, m);
+        expect(cost.estimated).toBe(reportedCost === undefined);
+        expect(cost.unknown).toBe(false);
+        expect(cost.usd).toBeCloseTo(reportedCost ?? ((10000 - reads - writes) * 3 + 100 * 15 + reads * 0.3 + writes * 3.75) / 1e6, 10);
     });
 
     test("deepseek: reasoning_content streamed, stored, and sent back on the next turn", async () => {
@@ -553,6 +717,112 @@ describe("Chat Completions: streaming", () => {
 });
 
 // ---------------------------------------------------------------------------
+
+describe("Chat Completions: effort discovery", () => {
+    for (const [provider, id] of [
+        ["groq", "openai/gpt-oss-120b"], ["groq", "openai/gpt-oss-20b"],
+        ["together", "openai/gpt-oss-120b"],
+        ["fireworks", "accounts/fireworks/models/gpt-oss-120b"], ["fireworks", "accounts/fireworks/models/gpt-oss-20b"],
+        ["cerebras", "gpt-oss-120b"], ["ollama", "gpt-oss:20b"], ["ollama", "gpt-oss:120b"],
+    ] as const) {
+        test(`${provider} ${id}: discovered levels control the wire request`, async () => {
+            respond = () => Response.json({ data: [{ id }, { id: "llama-plain" }, { id: `${id}-unknown` }] });
+            const client = new OpenAICompatProvider(builtin(provider), undefined);
+            const models = await client.listModels();
+            expect(models[0]).toMatchObject({ supportsReasoning: true, effortLevels: ["low", "medium", "high"] });
+            respond = () => sse([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]);
+            for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
+                await client.stream(req(models[0]!, [], { effort }), () => {});
+                expect(seen.at(-1)!.body.reasoning_effort).toBe(effort === "max" || effort === "xhigh" ? "high" : effort);
+            }
+            for (const model of models.slice(1)) {
+                expect(model.supportsReasoning).not.toBe(true);
+                await client.stream(req(model, [], { effort: "high" }), () => {});
+                expect(seen.at(-1)!.body).not.toHaveProperty("reasoning_effort");
+            }
+        });
+    }
+
+    test("xAI uses advertised levels rather than forwarding max", async () => {
+        respond = () => Response.json({ data: [
+            { id: "grok-4.7", capabilities: { reasoning_effort: ["low", "medium", "high", "xhigh"] } },
+            { id: "grok-4.5", capabilities: { reasoning_effort: ["low", "medium", "high"] } },
+            { id: "no-effort" },
+        ] });
+        const client = new OpenAICompatProvider(builtin("xai"), undefined);
+        const models = await client.listModels();
+        expect(models[0]!.effortLevels).toEqual(["low", "medium", "high", "xhigh"]);
+        expect(models[1]!.effortLevels).toEqual(["low", "medium", "high"]);
+        respond = () => sse([{ choices: [{ delta: {}, finish_reason: "stop" }] }]);
+        for (const [i, expected] of [[0, "xhigh"], [1, "high"], [2, undefined]] as const) {
+            await client.stream(req(models[i]!, [], { effort: "max" }), () => {});
+            expect(seen.at(-1)!.body.reasoning_effort).toBe(expected);
+        }
+    });
+
+    test("custom per-model effort configuration works with listings, appended models and a missing listing", async () => {
+        writeProvidersFile({ custom: [{ id: CUSTOM.id, name: CUSTOM.name, baseUrl: BASE, models: ["configured", "plain"], modelEffortLevels: { configured: ["low", "high"], listed: ["medium", "high"] } }] });
+        try {
+            const def = customProviders()[0]!;
+            for (const status of [200, 404]) {
+                respond = () => status === 200 ? Response.json({ data: [{ id: "listed" }, { id: "openai/gpt-oss-120b" }] }) : new Response("no models", { status });
+                const client = new OpenAICompatProvider(def, undefined);
+                const models = await client.listModels();
+                expect(models.find((m) => m.id === "configured")).toMatchObject({ supportsReasoning: true, effortLevels: ["low", "high"] });
+                respond = () => sse([{ choices: [{ delta: {}, finish_reason: "stop" }] }]);
+                for (const model of models) {
+                    await client.stream(req(model, [], { effort: "max" }), () => {});
+                    expect(seen.at(-1)!.body.reasoning_effort).toBe(["configured", "listed"].includes(model.id) ? "high" : undefined);
+                }
+            }
+        } finally {
+            writeProvidersFile({});
+        }
+    });
+
+    test("LM Studio and arbitrary custom endpoints do not infer effort from model names", async () => {
+        respond = () => Response.json({ data: [{ id: "openai/gpt-oss-20b" }, { id: "deepseek-reasoner" }] });
+        for (const def of [builtin("lmstudio"), CUSTOM]) {
+            expect((await new OpenAICompatProvider(def, undefined).listModels()).some((m) => m.supportsReasoning)).toBe(false);
+        }
+    });
+
+    test("custom configuration changes invalidate clients and every cached model lookup", async () => {
+        const { listAllModels, cachedListings, resolveModelInfo, lookupModel, clientFor, forgetClient } = await import("../src/providers/models");
+        const previousFetch = globalThis.fetch;
+        const bodies: Json[] = [];
+        globalThis.fetch = (async (url, init) => {
+            if (String(url) === "https://gateway.example/v1/models") return Response.json({ data: [{ id: "configured" }] });
+            if (String(url) === "https://gateway.example/v1/chat/completions") {
+                bodies.push(JSON.parse(String(init?.body)));
+                return sse([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]);
+            }
+            return new Response("not configured", { status: 404 });
+        }) as typeof fetch;
+        try {
+            writeProvidersFile({ custom: [{ id: CUSTOM.id, name: CUSTOM.name, baseUrl: "https://gateway.example/v1", requiresKey: false, deepseekCompat: true, modelEffortLevels: { configured: ["low", "high"] } }] });
+            expect(resolveModelInfo(`${CUSTOM.id}:configured`)).toMatchObject({ supportsReasoning: true, effortLevels: ["low", "high"] });
+            await listAllModels({ refresh: true });
+            expect(cachedListings().find((l) => l.provider.id === CUSTOM.id)?.models[0]?.supportsReasoning).toBe(true);
+            const oldClient = await clientFor(CUSTOM.id);
+            writeProvidersFile({ custom: [{ id: CUSTOM.id, name: CUSTOM.name, baseUrl: "https://gateway.example/v1", requiresKey: false }] });
+            expect(cachedListings().find((l) => l.provider.id === CUSTOM.id)).toBeUndefined();
+            expect(resolveModelInfo(`${CUSTOM.id}:configured`)?.supportsReasoning).toBeUndefined();
+            expect((await lookupModel(`${CUSTOM.id}:configured`))?.supportsReasoning).toBeUndefined();
+            const client = await clientFor(CUSTOM.id);
+            expect(client).not.toBe(oldClient);
+            const m = resolveModelInfo(`${CUSTOM.id}:configured`)!;
+            const prior: AssistantMessage = { role: "assistant", provider: CUSTOM.id, model: m.id, content: [{ type: "text", text: "previous" }], raw: { openai: { role: "assistant", content: "previous", reasoning_content: "thought" } } };
+            await client.stream(req(m, [prior], { effort: "high" }), () => {});
+            expect(bodies[0]).not.toHaveProperty("reasoning_effort");
+            expect(bodies[0]!.messages.find((m: Json) => m.role === "assistant")).not.toHaveProperty("reasoning_content");
+        } finally {
+            globalThis.fetch = previousFetch;
+            forgetClient(CUSTOM.id);
+            writeProvidersFile({});
+        }
+    });
+});
 
 describe("Responses API", () => {
     const def = builtin("openai");
@@ -1041,6 +1311,22 @@ describe("quick requests (the auto-mode reviewer's first step)", () => {
         const plain = await ask("claude-sonnet-5-5", {});
         expect(plain.system).toEqual([{ type: "text", text: "You are a test." }]);
         expect(plain.cache_control).toBeUndefined();
+    });
+
+    test("an agent request caches the system prompt up to its session context, and the conversation after it", async () => {
+        const system = "You are a test.\n\n# Notes\nShared.\n\n# Session context\nToday's date: 2026-10-22\n\nAppended.";
+        const agent = await ask("claude-sonnet-5-5", { system, cacheSystem: true, lightweight: false });
+        expect(agent.system).toEqual([
+            { type: "text", text: "You are a test.\n\n# Notes\nShared.", cache_control: { type: "ephemeral" } },
+            { type: "text", text: "# Session context\nToday's date: 2026-10-22\n\nAppended." },
+        ]);
+        expect(agent.cache_control).toEqual({ type: "ephemeral" });
+        // A prompt frozen before it had the section: cached whole.
+        const older = await ask("claude-sonnet-5-5", { system: "You are a test.\n\n# Environment\nToday's date: 2026-10-22", cacheSystem: true, lightweight: false });
+        expect(older.system).toEqual([{ type: "text", text: "You are a test.\n\n# Environment\nToday's date: 2026-10-22", cache_control: { type: "ephemeral" } }]);
+        // Not cached on its own: sent as it is.
+        const uncached = await ask("claude-sonnet-5-5", { system, lightweight: false });
+        expect(uncached.system).toEqual([{ type: "text", text: system }]);
     });
 });
 

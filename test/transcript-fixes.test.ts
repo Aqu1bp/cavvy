@@ -12,10 +12,13 @@ const { Agent } = await import("../src/agent/agent");
 const { Session } = await import("../src/agent/session");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { ProviderError } = await import("../src/providers/types");
-const { stallError } = await import("../src/providers/sse");
-const { httpError } = await import("../src/providers/openai-compat");
+const { stall, stallError } = await import("../src/providers/sse");
+const { OpenAICompatProvider, httpError } = await import("../src/providers/openai-compat");
 const { readSegments, replay, UiLog } = await import("../src/server/history");
 const { formatCost } = await import("../src/providers/pricing");
+const { AnthropicProvider } = await import("../src/providers/anthropic");
+const { OpenAIResponsesProvider } = await import("../src/providers/openai-responses");
+const { BUILTIN_PROVIDERS } = await import("../src/providers/registry");
 import type { ChatRequest, StreamEvent } from "../src/providers/types";
 
 afterAll(cleanup);
@@ -262,6 +265,52 @@ describe("output token limit continuation", () => {
         }
     });
 
+    test("a kept prompt can start a continued answer without moving or splitting it again", async () => {
+        const { Engine } = await import("../src/server/engine");
+        const engine = new Engine({ listModels: async () => [] });
+        const head = "PART-ONE: ```ts\nconst value = ";
+        const tail = "42;\n```";
+        try {
+            const rt = await engine.createSession(realpathSync(tempDir()));
+            await rt.ready;
+            rt.session.setTitle("Kept prompt and continuation");
+            // Two earlier exchanges: auto-compaction needs more than four messages, and this much context is over the threshold.
+            for (const n of [1, 2]) {
+                rt.session.push({ role: "user", content: [{ type: "text", text: `old context ${n} `.repeat(2000) }], meta: { kind: "prompt" } });
+                rt.session.push(text(`old answer ${n}`));
+            }
+            const a = scripted((_req, n, onEvent) => {
+                if (n === 1) return text("Earlier work.");
+                if (n === 3) onEvent({ type: "thinking", text: "finish the answer" });
+                onEvent({ type: "text", text: n === 2 ? head : tail });
+                return { ...reply([...(n === 3 ? [{ type: "thinking", text: "finish the answer" }] : []), { type: "text", text: n === 2 ? head : tail }], n === 2 ? "max_tokens" : "end_turn"), usage: { inputTokens: 9000, outputTokens: 1000 } };
+            }, { session: rt.session, model: { provider: "test", id: "test", contextWindow: 10_000, maxOutput: 1000 }, emit: (e) => (rt as any).onEvent(e) });
+            (a.agent.options.settings() as any).autoCompact = true;
+            Object.assign(rt, { model: a.agent.model, agent: a.agent });
+            await rt.startTurn("write the report");
+            expect(a.requests).toHaveLength(3);
+            expect(a.events.filter((e) => e.type === "compact_end")).toMatchObject([{ kept: true }]);
+            expect(JSON.stringify(a.requests[0]!.messages)).not.toContain("write the report");
+            expect(a.requests[1]!.messages.map((m) => m.role === "user" ? m.meta?.kind : m.role)).toEqual(["summary", "prompt"]);
+            expect(a.requests[2]!.messages.at(-1)).toMatchObject({ role: "user", meta: { kind: "continuation" } });
+            expect(a.events.filter((e) => e.type === "request_start").map((e) => !!e.continuation)).toEqual([false, true]);
+            const check = (turns: ReturnType<typeof reopenTurns>) => {
+                const matches = turns.filter((t) => t.prompt?.text === "write the report");
+                expect(matches).toHaveLength(1);
+                const turn = matches[0]!;
+                expect(turn.pos).toEqual({ seg: 1, index: 1 });
+                expect(turn.prompt?.index).toBe(1);
+                expect(turn.blocks.filter((b) => b.t === "text").map((b) => b.text)).toEqual([head + tail]);
+                expect(turn.blocks.findLastIndex((b) => b.t === "text")).toBeGreaterThan(turn.blocks.findLastIndex((b) => b.t === "thinking"));
+            };
+            check(rt.snapshot().turns);
+            await engine.stop();
+            check(reopenTurns(a.session.path));
+        } finally {
+            await engine.stop();
+        }
+    });
+
     test.each(["error", "stop reason"])("a real context overflow (%s) during continuation still compacts reactively", async (kind) => {
         const a = scripted((_req, n) => {
             if (n === 1) return { ...reply([{ type: "text", text: "PART-ONE " }], "max_tokens"), usage: { inputTokens: 9000, outputTokens: 1000 } };
@@ -274,7 +323,7 @@ describe("output token limit continuation", () => {
         (a.agent.options.settings() as any).autoCompact = true;
         for (const n of [1, 2]) {
             a.session.push({ role: "user", content: [{ type: "text", text: `earlier ${n}` }], meta: { kind: "prompt" } });
-            a.session.push(text(`ok ${n}`));
+            a.session.push(text(`earlier context ${n} `.repeat(100)));
         }
         expect(await a.run("write")).toBe("done");
         expect(a.requests).toHaveLength(4);
@@ -282,6 +331,10 @@ describe("output token limit continuation", () => {
         expect(a.requests[1]!.messages.at(-2)).toMatchObject({ role: "assistant", content: [{ type: "text", text: "PART-ONE " }] });
         expect(a.events.filter((e) => e.type === "compact_start")).toHaveLength(1);
         expect(a.requests[3]!.messages[0]).toMatchObject({ role: "user", meta: { kind: "summary" } });
+        // The continuation isn't a prompt waiting for its answer: it's folded into the summary, not kept after it.
+        expect(JSON.stringify(a.requests[2]!.messages)).toContain("output token limit");
+        expect(a.events.find((e) => e.type === "compact_end")).not.toHaveProperty("kept");
+        expect(a.requests[3]!.messages.map((m) => m.meta?.kind ?? m.role)).toEqual(["summary"]);
     });
 
     test("the GUI Agents panel report uses the complete continued answer", async () => {
@@ -349,7 +402,14 @@ describe("output token limit continuation", () => {
         expect(ant[1]!.content).toEqual(anthropic);
         const chat = toOpenAIMessages("", messages, def);
         expect(chat.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
-        expect(chat[1]).toEqual(openai);
+        expect(chat[1]).toEqual(kind === "thinking" ? { role: "assistant", content: null } : openai);
+        if (kind === "thinking") {
+            // Main strips DeepSeek-only reasoning from standard Chat Completions,
+            // while the DeepSeek dialect preserves it across the same boundary.
+            const deepseek = toOpenAIMessages("", messages, { ...def, deepseekCompat: true });
+            expect(deepseek.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+            expect(deepseek[1]).toEqual(openai);
+        }
         const resp = toResponsesInput(messages, def, "test");
         expect(resp[1]).toEqual(responses[0]);
         for (const wire of [ant, chat, resp]) {
@@ -424,6 +484,49 @@ describe("a request that doesn't answer fails visibly, in bounded time", () => {
         expect(a.requests).toHaveLength(5);
     });
 
+    test("ordinary transient failures remain bounded to ten attempts", async () => {
+        const a = scripted(() => { throw new ProviderError("overloaded", 529, true, 1); });
+        expect(await a.run("hi")).toBe("error");
+        expect(a.requests).toHaveLength(10);
+        expect(a.events.filter((e) => e.type === "retry")).toHaveLength(9);
+    });
+
+    test("retry notices show the wait and cancellation in both interactive UIs, clearing partial output", async () => {
+        const { Runtime } = await import("../src/server/runtime");
+        const { App } = await import("../src/ui/app");
+        const event = { type: "retry", attempt: 1, delayMs: 120_000, reason: "Rate limited" };
+        const ops: any[] = [];
+        const activity: string[] = [];
+        const runtime = { turnId: "turn", responseBlocks: ["partial-text", "partial-tool"], openText: "partial-text", openThinking: "thinking", op: (o: any) => ops.push(o), activity: (label: string) => activity.push(label) };
+        (Runtime.prototype as any).onEvent.call(runtime, event);
+        expect(ops).toEqual(["partial-text", "partial-tool"].map((blockId) => ({ op: "block.remove", turnId: "turn", blockId })));
+        expect(runtime.responseBlocks).toEqual([]);
+        expect(activity[0]).toContain("120s");
+        expect(activity[0]).toContain("Stop to cancel");
+        expect(activity[0]).not.toContain("Esc");
+        const app: any = { md: { hasContent: true }, mdLines: 1, mdSource: "partial", thinking: "partial", receiving: new Map([["tool", {}]]), notice() {}, renderLive() {} };
+        (App.prototype as any).onAgentEvent.call(app, event);
+        expect(app.status).toContain("120s");
+        expect(app.status).not.toContain("Esc");
+        Object.assign(app, { active: new Map(), detached: new Map(), dialogs: [], queued: [], turnStart: Date.now(), turnTokens: 0, streamChars: 0, frame: 0, toolState: { todos: [] } });
+        let binding: string | undefined = "ctrl+x";
+        app.keys = { label: (action: string) => { expect(action).toBe("chat:cancel"); return binding; } };
+        const { stripAnsi } = await import("../src/ui/ansi");
+        const spinner = () => stripAnsi((App.prototype as any).renderActivity.call(app, 160, 40).status[0]);
+        expect(spinner()).toContain("ctrl+x to interrupt");
+        // Queueing after the retry event changes what the same key does.
+        app.queued.push({ text: "next", mode: "queue" });
+        expect(spinner()).not.toContain("to interrupt");
+        expect(spinner()).not.toContain("cancels");
+        expect(spinner()).toContain("ctrl+x to take back the queued message");
+        app.queued = [];
+        binding = undefined;
+        expect(spinner()).not.toContain("to interrupt");
+        expect(spinner()).not.toContain("esc");
+        expect(app.mdSource).toBe("");
+        expect(app.receiving.size).toBe(0);
+    });
+
     test("stopped while it waits to retry: the reason it was retrying is kept with the interrupt", async () => {
         const ac = new AbortController();
         const a = scripted(() => {
@@ -440,6 +543,58 @@ describe("a request that doesn't answer fails visibly, in bounded time", () => {
         ac2.abort();
         await a.run("again", ac2.signal);
         expect(a.session.notices).toHaveLength(1);
+    });
+
+    test.each([120_000, 300_000])("Retry-After %d is honoured and the wait can be cancelled", async (delay) => {
+        const ac = new AbortController();
+        const a = scripted(() => { throw httpError(429, "Too Many Requests", JSON.stringify({ error: { message: "Rate limited" } }), String(delay / 1000), "OpenAI"); });
+        let waited: number | undefined;
+        const original = globalThis.setTimeout;
+        globalThis.setTimeout = ((fn: any, ms: number, ...args: any[]) => {
+            if (ms >= 60_000) { waited = ms; queueMicrotask(() => ac.abort()); }
+            return original(fn, ms, ...args);
+        }) as typeof setTimeout;
+        try {
+            expect(await a.run("hi", ac.signal)).toBe("aborted");
+            expect(waited).toBe(delay);
+            expect(a.events.find((e) => e.type === "retry")?.delayMs).toBe(delay);
+            expect(a.requests).toHaveLength(1);
+        } finally { globalThis.setTimeout = original; }
+    });
+
+    test("Retry-After above five minutes stops and reports the requested wait", async () => {
+        const a = scripted(() => { throw new ProviderError("Service unavailable", 503, true, 600_000); });
+        const ac = new AbortController();
+        const guard = setTimeout(() => ac.abort(), 100);
+        try {
+            expect(await a.run("hi", ac.signal)).toBe("error");
+            expect(a.requests).toHaveLength(1);
+            expect(a.events.filter((e) => e.type === "retry")).toHaveLength(0);
+            expect(a.session.notices[0]?.text).toContain("600s");
+            expect(a.session.notices[0]?.text).toContain("Service unavailable");
+            const { classifyError } = await import("../src/agent/goal");
+            expect(classifyError(a.session.notices[0]!.text)).toBe("limit");
+        } finally { clearTimeout(guard); }
+    });
+
+    test("a long Retry-After is reported even on the last allowed attempt", async () => {
+        const a = scripted((_req, n) => { throw new ProviderError("Rate limited", 429, true, n === 10 ? 600_000 : 1); });
+        expect(await a.run("hi")).toBe("error");
+        expect(a.requests).toHaveLength(10);
+        expect(a.events.filter((e) => e.type === "retry")).toHaveLength(9);
+        expect(a.session.notices[0]?.text).toContain("600s");
+    });
+
+    test("OpenAI quota exhaustion surfaces after one request without retrying", async () => {
+        const a = scripted(() => { throw httpError(429, "Too Many Requests", JSON.stringify({ error: { code: "insufficient_quota", message: "Please check your plan and billing details." } }), "1", "OpenAI"); });
+        const ac = new AbortController();
+        const guard = setTimeout(() => ac.abort(), 100);
+        try {
+            expect(await a.run("hi", ac.signal)).toBe("error");
+            expect(a.requests).toHaveLength(1);
+            expect(a.events.filter((e) => e.type === "retry")).toHaveLength(0);
+            expect(a.session.notices[0]?.text).toMatch(/usage limit.*billing/i);
+        } finally { clearTimeout(guard); }
     });
 
     test("a 429 for a quota of 0 isn't retried; a rate limit is", () => {
@@ -591,7 +746,7 @@ describe("the environment block warns about GNU and bash habits that fail here",
         const saved = process.env.SHELL;
         process.env.SHELL = "/usr/local/bin/fish";
         try {
-            expect(environmentBlock(tempDir(), { provider: "x", id: "y" } as any, false)).toContain(`Shell: ${pickShell()}`);
+            expect(environmentBlock(tempDir(), { provider: "x", id: "y" } as any)).toContain(`Shell: ${pickShell()}`);
             expect(pickShell()).not.toContain("fish");
         } finally {
             process.env.SHELL = saved;
@@ -968,4 +1123,235 @@ test("a failed Edit replays from disk with no diff, as it has none live; a succe
     const [cut] = replay({ segments: [{ messages: stopped }] as any, current: stopped, ui: new UiLog(join(tempDir(), "y.jsonl"), "y", false), meta: (c) => ({ title: c.name, category: "edit" }), newId: () => `j${++n}` })[0]!.blocks.filter((b: any) => b.t === "tool") as any[];
     expect(cut.status).toBe("error");
     expect(cut.diff).toBeUndefined();
+});
+
+describe("provider retry classification", () => {
+    type Json = Record<string, any>;
+    const model = { provider: "anthropic", id: "claude-haiku-5-5" };
+    const prompt = { role: "user" as const, content: [{ type: "text" as const, text: "hi" }] };
+    const req = (m = model, messages = [prompt], extra = {}) => ({ model: m, messages, system: "test", tools: [], ...extra });
+    let respond: () => Response | Promise<Response>;
+    const provider = () => {
+        const p = new AnthropicProvider(BUILTIN_PROVIDERS.find((p) => p.id === "anthropic")!, "test-key");
+        (p as any).client = (p as any).client.withOptions({ fetch: async (_url: unknown, init: RequestInit) => {
+            const response = await new Promise<Response>((resolve, reject) => {
+                const abort = () => reject(new DOMException("Aborted", "AbortError"));
+                if (init.signal?.aborted) return abort();
+                init.signal?.addEventListener("abort", abort, { once: true });
+                Promise.resolve(respond()).then(resolve, reject).finally(() => init.signal?.removeEventListener("abort", abort));
+            });
+            if (!response.body) return response;
+            const reader = response.body.getReader();
+            const signal = init.signal;
+            let abort: () => void;
+            const body = new ReadableStream<Uint8Array>({
+                start(c) {
+                    abort = () => { c.error(new DOMException("Aborted", "AbortError")); void reader.cancel(); };
+                    if (signal?.aborted) abort();
+                    else signal?.addEventListener("abort", abort, { once: true });
+                },
+                async pull(c) {
+                    try {
+                        const { value, done } = await reader.read();
+                        if (signal?.aborted) return;
+                        if (done) { signal?.removeEventListener("abort", abort); c.close(); }
+                        else c.enqueue(value);
+                    } catch (e) { signal?.removeEventListener("abort", abort); c.error(e); }
+                },
+                cancel() { signal?.removeEventListener("abort", abort); return reader.cancel(); },
+            });
+            return new Response(body, response);
+        } });
+        return p;
+    };
+    function sse(items: string[], opts: { pauseMs?: number; pauseAfter?: number } = {}) {
+        let cancelled = false;
+        return new Response(new ReadableStream({
+            async start(c) {
+                for (let i = 0; i < items.length; i++) {
+                    if (cancelled) return;
+                    c.enqueue(new TextEncoder().encode(items[i]));
+                    if (i === opts.pauseAfter) await Bun.sleep(opts.pauseMs!);
+                }
+                if (!cancelled) c.close();
+            },
+            cancel() { cancelled = true; },
+        }), { headers: { "content-type": "text/event-stream" } });
+    }
+    test.each(["code", "type"])("quota exhaustion in error.%s fails immediately in both OpenAI adapters", async (field) => {
+        const message = "You exceeded your current quota, please check your plan and billing details.";
+        respond = () => Response.json({ error: { message, [field]: "insufficient_quota" } }, { status: 429, headers: { "retry-after": "120" } });
+        const original = globalThis.fetch;
+        globalThis.fetch = (async () => respond()) as typeof fetch;
+        try {
+            const def = BUILTIN_PROVIDERS.find((p) => p.id === "openai")!;
+            for (const provider of [new OpenAICompatProvider(def, "test-key"), new OpenAIResponsesProvider(def, "test-key")]) {
+                const err = await provider.stream(req(model, []), () => {}).catch((e) => e);
+                expect(err).toBeInstanceOf(ProviderError);
+                expect(err.retryable).toBe(false);
+                expect(err.message).toContain(message);
+                expect(err.message).toMatch(/usage limit.*billing/i);
+            }
+        } finally { globalThis.fetch = original; }
+    });
+
+    test("streamed quota failures get billing guidance, while rate limits stay retryable", async () => {
+        const original = globalThis.fetch;
+        const def = BUILTIN_PROVIDERS.find((p) => p.id === "openai")!;
+        const responses = new OpenAIResponsesProvider(def, "test-key");
+        const compat = new OpenAICompatProvider(def, "test-key");
+        try {
+            for (const code of ["insufficient_quota", "rate_limit_exceeded"]) {
+                const error = { code, message: "Provider explanation" };
+                for (const [p, event] of [
+                    [responses, { type: "response.failed", response: { error } }],
+                    [responses, { type: "error", ...error }],
+                    [responses, { type: "error", error }],
+                    [compat, { error: { ...error, code: 429, type: code } }],
+                ] as const) {
+                    globalThis.fetch = (async () => sse([`data: ${JSON.stringify(event)}\n\n`])) as typeof fetch;
+                    const err = await p.stream(req(), () => {}).catch((e) => e);
+                    expect(err.retryable).toBe(code !== "insufficient_quota");
+                    expect(err.message).toContain("Provider explanation");
+                    if (code === "insufficient_quota") expect(err.message).toMatch(/usage limit.*billing/i);
+                }
+            }
+        } finally { globalThis.fetch = original; }
+    });
+
+    test("explicit billing exhaustion without a code is fatal; a temporary quota remains retryable", () => {
+        const error = (message: string) => httpError(429, "Too Many Requests", JSON.stringify({ error: { message } }), null, "P");
+        expect(error("Your credit balance is too low. Please purchase credits.").retryable).toBe(false);
+        expect(error("You exceeded your current quota, please check your plan and billing details.").retryable).toBe(true);
+        expect(error("Token quota exceeded for this minute; try again later.").retryable).toBe(true);
+        expect(httpError(429, "Too Many Requests", JSON.stringify({ error: { status: "RESOURCE_EXHAUSTED", message: "Quota exceeded" } }), null, "Google Gemini").retryable).toBe(true);
+        expect(httpError(402, "Payment Required", JSON.stringify({ error: { message: "Not enough credits" } }), null, "OpenRouter").retryable).toBe(false);
+    });
+
+    test.each(["object", "array", "string-wrapped"])("Gemini per-minute quotas remain retryable: %s", (shape) => {
+        const message = "You exceeded your current quota, please check your plan and billing details.\n* Quota exceeded for metric: generate_content_free_tier_input_token_count, limit: 250000\nPlease retry in 33.9s.";
+        const error = { code: 429, message, status: "RESOURCE_EXHAUSTED", details: [
+            { "@type": "type.googleapis.com/google.rpc.QuotaFailure", violations: [{ quotaId: "GenerateContentInputTokensPerModelPerMinute-FreeTier" }] },
+            { "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "33s" },
+        ] };
+        const body = shape === "array" ? [{ error }] : shape === "string-wrapped" ? { error: { message: `litellm.RateLimitError: GeminiException - ${JSON.stringify({ error })}`, type: "throttling_error", code: "429" } } : { error };
+        const e = httpError(429, "Too Many Requests", JSON.stringify(body), "33.9", "Google Gemini");
+        expect(e.retryable).toBe(true);
+        expect(e.retryAfterMs).toBe(33_900);
+        expect(e.message).toContain("Please retry in 33.9s");
+        expect(e.message).not.toContain("Usage limit / billing:");
+    });
+
+    test.each([
+        { details: [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "30s" }] },
+        { message: "Your credit balance is too low. Please retry in 30s." },
+        { details: [{ violations: [{ quotaId: "RequestsPerMinute" }] }] },
+        { details: [{ violations: [{ quotaId: "RequestsPerDay" }] }] },
+    ])("retry guidance overrides permanent-quota heuristics: %p", (hint) => {
+        const body = JSON.stringify({ error: { code: "insufficient_quota", message: "Your credit balance is too low.", ...hint } });
+        expect(httpError(429, "Too Many Requests", body, "30", "Gateway").retryable).toBe(true);
+    });
+
+    const ev = (type: string, data: Json = {}) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+    const prefix = [
+        ev("message_start", { message: { id: "msg_retry", type: "message", role: "assistant", model: "claude-haiku-5-5", content: [], stop_reason: null, usage: { input_tokens: 10, output_tokens: 1 } } }),
+        ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } }),
+        ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: "partial" } }),
+    ].join("");
+    const suffix = ev("content_block_stop", { index: 0 }) + ev("message_delta", { delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } }) + ev("message_stop");
+    const run = (signal?: AbortSignal, on: (e: StreamEvent) => void = () => {}) => provider().stream(req({ provider: "anthropic", id: "claude-haiku-5-5" }, [prompt], { signal }), on);
+
+    test("premature EOF discards the incomplete message and is retryable", async () => {
+        respond = () => new Response(prefix, { headers: { "content-type": "text/event-stream" } });
+        const err = await run().catch((e) => e);
+        expect(err).toBeInstanceOf(ProviderError);
+        expect(err.retryable).toBe(true);
+    });
+
+    test("the agent retries an incomplete tool response without saving or executing it", async () => {
+        let calls = 0;
+        const partialTool = ev("content_block_stop", { index: 0 })
+            + ev("content_block_start", { index: 1, content_block: { type: "tool_use", id: "discarded-tool", name: "Write", input: {} } })
+            + ev("content_block_delta", { index: 1, delta: { type: "input_json_delta", partial_json: '{"file_path":"/tmp/unwanted"' } });
+        respond = () => sse(++calls === 1 ? [prefix, partialTool] : [prefix.replace("partial", "complete"), suffix]);
+        const p = provider();
+        const a = scripted((req, _n, on) => p.stream(req, on), { model });
+        expect(await a.run("hi")).toBe("done");
+        expect(calls).toBe(2);
+        expect(a.requests[1]!.messages).toEqual(a.requests[0]!.messages);
+        expect(a.events.filter((e) => e.type === "retry")).toHaveLength(1);
+        expect(a.events.some((e) => e.type === "tool_start")).toBe(false);
+        expect(a.session.messages.filter((m: any) => m.role === "assistant").map((m: any) => m.content)).toEqual([[{ type: "text", text: "complete" }]]);
+        expect(JSON.stringify(a.session.messages)).not.toContain("discarded-tool");
+    });
+
+    test.each(["120", new Date(Date.now() + 120_000).toUTCString()])("Anthropic preserves Retry-After seconds and dates: %s", async (retryAfter) => {
+        respond = () => Response.json({ type: "error", error: { type: "rate_limit_error", message: "slow down" } }, { status: 429, headers: { "retry-after": retryAfter } });
+        const err = await run().catch((e) => e);
+        expect(err.retryable).toBe(true);
+        expect(err.retryAfterMs).toBeGreaterThan(110_000);
+        expect(err.retryAfterMs).toBeLessThanOrEqual(120_000);
+    });
+
+    test("a socket drop during the response is retryable", async () => {
+        // Exercise the real SDK reader with a failing body, without depending on TCP buffering.
+        const p = provider();
+        (p as any).client = (p as any).client.withOptions({ fetch: async () => new Response(new ReadableStream({
+            start(c) { c.enqueue(new TextEncoder().encode(prefix)); },
+            pull(c) { c.error(new Error("The socket connection was closed unexpectedly")); },
+        }), { headers: { "content-type": "text/event-stream" } }) });
+        const err = await p.stream(req({ provider: "anthropic", id: "claude-haiku-5-5" }, [prompt]), () => {}).catch((e) => e);
+        expect(err).toBeInstanceOf(ProviderError);
+        expect(err.retryable).toBe(true);
+        expect(err.message).toContain("socket connection");
+    });
+
+    test.each([false, true])("a stalled Anthropic request is bounded (headers received: %s)", async (headers) => {
+        const previous = stall.ms;
+        stall.ms = 50;
+        const ac = new AbortController();
+        const guard = setTimeout(() => ac.abort(), 800);
+        respond = headers ? () => sse([prefix, suffix], { pauseAfter: 0, pauseMs: 1500 }) : async () => { await Bun.sleep(1500); return sse([prefix, suffix]); };
+        try {
+            const err = await run(ac.signal).catch((e) => e);
+            expect(err).toBeInstanceOf(ProviderError);
+            expect(err.retryable).toBe(true);
+            expect(err.stalled).toBe(true);
+        } finally {
+            clearTimeout(guard);
+            stall.ms = previous;
+        }
+    });
+
+    test("keep-alive pings reset the Anthropic stall timer", async () => {
+        const previous = stall.ms;
+        stall.ms = 150;
+        respond = () => new Response(new ReadableStream({ async start(c) {
+            const enc = new TextEncoder();
+            c.enqueue(enc.encode(prefix));
+            for (let i = 0; i < 5; i++) { await Bun.sleep(50); c.enqueue(enc.encode(ev("ping"))); }
+            c.enqueue(enc.encode(suffix));
+            c.close();
+        } }), { headers: { "content-type": "text/event-stream" } });
+        try { expect((await run()).content).toEqual([{ type: "text", text: "partial" }]); }
+        finally { stall.ms = previous; }
+    });
+
+    test("user cancellation is not retried or classified as a stall", async () => {
+        respond = () => sse([prefix, suffix], { pauseAfter: 0, pauseMs: 1000 });
+        const ac = new AbortController();
+        const err = await run(ac.signal, (e) => { if (e.type === "text") ac.abort(); }).catch((e) => e);
+        expect(err).toBeInstanceOf(ProviderError);
+        expect(err.message).toBe("aborted");
+        expect(err.retryable).toBe(false);
+        expect(err.stalled).not.toBe(true);
+    });
+
+    test("authentication errors remain fatal and overload remains retryable", async () => {
+        respond = () => Response.json({ type: "error", error: { type: "authentication_error", message: "bad key" } }, { status: 401 });
+        expect((await run().catch((e) => e)).retryable).toBe(false);
+        respond = () => sse([ev("error", { error: { type: "overloaded_error", message: "overloaded" } })]);
+        expect((await run().catch((e) => e)).retryable).toBe(true);
+    });
+
 });

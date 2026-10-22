@@ -283,7 +283,7 @@ async function readDoc(file: string, size: number, mtimeMs: number, ctl: Control
                 if (prefix.startsWith(MSG_PREFIX) && whole) count++;
                 return;
             }
-            let l: { t?: string; m?: Message; cwd?: unknown; title?: unknown; count?: unknown };
+            let l: { t?: string; m?: Message; cwd?: unknown; title?: unknown; count?: unknown; kept?: unknown };
             try {
                 l = JSON.parse(line);
             } catch {
@@ -307,6 +307,12 @@ async function readDoc(file: string, size: number, mtimeMs: number, ctl: Control
             } else if (l.t === "meta" && typeof l.cwd === "string") doc.cwd = l.cwd;
             else if (l.t === "title" && typeof l.title === "string") doc.title = l.title;
             else if (l.t === "compact") {
+                // A prompt it kept is shown where it went on (replay), and found there.
+                if (l.kept === true) {
+                    const moved = count - 1;
+                    doc.entries = doc.entries.filter((e) => e.seg !== seg || e.index !== moved);
+                    doc.starts = doc.starts.filter((t) => t.seg !== seg || t.index !== moved);
+                }
                 seg++;
                 count = 0;
             } else if (l.t === "rewind" && typeof l.count === "number") {
