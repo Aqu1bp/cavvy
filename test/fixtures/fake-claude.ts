@@ -1058,6 +1058,13 @@ for await (const chunk of Bun.stdin.stream()) {
                 out({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response: { added: [...mcpServers.keys()], removed: [], errors } } });
             } else if (sub === "stop_task") {
                 if (process.env.FAKE_STOP_TASK === "hang") continue;
+                // ends-first: the task finished by itself as the stop came; the stop is refused (nothing left to stop).
+                if (process.env.FAKE_STOP_TASK === "ends-first") {
+                    const t = bgTasks.get(m.request.task_id);
+                    if (t) finishTask(t.task_id, t.description);
+                    out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: `No running task ${m.request.task_id}` } });
+                    continue;
+                }
                 if (process.env.FAKE_STOP_TASK === "complete-exit") {
                     bgTasks.delete(m.request.task_id);
                     backgroundChanged();

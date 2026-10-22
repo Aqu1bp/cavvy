@@ -132,6 +132,11 @@ function dueLabel(t: BackgroundTaskInfo, ended: "done" | "failed" | "stopped"): 
     return `${t.kind === "agent" ? "Background sub-agent" : t.kind === "monitor" ? "Monitor" : "Background command"} ${ended === "failed" ? "failed" : "finished"}: ${t.label}`;
 }
 
+/** An end said again otherwise (done, then failed): a revised outcome. A stop's is final, and nothing is revised to one. */
+function revises(was: Pick<BackgroundTaskInfo, "status">, now: Pick<BackgroundTaskInfo, "status">): boolean {
+    return was.status !== "running" && was.status !== "stopped" && now.status !== "running" && now.status !== "stopped" && now.status !== was.status;
+}
+
 function taskKind(type: string, agent: boolean): BackgroundTaskInfo["kind"] {
     if (agent || type === "local_agent") return "agent";
     if (type === "local_bash") return "shell";
@@ -326,7 +331,13 @@ export class ClaudeConnection implements CliConnection {
         }
         if (this.cur?.ref !== ref) return;
         const left = this.runningAgents();
-        if (left.length) this.emit({ type: "notice", level: "warn", message: `${this.sendNowCap ? "Claude Code couldn't stop the turn on its own" : "This Claude Code version can't stop a turn without stopping its background sub-agents"}: ${describeBackground(left.map((t) => ({ agent: true, label: t.label })))} ${left.length === 1 ? "stops" : "stop"} with it. Background commands and monitors keep running.` });
+        if (left.length) {
+            // A plain interrupt stops the background sub-agents too (Claude Code 2.1.304): the user's Esc stopped them.
+            for (const t of left) this.escStopped.add(t.id);
+            const what = describeBackground(left.map((t) => ({ agent: true, label: t.label })));
+            const why = this.sendNowCap ? "Claude Code couldn't stop the turn on its own" : "this Claude Code version can't stop a turn without them";
+            this.emit({ type: "notice", level: "warn", message: `Stopped ${what} when you pressed Esc (${why}). ${left.length === 1 ? "It won't" : "They won't"} report back. Background commands and monitors keep running.` });
+        }
         liveDebug("interrupt", { ref, agents: left.length });
         void this.control({ subtype: "interrupt" });
     }
@@ -774,14 +785,20 @@ export class ClaudeConnection implements CliConnection {
 
     // ---- background tasks
 
+    /** Background sub-agents the user's Esc stopped with a plain interrupt: their end is theirs. */
+    private escStopped = new Set<string>();
+
     private runningAgents(): BackgroundTaskInfo[] {
         return [...this.tasks.values()].filter((t) => t.status === "running" && t.kind === "agent");
     }
 
     private reportTask(task: BackgroundTaskInfo, wakeDue?: boolean) {
+        // Stopped by the plain interrupt of the user's Esc: theirs, no news to them.
+        if (task.status === "stopped" && this.escStopped.delete(task.id)) task = { ...task, byUser: true };
+        else if (task.status !== "running") this.escStopped.delete(task.id);
         const was = this.tasks.get(task.id);
-        // One that ended stays ended, unless Claude Code lists it again (an id reused).
-        if (was && was.status !== "running" && task.status !== "running") return;
+        // One that ended stays ended, unless Claude Code lists it again (an id reused), or says it ended otherwise.
+        if (was && was.status !== "running" && task.status !== "running" && !revises(was, task)) return;
         this.tasks.set(task.id, task);
         this.events({ t: "task", task, ...(wakeDue === undefined ? {} : { wakeDue }) });
     }
@@ -811,7 +828,12 @@ export class ClaudeConnection implements CliConnection {
         const timer = this.unlisted.get(id);
         if (timer) clearTimeout(timer);
         this.unlisted.delete(id);
-        if (!t || t.status !== "running") return;
+        if (!t) return;
+        // Said to have ended, then to have ended otherwise (a sub-agent done, then failed after all): so it did (#282).
+        if (t.status !== "running") {
+            if (revises(t, { status })) this.reportTask({ ...t, status });
+            return;
+        }
         this.reportTask({ ...t, status, endedAt: Date.now() }, wakeDue);
     }
 
@@ -1557,7 +1579,7 @@ export class ClaudeLive {
         this.accountWatches.get(key)?.();
         this.accountWatches.delete(key);
         const live = this.get(key);
-        // Its host still hears what stops with it (its background tasks, as lost).
+        // Its host still hears what stops with it (its background tasks, stopped with the process).
         await this.pool.release(key, this.provider.id);
         if (live) this.bound.delete(live);
         if (!this.get(key)) this.hosts.delete(key);

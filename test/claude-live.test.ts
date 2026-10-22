@@ -243,8 +243,10 @@ describe("Esc stops only the answer", () => {
         ac.abort();
         expect(await done).toBe("aborted");
         expect(controls("interrupt")).toEqual([{ subtype: "interrupt" }]);
-        expect(notices(events).join("\n")).toMatch(/can't stop a turn without stopping its background sub-agents: 1 background sub-agent \(Map auth\) stops with it/);
+        expect(notices(events)).toContain("warn: Stopped 1 background sub-agent (Map auth) when you pressed Esc (this Claude Code version can't stop a turn without them). It won't report back. Background commands and monitors keep running.");
         await until(() => agent.backgroundTasks().find((t) => t.kind === "agent")?.status === "stopped", 3000, "the sub-agent stopped");
+        // The user's stop: its end is no news to them.
+        expect(agent.backgroundTasks().find((t) => t.kind === "agent")).toMatchObject({ status: "stopped", byUser: true });
     });
 
     test("Esc while nothing runs sends nothing, and the background Agent keeps running", async () => {
@@ -350,6 +352,33 @@ describe("background work across turns", () => {
         expect(r["background-1"]).toBe("stopped");
         await until(() => agent.backgroundTasks().every((t) => t.status !== "running"), 3000, "both ended");
         await until(() => wakes.length >= 1, 3000, "a report");
+    });
+
+    test("a task that finishes by itself as its stop goes out: the stop is refused, its own end stands, and its report comes", async () => {
+        process.env.FAKE_SCENARIO = "two-shells";
+        process.env.FAKE_SHELL_MS = "60000";
+        process.env.FAKE_STOP_TASK = "ends-first";
+        const { run, agent, wakes } = await makeAgent();
+        expect(await run("start two")).toBe("done");
+        // Refused because it had ended by itself: "ended" (#282 round 3).
+        expect(await agent.stopBackground(["background-1"])).toEqual({ "background-1": "ended" });
+        expect(agent.backgroundTasks().find((t) => t.id === "background-1")).toMatchObject({ status: "done" });
+        expect(agent.backgroundTasks().find((t) => t.id === "background-1")?.byUser).toBeUndefined();
+        await until(() => wakes.length > 0, 5000, "its report");
+        expect(wakes[0]!.label).toBe("Background command finished: Check background-1");
+    });
+
+    test("a sub-agent said to be done, then to have failed: the session follows the revised outcome", async () => {
+        process.env.FAKE_SCENARIO = "agent-fails-later";
+        const { run, agent, background } = await makeAgent();
+        const seen: string[] = [];
+        background.onChange(() => {
+            const t = agent.backgroundTasks().find((x) => x.kind === "agent");
+            if (t && seen.at(-1) !== t.status) seen.push(t.status);
+        });
+        expect(await run("map auth in the background")).toBe("done");
+        await until(() => agent.backgroundTasks().find((t) => t.kind === "agent")?.status === "failed", 3000, "the revised outcome");
+        expect(seen.slice(-2)).toEqual(["done", "failed"]);
     });
 
     test("two wakes at once: each is its own turn, adopted in order", async () => {
@@ -492,14 +521,14 @@ describe("background work across turns", () => {
 });
 
 describe("the process: crashes, restarts, settings", () => {
-    test("a crash mid-turn ends it with an error, marks its background work lost, and the next turn resumes on a new process", async () => {
+    test("a crash mid-turn ends it with an error, its background work stopped with the process, and the next turn resumes on a new process", async () => {
         process.env.FAKE_SCENARIO = "agent-background-hang";
         process.env.FAKE_BACKGROUND_MS = "60000";
         process.env.FAKE_EXIT_AFTER_MS = "1500";
         const { run, events, agent } = await makeAgent();
         expect(await run("go")).toBe("error");
         expect(notices(events).join("\n")).toMatch(/Claude Code stopped/);
-        expect(agent.backgroundTasks().find((t) => t.kind === "agent")).toMatchObject({ status: "stopped", lost: true });
+        expect(agent.backgroundTasks().find((t) => t.kind === "agent")).toMatchObject({ status: "stopped", withProcess: true });
         delete process.env.FAKE_EXIT_AFTER_MS;
         process.env.FAKE_SCENARIO = "silent";
         expect(await run("again")).toBe("done");
@@ -509,14 +538,14 @@ describe("the process: crashes, restarts, settings", () => {
         expect(s[1].pid).not.toBe(s[0].pid);
     });
 
-    test("a crash while idle marks its background work lost; the next turn resumes", async () => {
+    test("a crash while idle: its background work stopped with the process; the next turn resumes", async () => {
         process.env.FAKE_SCENARIO = "two-shells";
         process.env.FAKE_SHELL_MS = "60000";
         process.env.FAKE_EXIT_IDLE_MS = "200";
         const { run, agent, events } = await makeAgent();
         expect(await run("start two")).toBe("done");
         await until(() => agent.backgroundTasks().every((t) => t.status !== "running"), 5000, "the tasks lost");
-        expect(agent.backgroundTasks().every((t) => t.lost)).toBe(true);
+        expect(agent.backgroundTasks().every((t) => t.withProcess)).toBe(true);
         delete process.env.FAKE_EXIT_IDLE_MS;
         process.env.FAKE_SCENARIO = "silent";
         expect(await run("again")).toBe("done");
@@ -524,13 +553,13 @@ describe("the process: crashes, restarts, settings", () => {
         expect(notices(events).join("\n")).not.toMatch(/error/);
     });
 
-    test("Harness quitting with background work: it stops with the process, as lost; the next run resumes the session", async () => {
+    test("Harness quitting with background work: it stops with the process; the next run resumes the session", async () => {
         process.env.FAKE_SCENARIO = "two-shells";
         process.env.FAKE_SHELL_MS = "60000";
         const first = await makeAgent();
         expect(await first.run("start two")).toBe("done");
         await first.client.shutdown();
-        expect(first.agent.backgroundTasks().every((t) => t.status === "stopped" && t.lost)).toBe(true);
+        expect(first.agent.backgroundTasks().every((t) => t.status === "stopped" && t.withProcess)).toBe(true);
         forgetClient("claude-code");
         process.env.FAKE_SCENARIO = "silent";
         const second = await makeAgent({ session: first.session });
