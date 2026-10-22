@@ -57,7 +57,7 @@ import { redact } from "../util/redact";
 import type { Skill } from "./skills";
 import { claudeAgents } from "../backends/claude-agents";
 import { isAgentBackend, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "../backends/types";
-import { getProvider } from "../providers/registry";
+import { getProvider, imageTypesOf } from "../providers/registry";
 import { ACCOUNT_PROVIDERS, account, accountRealPath } from "../providers/accounts";
 import { forBackend, pastedTexts, readsPdf } from "../providers/files";
 import { fitContent, fitToolImages, hasImages, imagesFor } from "../providers/images";
@@ -577,7 +577,8 @@ export class Agent {
     private sendable(messages: Message[]): Promise<Message[]> {
         const model = modelRef(this.model);
         const refusing = this.refusing?.model === model ? this.refusing.messages : undefined;
-        return imagesFor(messages, { readsImages: this.model.supportsImages !== false, refused: (m) => Boolean(refusing?.has(m) || (m.role === "user" && m.meta?.imagesRefused?.includes(model))) });
+        const def = getProvider(this.model.provider);
+        return imagesFor(messages, { readsImages: this.model.supportsImages !== false, types: imageTypesOf(def), maxBase64: def?.imageBase64PerRequest, refused: (m) => Boolean(refusing?.has(m) || (m.role === "user" && m.meta?.imagesRefused?.includes(model))) });
     }
 
     private request(messages: Message[], signal: AbortSignal, extra: Partial<ChatRequest> = {}): ChatRequest {
@@ -633,6 +634,9 @@ export class Agent {
             }
             return reason;
         } finally {
+            // A refusal is kept only once the retry is answered. A turn that ends first (stopped, max turns, an error) keeps
+            // nothing out: a compaction or another request after it sends the images again.
+            this.refusing = undefined;
             await this.turnSnapshots?.end();
             opts.signal.removeEventListener("abort", onAbort);
             this.running = false;

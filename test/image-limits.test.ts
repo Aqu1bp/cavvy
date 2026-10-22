@@ -145,14 +145,14 @@ function scripted(replies: Reply[]) {
     return { client, requests };
 }
 
-function agentWith(o: { client: unknown; proj?: string; session?: InstanceType<typeof Session>; supportsImages?: boolean; tools?: unknown[]; allow?: string[] }) {
+function agentWith(o: { client: unknown; proj?: string; session?: InstanceType<typeof Session>; supportsImages?: boolean; tools?: unknown[]; allow?: string[]; maxTurns?: number; provider?: string }) {
     const proj = o.proj ?? tempDir();
     const settings = { autoCompact: false, permissions: { allow: o.allow ?? [] } } as never;
     const session = o.session ?? Session.create(proj, { persist: false });
     const notices: string[] = [];
     const agent = new Agent({
         session,
-        model: { provider: "test", id: "test", ...(o.supportsImages !== undefined ? { supportsImages: o.supportsImages } : {}) } as never,
+        model: { provider: o.provider ?? "test", id: "test", ...(o.supportsImages !== undefined ? { supportsImages: o.supportsImages } : {}) } as never,
         client: o.client as never,
         settings: () => settings,
         checker: new PermissionChecker(() => settings, proj),
@@ -160,6 +160,7 @@ function agentWith(o: { client: unknown; proj?: string; session?: InstanceType<t
         mode: { get: () => "default", set() {} },
         toolState: { cwd: proj, projectRoot: proj, fileState: new Map(), todos: [], shells: new Map() } as never,
         host: { emit: (e: { type: string; message?: string }) => e.type === "notice" && notices.push(e.message ?? ""), ui: {}, askPermission: async () => ({ allow: false }) } as never,
+        ...(o.maxTurns !== undefined ? { maxTurns: o.maxTurns } : {}),
     });
     return { agent, session, notices, proj };
 }
@@ -217,16 +218,30 @@ describe("fitting one image", () => {
             restore();
         }
     });
-    test("transparent and too heavy: re-encoded keeping its transparency (a WebP, not a JPEG that turns it black)", async () => {
+    test("transparent and too heavy: re-encoded as a PNG that keeps its transparency (not a JPEG that turns it black, nor a WebP xAI doesn't take)", async () => {
         const clear = part(transparentPng(2000, 2000));
         expect(clear.data.length).toBeGreaterThan(IMAGE_BASE64);
         expect(await alphaAt(clear, 10, 10)).toBe(0);
-        const fitted = (await fitImage(clear))!;
-        expect(fitted.mediaType).toBe("image/webp");
-        expect(fitted.data.length).toBeLessThanOrEqual(IMAGE_BASE64);
-        expect(await alphaAt(fitted, 10, 10)).toBe(0);
-        expect(await alphaAt(fitted, 1990, 10)).toBe(255);
-    }, 30_000);
+        for (const types of [undefined, ["image/png", "image/jpeg"]]) {
+            const fitted = (await fitImage(clear, types))!;
+            expect(fitted.mediaType).toBe("image/png");
+            expect(fitted.data.length).toBeLessThanOrEqual(IMAGE_BASE64);
+            expect(longSide(fitted)).toBeLessThanOrEqual(IMAGE_SIDE);
+            expect(await alphaAt(fitted, 10, 10)).toBe(0);
+            expect(await alphaAt(fitted, longSide(fitted) - 10, 10)).toBe(255);
+        }
+    }, 60_000);
+    test("a type the provider doesn't take is re-encoded as a PNG; one it takes goes as it is", async () => {
+        const webp = part(await new Bun.Image(png(300, 200)).webp({ quality: 80 }).bytes(), "image/webp");
+        const gif = part(Buffer.from("R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==", "base64"), "image/gif");
+        expect(await fitImage(webp)).toBe(webp);
+        expect(await fitImage(gif)).toBe(gif);
+        for (const p of [webp, gif]) {
+            const out = (await fitImage(p, ["image/png", "image/jpeg"]))!;
+            expect(out.mediaType).toBe("image/png");
+            expect(sizeOf(out)).toEqual(sizeOf(p));
+        }
+    });
     test("decoding is bounded: an image over IMAGE_PIXELS isn't decoded at all, and a batch is decoded one image at a time", async () => {
         // A header claiming 8000×7000 (56 megapixels): 200 MB and more to decode, whatever the file's size.
         const huge = png(8000, 10);
@@ -342,6 +357,35 @@ describe("Anthropic's many-image rule", () => {
     }, 60_000);
 });
 
+describe("each provider is sent the image types its docs list", () => {
+    test("a pasted WebP goes to xAI (JPEG and PNG only) as a PNG, and to Anthropic as it is; the transcript keeps the WebP", async () => {
+        const webp = part(await new Bun.Image(png(300, 200)).webp({ quality: 80 }).bytes(), "image/webp");
+        const { client, requests } = scripted([{ text: "seen" }, { text: "seen too" }]);
+        const { agent, session } = agentWith({ client, provider: "xai" });
+        await run(agent, [{ type: "text", text: "look" }, webp]);
+        const sent = imagesIn(requests[0]!);
+        expect(sent.map((p) => p.mediaType)).toEqual(["image/png"]);
+        expect(sizeOf(sent[0]!)).toEqual({ width: 300, height: 200 });
+        // xAI's own serialization carries the PNG.
+        expect(JSON.stringify(toOpenAIMessages("", requests[0]!, getProvider("xai")!))).toContain("data:image/png;base64,");
+        agent.setModel({ provider: "anthropic", id: "test" } as never, client as never);
+        await run(agent, [{ type: "text", text: "and now?" }]);
+        expect(imagesIn(requests[1]!)).toEqual([webp]);
+        expect(imagesIn(session.messages)).toEqual([webp]);
+    });
+    test("Fireworks caps a request's images in total: the newest within it go, an older one gets a note", async () => {
+        const { client, requests } = scripted([]);
+        const { agent } = agentWith({ client, provider: "fireworks" });
+        const shots = [png(1000, 1000, true), png(1000, 1000, true), png(1000, 1000, true)].map((b) => part(b));
+        expect(shots.every((p) => p.data.length > 3_500_000 && p.data.length <= IMAGE_BASE64)).toBe(true);
+        for (const [i, shot] of shots.entries()) await run(agent, [{ type: "text", text: `shot ${i}` }, shot]);
+        expect(requests.map((r) => imagesIn(r).length)).toEqual([1, 2, 2]);
+        expect(imagesIn(requests[2]!)).toEqual([shots[1], shots[2]]);
+        expect(textOf(requests[2]!)).toContain("the provider takes a limited total of image data in a request");
+        expect(requests.every((r) => imagesIn(r).reduce((n, p) => n + p.data.length, 0) <= getProvider("fireworks")!.imageBase64PerRequest!)).toBe(true);
+    }, 30_000);
+});
+
 describe("models known to be text-only", () => {
     const history = async (supportsImages: boolean | undefined) => {
         const proj = tempDir();
@@ -425,6 +469,32 @@ describe("a request refused for its images", () => {
         expect(await run(agent, [{ type: "text", text: "again" }])).toBe("done");
         expect(requests.map((r) => imagesIn(r).length)).toEqual([1, 0, 1]);
         expect(session.messages.some((m) => m.role === "user" && m.meta?.imagesRefused)).toBe(false);
+    });
+    test("a turn that ends before the retry is answered (stopped, or at max turns) keeps nothing out: a compaction after it still sends the image", async () => {
+        // Stopped while the retry without images is under way.
+        const ac = new AbortController();
+        const requests: Message[][] = [];
+        const replies: Array<() => unknown> = [
+            () => { throw tooBig(); },
+            () => { ac.abort(); throw Object.assign(new Error("aborted"), { name: "AbortError" }); },
+            () => ({ role: "assistant", provider: "test", model: "test", stopReason: "end_turn", content: [{ type: "text", text: "1. Primary request: look" }] }),
+        ];
+        const client = { stream: async (req: { messages: Message[] }) => (requests.push(req.messages), replies[requests.length - 1]!()) };
+        const { agent, session } = agentWith({ client });
+        expect(await agent.run([{ type: "text", text: "look" }, part(png(100, 100))], { signal: ac.signal })).toBe("aborted");
+        // Something to summarize past the prompt.
+        session.push({ role: "assistant", provider: "test", model: "test", stopReason: "end_turn", content: [{ type: "text", text: "ok" }] } as never);
+        expect(await agent.compact({ auto: false, signal: new AbortController().signal })).toBe(true);
+        expect(requests.map((r) => imagesIn(r).length)).toEqual([1, 0, 1]);
+        expect(session.messages.some((m) => m.role === "user" && m.meta?.imagesRefused)).toBe(false);
+
+        // Out of model turns straight after the refusal.
+        const capped = scripted([tooBig(), { text: "1. Primary request: look" }]);
+        const second = agentWith({ client: capped.client, maxTurns: 1 });
+        expect(await run(second.agent, [{ type: "text", text: "look" }, part(png(100, 100))])).toBe("max_turns");
+        second.session.push({ role: "assistant", provider: "test", model: "test", stopReason: "end_turn", content: [{ type: "text", text: "ok" }] } as never);
+        expect(await second.agent.compact({ auto: false, signal: new AbortController().signal })).toBe(true);
+        expect(capped.requests.map((r) => imagesIn(r).length)).toEqual([1, 1]);
     });
     test("refused by one model only: a model that reads images is sent them again, the one that refused isn't", async () => {
         const noImages = () => new ProviderError("No endpoints found that support image input", 404);
