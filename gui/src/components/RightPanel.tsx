@@ -67,7 +67,8 @@ function WorkspaceButton(p: { handle: SessionHandle }) {
     );
 }
 
-type Listed = { path: string; change: Change; added: number; removed: number; kind?: GitFileDiff["kind"]; from?: string };
+/** `pathToken`: the name hides a registered value (GitFileDiff.pathToken): the reader opens it by that. */
+type Listed = { path: string; change: Change; added: number; removed: number; kind?: GitFileDiff["kind"]; from?: string; pathToken?: string };
 
 /**
  * What changed in the folder: Git's uncommitted changes, whoever made them, or Harness's own
@@ -91,7 +92,7 @@ function useFolderChanges(handle: () => SessionHandle) {
         const g = git();
         if (!g) return undefined;
         if (g.repo) {
-            const files: Listed[] = g.files.map((f) => ({ path: f.path, change: f.change, added: f.added, removed: f.removed, kind: f.kind, from: f.from }));
+            const files: Listed[] = g.files.map((f) => ({ path: f.path, change: f.change, added: f.added, removed: f.removed, kind: f.kind, from: f.from, ...(f.pathToken ? { pathToken: f.pathToken } : {}) }));
             return { repo: true, files, count: g.files.length + g.more, more: g.more, atLeast: Boolean(g.moreAtLeast), added: g.added, removed: g.removed, error: g.error };
         }
         const e = edits();
@@ -132,7 +133,7 @@ function FileRow(p: { f: Listed; onOpen: () => void }) {
 function ChangesPane(p: { changes: ReturnType<ReturnType<typeof useFolderChanges>> }) {
     const c = () => p.changes;
     // Git's uncommitted view, or (outside a repository) Harness's own record.
-    const open = (path?: string) => openReview(path, c()?.repo === false ? "harness" : "uncommitted");
+    const open = (path?: string, token?: string) => openReview(path, c()?.repo === false ? "harness" : "uncommitted", undefined, token);
     return (
         <Show when={c()} fallback={<div class="pane blank" aria-busy="true"><Spinner size={16} /></div>}>
             {(ch) => (
@@ -171,7 +172,7 @@ function ChangesPane(p: { changes: ReturnType<ReturnType<typeof useFolderChanges
                                 Review
                             </button>
                         </div>
-                        <For each={ch().files}>{(f) => <FileRow f={f} onOpen={() => open(f.path)} />}</For>
+                        <For each={ch().files}>{(f) => <FileRow f={f} onOpen={() => open(f.path, f.pathToken)} />}</For>
                         <Show when={ch().more}>
                             <div class="file-more">
                                 {ch().more.toLocaleString()}

@@ -161,8 +161,9 @@ export function openAgents(agentId?: string) {
 }
 
 /** The docked review pane, on a file and a view when given (else the view last used). */
-export function openReview(path?: string, scope?: ReviewScope, turnId?: number) {
-    setReview({ path, scope, turnId });
+/** `token`: the file's handle when its name was shown redacted (GitFileDiff.pathToken). */
+export function openReview(path?: string, scope?: ReviewScope, turnId?: number, token?: string) {
+    setReview({ path, scope, turnId, ...(path !== undefined && token ? { token } : {}) });
 }
 
 /** Stop a delegated task (or every one running); Task sub-agents stop with the turn. */
@@ -525,9 +526,10 @@ export function askToDelete(ids: readonly string[]) {
 }
 
 /** Only the commit dialog's explicit Commit click calls this. Errors stay in the dialog. */
-export async function gitCommit(id: string, paths: string[], message: string, expectedHead?: GitCommitHead) {
+/** `pathTokens`: files whose names were shown redacted (GitFileDiff.pathToken), beside `paths`. */
+export async function gitCommit(id: string, paths: string[], message: string, expectedHead?: GitCommitHead, pathTokens: string[] = []) {
     try {
-        const result = await rpc.call("session.gitCommit", { id, paths, message, expectedHead });
+        const result = await rpc.call("session.gitCommit", { id, paths, message, expectedHead, ...(pathTokens.length ? { pathTokens } : {}) });
         toast(`Committed ${result.hash.slice(0, 7)} ${result.subject}`, "success");
         return result;
     } finally {
@@ -537,8 +539,8 @@ export async function gitCommit(id: string, paths: string[], message: string, ex
     }
 }
 
-export function gitCommitMessage(id: string, paths: string[]) {
-    return rpc.call("session.gitCommitMessage", { id, paths });
+export function gitCommitMessage(id: string, paths: string[], pathTokens: string[] = []) {
+    return rpc.call("session.gitCommitMessage", { id, paths, ...(pathTokens.length ? { pathTokens } : {}) });
 }
 
 /**
@@ -671,11 +673,12 @@ export function editorName(): string | undefined {
  * Settings. The server resolves `path` against the session's folder and opens
  * only what's inside its folders.
  */
-export async function openInEditor(path: string, line?: number, o: { col?: number; folder?: boolean; sessionId?: string } = {}) {
+/** `gitToken`: a file a Git listing showed redacted (GitFileDiff.pathToken): the server opens it, `path` unused. `editor`: "finder" reveals it. */
+export async function openInEditor(path: string, line?: number, o: { col?: number; folder?: boolean; sessionId?: string; gitToken?: string; editor?: string } = {}) {
     const sessionId = o.sessionId ?? app.activeId;
     if (!sessionId) return;
     try {
-        await rpc.call("fs.open", { sessionId, path, line, col: o.col, folder: o.folder });
+        await rpc.call("fs.open", { sessionId, ...(o.gitToken !== undefined ? { gitToken: o.gitToken } : { path }), line, col: o.col, folder: o.folder, ...(o.editor ? { editor: o.editor } : {}) });
     } catch (e) {
         const code = e instanceof RpcError ? e.code : undefined;
         if (code === "no_editor" || code === "not_installed")

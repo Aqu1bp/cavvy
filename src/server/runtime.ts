@@ -59,6 +59,7 @@ import { followUpDefault, loadQueue, saveQueue, type FollowUp } from "../agent/q
 import { RpcError } from "./rpc-error";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
 import { gitChanges } from "./git-changes";
+import { GitHandles, redactedError } from "./git-handles";
 import { sessionWorktree, sessionWorktrees } from "./session-worktrees";
 import { gitPublishInfo, gitPublish, gitPrState } from "./git-publish";
 import { COMMIT_MESSAGE_SYSTEM, gitCommit, gitCommitPrompt } from "./git-commit";
@@ -3172,17 +3173,35 @@ export class Runtime {
      * What git says changed in the session's folder, whoever changed it; or, with `worktree`, in another
      * worktree of its repository (only one `git worktree list` reports: never any other folder).
      */
-    async gitChanges(req: { scope: GitScope; base?: string; path?: string; turnId?: number; worktree?: string }): Promise<GitChangesInfo> {
-        const { worktree, ...rest } = req;
+    async gitChanges(req: { scope: GitScope; base?: string; baseToken?: string; path?: string; pathToken?: string; turnId?: number; worktree?: string }): Promise<GitChangesInfo> {
+        const { worktree, pathToken, baseToken, ...rest } = req;
+        let other: { real: string; gitDir: string } | undefined;
         if (worktree !== undefined) {
             const w = await sessionWorktree(this.ws.cwd, worktree);
             if (!w.current) {
                 // Turns are snapshots of the session's own folder.
                 if (rest.scope === "turn" || rest.scope === "last-turn") throw new RpcError("Turns are recorded for this session's own folder only.", "invalid");
-                return gitChanges(w.real, { scope: rest.scope, base: rest.base, path: rest.path }, undefined, { gitDir: w.gitDir });
+                other = w;
             }
         }
-        return gitChanges(this.ws.cwd, rest, TurnSnapshots.for(this.session, this.ws.cwd));
+        // Names shown redacted come back as handles, for the folder they were listed in.
+        const root = other?.real ?? this.ws.cwd;
+        if (pathToken !== undefined) rest.path = this.gitHandles.resolve("path", root, pathToken);
+        if (baseToken !== undefined) rest.base = this.gitHandles.resolve("ref", root, baseToken);
+        try {
+            const info = other ? await gitChanges(other.real, { scope: rest.scope, base: rest.base, path: rest.path }, undefined, { gitDir: other.gitDir }) : await gitChanges(this.ws.cwd, rest, TurnSnapshots.for(this.session, this.ws.cwd));
+            return this.gitHandles.shown(info, root);
+        } catch (e) {
+            throw redactedError(e);
+        }
+    }
+
+    /** Names this session showed redacted in Git changes, by their handles (GitHandles). */
+    readonly gitHandles = new GitHandles();
+
+    /** The files to commit: as named, and by handle (in the session's own folder). */
+    private gitPaths(paths: string[], tokens: string[] = []): string[] {
+        return [...paths, ...tokens.map((t) => this.gitHandles.resolve("path", this.ws.cwd, t))];
     }
 
     /** The worktrees of the session's repository, for the diff reader to look at. */
@@ -3205,15 +3224,24 @@ export class Runtime {
         if (!this.settled(false)) throw new RpcError(`This session is still working. Wait for its responses, questions, shells, and tasks to finish before ${action}.`, "busy");
     }
 
-    async gitCommit(paths: string[], message: string, expectedHead?: GitCommitHead): Promise<GitCommitInfo> {
+    async gitCommit(paths: string[], message: string, expectedHead?: GitCommitHead, pathTokens?: string[]): Promise<GitCommitInfo> {
         await this.yieldIdleCompaction();
         this.checkGitCommit();
+        const files = this.gitPaths(paths, pathTokens);
+        let head = expectedHead;
+        if (head?.branchToken !== undefined) {
+            const { branchToken, ...rest } = head;
+            head = { ...rest, branch: this.gitHandles.resolve("ref", this.ws.cwd, branchToken) };
+        }
         this.committing = true;
         this.commitAbort = new AbortController();
-        const done = gitCommit(this.ws.cwd, paths, message, { expectedHead, signal: this.commitAbort.signal });
+        const done = gitCommit(this.ws.cwd, files, message, { expectedHead: head, signal: this.commitAbort.signal });
         this.commitDone = done;
         try {
-            return await done;
+            const info = await done;
+            return { ...info, subject: redact(info.subject), ...(info.branch !== undefined ? { branch: redact(info.branch) } : {}) };
+        } catch (e) {
+            throw redactedError(e);
         } finally {
             this.committing = false;
             this.commitDone = undefined;
@@ -3255,13 +3283,15 @@ export class Runtime {
         }
     }
 
-    async gitCommitMessage(paths: string[]): Promise<GitCommitMessageInfo> {
+    async gitCommitMessage(paths: string[], pathTokens?: string[]): Promise<GitCommitMessageInfo> {
         await this.ready;
         this.checkGitCommit();
+        const files = this.gitPaths(paths, pathTokens);
         if (!this.model || !this.client) throw new RpcError("Set a small model in Settings to generate messages.", "no_model");
         const target = await this.smallTarget();
         if (isAgentBackend(target.client)) throw new RpcError("Set a small model from another provider in Settings to generate messages.", "no_model");
-        const prompt = await gitCommitPrompt(this.ws.cwd, paths);
+        // The prompt redacts what it shows the model, names included.
+        const prompt = await gitCommitPrompt(this.ws.cwd, files).catch((e) => { throw redactedError(e); });
         const message = await this.complete(COMMIT_MESSAGE_SYSTEM, prompt, AbortSignal.timeout(30_000), { target });
         if (!message.trim()) throw new RpcError("The model returned an empty commit message. Try again or write your own.");
         return { message, model: modelRef(target.model) };

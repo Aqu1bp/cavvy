@@ -19,16 +19,19 @@ const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
  * close a frame or start a line of its own), capped with its extension kept.
  */
 export function sanitizeName(raw: string, fallback = "file"): string {
-    let s = raw.split(/[/\\]/).pop() ?? "";
+    // Redacted whole first: the split on slashes, cleanup and the cut below would each leave parts redact() can't match.
+    let s = redact(raw).split(/[/\\]/).pop() ?? "";
     // eslint-disable-next-line no-control-regex
     s = s.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ").replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff"<>`]/g, "");
     s = s.replace(/\s+/g, " ").trim();
+    // Cleanup can put a value back together (a zero-width character dropped from its middle): before the cut too.
+    s = redact(s);
     if (s.length > ATTACH_LIMITS.nameChars) {
         const dot = s.lastIndexOf(".");
         const ext = dot > 0 && s.length - dot <= 16 ? s.slice(dot) : "";
         s = s.slice(0, ATTACH_LIMITS.nameChars - ext.length - 1) + "…" + ext;
     }
-    return redact(s) || fallback;
+    return s || fallback;
 }
 
 function lineCount(text: string): number {

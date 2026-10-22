@@ -18,6 +18,8 @@ export interface ReviewComment {
     id: string;
     /** As the review pane lists it: relative to the session's folder (../ for the rest of the repository). */
     path: string;
+    /** The file's handle when its name was shown redacted (GitFileDiff.pathToken): which file, never shown or sent. */
+    fileKey?: string;
     start: LineRef;
     end: LineRef;
     text: string;
@@ -40,7 +42,7 @@ const marker = (t: DiffLine["t"]) => (t === "add" ? "+" : t === "del" ? "-" : " 
 export const AROUND = 2;
 
 /** A comment on these consecutive lines of one hunk, or undefined when there's nothing to anchor to. */
-export function buildComment(input: { id: string; path: string; lines: readonly DiffLine[]; before?: readonly DiffLine[]; after?: readonly DiffLine[]; text: string; now?: number }): ReviewComment | undefined {
+export function buildComment(input: { id: string; path: string; fileKey?: string; lines: readonly DiffLine[]; before?: readonly DiffLine[]; after?: readonly DiffLine[]; text: string; now?: number }): ReviewComment | undefined {
     const lines = input.lines;
     const first = lines[0];
     const last = lines.at(-1);
@@ -54,7 +56,7 @@ export function buildComment(input: { id: string; path: string; lines: readonly 
     const around = (ls: readonly DiffLine[] | undefined) => (ls?.length ? ls.map((l) => marker(l.t) + l.text) : undefined);
     const before = around(input.before?.slice(-AROUND));
     const after = around(input.after?.slice(0, AROUND));
-    return { id: input.id, path: input.path, start, end, text, snippet: [header, ...lines.map((l) => marker(l.t) + l.text)].join("\n"), ...(before ? { before } : {}), ...(after ? { after } : {}), created: input.now ?? Date.now() };
+    return { id: input.id, path: input.path, ...(input.fileKey ? { fileKey: input.fileKey } : {}), start, end, text, snippet: [header, ...lines.map((l) => marker(l.t) + l.text)].join("\n"), ...(before ? { before } : {}), ...(after ? { after } : {}), created: input.now ?? Date.now() };
 }
 
 const num = (r: LineRef) => `${r.side === "old" ? "−" : ""}${r.line}`;

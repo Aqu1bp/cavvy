@@ -37,15 +37,18 @@ export type GitView = GitChangesInfo & { error?: string; worktree?: string };
 
 const asked = new Map<string, Slot<GitView>>();
 
+/** A branch shown redacted is picked by its handle (GitChangesInfo.baseTokens). Git never allows ":" in a branch's name, so the two can't be mistaken. */
+const baseParam = (base: string) => (base.startsWith("git:") ? { baseToken: base } : { base });
+
 /**
  * One request per session, scope and base at a time: the panel and the pane asking together
  * share it, and a refresh asked for mid-request (a turn ending during the scan its start
  * began) gets one more, after it.
  */
-export function fetchGitChanges(id: string, scope: GitScope, base?: string, path?: string, turnId?: number, worktree?: string): Promise<GitView> {
-    return coalesce(asked, JSON.stringify([id, scope, base, path, turnId, worktree]), () =>
+export function fetchGitChanges(id: string, scope: GitScope, base?: string, path?: string, turnId?: number, worktree?: string, pathToken?: string): Promise<GitView> {
+    return coalesce(asked, JSON.stringify([id, scope, base, path, turnId, worktree, pathToken]), () =>
         rpc
-            .call("session.gitChanges", { id, scope, ...(base ? { base } : {}), ...(path !== undefined ? { path } : {}), ...(turnId !== undefined ? { turnId } : {}), ...(worktree !== undefined ? { worktree } : {}) })
+            .call("session.gitChanges", { id, scope, ...(base ? baseParam(base) : {}), ...(pathToken !== undefined ? { pathToken } : path !== undefined ? { path } : {}), ...(turnId !== undefined ? { turnId } : {}), ...(worktree !== undefined ? { worktree } : {}) })
             .catch((e): GitView => ({ repo: true, scope, files: [], added: 0, removed: 0, tracked: true, bases: [], more: 0, error: e instanceof Error ? e.message : String(e) }))
             // Which folder the answer is of travels with it: a view switching folders shows the last answer until the next one comes.
             .then((v): GitView => (worktree !== undefined ? { ...v, worktree } : v)),

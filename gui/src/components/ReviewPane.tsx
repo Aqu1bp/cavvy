@@ -25,6 +25,7 @@ import { plural } from "../lib/format";
 import { CHANGE, dirOf, nameOf, REVIEW_DEFAULT, REVIEW_STEP, reviewDragWidth, reviewWidthRange } from "../lib/inspector";
 import { DiffView, type DiffComments } from "./blocks/DiffView";
 import { buildComment } from "../lib/review-comments";
+import { findPick, pickKey, pickOf, pickParams, type ReviewPick } from "../lib/review-pick";
 import { newCommentId, reviewComments } from "../state/review-comments";
 import { PublishStatus } from "./PublishStatus";
 import { BasePicker } from "./BasePicker";
@@ -32,7 +33,9 @@ import { ReviewWorktreePicker } from "./ReviewWorktreePicker";
 import { keepWorktree, ownOnScreen, pickScope, pickWorktree, worktreeWork, type ReviewPlace } from "../lib/worktree-work";
 import { Segmented, Spinner } from "./ui/bits";
 
-type Row = FileDiff & Partial<Pick<GitFileDiff, "change" | "from" | "kind" | "deferred" | "filter">>;
+type Row = FileDiff & Partial<Pick<GitFileDiff, "change" | "from" | "kind" | "deferred" | "filter" | "pathToken">>;
+/** A file here: by its handle when its name was shown redacted (two can show the same name), else by name. */
+const key = (f: Row) => f.pathToken ?? f.path;
 
 const changeOf = (f: Row): GitFileDiff["change"] => f.change ?? f.status;
 
@@ -183,7 +186,8 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const setScope = (v: ReviewScope) => setPlace((c) => pickScope(c, v));
     const setBase = (b: string | undefined) => setPlace((c) => ({ ...c, base: b }));
     const [turnId, setTurnId] = createSignal<number | undefined>(review()?.turnId ?? saved?.turnId);
-    const [picked, setPicked] = createSignal<string>();
+    const [picked, setPicked] = createSignal<ReviewPick>();
+    const asPick = (r: { path?: string; token?: string } | undefined): ReviewPick | undefined => (r?.path !== undefined ? { path: r.path, ...(r.token ? { token: r.token } : {}) } : undefined);
     const [unchecked, setUnchecked] = createSignal(new Set<string>());
     createEffect(on(id, () => setUnchecked(new Set<string>())));
     // Start on the file and view it was opened for; a new request moves there.
@@ -193,12 +197,12 @@ export function ReviewPane(p: { handle: SessionHandle }) {
             (r) => {
                 setPlace((c) => opened(c, r));
                 if (r?.turnId !== undefined) setTurnId(r.turnId);
-                setPicked(r?.path);
+                setPicked(asPick(r));
             },
             { defer: true },
         ),
     );
-    setPicked(review()?.path);
+    setPicked(asPick(review()));
     createEffect(() => lastView.set(id(), { scope: scope(), base: base(), turnId: turnId(), worktree: worktree(), own: place().own }));
 
     const gitScope = (): GitScope => (scope() === "harness" ? "uncommitted" : (scope() as GitScope));
@@ -260,7 +264,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const files = (): Row[] => view()?.files ?? [];
     const more = () => (shownScope() !== "harness" && git()?.more) || 0;
     const error = () => (shownScope() !== "harness" ? git()?.error : undefined);
-    const selected = () => files().filter((f) => f.kind !== "folder" && f.kind !== "repo" && !unchecked().has(f.path)).map((f) => f.path);
+    const selected = () => files().filter((f) => f.kind !== "folder" && f.kind !== "repo" && !unchecked().has(key(f))).map(key);
     const commitDisabled = () => commitUnavailable(p.handle) ?? (loading() ? "Wait for changes to finish loading." : error() ? "Refresh the changes before committing." : !selected().length ? "Select files to commit." : undefined);
     const check = (path: string, checked: boolean) => setUnchecked((old) => {
         const next = new Set(old);
@@ -283,22 +287,24 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const same = (a: string, b: string) => absolute(a) === absolute(b);
     const listedPick = createMemo(() => {
         const want = picked();
-        return want ? files().find((f) => same(f.path, want)) : undefined;
+        return want ? findPick(files(), want, same) : undefined;
     });
     // Asked for a file the list doesn't hold (past its 300): fetched by itself. Its answer
     // counts only for the view, base and path it was asked for; the resource keeps its last.
     const unlistedKey = () => {
         const want = picked();
-        return shownScope() !== "harness" && view() && want && !listedPick() ? JSON.stringify([id(), gitScope(), base(), turnId(), worktree(), want]) : undefined;
+        return shownScope() !== "harness" && view() && want && !listedPick() ? JSON.stringify([id(), gitScope(), base(), turnId(), worktree(), pickKey(want)]) : undefined;
     };
     const [unlisted, { refetch: refetchUnlisted }] = createResource(
         () => {
             if (!sessionReadReady(p.handle)) return false;
             const key = unlistedKey();
-            return key ? { key, id: id(), scope: gitScope(), base: base(), turnId: turnId(), worktree: worktree(), path: picked()! } : false;
+            return key ? { key, id: id(), scope: gitScope(), base: base(), turnId: turnId(), worktree: worktree(), pick: picked()! } : false;
         },
         async (k) => {
-            const r = await fetchGitChanges(k.id, k.scope, k.base, k.path, k.turnId, k.worktree);
+            // A handle goes as one, never as a file's name.
+            const q = pickParams(k.pick);
+            const r = await fetchGitChanges(k.id, k.scope, k.base, q.path, k.turnId, k.worktree, q.pathToken);
             const f = r.files[0];
             return { key: k.key, file: f, error: r.error ?? (f ? undefined : "This file has no changes in this view.") };
         },
@@ -314,16 +320,16 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     // Like the unlisted file, its answer counts only for the session, view, base and path it was asked for.
     const fullKey = () => {
         const f = file();
-        return shownScope() !== "harness" && f?.deferred ? JSON.stringify([id(), gitScope(), base(), turnId(), worktree(), f.path]) : undefined;
+        return shownScope() !== "harness" && f?.deferred ? JSON.stringify([id(), gitScope(), base(), turnId(), worktree(), key(f)]) : undefined;
     };
     const [full, { refetch: refetchFull }] = createResource(
         () => {
             if (!sessionReadReady(p.handle)) return false;
             const key = fullKey();
-            return key ? { key, id: id(), scope: gitScope(), base: base(), turnId: turnId(), worktree: worktree(), path: file()!.path } : false;
+            return key ? { key, id: id(), scope: gitScope(), base: base(), turnId: turnId(), worktree: worktree(), path: file()!.path, pathToken: file()!.pathToken } : false;
         },
         async (k) => {
-            const r = await fetchGitChanges(k.id, k.scope, k.base, k.path, k.turnId, k.worktree);
+            const r = await fetchGitChanges(k.id, k.scope, k.base, k.path, k.turnId, k.worktree, k.pathToken);
             const f = r.files[0];
             return { key: k.key, file: f && !f.deferred ? f : undefined, error: r.error ?? (f ? "Couldn't load this diff." : "This file no longer has changes. Refresh the list.") };
         },
@@ -339,6 +345,13 @@ export function ReviewPane(p: { handle: SessionHandle }) {
         (k) => fetchGitChanges(k.id, "uncommitted", undefined, undefined, undefined, k.worktree),
     );
     const bases = () => (git()?.bases.length ? git()!.bases : (fallback()?.bases ?? []));
+    /** The picked base's name to show: a handle (a name shown redacted) never is; its listed name is, if known. */
+    const baseLabel = () => {
+        const b = base();
+        if (!b?.startsWith("git:")) return b;
+        const i = (git()?.bases.length ? git()!.baseTokens : fallback()?.baseTokens)?.indexOf(b) ?? -1;
+        return i >= 0 ? bases()[i] : undefined;
+    };
 
     const refresh = () => {
         void refetchGit();
@@ -347,12 +360,13 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     };
 
     /** Comments on the shown file: they wait in this session's composer until the next message. */
-    const commentsFor = (path: string): DiffComments => ({
+    /** A file's comments: by its handle when its name was shown redacted (another may show the same), else by name. */
+    const commentsFor = (f: Row): DiffComments => ({
         get list() {
-            return reviewComments.list(id()).filter((c) => same(c.path, path));
+            return reviewComments.list(id()).filter((c) => (f.pathToken ? c.fileKey === f.pathToken : !c.fileKey && same(c.path, f.path)));
         },
         add: (lines, text, around) => {
-            const c = buildComment({ id: newCommentId(), path, lines, text, ...around });
+            const c = buildComment({ id: newCommentId(), path: f.path, ...(f.pathToken ? { fileKey: f.pathToken } : {}), lines, text, ...around });
             if (c) reviewComments.add(id(), c);
         },
         edit: (commentId, text) => reviewComments.edit(id(), commentId, text),
@@ -363,7 +377,10 @@ export function ReviewPane(p: { handle: SessionHandle }) {
         const out = new Map<string, number>();
         // Another worktree's files take no comments, and the session's don't belong on them.
         if (!own()) return out;
-        for (const c of reviewComments.list(id())) out.set(absolute(c.path), (out.get(absolute(c.path)) ?? 0) + 1);
+        for (const c of reviewComments.list(id())) {
+            const k = c.fileKey ?? absolute(c.path);
+            out.set(k, (out.get(k) ?? 0) + 1);
+        }
         return out;
     });
 
@@ -383,12 +400,13 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     };
     /** "2 of 3 files, +19 −4 in all." */
     const where = () => {
-        const i = files().findIndex((f) => f.path === file()?.path);
+        const shown = file();
+        const i = shown ? files().findIndex((f) => key(f) === key(shown)) : -1;
         const all = `+${view()?.added ?? 0} −${view()?.removed ?? 0} in all`;
         return i < 0 ? `${count()}, ${all}.` : `${i + 1} of ${count()}, ${all}.`;
     };
     /** The file the head names: the one shown, or the one asked for while it loads. */
-    const headPath = () => shownFile()?.path ?? (askedFor() ? picked() : undefined);
+    const headPath = () => shownFile()?.path ?? (askedFor() ? picked()?.path : undefined);
     const headSub = () => {
         const path = headPath();
         if (!path) return files().length ? count() : "";
@@ -403,8 +421,8 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     };
     /** The diff shown is redrawn for a new file, or the same file in another worktree (which takes no comments). */
     const viewKey = createMemo(() => {
-        const path = shownFile()?.path;
-        return path ? JSON.stringify([own() ? null : shownRoot(), path]) : undefined;
+        const f = shownFile();
+        return f ? JSON.stringify([own() ? null : shownRoot(), key(f)]) : undefined;
     });
     const awayNote = "Looking at another worktree: comments, Commit and Push are for this session's own folder.";
 
@@ -443,12 +461,12 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                 </Show>
                 <DiffLayout />
                 <Show when={canOpen()}>
-                    <button class="hb" title={`Open in ${editorName() ?? "your editor"}`} aria-label="Open in editor" onClick={() => void openInEditor(absolute(shownFile()!.path))}>
+                    <button class="hb" title={`Open in ${editorName() ?? "your editor"}`} aria-label="Open in editor" onClick={() => void openInEditor(absolute(shownFile()!.path), undefined, { gitToken: shownFile()!.pathToken })}>
                         <SquareArrowOutUpRight size={15} />
                     </button>
                 </Show>
                 <Show when={canReveal && shownFile()}>
-                    <button class="hb rv-reveal" title="Reveal in Finder" aria-label="Reveal in Finder" onClick={() => void revealPath(absolute(shownFile()!.path)).catch(reportError)}>
+                    <button class="hb rv-reveal" title="Reveal in Finder" aria-label="Reveal in Finder" onClick={() => void (shownFile()!.pathToken ? openInEditor("", undefined, { gitToken: shownFile()!.pathToken, editor: "finder" }) : revealPath(absolute(shownFile()!.path))).catch(reportError)}>
                         <FolderOpen size={15} />
                     </button>
                 </Show>
@@ -493,7 +511,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                             <GitBranch size={13} />
                             <span class="mono truncate">{branchLabel()}</span>
                             <span class="arrow">→</span>
-                            <BasePicker value={git()?.base?.ref ?? base() ?? git()?.defaultBase} bases={bases()} onPick={setBase} />
+                            <BasePicker value={git()?.base?.ref ?? baseLabel() ?? git()?.defaultBase} current={git()?.base ? (git()!.base!.refToken ?? git()!.base!.ref) : (base() ?? git()?.defaultBaseToken ?? git()?.defaultBase)} bases={bases()} tokens={git()?.bases.length ? git()!.baseTokens : fallback()?.baseTokens} onPick={setBase} />
                         </span>
                     </Show>
                 </Show>
@@ -523,7 +541,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
             </div>
             <Show when={files().length}>
                 <nav class="rv-files" aria-label="Changed files" aria-busy={loading()}>
-                    <For each={files()}>{(f) => <FilePill file={f} on={file()?.path === f.path} onSelect={() => setPicked(f.path)} commit={shownScope() === "uncommitted" && own()} checked={f.kind !== "folder" && f.kind !== "repo" && !unchecked().has(f.path)} onCheck={(checked) => check(f.path, checked)} comments={commentCounts().get(absolute(f.path))} />}</For>
+                    <For each={files()}>{(f) => <FilePill file={f} on={file() !== undefined && key(file()!) === key(f)} onSelect={() => setPicked(pickOf(f))} commit={shownScope() === "uncommitted" && own()} checked={f.kind !== "folder" && f.kind !== "repo" && !unchecked().has(key(f))} onCheck={(checked) => check(key(f), checked)} comments={commentCounts().get(f.pathToken ?? absolute(f.path))} />}</For>
                     <Show when={more()}>
                         <span class="rv-more">
                             {more().toLocaleString()}
@@ -577,8 +595,8 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                         diff in place, so a comment being written, the scroll and the focus all stay. */}
                     <Show when={viewKey()} keyed>
                         {(key) => {
-                            const [wt, path] = JSON.parse(key) as [string | null, string];
-                            const comments = wt === null ? commentsFor(path) : undefined;
+                            const [wt] = JSON.parse(key) as [string | null, string];
+                            const comments = wt === null ? commentsFor(shownFile()!) : undefined;
                             let last = shownFile()!;
                             const f = () => (last = shownFile() ?? last);
                             return (
