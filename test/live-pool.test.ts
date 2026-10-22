@@ -411,7 +411,7 @@ test("stopping a task counts once the CLI confirms it, and times out when it doe
     expect(s.tasks.get("stubborn1")?.status).toBe("running");
 });
 
-test("an end said while a stop is being answered is held: refused, the task ended by itself; taken, it was stopped; the process gone, its own end stands", async () => {
+test("an end of the task's own while its stop is asked: it ended by itself (ended), however the CLI answers; the process gone, its own end stands", async () => {
     const { pool, fake } = setup();
     const s = pool.session("a", "fake");
     await turn(s, "bg stubborn1");
@@ -428,24 +428,23 @@ test("an end said while a stop is being answered is held: refused, the task ende
         return { result: () => result, refuse, take };
     };
 
-    // It finished as the stop went out, and the CLI refused the stop: it ended by itself.
+    // It finished as the stop went out (the CLI then refuses the stop): it ended by itself.
     const one = asked("stubborn1");
     await Bun.sleep(10);
     ended("stubborn1", "done");
-    await Bun.sleep(20);
-    expect(one.result()).toBeUndefined();
-    one.refuse(new Error("no such task"));
     await until(() => one.result() !== undefined);
+    one.refuse(new Error("no such task"));
     expect(one.result()).toBe("ended");
     expect(s.tasks.get("stubborn1")?.status).toBe("done");
 
-    // The same, but the stop was taken: it was stopped.
+    // The same, but the CLI answered the stop success: its own end says it ended by itself (a CLI's success
+    // doesn't say the stop took; Claude Code answers so for a task it no longer runs, #295 review).
     const two = asked("stubborn2");
     await Bun.sleep(10);
     ended("stubborn2", "done");
     two.take();
     await until(() => two.result() !== undefined);
-    expect(two.result()).toBe("stopped");
+    expect(two.result()).toBe("ended");
 
     // No answer, then the process goes: the end it said stands (not taken for a stop).
     const three = asked("stubborn3");
