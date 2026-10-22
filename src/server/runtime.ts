@@ -11,7 +11,7 @@ import { WakeQueue, WatcherMap, formatWakes, stopWatchers, wakeDisplay, type Wak
 import { turnDuration } from "./duration";
 import { existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
-import { Agent, type Admission, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
+import { Agent, type Admission, type Admitted, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
 import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, rewindTargets, untrackedChangesNote, type RestoreItem } from "../agent/checkpoints";
 import { beforeFork, forkCut, forkTargets } from "../agent/fork";
 import { fireHooks, type HookEvent } from "../agent/hooks";
@@ -61,7 +61,7 @@ import { gitChanges } from "./git-changes";
 import { sessionWorktree, sessionWorktrees } from "./session-worktrees";
 import { gitPublishInfo, gitPublish, gitPrState } from "./git-publish";
 import { COMMIT_MESSAGE_SYSTEM, gitCommit, gitCommitPrompt } from "./git-commit";
-import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, runsAgent, promptKey, promptText, readSegments, replay, resultPatch, shownStep, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
+import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, isPrompt, runsAgent, promptKey, promptText, readSegments, replay, resultPatch, shownStep, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
 import { TurnSnapshots } from "../agent/turn-snapshots";
 import { IdleCompactTimer } from "../agent/idle-compact";
 import type {
@@ -1195,7 +1195,7 @@ export class Runtime {
                     approvePlan: (plan) => this.approvePlan(plan),
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
                 },
-                drainQueued: (record) => this.drainQueued(record),
+                drainQueued: (record, admit) => this.drainQueued(record, admit),
                 drainWaiting: (record) => this.drainWaiting(record),
                 wake: (w) => this.adoptWake(w),
                 backgroundChanged: () => this.syncBackground(),
@@ -1442,7 +1442,7 @@ export class Runtime {
                 if (turnId) for (const id of this.responseBlocks) this.op({ op: "block.remove", turnId, blockId: id });
                 this.responseBlocks = [];
                 this.openText = this.openThinking = undefined;
-                this.activity(`Retrying in ${Math.ceil(e.delayMs / 1000)}s`, `${e.reason.slice(0, 160)} (attempt ${e.attempt})`);
+                this.activity(`Retrying in ${Math.ceil(e.delayMs / 1000)}s · Stop to cancel`, `${e.reason.slice(0, 160)} (attempt ${e.attempt})`);
                 break;
             }
             case "usage": {
@@ -1455,7 +1455,7 @@ export class Runtime {
                 if (!e.idle) this.activity("Compacting conversation");
                 break;
             case "compact_end":
-                this.compacted(e.summary, e.idle);
+                this.compacted(e.summary, e.idle, e.kept);
                 break;
             case "limits":
                 this.engine.limitsReported(e.limits, e.partial);
@@ -1560,16 +1560,19 @@ export class Runtime {
         this.syncShells();
     }
 
-    private compacted(summary: string, idle?: boolean) {
+    private compacted(summary: string, idle?: boolean, kept?: boolean) {
         const current = this.turnId;
         // Claude Code or Codex compacting its own context leaves this session's history as it is.
         if (!this.backendModel()) {
             this.segment++;
             if (this.runStart !== undefined) this.runStart = 0;
+            // The running turn's prompt went on after the summary (not a reminder the compaction kept): it's there now.
+            const moved = kept && current && this.session.messages[1] && isPrompt(this.session.messages[1]) ? 1 : undefined;
             // Everything before is out of the model's context now (and out of /rewind's reach).
             for (const t of this.view.turns) {
                 if (t.id === current) {
-                    if (t.prompt?.index !== undefined) this.op({ op: "turn.patch", turnId: t.id, patch: { prompt: { ...t.prompt, index: undefined } } });
+                    if (moved !== undefined) this.movePrompt(t, moved);
+                    else if (t.prompt?.index !== undefined) this.op({ op: "turn.patch", turnId: t.id, patch: { prompt: { ...t.prompt, index: undefined } } });
                     continue;
                 }
                 if (!t.archived) this.op({ op: "turn.patch", turnId: t.id, patch: { archived: true, prompt: t.prompt ? { ...t.prompt, index: undefined } : undefined } });
@@ -1584,6 +1587,23 @@ export class Runtime {
         }
         this.setState({ contextTokens: 0 });
         this.recordState();
+    }
+
+    /**
+     * The running turn's prompt, kept by a compaction, is at `index` of the new
+     * segment: its turn, the log's record of it, and its attachments are found
+     * there, and it can be rewound to as before (replay shows it there, once).
+     */
+    private movePrompt(t: Turn, index: number) {
+        const pos = { seg: this.segment, index };
+        this.op({ op: "turn.patch", turnId: t.id, patch: { pos, ...(t.prompt?.index !== undefined ? { prompt: { ...t.prompt, index } } : {}) } });
+        if (this.pendingPrompt) this.pendingPrompt = { ...this.pendingPrompt, ...pos };
+        if (!this.uiTurn) return;
+        const { prompt, ...start } = { ...this.uiTurn, ...pos };
+        this.uiTurn = { ...start, ...(prompt ? { prompt } : {}) };
+        // Started afresh there (the turn that started last), then which prompt it is, if that's known yet.
+        this.ui.write({ t: "turn", ...start });
+        if (prompt) this.ui.write({ t: "turn", ...start, prompt });
     }
 
     // What it does shows on its own (an AgentRun): the call's row opens it, so the row carries none of it.
@@ -2079,9 +2099,43 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Prompts
 
-    private drainQueued(record?: () => void): string[] {
+    private drainQueued(record?: () => void, admit?: (text: string) => Promise<Admitted>): string[] | Promise<Admitted[]> {
         // Messages to steer with; queued ones, held ones and those with images or files wait for their own turn.
-        const take = this.queued.filter((q) => q.mode === "steer" && !q.held && steerable(q));
+        const steering = () => this.queued.filter((q) => q.mode === "steer" && !q.held && steerable(q));
+        const take = steering();
+        if (!take.length) return [];
+        return admit ? this.admitQueued(take, admit, steering, record) : this.steerWith(take, record);
+    }
+
+    /**
+     * Their UserPromptSubmit hooks run while they stay in the queue (on disk too): an interrupt meanwhile hands
+     * them back to the composer. One a hook blocks goes back to the composer now, to change or drop (the hook's
+     * warning says why); the rest go.
+     */
+    private async admitQueued(take: Queued[], admit: (text: string) => Promise<Admitted>, steering: () => Queued[], record?: () => void): Promise<Admitted[]> {
+        const blocked: Queued[] = [];
+        const admitted = new Map<Queued, Admitted>();
+        for (const q of take) {
+            const a = await admit(q.text);
+            if (a.admission === "stopped") return [];
+            if (a.admission === "blocked") blocked.push(q);
+            else admitted.set(q, a);
+        }
+        const back = blocked.filter((q) => this.queued.includes(q));
+        if (back.length) {
+            this.queued = this.queued.filter((q) => !back.includes(q));
+            this.queueUpdated();
+            this.engine.draft(this, back.map((q) => q.text).join("\n\n"));
+        }
+        // One the user took out or held meanwhile doesn't go.
+        const still = steering();
+        const go = take.filter((q) => admitted.has(q) && still.includes(q));
+        this.steerWith(go, record);
+        // Each with what its own hooks added (two alike are still two).
+        return go.map((q) => admitted.get(q)!);
+    }
+
+    private steerWith(take: Queued[], record?: () => void): string[] {
         if (!take.length) return [];
         this.queued = this.queued.filter((q) => !take.includes(q));
         this.queueUpdated();

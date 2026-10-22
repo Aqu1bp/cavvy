@@ -92,7 +92,8 @@ export type Line =
     | { t: "account"; provider: string; id: string }
     | { t: "fastMode"; enabled: boolean }
     | { t: "title"; title: string }
-    | { t: "compact"; summary: string; /** Compacted while idle, before the prompt cache expired. */ idle?: true }
+    /** kept: the last message before it goes on after the summary, the same message moved (the GUI shows it once, where it went). */
+    | { t: "compact"; summary: string; /** Compacted while idle, before the prompt cache expired. */ idle?: true; kept?: true }
     | { t: "rewind"; count: number }
     /** unknown: no price was known; at: when spent (ms), absent in older records. */
     | { t: "usage"; usage: Usage; cost: number; model: string; unknown?: true; at?: number }
@@ -435,6 +436,7 @@ export class Session {
         cur.usage.outputTokens += usage.outputTokens;
         cur.usage.cacheReadTokens = (cur.usage.cacheReadTokens ?? 0) + (usage.cacheReadTokens ?? 0);
         cur.usage.cacheWriteTokens = (cur.usage.cacheWriteTokens ?? 0) + (usage.cacheWriteTokens ?? 0);
+        if (usage.webSearchRequests) cur.usage.webSearchRequests = (cur.usage.webSearchRequests ?? 0) + usage.webSearchRequests;
         cur.cost += cost;
         this.usageByModel.set(model, cur);
     }
@@ -531,14 +533,14 @@ export class Session {
         this.write({ t: "rewind", count });
     }
 
-    /** Replace history with a compacted version. Backend sessions start over from the summary. */
-    compact(summary: string, messages: Message[], idle = false) {
+    /** Replace history with a compacted version. Backend sessions start over from the summary. `kept`: `messages` ends with the last message before. */
+    compact(summary: string, messages: Message[], idle = false, kept = false) {
         this.messages = [];
         this.notices = [];
         this.backends.clear();
         this.backendFolders.clear();
         this.summary = summary;
-        this.write({ t: "compact", summary, ...(idle ? { idle: true as const } : {}) });
+        this.write({ t: "compact", summary, ...(idle ? { idle: true as const } : {}), ...(kept ? { kept: true as const } : {}) });
         for (const m of messages) this.push(m);
     }
 

@@ -355,6 +355,65 @@ describe("GoalController", () => {
         expect(h.alerts.map((a) => a.kind)).toEqual(["done"]);
     });
 
+    test.each([
+        "Service unavailable (503). Provider requested retry after 600s; automatic retries stop above 300s. Try again after that wait.",
+        "Google Gemini: You exceeded your current quota, please check your plan and billing details. Please retry in 33.9s. (429)",
+        'Google Gemini: You exceeded your current quota, please check your plan and billing details. {"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"33s"}',
+        'Google Gemini: You exceeded your current quota, please check your plan and billing details. {"quotaId":"RequestsPerMinute"}',
+        'Google Gemini: You exceeded your current quota, please check your plan and billing details. {"quotaId":"RequestsPerDay"}',
+    ])("provider waits pause the goal without clearing it or scheduling an early retry: %s", async (message) => {
+        expect(classifyError(message)).toBe("limit");
+        const h = harness();
+        h.goal.set("finish the work");
+        const from = h.turn(user("go"));
+        h.session.recordNotice("error", message);
+        await h.goal.afterTurn("error", from, true);
+        expect(h.goal.view()).toMatchObject({ state: "paused", condition: "finish the work" });
+        expect(h.timers).toEqual([]);
+        h.flush(120_000);
+        expect(h.turns).toEqual([]);
+        expect(h.notices.at(-1)!.text).toStartWith("Goal paused:");
+    });
+
+    test.each(["object", "array", "string-wrapped"])("Gemini structured retry details survive classification after HTTP formatting: %s", async (shape) => {
+        const { httpError } = await import("../src/providers/openai-compat");
+        const error = {
+            code: 429,
+            message: "You exceeded your current quota, please check your plan and billing details.",
+            status: "RESOURCE_EXHAUSTED",
+            details: [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "33s" }, { quotaId: "RequestsPerMinute" }],
+        };
+        const body = shape === "array" ? [{ error }] : shape === "string-wrapped" ? { error: { message: JSON.stringify({ error }) } } : { error };
+        const e = httpError(429, "Too Many Requests", JSON.stringify(body), "33", "Google Gemini");
+        expect(e.retryable).toBe(true);
+        expect(classifyError(e.message)).toBe("limit");
+        const h = harness();
+        h.goal.set("finish the work");
+        const from = h.turn(user("go"));
+        h.session.recordNotice("error", e.message);
+        await h.goal.afterTurn("error", from, true);
+        expect(h.goal.view()?.state).toBe("paused");
+        expect(h.timers).toEqual([]);
+        // Explicit OpenAI quota codes still clear a goal after the HTTP formatter drops the code.
+        const permanent = httpError(429, "Too Many Requests", JSON.stringify({ error: { code: "insufficient_quota", message: error.message } }), null, "OpenAI");
+        expect(permanent.retryable).toBe(false);
+        expect(classifyError(permanent.message)).toBe("fatal");
+    });
+
+    test("Vertex's explicit billing-disabled error still clears the goal", async () => {
+        const { vertexError } = await import("../src/providers/vertex");
+        const e = vertexError(403, "Forbidden", JSON.stringify({ error: { message: "BILLING_DISABLED" } }), "Vertex AI", { project: "test-project", account: "test@example.com" } as any);
+        expect(e.message).toContain("no billing account linked");
+        expect(classifyError(e.message)).toBe("fatal");
+        const h = harness();
+        h.goal.set("finish the work");
+        const from = h.turn(user("go"));
+        h.session.recordNotice("error", e.message);
+        await h.goal.afterTurn("error", from, true);
+        expect(h.goal.active).toBe(false);
+        expect(h.notices.at(-1)!.text).toStartWith("Goal cleared after an unrecoverable error:");
+    });
+
     test("other errors retry after a wait, three times, then pause; a success resets the count", async () => {
         const h = harness();
         h.goal.set("x");

@@ -16,8 +16,8 @@ export interface CostEstimate {
 export function costOf(usage: Usage, model: ModelInfo | undefined): CostEstimate {
     if (typeof usage.cost === "number") return { usd: usage.cost, estimated: Boolean(usage.costEstimated), unknown: false };
     const parts = usageCostParts(usage, model);
-    if (!parts) return { usd: 0, estimated: true, unknown: true };
-    const usd = parts.input + parts.output + parts.cacheRead + parts.cacheWrite;
+    if (!parts) return { usd: (usage.webSearchRequests ?? 0) * .01, estimated: true, unknown: true };
+    const usd = parts.input + parts.output + parts.cacheRead + parts.cacheWrite + parts.webSearch;
     return { usd, estimated: true, unknown: false };
 }
 
@@ -37,6 +37,7 @@ export function usageCostParts(usage: Usage, model: ModelInfo | undefined) {
         output: usage.outputTokens * p.output / 1e6,
         cacheRead: (usage.cacheReadTokens ?? 0) * (p.cacheRead ?? p.input) / 1e6,
         cacheWrite: (((usage.cacheWriteTokens ?? 0) - hour) * (p.cacheWrite ?? p.input) + hour * p.input * 2) / 1e6,
+        webSearch: (usage.webSearchRequests ?? 0) * .01,
         cacheSavings: (usage.cacheReadTokens ?? 0) * Math.max(0, p.input - (p.cacheRead ?? p.input)) / 1e6,
     };
 }
@@ -48,6 +49,7 @@ export function addUsage(a: Usage, b: Usage): Usage {
         cacheReadTokens: (a.cacheReadTokens ?? 0) + (b.cacheReadTokens ?? 0),
         cacheWriteTokens: (a.cacheWriteTokens ?? 0) + (b.cacheWriteTokens ?? 0),
         reasoningTokens: (a.reasoningTokens ?? 0) + (b.reasoningTokens ?? 0),
+        webSearchRequests: (a.webSearchRequests ?? 0) + (b.webSearchRequests ?? 0),
     };
 }
 

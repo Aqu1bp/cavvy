@@ -956,9 +956,12 @@ export class CodexTurn {
                     // The user's words name skills; a watch's events (others' words, such as a PR comment) come after and don't.
                     const typed = next.filter((x) => !this.sink.fromWake?.(x));
                     const woke = next.filter((x) => this.sink.fromWake?.(x));
-                    request = typed.length ? typed.join("\n\n") : undefined;
-                    after = woke.length ? `${typed.length ? "\n\n" : ""}${woke.join("\n\n")}` : "";
                     text = queued = [...typed, ...woke].join("\n\n");
+                    // Nor does what a UserPromptSubmit hook added after them: what's scanned ends before the first.
+                    const cut = typed.findIndex((x) => (this.sink.requestOf?.(x) ?? x) !== x);
+                    const words = cut < 0 ? typed : [...typed.slice(0, cut), this.sink.requestOf!(typed[cut]!)!];
+                    request = words.length ? words.join("\n\n") : undefined;
+                    after = request === undefined ? "" : text.slice(request.length);
                     // The goal active: Codex starts its next turn as this one ends, and the messages go into that one
                     // (a turn started here as well would run beside it).
                     const own = this.goal?.status === "active" ? await this.nextGoalTurn(GOAL_TURN_GRACE_MS, false) : undefined;
@@ -1393,7 +1396,7 @@ export class CodexTurn {
         }
         this.cliSession.usage(usage, {});
         // Counted above: what the sub-agent's chip shows (kept until it's known whose thread this is).
-        const shown: AgentEvent = { type: "usage", usage, cost: { usd: 0, estimated: true, unknown: !this.billedToPlan }, contextTokens: 0 };
+        const shown: AgentEvent = { type: "usage", usage, cost: { usd: 0, estimated: true, unknown: !this.billedToPlan }, contextTokens: 0, displayOnly: true };
         const sub = this.subs.get(thread!);
         if (sub) this.subEmit(sub, shown);
         else this.keep(thread!, SHOWN_USAGE, shown);
@@ -2066,7 +2069,8 @@ export class CodexTurn {
             const text = texts.join("\n\n");
             // Into a turn that runs as the mode says, or into its restart (also when it changed while draining).
             if (this.turnId !== turnId || this.restartIfStale()) {
-                this.unsteered.push(text);
+                // Each as it was queued, so the user's words, a hook's additions and a watch's events stay told apart.
+                this.unsteered.push(...texts);
                 return;
             }
             try {

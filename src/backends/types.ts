@@ -142,8 +142,9 @@ export interface SessionHost {
 export interface TurnSink {
     emit(e: AgentEvent): void;
     /** Messages the user typed while the backend was working. If any are drained,
-     * consume and record preceding output before recording the queued prompt. */
-    drainQueued(progress?: () => BackendResult): string[] | Promise<string[]>;
+     * consume and record preceding output before recording the queued prompt. `live`: whether the
+     * backend can still take them, checked before they're taken (their hooks run first). */
+    drainQueued(progress?: () => BackendResult, live?: () => boolean): string[] | Promise<string[]>;
     /**
      * For when the CLI is between its turns, waiting only on background work: nothing is mid-step, so
      * the next message the user queued goes now as a prompt of its own, whatever its mode, with what's
@@ -155,6 +156,8 @@ export interface TurnSink {
     drainWaiting?(progress?: () => BackendResult, live?: () => boolean): Promise<BackendPrompt | undefined>;
     /** A drained message is an event a watch raised (others' words, such as a PR comment), not the user's. */
     fromWake?(text: string): boolean;
+    /** The words the user typed of a drained message of theirs, which it starts with: what a hook added follows. */
+    requestOf?(text: string): string | undefined;
     /** Called when a message to steer with arrives mid-turn, for a backend that can take it at once (Codex). Returns the unsubscribe. */
     onQueued?(listener: () => void): () => void;
     /**

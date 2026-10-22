@@ -131,6 +131,8 @@ export class LiveCliSession {
     private endedElsewhere = new Set<string>();
     private stale = false;
     private stopping?: Promise<void>;
+    /** A settings change the running process hasn't answered yet: the next waits for it. */
+    private applying?: Promise<unknown>;
     private closed = false;
     private idleTimer?: unknown;
     private _lastActive: number;
@@ -353,6 +355,11 @@ export class LiveCliSession {
                 await this.stopping;
                 continue;
             }
+            if (this.applying) {
+                // A change the CLI hasn't answered (its turn was aborted): nothing overtakes it.
+                await untilAborted(this.applying, signal);
+                continue;
+            }
             // Once the CLI has a session of its own, a new process resumes that (a fork is forked once).
             const c = this.cliSessionId ? { ...cfg, resumeId: this.cliSessionId, forkSession: false } : cfg;
             const spec = this.adapter.spawn(c);
@@ -379,7 +386,8 @@ export class LiveCliSession {
                 else restart = true;
             }
             if (restart) {
-                await this.stopProcess();
+                // Through stop(), so a close meanwhile waits for it too.
+                await this.stop();
                 continue;
             }
             this.stale = deferred !== undefined;
@@ -389,8 +397,12 @@ export class LiveCliSession {
 
     /** Change the running process's settings: "restart" when it can't, or exits meanwhile. Throws Stopped when the turn is aborted first. */
     private async applySettings(proc: JsonLinesProcess, conn: CliConnection, changed: Partial<LiveSettings>, signal: AbortSignal): Promise<"applied" | "restart"> {
+        const answer = Promise.race([conn.apply(changed).catch(() => "restart" as const), proc.exited.then(() => "restart" as const)]);
+        const applying: Promise<unknown> = (this.applying = answer.finally(() => {
+            if (this.applying === applying) this.applying = undefined;
+        }));
         try {
-            return await untilAborted(Promise.race([conn.apply(changed).catch(() => "restart" as const), proc.exited.then(() => "restart" as const)]), signal);
+            return await untilAborted(answer, signal);
         } catch (e) {
             // What the CLI took of them isn't known: the next turn sends them all.
             if (proc === this.proc) this.settings = undefined;
@@ -474,6 +486,8 @@ export class LiveCliSession {
         this.settings = undefined;
         this.stale = false;
         this.abandoned.clear();
+        this.endedElsewhere.clear();
+        this.applying = undefined;
         this.wakeDue = false;
         this._error = error;
         const reason: TurnEndReason = error === undefined ? "aborted" : "error";
@@ -511,13 +525,15 @@ export class LiveCliSession {
                         if (!this.endedElsewhere.has(ref)) this.abandoned.add(ref);
                         this.changed();
                     }
-                    // Held while it was sent.
-                    for (const e of turn.held.splice(0)) this.route(e);
+                    // Held while it was sent: those that named no turn were this one's, whichever turn runs now.
+                    for (const e of turn.held.splice(0)) this.route(e.t === "turn_event" && e.ref === undefined ? { ...e, ref } : e);
                 },
                 (e) => {
                     known(undefined);
                     if (turn.abandonedAs !== undefined && this.abandoned.delete(turn.abandonedAs)) this.changed();
                     this.finish(turn, { reason: "error", error: e instanceof Error ? e.message : String(e) });
+                    // Held while it was sent; not taken, so it had none of them: those that named no turn are no turn's.
+                    if (gen === this.generation) for (const e of turn.held.splice(0)) e.t === "turn_event" && e.ref === undefined ? this.emitSession(e) : this.route(e);
                 },
             );
             if (signal.aborted) onAbort();
@@ -544,8 +560,9 @@ export class LiveCliSession {
                 return this.emitSession(e);
         }
         const user = this.turn;
-        // Its prompt is still being sent: which turn is whose is known once it's taken.
-        if (user && user.ref === undefined && !user.result) return void user.held.push(e);
+        // Its prompt is still being sent: what may be its own waits until it's taken. A turn the CLI started by
+        // itself, and what names one, isn't.
+        if (user && user.ref === undefined && !user.result && !this.notPrompted(e)) return void user.held.push(e);
         // A turn started or ended: a report that was due is in it. Told once the turn is in place, so
         // nothing sees the session quiet between the report's due and its turn.
         const reported = e.t !== "turn_event" && this.wakeDue;
@@ -579,6 +596,12 @@ export class LiveCliSession {
         }
         if (e.t === "turn_event") return void (turn.sink ? turn.sink.emit(e.event) : turn.held.push(e));
         this.finish(turn, { ref: turn.ref, reason: e.reason, error: e.error, usage: e.usage, limit: e.limit, answers: e.answers });
+    }
+
+    /** A turn the CLI started by itself, or an event that names one known here (or one ended here unanswered). */
+    private notPrompted(e: Extract<CliEvent, { t: "turn_started" | "turn_event" | "turn_ended" }>): boolean {
+        if (e.t === "turn_started") return e.origin !== "user";
+        return e.ref !== undefined && (this.wakes.has(e.ref) || this.abandoned.has(e.ref));
     }
 
     private turnFor(e: Extract<CliEvent, { t: "turn_event" | "turn_ended" }>): Turn | undefined {

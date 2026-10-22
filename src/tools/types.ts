@@ -1,5 +1,5 @@
 import type { SecretStore } from "../agent/secrets";
-import type { ImagePart } from "../providers/types";
+import type { ImagePart, TodoItem } from "../providers/types";
 import type { Settings } from "../config/settings";
 import type { PermissionMode } from "../permissions/modes";
 import type { Sandbox } from "../permissions/sandbox";
@@ -43,11 +43,8 @@ export interface FileState {
     partial: boolean;
 }
 
-export interface TodoItem {
-    content: string;
-    status: "pending" | "in_progress" | "completed";
-    activeForm?: string;
-}
+// Defined beside the transcript types, which carry todos across compaction.
+export type { TodoItem } from "../providers/types";
 
 export interface BackgroundShell {
     id: string;
