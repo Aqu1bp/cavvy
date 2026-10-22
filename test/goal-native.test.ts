@@ -577,7 +577,7 @@ describe("Codex", () => {
     test("a turn not yet known to be Codex's or the one being started is judged by the looser of their policies", () => {
         const sent: any[] = [];
         const turn = Object.assign(Object.create(CodexTurn.prototype), {
-            t: { readOnly: false, host: { mode: () => "plan" } },
+            t: { readOnly: false, session: { mode: () => "plan" } },
             rpc: { request: async (method: string, params: unknown) => void sent.push({ method, params }), proc: { kill() {} } },
             threadId: "thr",
             aborted: false,

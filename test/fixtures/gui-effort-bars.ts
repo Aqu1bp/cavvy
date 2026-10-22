@@ -117,7 +117,7 @@ test("EffortPicker: a change the server refuses goes back to the level in force,
         // On Home the picker shows the saved default, which only a saved change moves.
         app, rpc, reportError: (e: unknown) => errors.push(e), toast: stub,
         setApp: (key: string, field: string, value: string) => { if (key === "settings" && field === "effort") setSessionEffort(value); },
-        ...names(["activate", "createSession", "dropHandle", "forkSession", "handleFor", "importCliSession", "markSeen", "refreshModels", "refreshProjects", "refreshProviders", "refreshSessions", "refreshSettings", "requestTrust"]),
+        ...names(["activate", "createSession", "dropHandle", "forkSession", "handleFor", "importCliSession", "markSeen", "refreshModels", "refreshProjects", "refreshProviders", "refreshSessions", "refreshSettings", "requestTrust", "revealBackground"]),
     }));
     mock.module("../../gui/src/lib/platform", () => names(["copyText", "pickFolder"]));
     mock.module("../../gui/src/state/prefs", () => ({ prefs: {}, setPrefs: stub }));
