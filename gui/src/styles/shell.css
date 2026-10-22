@@ -20,10 +20,13 @@
 
 /* The sizes App.tsx keeps (lib/layout.ts) change on every frame of dragging
    an edge, so they're not inherited: each is set on the element that uses it
-   (--rail-w on .win, --insp-col and --term-h on .sheet, --insp-w and
-   --insp-bottom on .insp), and the few children that need one inherit it
-   explicitly. An inherited custom property changing restyles every element
-   under the one it's on. */
+   (--rail-w on .win and .win-rail, --insp-col and --term-h on .sheet, --insp-w
+   and --insp-bottom on .insp). An inherited custom property changing restyles
+   every element under the one it's on.
+   Nothing takes one with `--x: inherit` either: WebKit (the app's WKWebView)
+   doesn't recompute an explicitly inherited value when only the parent's
+   inline value changes, so the child keeps a stale size (Chrome does). What's
+   under .win-rail and .insp fills a grid track sized by the element's own value. */
 @property --rail-w {
     syntax: "<length>";
     inherits: false;
@@ -91,12 +94,15 @@
 
 /* ---- Rail ------------------------------------------------------------ */
 
+/* Its one track keeps the rail's width (its own --rail-w) while the column opens and closes;
+   the sidebar, and the settings sections over it, fill that track. */
 .win-rail {
-    --rail-w: inherit;
     grid-column: 1;
     grid-row: 1;
     position: relative;
-    display: flex;
+    display: grid;
+    grid-template-columns: var(--rail-w);
+    grid-template-rows: minmax(0, 1fr);
     min-width: 0;
     min-height: 0;
     overflow: hidden;
@@ -104,7 +110,11 @@
     transition: opacity 240ms, transform var(--dur-panel) var(--ease);
 }
 
-.win-rail > :not(.settings-host),
+.win-rail > * {
+    grid-area: 1 / 1;
+    min-width: 0;
+}
+
 .win-rail > .keep > * {
     flex: 1;
     min-width: 0;
@@ -114,8 +124,6 @@
    the rail under the settings sections, the session under the settings page. Not positioned, so
    what's absolutely placed in it (the stage, Home) still fills the column it's in. */
 .keep {
-    /* The rail's width passes through to the sidebar (--rail-w isn't inherited; see above). */
-    --rail-w: inherit;
     display: flex;
     flex-direction: column;
     flex: 1;

@@ -379,7 +379,8 @@ export function App() {
     const panelKept = () => Boolean(prefs.panel && active() && !agent() && app.opening?.id !== app.activeId);
     // The sizes go on the elements that use them, not on .app: a custom property changing on an
     // element restyles everything under it, so on .app each frame of a drag restyled the window.
-    // (shell.css registers them as not inherited; the few children that need one inherit it explicitly.)
+    // shell.css registers them as not inherited, and nothing takes one with `inherit` (WebKit keeps a
+    // stale value there): each element that reads a size has it set here, on itself.
     const railWidth = () => railDrag() ?? prefs.sidebarWidth;
 
     return (
@@ -400,7 +401,7 @@ export function App() {
                     <div class="win-drag" data-tauri-drag-region />
                     <div class="rail-scrim" aria-hidden="true" onClick={() => setRailOpen(false)} />
                     {/* The rail sits straight on the window glass; in narrow windows it's a drawer over the sheet. */}
-                    <div class="win-rail" inert={!layout().railShown}>
+                    <div class="win-rail" inert={!layout().railShown} style={{ "--rail-w": `${railWidth()}px` }}>
                         <Show when={prefs.sidebar || layout().railMode === "overlay"}>
                             <div class="settings-host">
                                 <Show when={settingsTab()}>
