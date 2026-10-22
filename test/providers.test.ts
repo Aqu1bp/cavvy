@@ -531,6 +531,21 @@ describe("Chat Completions: streaming", () => {
         const msg = await new OpenAICompatProvider(CUSTOM, FAKE.openai).stream(req(model, []), () => {});
         expect(msg.content).toEqual([{ type: "tool_call", id: "c9", name: "read_file", input: { __invalid_json: '{"path": ' } }]);
         expect(msg.stopReason).toBe("tool_use");
+
+        const { validateInput } = await import("../src/tools");
+        const { ReadTool } = await import("../src/tools/file-tools");
+        const call = msg.content[0]!;
+        if (call.type !== "tool_call") throw new Error("expected a tool call");
+        const error = validateInput(ReadTool, call.input)!;
+        expect(error).toContain("The tool arguments were not valid JSON");
+        respond = () => sse([{ choices: [{ index: 0, delta: { content: "retry" }, finish_reason: "stop" }] }]);
+        await new OpenAICompatProvider(CUSTOM, FAKE.openai).stream(req(model, [msg, {
+            role: "user", content: [{ type: "tool_result", toolCallId: call.id, toolName: call.name, content: error, isError: true }],
+        }]), () => {});
+        const replay = seen[1]!.body.messages;
+        expect(replay[1].tool_calls[0].function.arguments).toBe("{}");
+        expect(replay[2]).toEqual({ role: "tool", tool_call_id: "c9", content: `Error: ${error}` });
+        expect((msg.raw!.openai!.tool_calls as Json[])[0]!.function.arguments).toBe('{"path": ');
     });
 
     test("finish_reason length maps to max_tokens", async () => {
