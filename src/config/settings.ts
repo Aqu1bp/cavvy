@@ -118,6 +118,12 @@ export interface Settings {
     /** Claude Code's grace after an answer for shells without a timeout of their own, and monitors; agents keep their own limit. */
     claudeCode?: { backgroundWaitSec?: number };
     /**
+     * Agent CLIs (Claude Code, Codex). `liveSessions`: keep one CLI process per session between turns, so
+     * background work outlives the turn that started it and Esc stops only the answer (#219; default true).
+     * False: a process per turn, as before, which waits for background work and stops it at the turn's end.
+     */
+    agentCli?: { liveSessions?: boolean };
+    /**
      * Servers from the project's .mcp.json the user approved: name -> a keyed
      * hash of what it runs (src/mcp/approval.ts). Any change asks again.
      * It and the two lists below count from user and local settings only.

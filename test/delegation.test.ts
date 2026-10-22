@@ -24,6 +24,8 @@ const { loadSettings } = await import("../src/config/settings");
 const { redact } = await import("../src/util/redact");
 const { DELEGATE_TOOL, DELEGATION_LIMITS, Delegations, MCP_SERVER_NAME, delegationAvailable, nativeModel, orchestratorTools } = await import("../src/agent/delegation");
 const { App } = await import("../src/ui/app");
+const { runCommand } = await import("../src/commands/index");
+const { stripAnsi } = await import("../src/ui/ansi");
 const { attachTiming } = await import("../src/backends/claude-code");
 const { SecretStore } = await import("../src/agent/secrets");
 
@@ -152,6 +154,8 @@ const { gitToolDeps } = await import("../src/tools/git-tools");
 const calls = (list: { server?: string; tool: string; args: Record<string, unknown> }[]) => (process.env.FAKE_MCP_CALLS = JSON.stringify(list));
 
 interface Opts {
+    /** The host says when a background task ends (the GUI). */
+    announces?: boolean;
     approvedMcpServers?: () => import("../src/mcp/manager").ApprovedMcpServers;
     provider: string;
     model?: Partial<ModelInfo>;
@@ -191,6 +195,7 @@ async function makeAgent(o: Opts) {
         listings: () => listings,
         host: {
             emit: (e) => events.push(e),
+            ...(o.announces ? { announcesBackgroundEnds: true } : {}),
             ui: o.ui ?? {},
             askPermission: o.headless
                 ? undefined
@@ -714,6 +719,25 @@ describe("Claude Code as the main agent", () => {
         expect(childRequests.map((r) => r.fastMode)).toEqual([true, false]);
     });
 
+    test("where the host says when a background task ends (the GUI), the agent doesn't say it again: one notice, not two (#282)", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "delegate", args: { task: "Review the code", description: "Review", model: "gemini:gemini-test", agent: "explore", wait: false } }]);
+        const g = gate();
+        script = async (req) => {
+            await g.wait(req.signal);
+            return say("Looks fine.");
+        };
+        const { run, events, agent } = await makeAgent({ provider: "claude-code", announces: true });
+        expect(await run("start a review")).toBe("done");
+        g.open();
+        await agent.delegatedTasks[0]!.settled;
+        expect(notices(events).filter((n) => n.includes("finished"))).toEqual([]);
+        // Its result still goes with the next prompt.
+        calls([]);
+        expect(await run("anything back?")).toBe("done");
+        expect(userTexts().at(-1)).toContain("Looks fine.");
+    });
+
     test("a background task's result comes with the next prompt", async () => {
         process.env.FAKE_SCENARIO = "mcp";
         calls([{ tool: "delegate", args: { task: "Review the code", description: "Review", model: "gemini:gemini-test", agent: "explore", wait: false } }]);
@@ -778,7 +802,7 @@ describe("Claude Code as the main agent", () => {
         expect(notices(events)).toContain("info: Stopped 1 delegated task.");
     });
 
-    test("after a switch to a harness model, esc still stops the tasks running in the background", async () => {
+    test("after a switch to a harness model, esc leaves the tasks running in the background, and an explicit stop ends them (#228)", async () => {
         process.env.FAKE_SCENARIO = "mcp";
         calls([{ tool: "delegate", args: { task: "Review", description: "Review", model: "gemini:gemini-test", agent: "explore", wait: false } }]);
         script = async (req) => {
@@ -796,9 +820,16 @@ describe("Claude Code as the main agent", () => {
         await Bun.sleep(50);
         ac.abort();
         expect(await done).toBe("aborted");
+        await Bun.sleep(30);
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["running"]);
+        expect(notices(events)).not.toContain("info: Stopped 1 delegated task.");
+        expect(notices(events)).toContain("info: 1 background task keeps running (/tasks stop stops it).");
+        // It's in the session's background list, and stops when asked to.
+        expect(agent.backgroundTasks()).toMatchObject([{ id: "task-1", provider: "gemini", kind: "agent", label: "Review", status: "running", stoppable: true }]);
+        expect(await agent.stopBackground(["task-1"])).toEqual({ "task-1": "stopped" });
         await agent.delegatedTasks[0]!.settled;
         expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["cancelled"]);
-        expect(notices(events)).toContain("info: Stopped 1 delegated task.");
+        expect(agent.backgroundTasks()[0]!.status).toBe("stopped");
     });
 
     test("stopping a task withdraws its permission prompt, and stops the shells it started", async () => {
@@ -1547,6 +1578,70 @@ describe("Monitor for Codex (it has none of its own)", () => {
 // ---------------------------------------------------------------------------
 
 describe("harness models", () => {
+    test("esc in an API session ends the turn, not a background Task started on an earlier turn: it still reports back (#228)", async () => {
+        const main = (content: unknown[], stopReason = "end_turn") => ({ role: "assistant", provider: "anthropic", model: "claude-main", stopReason, content, usage: { inputTokens: 10, outputTokens: 5 } });
+        const g = gate();
+        let n = 0;
+        const requests: ChatRequest[] = [];
+        const client = {
+            stream: async (req: ChatRequest) => {
+                requests.push(req);
+                n++;
+                if (n === 1) return main([{ type: "tool_call", id: "t1", name: "Task", input: { description: "Long review", prompt: "Review everything", model: "gemini:gemini-test", subagent_type: "explore", run_in_background: true } }], "tool_use");
+                if (n === 2) return main([{ type: "text", text: "Started it." }]);
+                // Turn 2 works until it's stopped; turn 3 answers.
+                if (n === 3) return gate().wait(req.signal).then(() => main([{ type: "text", text: "never" }]));
+                return main([{ type: "text", text: "Got the review." }]);
+            },
+            listModels: async () => [],
+        };
+        script = async () => (await g.wait(), say("All good."));
+        const { run, agent } = await makeAgent({ provider: "anthropic", model: { id: "claude-main" }, client });
+        expect(await run("start a background review")).toBe("done");
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["running"]);
+        const ac = new AbortController();
+        const turn2 = run("meanwhile, a quick question", ac.signal);
+        await until(() => n >= 3);
+        ac.abort();
+        expect(await turn2).toBe("aborted");
+        await Bun.sleep(30);
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["running"]);
+        // It finishes, and its result goes with the next prompt.
+        g.open();
+        await agent.delegatedTasks[0]!.settled;
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["done"]);
+        expect(await run("anything back?")).toBe("done");
+        expect(JSON.stringify(requests.at(-1)!.messages)).toContain("All good.");
+    });
+
+    test("the kill switch (agentCli.liveSessions false): Esc stops a background Task started on an earlier turn, as before #228", async () => {
+        const main = (content: unknown[], stopReason = "end_turn") => ({ role: "assistant", provider: "anthropic", model: "claude-main", stopReason, content, usage: { inputTokens: 10, outputTokens: 5 } });
+        const g = gate();
+        let n = 0;
+        const client = {
+            stream: async (req: ChatRequest) => {
+                n++;
+                if (n === 1) return main([{ type: "tool_call", id: "t1", name: "Task", input: { description: "Long review", prompt: "Review everything", model: "gemini:gemini-test", subagent_type: "explore", run_in_background: true } }], "tool_use");
+                if (n === 2) return main([{ type: "text", text: "Started it." }]);
+                return gate().wait(req.signal).then(() => main([{ type: "text", text: "never" }]));
+            },
+            listModels: async () => [],
+        };
+        script = async (req) => (await g.wait(req.signal), say("All good."));
+        const { run, agent, events } = await makeAgent({ provider: "anthropic", model: { id: "claude-main" }, client, settings: { agentCli: { liveSessions: false } } });
+        expect(await run("start a background review")).toBe("done");
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["running"]);
+        const ac = new AbortController();
+        const turn2 = run("meanwhile, a quick question", ac.signal);
+        await until(() => n >= 3);
+        ac.abort();
+        expect(await turn2).toBe("aborted");
+        await agent.delegatedTasks[0]!.settled;
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["cancelled"]);
+        expect(notices(events)).toContain("info: Stopped 1 delegated task.");
+        expect(notices(events).join("\n")).not.toContain("keeps running");
+    });
+
     test("Task runs a sub-agent on the model asked for, and ListModels shows what can run", async () => {
         const mainRequests: ChatRequest[] = [];
         const main = (content: unknown[], stopReason = "end_turn") => ({ role: "assistant", provider: "anthropic", model: "claude-main", stopReason, content, usage: { inputTokens: 10, outputTokens: 5 } });
@@ -1656,7 +1751,132 @@ describe("harness models", () => {
     });
 });
 
+describe("tasks that stopped when Harness quit", () => {
+    test("a /goal doesn't take the reminder of them (it leaves reminders for later): the next prompt does, and only then are they kept stopped (#282 review 6)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const prompts: string[] = [];
+        const backend = {
+            agentBackend: true as const,
+            setMode() {},
+            listModels: async () => [],
+            stream: async () => say(""),
+            compact: async () => ({ reason: "done" as const, text: "", actions: [] }),
+            runTurn: async (t: { prompt: string }) => (prompts.push(t.prompt), { reason: "done" as const, text: "ok", actions: [] }),
+        };
+        const { run, agent } = await makeAgent({ provider: "fake-cli", client: backend });
+        const logged = new Map([["bash_1", { id: "bash_1", provider: "harness", kind: "shell" as const, label: "npm run dev", startedAt: 5, status: "running" as const, stoppable: true }]]);
+        const log = { backgroundTasks: logged, recordBackgroundTask: (t: any) => void logged.set(t.id, t) };
+        agent.state.background = new SessionBackground(log);
+        expect(await run("/goal ship the release")).toBe("done");
+        expect(prompts[0]).not.toContain("stopped when Harness quit");
+        // Not taken: the log still has it running, so a reopen now would still tell.
+        expect(logged.get("bash_1")!.status).toBe("running");
+        expect(agent.state.background.shown().map((t) => t.lost)).toEqual([true]);
+        expect(await run("how's it going?")).toBe("done");
+        expect(prompts[1]).toContain("These background tasks stopped when Harness quit: background command: npm run dev (bash_1)");
+        expect(logged.get("bash_1")).toMatchObject({ status: "stopped", lost: true });
+    });
+});
+
 describe("the app", () => {
+    function tuiApp() {
+        const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
+        (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true, columns: 100, rows: 30 };
+        app.session = Session.create(cwd, { persist: false, system: "sys" });
+        const notes: string[] = [];
+        app.notice = (m: string, level = "info") => void notes.push(`${level}: ${m}`);
+        return { app, notes };
+    }
+
+    test("in the terminal, a background shell that ends while nothing else happens is kept in the log and said (#282 review 5)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const { backgroundPoll } = await import("../src/ui/app");
+        const saved = backgroundPoll.ms;
+        backgroundPoll.ms = 20;
+        const { app, notes } = tuiApp();
+        try {
+            const logged = new Map<string, any>();
+            app.toolState.background = new SessionBackground({ backgroundTasks: logged, recordBackgroundTask: (t) => void logged.set(t.id, t) });
+            const sh = { id: "bash_1", command: "npm run build", startedAt: Date.now() - 1000, output: "", readOffset: 0, exitCode: null as number | null, kill: async () => "stopped" as const };
+            app.toolState.shells.set(sh.id, sh);
+            // As a turn's end does.
+            (app as any).persistBackground();
+            expect(logged.get("bash_1")?.status).toBe("running");
+            // It ends with no turn going.
+            sh.exitCode = 0;
+            await until(() => logged.get("bash_1")?.status === "done", 2000);
+            expect(notes).toContain("info: Background command finished: npm run build (1s)");
+            // Nothing runs: it stops looking.
+            await until(() => (app as any).backgroundTimer === undefined, 2000);
+        } finally {
+            backgroundPoll.ms = saved;
+            if ((app as any).backgroundTimer) clearInterval((app as any).backgroundTimer);
+        }
+    });
+
+    test("in the terminal, a CLI's own turn that arrives during a model switch is adopted once it's over (#282 review 7)", async () => {
+        const { app } = tuiApp();
+        const turns: any[] = [];
+        const backend = {
+            agentBackend: true as const,
+            adoptsTurns: true,
+            setMode() {},
+            listModels: async () => [],
+            stream: async () => say(""),
+            compact: async () => ({ reason: "done" as const, text: "", actions: [] }),
+            runTurn: async (t: any) => (turns.push(t), { reason: "done" as const, text: "Auth is mapped.", actions: [] }),
+        };
+        const { agent } = await makeAgent({ provider: "fake-cli", client: backend });
+        app.agent = agent;
+        (app as any).switching = true;
+        app.adoptWake({ provider: "fake-cli", ref: "turn-3", label: "Background task finished: Map auth" });
+        await Bun.sleep(200);
+        expect(turns).toEqual([]);
+        (app as any).switching = false;
+        await until(() => turns.length === 1 && !app.busy, 5000);
+        expect(turns[0].adopt).toBe("turn-3");
+        expect(agent.session.messages.find((m) => m.role === "user")?.meta).toMatchObject({ kind: "wake", display: "Background task finished: Map auth" });
+    });
+
+    test("/tasks lists the session's background work beside its delegated tasks, and /tasks stop <id|all> stops it", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "delegate", args: { task: "Review", description: "Review the diff", model: "gemini:gemini-test", agent: "explore", wait: false } }]);
+        script = async (req) => {
+            await gate().wait(req.signal);
+            return say("never");
+        };
+        const { run, agent } = await makeAgent({ provider: "claude-code" });
+        expect(await run("start it")).toBe("done");
+        let killed = 0;
+        const sh = { id: "bash_1", command: "npm run dev", startedAt: Date.now(), output: "", readOffset: 0, exitCode: null as number | null, kill: async () => ((killed++, (sh.exitCode = 143)), "stopped" as const) };
+        agent.state.shells.set(sh.id, sh);
+        const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
+        const printed: string[] = [];
+        const notes: string[] = [];
+        (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true };
+        app.session = Session.create(cwd, { persist: false });
+        app.agent = agent;
+        app.print = (lines: any) => void printed.push(...(Array.isArray(lines) ? lines : [lines]).map((l: unknown) => stripAnsi(String(l))));
+        app.notice = (m: string, level = "info") => void notes.push(`${level}: ${m}`);
+        await runCommand(app, "/tasks");
+        const listing = printed.join("\n");
+        expect(listing).toContain("task-1");
+        expect(listing).toContain("Review the diff");
+        expect(listing).toContain("bash_1");
+        expect(listing).toContain("background command: npm run dev");
+        expect(listing).toContain("/tasks stop all stops them all");
+        await runCommand(app, "/tasks stop bash_1");
+        expect(killed).toBe(1);
+        expect(notes.at(-1)).toBe("info: Stopping 1 background task.");
+        await runCommand(app, "/tasks stop nope");
+        expect(notes.at(-1)).toBe("error: No running background task nope. /tasks lists them.");
+        await runCommand(app, "/tasks stop all");
+        await agent.delegatedTasks[0]!.settled;
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["cancelled"]);
+        await runCommand(app, "/tasks stop");
+        expect(notes.at(-1)).toBe("info: No background tasks are running.");
+    });
+
     test("a stopped sub-agent's prompt is withdrawn, and one still queued isn't shown", async () => {
         const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
         (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true };
@@ -1928,6 +2148,243 @@ describe("a read-only agent on Claude Code or Codex", () => {
             expect(readOnlyBackendMode("default", p)).toBe("default");
             expect(readOnlyBackendMode("acceptEdits", p)).toBe("default");
             expect(readOnlyBackendMode("bypassPermissions", p)).toBe("default");
+        }
+    });
+});
+
+describe("the terminal's background list across sessions and turns: #282 review round 2", () => {
+    function tui() {
+        const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
+        (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true, columns: 100, rows: 30 };
+        const notes: string[] = [];
+        app.notice = (m: string, level = "info") => void notes.push(`${level}: ${m}`);
+        (app as any).makeAgent = () => {};
+        (app as any).replayTranscript = () => {};
+        (app as any).sessionSwitched = () => {};
+        return { app, notes };
+    }
+    const shell = (id: string, command: string) => ({ id, command, startedAt: Date.now() - 1000, output: "", readOffset: 0, exitCode: null as number | null, kill: async () => "stopped" as const });
+    const stopTimer = (app: App) => (app as any).backgroundTimer && clearInterval((app as any).backgroundTimer);
+
+    test("a shell left running by /new that then finishes isn't 'stopped when Harness quit' when its session is reopened (A3)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const { app } = tui();
+        try {
+            app.session = Session.create(cwd, { system: "sys" });
+            app.session.push({ role: "user", content: [{ type: "text", text: "start the build" }], meta: { kind: "prompt" } });
+            (app as any).bindBackground();
+            const sh = shell("bash_1", "npm run build");
+            app.toolState.shells.set(sh.id, sh);
+            (app as any).persistBackground();
+            const pathA = app.session.path;
+            app.newSession();
+            sh.exitCode = 0;
+            (app as any).persistBackground();
+            // Not the new session's either.
+            expect(app.toolState.background!.shown().map((t) => t.id)).toEqual([]);
+            const reopened = new SessionBackground(Session.load(pathA));
+            expect(reopened.shown().filter((t) => t.lost)).toEqual([]);
+        } finally {
+            stopTimer(app);
+        }
+    });
+
+    test("back in the session (/resume) while its shell still runs: the agent isn't told it stopped, and it's listed running (A3)", async () => {
+        const { app } = tui();
+        try {
+            app.session = Session.create(cwd, { system: "sys" });
+            app.session.push({ role: "user", content: [{ type: "text", text: "start the dev server" }], meta: { kind: "prompt" } });
+            (app as any).bindBackground();
+            const sh = shell("bash_7", "npm run dev");
+            app.toolState.shells.set(sh.id, sh);
+            (app as any).persistBackground();
+            const pathA = app.session.path;
+            app.newSession();
+            app.resume(pathA);
+            // What the next prompt's run() takes (agent.ts runInner: takeLost, then lostNote).
+            expect(app.toolState.background!.takeLost().map((t) => t.id)).toEqual([]);
+            expect(app.toolState.background!.shown({ shells: app.toolState.shells }).map((t) => [t.id, t.status])).toEqual([["bash_7", "running"]]);
+        } finally {
+            stopTimer(app);
+        }
+    });
+
+    test("the first shell a turn starts is looked at from its launch: one that ends before the turn does is kept and said (B6)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const { backgroundPoll } = await import("../src/ui/app");
+        const saved = backgroundPoll.ms;
+        backgroundPoll.ms = 20;
+        const { app, notes } = tui();
+        try {
+            const logged = new Map<string, any>();
+            app.toolState.background = new SessionBackground({ backgroundTasks: logged, recordBackgroundTask: (t) => void logged.set(t.id, t) });
+            (app as any).boundBackground = app.session;
+            (app as any).busy = true;
+            const sh = shell("bash_1", "npm run build");
+            app.toolState.shells.set(sh.id, sh);
+            // Its Bash call ends (the shell runs on); the turn goes on.
+            const call = { type: "tool_call", id: "b1", name: "Bash", input: { command: "npm run build", run_in_background: true } };
+            (app as any).onAgentEvent({ type: "tool_end", call, result: { content: "Started bash_1" }, durationMs: 5 });
+            expect(logged.get("bash_1")?.status).toBe("running");
+            sh.exitCode = 0;
+            await until(() => logged.get("bash_1")?.status === "done", 2000);
+            expect(notes).toContain("info: Background command finished: npm run build (1s)");
+        } finally {
+            backgroundPoll.ms = saved;
+            stopTimer(app);
+        }
+    });
+});
+
+describe("the background list across sessions, and the delegate tool's own tasks: #282 review round 3", () => {
+    function tui() {
+        const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
+        (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true, columns: 100, rows: 30 };
+        app.notice = () => {};
+        (app as any).makeAgent = () => {};
+        (app as any).replayTranscript = () => {};
+        (app as any).sessionSwitched = () => {};
+        return app;
+    }
+    const stopTimer = (app: InstanceType<typeof App>) => (app as any).backgroundTimer && clearInterval((app as any).backgroundTimer);
+
+    test("/new while a delegated task runs: the Agent it ran under goes, and the old session's log has it stopped then, not 'stopped when Harness quit'", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const app = tui();
+        try {
+            app.session = Session.create(cwd, { system: "sys" });
+            app.session.push({ role: "user", content: [{ type: "text", text: "review it in the background" }], meta: { kind: "prompt" } });
+            const task = { id: "task-1", description: "Review a.ts", model: "gemini:gemini-test", status: "running", startedAt: Date.now() - 1000, controller: new AbortController() };
+            // An Agent (model and client set): makeAgent replaces it, and its delegated tasks stop with it.
+            (app as any).agent = { delegatedTasks: [task], backgroundTasks: () => [] };
+            (app as any).model = GEMINI;
+            (app as any).client = {};
+            (app as any).bindBackground();
+            (app as any).persistBackground();
+            const pathA = app.session.path;
+            expect(Session.load(pathA).backgroundTasks.get("task-1")?.status).toBe("running");
+            app.newSession();
+            expect(Session.load(pathA).backgroundTasks.get("task-1")?.status).toBe("stopped");
+            expect(new SessionBackground(Session.load(pathA)).shown().filter((t) => t.lost)).toEqual([]);
+        } finally {
+            stopTimer(app);
+        }
+    });
+
+    for (const live of [true, false]) {
+        test(`a shell that ends on its own is a line in the terminal${live ? "" : ", except with the kill switch off (agentCli.liveSessions false, P2)"}`, async () => {
+            const app = tui();
+            const notes: string[] = [];
+            app.notice = (m: string, level = "info") => void notes.push(`${level}: ${m}`);
+            try {
+                if (!live) app.settings = { ...app.settings, agentCli: { liveSessions: false } };
+                app.session = Session.create(cwd, { system: "sys" });
+                (app as any).bindBackground();
+                const sh = { id: "bash_1", command: "npm run lint", startedAt: Date.now() - 1000, output: "", readOffset: 0, exitCode: null as number | null, kill: async () => "stopped" as const };
+                app.toolState.shells.set(sh.id, sh as never);
+                (app as any).persistBackground();
+                sh.exitCode = 1;
+                (app as any).persistBackground();
+                expect(notes.filter((n) => n.includes("npm run lint"))).toHaveLength(live ? 1 : 0);
+            } finally {
+                stopTimer(app);
+            }
+        });
+    }
+
+    test("/tasks stop on a task that had already ended says so, not that it couldn't be stopped (K1)", async () => {
+        const app = tui();
+        const notes: string[] = [];
+        app.notice = (m: string, level = "info") => void notes.push(`${level}: ${m}`);
+        app.session = Session.create(cwd, { persist: false });
+        app.toolState.background = undefined;
+        (app as any).agent = {
+            delegatedTasks: [],
+            backgroundTasks: () => [{ id: "bash_9", provider: "harness", kind: "shell", label: "npm test", startedAt: 1, status: "running", stoppable: true }],
+            stopBackground: async () => ({ bash_9: "ended" }),
+        };
+        await runCommand(app, "/tasks stop bash_9");
+        expect(notes).toEqual(["info: bash_9 had already ended."]);
+    });
+
+    test("after /new, a shell the old session started isn't listed in, or logged to, the new session (A3, its shells passed)", async () => {
+        const app = tui();
+        try {
+            app.session = Session.create(cwd, { system: "sys" });
+            app.session.push({ role: "user", content: [{ type: "text", text: "start the build" }], meta: { kind: "prompt" } });
+            (app as any).bindBackground();
+            const sh = { id: "bash_1", command: "npm run build", startedAt: Date.now() - 1000, output: "", readOffset: 0, exitCode: null as number | null, kill: async () => "stopped" as const };
+            app.toolState.shells.set(sh.id, sh as never);
+            (app as any).persistBackground();
+            app.newSession();
+            app.session.push({ role: "user", content: [{ type: "text", text: "something else" }], meta: { kind: "prompt" } });
+            (app as any).persistBackground();
+            expect(app.toolState.background!.shown({ shells: app.toolState.shells }).map((t) => `${t.id}:${t.status}`)).toEqual([]);
+            expect([...app.session.backgroundTasks.keys()]).toEqual([]);
+        } finally {
+            stopTimer(app);
+        }
+    });
+
+    test("the delegate tool's waited-on task is never listed, logged, or announced (A4/B5, through the tool)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        let finish!: (r: any) => void;
+        const logged = new Map<string, any>();
+        const recorded: string[] = [];
+        const bg = new SessionBackground({ backgroundTasks: logged, recordBackgroundTask: (t) => (recorded.push(`${t.id}:${t.status}`), void logged.set(t.id, t)) });
+        const listed: string[] = [];
+        const news: string[] = [];
+        let tasks!: InstanceType<typeof Delegations>;
+        const look = () => {
+            for (const n of bg.sync({ delegated: tasks.list() })) news.push(n.id);
+            for (const t of bg.shown({ delegated: tasks.list() })) listed.push(`${t.id}:${t.status}`);
+        };
+        tasks = new Delegations(() => new Promise((r) => (finish = r)), undefined, look);
+        const tools = orchestratorTools({
+            caller: () => "claude-code",
+            listings: () => [listing("claude-code", ["default"]), listing("gemini", ["gemini-test"])],
+            projectRoot: () => cwd,
+            checkModel: async () => ({}),
+            claimCall: async () => "call-1",
+            tasks,
+        } as never);
+        const call = tools.find((t) => t.name === "delegate")!.call({ task: "Review", description: "Review a.ts", model: "gemini:gemini-test", agent: "explore" }, { signal: new AbortController().signal, meta: {} } as never);
+        for (let i = 0; i < 100 && !finish; i++) await Bun.sleep(10);
+        expect(finish).toBeDefined();
+        look();
+        finish({ status: "done", report: "LGTM", model: "gemini:gemini-test", tokens: 1, durationMs: 5 });
+        await call;
+        look();
+        expect(listed).toEqual([]);
+        expect(recorded).toEqual([]);
+        expect(news).toEqual([]);
+    });
+
+    test("a delegate call whose wait runs out leaves its task in the background: listed running, and its end is news (A4/B5, through the tool)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const saved = DELEGATION_LIMITS.defaultWaitMs;
+        DELEGATION_LIMITS.defaultWaitMs = 30;
+        try {
+            let finish!: (r: any) => void;
+            const bg = new SessionBackground();
+            const tasks = new Delegations(() => new Promise((r) => (finish = r)));
+            const tools = orchestratorTools({
+                caller: () => "claude-code",
+                listings: () => [listing("claude-code", ["default"]), listing("gemini", ["gemini-test"])],
+                projectRoot: () => cwd,
+                checkModel: async () => ({}),
+                claimCall: async () => "call-1",
+                tasks,
+            } as never);
+            const r = await tools.find((t) => t.name === "delegate")!.call({ task: "Review", description: "Review a.ts", model: "gemini:gemini-test", agent: "explore" }, { signal: new AbortController().signal, meta: {} } as never);
+            expect(r.text).toContain("It keeps running");
+            expect(bg.shown({ delegated: tasks.list() }).map((t) => t.status)).toEqual(["running"]);
+            bg.sync({ delegated: tasks.list() });
+            finish({ status: "done", report: "LGTM", model: "gemini:gemini-test", tokens: 1, durationMs: 5 });
+            for (let i = 0; i < 100 && tasks.list()[0]!.status === "running"; i++) await Bun.sleep(5);
+            expect(bg.sync({ delegated: tasks.list() }).map((t) => t.status)).toEqual(["done"]);
+        } finally {
+            DELEGATION_LIMITS.defaultWaitMs = saved;
         }
     });
 });

@@ -56,7 +56,7 @@ import { TurnSnapshots, type TurnCapture } from "./turn-snapshots";
 import { redact } from "../util/redact";
 import type { Skill } from "./skills";
 import { claudeAgents } from "../backends/claude-agents";
-import { isAgentBackend, type AgentBackendClient, type BackendHost, type BackendPermission, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "../backends/types";
+import { isAgentBackend, type AgentBackendClient, type BackendPermission, type BackgroundStop, type BackendWake, type SessionEvent, type SessionHost, type TurnSink, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer } from "../backends/types";
 import { getProvider, imageTypesOf } from "../providers/registry";
 import { ACCOUNT_PROVIDERS, account, accountRealPath } from "../providers/accounts";
 import { forBackend, pastedTexts, readsPdf } from "../providers/files";
@@ -65,7 +65,8 @@ import { cachedListings, type ProviderListing } from "../providers/models";
 import { registerTools, type Registration, type ServerTool, type ServerToolResult } from "../mcp/server";
 import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
-import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall } from "../tools/monitor";
+import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMonitorNote } from "../tools/monitor";
+import { lostNote, SessionBackground, type BackgroundTaskInfo } from "./background";
 import { SECRET_INSTRUCTIONS, secretTools, secretToolTitle } from "./secret-tools";
 import { readFile } from "fs/promises";
 import { join, relative } from "path";
@@ -187,6 +188,23 @@ export interface AgentHost {
      * until it's stored and sent.
      */
     drainWaiting?(steps: { record(): void; admit(parts: UserContent[], display: string): Promise<Admission> }): Promise<{ parts: UserContent[]; display: string } | undefined>;
+    /** A backend's CLI started a turn by itself: start a wake turn that adopts it (run's `adopt`). */
+    wake?(w: BackendWake): void;
+    /** The session's background work changed (a delegated task started or settled, a CLI reported a task). */
+    backgroundChanged?(): void;
+    /** The host tells the user itself when a background task ends (the GUI's notices): the agent doesn't say it too. */
+    announcesBackgroundEnds?: boolean;
+}
+
+/** How each task asked to stop went (Agent.stopBackground). */
+export type BackgroundStops = Record<string, BackgroundStop>;
+
+export interface RunOptions {
+    signal: AbortSignal;
+    display?: string;
+    kind?: "prompt" | "command" | "wake";
+    /** A wake turn the backend's CLI started by itself (AgentHost.wake): nothing is sent; the turn takes its events until it ends. */
+    adopt?: BackendWake;
 }
 
 /** What a queued message's hooks, and whether it can still go, decided (AgentHost.drainWaiting). */
@@ -604,13 +622,14 @@ export class Agent {
     // -----------------------------------------------------------------------
 
     /** Run one user turn to completion. */
-    async run(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" | "wake" }): Promise<TurnEndReason> {
+    /** `adopt`: a wake turn its backend's CLI started by itself (AgentHost.wake): nothing is sent, its events are taken. */
+    async run(content: UserContent[], opts: RunOptions): Promise<TurnEndReason> {
         if (this.running) throw new Error("Agent is already running");
         this.running = true;
         this.prompted = false;
         this.limitStop = undefined;
-        // Interrupting a turn stops the delegated tasks still running, those in the background too
-        // (delegated on an earlier turn, maybe before a switch to another model).
+        // Interrupting a turn stops the delegated tasks it waits on. Those in the background (started on this
+        // turn or an earlier one) run on: only an explicit stop ends them (#228, stopBackground).
         const onAbort = () => this.cancelTasks();
         opts.signal.addEventListener("abort", onAbort, { once: true });
         this.hookStop = undefined;
@@ -644,7 +663,7 @@ export class Agent {
         }
     }
 
-    private async runInner(content: UserContent[], opts: { signal: AbortSignal; display?: string; kind?: "prompt" | "command" | "wake" }): Promise<TurnEndReason> {
+    private async runInner(content: UserContent[], opts: RunOptions): Promise<TurnEndReason> {
         const { signal } = opts;
         const settings = this.hookSettings();
         const promptText = promptTextOf(content);
@@ -660,24 +679,35 @@ export class Agent {
             }
             if (h.context) this.addReminder(h.context);
         }
+        // A turn its CLI started by itself (adopt) is sent nothing: Harness's notes, results and context all wait
+        // for the next prompt that is sent, as they do for a /goal.
+        const adopting = Boolean(opts.adopt);
         // SessionStart hooks' context goes with the first prompt after them.
-        for (const c of this.o.isSubagent ? [] : this.session.hookContext.splice(0)) this.addReminder(c);
+        for (const c of this.o.isSubagent || adopting ? [] : this.session.hookContext.splice(0)) this.addReminder(c);
 
         // Delegated tasks that ended during a turn on another model (not a backend's) go with this prompt.
-        this.deliverTasks(false);
+        if (!adopting) this.deliverTasks(false);
         // Its images fitted to what providers take, before they're stored (and resent every turn). Claude Code and Codex take them as they came.
         const parts: UserContent[] = [...(isAgentBackend(this.client) ? content : await fitContent(content))];
         // A /goal to Claude Code or Codex is their own command, sent as typed: Harness's notes wait for the next prompt.
         const goalCommand = isAgentBackend(this.client) && GOAL_COMMAND.test(promptText);
-        for (const r of goalCommand ? [] : this.pendingReminders.splice(0)) parts.push(reminder(r.text));
+        const keepNotes = goalCommand || adopting;
+        // Background tasks that stopped when Harness quit (the session was open with them running): said once, with
+        // a prompt that takes the reminders now (it's stored just below). Taking them writes them stopped in the
+        // log, so not for a /goal, which leaves its reminders for the next prompt (kept in memory only).
+        const lost = this.o.isSubagent || keepNotes ? [] : (this.state.background?.takeLost() ?? []);
+        // With the kill switch off (liveSessions), only written stopped, as before: the agent isn't told.
+        if (lost.length && this.liveSessions) this.addReminder(lostNote(lost));
+        for (const r of keepNotes ? [] : this.pendingReminders.splice(0)) parts.push(reminder(r.text));
         // Codex's edits are checked too: what came after their wait goes with this prompt (after a /goal, with the next).
-        const late = goalCommand ? undefined : this.lateDiagnostics();
+        const late = keepNotes ? undefined : this.lateDiagnostics();
         if (late) parts.push(late);
         const prompt = this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint } });
         this.prompted = true;
 
         // Claude Code, Codex: the backend runs the whole turn with its own tools (the prompt as stored: redacted).
-        if (isAgentBackend(this.client)) return this.runBackend(this.client, prompt.content, signal, opts.kind === "wake");
+        if (isAgentBackend(this.client)) return this.runBackend(this.client, prompt.content, signal, opts.kind === "wake", opts.adopt);
+        if (opts.adopt) return this.cannotAdopt(opts.adopt);
 
         let turns = 0;
         let maxTokenStrikes = 0;
@@ -1442,7 +1472,7 @@ export class Agent {
         return this.pluginsNative() ? withoutPluginHooks(s) : s;
     }
 
-    private backendTurn(signal: AbortSignal, host: BackendHost): Omit<BackendTurn, "prompt" | "images" | "resumeId"> {
+    private backendTurn(signal: AbortSignal, session: SessionHost, sink: TurnSink): Omit<BackendTurn, "prompt" | "images" | "resumeId"> {
         const s = this.o.settings();
         let trusted = false;
         let approvedMcpServers: ApprovedMcpServers | undefined;
@@ -1453,7 +1483,7 @@ export class Agent {
             approvedMcpServers = this.o.approvedMcpServers?.();
         } catch {
             trusted = false;
-            host.emit({ type: "notice", level: "warn", message: "Could not check folder trust or approved MCP servers; this turn runs without project configuration or MCP servers." });
+            sink.emit({ type: "notice", level: "warn", message: "Could not check folder trust or approved MCP servers; this turn runs without project configuration or MCP servers." });
         }
         return {
             cwd: this.state.cwd,
@@ -1479,7 +1509,9 @@ export class Agent {
             readOnly: this.o.readOnly,
             agents: this.nativeAgents(trusted),
             signal,
-            host,
+            sessionKey: this.session.meta.id,
+            session,
+            sink,
         };
     }
 
@@ -1594,6 +1626,7 @@ export class Agent {
         return (this.delegations ??= new Delegations(
             (req, signal) => this.runChild(req.callId ?? "", req, signal),
             (t) => this.taskSettled(t),
+            () => this.o.host.backgroundChanged?.(),
         ));
     }
 
@@ -1610,7 +1643,8 @@ export class Agent {
         for (const t of this.delegations?.undelivered() ?? []) {
             t.delivered = true;
             this.addReminder(taskEndedNote(t, backend));
-            if (notify) this.emit({ type: "notice", level: "info", message: `${backend ? "Delegated" : "Background"} task ${t.id} "${t.description}" (${t.model}) ${t.status === "done" ? "finished" : t.status}. Its result goes to ${name} with your next message.` });
+            // The window announces it (notifyBackground), unless the kill switch is off (liveSessions): then a line, as before.
+            if (notify && (!this.o.host.announcesBackgroundEnds || !this.liveSessions)) this.emit({ type: "notice", level: "info", message: `${backend ? "Delegated" : "Background"} task ${t.id} "${t.description}" (${t.model}) ${t.status === "done" ? "finished" : t.status}. Its result goes to ${name} with your next message.` });
         }
     }
 
@@ -1633,10 +1667,108 @@ export class Agent {
         this.emit({ type: "notice", level: "info", message: `${running} background task${running === 1 ? " is" : "s are"} still running. ${running === 1 ? "Its result goes" : "Their results go"} to ${this.model.name ?? this.model.id} with your next message (/tasks shows them, /tasks stop stops them).` });
     }
 
-    /** Stop the delegated tasks still running (the user interrupted the turn). */
+    /**
+     * The agentCli.liveSessions kill switch (on unless it's false). Off, the session-level background behaviour
+     * of #219 PR 2 falls back to what it was: Esc stops every delegated task (cancelTasks), a delegated task's end
+     * is a transcript line again rather than the window's notice (deliverTasks; the runtime and the TUI send no
+     * background notices), and the agent isn't told of tasks that stopped when Harness quit. The Background list,
+     * its log lines and the user's explicit Stop stay: they only add a view and an action the user takes.
+     */
+    private get liveSessions(): boolean {
+        return this.o.settings().agentCli?.liveSessions !== false;
+    }
+
+    /** The user interrupted the turn: stop the delegated tasks it waits on (not those in the background, #228). */
     private cancelTasks() {
-        const n = this.delegations?.cancelAll() ?? 0;
+        if (!this.liveSessions) {
+            // The kill switch: as before #228, interrupting a turn stops every delegated task, those in the background too.
+            const all = this.delegations?.cancelAll() ?? 0;
+            if (all) this.emit({ type: "notice", level: "info", message: `Stopped ${all} delegated task${all === 1 ? "" : "s"}.` });
+            return;
+        }
+        const n = this.delegations?.cancelForeground() ?? 0;
         if (n) this.emit({ type: "notice", level: "info", message: `Stopped ${n} delegated task${n === 1 ? "" : "s"}.` });
+        const left = this.delegations?.running().filter((t) => !t.controller.signal.aborted).length ?? 0;
+        if (left) this.emit({ type: "notice", level: "info", message: `${left} background task${left === 1 ? " keeps" : "s keep"} running (/tasks stop stops ${left === 1 ? "it" : "them"}).` });
+    }
+
+    /** A wake turn to adopt, on a model that can't take one (another provider's now, or one that runs no CLI). */
+    private cannotAdopt(w: BackendWake): TurnEndReason {
+        const name = getProvider(w.provider)?.name ?? w.provider;
+        this.endNotice("warn", `${name} started a turn of its own, but this session can't take it over now${this.model.provider === w.provider ? "" : ` (it's on ${this.model.name ?? this.model.id})`}.`);
+        this.emit({ type: "turn_end", reason: "error" });
+        return "error";
+    }
+
+    /** Session-level news from a backend: its background tasks, a notice outside any turn. */
+    private sessionEvent(e: SessionEvent) {
+        if (e.type === "notice") return this.emit(e);
+        this.state.background?.report(e.task);
+        this.o.host.backgroundChanged?.();
+    }
+
+    /** The session's background work, as one list (src/agent/background.ts): running and ended. */
+    backgroundTasks(): BackgroundTaskInfo[] {
+        return (this.state.background ?? new SessionBackground()).list({ delegated: this.delegatedTasks, shells: this.state.shells });
+    }
+
+    /**
+     * Stop background work: these tasks, or every one running. A delegated task and a shell of the harness's
+     * own stop here; one an agent CLI runs is asked of its backend (none can while its CLI isn't running).
+     */
+    async stopBackground(ids?: string[]): Promise<BackgroundStops> {
+        const all = this.backgroundTasks();
+        const targets = ids ?? all.filter((t) => t.status === "running").map((t) => t.id);
+        const out: BackgroundStops = {};
+        const cli: string[] = [];
+        await Promise.all(
+            targets.map(async (id) => {
+                // One that had already ended (the list the user stopped from was a moment old) keeps its own
+                // outcome: the stop counts as theirs only when it's what ended the task.
+                const task = this.delegations?.get(id);
+                if (task) {
+                    if (task.status === "running") this.delegations!.cancel(id);
+                    out[id] = task.status === "running" ? "stopped" : "ended";
+                    return;
+                }
+                const shell = this.state.shells.get(id);
+                if (shell) {
+                    if (shell.exitCode !== null) {
+                        out[id] = "ended";
+                        return;
+                    }
+                    // Its process already gone (its exit not taken in yet): it ended on its own.
+                    if ((await shell.kill()) === "gone") {
+                        out[id] = "ended";
+                        return;
+                    }
+                    // The agent may be counting on a monitor to wake it: it hears it was stopped with the next message.
+                    if (shell.monitor) this.addReminder(stoppedMonitorNote(shell));
+                    out[id] = "stopped";
+                    return;
+                }
+                const t = all.find((x) => x.id === id);
+                if (!t) out[id] = "unknown";
+                else if (t.status !== "running") out[id] = "ended";
+                else if (!t.stoppable) out[id] = "not_stoppable";
+                else cli.push(id);
+            }),
+        );
+        if (cli.length) {
+            const backend = isAgentBackend(this.client) ? this.client : undefined;
+            const mine = cli.filter((id) => all.find((t) => t.id === id)?.provider === this.model.provider);
+            for (const id of cli) if (!mine.includes(id) || !backend?.stopBackground) out[id] = "not_stoppable";
+            if (mine.length && backend?.stopBackground) Object.assign(out, await backend.stopBackground(this.session.meta.id, mine).catch(() => Object.fromEntries(mine.map((id) => [id, "failed" as const]))));
+            // Its CLI doesn't know it (the run it was in is over, without a word of its end): it isn't running.
+            for (const id of mine) {
+                const t = out[id] === "unknown" ? this.state.background?.get(id) : undefined;
+                if (t?.status !== "running") continue;
+                this.state.background!.report({ ...t, status: "stopped", endedAt: Date.now(), withProcess: true });
+                out[id] = "stopped";
+            }
+        }
+        this.o.host.backgroundChanged?.();
+        return out;
     }
 
     /** Tasks delegated in this session (/tasks). */
@@ -1708,7 +1840,13 @@ export class Agent {
      * conversation so far (it may have started on another model); a resumed
      * one gets what other models said since its last turn.
      */
-    private backendPrompt(text: string, promptIndex: number, resume?: { synced: number }): string {
+    private backendPrompt(text: string, promptIndex: number, resume?: { synced: number; unsent?: string }): string {
+        // What it wasn't sent before its place (an adopted turn moved it past that): first, as it happened first.
+        const body = this.missedPrompt(text, promptIndex, resume);
+        return resume?.unsent ? `${resume.unsent}\n\n${body}` : body;
+    }
+
+    private missedPrompt(text: string, promptIndex: number, resume?: { synced: number }): string {
         const missed = this.session.messages.slice(resume ? resume.synced : 0, promptIndex).map(withoutStateNotes);
         // Only that its last turn was stopped, which it never heard (Harness stopped or died part way), and
         // Harness's notes to it since (a message that missed that turn): said plainly, not as another model's turn.
@@ -1727,11 +1865,12 @@ export class Agent {
     }
 
     /** `woken`: the turn is for wakes, so its prompt carries others' words (see BackendTurn.synthetic). */
-    private async runBackend(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal, woken = false): Promise<TurnEndReason> {
+    private async runBackend(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal, woken = false, adopt?: BackendWake): Promise<TurnEndReason> {
+        if (adopt && (!backend.adoptsTurns || adopt.provider !== this.model.provider)) return this.cannotAdopt(adopt);
         // A wake while the backend works is offered to it as a message the user queued is (Codex steers with it at once).
         const stopWaking = this.o.isSubagent ? undefined : this.state.wakes?.onReady(() => this.queueChanged());
         try {
-            return await this.runBackendTurn(backend, parts, signal, woken);
+            return await this.runBackendTurn(backend, parts, signal, woken, adopt?.ref);
         } finally {
             stopWaking?.();
             this.delegateCalls = [];
@@ -1744,9 +1883,17 @@ export class Agent {
     }
 
     private backendStopReminders: string[] = [];
+    /**
+     * A model turn took this round's prompt: the backend reported a model's usage (input read) or its output (text,
+     * thinking, a tool call). Not a command the CLI answers itself (Codex's /goal status: no model turn, "done"), nor
+     * a start that failed: those weren't delivered, and what was waiting (BackendSession.unsent) stays.
+     */
+    private modelTookPrompt = false;
+    /** An adopted turn running: what its CLI wasn't sent, carried with each move of its place (SessionHost.sessionId). */
+    private adoptedUnsent?: { provider: string; text: string };
 
     /** How a backend runs the harness's hooks: whole events (Codex's items), or one handler Claude Code calls back for. */
-    private backendHooks(signal: AbortSignal): Pick<BackendHost, "hooks" | "hookHandler"> {
+    private backendHooks(signal: AbortSignal): Pick<SessionHost, "hooks" | "hookHandler"> {
         return {
             hooks: (event, payload) => this.hooks(event, payload, signal),
             hookHandler: async (event, h, input, sig) => {
@@ -1768,7 +1915,8 @@ export class Agent {
         };
     }
 
-    private async runBackendTurn(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal, woken: boolean): Promise<TurnEndReason> {
+    /** `adopt`: the turn the CLI started by itself to take (BackendTurn.adopt), sending nothing. */
+    private async runBackendTurn(backend: AgentBackendClient, parts: UserContent[], signal: AbortSignal, woken: boolean, adopt?: string): Promise<TurnEndReason> {
         // Its first request goes with the prompt.
         this.backendRequestAt = Date.now();
         this.idleTried = false;
@@ -1782,9 +1930,10 @@ export class Agent {
         const wakeTexts = new Set<string>();
         /** What drainQueued handed over from the user, to the words they typed (what hooks added follows). */
         const typed = new Map<string, string>();
-        const host: BackendHost = {
+        // The session's side. Still made per turn for the backends that run a process per turn (its permission
+        // answers end this turn); a live CLI session binds one for good (#219).
+        const session: SessionHost = {
             ...this.backendHooks(signal),
-            emit: (e) => this.emitFromBackend(e),
             mode: () => this.o.mode.get(),
             fastMode: () => this.fastMode(),
             permission: async (req) => {
@@ -1814,7 +1963,14 @@ export class Agent {
             },
             usage: (u, o) => this.recordBackendUsage(u, o),
             context: (tokens) => this.recordBackendContext(tokens),
-            sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length, folder),
+            // An adopted turn's move of its place carries what it wasn't sent, in the same line (adoptedUnsent).
+            sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length, folder, this.adoptedUnsent?.provider === provider ? this.adoptedUnsent.text : undefined),
+            limits: (limits, partial) => this.emitFromBackend({ type: "limits", limits, partial }),
+            emitSession: (e) => this.sessionEvent(e),
+            onWake: (w) => this.o.host.wake?.(w),
+        };
+        const sink: TurnSink = {
+            emit: (e) => this.emitFromBackend(e),
             onQueued: (listener) => {
                 this.queueListeners.add(listener);
                 return () => this.queueListeners.delete(listener);
@@ -1917,7 +2073,7 @@ export class Agent {
             declined = true;
             stopper.abort();
         };
-        const base = this.backendTurn(AbortSignal.any([signal, stopper.signal]), host);
+        const base = this.backendTurn(AbortSignal.any([signal, stopper.signal]), session, sink);
         let stopRounds = 0;
         // The user's own message, for the skills it names: its first part, not the files and notes after it.
         // A sub-agent's task is the parent model's words, not the user's: it runs no skill the model may not.
@@ -1927,7 +2083,7 @@ export class Agent {
         let prompt = text;
         // The conversation so far goes beside a /goal (goalContext), so the command stays the whole prompt.
         const goalCommand = GOAL_COMMAND.test(text);
-        const toSend = (r?: { synced: number }) =>
+        const toSend = (r?: { synced: number; unsent?: string }) =>
             goalCommand && prompt === text ? { prompt, goalContext: this.backendPrompt("", promptIndex, r).trim() || undefined } : { prompt: this.backendPrompt(prompt, promptIndex, r) };
         let promptImages = images;
         let promptDocuments = documents;
@@ -1938,8 +2094,34 @@ export class Agent {
             try {
                 // A sub-agent kept going (a Stop hook) takes up a speed change since.
                 const sent = toSend(resume);
-                result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...sent, synthetic: woken || sent.prompt !== prompt, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork });
-                if (result.resumeFailed) {
+                // An adopted turn is the first round only: a Stop hook's "keep going" is a prompt of ours.
+                const adopting = adopt !== undefined && stopRounds === 0;
+                // What the CLI hasn't been sent of the conversation before the turn it started (another model's
+                // turns, Harness's notes): nothing goes with that turn, so if it moves the CLI's place past them
+                // (sessionId), they go with the next prompt.
+                const unsent = adopting ? this.backendPrompt("", promptIndex, resume).trim() : "";
+                const placed = this.session.backends.get(provider);
+                let returned: BackendResult | undefined;
+                if (adopting) this.adoptedUnsent = { provider, text: unsent };
+                this.modelTookPrompt = false;
+                try {
+                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...sent, synthetic: woken || sent.prompt !== prompt, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork, ...(adopting ? { adopt } : {}) });
+                    returned = result;
+                } finally {
+                    this.adoptedUnsent = undefined;
+                    const now = this.session.backends.get(provider);
+                    const moved = now !== undefined && (now.id !== placed?.id || now.synced !== placed?.synced);
+                    if (adopting) {
+                        // Its place moves past what it wasn't sent: as it said its session id (that line carried it
+                        // already), or at the turn's end (endBackendTurn's sync, after this). Not if it threw before
+                        // its place moved: then that is still after its place.
+                        if (returned || moved) this.session.setBackendUnsent(provider, unsent || undefined);
+                    } else if (resume?.unsent && this.modelTookPrompt) {
+                        // A prompt of ours carried what was waiting, and the CLI took it (it answered): that's sent.
+                        this.session.consumeBackendUnsent(provider, resume.unsent);
+                    }
+                }
+                if (result.resumeFailed && !adopting) {
                     // Gone, or made in another folder: start a new one with this conversation as context.
                     this.session.forgetBackendSession(provider);
                     this.emit({ type: "notice", level: "warn", message: `${redact(result.error ?? `Couldn't continue the earlier ${name} session`)}. Starting a new one with this conversation as context.` });
@@ -2069,11 +2251,8 @@ export class Agent {
         const ownHooks = provider === "codex";
         if (ownHooks && !(await this.preCompact(opts))) return false;
         this.emit({ type: "compact_start", auto: opts.auto, ...(opts.idle ? { idle: true } : {}) });
-        const host: BackendHost = {
+        const session: SessionHost = {
             ...this.backendHooks(opts.signal),
-            emit: (e) => {
-                if (e.type === "notice" || e.type === "retry" || e.type === "limits") this.emit(e);
-            },
             mode: () => this.o.mode.get(),
             permission: async () => ({ allow: false, message: "Not during compaction.", stop: true }),
             askQuestions: async () => undefined,
@@ -2081,9 +2260,16 @@ export class Agent {
             setMode: () => {},
             usage: (u, o) => this.recordBackendUsage(u, o),
             sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length, folder),
+            limits: (limits, partial) => this.emit({ type: "limits", limits, partial }),
+            emitSession: (e) => this.sessionEvent(e),
+        };
+        const sink: TurnSink = {
+            emit: (e) => {
+                if (e.type === "notice" || e.type === "retry" || e.type === "limits") this.emit(e);
+            },
             drainQueued: () => [],
         };
-        const r = await backend.compact({ ...this.backendTurn(opts.signal, host), resumeId: resume.id, forkSession: resume.fork, instructions: opts.instructions });
+        const r = await backend.compact({ ...this.backendTurn(opts.signal, session, sink), resumeId: resume.id, forkSession: resume.fork, instructions: opts.instructions });
         if (r.reason === "aborted") throw new ProviderError("aborted");
         if (r.reason === "error") throw new Error(r.error ?? "Compaction failed");
         this.contextTokens = 0;
@@ -2106,6 +2292,7 @@ export class Agent {
      * redact theirs (keys in a file the backend read, say).
      */
     private emitFromBackend(e: AgentEvent) {
+        if (e.type === "text" || e.type === "thinking" || e.type === "tool_call_start" || e.type === "tool_start") this.modelTookPrompt = true;
         // Tools' results go back to the model in its next request: the cache is read from about now.
         if (e.type === "tool_end") this.backendRequestAt = Date.now();
         e = redactBackendEvent(e);
@@ -2172,6 +2359,7 @@ export class Agent {
     }
 
     private recordBackendUsage(usage: Usage, o: { contextTokens?: number; contextWindow?: number }) {
+        if (usage.inputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0) > 0) this.modelTookPrompt = true;
         const cost = costOf(usage, this.model);
         this.session.recordUsage(modelRef(this.model), usage, cost.usd, cost.unknown);
         if (o.contextWindow && !this.model.contextWindow) this.model.contextWindow = o.contextWindow;

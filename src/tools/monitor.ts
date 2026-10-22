@@ -262,7 +262,9 @@ export function startMonitor(o: StartOpts): { id: string; pid?: number; shell: B
             if (ending === "stopped") wakes.drop(key);
             const how = await stopGroup(child.pid, graceMs);
             o.proxy?.close();
-            return how;
+            // Marked stopped here (its command may have exited, the close not taken in yet), it sends no notice of
+            // its own end: the stop is what ended it, for whoever asked (they tell the agent it was stopped).
+            return ending === "stopped" && how === "gone" ? "stopped" : how;
         },
     };
 

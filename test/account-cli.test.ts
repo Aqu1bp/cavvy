@@ -146,10 +146,12 @@ function fakeTurn(provider: string): import("../src/backends/types").BackendTurn
     return {
         prompt: "hello", images: [], cwd: root, model: { provider, id: "default" }, mode: "auto", accountId: "personal",
         additionalDirectories: [], trusted: true, rules: { deny: [], ask: [], root }, signal: new AbortController().signal,
-        host: {
-            emit: () => {}, mode: () => "auto", permission: async () => ({ allow: true }), askQuestions: async () => undefined,
-            approvePlan: async () => ({ approved: false }), setMode: () => {}, usage: () => {}, sessionId: () => {}, drainQueued: () => [],
+        sessionKey: "test",
+        session: {
+            mode: () => "auto", permission: async () => ({ allow: true }), askQuestions: async () => undefined,
+            approvePlan: async () => ({ approved: false }), setMode: () => {}, usage: () => {}, sessionId: () => {},
         },
+        sink: { emit: () => {}, drainQueued: () => [] },
     };
 }
 
@@ -187,7 +189,7 @@ test("Claude account sandbox stays on for read-only delegates and Bypass", async
     for (const readOnly of [false, true]) {
         const turn = fakeTurn("claude-code");
         turn.mode = "bypassPermissions";
-        turn.host.mode = () => "bypassPermissions";
+        turn.session.mode = () => "bypassPermissions";
         turn.readOnly = readOnly;
         expect((await backend.runTurn(turn)).reason).toBe("done");
     }

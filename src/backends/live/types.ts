@@ -11,7 +11,7 @@ import type { PlanLimits } from "../../server/protocol";
 import type { JsonLinesProcess } from "../cli";
 import type { AgentCliDef, CliCapabilities } from "../defs";
 import type { AgentCliStatus } from "../index";
-import type { BackendHost, BackendTurn } from "../types";
+import type { BackendTurn, SessionHost } from "../types";
 import type { BackgroundTaskInfo } from "./info";
 
 export type { BackgroundTaskInfo } from "./info";
@@ -22,7 +22,7 @@ export type { BackgroundTaskInfo } from "./info";
  * them later). A resumed or forked session is the session's to choose:
  * LiveCliSession resumes the session its process reported, once there is one.
  */
-export type SpawnConfig = Omit<BackendTurn, "prompt" | "images" | "documents" | "request" | "requestAfter" | "synthetic" | "goalContext" | "signal" | "host">;
+export type SpawnConfig = Omit<BackendTurn, "prompt" | "images" | "documents" | "request" | "requestAfter" | "synthetic" | "goalContext" | "signal" | "session" | "sink" | "adopt" | "sessionKey">;
 
 /** How to start the process. */
 export interface SpawnSpec {
@@ -56,15 +56,9 @@ export interface TurnInput {
     requestAfter?: string;
 }
 
-/**
- * What a live process asks of the harness, between turns too (a background
- * sub-agent's permission prompt): bound once a session, not per turn. #219 PR 2
- * splits BackendHost into this and TurnSink.
- */
-export type SessionHost = Pick<BackendHost, "permission" | "askQuestions" | "approvePlan" | "setMode" | "usage" | "context" | "sessionId" | "hooks" | "hookHandler">;
-
-/** Where one turn's events go. */
-export type TurnSink = Pick<BackendHost, "emit"> & Partial<Pick<BackendHost, "drainQueued" | "onQueued" | "fromWake" | "undelivered" | "diagnose">>;
+// What a live process asks of the harness, between turns too (bound once a session), and where one turn's
+// events go: src/backends/types.ts.
+export type { SessionHost, TurnSink } from "../types";
 
 /** What a connection reports, in the layer's terms. `ref` names a turn: the prompt's uuid (Claude Code), the turn id (Codex). */
 export type CliEvent =

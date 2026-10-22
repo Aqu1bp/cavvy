@@ -91,6 +91,19 @@ describe("the fork's file", () => {
         s.release();
     });
 
+    test("a shared backend session keeps what its CLI wasn't sent (an adopted turn's context) in the fork, and after reopening it (#282 review round 4, F1)", () => {
+        const s = original();
+        s.setBackendSession("claude-code", "shared", 6, undefined, "<conversation-so-far>missed</conversation-so-far>");
+        const f = forkSession(s, { cut: 6 });
+        expect(f.backends.get("claude-code")).toMatchObject({ id: "shared", fork: true, unsent: "<conversation-so-far>missed</conversation-so-far>" });
+        f.release();
+        const reopened = Session.load(f.path);
+        expect(reopened.backends.get("claude-code")?.unsent).toBe("<conversation-so-far>missed</conversation-so-far>");
+        reopened.release();
+        expect(s.backends.get("claude-code")).toMatchObject({ fork: true, unsent: "<conversation-so-far>missed</conversation-so-far>" });
+        s.release();
+    });
+
     test("accounts survive without sharing backends, including a switch back to Default", () => {
         const s = original();
         s.setAccount("claude-code", "work");

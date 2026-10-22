@@ -10,6 +10,7 @@ import { ensureDir, paths, projectStateDir, APP_TITLE, APP_VERSION } from "../co
 import type { Message, Usage } from "../providers/types";
 import type { PlanLink } from "../server/protocol";
 import type { GoalRecord } from "./goal";
+import type { BackgroundTaskInfo } from "../backends/live/info";
 import { textOf } from "../providers/types";
 import { redact, redactedJson } from "../util/redact";
 import { defaultAccount, validAccountId } from "../providers/accounts";
@@ -100,7 +101,7 @@ export type Line =
     | { t: "usage"; usage: Usage; cost: number; model: string; unknown?: true; at?: number }
     | ({ t: "notice" } & TurnNotice)
     /** An agent backend's own session (Claude Code) or thread (Codex); id null forgets it. */
-    | { t: "backend"; provider: string; id: string | null; synced?: number; fork?: boolean; folder?: string }
+    | { t: "backend"; provider: string; id: string | null; synced?: number; fork?: boolean; folder?: string; unsent?: string }
     /** A plan the agent presented (ExitPlanMode), kept so it can be saved or taken elsewhere later: Claude Code's never reach the messages. */
     | { t: "plan"; id: string; text: string; at: number }
     /** A plan taken to a new worktree: where it came from, or where it went. Older versions skip these lines. */
@@ -113,6 +114,8 @@ export type Line =
     | { t: "schedules"; jobs: ScheduledJob[] }
     /** The /goal set in this session; null when it ended. Older versions skip these lines. */
     | { t: "goal"; goal: GoalRecord | null }
+    /** A background task as it is now (the last line for its id wins): started, or ended. Older versions skip these lines. */
+    | { t: "bgtask"; task: BackgroundTaskInfo }
     /** `model` refused a request for the images of the messages at `indexes` (see refuseImages). Older versions skip these lines. */
     | { t: "imagesRefused"; model: string; indexes: number[] };
 
@@ -169,6 +172,11 @@ export interface BackendSession {
     synced: number;
     /** Shared with a fork: never continued in place, only forked (the next turn gets a new id). */
     fork?: boolean;
+    /**
+     * What it wasn't sent of the conversation before its place: a turn its CLI started by itself (adopted, a wake)
+     * moved its place past messages it never saw. Goes with its next prompt; never part of the history other models see.
+     */
+    unsent?: string;
 }
 
 export interface SessionSummary {
@@ -220,6 +228,8 @@ export class Session {
     /** Durable schedules as last saved (src/agent/schedule.ts), for restoring when it's opened again. */
     schedules: ScheduledJob[] = [];
     private savedSchedules = "[]";
+    /** Its background tasks as the log has them, by id (src/agent/background.ts). A fork doesn't take them. */
+    readonly backgroundTasks = new Map<string, BackgroundTaskInfo>();
     /** The /goal still set when the session was last written (src/agent/goal.ts). */
     goal?: GoalRecord;
     /**
@@ -268,9 +278,10 @@ export class Session {
         for (const message of this.messages) copy.push(structuredClone(message));
         if (opts.shareBackends) for (const [provider, b] of this.backends) {
             const folder = this.backendFolders.get(provider);
-            copy.backends.set(provider, { id: b.id, synced: b.synced, fork: true });
+            const unsent = b.unsent ? { unsent: b.unsent } : {};
+            copy.backends.set(provider, { id: b.id, synced: b.synced, fork: true, ...unsent });
             if (folder) copy.backendFolders.set(provider, folder);
-            copy.write({ t: "backend", provider, id: b.id, synced: b.synced, fork: true, ...(folder ? { folder } : {}) });
+            copy.write({ t: "backend", provider, id: b.id, synced: b.synced, fork: true, ...unsent, ...(folder ? { folder } : {}) });
         }
         for (const notice of this.notices) {
             copy.notices.push({ ...notice });
@@ -354,6 +365,12 @@ export class Session {
         this.savedSchedules = text;
         this.schedules = durable;
         this.write({ t: "schedules", jobs: durable });
+    }
+
+    /** Keep a background task's state in the log (SessionBackground.persist decides when). */
+    recordBackgroundTask(task: BackgroundTaskInfo) {
+        this.backgroundTasks.set(task.id, { ...task });
+        this.write({ t: "bgtask", task });
     }
 
     setSystem(system: string) {
@@ -456,15 +473,39 @@ export class Session {
         return current;
     }
 
-    setBackendSession(provider: string, id: string, synced: number, folder = this.backendFolders.get(provider)) {
+    /**
+     * The backend session's id and place. `unsent` (BackendSession.unsent) is written with the place when given
+     * (an adopted turn moving it, in one line); otherwise what it wasn't sent stays, whatever the id: a native fork
+     * or a compaction continues a session that never saw it either. Only a prompt that carried it takes it away
+     * (consumeBackendUnsent); forgetting the session (a fresh one is sent everything) drops it.
+     */
+    setBackendSession(provider: string, id: string, synced: number, folder = this.backendFolders.get(provider), unsent?: string) {
         const cur = this.backends.get(provider);
-        if (cur?.id === id && cur.synced === synced && folder === this.backendFolders.get(provider)) return;
+        const kept = unsent ?? cur?.unsent;
+        if (cur?.id === id && cur.synced === synced && folder === this.backendFolders.get(provider) && (cur.unsent ?? "") === (kept ?? "")) return;
         if (cur?.id !== id) this.runsFor?.recordSubagentRun(provider, id);
         // Still the shared one (the backend never answered with its fork): it stays shared.
         const fork = cur?.id === id && cur.fork ? { fork: true } : {};
-        this.backends.set(provider, { id, synced, ...fork });
+        const carried = kept ? { unsent: kept } : {};
+        this.backends.set(provider, { id, synced, ...fork, ...carried });
         if (folder) this.backendFolders.set(provider, folder);
-        this.write({ t: "backend", provider, id, synced, ...fork, ...(folder ? { folder } : {}) });
+        this.write({ t: "backend", provider, id, synced, ...fork, ...carried, ...(folder ? { folder } : {}) });
+    }
+
+    /** What the backend session wasn't sent of the conversation before its place (BackendSession.unsent); none: nothing. */
+    setBackendUnsent(provider: string, unsent: string | undefined) {
+        const cur = this.backends.get(provider);
+        if (!cur || (cur.unsent ?? "") === (unsent ?? "")) return;
+        const { unsent: _, ...rest } = cur;
+        const next = unsent ? { ...rest, unsent } : rest;
+        this.backends.set(provider, next);
+        const folder = this.backendFolders.get(provider);
+        this.write({ t: "backend", provider, ...next, ...(folder ? { folder } : {}) });
+    }
+
+    /** A prompt carrying `sent` (what was waiting) reached the backend: it's sent, unless something newer waits now. */
+    consumeBackendUnsent(provider: string, sent: string) {
+        if (this.backends.get(provider)?.unsent === sent) this.setBackendUnsent(provider, undefined);
     }
 
     /** A fork is to share this backend session: from now on it's only forked, never continued in place. False if that couldn't be saved. */
@@ -473,7 +514,7 @@ export class Session {
         if (!cur) return false;
         this.backends.set(provider, { ...cur, fork: true });
         const folder = this.backendFolders.get(provider);
-        return this.write({ t: "backend", provider, id: cur.id, synced: cur.synced, fork: true, ...(folder ? { folder } : {}) });
+        return this.write({ t: "backend", provider, id: cur.id, synced: cur.synced, fork: true, ...(cur.unsent ? { unsent: cur.unsent } : {}), ...(folder ? { folder } : {}) });
     }
 
     addPlan(id: string, text: string): PresentedPlan {
@@ -609,7 +650,7 @@ export class Session {
             }
             else if (l.t === "backend") {
                 if (typeof l.provider !== "string") continue;
-                if (typeof l.id === "string" && l.id) s.backends.set(l.provider, { id: l.id, synced: typeof l.synced === "number" ? l.synced : s.messages.length, ...(l.fork === true ? { fork: true } : {}) });
+                if (typeof l.id === "string" && l.id) s.backends.set(l.provider, { id: l.id, synced: typeof l.synced === "number" ? l.synced : s.messages.length, ...(l.fork === true ? { fork: true } : {}), ...(typeof l.unsent === "string" && l.unsent ? { unsent: l.unsent } : {}) });
                 else s.backends.delete(l.provider);
                 if (l.id && typeof l.folder === "string") s.backendFolders.set(l.provider, l.folder);
                 else s.backendFolders.delete(l.provider);
@@ -633,6 +674,10 @@ export class Session {
             else if (l.t === "planLink" && validLink(l.link)) s.planLinks = [...s.planLinks, l.link].slice(-PLANS_KEPT);
             else if (l.t === "import" && typeof l.source === "string" && typeof l.id === "string") s.imported = { source: l.source, id: l.id, startedAt: l.startedAt, importedAt: l.importedAt, messages: l.messages, omitted: l.omitted };
             else if (l.t === "usage") s.accumulate(l.model, l.usage, l.cost, l.unknown === true);
+            else if (l.t === "bgtask") {
+                const task = validTask(l.task);
+                if (task) s.backgroundTasks.set(task.id, task);
+            }
             else if (l.t === "schedules" && Array.isArray(l.jobs)) {
                 s.schedules = l.jobs.map(validJob).filter((j): j is ScheduledJob => Boolean(j));
                 s.savedSchedules = JSON.stringify(s.schedules);
@@ -641,6 +686,31 @@ export class Session {
         repairTail(s);
         return s;
     }
+}
+
+const TASK_KINDS = ["agent", "shell", "monitor", "workflow", "other"];
+const TASK_STATUSES = ["running", "done", "failed", "stopped"];
+
+/** A background task as read from disk, or undefined if it isn't one. */
+function validTask(t: unknown): BackgroundTaskInfo | undefined {
+    const v = t as Partial<BackgroundTaskInfo> | undefined;
+    if (!v || typeof v.id !== "string" || !v.id || typeof v.provider !== "string" || typeof v.label !== "string" || typeof v.startedAt !== "number") return undefined;
+    if (!TASK_KINDS.includes(v.kind as string) || !TASK_STATUSES.includes(v.status as string)) return undefined;
+    return {
+        id: v.id,
+        provider: v.provider,
+        kind: v.kind!,
+        label: v.label,
+        ...(typeof v.toolUseId === "string" ? { toolUseId: v.toolUseId } : {}),
+        ...(typeof v.turnId === "string" ? { turnId: v.turnId } : {}),
+        startedAt: v.startedAt,
+        status: v.status!,
+        ...(typeof v.endedAt === "number" ? { endedAt: v.endedAt } : {}),
+        stoppable: v.stoppable === true,
+        ...(v.lost === true ? { lost: true } : {}),
+        ...(v.withProcess === true ? { withProcess: true } : {}),
+        ...(v.byUser === true ? { byUser: true } : {}),
+    };
 }
 
 /** Marks a user message's images as refused by `model` (see Session.refuseImages). */

@@ -289,7 +289,7 @@ test("a setting the process can't take live restarts it when nothing runs in the
     expect(restarted.pid).not.toBe(one.pid);
 });
 
-test("a crash ends the turn with the CLI's error, marks its tasks lost, and the next turn resumes", async () => {
+test("a crash ends the turn with the CLI's error, marks its tasks stopped with the process, and the next turn resumes", async () => {
     const { pool } = setup();
     const s = pool.session("a", "fake");
     const one = await turn(s, "bg t1");
@@ -298,7 +298,7 @@ test("a crash ends the turn with the CLI's error, marks its tasks lost, and the 
     expect(crash.error).toBe("Fake CLI stopped: fatal: boom");
     expect(s.state).toBe("dead");
     expect(s.error).toBe("Fake CLI stopped: fatal: boom");
-    expect(s.tasks.get("t1")).toMatchObject({ status: "stopped", lost: true });
+    expect(s.tasks.get("t1")).toMatchObject({ status: "stopped", withProcess: true });
     expect(s.quiet()).toBe(true);
     const again = await turn(s, "again");
     expect(again.reason).toBe("done");
@@ -427,7 +427,7 @@ test("release stops one harness session's processes; shutdownAll stops them all,
     await pool.shutdownAll();
     expect([b.state, c.state]).toEqual(["dead", "dead"]);
     expect(pool.list()).toEqual([]);
-    expect(b.tasks.get("t1")).toMatchObject({ status: "stopped", lost: true });
+    expect(b.tasks.get("t1")).toMatchObject({ status: "stopped", withProcess: true });
     await until(() => !alive(pb) && !alive(pc));
 });
 
@@ -462,7 +462,7 @@ test("a task id that runs again starts a new occurrence, without the last one's 
     tasks.report(t);
     clock.advance(5);
     tasks.lose();
-    expect(tasks.get("a")).toMatchObject({ status: "stopped", lost: true, endedAt: 5 });
+    expect(tasks.get("a")).toMatchObject({ status: "stopped", withProcess: true, endedAt: 5 });
     tasks.report({ ...t, startedAt: 7 });
     expect(tasks.get("a")).toEqual({ ...t, startedAt: 7 });
     tasks.report({ ...t, startedAt: 7, status: "done" });

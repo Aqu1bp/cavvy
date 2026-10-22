@@ -1,11 +1,12 @@
 // The side panel, in the sheet's inspector column: Changes | Plan at the top
 // (the folder's changes, each opening the diff reader; the proposed plan and the
-// agent's to-do list), what's live under either (running shells, watched pull
-// requests, monitors, secrets, MCP servers that failed or ask for approval,
-// sub-agents), and Commit and Push at the foot. Empty sections aren't drawn.
+// agent's to-do list), what's live under either (background work: sub-agents,
+// shells, monitors and delegated tasks; watched pull requests, secrets, MCP
+// servers that failed or ask for approval, sub-agents), and Commit and Push at
+// the foot. Empty sections aren't drawn.
 
 import { createEffect, createMemo, createResource, createSignal, For, on, Show } from "solid-js";
-import { ArrowUpLeft, Bot, Check, ChevronRight, ClipboardList, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitBranchPlus, GitCommitHorizontal, GitPullRequestArrow, KeyRound, Map as MapIcon, Plug, Radar, Save, SquarePen, Terminal, X } from "lucide-solid";
+import { ArrowUpLeft, Bot, Check, ChevronRight, ClipboardList, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitBranchPlus, GitCommitHorizontal, GitPullRequestArrow, KeyRound, Map as MapIcon, Plug, Save, SquarePen, X } from "lucide-solid";
 import type { AgentRun, ChangesInfo, GitFileDiff, PlanLink } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { activate, app, reportError, rpc, toast } from "../state/app";
@@ -21,6 +22,7 @@ import { shortcut } from "../state/keybindings";
 import { Menu } from "./ui/Menu";
 import { Segmented, Spinner } from "./ui/bits";
 import { PublishDialog } from "./PublishDialog";
+import { BackgroundTasks } from "./BackgroundTasks";
 
 const live = (a: AgentRun) => a.status === "running" || a.status === "waiting";
 const ran = (a: AgentRun) => duration((a.endedAt ?? (live(a) ? now() : a.startedAt)) - a.startedAt);
@@ -279,61 +281,6 @@ function Plan(p: { handle: SessionHandle; heading?: boolean }) {
                         )}
                     </For>
                 </ul>
-            </div>
-        </Show>
-    );
-}
-
-function Shells(p: { handle: SessionHandle }) {
-    const running = () => p.handle.view.state.shells.filter((s) => s.running && !s.monitor);
-    return (
-        <Show when={running().length}>
-            <div class="sec">
-                <div class="sh">Shells</div>
-                <For each={running()}>
-                    {(sh) => (
-                        <div class="prow swap" title={sh.command}>
-                            <Terminal size={16} class="shell-live" />
-                            <span class="mono truncate grow shell-cmd">{sh.command}</span>
-                            <span class="meta">{duration(now() - sh.startedAt)}</span>
-                            <button class="act hb sm" title="Stop" aria-label="Stop shell" onClick={() => void rpc.call("session.killShell", { id: p.handle.id, shellId: sh.id }).catch(reportError)}>
-                                <X size={14} />
-                            </button>
-                        </div>
-                    )}
-                </For>
-            </div>
-        </Show>
-    );
-}
-
-/** "45s left", "12m left": a glance, not a countdown (the tooltip has the exact time). */
-function timeLeft(ms: number): string {
-    const s = Math.max(0, Math.ceil(ms / 1000));
-    return s < 60 ? `${s}s left` : `${Math.ceil(s / 60)}m left`;
-}
-
-/** Commands the agent is watching (Monitor): each new line of theirs wakes it. */
-function Monitors(p: { handle: SessionHandle }) {
-    const running = () => p.handle.view.state.shells.filter((s) => s.running && s.monitor);
-    return (
-        <Show when={running().length}>
-            <div class="sec">
-                <div class="sh">Monitors</div>
-                <For each={running()}>
-                    {(m) => (
-                        <div class="prow swap" title={`${m.monitor!.description}\n${m.command}`}>
-                            <Radar size={16} class="shell-live" />
-                            <span class="truncate grow">{m.monitor!.description}</span>
-                            <span class="meta" title={`${plural(m.monitor!.events, "event")} so far; it stops in ${duration(Math.max(0, m.monitor!.expiresAt - now()))}`}>
-                                {timeLeft(m.monitor!.expiresAt - now())}
-                            </span>
-                            <button class="act hb sm" title="Stop monitor" aria-label={`Stop monitor: ${m.monitor!.description}`} onClick={() => void rpc.call("session.killShell", { id: p.handle.id, shellId: m.id }).catch(reportError)}>
-                                <X size={14} />
-                            </button>
-                        </div>
-                    )}
-                </For>
             </div>
         </Show>
     );
@@ -602,9 +549,8 @@ export function RightPanel(p: { handle: SessionHandle }) {
                 </Show>
                 {/* What's live, whichever pane is showing. */}
                 <div class="insp-live">
-                    <Shells handle={p.handle} />
+                    <BackgroundTasks handle={p.handle} />
                     <Watches handle={p.handle} />
-                    <Monitors handle={p.handle} />
                     <Secrets handle={p.handle} />
                     <Mcp handle={p.handle} />
                     <Lineage handle={p.handle} />

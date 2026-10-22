@@ -63,7 +63,7 @@ let commandLists = 0;
 let holdSend: Promise<void> | undefined;
 const commentStore = createReviewCommentStore(() => undefined);
 const noop = () => undefined;
-const components = Object.fromEntries(["ArrowUp", "CornerDownRight", "QueueTab", "GoalTab", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "Sparkles", "SquareTerminal", "X", "ModelPicker", "EffortPicker", "AtSign", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring", "ReviewCommentChips"].map((key) => [key, noop]));
+const components = Object.fromEntries(["ArrowUp", "CornerDownRight", "QueueTab", "GoalTab", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "Sparkles", "SquareTerminal", "X", "ModelPicker", "EffortPicker", "AtSign", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring", "ReviewCommentChips", "BackgroundChip"].map((key) => [key, noop]));
 const [working, setWorking] = solid.createSignal(false);
 const [goal, setGoal] = solid.createSignal<any>();
 const [asks, setAsks] = solid.createSignal<any[]>([]);

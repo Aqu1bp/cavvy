@@ -36,6 +36,223 @@ function lines(file: string): any[] {
 }
 
 describe("Session persistence", () => {
+    test("background tasks are kept as bgtask lines: the last for an id wins, bad ones are skipped, and a fork doesn't take them", () => {
+        const s = Session.create(project());
+        s.push(user("hi"));
+        const task = { id: "task-1", provider: "claude-code", kind: "agent" as const, label: "Map auth", toolUseId: "toolu_1", startedAt: 5, status: "running" as const, stoppable: true };
+        s.recordBackgroundTask(task);
+        s.recordBackgroundTask({ id: "bash_1", provider: "harness", kind: "shell", label: "npm run dev", startedAt: 6, status: "running", stoppable: true });
+        s.recordBackgroundTask({ ...task, status: "done", endedAt: 9 });
+        appendFileSync(s.path, JSON.stringify({ t: "bgtask", task: { id: "bad", kind: "nonsense" } }) + "\n");
+        expect(lines(s.path).filter((l) => l.t === "bgtask")).toHaveLength(4);
+        const back = Session.load(s.path);
+        expect([...back.backgroundTasks.values()]).toEqual([
+            { ...task, status: "done", endedAt: 9 },
+            { id: "bash_1", provider: "harness", kind: "shell", label: "npm run dev", startedAt: 6, status: "running", stoppable: true },
+        ]);
+        const fork = back.fork({ persist: false });
+        expect(fork.backgroundTasks.size).toBe(0);
+        back.release();
+    });
+
+    test("SessionBackground.sync says what ended on its own once, not the user's stops, and keeps the finished ones until cleared", async () => {
+        const { SessionBackground, endedText } = await import("../src/agent/background");
+        const bg = new SessionBackground(undefined, () => 100);
+        const shells = new Map<string, any>([
+            ["bash_1", { id: "bash_1", command: "npm test", startedAt: 10, exitCode: null }],
+            ["bash_2", { id: "bash_2", command: "npm run dev", startedAt: 20, exitCode: null }],
+        ]);
+        expect(bg.sync({ shells })).toEqual([]);
+        bg.stoppedByUser(["bash_2"]);
+        shells.get("bash_1").exitCode = 0;
+        shells.get("bash_2").exitCode = 143;
+        const news = bg.sync({ shells });
+        expect(news.map((t) => [t.id, t.status])).toEqual([["bash_1", "done"]]);
+        expect(endedText({ ...news[0]!, endedAt: 135_010 })).toBe("Background command finished: npm test (2m 15s)");
+        expect(bg.sync({ shells })).toEqual([]);
+        // Killed by the user: stopped, not failed.
+        expect(bg.shown({ shells }).map((t) => [t.id, t.status])).toEqual([["bash_1", "done"], ["bash_2", "stopped"]]);
+        bg.clearEnded();
+        expect(bg.shown({ shells })).toEqual([]);
+        // A delegated task a call waits on is the turn's own work: not listed.
+        const delegated = [{ id: "task-1", description: "Review", agent: "explore", model: "gemini:g", writes: false, status: "running", startedAt: 1, delivered: false, foreground: 1, settled: Promise.resolve(), controller: new AbortController() }] as any;
+        expect(bg.list({ delegated })).toEqual([]);
+        delegated[0].foreground = 0;
+        expect(bg.list({ delegated }).map((t) => t.id)).toEqual(["task-1"]);
+    });
+
+    test("the user's stop of task-1 doesn't cover a later task-1 (ids start again with a rebuilt Agent): its failure is shown and is news (#282 review round 3)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const bg = new SessionBackground(undefined, () => 100);
+        const task = (startedAt: number, status: string) => ({ id: "task-1", description: "Review", agent: "explore", model: "gemini:g", writes: false, status, startedAt, delivered: false, settled: Promise.resolve(), controller: new AbortController() }) as any;
+        bg.sync({ delegated: [task(1, "running")] });
+        bg.stoppedByUser(["task-1"]);
+        expect(bg.sync({ delegated: [task(1, "failed")] })).toEqual([]);
+        expect(bg.list({ delegated: [task(1, "failed")] }).map((t) => t.status)).toEqual(["stopped"]);
+        // The Agent is rebuilt (a settings change): its first delegated task is task-1 again, and it fails on its own.
+        expect(bg.sync({ delegated: [task(50, "running")] })).toEqual([]);
+        expect(bg.list({ delegated: [task(50, "failed")] }).map((t) => t.status)).toEqual(["failed"]);
+        expect(bg.sync({ delegated: [task(50, "failed")] }).map((t) => [t.id, t.startedAt, t.status])).toEqual([["task-1", 50, "failed"]]);
+    });
+
+    test("a stop answered 'ended' (the task had ended on its own first) leaves its outcome and its news (#282 review round 3)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const bg = new SessionBackground(undefined, () => 100);
+        const shells = new Map<string, any>([["bash_1", { id: "bash_1", command: "npm test", startedAt: 10, exitCode: null }]]);
+        bg.sync({ shells });
+        // It fails between looks; the user's Stop of it (from a list a moment old) finds it ended.
+        shells.get("bash_1").exitCode = 1;
+        expect(await bg.userStop(["bash_1"], async () => ({ bash_1: "ended" }))).toEqual({ bash_1: "ended" });
+        expect(bg.sync({ shells }).map((t) => [t.id, t.status])).toEqual([["bash_1", "failed"]]);
+        expect(bg.shown({ shells }).map((t) => [t.id, t.status])).toEqual([["bash_1", "failed"]]);
+        // Ended while the stop was pending (seen by a look then): the same.
+        const bg2 = new SessionBackground(undefined, () => 100);
+        shells.get("bash_1").exitCode = null;
+        bg2.sync({ shells });
+        const news: string[] = [];
+        await bg2.userStop(["bash_1"], async () => {
+            shells.get("bash_1").exitCode = 1;
+            news.push(...bg2.sync({ shells }).map((t) => t.status));
+            return { bash_1: "ended" };
+        });
+        expect(news).toEqual([]);
+        expect(bg2.sync({ shells }).map((t) => [t.id, t.status])).toEqual([["bash_1", "failed"]]);
+    });
+
+    test("a task said done, then failed, while the user's stop is pending: a refused stop lets the failure go as news, not the done (#282 review round 3, Astra P2)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const bg = new SessionBackground(undefined, () => 100);
+        const t = { id: "cli-1", provider: "fake-cli", kind: "agent" as const, label: "Map auth", startedAt: 5, status: "running" as const, stoppable: true };
+        bg.report(t);
+        bg.sync();
+        await bg.userStop(["cli-1"], async () => {
+            bg.report({ ...t, status: "done" });
+            expect(bg.sync()).toEqual([]);
+            bg.report({ ...t, status: "failed" });
+            expect(bg.sync()).toEqual([]);
+            return { "cli-1": "failed" };
+        });
+        expect(bg.sync().map((x) => [x.id, x.status])).toEqual([["cli-1", "failed"]]);
+        expect(bg.shown().map((x) => [x.id, x.status])).toEqual([["cli-1", "failed"]]);
+    });
+
+    test("Clear finished while the user's stop is pending: a revision of the held end still decides what's told (#282 review round 4, Astra 2)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const bg = new SessionBackground(undefined, () => 100);
+        const t = { id: "cli-1", provider: "fake-cli", kind: "agent" as const, label: "Map auth", startedAt: 5, status: "running" as const, stoppable: true };
+        bg.report(t);
+        bg.sync();
+        for (const answer of ["ended", "failed"] as const) {
+            const b = new SessionBackground(undefined, () => 100);
+            b.report(t);
+            b.sync();
+            await b.userStop(["cli-1"], async () => {
+                b.report({ ...t, status: "done" });
+                expect(b.sync()).toEqual([]);
+                b.clearEnded();
+                b.report({ ...t, status: "failed" });
+                expect(b.sync()).toEqual([]);
+                return { "cli-1": answer };
+            });
+            expect(b.sync().map((x) => [x.id, x.status])).toEqual([["cli-1", "failed"]]);
+        }
+    });
+
+    test("a revision while the user's stop is pending, of an end told before the stop (a Stop from a list a moment old): held, then told (#282 review round 4, Bug D)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const t = { id: "toolu_x", provider: "claude-code", kind: "agent" as const, label: "Map auth", startedAt: 1000, stoppable: true };
+        const bg = new SessionBackground();
+        bg.report({ ...t, status: "running" });
+        bg.sync();
+        bg.report({ ...t, status: "done" });
+        expect(bg.sync().map((x) => x.status)).toEqual(["done"]);
+        await bg.userStop(["toolu_x"], async () => {
+            bg.report({ ...t, status: "failed" });
+            expect(bg.sync()).toEqual([]);
+            return { toolu_x: "ended" };
+        });
+        expect(bg.sync().map((x) => x.status)).toEqual(["failed"]);
+        // Ended, then revised, both while the stop is pending, in two looks: the revision is what's told.
+        const b2 = new SessionBackground();
+        b2.report({ ...t, status: "running" });
+        b2.sync();
+        await b2.userStop(["toolu_x"], async () => {
+            b2.report({ ...t, status: "done" });
+            b2.sync();
+            b2.report({ ...t, status: "failed" });
+            b2.sync();
+            return { toolu_x: "ended" };
+        });
+        expect(b2.sync().map((x) => x.status)).toEqual(["failed"]);
+    });
+
+    test("a stop not confirmed in time is for that task: a later task with its id that ends stopped is news (#282 review round 4, B3)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const bg = new SessionBackground(undefined, () => 100);
+        const t = (startedAt: number, status: string) => ({ id: "task-1", provider: "gemini", kind: "agent" as const, label: "Review", startedAt, status: status as any, stoppable: true });
+        bg.report(t(1, "running"));
+        bg.sync();
+        expect(await bg.userStop(["task-1"], async () => ({ "task-1": "timeout" }))).toEqual({ "task-1": "timeout" });
+        // It goes (its Agent rebuilt); a new task-1 starts, and is stopped by something else.
+        bg.report(t(50, "running"));
+        bg.sync();
+        bg.report(t(50, "stopped"));
+        expect(bg.sync().map((x) => [x.id, x.startedAt, x.status])).toEqual([["task-1", 50, "stopped"]]);
+    });
+
+    test("what an adopted turn's CLI wasn't sent is kept with its backend session: through a reload, a cursor move, a fork and a new session id; a delivered prompt takes it (#282 review rounds 3-4, D3)", () => {
+        const s = Session.create(project());
+        s.push(user("hi"));
+        s.setBackendSession("claude-code", "cli-1", 1);
+        s.setBackendUnsent("claude-code", "<conversation-so-far>earlier</conversation-so-far>");
+        s.push(user("more"));
+        s.setBackendSession("claude-code", "cli-1", 2);
+        expect(s.backends.get("claude-code")).toEqual({ id: "cli-1", synced: 2, unsent: "<conversation-so-far>earlier</conversation-so-far>" });
+        const back = Session.load(s.path);
+        expect(back.backends.get("claude-code")?.unsent).toBe("<conversation-so-far>earlier</conversation-so-far>");
+        // Never part of the history other models see.
+        expect(JSON.stringify(back.messages)).not.toContain("earlier");
+        const fork = back.fork({ persist: false, shareBackends: true });
+        expect(fork.backends.get("claude-code")?.unsent).toBe("<conversation-so-far>earlier</conversation-so-far>");
+        // Shared with a fork (from now on only forked): still waiting, in memory and in the log.
+        expect(back.markBackendForked("claude-code")).toBe(true);
+        expect(Session.load(s.path).backends.get("claude-code")).toMatchObject({ fork: true, unsent: "<conversation-so-far>earlier</conversation-so-far>" });
+        back.setBackendUnsent("claude-code", undefined);
+        expect(Session.load(s.path).backends.get("claude-code")).toEqual({ id: "cli-1", synced: 2, fork: true });
+        // A new id (a native fork, a compaction) continues a session that never saw it either: it stays, until a
+        // prompt that carried it is delivered (consumeBackendUnsent), and only that one.
+        back.setBackendUnsent("claude-code", "again");
+        back.setBackendSession("claude-code", "cli-2", 2);
+        expect(Session.load(s.path).backends.get("claude-code")).toEqual({ id: "cli-2", synced: 2, unsent: "again" });
+        back.consumeBackendUnsent("claude-code", "older");
+        expect(back.backends.get("claude-code")?.unsent).toBe("again");
+        back.consumeBackendUnsent("claude-code", "again");
+        expect(Session.load(s.path).backends.get("claude-code")).toEqual({ id: "cli-2", synced: 2 });
+        // Written with the place, in one line (an adopted turn's move).
+        back.setBackendSession("claude-code", "cli-2", 3, undefined, "with the move");
+        expect(Session.load(s.path).backends.get("claude-code")).toEqual({ id: "cli-2", synced: 3, unsent: "with the move" });
+        back.release();
+    });
+
+    test("a SessionBackground made from the log has its running tasks as stopped when Harness quit, until they're told", async () => {
+        const { SessionBackground, lostNote } = await import("../src/agent/background");
+        const s = Session.create(project());
+        s.push(user("hi"));
+        s.recordBackgroundTask({ id: "bash_1", provider: "harness", kind: "shell", label: "npm run dev", startedAt: 6, status: "running", stoppable: true });
+        s.recordBackgroundTask({ id: "task-1", provider: "gemini", kind: "agent", label: "Review", startedAt: 7, status: "done", endedAt: 8, stoppable: true });
+        const back = Session.load(s.path);
+        const bg = new SessionBackground(back, () => 100);
+        expect(bg.shown()).toEqual([{ id: "bash_1", provider: "harness", kind: "shell", label: "npm run dev", startedAt: 6, status: "stopped", endedAt: 100, lost: true, stoppable: true }]);
+        const lost = bg.takeLost();
+        expect(lostNote(lost)).toBe("These background tasks stopped when Harness quit: background command: npm run dev (bash_1). They are no longer running and will not produce further results. Restart them only if still needed; do not wait for their old task IDs.");
+        expect(bg.shown()).toEqual([]);
+        expect(bg.takeLost()).toEqual([]);
+        // Written stopped: opened again, there's nothing to tell.
+        expect(back.backgroundTasks.get("bash_1")).toMatchObject({ status: "stopped", lost: true });
+        expect(new SessionBackground(Session.load(s.path)).shown()).toEqual([]);
+        back.release();
+    });
+
     test("account selections survive reopen and invalidate only their provider's native thread", () => {
         const s = Session.create(project());
         s.setModel("codex:default");
