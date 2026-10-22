@@ -42,7 +42,7 @@ import { isAgentBackend } from "../backends/types";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { account } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
-import { modelRef, parseModelRef, textOf, toolCallsOf, assistantText, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
+import { continuationGroups, modelRef, parseModelRef, textOf, toolCallsOf, assistantText, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
 import { expandMentions } from "../ui/mentions";
 import { expandMcpMentions } from "../mcp/mentions";
 import type { McpAsker } from "../mcp/elicitation";
@@ -3099,7 +3099,8 @@ export class Runtime {
 
     exportMarkdown(): string {
         const out: string[] = [`# ${this.session.title ?? "Session"} (${this.id})`, "", `- Directory: ${this.ws.cwd}`, `- Model: ${this.session.model ?? "?"}`, `- Exported: ${new Date().toISOString()}`, ""];
-        for (const msg of this.session.messages) {
+        for (const group of continuationGroups(this.session.messages)) {
+            const msg = group[0]!;
             if (msg.role === "user") {
                 const kind = msg.meta?.kind ?? "prompt";
                 if (kind === "tool_results") {
@@ -3110,9 +3111,9 @@ export class Runtime {
                 const note = attachmentsNote(msg.content);
                 if (t || note) out.push(kind === "summary" ? "## Summary of earlier conversation" : "## User", "", ...(t ? [t] : []), ...(note ? [`*${note}*`] : []), "");
             } else {
-                const t = textOf(msg).trim();
+                const t = group.map(textOf).join("").trim();
                 if (t) out.push("## Assistant", "", t, "");
-                for (const p of msg.content) if (p.type === "tool_call") out.push(`**${p.name}** \`${JSON.stringify(p.input).slice(0, 300)}\``, "");
+                for (const part of group) for (const p of part.content) if (p.type === "tool_call") out.push(`**${p.name}** \`${JSON.stringify(p.input).slice(0, 300)}\``, "");
             }
         }
         return redact(out.join("\n"));

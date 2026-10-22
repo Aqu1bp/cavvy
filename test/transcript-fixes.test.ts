@@ -212,6 +212,78 @@ describe("output token limit continuation", () => {
         }
     });
 
+    test("auto-compaction waits for a continued answer, keeping its text in requests, results and the GUI", async () => {
+        const { Engine } = await import("../src/server/engine");
+        const { TurnTally } = await import("../src/sdk/messages");
+        const engine = new Engine({ listModels: async () => [] });
+        const tally = new TurnTally();
+        const head = "PART-ONE: const value = ";
+        const tail = "42; PART-TWO.";
+        try {
+            const rt = await engine.createSession(realpathSync(tempDir()));
+            await rt.ready;
+            rt.session.setTitle("Continuation at the compaction threshold");
+            for (const n of [1, 2]) {
+                rt.session.push({ role: "user", content: [{ type: "text", text: `earlier ${n}` }], meta: { kind: "prompt" } });
+                rt.session.push(text(`ok ${n}`));
+            }
+            const a = scripted((_req, n, onEvent) => {
+                if (n > 1) onEvent({ type: "thinking", text: "finish the answer" });
+                onEvent({ type: "text", text: n === 1 ? head : tail });
+                return { ...reply([...(n > 1 ? [{ type: "thinking", text: "finish the answer" }] : []), { type: "text", text: n === 1 ? head : tail }], n === 1 ? "max_tokens" : "end_turn"), usage: { inputTokens: 9000, outputTokens: 1000 } };
+            }, { session: rt.session, model: { provider: "test", id: "test", contextWindow: 10_000, maxOutput: 1000 }, emit: (e) => { tally.observe(e); (rt as any).onEvent(e); } });
+            const settings = a.agent.options.settings() as any;
+            settings.autoCompact = true;
+            settings.hooks = { Stop: [{}] };
+            let stopped: any;
+            (a.agent as any).hooks = async (event: string, input: any) => { if (event === "Stop") stopped = input; };
+            Object.assign(rt, { model: a.agent.model, agent: a.agent });
+            await rt.startTurn("write the report");
+            expect(a.requests).toHaveLength(2);
+            expect(a.events.some((e) => e.type === "compact_start")).toBe(false);
+            expect(a.requests[1]!.messages.at(-2)).toMatchObject({ role: "assistant", content: [{ type: "text", text: head }] });
+            expect(a.requests[1]!.messages.at(-1)).toMatchObject({ role: "user", meta: { kind: "continuation" } });
+            expect(tally.result("done", "s", "m").result).toBe(head + tail);
+            expect(stopped.last_assistant_message).toBe(head + tail);
+            expect((a.agent as any).lastAssistantText()).toBe(head + tail);
+            expect(a.events.filter((e) => e.type === "request_start").map((e) => !!e.continuation)).toEqual([false, true]);
+            // The guard applies only while continuing, not to the next ordinary request.
+            expect((a.agent as any).shouldAutoCompact()).toBe(true);
+            const check = (turns: ReturnType<typeof reopenTurns>) => {
+                const blocks = turns.at(-1)!.blocks;
+                expect(blocks.filter((b) => b.t === "text").map((b) => b.text)).toEqual([head + tail]);
+                expect(blocks.findLastIndex((b) => b.t === "text")).toBeGreaterThan(blocks.findLastIndex((b) => b.t === "thinking"));
+            };
+            check(rt.snapshot().turns);
+            await engine.stop();
+            check(reopenTurns(a.session.path));
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test.each(["error", "stop reason"])("a real context overflow (%s) during continuation still compacts reactively", async (kind) => {
+        const a = scripted((_req, n) => {
+            if (n === 1) return { ...reply([{ type: "text", text: "PART-ONE " }], "max_tokens"), usage: { inputTokens: 9000, outputTokens: 1000 } };
+            if (n === 2) {
+                if (kind === "error") throw new ProviderError("context window exceeded", 400, false);
+                return reply([], "context_window_exceeded");
+            }
+            return text(n === 3 ? "summary" : "finished");
+        }, { model: { provider: "test", id: "test", contextWindow: 10_000, maxOutput: 1000 } });
+        (a.agent.options.settings() as any).autoCompact = true;
+        for (const n of [1, 2]) {
+            a.session.push({ role: "user", content: [{ type: "text", text: `earlier ${n}` }], meta: { kind: "prompt" } });
+            a.session.push(text(`ok ${n}`));
+        }
+        expect(await a.run("write")).toBe("done");
+        expect(a.requests).toHaveLength(4);
+        expect(a.requests[1]!.messages.at(-1)).toMatchObject({ role: "user", meta: { kind: "continuation" } });
+        expect(a.requests[1]!.messages.at(-2)).toMatchObject({ role: "assistant", content: [{ type: "text", text: "PART-ONE " }] });
+        expect(a.events.filter((e) => e.type === "compact_start")).toHaveLength(1);
+        expect(a.requests[3]!.messages[0]).toMatchObject({ role: "user", meta: { kind: "summary" } });
+    });
+
     test("the GUI Agents panel report uses the complete continued answer", async () => {
         const { Engine } = await import("../src/server/engine");
         const engine = new Engine({ listModels: async () => [] });

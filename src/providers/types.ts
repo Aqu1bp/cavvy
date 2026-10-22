@@ -212,6 +212,24 @@ export function textOf(msg: Message): string {
         .join("");
 }
 
+/** Display/export groups; continuation links join assistants without changing their stored wire payloads. */
+export function* continuationGroups(messages: readonly Message[]): Generator<Message[]> {
+    for (let i = 0; i < messages.length; i++) {
+        const first = messages[i]!;
+        const group = [first];
+        if (first.role === "assistant") {
+            while (i + 2 < messages.length) {
+                const link = messages[i + 1]!;
+                const next = messages[i + 2]!;
+                if (link.role !== "user" || link.meta?.kind !== "continuation" || next.role !== "assistant") break;
+                group.push(next);
+                i += 2;
+            }
+        }
+        yield group;
+    }
+}
+
 /** The latest answer, joining only messages linked by an output-limit continuation. */
 export function assistantText(messages: readonly Message[]): string {
     for (let i = messages.length - 1; i >= 0; i--) {

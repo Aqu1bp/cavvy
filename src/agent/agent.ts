@@ -1093,6 +1093,9 @@ export class Agent {
     private shouldAutoCompact(): boolean {
         const s = this.o.settings();
         if (s.autoCompact === false || this.o.isSubagent) return false;
+        // Keep a cut-off answer verbatim until it finishes; real overflows still compact reactively.
+        const last = this.session.messages.at(-1);
+        if (last?.role === "user" && last.meta?.kind === "continuation") return false;
         // Agent backends manage their own context.
         if (isAgentBackend(this.client)) return false;
         const window = this.model.contextWindow;

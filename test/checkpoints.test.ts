@@ -651,6 +651,24 @@ describe("/rewind command", () => {
         expect(f.app.lastResponse).toBe("done one and its continuation");
     });
 
+    test.each(["error", "interrupt"])("rewinding after a textless %s keeps the previous answer available for /copy", async (kind) => {
+        const proj = project();
+        const s = setup(proj, { one: [], three: [] });
+        await s.run("one");
+        s.session.push({ role: "user", content: [{ type: "text", text: "Continue" }], meta: { kind: "continuation" } });
+        s.session.push({ role: "assistant", provider: "test", model: "test", content: [{ type: "text", text: " and its continuation" }], stopReason: "end_turn" });
+        s.session.push({ role: "user", content: [{ type: "text", text: "two" }], meta: { kind: "prompt" } });
+        if (kind === "interrupt") {
+            s.session.push({ role: "assistant", provider: "test", model: "test", content: [{ type: "tool_call", id: "c", name: "Bash", input: {} }], stopReason: "tool_use" });
+            s.session.push({ role: "user", content: [{ type: "tool_result", toolCallId: "c", toolName: "Bash", content: "interrupted", isError: true }], meta: { kind: "tool_results" } });
+            s.session.push({ role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }], meta: { kind: "interrupt" } });
+        }
+        await s.run("three");
+        const f = fakeApp(s, proj, [pickLabel("three"), pickValue("conversation")]);
+        await rewindCommand(f.app);
+        expect(f.app.lastResponse).toBe("done one and its continuation");
+    });
+
     test("conversation only keeps the files; code only keeps the conversation", async () => {
         const proj = project();
         const a = join(proj, "a.txt");
