@@ -8,6 +8,7 @@ const { toAnthropicMessages, sanitizeToolId } = await import("../src/providers/a
 const { BUILTIN_PROVIDERS } = await import("../src/providers/registry");
 const { ProviderError } = await import("../src/providers/types");
 const { stall } = await import("../src/providers/sse");
+const { costOf, promptTokens, usageCostParts } = await import("../src/providers/pricing");
 import type { ProviderDef } from "../src/providers/registry";
 import type { AssistantMessage, ChatRequest, Message, ModelInfo, StreamEvent } from "../src/providers/types";
 
@@ -320,6 +321,90 @@ describe("Chat Completions: streaming", () => {
         expect(msg.usage?.cost).toBe(0.0012);
         expect(msg.content[0]).toEqual({ type: "thinking", text: "thinking..." });
         expect(msg.raw?.openai?.reasoning_details).toEqual([{ type: "reasoning.text", index: 0, text: "thinking..." }]);
+    });
+
+    test.each(["anthropic/claude-sonnet-4.6", "anthropic/claude-sonnet-4.6:thinking", "~anthropic/claude-sonnet-latest"])("openrouter: Claude caching preserves the prefix across turns (%s)", async (id) => {
+        respond = () => sse([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]);
+        const def = builtin("openrouter");
+        const m: ModelInfo = { provider: def.id, id };
+        const p = new OpenAICompatProvider(def, FAKE.openrouter);
+        const request = req(m, HISTORY, { cacheSystem: true });
+        const original = JSON.stringify(request);
+        const first = await p.stream(request, () => {});
+        await p.stream({ ...request, messages: [...HISTORY, first, { role: "user", content: [{ type: "text", text: "Continue" }] }] }, () => {});
+        const a = seen[0]!.body;
+        const b = seen[1]!.body;
+        expect(a.cache_control).toEqual({ type: "ephemeral" });
+        expect(b.cache_control).toEqual(a.cache_control);
+        expect(a.messages[0]).toEqual({ role: "system", content: [{ type: "text", text: request.system, cache_control: { type: "ephemeral" } }] });
+        expect(JSON.stringify(b.messages.slice(0, a.messages.length))).toBe(JSON.stringify(a.messages));
+        expect(JSON.stringify(b.tools)).toBe(JSON.stringify(a.tools));
+        expect(a.tools).toEqual(request.tools.map((t) => ({ type: "function", function: t })));
+        expect(a.messages.slice(1)).toEqual(toOpenAIMessages("", HISTORY, def));
+        expect(b.messages.slice(a.messages.length)).toEqual([first.raw!.openai, { role: "user", content: "Continue" }]);
+        // One system breakpoint plus the automatic breakpoint, with no TTL override.
+        expect(JSON.stringify(b).match(/"cache_control"/g)).toHaveLength(2);
+        expect(JSON.stringify(request)).toBe(original);
+    });
+
+    test.each([
+        { lightweight: false, cacheSystem: false },
+        { lightweight: false, cacheSystem: true },
+        { lightweight: true, cacheSystem: false },
+        { lightweight: true, cacheSystem: true },
+    ])("openrouter: Claude honors lightweight and cacheSystem (%j)", async (flags) => {
+        respond = () => sse([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]);
+        const m: ModelInfo = { provider: "openrouter", id: "anthropic/claude-sonnet-4.6" };
+        const p = new OpenAICompatProvider(builtin("openrouter"), FAKE.openrouter);
+        await p.stream(req(m, HISTORY, flags), () => {});
+        const b = seen[0]!.body;
+        expect(b.cache_control).toEqual(flags.lightweight ? undefined : { type: "ephemeral" });
+        expect(b.messages[0].content).toEqual(flags.cacheSystem ? [{ type: "text", text: "You are a test.", cache_control: { type: "ephemeral" } }] : "You are a test.");
+        await p.stream(req(m, HISTORY, { ...flags, system: "", tools: [] }), () => {});
+        expect(seen[1]!.body.messages).toEqual(toOpenAIMessages("", HISTORY, builtin("openrouter")));
+        expect(seen[1]!.body.tools).toBeUndefined();
+    });
+
+    test.each([
+        ["openrouter", "openai/gpt-5"],
+        ["openrouter", "google/gemini-2.5-pro"],
+        ["openrouter", "google/gemini-3-pro-preview"],
+        ["openrouter", "google/gemini-2.0-flash-001"],
+        ["openrouter", "vendor/claude-sonnet-4.6"],
+        ["openrouter", "openrouter/auto"],
+        ["groq", "anthropic/claude-sonnet-4.6"],
+        ["custom-x", "anthropic/claude-sonnet-4.6"],
+    ])("cache_control is absent for %s / %s", async (provider, id) => {
+        respond = () => sse([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]);
+        const def = provider === "custom-x" ? CUSTOM : builtin(provider);
+        await new OpenAICompatProvider(def, FAKE.openrouter).stream(req({ provider, id }, HISTORY, { cacheSystem: true }), () => {});
+        expect(JSON.stringify(seen[0]!.body)).not.toContain('"cache_control"');
+        expect(seen[0]!.body.messages).toEqual(toOpenAIMessages("You are a test.", HISTORY, def));
+    });
+
+    test.each([
+        { details: { cached_tokens: 6000, cache_write_tokens: 2000 }, reportedCost: 0.0123 },
+        { details: { cached_tokens: 6000, cache_write_tokens: 2000 }, reportedCost: undefined },
+        { details: { cached_tokens: 6000 }, reportedCost: undefined },
+        { details: { cache_write_tokens: 2000 }, reportedCost: undefined },
+        { details: undefined, reportedCost: 0 },
+    ])("openrouter: cache usage and cost are accounted for without assuming a one-hour TTL (%j)", async ({ details, reportedCost }) => {
+        respond = () => sse([
+            { choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] },
+            { choices: [], usage: { prompt_tokens: 10000, completion_tokens: 100, prompt_tokens_details: details, cost: reportedCost } },
+        ]);
+        const m: ModelInfo = { provider: "openrouter", id: "anthropic/claude-sonnet-4.6", pricing: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } };
+        const msg = await new OpenAICompatProvider(builtin("openrouter"), FAKE.openrouter).stream(req(m, HISTORY), () => {});
+        const reads = details?.cached_tokens ?? 0;
+        const writes = details?.cache_write_tokens ?? 0;
+        expect(msg.usage).toEqual({ inputTokens: 10000 - reads - writes, outputTokens: 100, cacheReadTokens: reads, cacheWriteTokens: writes, reasoningTokens: undefined, cost: reportedCost });
+        expect(msg.usage!.cacheWrite1hTokens).toBeUndefined();
+        expect(promptTokens(msg.usage!)).toBe(10000);
+        expect(usageCostParts(msg.usage!, m)).toMatchObject({ cacheRead: reads * 0.3 / 1e6, cacheWrite: writes * 3.75 / 1e6 });
+        const cost = costOf(msg.usage!, m);
+        expect(cost.estimated).toBe(reportedCost === undefined);
+        expect(cost.unknown).toBe(false);
+        expect(cost.usd).toBeCloseTo(reportedCost ?? ((10000 - reads - writes) * 3 + 100 * 15 + reads * 0.3 + writes * 3.75) / 1e6, 10);
     });
 
     test("deepseek: reasoning_content streamed, stored, and sent back on the next turn", async () => {
