@@ -58,7 +58,7 @@ export async function checkTranscriptScroll(target: HTMLElement) {
         setView("state", { ...state, busy: true, activity: { label: "Thinking", since: Date.now() } });
         await settle();
         await scroll(scroller().scrollHeight);
-        check(row(".live-tail")?.textContent?.includes("Thinking"), "working tail remains during pause");
+        check(row(".live-line")?.textContent?.includes("Thinking"), "the live line stays at the end during a pause");
         await scroll(scroller().scrollTop + y('[data-find="note10"]') - 100);
         const workTop = y('[data-find="note10"]');
         setView("turns", 0, "status", "done"); setView("state", "busy", false); await settle();
@@ -79,9 +79,44 @@ export async function checkTranscriptScroll(target: HTMLElement) {
         near(y(".fold"), foldTop, "manual fold retains toggle position");
         click(".fold"); await settle();
         near(y(".fold"), foldTop, "manual unfold retains toggle position");
+        await checkGlide();
     } finally {
         dispose();
         setFindOpen(false);
         root.style.cssText = style;
     }
+}
+
+const frames = (n = 2) => new Promise<void>((resolve) => { const step = () => (--n <= 0 ? resolve() : requestAnimationFrame(step)); requestAnimationFrame(step); });
+
+/** Pinned to the end while a turn runs: growth lands at the end in one write, and the column glides in, clipped. */
+async function checkGlide() {
+    setPrefs({ motion: "quick" });
+    const text = (n: number) => Array.from({ length: n }, (_, i) => `Line ${i} of the answer.`).join("\n\n");
+    setView("turns", [{ id: "glide", status: "running", startedAt: Date.now(), prompt: { text: "Go" }, blocks: [{ t: "text", id: "g0", text: text(40) }] }]);
+    setView("state", { ...state, busy: true, activity: { label: "Thinking", since: Date.now() } });
+    await settle();
+    await scroll(scroller().scrollHeight);
+    const end = () => scroller().scrollHeight - scroller().clientHeight;
+    const col = row(".transcript-col");
+    check(!row(".jump"), "glide: starts pinned to the end");
+    setView("turns", 0, "blocks", 0, "text", text(46));
+    // A frame to lay it out (the observer asks for a pin), the next to write it.
+    await frames(3);
+    near(scroller().scrollTop, end(), "glide: growth while pinned is at the end at once");
+    check(col.getAnimations().length === 1, `glide: the column glides into place (${col.getAnimations().length} animations)`);
+    check(scroller().scrollHeight === row(".transcript-glide").offsetHeight, "glide: its translate adds nothing to what the conversation scrolls through");
+    await settle();
+    check(!row(".jump"), "glide: our own scroll keeps it pinned");
+    // The reader scrolling up, however little, stops following; growth below doesn't move them.
+    scroller().dispatchEvent(new WheelEvent("wheel", { deltaY: -4, bubbles: true }));
+    scroller().scrollTop -= 4;
+    await settle();
+    check(row(".jump"), "glide: a scroll up unpins it");
+    check(row(".jump.is-live .spinner"), "glide: Latest says the turn is still running");
+    const top = scroller().scrollTop;
+    setView("turns", 0, "blocks", 0, "text", text(52));
+    await settle();
+    near(scroller().scrollTop, top, "glide: growth doesn't pull an unpinned reader down");
+    setPrefs({ motion: "instant" });
 }

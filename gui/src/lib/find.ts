@@ -3,7 +3,8 @@
 // is then looked up in the page, once the rows around it are open.
 
 import { foldCase, type Block, type Turn } from "@shared/protocol";
-import { cardOf, toolLabel } from "../components/blocks/Activity";
+import { cardOf } from "../components/blocks/Activity";
+import { toolLabel } from "./tool-words";
 import { stripAnsi } from "./format";
 import { renderMarkdown } from "./markdown";
 import { splitComments } from "./review-comments";

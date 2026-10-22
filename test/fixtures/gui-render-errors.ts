@@ -5,6 +5,8 @@ import { all, component, node, renderer, text } from "../helpers/gui-render";
 import { boundary } from "../helpers/render-boundary";
 import { rawRenderText, renderDetails } from "../../gui/src/lib/render-error";
 import * as format from "../../gui/src/lib/format";
+import * as toolWords from "../../gui/src/lib/tool-words";
+import * as liveLine from "../../gui/src/lib/live-line";
 import { createReveal } from "../../gui/src/lib/reveal";
 import * as diffWindow from "../../gui/src/lib/diff-window";
 import { registerSecret, unregisterSecret } from "../../src/util/redact";
@@ -78,7 +80,7 @@ for (const kind of ["Markdown", "CodeBlock", "DiffView", "ToolRow", "ToolDetails
         const Widget = component(source(file), kind, {
             RenderBoundary: boundary(undefined, (error) => errors.push(error)),
             MarkdownRenderer: class { segments() { throw Error("bad markdown"); } },
-            ...format, now: () => 0, prefs: {}, findReveal: () => undefined,
+            ...format, ...toolWords, ...liveLine, now: () => 0, prefs: {}, findReveal: () => undefined,
             ...Object.fromEntries(["Wrench", "Bot", "FileText", "ChevronRight", "CopyButton"].map((name) => [name, () => node(name)])),
             onMount() {}, highlight: async () => undefined, createReveal, paint() {},
             groupBlocks: () => { throw Error("bad turn"); },

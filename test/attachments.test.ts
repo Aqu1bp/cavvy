@@ -637,6 +637,8 @@ describe("nothing gets lost", () => {
             expect(m.content.some((p) => p.type === "file" && p.name === "spec.md")).toBe(true);
             // Its turn shows them, and they're fetched from where the turn starts.
             const turn = rt.snapshot().turns.find((t) => t.prompt?.text === "use this logo")!;
+            // It joined the running turn: that one ended for it, and the GUI keeps their work open together.
+            expect(turn.prompt?.steered).toBe(true);
             expect(turn.prompt).toMatchObject({ images: 1, imagesKey: attachedPrompt([{ type: "image", ...image }]).imagesKey, files: [expect.objectContaining({ name: "spec.md" })] });
             expect(rt.promptImages(turn.pos!.seg, turn.pos!.index)).toEqual([image]);
             // Exported, with what was attached.
@@ -645,7 +647,7 @@ describe("nothing gets lost", () => {
             await until(() => !rt.busy);
             // Rebuilt from the transcript (reopened, rewound), the turn still shows them.
             (rt as unknown as { rebuild(): void }).rebuild();
-            expect(rt.snapshot().turns.find((t) => t.prompt?.text === "use this logo")!.prompt).toMatchObject({ images: 1, files: [expect.objectContaining({ name: "spec.md" })] });
+            expect(rt.snapshot().turns.find((t) => t.prompt?.text === "use this logo")!.prompt).toMatchObject({ images: 1, files: [expect.objectContaining({ name: "spec.md" })], steered: true });
         } finally {
             await engine.handle(c, "session.interrupt", { id }).catch(() => undefined);
             await engine.stop();

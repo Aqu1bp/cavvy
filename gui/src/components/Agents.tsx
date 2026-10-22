@@ -11,11 +11,12 @@ import { newSession, stopAgent } from "../state/actions";
 import { setAgentFocus } from "../state/ui";
 import { clock, duration, plural } from "../lib/format";
 import { now } from "../lib/clock";
-import { ActivityGroup, CardFoldsProvider, groupBlocks, shortModelRef, type Item } from "./blocks/Activity";
+import { ActivityGroup, CardFoldsProvider, groupBlocks, Thinking, type Item } from "./blocks/Activity";
+import { shortModelRef } from "../lib/tool-words";
 import { Markdown } from "./blocks/Markdown";
 import { Crumb, CrumbSep, sessionTitle, TitleBar } from "./Header";
 import { Monogram } from "./Sidebar";
-import { Narration, Notice, Thinking } from "./TurnView";
+import { Narration, Notice } from "./TurnView";
 import { InteractionTab } from "./InteractionDock";
 import { ProviderIcon } from "./ui/ProviderIcon";
 

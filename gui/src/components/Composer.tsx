@@ -31,8 +31,6 @@ import { composingKey, revealMenuOption } from "../lib/composer-menu";
 import { matchSkills, skillToken } from "../lib/commands";
 import { firstSendable, followUpFor, otherFollowUp } from "../lib/queue";
 import { canStop } from "../lib/session-status";
-import { now } from "../lib/clock";
-import { turnDuration } from "../lib/format";
 import { QueueTab } from "./QueueTab";
 
 /** `mention`: a skill picked from the $ menu, which goes in where the $ is. */
@@ -492,12 +490,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     // session, at the bottom of the window; below it on Home, which has the page below it. Each flips if there's no room.
     const menuSide = () => (p.variant === "home" ? "bottom" : "top");
     const interactions = () => st()?.interactions ?? [];
-    /** The status row: while a turn runs, unless a request card already says what's happening. */
+    /** A turn runs, and no request card is up: what it's doing is the turn's live line (LiveLine.tsx), not a row here. */
     const working = () => Boolean(p.sessionId && busy() && !interactions().length);
-    /** Compacting while idle: no turn runs, so it counts from the compaction's start (the placeholder says a message stops it). */
-    const idle = () => Boolean(st()?.activity?.idle);
-    const since = () => (idle() ? st()?.activity?.since : (h()?.view.turns?.at(-1)?.startedAt ?? st()?.activity?.since));
-    const elapsed = () => (since() === undefined ? "" : turnDuration(Math.max(0, now() - since()!)));
     /** Puts an @ where the caret is (after a space), which opens the file menu. */
     const mention = () => {
         if (!ta) return;
@@ -620,17 +614,6 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 </div>
             </Show>
             <div class="composer-box glass" ref={box}>
-                <Show when={working()}>
-                    <div class="c-status">
-                        <span class="c-spin" aria-hidden="true" />
-                        <span class="lbl truncate" title={st()?.activity?.detail}>
-                            {st()?.activity?.label ?? "Working"}
-                        </span>
-                        <span class="tm num">{elapsed()}</span>
-                        <span class="grow" />
-                        <Show when={shortcut("app:interrupt")}>{(k) => <kbd class="c-stop">{k()} to stop</kbd>}</Show>
-                    </div>
-                </Show>
                 <Show when={p.sessionId ? st()?.goal : undefined}>
                     {(goal) => <GoalTab sessionId={p.sessionId!} goal={goal()} />}
                 </Show>
@@ -745,6 +728,14 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                             </button>
                         }
                     >
+                        {/* How to stop it, beside the button that does: the box keeps its height while a turn runs. */}
+                        <Show when={busy() && shortcut("app:interrupt")}>
+                            {(k) => (
+                                <kbd class="c-alt c-esc" title={`Stop (${k()})`} aria-hidden="true">
+                                    {k() === "Esc" ? "esc" : k()}
+                                </kbd>
+                            )}
+                        </Show>
                         <button class="send stop" onClick={() => interrupt(p.sessionId)} title={busy() ? "Stop (Esc)" : "Pause the goal (Esc)"} aria-label={busy() ? "Stop" : "Pause the goal"}>
                             <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
                                 <rect x="1" y="1" width="10" height="10" rx="2.5" fill="currentColor" />
