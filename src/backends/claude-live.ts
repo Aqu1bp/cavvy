@@ -287,6 +287,11 @@ export class ClaudeConnection implements CliConnection {
      * Esc on a turn (a prompt's, or an adopted wake's). Never sent when the turn isn't the one Claude Code runs:
      * a prompt it hasn't started is withdrawn instead; one already answered is left alone.
      */
+    /** The turn Claude Code runs is being stopped (an interrupt is under way). */
+    stoppingNow(): boolean {
+        return this.cur !== undefined && this.stopping.has(this.cur.ref);
+    }
+
     async interrupt(ref: string): Promise<void> {
         this.stopping.add(ref);
         const followUp = this.followUp;
@@ -1539,7 +1544,8 @@ export class ClaudeLive {
     sendNow(key: string, text: string): boolean {
         const conn = this.adapter(key)?.conn;
         const live = this.get(key);
-        if (!conn || !live || live.state !== "busy" || !conn.sendNowCap || !conn.running()) return false;
+        // Not while one waits to go, or the running turn is being stopped already (its interrupt took what was waiting).
+        if (!conn || !live || live.state !== "busy" || !conn.sendNowCap || !conn.running() || conn.followUp !== undefined || conn.stoppingNow()) return false;
         conn.followUp = text;
         liveDebug("claude", "sendNow", { key, chars: text.length });
         return true;

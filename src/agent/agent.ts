@@ -1783,6 +1783,9 @@ export class Agent {
      * (Claude Code's send-now), which it reports back as a wake turn to adopt as the user's. False when it can't.
      */
     sendNow(text: string): boolean {
+        // Not one the user's UserPromptSubmit hooks haven't admitted (they may block it, or add to it): it waits in
+        // the queue, and goes through them as a prompt of its own once the turn has stopped.
+        if (!this.o.isSubagent && this.hookSettings().hooks?.UserPromptSubmit?.length) return false;
         return isAgentBackend(this.client) && Boolean(this.client.sendNow?.(this.session.meta.id, text));
     }
 

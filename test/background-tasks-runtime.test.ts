@@ -678,3 +678,39 @@ test("review #295 P1-1: Esc stops the answer, not a background sub-agent's permi
         await engine.stop();
     }
 });
+
+test("review #295 P1-3: a second Esc while the first one's stop is under way hands no other queued message to send-now", async () => {
+    const { engine, c, id, rt } = await session();
+    try {
+        const sentNow: string[] = [];
+        let turns = 0;
+        const backend = {
+            agentBackend: true as const,
+            setMode() {},
+            listModels: async () => [],
+            stream: async () => {
+                throw new Error("not used");
+            },
+            compact: async () => ({ reason: "done" as const, text: "", actions: [] }),
+            runTurn: async (t: BackendTurn) => {
+                turns++;
+                if (turns === 1 && !t.signal.aborted) await new Promise<void>((r) => t.signal.addEventListener("abort", () => setTimeout(r, 100), { once: true }));
+                return { reason: t.signal.aborted ? ("aborted" as const) : ("done" as const), text: "ok", actions: [] };
+            },
+            sendNow: (_key: string, text: string) => (sentNow.push(text), true),
+        };
+        rt.agent!.setModel(backendModel("fake-cli", "x"), backend as never);
+        await engine.handle(c, "session.send", { id, text: "go" });
+        await until(() => rt.busy && turns === 1);
+        await engine.handle(c, "session.send", { id, text: "one" });
+        await engine.handle(c, "session.send", { id, text: "two" });
+        await engine.handle(c, "session.interrupt", { id });
+        await engine.handle(c, "session.interrupt", { id });
+        expect(sentNow).toEqual(["one"]);
+        await until(() => !rt.busy);
+        // The second is still the user's: back in the composer once the turn has stopped, as Esc leaves queued messages.
+        expect((sent.get(c) ?? []).some((e) => e.type === "draft" && (e as { text?: string }).text === "two")).toBe(true);
+    } finally {
+        await engine.stop();
+    }
+});

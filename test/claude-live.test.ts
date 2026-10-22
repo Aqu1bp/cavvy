@@ -315,6 +315,29 @@ describe("Esc stops only the answer", () => {
         expect(agent.backgroundTasks().find((t) => t.kind === "agent")?.status).toBe("running");
     });
 
+    test("review #295 P1-2: with UserPromptSubmit hooks, Esc doesn't send a queued message at once (its hooks haven't admitted it)", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-hang";
+        process.env.FAKE_BACKGROUND_MS = "3000";
+        const settings = { hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: "true" }] }] } };
+        const { run, events, agent } = await makeAgent({ settings });
+        const { ac, done } = await startHanging(run, events);
+        expect(agent.sendNow("Use the other branch instead")).toBe(false);
+        ac.abort();
+        expect(await done).toBe("aborted");
+        expect(userTexts()).not.toContain("Use the other branch instead");
+    });
+
+    test("review #295 P1-3: a second Esc while the first one's stop is under way doesn't take another message (it would never be sent)", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-hang";
+        process.env.FAKE_BACKGROUND_MS = "3000";
+        const { run, events, agent } = await makeAgent();
+        const { ac, done } = await startHanging(run, events);
+        expect(agent.sendNow("first")).toBe(true);
+        ac.abort();
+        expect(agent.sendNow("second")).toBe(false);
+        expect(await done).toBe("aborted");
+    });
+
     test("an interrupt Claude Code doesn't answer ends the turn here, keeps the process, and says how to restart it", async () => {
         process.env.FAKE_SCENARIO = "hang";
         process.env.FAKE_IGNORE_INTERRUPT = "1";

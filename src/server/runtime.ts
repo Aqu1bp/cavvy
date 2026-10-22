@@ -2833,7 +2833,8 @@ export class Runtime {
         if (this.abort) {
             // Esc with a message sent meanwhile: a backend that can sends it at once in place of the turn it stops
             // (Claude Code's send-now, which spares its background sub-agents); its turn comes back as the user's.
-            const q = this.queued.find((x) => !x.held && !isCommand(x) && !x.attachments?.length && x.text.trim());
+            // Only with the first Esc: once the stop is under way, nothing would send another.
+            const q = this.abort.signal.aborted ? undefined : this.queued.find((x) => !x.held && !isCommand(x) && !x.attachments?.length && x.text.trim());
             if (q && this.agent?.sendNow(q.text)) {
                 this.queued = this.queued.filter((x) => x !== q);
                 this.queueUpdated();
