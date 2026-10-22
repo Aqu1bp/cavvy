@@ -548,3 +548,98 @@ test("a process whose interrupt went unanswered isn't reaped until the CLI ends 
     await until(() => !s.unresponsive);
     await until(() => s.state === "dead");
 });
+
+test("closing while a turn waits on its settings starts nothing after; a restart then starts afresh", async () => {
+    const { fake, pool } = setup();
+    const s = pool.session("a", "fake");
+    const one = await turn(s, "one");
+    let answer!: (r: "applied" | "restart") => void;
+    fake.hold.apply = new Promise((r) => (answer = r));
+    const two = turn(s, "two", { model: "other" });
+    await until(() => fake.applies === 1);
+    await pool.shutdownAll();
+    answer("restart");
+    expect(await two).toMatchObject({ reason: "aborted" });
+    expect(fake.connections).toHaveLength(1);
+    expect(s.state).toBe("dead");
+    expect(s.pid).toBeUndefined();
+    await until(() => !alive(one.pid));
+
+    // A user's restart meanwhile: the turn runs on a new process, not on the one that went.
+    const t = pool.session("b", "fake");
+    const first = await turn(t, "one");
+    fake.hold.apply = new Promise((r) => (answer = r));
+    const second = turn(t, "two", { model: "other" });
+    await until(() => fake.applies === 2);
+    await t.restart();
+    answer("applied");
+    fake.hold.apply = undefined;
+    const r = await second;
+    expect(r.reason).toBe("done");
+    expect(r.pid).not.toBe(first.pid);
+    expect(r.pid).toBe(t.pid!);
+});
+
+test("aborting a turn while its process starts, or while it takes new settings, ends it at once", async () => {
+    const { fake, pool } = setup();
+    const s = pool.session("a", "fake");
+    fake.hold.open = new Promise(() => {});
+    const esc = new AbortController();
+    const starting = turn(s, "one", { signal: esc.signal });
+    await until(() => fake.connections.length === 1);
+    const pid = fake.connections[0]!.proc.pid;
+    esc.abort();
+    expect(await starting).toMatchObject({ reason: "aborted" });
+    expect(s.state).toBe("dead");
+    await until(() => !alive(pid));
+    fake.hold.open = undefined;
+    const one = await turn(s, "one");
+    expect(one.reason).toBe("done");
+
+    // A CLI that never answers a settings change: the turn ends, the process stays, and the next turn sends them again.
+    fake.hold.apply = new Promise(() => {});
+    const esc2 = new AbortController();
+    const applying = turn(s, "two", { model: "other", signal: esc2.signal });
+    await until(() => fake.applies === 1);
+    esc2.abort();
+    expect(await applying).toMatchObject({ reason: "aborted" });
+    fake.hold.apply = undefined;
+    const three = await turn(s, "three", { model: "other" });
+    expect(three.pid).toBe(one.pid);
+    expect(fake.applies).toBe(2);
+});
+
+test("an interrupt's deadline runs while the prompt is still being taken", async () => {
+    const { clock, fake, pool } = setup();
+    const s = pool.session("a", "fake");
+    const one = await turn(s, "one");
+    let take!: () => void;
+    fake.hold.prompt = new Promise<void>((r) => (take = r));
+    const esc = new AbortController();
+    let done = false;
+    const two = turn(s, "two", { signal: esc.signal }).finally(() => (done = true));
+    await until(() => s.state === "busy");
+    esc.abort();
+    await until(() => done, () => clock.advance(100));
+    expect(await two).toMatchObject({ reason: "aborted", unanswered: true });
+    expect(s.unresponsive).toBe(true);
+    expect(s.state).toBe("idle");
+
+    // The CLI takes the prompt at last and ends its turn: it answered after all.
+    fake.hold.prompt = undefined;
+    take();
+    await until(() => !s.unresponsive);
+    expect((await turn(s, "three")).pid).toBe(one.pid);
+});
+
+test("a CLI that can't be spawned ends the turn with the error and leaves the session dead", async () => {
+    const { fake, pool } = setup();
+    const s = pool.session("a", "fake");
+    fake.bin = "/nonexistent/fake-cli";
+    const r = await turn(s, "one");
+    expect(r.reason).toBe("error");
+    expect(r.error).toContain("ENOENT");
+    expect(s.state).toBe("dead");
+    fake.bin = process.execPath;
+    expect((await turn(s, "two")).reason).toBe("done");
+});

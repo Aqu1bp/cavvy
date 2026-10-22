@@ -97,6 +97,8 @@ interface Turn {
     refKnown?: Promise<string | undefined>;
     interrupting?: boolean;
     timer?: unknown;
+    /** Its stand-in in `abandoned`: it was ended here before its prompt was taken. */
+    abandonedAs?: string;
 }
 
 export class LiveCliSession {
@@ -123,6 +125,10 @@ export class LiveCliSession {
     private quietWaiters = new Set<() => void>();
     /** Refs of turns ended here after an interrupt went unanswered, until the CLI ends them. */
     private abandoned = new Set<string>();
+    /** Stand-ins in `abandoned` for turns whose prompt the CLI hadn't taken yet. */
+    private untaken = 0;
+    /** The last few refs the CLI ended that were no turn's here. */
+    private endedElsewhere = new Set<string>();
     private stale = false;
     private stopping?: Promise<void>;
     private closed = false;
@@ -205,9 +211,10 @@ export class LiveCliSession {
     /**
      * Run a prompt as a turn: start the process if there's none (or restart it for new spawn settings, when
      * nothing runs in the background), apply the settings, send the prompt, and pass the turn's events to
-     * `sink` until it ends. Aborting `signal` interrupts the turn. One at a time. A process that can't be
-     * started (or exits while starting) ends the turn with an error; an adapter that can't say how to start
-     * one (the CLI isn't installed) throws.
+     * `sink` until it ends. Aborting `signal` interrupts the turn; before the prompt is sent, it ends the turn
+     * at once (a process still starting is stopped). One at a time. A process that can't be started (or exits
+     * while starting) ends the turn with an error; an adapter that can't say how to start one (the CLI isn't
+     * installed) throws. Closing the session meanwhile ends it aborted, and starts nothing.
      */
     async runTurn(input: TurnInput, sink: TurnSink, signal: AbortSignal, o: { spawn: SpawnConfig; settings: LiveSettings; host: SessionHost }): Promise<LiveTurnResult> {
         if (this.closed) throw new Error(`This ${this.adapter.def.name} session was closed`);
@@ -219,8 +226,9 @@ export class LiveCliSession {
         try {
             let deferred: { tasks: number } | undefined;
             try {
-                deferred = await this.prepare(o.spawn, o.settings);
+                deferred = await this.prepare(o.spawn, o.settings, signal);
             } catch (e) {
+                if (e instanceof Stopped || (e instanceof StartError && (this.closed || signal.aborted))) return { reason: "aborted" };
                 if (e instanceof StartError) return { reason: "error", error: e.message };
                 throw e;
             }
@@ -274,14 +282,16 @@ export class LiveCliSession {
         const turn = ref === undefined || this.turn?.ref === ref ? this.turn : this.wakes.get(ref);
         if (!turn || turn.result || turn.interrupting) return;
         turn.interrupting = true;
-        const r = turn.ref ?? (await turn.refKnown);
-        if (!r || turn.result) return;
+        const gen = this.generation;
+        // The deadline runs from now, whether or not the CLI has taken the prompt yet.
         turn.timer = this.o.clock.setTimeout(() => {
             if (turn.result) return;
-            this.abandoned.add(r);
-            this.finish(turn, { ref: r, reason: "aborted", unanswered: true });
+            // Not taken yet: it's held under a stand-in until its ref comes (prompt()).
+            this.abandoned.add(turn.ref ?? (turn.abandonedAs = `?${++this.untaken}`));
+            this.finish(turn, { ref: turn.ref, reason: "aborted", unanswered: true });
         }, this.o.interruptMs);
-        await this.conn?.interrupt(r).catch(() => {});
+        const r = turn.ref ?? (await turn.refKnown);
+        if (r && gen === this.generation) await this.conn?.interrupt(r).catch(() => {});
     }
 
     /** Stop background tasks: these, or every running one. */
@@ -332,53 +342,92 @@ export class LiveCliSession {
         return this.stop();
     }
 
-    private async prepare(cfg: SpawnConfig, settings: LiveSettings): Promise<{ tasks: number } | undefined> {
-        if (this.stopping) await this.stopping;
-        // Once the CLI has a session of its own, a new process resumes that (a fork is forked once).
-        if (this.cliSessionId) cfg = { ...cfg, resumeId: this.cliSessionId, forkSession: false };
-        const spec = this.adapter.spawn(cfg);
-        const resume = { resumeId: cfg.resumeId, fork: cfg.forkSession };
-        this.stale = false;
-        let deferred: { tasks: number } | undefined;
-        if (this.proc && spec.fingerprint !== this.fingerprint) {
-            if (this.background()) deferred = { tasks: this.background() };
-            else await this.stopProcess();
-        }
-        if (!this.proc) {
-            await this.start(spec, settings, resume);
+    /**
+     * Have a process ready for a turn, with its settings. Starts over when the process goes meanwhile (stopped,
+     * restarted, exited); throws Stopped once the session is closed or the turn aborted.
+     */
+    private async prepare(cfg: SpawnConfig, settings: LiveSettings, signal: AbortSignal): Promise<{ tasks: number } | undefined> {
+        for (;;) {
+            if (this.closed || signal.aborted) throw new Stopped();
+            if (this.stopping) {
+                await this.stopping;
+                continue;
+            }
+            // Once the CLI has a session of its own, a new process resumes that (a fork is forked once).
+            const c = this.cliSessionId ? { ...cfg, resumeId: this.cliSessionId, forkSession: false } : cfg;
+            const spec = this.adapter.spawn(c);
+            const proc = this.proc;
+            const conn = this.conn;
+            if (!proc || !conn) {
+                await this.start(spec, settings, { resumeId: c.resumeId, fork: c.forkSession }, signal);
+                return undefined;
+            }
+            const gen = this.generation;
+            let deferred: { tasks: number } | undefined;
+            let restart = false;
+            if (spec.fingerprint !== this.fingerprint) {
+                if (this.background()) deferred = { tasks: this.background() };
+                else restart = true;
+            }
+            const changed = restart ? undefined : settingsChange(this.settings, settings);
+            if (changed) {
+                const r = await this.applySettings(proc, conn, changed, signal);
+                // The process went meanwhile: start over.
+                if (gen !== this.generation) continue;
+                if (r === "applied") this.settings = settings;
+                else if (this.background()) deferred ??= { tasks: this.background() };
+                else restart = true;
+            }
+            if (restart) {
+                await this.stopProcess();
+                continue;
+            }
+            this.stale = deferred !== undefined;
             return deferred;
         }
-        const changed = settingsChange(this.settings, settings);
-        if (changed) {
-            const r = await this.conn!.apply(changed).catch(() => "restart" as const);
-            if (r === "applied") this.settings = settings;
-            else if (this.background()) deferred ??= { tasks: this.background() };
-            else {
-                await this.stopProcess();
-                await this.start(spec, settings, resume);
-            }
-        }
-        if (deferred) this.stale = true;
-        return deferred;
     }
 
-    private async start(spec: SpawnSpec, settings: LiveSettings, resume: { resumeId?: string; fork?: boolean }): Promise<void> {
+    /** Change the running process's settings: "restart" when it can't, or exits meanwhile. Throws Stopped when the turn is aborted first. */
+    private async applySettings(proc: JsonLinesProcess, conn: CliConnection, changed: Partial<LiveSettings>, signal: AbortSignal): Promise<"applied" | "restart"> {
+        try {
+            return await untilAborted(Promise.race([conn.apply(changed).catch(() => "restart" as const), proc.exited.then(() => "restart" as const)]), signal);
+        } catch (e) {
+            // What the CLI took of them isn't known: the next turn sends them all.
+            if (proc === this.proc) this.settings = undefined;
+            throw e;
+        }
+    }
+
+    private async start(spec: SpawnSpec, settings: LiveSettings, resume: { resumeId?: string; fork?: boolean }, signal: AbortSignal): Promise<void> {
+        let proc: JsonLinesProcess;
+        try {
+            proc = new JsonLinesProcess(spec.bin, spec.args, { cwd: spec.cwd, env: spec.env });
+        } catch (e) {
+            // Not even spawned (no such binary or folder): still no process.
+            throw new StartError(`${this.adapter.def.name} couldn't start: ${e instanceof Error ? e.message : String(e)}`);
+        }
         const gen = ++this.generation;
         this._state = "starting";
         this._error = undefined;
         this.fingerprint = spec.fingerprint;
         this.settings = undefined;
-        const proc = (this.proc = new JsonLinesProcess(spec.bin, spec.args, { cwd: spec.cwd, env: spec.env }));
+        this.stale = false;
+        this.proc = proc;
         const exited = proc.exited.then(async (code) => {
             await Promise.race([proc.stderrEnded, Bun.sleep(EXIT_DRAIN_MS)]);
             throw new StartError(this.exitMessage(proc, code));
         });
         exited.catch(() => {});
+        // Stopped (or closed) while starting: what's started here is let go.
+        const current = () => {
+            if (gen !== this.generation) throw this.closed ? new Stopped() : new StartError(`${this.adapter.def.name} was stopped while starting`);
+        };
         try {
-            const conn = await Promise.race([this.adapter.connect(proc, (e) => gen === this.generation && this.route(e), this.hostProxy), exited]);
+            const conn = await untilAborted(Promise.race([this.adapter.connect(proc, (e) => gen === this.generation && this.route(e), this.hostProxy), exited]), signal);
+            current();
             this.conn = conn;
-            const { sessionId } = await Promise.race([conn.open({ ...resume, settings }), exited]);
-            if (gen !== this.generation) throw new StartError(`${this.adapter.def.name} was stopped while starting`);
+            const { sessionId } = await untilAborted(Promise.race([conn.open({ ...resume, settings }), exited]), signal);
+            current();
             this.settings = settings;
             this.noteSessionId(sessionId);
             void this.watch(proc, conn, gen);
@@ -389,7 +438,7 @@ export class LiveCliSession {
                 this._state = "dead";
             }
             await proc.kill();
-            throw e instanceof StartError ? e : new StartError(e instanceof Error ? e.message : String(e));
+            throw e instanceof StartError || e instanceof Stopped ? e : new StartError(e instanceof Error ? e.message : String(e));
         }
     }
 
@@ -437,6 +486,10 @@ export class LiveCliSession {
     }
 
     private async prompt(input: TurnInput, sink: TurnSink, signal: AbortSignal): Promise<LiveTurnResult> {
+        const conn = this.conn;
+        // Stopped since it was readied.
+        if (!conn) return { reason: "aborted" };
+        const gen = this.generation;
         const turn: Turn = { origin: "user", sink, held: [] };
         const done = new Promise<LiveTurnResult>((resolve) => (turn.resolve = resolve));
         let known!: (ref: string | undefined) => void;
@@ -446,16 +499,24 @@ export class LiveCliSession {
         const onAbort = () => void this.interrupt();
         signal.addEventListener("abort", onAbort, { once: true });
         try {
-            this.conn!.prompt(input).then(
+            conn.prompt(input).then(
                 ({ ref }) => {
                     turn.ref = ref;
                     known(ref);
-                    // Held while it was sent; gone with its process if that went meanwhile.
-                    const held = turn.held.splice(0);
-                    if (!turn.result) for (const e of held) this.route(e);
+                    // Gone with its process if that went meanwhile.
+                    if (gen !== this.generation) return;
+                    // Ended here before the CLI took it (an unanswered interrupt): the CLI may be on it now, unless it ended it already.
+                    if (turn.abandonedAs !== undefined) {
+                        this.abandoned.delete(turn.abandonedAs);
+                        if (!this.endedElsewhere.has(ref)) this.abandoned.add(ref);
+                        this.changed();
+                    }
+                    // Held while it was sent.
+                    for (const e of turn.held.splice(0)) this.route(e);
                 },
                 (e) => {
                     known(undefined);
+                    if (turn.abandonedAs !== undefined && this.abandoned.delete(turn.abandonedAs)) this.changed();
                     this.finish(turn, { reason: "error", error: e instanceof Error ? e.message : String(e) });
                 },
             );
@@ -507,7 +568,12 @@ export class LiveCliSession {
             if (e.t !== "turn_ended") return this.emitSession(e);
             // A turn ended here after an unanswered interrupt: the CLI is done with it now.
             const was = this.abandoned.size;
-            for (const r of [e.ref, ...(e.answers ?? [])]) this.abandoned.delete(r);
+            for (const r of [e.ref, ...(e.answers ?? [])]) {
+                if (this.abandoned.delete(r)) continue;
+                // Maybe one whose prompt is still being acknowledged: remember a few.
+                this.endedElsewhere.add(r);
+                if (this.endedElsewhere.size > 16) this.endedElsewhere.delete(this.endedElsewhere.values().next().value!);
+            }
             if (this.abandoned.size !== was) this.changed();
             return;
         }
@@ -580,6 +646,19 @@ export class LiveCliSession {
 
 /** A process that couldn't be started, or exited while starting: the turn ends with it as its error. */
 class StartError extends Error {}
+
+/** The turn was aborted, or the session closed, before its prompt was sent: the turn ends aborted. */
+class Stopped extends Error {}
+
+/** `p`, unless `signal` aborts first: then Stopped. */
+function untilAborted<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+    if (signal.aborted) return Promise.reject(new Stopped());
+    return new Promise<T>((resolve, reject) => {
+        const onAbort = () => reject(new Stopped());
+        signal.addEventListener("abort", onAbort, { once: true });
+        p.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+    });
+}
 
 function answers(turn: Turn, ref: string, refs: string[] | undefined): boolean {
     return turn.ref !== undefined && (turn.ref === ref || Boolean(refs?.includes(turn.ref)));
