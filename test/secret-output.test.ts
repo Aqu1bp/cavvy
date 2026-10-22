@@ -1,6 +1,7 @@
 import { afterAll, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
+import { tmpdir } from "os";
 import { isolate, tempDir } from "./helpers/isolate";
 import type { ToolContext, ToolState } from "../src/tools/types";
 
@@ -348,7 +349,7 @@ for (const backgroundMode of [false, true]) {
 
 test("review: background output survives an archive write failure", async () => {
     const { ctx, dir } = setup();
-    const id = await background(ctx, script(dir, `await write('first\\n'); fs.writeFileSync('ready', ''); while (!fs.existsSync('continue')) await pause(); await write('IMPORTANT_SECOND\\n');`));
+    const id = await background(ctx, script(dir, `await write('first\\n' + ('x'.repeat(999) + '\\n').repeat(40)); fs.writeFileSync('ready', ''); while (!fs.existsSync('continue')) await pause(); await write(('x'.repeat(999) + '\\n').repeat(40) + 'IMPORTANT_SECOND\\n');`));
     for (let i = 0; i < 500 && !existsSync(join(dir, "ready")); i++) await Bun.sleep(10);
     const first = await BashOutputTool.run({ bash_id: id }, ctx);
     const path = /Full output: (.+)/.exec(first.content)![1]!;
@@ -356,6 +357,7 @@ test("review: background output survives an archive write failure", async () => 
     writeFileSync(join(dir, "continue"), "");
     const out = await finished(ctx, id);
     expect(out.content).toContain("IMPORTANT_SECOND");
+    expect(out.isError).toBeFalsy();
     expect(out.content).toContain("Could not save complete output");
 });
 
@@ -397,8 +399,8 @@ test("review: dense colored output is saved as readable text, including split es
     expect(read.content).toContain("hello world");
 });
 
-test("review: new sessions clean crashed output owners and preserve live ones under HARNESS_HOME", async () => {
-    const root = join(iso.home, "outputs", "bash");
+test("review: new sessions clean crashed output owners and preserve live ones in tmpdir", async () => {
+    const root = tmpdir();
     mkdirSync(root, { recursive: true });
     const dead = mkdtempSync(join(root, "harness-output-2147483647-"));
     const live = mkdtempSync(join(root, `harness-output-${process.pid}-`));
@@ -416,24 +418,6 @@ test("review: new sessions clean crashed output owners and preserve live ones un
     } finally {
         rmSync(dead, { recursive: true, force: true });
         rmSync(live, { recursive: true, force: true });
-    }
-});
-
-test("review: failure to create an archive does not prevent a command or its preview", async () => {
-    const { ctx, dir } = setup();
-    const badHome = join(dir, "not-a-directory");
-    writeFileSync(badHome, "blocked");
-    const previous = process.env.HARNESS_HOME;
-    process.env.HARNESS_HOME = badHome;
-    try {
-        const out = await BashTool.run({ command: "printf 'IMPORTANT_RESULT\\n'" }, ctx);
-        expect(out.content).toContain("IMPORTANT_RESULT");
-        expect(out.content).toContain("Could not save complete output");
-        const bg = await finished(ctx, await background(ctx, "printf 'IMPORTANT_BACKGROUND\\n'"));
-        expect(bg.content).toContain("IMPORTANT_BACKGROUND");
-        expect(bg.content).toContain("Could not save complete output");
-    } finally {
-        process.env.HARNESS_HOME = previous;
     }
 });
 
@@ -461,3 +445,133 @@ test("review: oversized lines do not mix unsanitized lengths into exact omission
     expect(saved).toContain("exact character count unavailable");
     expect(statSync(path).size).toBeLessThanOrEqual(8 * 1024 * 1024);
 }, 20000);
+
+for (const bg of [false, true]) {
+    test(`round 2: stray ESC and CSI cannot expose secrets in ${bg ? "background" : "foreground"} output`, async () => {
+        const { ctx, dir, progress } = setup();
+        const command = script(dir, `await write('\\x1b'); await pause(); await write(token + '\\n\\x1b[' + token + '\\n'); await write(('filler'.repeat(100) + '\\n').repeat(60));`);
+        const out = bg ? await finished(ctx, await background(ctx, command)) : await BashTool.run({ command }, ctx);
+        noFragments(out.content);
+        noFragments(progress.join(""));
+        const path = /Full output: (.+)/.exec(out.content)![1]!;
+        noFragments(readFileSync(path, "utf8"));
+    });
+}
+
+test("round 2: oversized raw head and tail redact secrets before stripping escapes", async () => {
+    const { ctx, dir } = setup();
+    const command = script(dir, `await write('\\x1b' + token + ' '); for (let i = 0; i < 145; i++) await write('x'.repeat(65536)); await write(' \\x1b[' + token + ' FINAL_ERROR\\n');`);
+    const out = await BashTool.run({ command }, ctx);
+    noFragments(out.content);
+    expect(out.content).toContain("FINAL_ERROR");
+    noFragments(readFileSync(/Saved output: (.+)/.exec(out.content)![1]!, "utf8"));
+});
+
+test("round 2: unterminated terminal strings recover at newline, CAN and SUB across background reads", async () => {
+    const { ctx, dir } = setup();
+    const command = script(dir, `await write(('filler'.repeat(100) + '\\n').repeat(60) + '\\x1b]oops\\n'); fs.writeFileSync('ready', ''); while (!fs.existsSync('continue')) await pause(); for (const escape of ['\\x1b]', '\\x1bP', '\\x1b[']) for (const end of ['\\n', '\\x18', '\\x1a']) await write(escape + '12;' + end + 'LATER_IMPORTANT ' + token + '\\n');`);
+    const id = await background(ctx, command);
+    for (let i = 0; i < 500 && !existsSync(join(dir, "ready")); i++) await Bun.sleep(10);
+    const first = await BashOutputTool.run({ bash_id: id }, ctx);
+    const path = /Full output: (.+)/.exec(first.content)![1]!;
+    writeFileSync(join(dir, "continue"), "");
+    const out = await finished(ctx, id);
+    expect(out.content.match(/LATER_IMPORTANT/g)).toHaveLength(9);
+    expect(readFileSync(path, "utf8").match(/LATER_IMPORTANT/g)).toHaveLength(9);
+    noFragments(out.content);
+});
+
+test("round 2: save failures are notes only for truncated output, with no nonexistent path", async () => {
+    const { ctx } = setup();
+    const warm = await BashTool.run({ command: "seq 1 10000" }, ctx);
+    const path = /Full output: (.+)/.exec(warm.content)![1]!;
+    // Removing the owner directory reliably breaks writes, even when tests run as root.
+    rmSync(dirname(path), { recursive: true, force: true });
+    for (const bg of [false, true]) {
+        const small = bg ? await finished(ctx, await background(ctx, "echo hi")) : await BashTool.run({ command: "echo hi" }, ctx);
+        expect(small.isError).toBeFalsy();
+        expect(small.content).not.toContain("output:");
+        expect(small.content).not.toContain("Could not save");
+        const large = bg ? await finished(ctx, await background(ctx, "seq 1 10000")) : await BashTool.run({ command: "seq 1 10000" }, ctx);
+        expect(large.isError).toBeFalsy();
+        expect(large.content).toContain("Could not save complete output");
+        expect(large.content).not.toMatch(/(?:Full|Saved) output:/);
+        expect(large.content).toContain("10000");
+    }
+    expect((await BashTool.run({ command: "echo failure; exit 7" }, ctx)).isError).toBe(true);
+});
+
+test("round 2: exhausted session quota does not affect small outputs or keep their files", async () => {
+    const { ctx, dir } = setup();
+    const command = script(dir, `for (let i = 0; i < 8300; i++) await write('x'.repeat(1023) + '\\n');`);
+    let path = "";
+    let last = "";
+    for (let i = 0; i < 8; i++) {
+        const out = await BashTool.run({ command }, ctx);
+        path ||= /(?:Full|Saved) output: (.+)/.exec(out.content)![1]!;
+        last = out.content;
+    }
+    expect(last).toContain("64 MiB session");
+    const files = readdirSync(dirname(path));
+    expect((await BashTool.run({ command: "echo hi" }, ctx)).content).toBe("hi");
+    const bg = await finished(ctx, await background(ctx, "echo hi"));
+    expect(bg.content).not.toContain("limit");
+    expect(bg.content).not.toContain("output:");
+    const boundary = await BashTool.run({ command: script(dir, `await write('x'.repeat(30000) + '\\n');`) }, ctx);
+    expect(boundary.content).toBe("x".repeat(30000));
+    expect(readdirSync(dirname(path))).toEqual(files);
+}, 30000);
+
+test("round 2: default Bash permission allows tail of saved output without a credentials prompt", async () => {
+    const { PermissionChecker } = await import("../src/permissions/checker");
+    const { ctx, dir } = setup();
+    const out = await BashTool.run({ command: "seq 1 10000" }, ctx);
+    const path = /Full output: (.+)/.exec(out.content)![1]!;
+    const checker = new PermissionChecker(() => ({ permissions: { allow: [], ask: [], deny: [] } }), dir, () => undefined);
+    const command = `tail -n 2 ${quote(path)}`;
+    expect(checker.check(BashTool, { command }, "default", dir).behavior).toBe("allow");
+    expect((await BashTool.run({ command }, ctx)).content).toBe("9999\n10000");
+});
+
+test("round 2: filtered background reads do not replay output when the archive activates", async () => {
+    const { ctx, dir } = setup();
+    const id = await background(ctx, script(dir, `await write('MATCH_OLD\\n'); fs.writeFileSync('ready', ''); while (!fs.existsSync('continue')) await pause(); await write(('filler'.repeat(100) + '\\n').repeat(60) + 'MATCH_NEW\\n');`));
+    for (let i = 0; i < 500 && !existsSync(join(dir, "ready")); i++) await Bun.sleep(10);
+    expect((await BashOutputTool.run({ bash_id: id, filter: "MATCH" }, ctx)).content).toContain("MATCH_OLD");
+    writeFileSync(join(dir, "continue"), "");
+    const sh = ctx.state.shells.get(id)!;
+    for (let i = 0; i < 500 && sh.exitCode === null; i++) await Bun.sleep(10);
+    const out = await BashOutputTool.run({ bash_id: id, filter: "MATCH" }, ctx);
+    expect(out.content).toContain("MATCH_NEW");
+    expect(out.content).not.toContain("MATCH_OLD");
+});
+
+for (const end of ["head", "tail"]) {
+    test(`round 2: oversized ${end} cannot leak an ANSI-split secret across the raw window`, async () => {
+        const { ctx, dir } = setup();
+        const command = script(dir, `const colors = '\\x1b[31m'.repeat(4000); const split = token.slice(0, 8) + '\\x1b[' + '0'.repeat(100000) + 'm' + token.slice(8); const filler = 'x'.repeat(9 * 1024 * 1024); await write(${end === "head" ? "colors + split + filler" : "filler + split + colors"} + ' FINAL_ERROR\\n');`);
+        const out = await BashTool.run({ command }, ctx);
+        noFragments(out.content);
+        expect(out.content).toContain("FINAL_ERROR");
+        const path = /Saved output: (.+)/.exec(out.content)![1]!;
+        noFragments(readFileSync(path, "utf8"));
+    });
+}
+
+test("round 2: exhausted file quota does not create artifacts or notes for small commands", async () => {
+    const { ctx } = setup();
+    let path = "";
+    for (let i = 0; i < 256; i++) {
+        const out = await BashTool.run({ command: "printf '%030001d\\n' 0" }, ctx);
+        path ||= /Full output: (.+)/.exec(out.content)![1]!;
+    }
+    const capped = await BashTool.run({ command: "printf '%030001d\\n' 0" }, ctx);
+    expect(capped.content).toContain("Session output file limit (256)");
+    expect(capped.content).not.toMatch(/(?:Full|Saved) output:/);
+    expect(capped.isError).toBeFalsy();
+    expect((await BashTool.run({ command: "echo hi" }, ctx)).content).toBe("hi");
+    const bg = await finished(ctx, await background(ctx, "echo hi"));
+    expect(bg.content).not.toContain("limit");
+    expect(bg.content).not.toContain("output:");
+    expect(readdirSync(dirname(path))).toHaveLength(256);
+}, 30000);
