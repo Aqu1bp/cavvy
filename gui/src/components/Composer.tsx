@@ -613,15 +613,15 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     </Show>
                 </div>
             </Show>
+            <Show when={p.sessionId && st()?.queued.length}>
+                <QueueTab sessionId={p.sessionId!} state={st()!} dequeue={(i, edit) => void dequeue(i, edit)} />
+            </Show>
             <div class="composer-box glass" ref={box}>
                 <Show when={p.sessionId ? st()?.goal : undefined}>
                     {(goal) => <GoalTab sessionId={p.sessionId!} goal={goal()} />}
                 </Show>
                 <Show when={p.sessionId && st()?.schedules?.length}>
                     <ScheduleTab sessionId={p.sessionId!} items={st()!.schedules} />
-                </Show>
-                <Show when={p.sessionId && st()?.queued.length}>
-                    <QueueTab sessionId={p.sessionId!} state={st()!} dequeue={(i, edit) => void dequeue(i, edit)} />
                 </Show>
                 <Show when={comments().length}>
                     <ReviewCommentChips

@@ -100,7 +100,7 @@
     min-width: 0;
 }
 
-/* ---- Goal, schedules and queued messages: rows inside the card ------------ */
+/* ---- Goal and schedules: rows inside the card ---------------------------- */
 
 .queue {
     display: flex;
@@ -165,48 +165,215 @@
     font-variant-numeric: tabular-nums;
 }
 
-/* Steering: it joins the turn, so it takes the accent; held after a restart: it waits on you. */
-.queue-row.m-steer .queue-icon {
-    color: var(--accent);
+/* ---- Up next: steers and queued messages, in a tray on top of the box -------
+   Its own small glass card, inset from the box's edges, so it reads as "waiting
+   to go into this box". Rows are numbered in the order they go; the number is a
+   grip while you're on the row. The hint and the row's buttons share one spot. */
+
+.uq-tray.glass {
+    position: relative;
+    z-index: 1;
+    flex: none;
+    min-width: 0;
+    /* 6px above the box: the composer's column gap is 8px. */
+    margin: 0 14px -2px;
+    padding: 4px;
+    border-radius: 16px;
+    animation: c-in 260ms var(--ease);
 }
 
-.queue-row.m-held .queue-icon,
-.queue-row.m-held .queue-hint {
-    color: var(--warn);
+.uq-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
 }
 
-.queue-grip {
+/* Past four rows it scrolls, so the transcript keeps its room. */
+.uq-list:has(> .uq-row:nth-child(5)) {
+    max-height: min(178px, 30vh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.uq-row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: none;
+    min-width: 0;
+    height: 34px;
+    padding: 0 6px 0 4px;
+    border-radius: 12px;
+    font-size: 0.929rem;
+    color: var(--fg);
+    white-space: nowrap;
+    outline: none;
+    transition: background 140ms;
+}
+
+.uq-row.movable {
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
     cursor: grab;
-    margin: 0 -4px 0 -6px;
+}
+
+.uq-row:hover,
+.uq-row:focus-visible {
+    background: var(--hover);
+}
+
+.uq-row:focus-visible {
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* Its place in line; a grip while you're on the row. */
+.uq-n {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 22px;
+    height: 22px;
+    border-radius: 7px;
     color: var(--fg-3);
 }
 
-.queue-grip:active {
-    cursor: grabbing;
+.uq-n > * {
+    grid-area: 1 / 1;
+    transition: opacity var(--dur-fast);
 }
 
-.queue-row.dragging {
-    opacity: 0.5;
+.uq-n b {
+    font-size: 0.821rem;
+    font-weight: 600;
+    line-height: 1;
 }
 
-/* Where a dragged message lands: a line above the row (or below the last). */
-.queue-row.drop-before {
-    box-shadow: inset 0 2px 0 var(--accent);
+.uq-n svg {
+    opacity: 0;
 }
 
-.queue-drop-end {
-    height: 2px;
-    margin-top: -2px;
-    border-radius: 1px;
-    background: var(--accent);
+.uq-row.movable:hover .uq-n b,
+.uq-row.movable:focus-visible .uq-n b,
+.uq-row.lifted .uq-n b {
+    opacity: 0;
 }
 
-.queue-send {
+.uq-row.movable:hover .uq-n svg,
+.uq-row.movable:focus-visible .uq-n svg,
+.uq-row.lifted .uq-n svg {
+    opacity: 1;
+}
+
+.uq-kind {
+    display: grid;
     flex: none;
-    height: 22px;
+    color: var(--fg-3);
+}
+
+/* Steering: it joins the turn, so it takes the accent; held after a restart: it waits on you. */
+.uq-row.q-steer .uq-kind {
+    color: var(--accent);
+}
+
+.uq-row.q-held .uq-kind,
+.uq-row.q-held .uq-hint {
+    color: var(--warn);
+}
+
+.uq-text {
+    flex: 1;
+    min-width: 0;
+}
+
+.uq-end {
+    display: grid;
+    justify-items: end;
+    align-items: center;
+    flex: none;
+}
+
+.uq-end > * {
+    grid-area: 1 / 1;
+    transition: opacity var(--dur-fast);
+}
+
+.uq-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding-right: 6px;
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+/* On its way: the first steer, waiting for the turn's next step. */
+.uq-hint.joining::before {
+    content: "";
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: uq-joining 1.2s ease-in-out infinite;
+}
+
+@keyframes uq-joining {
+    50% {
+        opacity: 0.3;
+        transform: scale(0.7);
+    }
+}
+
+.uq-acts {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* On the row, or on it (or a button in it) from the keyboard: a row a click or a drag left focused keeps its hint. */
+.uq-row:hover .uq-acts,
+.uq-row:focus-visible .uq-acts,
+.uq-row:has(:focus-visible) .uq-acts {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.uq-row:hover .uq-hint,
+.uq-row:focus-visible .uq-hint,
+.uq-row:has(:focus-visible) .uq-hint {
+    opacity: 0;
+}
+
+.uq-ib {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 8px;
+    color: var(--fg-3);
+    transition: background 140ms, color 140ms;
+}
+
+.uq-ib:hover {
+    background: var(--press);
+    color: var(--fg);
+}
+
+/* Steer (into the running turn, with its glyph) or Send now. */
+.uq-send {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 24px;
+    margin-right: 2px;
     padding: 0 9px;
     border-radius: var(--pill);
-    font-size: 0.821rem;
+    font-size: 0.857rem;
     font-weight: 600;
     color: var(--accent);
     background: color-mix(in srgb, var(--accent) 12%, transparent);
@@ -214,52 +381,62 @@
     transition: background 140ms;
 }
 
-.queue-send:hover {
+.uq-send:has(svg) {
+    padding-left: 7px;
+}
+
+.uq-send:hover {
     background: color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
-/* Steer: the way into the running turn, a pill with its glyph. */
-.queue-send.steer {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 0 10px 0 8px;
+.uq-send:focus-visible,
+.uq-ib:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
 }
 
-.queue-hint:has(.queue-joining) {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    color: var(--fg-2);
+/* Sorting: the others slide out of the way; the one you hold is lifted and follows the pointer. */
+.uq-list.sorting .uq-row {
+    transition: transform var(--dur-sort) var(--ease), background 140ms;
 }
 
-/* On its way: waiting for the turn's next step. */
-.queue-joining {
-    flex: none;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--accent);
-    animation: queue-joining 1.4s var(--ease) infinite;
+.uq-list .uq-row.lifted,
+.uq-list .uq-row.settling {
+    z-index: 2;
+    cursor: grabbing;
+    background: color-mix(in srgb, var(--fg) 7%, var(--sheet));
 }
 
-@keyframes queue-joining {
-    50% {
-        opacity: 0.3;
-        transform: scale(0.7);
-    }
+.uq-list .uq-row.lifted {
+    box-shadow: var(--pop-shadow);
+    transition: box-shadow 160ms, background 140ms;
+}
+
+.uq-list .uq-row.settling {
+    box-shadow: none;
+    transition: transform var(--dur-settle) var(--spring), box-shadow 200ms;
+}
+
+/* The move is in: every row takes its new place and drops its transform at once, so nothing moves. */
+.uq-list.still .uq-row {
+    transition: none !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .queue-joining {
+    .uq-tray.glass {
         animation: none;
     }
-}
 
-.queue-send:focus-visible,
-.queue-grip:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
+    .uq-row,
+    .uq-list .uq-row.lifted,
+    .uq-list .uq-row.settling,
+    .uq-list.sorting .uq-row {
+        transition: none;
+    }
+
+    .uq-hint.joining::before {
+        animation: none;
+    }
 }
 
 /* Schedules: what runs when, like the queue. */

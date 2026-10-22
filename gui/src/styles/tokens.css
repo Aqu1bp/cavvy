@@ -64,16 +64,23 @@
     --dur-fast: 120ms;
     /* Panels and menus opening and closing (Settings → Panel animations). */
     --dur-panel: 160ms;
+    /* Reordering a list (the "Up next" tray): the others sliding out of the way, the dropped one settling. */
+    --dur-sort: 200ms;
+    --dur-settle: 220ms;
 }
 
 [data-motion="instant"] {
     --dur: 0ms;
     --dur-panel: 0ms;
+    --dur-sort: 0ms;
+    --dur-settle: 0ms;
 }
 
 [data-motion="smooth"] {
     --dur: 560ms;
     --dur-panel: 260ms;
+    --dur-sort: 280ms;
+    --dur-settle: 320ms;
 }
 
 [data-density="compact"] {
