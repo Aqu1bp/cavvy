@@ -113,7 +113,7 @@ export type AgentEvent =
     | { type: "tool_end"; call: ToolCallPart; result: ToolResult; durationMs: number; /** Its title now, when what it did was only known at its end (a backend's web search). */ title?: string }
     | { type: "notice"; level: "info" | "warn" | "error"; message: string }
     | { type: "retry"; attempt: number; delayMs: number; reason: string }
-    | { type: "usage"; usage: Usage; cost: CostEstimate; contextTokens: number }
+    | { type: "usage"; usage: Usage; cost: CostEstimate; contextTokens: number; /** Already accounted for by the backend; only updates a sub-agent's display. */ displayOnly?: boolean }
     /** `idle`: compacting a conversation left idle, before its prompt cache expires. */
     | { type: "compact_start"; auto: boolean; idle?: boolean }
     | { type: "compact_end"; summary: string; idle?: boolean }
@@ -987,6 +987,7 @@ export class Agent {
                       if (res.usage) {
                           const cost = costOf(res.usage, r.model);
                           this.session.recordUsage(modelRef(r.model), res.usage, cost.usd, cost.unknown);
+                          this.emit({ type: "usage", usage: res.usage, cost, contextTokens: this.contextTokens });
                       }
                       return textOf(res);
                   }
@@ -1150,6 +1151,7 @@ export class Agent {
             if (res.usage) {
                 const cost = costOf(res.usage, this.model);
                 this.session.recordUsage(modelRef(this.model), res.usage, cost.usd, cost.unknown);
+                this.emit({ type: "usage", usage: res.usage, cost, contextTokens: this.contextTokens });
             }
         } catch (e) {
             if (isAbort(e, opts.signal)) throw e;
@@ -1172,9 +1174,14 @@ export class Agent {
             });
             const res = await this.client.stream(req, () => {});
             summary = textOf(res);
+            if (res.usage) {
+                const cost = costOf(res.usage, this.model);
+                this.session.recordUsage(modelRef(this.model), res.usage, cost.usd, cost.unknown);
+                this.emit({ type: "usage", usage: res.usage, cost, contextTokens: this.contextTokens });
+            }
         }
         if (!summary.trim()) throw new Error("The model returned an empty summary");
-        const keep: Message[] = [summaryMessage(summary, Boolean(opts.continuing))];
+        const keep: Message[] = [summaryMessage(summary, Boolean(opts.continuing), this.state)];
         this.session.compact(summary, keep, opts.idle);
         this.contextTokens = 0;
         this.lastUsageTotal = 0;

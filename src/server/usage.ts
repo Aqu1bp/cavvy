@@ -63,11 +63,11 @@ export async function usageSummary(days: UsageDays, now = Date.now(), limits: Pl
         v.unknown = r.unknown || (estimate.unknown && !r.cost);
         v.planEquivalent = source === "api" ? 0 : v.cost;
         if (parts && !r.unknown) {
-            const sum = parts.input + parts.output + parts.cacheRead + parts.cacheWrite;
+            const sum = parts.input + parts.output + parts.cacheRead + parts.cacheWrite + parts.webSearch;
             const scale = sum > 0 ? v.cost / sum : 0;
             for (const k of ["input", "output", "cacheRead", "cacheWrite"] as const) v.costByType[k] = parts[k] * scale;
             v.cacheSavings = parts.cacheSavings;
-            if (!sum) v.costByType.unallocated = v.cost;
+            v.costByType.unallocated = sum ? parts.webSearch * scale : v.cost;
         } else v.costByType.unallocated = v.cost;
         return v;
     };

@@ -169,7 +169,11 @@ export class TurnTally {
                 if (e.result.isError && NON_INTERACTIVE_DENIAL.test(e.result.content)) this.denials.push(e.call.name);
                 break;
             case "usage":
-                this.addUsage(e.usage, e.cost.usd);
+                if (!e.displayOnly) this.addUsage(e.usage, e.cost.usd);
+                break;
+            case "subagent":
+                // Session folding persists these records without re-emitting them.
+                if (e.event.type === "usage" || e.event.type === "subagent") this.observe(e.event);
                 break;
             case "notice":
                 if (e.level === "error") this.errors.push(e.message);
