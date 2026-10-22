@@ -86,30 +86,45 @@ export function commandMeta(t: Pick<ToolBlock, "status" | "summary" | "input">):
 
 /**
  * What a finished command printed, as its row shows it opened: cleaned of terminal codes, without trailing
- * blank lines, nor the exit code the tool adds at the end ("Exit code: 1"), which the row's footer says.
+ * blank lines, nor the exit code the tool adds at the end of a failure ("Exit code: 1"), which the row's
+ * footer says. A command that succeeded keeps every line, even one that reads like that trailer (the tool
+ * only adds it for a nonzero exit, so there it's the command's own output).
  */
-export function outputLines(output: string | undefined): string[] {
+export function outputLines(output: string | undefined, failed = false): string[] {
     if (!output) return [];
     const lines = stripAnsi(output).split(/\r\n|\r|\n/);
     const trim = () => {
         while (lines.length && !lines.at(-1)!.trim()) lines.pop();
     };
     trim();
-    if (/^Exit code:? -?\d+$/.test(lines.at(-1)?.trim() ?? "")) {
+    if (failed && /^Exit code:? -?\d+$/.test(lines.at(-1)?.trim() ?? "")) {
         lines.pop();
         trim();
     }
     return lines;
 }
 
+/** A command the server cut short on its way here (inputs over 4,000 characters, src/server/diffs.ts trimInput): not the whole command, so not one to copy. */
+export function commandCut(command: string): boolean {
+    return /\n… \(\d+ more characters\)$/.test(command);
+}
+
+/** How far apart a Harness shell's start and its call's start can be and still be the same run (the call returns once the shell is up). */
+const SHELL_START_SLACK_MS = 10_000;
+
 /**
  * The background task a command started: the one linked to its call (Claude Code's, Codex's), else, for a
  * Harness shell (which isn't linked), the shell its result names ("Started background shell bash_1", "Running in background as bash_1").
  */
-export function taskOf(t: Pick<ToolBlock, "id" | "input" | "summary" | "output">, tasks: readonly BackgroundTaskInfo[]): BackgroundTaskInfo | undefined {
+export function taskOf(t: Pick<ToolBlock, "id" | "input" | "summary" | "output" | "startedAt" | "durationMs">, tasks: readonly BackgroundTaskInfo[]): BackgroundTaskInfo | undefined {
     const linked = tasks.find((x) => x.toolUseId === t.id);
     if (linked || t.input?.run_in_background !== true) return linked;
     const said = `${t.summary ?? ""}\n${(t.output ?? "").slice(0, 400)}`;
     const id = /\b(?:background shell|in background as) (\S+?)[\s.,]/.exec(`${said} `)?.[1];
-    return id ? tasks.find((x) => x.id === id && !x.toolUseId && x.kind === "shell") : undefined;
+    // Shell ids are counted per Harness process (bash_1, bash_2, …), so after a restart a new shell can have
+    // an old call's id: the shell must also have started while this call ran, or a Stop here would stop it.
+    const at = t.startedAt;
+    if (!id || at === undefined) return undefined;
+    const until = at + (t.durationMs ?? 0) + SHELL_START_SLACK_MS;
+    return tasks.find((x) => x.id === id && !x.toolUseId && x.kind === "shell" && x.startedAt >= at - 1000 && x.startedAt <= until);
 }

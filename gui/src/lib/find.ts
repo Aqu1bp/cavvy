@@ -56,7 +56,7 @@ function blockText(b: Block): string | undefined {
                 const head = [desc, l.arg, commandMeta(b)].filter(Boolean).join(" ");
                 const command = String(b.input?.command ?? "").trim();
                 // Its output as the opened row draws it (without the exit code the tool adds: the footer, which find skips, says it).
-                const output = outputLines(b.output).join("\n");
+                const output = outputLines(b.output, b.status === "error").join("\n");
                 return [head, command || undefined, output.trim() ? output : undefined].filter(Boolean).join("\n");
             }
             // Still running: its argument, which its live row shows as long as it runs (nothing while the call is still arriving).

@@ -35,7 +35,7 @@ import {
 import type { AgentRun, Block, ThinkingBlock, TodoEntry, ToolBlock } from "@shared/protocol";
 import { duration, firstChangedLine, plural, sleepSeconds, stripAnsi, tokens } from "../../lib/format";
 import { commandDescription, isLive, runningVerb, shortModelRef, toolLabel } from "../../lib/tool-words";
-import { commandMeta, exitCode, highlightShell, outputLines, passTally, taskOf } from "../../lib/command-row";
+import { commandCut, commandMeta, exitCode, highlightShell, outputLines, passTally, taskOf } from "../../lib/command-row";
 import { lineTone } from "../../lib/live-line";
 import { backgroundOf } from "../../lib/background";
 import { now } from "../../lib/clock";
@@ -996,7 +996,7 @@ function CommandCardContent(p: { tool: ToolBlock }) {
                             </svg>
                         </button>
                     </Show>
-                    <Show when={command()}>
+                    <Show when={command() && !commandCut(command())}>
                         <CopyButton text={command} label="Copy command" class="cp" />
                     </Show>
                 </span>
@@ -1025,7 +1025,7 @@ function CommandBody(p: { tool: ToolBlock; live: boolean; running: boolean; code
     const tokens = createMemo(() => highlightShell(command()));
     const [full, setFull] = createSignal<string>();
     const [loading, setLoading] = createSignal(false);
-    const lines = createMemo(() => outputLines(full() ?? p.tool.output));
+    const lines = createMemo(() => outputLines(full() ?? p.tool.output, p.tool.status === "error"));
     const progress = () => (p.running && p.tool.progress ? stripAnsi(p.tool.progress).trimEnd().split("\n").slice(-LIVE_LINES).join("\n") : "");
     const load = async () => {
         setLoading(true);
@@ -1052,9 +1052,11 @@ function CommandBody(p: { tool: ToolBlock; live: boolean; running: boolean; code
                 <pre>
                     <For each={tokens()}>{(tk) => (tk.cls ? <span class={tk.cls}>{tk.text}</span> : tk.text)}</For>
                 </pre>
-                <span data-find-skip>
-                    <CopyButton text={command} label="Copy command" class="cp" />
-                </span>
+                <Show when={!commandCut(command())}>
+                    <span data-find-skip>
+                        <CopyButton text={command} label="Copy command" class="cp" />
+                    </span>
+                </Show>
             </div>
             {"\n"}
             <div class="cmd-out">

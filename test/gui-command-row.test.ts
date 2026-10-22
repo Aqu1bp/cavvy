@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { commandMeta, exitCode, highlightShell, outputLines, passTally, taskOf, type ShellToken } from "../gui/src/lib/command-row";
+import { commandCut, commandMeta, exitCode, highlightShell, outputLines, passTally, taskOf, type ShellToken } from "../gui/src/lib/command-row";
 
 // A command's row (gui/src/lib/command-row.ts): its command highlighted when it's opened, and what the row says
 // folded (its exit code, a test run's tally, its summary). Activity.tsx draws from these; find.ts counts the same words.
@@ -76,11 +76,23 @@ test("an opened command's output lines: no terminal codes, no trailing blank lin
     expect(outputLines("")).toEqual([]);
     expect(outputLines(undefined)).toEqual([]);
     expect(outputLines("\n \n")).toEqual([]);
-    // The exit code the tool adds at the end is the footer's to say; one said earlier is the command's own.
-    expect(outputLines("Compiling\nerror: x\n\nExit code: 1")).toEqual(["Compiling", "error: x"]);
-    expect(outputLines("oops\nExit code 127\n")).toEqual(["oops"]);
-    expect(outputLines("Exit code: 1\nretrying\n")).toEqual(["Exit code: 1", "retrying"]);
-    expect(outputLines("Exit code: 2")).toEqual([]);
+    // The exit code the tool adds at the end of a failure is the footer's to say; one said earlier is the command's own.
+    expect(outputLines("Compiling\nerror: x\n\nExit code: 1", true)).toEqual(["Compiling", "error: x"]);
+    expect(outputLines("oops\nExit code 127\n", true)).toEqual(["oops"]);
+    expect(outputLines("Exit code: 1\nretrying\n", true)).toEqual(["Exit code: 1", "retrying"]);
+    expect(outputLines("Exit code: 2", true)).toEqual([]);
+});
+
+test("a command that succeeded keeps a last line that reads like the tool's exit code: it printed it itself", () => {
+    // printf 'Exit code: 42\n' exits 0: the tool adds no trailer, so this is the command's whole output.
+    expect(outputLines("Exit code: 42\n")).toEqual(["Exit code: 42"]);
+    expect(outputLines("build ok\nExit code 0")).toEqual(["build ok", "Exit code 0"]);
+});
+
+test("a command the server cut short isn't offered for copying", () => {
+    expect(commandCut(`${"x".repeat(4000)}\n… (812 more characters)`)).toBe(true);
+    expect(commandCut("echo '… (3 more characters)'")).toBe(false);
+    expect(commandCut("bun test")).toBe(false);
 });
 
 test("a command's background task: the one linked to its call, else the Harness shell its result names", () => {
@@ -90,7 +102,7 @@ test("a command's background task: the one linked to its call, else the Harness 
     const tasks = [task({ id: "bash_1" }), shell, linked];
     expect(taskOf({ id: "call1", input: { command: "npm run dev" } }, tasks)).toBe(linked);
     // Harness's shells aren't linked to their call: its result names the shell.
-    const started = { id: "call2", input: { command: "npm run dev", run_in_background: true }, output: "Started background shell bash_2 (pid 41). Use BashOutput…" };
+    const started = { id: "call2", input: { command: "npm run dev", run_in_background: true }, output: "Started background shell bash_2 (pid 41). Use BashOutput…", startedAt: 1, durationMs: 20 };
     expect(taskOf(started, tasks)).toBe(shell);
     expect(taskOf({ ...started, output: undefined, summary: "Running in background as bash_2" }, tasks)).toBe(shell);
     // Only a command started in the background, and only an unlinked shell: bash_1 isn't bash_10, nor someone else's task.
@@ -98,4 +110,14 @@ test("a command's background task: the one linked to its call, else the Harness 
     expect(taskOf({ ...started, output: "Started background shell bash_10 (pid 3)" }, tasks)).toBeUndefined();
     expect(taskOf({ ...started, output: "Started background shell b7 (pid 3)" }, tasks)).toBeUndefined();
     expect(taskOf({ id: "call3", input: { command: "ls" } }, tasks)).toBeUndefined();
+});
+
+test("a Harness shell id used again after a restart doesn't link an old command's row to the new shell", () => {
+    // Shell ids are counted per process: before a restart, call2 started bash_1 at t=1000; after it, a new bash_1 starts at t=900000.
+    const fresh = { id: "bash_1", provider: "harness", kind: "shell", label: "npm run dev", startedAt: 900_000, status: "running", stoppable: true } as any;
+    const old = { id: "call2", input: { command: "npm run dev", run_in_background: true }, output: "Started background shell bash_1 (pid 41).", startedAt: 1000, durationMs: 15 };
+    expect(taskOf(old, [fresh])).toBeUndefined();
+    // Its own shell, started while the call ran, still matches; a call with no start time can't be matched by id at all.
+    expect(taskOf(old, [{ ...fresh, startedAt: 1010 }])?.id).toBe("bash_1");
+    expect(taskOf({ ...old, startedAt: undefined }, [{ ...fresh, startedAt: 1010 }])).toBeUndefined();
 });
