@@ -101,21 +101,19 @@ describe("a background flood", () => {
         expect(shell.output.split("\n").slice(0, -2).every((l) => l === "GET /a 200" || l === "POST /b 500")).toBe(true);
     }, 60_000);
 
-    test("stdout and stderr floods together keep each line whole, and the end in order", async () => {
+    test("stdout and stderr flooding together come out as written, the end last", async () => {
         const { ctx } = setup();
-        // Whole lines (9 characters each). Across the two pipes, order holds to within what their buffers hold
-        // while we're behind; once those are read, a later line comes later.
-        const { id, shell } = await background(ctx, "(yes OUT_LINE | head -c 3999996) & (yes ERR_LINE | head -c 3999996 >&2); wait; sleep 1; echo FINAL_MARKER");
+        // Both streams share one pipe, as \`2>&1\` in a terminal: the kernel keeps the order they were written in
+        // (two processes writing big blocks at once can meet mid-line, as they would there).
+        const { id, shell } = await background(ctx, "(yes OUT_LINE | head -c 3999996) & (yes ERR_LINE | head -c 3999996 >&2); wait; echo FINAL_MARKER");
         const { turns } = await turnsDuring(() => exited(shell));
         expect(turns).toBeGreaterThanOrEqual(5);
         const out = (await BashOutputTool.run({ bash_id: id }, ctx)).content;
-        const lines = wholeLines(out);
-        expect(lines.at(-1)).toBe("FINAL_MARKER");
-        // Batching a chunk's lines must not splice one pipe's line into the other's.
-        for (const line of lines.slice(0, -1)) expect(["OUT_LINE", "ERR_LINE"]).toContain(line);
-        expect(lines).toContain("OUT_LINE");
-        expect(lines).toContain("ERR_LINE");
-        for (const line of shell.output.split("\n").slice(0, -2)) expect(["OUT_LINE", "ERR_LINE"]).toContain(line);
+        expect(wholeLines(out).at(-1)).toBe("FINAL_MARKER");
+        const saved = readFileSync(/(?:Full|Saved) output: (.+)/.exec(out)![1]!, "utf8");
+        expect(saved).toContain("OUT_LINE\nOUT_LINE\n");
+        expect(saved).toContain("ERR_LINE\nERR_LINE\n");
+        expect(shell.output.endsWith("\nFINAL_MARKER\n")).toBe(true);
     }, 60_000);
 
     test("a huge line with no newline keeps its real ends while the server keeps its turns", async () => {
@@ -193,6 +191,35 @@ describe("a foreground flood", () => {
     }, 60_000);
 });
 
+describe("stdout and stderr keep the order they were written in", () => {
+    // Old (#342's first version): two FIFOs read at the same moments put whatever both said within a poll stdout-first.
+    const cases: [string, string, (string | RegExp)[]][] = [
+        ["errors between steps", "ls /nope-a; echo '--- step 2'; ls /nope-b; echo '--- step 3'; echo ok", [/nope-a/, "--- step 2", /nope-b/, "--- step 3", "ok"]],
+        ["a shell trace", "set -x; echo a; ls /nonexistent; echo b; true; echo c", [/echo a$/, "a", /ls \/nonexistent$/, /\/nonexistent/, /echo b$/, "b", /true$/, /echo c$/, "c"]],
+        ["a make-like loop", 'for i in 1 2 3 4 5; do echo "cc -c f$i.c"; sleep 0.0$i; echo "f$i.c: error" >&2; done', [1, 2, 3, 4, 5].flatMap((i) => [`cc -c f${i}.c`, `f${i}.c: error`])],
+    ];
+    for (const [name, command, expected] of cases)
+        for (const bg of [false, true]) {
+            test(`${name}, ${bg ? "background" : "foreground"}`, async () => {
+                const { ctx } = setup();
+                let content: string;
+                if (bg) {
+                    const { id, shell } = await background(ctx, command);
+                    await exited(shell);
+                    content = /<output>\n([\s\S]*?)\n<\/output>/.exec((await BashOutputTool.run({ bash_id: id }, ctx)).content)![1]!;
+                } else content = (await BashTool.run({ command }, ctx)).content;
+                // The foreground script's own lines after the command can show in a trace too.
+                const lines = content.split("\n").slice(0, expected.length);
+                expect(lines.length).toBe(expected.length);
+                lines.forEach((line, i) => {
+                    const want = expected[i]!;
+                    if (typeof want === "string") expect(line).toBe(want);
+                    else expect(line).toMatch(want);
+                });
+            }, 30_000);
+        }
+});
+
 describe("a monitor", () => {
     test("flooding stderr (no events, so no flood guard) leaves the server its turns", async () => {
         const { ctx, state } = setup();
@@ -200,6 +227,7 @@ describe("a monitor", () => {
         state.wakes = wakes;
         state.watchers = new Map();
         ctx.wakes = wakes;
+        // A monitor's stdout and stderr are separate pipes (only stdout lines are events): after a pause, the order is sure.
         const r = await MonitorTool.run({ command: "(yes ERR_LINE | head -c 19999998) >&2; sleep 1; echo DONE_EVENT", description: "flood" }, ctx);
         const id = /\b(monitor_\d+)\b/.exec(r.content)![1]!;
         const shell = state.shells.get(id)!;
@@ -265,16 +293,26 @@ describe("paced pipes", () => {
         expect((await BashOutputTool.run({ bash_id: id }, ctx)).content).toContain("BEFORE_MARKER");
     }, 30_000);
 
-    test("where FIFOs can't be made, and with pacedOutput off, output comes through ordinary pipes", async () => {
-        const path = process.env.PATH;
-        process.env.PATH = realpathSync(tempDir("harness-no-mkfifo-"));
-        let fallback: Awaited<ReturnType<typeof BashTool.run>>;
-        try {
-            fallback = await BashTool.run({ command: "/usr/bin/printf 'one\\ntwo\\n'; /usr/bin/printf err >&2" }, setup().ctx);
-        } finally {
-            process.env.PATH = path;
-        }
-        expect(fallback.content).toBe("one\ntwo\nerr");
+    test("once mkfifo fails, later commands go straight to ordinary pipes", async () => {
+        // In a process of its own: the failure is remembered for the rest of the process.
+        const dir = realpathSync(tempDir("harness-no-mkfifo-"));
+        dirs.push(dir);
+        const log = join(dir, "calls");
+        writeFileSync(join(dir, "mkfifo"), `#!/bin/sh\necho x >> ${quote(log)}\nexit 1\n`, { mode: 0o755 });
+        const probe = join(dir, "probe.ts");
+        writeFileSync(probe, `const { BashTool } = await import(${JSON.stringify(join(import.meta.dir, "../src/tools/bash"))});
+const ctx = { state: { cwd: ${JSON.stringify(dir)}, projectRoot: ${JSON.stringify(dir)}, fileState: new Map(), todos: [], shells: new Map() }, settings: {}, signal: new AbortController().signal };
+const out = [];
+for (let i = 0; i < 5; i++) out.push((await BashTool.run({ command: "/bin/echo run" + i }, ctx)).content);
+await Bun.sleep(200);
+console.log(out.join(","));`);
+        const r = Bun.spawnSync([process.execPath, "--no-env-file", probe], { env: { ...process.env, PATH: dir } });
+        expect(r.stdout.toString().trim()).toBe("run0,run1,run2,run3,run4");
+        // The first command's own attempt and the spares made alongside it, then none.
+        expect(readFileSync(log, "utf8").split("\n").filter(Boolean).length).toBeLessThanOrEqual(2);
+    }, 30_000);
+
+    test("with pacedOutput off, output comes through ordinary pipes", async () => {
         const off = setup({ pacedOutput: false });
         expect((await BashTool.run({ command: "printf 'one\\ntwo\\n'" }, off.ctx)).content).toBe("one\ntwo");
         const { id, shell } = await background(off.ctx, "printf 'bg one\\n'");

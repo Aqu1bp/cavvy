@@ -147,12 +147,14 @@ export function startMonitor(o: StartOpts): { id: string; pid?: number; shell: B
     const [file, ...args] = shellArgv(o.command, sandbox);
     let spawned: PacedChild;
     try {
-        spawned = spawnPaced(file!, args, { cwd: state.cwd, env: withPwd(o.env, state.cwd), detached: true }, o.paced);
+        spawned = spawnPaced(file!, args, { cwd: state.cwd, env: withPwd(o.env, state.cwd), detached: true }, { paced: o.paced });
     } catch (e) {
         o.proxy?.close();
         throw e;
     }
-    const { child, stdout, stderr, onClose, drain } = spawned;
+    const { child, stdout, onClose, drain } = spawned;
+    // Its own stream (not combined): stdout lines are events, stderr's aren't.
+    const stderr = spawned.stderr!;
     const startedAt = Date.now();
     const info = { description: o.description, events: 0, expiresAt: startedAt + o.timeoutMs };
     /** Why it ended early, if it did: the user or agent stopped it (no notice), it expired, or it flooded. */

@@ -231,12 +231,14 @@ export const MAX_PARTIAL_LINE = 64 * 1024;
 
 /** Read from each paced stream per turn of the event loop. */
 const PACED_CHUNK = 64 * 1024;
-/** Longest wait between polls of a quiet command's output. */
+/** Longest wait between polls of a command that printed in the last 2 s. */
 const PACED_POLL_MS = 20;
+/** Longest wait between polls of a command that has been quiet for long: what it prints next waits at most this. */
+const PACED_IDLE_MS = 200;
 /** Most a reader catching up at once (drain) takes in. */
 const PACED_DRAIN = 1024 * 1024;
 
-/** A command's stdout or stderr: a FIFO its PacedOutput reads. */
+/** A command's output (or one of its streams): a FIFO its PacedOutput reads. */
 class PacedStream extends Readable {
     /** Asked for more (_read) and not given it yet. */
     wants = false;
@@ -295,27 +297,26 @@ class PacedStream extends Readable {
 }
 
 /**
- * A command's stdout and stderr, read at our own pace. Bun reads a pipe as fast as the
- * command writes it, buffering without limit, and a command that floods its output
- * (`yes`) keeps the event loop in that read: the server stops answering and its memory
+ * A command's output, read at our own pace. Bun reads a pipe as fast as the command
+ * writes it, buffering without limit, and a command that floods its output (`yes`)
+ * keeps the event loop in that read: the server stops answering and its memory
  * balloons (#298). These are FIFOs read without blocking, a chunk of each per turn of
  * the event loop: when we fall behind, the kernel's pipe buffer fills and the command
- * waits. Both are read at the same moments, so what one says keeps its order with the
- * other's, to within a poll (or, in a flood, what the pipes' buffers hold).
+ * waits. Bash's stdout and stderr share one FIFO, so they keep the order they were
+ * written in; a Monitor's are two, read at the same moments (in order to within a poll).
  */
 class PacedOutput {
-    readonly stdout: PacedStream;
-    readonly stderr: PacedStream;
+    readonly streams: PacedStream[];
     private timer?: ReturnType<typeof setTimeout>;
     private immediate?: ReturnType<typeof setImmediate>;
     private idle = 0;
+    private lastData = performance.now();
     /** Time owed to the rest of the server, in ms (see read). */
     private owed = 0;
     private readonly buf = Buffer.allocUnsafe(PACED_CHUNK);
 
-    constructor(out: number, err: number) {
-        this.stdout = new PacedStream(out, this);
-        this.stderr = new PacedStream(err, this);
+    constructor(fds: number[]) {
+        this.streams = fds.map((fd) => new PacedStream(fd, this));
     }
 
     /** Read again: not in this turn (a chunk per turn lets the server answer in between), or after the rest owed. */
@@ -349,7 +350,7 @@ class PacedOutput {
     }
 
     private get waiting() {
-        return (this.stdout.open && this.stdout.wants) || (this.stderr.open && this.stderr.wants);
+        return this.streams.some((s) => s.open && s.wants);
     }
 
     private cancel() {
@@ -360,12 +361,14 @@ class PacedOutput {
 
     private read(force = false): number {
         const started = performance.now();
-        const n = this.stdout.readChunk(this.buf, force) + this.stderr.readChunk(this.buf, force);
+        let n = 0;
+        for (const s of this.streams) n += s.readChunk(this.buf, force);
         if (n) {
             this.idle = 0;
+            this.lastData = performance.now();
             // Rest as long as handling it took (the 'data' listeners run in push) before reading
             // more: a command that never stops printing gets at most half the thread.
-            this.owed += performance.now() - started;
+            this.owed += this.lastData - started;
         }
         return n;
     }
@@ -375,28 +378,39 @@ class PacedOutput {
         const n = this.read();
         if (!this.waiting) return;
         if (n) return this.schedule();
-        // Nothing: once more next turn (more is often on its way), then less and less often.
+        // Nothing: once more next turn (more is often on its way), then less and less often: every
+        // PACED_POLL_MS at most for 2 s of quiet, then growing to PACED_IDLE_MS (reached at 5 s).
         this.owed = 0;
-        if (!this.idle++) this.immediate = setImmediate(this.poll);
-        else this.timer = setTimeout(this.poll, Math.min(PACED_POLL_MS, 2 ** (this.idle - 2)));
+        if (!this.idle++) return void (this.immediate = setImmediate(this.poll));
+        const quiet = performance.now() - this.lastData;
+        const longest = quiet < 2000 ? PACED_POLL_MS : Math.min(PACED_IDLE_MS, quiet / 25);
+        this.timer = setTimeout(this.poll, Math.min(longest, 2 ** (this.idle - 2)));
     };
 }
 
-type FifoPair = [{ read: number; write: number }, { read: number; write: number }];
-/** FIFO pairs made ahead: mkfifo is a process of its own, and starting a command shouldn't wait for one. */
-const spareFifos: FifoPair[] = [];
+interface Fifo { read: number; write: number }
+/** FIFOs made ahead: mkfifo is a process of its own, and starting a command shouldn't wait for one. */
+const spareFifos: Fifo[] = [];
+const SPARE_FIFOS = 4;
 let makingFifos = false;
+/** mkfifo failed (missing, or FIFOs unsupported here): ordinary pipes from then on. */
+let noFifos = false;
 
-/** Two FIFOs for a command's output, each open at both ends, with nothing left on disk; undefined where FIFOs can't be made. */
-function pacedFifos(): FifoPair | undefined {
-    const spare = spareFifos.pop();
-    if (!makingFifos && spareFifos.length < 2) makeSpareFifos();
-    if (spare) return spare;
+/** `count` FIFOs, each open at both ends, with nothing left on disk; undefined where FIFOs can't be made. */
+function pacedFifos(count: number): Fifo[] | undefined {
+    if (noFifos) return undefined;
+    const spares = spareFifos.length >= count ? spareFifos.splice(-count) : undefined;
+    if (!makingFifos && spareFifos.length < SPARE_FIFOS) makeSpareFifos();
+    if (spares) return spares;
     let dir: string | undefined;
     try {
-        const made = fifoPaths();
+        const made = fifoPaths(count);
         dir = made.dir;
-        return spawnSync("mkfifo", ["-m", "600", ...made.paths], { stdio: "ignore" }).status === 0 ? openFifos(made.paths) : undefined;
+        const r = spawnSync("mkfifo", ["-m", "600", ...made.paths], { stdio: "ignore" });
+        if (r.status === 0) return openFifos(made.paths);
+        // Not there, or it ran and failed; not a passing shortage (of processes, say), which can clear.
+        if (r.status !== null || (r.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") noFifos = true;
+        return undefined;
     } catch {
         return undefined;
     } finally {
@@ -406,38 +420,38 @@ function pacedFifos(): FifoPair | undefined {
 
 function makeSpareFifos() {
     makingFifos = true;
-    let made: { dir: string; paths: string[] };
-    try {
-        made = fifoPaths();
-    } catch {
-        makingFifos = false;
-        return;
-    }
-    const { dir, paths } = made;
+    let dir: string | undefined;
     let settled = false;
-    const done = (code: number | null) => {
+    const done = (paths?: string[]) => {
         if (settled) return;
         settled = true;
         try {
-            if (code === 0) spareFifos.push(openFifos(paths));
+            if (paths) spareFifos.push(...openFifos(paths));
         } catch {
             // Made again, in its turn, by the next command.
         } finally {
-            rmSync(dir, { recursive: true, force: true });
+            if (dir) rmSync(dir, { recursive: true, force: true });
             makingFifos = false;
         }
     };
-    const maker = spawn("mkfifo", ["-m", "600", ...paths], { stdio: "ignore" });
-    maker.once("error", () => done(null));
-    maker.once("exit", (code) => done(code));
+    try {
+        const made = fifoPaths(SPARE_FIFOS);
+        dir = made.dir;
+        const maker = spawn("mkfifo", ["-m", "600", ...made.paths], { stdio: "ignore" });
+        maker.once("error", () => done());
+        maker.once("exit", (code) => done(code === 0 ? made.paths : undefined));
+    } catch {
+        // Out of descriptors or processes, say: the next command tries again.
+        done();
+    }
 }
 
-function fifoPaths() {
+function fifoPaths(count: number) {
     const dir = mkdtempSync(join(tmpdir(), "harness-pipe-"));
-    return { dir, paths: [join(dir, "out"), join(dir, "err")] };
+    return { dir, paths: Array.from({ length: count }, (_, i) => join(dir, String(i))) };
 }
 
-function openFifos(paths: string[]): FifoPair {
+function openFifos(paths: string[]): Fifo[] {
     const fds: number[] = [];
     try {
         return paths.map((path) => {
@@ -448,7 +462,7 @@ function openFifos(paths: string[]): FifoPair {
             const write = openSync(path, constants.O_WRONLY);
             fds.push(write);
             return { read, write };
-        }) as FifoPair;
+        });
     } catch (e) {
         for (const fd of fds) closeSync(fd);
         throw e;
@@ -458,8 +472,9 @@ function openFifos(paths: string[]): FifoPair {
 export interface PacedChild {
     child: ChildProcess;
     stdout: Readable;
-    stderr: Readable;
-    /** Like the child's "close": it exited (or failed to start) and both streams are closed. */
+    /** Undefined when stderr shares stdout's stream (`combined`). */
+    stderr?: Readable;
+    /** Like the child's "close": it exited (or failed to start) and its streams are closed. */
     onClose: (cb: (code: number | null, signal: NodeJS.Signals | null) => void) => void;
     /** Take in what it has printed so far, now (PacedOutput.drain); ordinary pipes deliver it as it comes. */
     drain: () => void;
@@ -467,30 +482,30 @@ export interface PacedChild {
 
 /**
  * Spawn with stdin ignored and stdout and stderr in paced pipes (PacedOutput), or in
- * ordinary pipes, as before, where FIFOs can't be made or `paced` is false.
+ * ordinary pipes, as before, where FIFOs can't be made or `paced` is false. `combined`:
+ * both go into one, in the order the command wrote them (as a terminal shows them).
  */
-export function spawnPaced(file: string, args: string[], options: Omit<SpawnOptions, "stdio">, paced = true): PacedChild {
-    const fifos = paced ? pacedFifos() : undefined;
+export function spawnPaced(file: string, args: string[], options: Omit<SpawnOptions, "stdio">, o: { paced?: boolean; combined?: boolean } = {}): PacedChild {
+    const fifos = o.paced !== false ? pacedFifos(o.combined ? 1 : 2) : undefined;
     if (!fifos) {
         const child = spawn(file, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
         return { child, stdout: child.stdout!, stderr: child.stderr!, onClose: (cb) => void child.on("close", cb), drain: () => {} };
     }
-    const [out, err] = fifos;
+    const out = fifos[0]!;
+    const err = fifos[1] ?? out;
     let child: ChildProcess;
     try {
         child = spawn(file, args, { ...options, stdio: ["ignore", out.write, err.write] });
     } catch (e) {
-        closeSync(out.read);
-        closeSync(err.read);
+        for (const f of fifos) closeSync(f.read);
         throw e;
     } finally {
         // The command holds them now: the streams end when it (and what it started) closes them.
-        closeSync(out.write);
-        closeSync(err.write);
+        for (const f of fifos) closeSync(f.write);
     }
-    const output = new PacedOutput(out.read, err.read);
-    const { stdout, stderr } = output;
-    let left = 3;
+    const output = new PacedOutput(fifos.map((f) => f.read));
+    const [stdout, stderr] = output.streams as [PacedStream, PacedStream | undefined];
+    let left = 1 + output.streams.length;
     let status: [number | null, NodeJS.Signals | null] = [null, null];
     const waiting: ((code: number | null, signal: NodeJS.Signals | null) => void)[] = [];
     const settle = () => {
@@ -501,8 +516,7 @@ export function spawnPaced(file: string, args: string[], options: Omit<SpawnOpti
         output.poke();
         settle();
     });
-    stdout.once("close", settle);
-    stderr.once("close", settle);
+    for (const s of output.streams) s.once("close", settle);
     return {
         child,
         stdout,
@@ -823,7 +837,7 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
     const script = `${opts.command}\n__harness_ec=$?\npwd -P > '${cwdFile}' 2>/dev/null\nexit $__harness_ec\n`;
     return new Promise((resolvePromise) => {
         const [file, ...args] = shellArgv(script, opts.sandbox);
-        const { child, stdout, stderr, onClose } = spawnPaced(file!, args, { cwd: opts.cwd, env: withPwd(opts.env, opts.cwd), detached: true }, opts.paced);
+        const { child, stdout, stderr, onClose } = spawnPaced(file!, args, { cwd: opts.cwd, env: withPwd(opts.env, opts.cwd), detached: true }, { paced: opts.paced, combined: true });
         const preview = new OutputPreview();
         let rawLength = 0;
         let outputTruncated = false;
@@ -862,7 +876,7 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
             outputTruncated = true;
             return `[Output line omitted: exceeds ${MAX_KEPT} characters]\n`;
         };
-        for (const stream of [stdout, stderr]) readBashStream(stream, onChunk, overflow, nextOrder, inspect, opts.onData);
+        for (const stream of [stdout, stderr]) if (stream) readBashStream(stream, onChunk, overflow, nextOrder, inspect, opts.onData);
         const timer = setTimeout(() => {
             timedOut = true;
             killTree();
@@ -1159,7 +1173,7 @@ function startBackground(command: string, ctx: ToolContext, env: Record<string, 
     const [file, ...args] = shellArgv(command, ctx.sandbox);
     let spawned: PacedChild;
     try {
-        spawned = spawnPaced(file!, args, { cwd: ctx.state.cwd, env: withPwd(env, ctx.state.cwd), detached: true }, ctx.settings.pacedOutput !== false);
+        spawned = spawnPaced(file!, args, { cwd: ctx.state.cwd, env: withPwd(env, ctx.state.cwd), detached: true }, { paced: ctx.settings.pacedOutput !== false, combined: true });
     } catch (e) {
         proxy?.close();
         throw e;
@@ -1184,7 +1198,7 @@ function startBackground(command: string, ctx: ToolContext, env: Record<string, 
             clearTimeout(timer);
             // A detached descendant can retain the pipes after the tracked group is gone.
             stdout.destroy();
-            stderr.destroy();
+            stderr?.destroy();
             await closed;
             proxy?.close();
             return how;
@@ -1199,7 +1213,7 @@ function startBackground(command: string, ctx: ToolContext, env: Record<string, 
         saved.preview.append(text, order, omitted);
         outputFile.append(text, omitted);
     };
-    for (const stream of [stdout, stderr]) readBashStream(stream, onChunk, overflowLine, nextOrder);
+    for (const stream of [stdout, stderr]) if (stream) readBashStream(stream, onChunk, overflowLine, nextOrder);
     // The network goes with the shell: whatever it left running loses it.
     onClose((code) => {
         outputFile.flush();
