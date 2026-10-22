@@ -186,6 +186,10 @@ export class OpenAICompatProvider implements ProviderClient {
             model: m.id,
             stream: true,
         };
+        // OpenRouter's Claude routes support automatic caching; Gemini 2.5+ uses implicit caching.
+        // https://openrouter.ai/docs/guides/best-practices/prompt-caching
+        const cacheClaude = def.id === "openrouter" && /^~?anthropic\/claude-/.test(m.id);
+        if (cacheClaude && !req.lightweight) body.cache_control = { type: "ephemeral" };
         if (req.tools.length) {
             body.tools = req.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
         }
@@ -200,7 +204,13 @@ export class OpenAICompatProvider implements ProviderClient {
             else body.reasoning_effort = effort;
         }
 
-        const payload = fitRequest(req.messages, providerReadsPdf(def), (messages) => JSON.stringify({ ...body, messages: toOpenAIMessages(req.system, messages, def) }));
+        const payload = fitRequest(req.messages, providerReadsPdf(def), (messages) => {
+            const converted = toOpenAIMessages(req.system, messages, def);
+            if (cacheClaude && req.cacheSystem && req.system) {
+                converted[0]!.content = [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }];
+            }
+            return JSON.stringify({ ...body, messages: converted });
+        });
         // A request that stops sending anything is retried instead of waited on forever.
         const stall = stallTimer(req.signal, def.id === "vertex");
         const post = async (fresh: boolean) =>
