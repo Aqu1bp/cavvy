@@ -80,6 +80,8 @@ export function toOpenAIMessages(system: string, messages: Message[], def: Provi
     const out: Json[] = [];
     const deepseek = usesDeepSeekDialect(def);
     if (system) out.push({ role: "system", content: system });
+    /** The last user message out, and its parts: one straight after it joins it. */
+    let lastUser: { m: Json; parts: Json[] } | undefined;
     for (const msg of messages) {
         if (msg.role === "user") {
             const extraImages: Json[] = [];
@@ -105,8 +107,12 @@ export function toOpenAIMessages(system: string, messages: Message[], def: Provi
             }
             if (extraImages.length) parts.unshift({ type: "text", text: "Images returned by the tool calls above:" }, ...extraImages);
             if (parts.length) {
-                const onlyText = parts.every((x) => x.type === "text");
-                out.push({ role: "user", content: onlyText ? parts.map((x) => x.text).join("\n\n") : parts });
+                // Consecutive user messages (a summary and the prompt it kept, a prompt after an interrupt) go as one, in
+                // order: chat templates that want roles to alternate (Mistral's, many local models') refuse two in a row.
+                if (lastUser && out[out.length - 1] === lastUser.m) lastUser.parts.push(...parts);
+                else out.push((lastUser = { m: { role: "user" }, parts }).m);
+                const all = lastUser.parts;
+                lastUser.m.content = all.every((x) => x.type === "text") ? all.map((x) => x.text).join("\n\n") : all;
             }
             continue;
         }

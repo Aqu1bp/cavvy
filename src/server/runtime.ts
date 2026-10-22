@@ -60,7 +60,7 @@ import { gitChanges } from "./git-changes";
 import { sessionWorktree, sessionWorktrees } from "./session-worktrees";
 import { gitPublishInfo, gitPublish, gitPrState } from "./git-publish";
 import { COMMIT_MESSAGE_SYSTEM, gitCommit, gitCommitPrompt } from "./git-commit";
-import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, runsAgent, promptKey, promptText, readSegments, replay, resultPatch, shownStep, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
+import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, isPrompt, runsAgent, promptKey, promptText, readSegments, replay, resultPatch, shownStep, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
 import { TurnSnapshots } from "../agent/turn-snapshots";
 import { IdleCompactTimer } from "../agent/idle-compact";
 import type {
@@ -1448,7 +1448,7 @@ export class Runtime {
                 if (!e.idle) this.activity("Compacting conversation");
                 break;
             case "compact_end":
-                this.compacted(e.summary, e.idle);
+                this.compacted(e.summary, e.idle, e.kept);
                 break;
             case "limits":
                 this.engine.limitsReported(e.limits, e.partial);
@@ -1553,16 +1553,19 @@ export class Runtime {
         this.syncShells();
     }
 
-    private compacted(summary: string, idle?: boolean) {
+    private compacted(summary: string, idle?: boolean, kept?: boolean) {
         const current = this.turnId;
         // Claude Code or Codex compacting its own context leaves this session's history as it is.
         if (!this.backendModel()) {
             this.segment++;
             if (this.runStart !== undefined) this.runStart = 0;
+            // The running turn's prompt went on after the summary (not a reminder the compaction kept): it's there now.
+            const moved = kept && current && this.session.messages[1] && isPrompt(this.session.messages[1]) ? 1 : undefined;
             // Everything before is out of the model's context now (and out of /rewind's reach).
             for (const t of this.view.turns) {
                 if (t.id === current) {
-                    if (t.prompt?.index !== undefined) this.op({ op: "turn.patch", turnId: t.id, patch: { prompt: { ...t.prompt, index: undefined } } });
+                    if (moved !== undefined) this.movePrompt(t, moved);
+                    else if (t.prompt?.index !== undefined) this.op({ op: "turn.patch", turnId: t.id, patch: { prompt: { ...t.prompt, index: undefined } } });
                     continue;
                 }
                 if (!t.archived) this.op({ op: "turn.patch", turnId: t.id, patch: { archived: true, prompt: t.prompt ? { ...t.prompt, index: undefined } : undefined } });
@@ -1577,6 +1580,23 @@ export class Runtime {
         }
         this.setState({ contextTokens: 0 });
         this.recordState();
+    }
+
+    /**
+     * The running turn's prompt, kept by a compaction, is at `index` of the new
+     * segment: its turn, the log's record of it, and its attachments are found
+     * there, and it can be rewound to as before (replay shows it there, once).
+     */
+    private movePrompt(t: Turn, index: number) {
+        const pos = { seg: this.segment, index };
+        this.op({ op: "turn.patch", turnId: t.id, patch: { pos, ...(t.prompt?.index !== undefined ? { prompt: { ...t.prompt, index } } : {}) } });
+        if (this.pendingPrompt) this.pendingPrompt = { ...this.pendingPrompt, ...pos };
+        if (!this.uiTurn) return;
+        const { prompt, ...start } = { ...this.uiTurn, ...pos };
+        this.uiTurn = { ...start, ...(prompt ? { prompt } : {}) };
+        // Started afresh there (the turn that started last), then which prompt it is, if that's known yet.
+        this.ui.write({ t: "turn", ...start });
+        if (prompt) this.ui.write({ t: "turn", ...start, prompt });
     }
 
     // What it does shows on its own (an AgentRun): the call's row opens it, so the row carries none of it.

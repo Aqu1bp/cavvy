@@ -160,8 +160,8 @@ describe("Chat Completions: message conversion", () => {
             },
             { role: "tool", tool_call_id: "toolu_01", content: "file body\n[1 image(s) attached in the next message]" },
             { role: "tool", tool_call_id: "toolu_02", content: "Error: not found" },
-            { role: "user", content: [{ type: "text", text: "Images returned by the tool calls above:" }, { type: "image_url", image_url: { url: `data:image/png;base64,${PNG}` } }] },
-            { role: "user", content: "Thanks" },
+            // The message after them joins the tool calls' images: roles alternate, as strict chat templates want.
+            { role: "user", content: [{ type: "text", text: "Images returned by the tool calls above:" }, { type: "image_url", image_url: { url: `data:image/png;base64,${PNG}` } }, { type: "text", text: "Thanks" }] },
         ]);
     });
 

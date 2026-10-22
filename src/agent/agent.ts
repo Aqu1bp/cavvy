@@ -116,7 +116,8 @@ export type AgentEvent =
     | { type: "usage"; usage: Usage; cost: CostEstimate; contextTokens: number; /** Already accounted for by the backend; only updates a sub-agent's display. */ displayOnly?: boolean }
     /** `idle`: compacting a conversation left idle, before its prompt cache expires. */
     | { type: "compact_start"; auto: boolean; idle?: boolean }
-    | { type: "compact_end"; summary: string; idle?: boolean }
+    /** `kept`: the message waiting for an answer went on after the summary, the same message (it moved, it wasn't sent again). */
+    | { type: "compact_end"; summary: string; idle?: boolean; kept?: boolean }
     | { type: "subagent"; parentId: string; label: string; event: AgentEvent }
     /** An agent CLI reported the user's plan limits (`partial`: earlier windows it left out still stand). */
     | { type: "limits"; limits: PlanLimits; partial: boolean }
@@ -631,7 +632,23 @@ export class Agent {
         let maxTokenStrikes = 0;
         let pauses = 0;
         let stopHookRounds = 0;
-        let overflowCompacted = false;
+        /** Compactions since the model last answered: the first keeps a message waiting for that answer out of the summary; after two, this turn stops compacting. */
+        let compactions = 0;
+        /** A compaction didn't shrink the history: compacting again won't help until the model has added to it. */
+        let unshrinkable = false;
+        /** Compacts in this turn: true when that shrank the history, or kept a message the next one can fold in. */
+        const compactInTurn = async (): Promise<boolean> => {
+            // The history alone, estimated the same way on both sides: the system prompt and tools don't change.
+            const before = estimateTokens(this.session.messages);
+            if (!(await this.compact({ auto: true, signal, continuing: true, keepLast: compactions === 0 }))) return false;
+            compactions++;
+            if (estimateTokens(this.session.messages) < before) return true;
+            // A message kept after the summary may be what's too big.
+            const last = this.session.messages.at(-1);
+            if (last?.role === "user" && last.meta?.kind !== "summary") return true;
+            unshrinkable = true;
+            return false;
+        };
         /** The model has said or done something this turn. */
         let answered = false;
         const maxTurns = this.o.maxTurns ?? Infinity;
@@ -645,16 +662,14 @@ export class Agent {
             }
 
             // A PreCompact hook that refused once this turn isn't asked again on every request.
-            if (!this.autoCompactBlocked && this.shouldAutoCompact()) {
-                let ok = false;
+            if (!this.autoCompactBlocked && !unshrinkable && !compactions && this.shouldAutoCompact()) {
                 try {
-                    ok = await this.compact({ auto: true, signal, continuing: true });
+                    await compactInTurn();
                 } catch (e) {
                     // Stopped while compacting: an interrupt like any other, not an unexpected error.
                     if (isAbort(e, signal)) return this.interrupted(false);
                     this.emit({ type: "notice", level: "warn", message: `Auto-compact failed: ${(e as Error).message}` });
                 }
-                if (ok) overflowCompacted = true;
             }
 
             let msg: AssistantMessage;
@@ -662,11 +677,12 @@ export class Agent {
                 msg = await this.callModel(signal);
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);
-                if (isContextOverflow(e) && !overflowCompacted) {
-                    overflowCompacted = true;
+                // As often as the model answers in between, and once more straight after a compaction (which folds in
+                // the message the first kept); never again after one that didn't shrink the history.
+                if (isContextOverflow(e) && !unshrinkable && compactions < 2) {
                     this.emit({ type: "notice", level: "warn", message: "The conversation exceeded the model's context window; compacting and retrying." });
                     try {
-                        if (await this.compact({ auto: true, signal, continuing: true })) continue;
+                        if (await compactInTurn()) continue;
                     } catch (ce) {
                         if (isAbort(ce, signal)) return this.interrupted(false);
                     }
@@ -679,6 +695,8 @@ export class Agent {
             // A provider that returns (rather than throws) after an abort hands
             // back a cut-off response; drop it like any other partial response.
             if (signal.aborted) return this.interrupted(false);
+            compactions = 0;
+            unshrinkable = false;
 
             // From here on, the redacted copy: it's what gets shown and what tools run with.
             msg = this.session.push(msg);
@@ -1064,30 +1082,62 @@ export class Agent {
 
     private shouldAutoCompact(): boolean {
         const s = this.o.settings();
-        if (s.autoCompact === false || this.o.isSubagent) return false;
+        if (s.autoCompact === false) return false;
         // Agent backends manage their own context.
         if (isAgentBackend(this.client)) return false;
         const window = this.model.contextWindow;
         if (!window) return false;
-        const reserve = Math.min(this.model.maxOutput ?? 32_000, 32_000);
         const threshold = s.autoCompactThreshold ?? 0.92;
-        return this.session.messages.length > 4 && this.estimatedContext() > (window - reserve) * threshold;
+        return this.session.messages.length > 4 && this.estimatedContext() > (window - this.outputReserve(window)) * threshold;
+    }
+
+    /**
+     * Room for the answer that auto-compaction keeps free below the window: the
+     * model's max output, at most 32K, and never more than a quarter of the window.
+     * A model that can write about its whole window would otherwise compact with
+     * next to nothing in it; its requests ask for less output instead (turnMaxTokens).
+     */
+    private outputReserve(window: number): number {
+        return Math.min(this.model.maxOutput ?? 32_000, 32_000, Math.floor(window / 4));
+    }
+
+    /**
+     * A turn request's max output: as set, unless the window cut the reserve
+     * short. Then it's what fits beside the context (an estimate, with a margin),
+     * never less than the reserve.
+     */
+    private turnMaxTokens(): number | undefined {
+        const asked = this.o.settings().maxOutputTokens;
+        const window = this.model.contextWindow;
+        // With no known output limit, a guessed one could exceed what the model allows.
+        const most = Math.min(asked ?? Infinity, this.model.maxOutput ?? Infinity);
+        if (!window || !Number.isFinite(most)) return asked;
+        const reserve = this.outputReserve(window);
+        if (most <= reserve || reserve === Math.min(this.model.maxOutput ?? 32_000, 32_000)) return asked;
+        return Math.min(most, Math.max(reserve, window - Math.ceil(this.estimatedContext() * 1.2)));
     }
 
     // -----------------------------------------------------------------------
     // Model calls with retries
 
-    private async callModel(signal: AbortSignal, extra: Partial<ChatRequest> = {}, messages?: Message[]): Promise<AssistantMessage> {
+    private callModel(signal: AbortSignal, extra: Partial<ChatRequest> = {}, messages?: Message[]): Promise<AssistantMessage> {
+        return this.withRetries(signal, () => {
+            this.emit({ type: "request_start" });
+            // After any retries: the cache dates from the request that was answered.
+            this.sentAt = Date.now();
+            this.idleTried = false;
+            return this.client.stream(this.request(messages ?? this.session.messages, signal, { maxTokens: this.turnMaxTokens(), ...extra }), (e: StreamEvent) => this.forward(e));
+        });
+    }
+
+    /** A request (a turn's, a compaction's), sent again after a transient error: with backoff, or when the provider says to. */
+    private async withRetries(signal: AbortSignal, send: () => Promise<AssistantMessage>): Promise<AssistantMessage> {
         let stalls = 0;
         this.retrying = undefined;
         try {
             for (let attempt = 1; ; attempt++) {
-                this.emit({ type: "request_start" });
                 try {
-                    // After any retries: the cache dates from the request that was answered.
-                    this.sentAt = Date.now();
-                    this.idleTried = false;
-                    return await this.client.stream(this.request(messages ?? this.session.messages, signal, extra), (e: StreamEvent) => this.forward(e));
+                    return await send();
                 } catch (e) {
                     if (isAbort(e, signal)) throw new ProviderError("aborted");
                     const pe = e instanceof ProviderError ? e : new ProviderError((e as Error)?.message ?? String(e), undefined, false);
@@ -1131,26 +1181,41 @@ export class Agent {
     // -----------------------------------------------------------------------
     // Compaction
 
-    /** Summarize the history and replace it. Returns false if there was nothing to do. */
-    async compact(opts: { auto: boolean; signal: AbortSignal; instructions?: string; continuing?: boolean; idle?: boolean }): Promise<boolean> {
+    /**
+     * Summarize the history and replace it. Returns false if there was nothing to do.
+     * `keepLast`: a user message still waiting for its answer (a turn's prompt, with its
+     * attachments) isn't summarized: it stays after the summary as it is.
+     */
+    async compact(opts: { auto: boolean; signal: AbortSignal; instructions?: string; continuing?: boolean; idle?: boolean; keepLast?: boolean }): Promise<boolean> {
         // Until a request of the conversation's own: usage a cancelled backend compaction reports doesn't count.
         if (opts.idle) this.idleTried = true;
         if (isAgentBackend(this.client)) return this.compactBackend(this.client, opts);
-        const history = this.session.messages;
+        let history = this.session.messages;
+        const last = history.at(-1);
+        const kept = opts.keepLast && history.length > 2 && last?.role === "user" && !last.content.some((p) => p.type === "tool_result") ? last : undefined;
+        if (kept) history = history.slice(0, -1);
         if (history.length < 2) return false;
         if (!(await this.preCompact(opts))) return false;
         this.emit({ type: "compact_start", auto: opts.auto, ...(opts.idle ? { idle: true } : {}) });
         const req = [...history, compactRequestMessage(opts.instructions)];
-        let summary = "";
-        try {
-            // Same system prompt and tools as the session, so the cached prefix is reused.
-            const res = await this.client.stream(this.request(req, opts.signal, { maxTokens: 16_000 }), () => {});
-            summary = textOf(res);
+        // Each summary request (the transcript fallback's too) is retried like a turn's, and its spend recorded.
+        // An idle compaction is worth it only before the cache expires, so it gets one try.
+        const send = async (r: ChatRequest) => {
+            const res = await (opts.idle ? this.client.stream(r, () => {}) : this.withRetries(opts.signal, () => this.client.stream(r, () => {})));
             if (res.usage) {
                 const cost = costOf(res.usage, this.model);
                 this.session.recordUsage(modelRef(this.model), res.usage, cost.usd, cost.unknown);
                 this.emit({ type: "usage", usage: res.usage, cost, contextTokens: this.contextTokens });
             }
+            return res;
+        };
+        const window = this.model.contextWindow;
+        // A small window keeps room for the history beside the summary.
+        const maxOut = window ? Math.min(16_000, Math.floor(window / 4)) : 16_000;
+        let summary = "";
+        try {
+            // Same system prompt and tools as the session, so the cached prefix is reused.
+            summary = textOf(await send(this.request(req, opts.signal, { maxTokens: maxOut })));
         } catch (e) {
             if (isAbort(e, opts.signal)) throw e;
             if (!isContextOverflow(e)) throw e;
@@ -1158,8 +1223,6 @@ export class Agent {
         if (!summary.trim()) {
             // Too long even to summarize, or the model only called tools:
             // summarize a condensed text transcript instead, without tools.
-            const window = this.model.contextWindow;
-            const maxOut = window ? Math.min(16_000, Math.floor(window / 4)) : 16_000;
             // ~2.5 characters per token leaves room for code and JSON.
             const maxChars = window ? Math.max(2_000, Math.min(400_000, Math.floor((window - maxOut - 2_000) * 2.5))) : 100_000;
             const transcript = compactTranscriptText(history, maxChars);
@@ -1170,22 +1233,17 @@ export class Agent {
                 maxTokens: maxOut,
                 lightweight: true,
             });
-            const res = await this.client.stream(req, () => {});
-            summary = textOf(res);
-            if (res.usage) {
-                const cost = costOf(res.usage, this.model);
-                this.session.recordUsage(modelRef(this.model), res.usage, cost.usd, cost.unknown);
-                this.emit({ type: "usage", usage: res.usage, cost, contextTokens: this.contextTokens });
-            }
+            summary = textOf(await send(req));
         }
         if (!summary.trim()) throw new Error("The model returned an empty summary");
-        const keep: Message[] = [summaryMessage(summary, Boolean(opts.continuing), this.state)];
-        this.session.compact(summary, keep, opts.idle);
+        // The kept message says what comes next.
+        const keep: Message[] = kept ? [summaryMessage(summary, false, this.state), kept] : [summaryMessage(summary, Boolean(opts.continuing), this.state)];
+        this.session.compact(summary, keep, opts.idle, Boolean(kept));
         this.contextTokens = 0;
         this.lastUsageTotal = 0;
         this.cache = undefined;
         this.state.fileState.clear();
-        this.emit({ type: "compact_end", summary, ...(opts.idle ? { idle: true } : {}) });
+        this.emit({ type: "compact_end", summary, ...(opts.idle ? { idle: true } : {}), ...(kept ? { kept: true } : {}) });
         if (!this.o.isSubagent) void this.hooks("PostCompact", { trigger: opts.auto ? "auto" : "manual", compact_summary: summary }).then(() => this.compacted());
         return true;
     }
