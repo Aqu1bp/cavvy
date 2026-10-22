@@ -6,7 +6,14 @@
 // provider's prompt cache is a prefix match.
 
 import type { Effort } from "../config/settings";
-import type { TodoItem } from "../tools/types";
+
+// Lives here, not in tools/types, so the GUI can import the transcript types
+// without pulling the agent's tool code into its typecheck.
+export interface TodoItem {
+    content: string;
+    status: "pending" | "in_progress" | "completed";
+    activeForm?: string;
+}
 
 export type TextPart = { type: "text"; text: string };
 export type ImagePart = { type: "image"; mediaType: string; data: string /* base64 */ };
