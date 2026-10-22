@@ -189,6 +189,32 @@ test("tray: ↑↑ pressed fast moves the same message twice", async () => {
     }
 });
 
+test("tray: ↑ ↓ ↑ pressed fast go in the order pressed, so the message ends one place up", async () => {
+    const t = setup();
+    try {
+        t.press(30, "ArrowUp");
+        t.press(30, "ArrowDown");
+        t.press(30, "ArrowUp");
+        await t.settle();
+        t.setIds([10, 30, 20]);
+        t.tick();
+        await t.settle();
+        t.setIds([10, 20, 30]);
+        t.tick();
+        await t.settle();
+        t.setIds([10, 30, 20]);
+        t.tick();
+        await t.settle();
+        expect(t.calls.map((c) => c.params)).toEqual([
+            { id: "s", queueId: 30, to: 1 },
+            { id: "s", queueId: 30, to: 2 },
+            { id: "s", queueId: 30, to: 1 },
+        ]);
+    } finally {
+        t.dispose();
+    }
+});
+
 test("tray: a drag from the row lifts it after 3px, follows the pointer within the list, and drops where it's held", async () => {
     const t = setup();
     try {

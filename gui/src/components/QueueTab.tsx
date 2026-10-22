@@ -53,8 +53,8 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
     let list: HTMLDivElement | undefined;
     let tokens = 0;
     let settleTimer: ReturnType<typeof setTimeout> | undefined;
-    /** ↑/↓ pressed while a move is still going: done next, on the same message. */
-    let pendingKey: { id: number; key: "up" | "down" } | undefined;
+    /** ↑/↓ pressed while a move is still going: done next, in the order pressed, on the same message. */
+    let pendingKeys: { id: number; key: "up" | "down" }[] = [];
     /** The message to give the focus back to once its row has moved (moving a row takes the focus off it). */
     let refocus: number | undefined;
     let mounted = false;
@@ -96,9 +96,10 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
     const afterMove = (id: number) => {
         if (refocus === id) rowOf(id)?.focus({ preventScroll: true });
         refocus = undefined;
-        const next = pendingKey;
-        pendingKey = undefined;
-        if (next && next.id === id) step(id, next.key);
+        // Keys for another message (its move was let go) are dropped; the rest go one by one, each
+        // starting from where the last one left it. A key that can't move it (at the top) is skipped.
+        pendingKeys = pendingKeys.filter((k) => k.id === id);
+        while (pendingKeys.length && !step(id, pendingKeys.shift()!.key));
     };
 
     /** Let go over `to`: settle there, then ask the server, and keep the rows drawn in the new order until it shows it. */
@@ -157,18 +158,20 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
     };
 
     /** ↑/↓ on a focused row: one place, with the same motion as a drag, and the focus stays on it. */
-    const step = (id: number, key: "up" | "down") => {
+    /** Whether a move started now (a key pressed mid-move is kept for later and doesn't count). */
+    const step = (id: number, key: "up" | "down"): boolean => {
         if (sort()) {
-            if (sort()!.id === id) pendingKey = { id, key };
-            return;
+            if (sort()!.id === id) pendingKeys.push({ id, key });
+            return false;
         }
         const row = rowOf(id);
         const s = row && begin(id, row);
-        if (!s) return;
+        if (!s) return false;
         const to = stepTarget(s.from, key, s.ids.length);
-        if (to === undefined) return;
+        if (to === undefined) return false;
         refocus = id;
         drop({ ...s, to, dy: (to - s.from) * s.pitch });
+        return true;
     };
 
     const onPointerDown = (e: PointerEvent, id: number) => {
