@@ -44,6 +44,8 @@ export interface Segment {
     summary?: string;
     /** That summary was written while the conversation was idle, before its prompt cache expired. */
     idle?: boolean;
+    /** Its message after the summary is the last one before it (a prompt waiting for its answer), moved here. */
+    kept?: boolean;
     messages: Message[];
     /** How its turns ended, where the messages don't say (errors, limits). */
     notices?: TurnNotice[];
@@ -62,7 +64,7 @@ export function readSegments(file: string): Segment[] {
     }
     for (const raw of text.split("\n")) {
         if (!raw) continue;
-        let l: { t: string; m?: Message; summary?: string; idle?: boolean; count?: number; source?: unknown; startedAt?: unknown; omitted?: unknown } & Partial<TurnNotice>;
+        let l: { t: string; m?: Message; summary?: string; idle?: boolean; kept?: boolean; count?: number; source?: unknown; startedAt?: unknown; omitted?: unknown } & Partial<TurnNotice>;
         try {
             l = JSON.parse(raw);
         } catch {
@@ -70,7 +72,7 @@ export function readSegments(file: string): Segment[] {
         }
         const cur = segments[segments.length - 1]!;
         if (l.t === "msg" && l.m) cur.messages.push(l.m);
-        else if (l.t === "compact") segments.push({ summary: l.summary ?? "", ...(l.idle === true ? { idle: true } : {}), messages: [] });
+        else if (l.t === "compact") segments.push({ summary: l.summary ?? "", ...(l.idle === true ? { idle: true } : {}), ...(l.kept === true ? { kept: true } : {}), messages: [] });
         else if (l.t === "rewind" && typeof l.count === "number") {
             cur.messages = cur.messages.slice(0, l.count);
             if (cur.notices) cur.notices = noticesUpTo(cur.notices, l.count);
@@ -440,7 +442,8 @@ function restoredAgent(rec: AgentRun, t: Turn): AgentRun {
 /** How an interrupted turn ends in the history (as Agent writes it when a turn is stopped). */
 export const INTERRUPTED = "[Request interrupted by user]";
 
-const isPrompt = (m: Message) => m.role === "user" && (m.meta?.kind === undefined || m.meta.kind === "prompt" || m.meta.kind === "command" || m.meta.kind === "wake");
+/** A message the user sent that starts a turn of its own: a prompt, a command, a wake. */
+export const isPrompt = (m: Message) => m.role === "user" && (m.meta?.kind === undefined || m.meta.kind === "prompt" || m.meta.kind === "command" || m.meta.kind === "wake");
 /** Where a turn starts: a prompt, or tool results a message sent meanwhile rides along with. */
 const startsTurn = (m: Message) => isPrompt(m) || (m.role === "user" && m.meta?.kind === "tool_results" && m.content.some((p) => p.type === "text" && p.text.startsWith(STEERING)));
 
@@ -521,7 +524,7 @@ export interface ReplayInput {
 export function replay(o: ReplayInput): Turn[] {
     const turns: Turn[] = [];
     const last = o.segments[o.segments.length - 1];
-    const segs: Segment[] = [...o.segments.slice(0, -1), { summary: last?.summary, idle: last?.idle, imported: last?.imported, messages: o.current, notices: o.currentNotices ?? last?.notices }];
+    const segs: Segment[] = [...o.segments.slice(0, -1), { summary: last?.summary, idle: last?.idle, kept: last?.kept, imported: last?.imported, messages: o.current, notices: o.currentNotices ?? last?.notices }];
     segs.forEach((seg, si) => {
         const archived = si < segs.length - 1;
         let turn: Turn | undefined;
@@ -560,8 +563,12 @@ export function replay(o: ReplayInput): Turn[] {
         };
         // Turns whose steps came from the log: the transcript's text of them isn't shown again.
         const shown = new Set<Turn>();
+        // A prompt the next compaction kept is shown once, where it went on (after the summary).
+        const moved = segs[si + 1]?.kept ? seg.messages.length - 1 : -1;
+        const before = si > 0 && seg.kept ? segs[si - 1]!.messages.length - 1 : -1;
         seg.messages.forEach((m, index) => {
             noticesBefore(index);
+            if (index === moved && m.role === "user") return;
             if (m.role === "user") {
                 const kind = m.meta?.kind ?? "prompt";
                 if (kind === "summary" || kind === "reminder") return;
@@ -589,7 +596,8 @@ export function replay(o: ReplayInput): Turn[] {
                     }
                     return;
                 }
-                const rec = o.ui.turn(si, index);
+                // Its record from where it was sent, if the log has none here (written before it was moved).
+                const rec = o.ui.turn(si, index) ?? (index === 1 && before >= 0 ? o.ui.turn(si - 1, before) : undefined);
                 const imported = Boolean(m.meta?.imported);
                 // A wake (a watched PR, a monitor) isn't a prompt to rewind to.
                 const t = start({ text: promptText(m), ...attachedPrompt(m.content), ...(kind === "command" ? { command: true } : {}), ...(kind === "wake" ? { wake: true } : archived || imported ? {} : { index }) }, rec?.at, index);

@@ -10,6 +10,7 @@ import { childEnv } from "../util/env";
 import { redact } from "../util/redact";
 import { ProviderError } from "../providers/types";
 import { readAgentConfig } from "../providers/registry";
+import { agentCli } from "./defs";
 
 export interface CliInfo {
     /** Program name on PATH. */
@@ -20,19 +21,15 @@ export interface CliInfo {
     signIn: string;
 }
 
-export const CLAUDE_CLI: CliInfo = {
-    command: "claude",
-    product: "Claude Code",
-    install: "Install Claude Code (https://code.claude.com/docs/en/setup)",
-    signIn: "claude auth login",
-};
+export const CLAUDE_CLI: CliInfo = cliOf("claude-code");
 
-export const CODEX_CLI: CliInfo = {
-    command: "codex",
-    product: "Codex",
-    install: "Install the Codex CLI (npm install -g @openai/codex)",
-    signIn: "codex login",
-};
+export const CODEX_CLI: CliInfo = cliOf("codex");
+
+function cliOf(id: string): CliInfo {
+    const def = agentCli(id);
+    if (!def) throw new Error(`No agent CLI ${id}`);
+    return def.cli;
+}
 
 /** The CLI's path: the one saved with /login (`path`), or the first on PATH. */
 export function findCli(providerId: string, cli: CliInfo): string | undefined {
@@ -113,12 +110,16 @@ export class JsonLinesProcess {
     private killing = false;
     private reader?: { cancel(): Promise<void> };
     readonly exited: Promise<number>;
+    readonly pid: number;
+    /** Settles once its stderr has ended (and been read). */
+    readonly stderrEnded: Promise<void>;
 
     constructor(bin: string, args: string[], opts: { cwd: string; env?: Record<string, string> }) {
         this.proc = Bun.spawn([bin, ...args], { cwd: opts.cwd, env: { ...childEnv(), ...opts.env }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
         this.exited = this.proc.exited;
+        this.pid = this.proc.pid;
         void this.exited.then(() => (this.gone = true));
-        void this.drainStderr();
+        this.stderrEnded = this.drainStderr();
     }
 
     private async drainStderr() {

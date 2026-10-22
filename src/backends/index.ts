@@ -7,6 +7,7 @@ import { ClaudeCodeBackend, claudeStatus, describeClaudeAuth } from "./claude-co
 import { CodexBackend, codexAccount, codexPlan, describeCodexAuth, type CodexAccount } from "./codex";
 import type { PlanLimits } from "../server/protocol";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "./cli";
+import { agentCli } from "./defs";
 
 export function createBackend(def: ProviderDef): AgentBackendClient {
     switch (def.id) {
@@ -72,5 +73,5 @@ async function checkCli(providerId: string, signal: AbortSignal | undefined, acc
 
 /** What a vendor's own sign-in is called, for messages. */
 export function vendorOf(providerId: string): string {
-    return providerId === "codex" ? "OpenAI" : "Anthropic";
+    return agentCli(providerId)?.vendor ?? providerId;
 }

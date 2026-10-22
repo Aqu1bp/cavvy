@@ -1489,6 +1489,47 @@ describe("sessions", () => {
         c.close();
     }, 30_000);
 
+    test("a prompt auto-compaction kept stays its turn's: shown once, rewindable, with its images, live as after a reopen", async () => {
+        const file = join(iso.home, "settings.json");
+        const saved = readFileSync(file, "utf-8");
+        const c = await client();
+        try {
+            // Compacts at the start of any turn with more than four messages before it.
+            writeFileSync(file, JSON.stringify({ ...JSON.parse(saved), autoCompactThreshold: 0.001 }));
+            const id = await c.open("session.create", { cwd: project() });
+            const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+            for (const text of ["alpha words", "bravo words"]) {
+                await c.call("session.send", { id, text });
+                await c.until(id, (v) => done(v) && v.turns.some((t) => t.prompt?.text === text));
+            }
+            await c.call("session.send", { id, text: "charlie words", images: [{ mediaType: "image/png", data: png }] });
+            await c.until(id, (v) => done(v) && v.turns.some((t) => t.prompt?.text === "charlie words"), 15_000);
+            const live = c.view(id).turns.filter((t) => t.prompt?.text === "charlie words");
+            expect(live).toHaveLength(1);
+            expect(live[0]!.blocks.some((b) => b.t === "compact")).toBe(true);
+            expect(live[0]).toMatchObject({ pos: { seg: 1, index: 1 }, prompt: { index: 1, images: 1 } });
+            expect(await c.call("session.promptImages", { id, ...live[0]!.pos })).toEqual({ images: [{ mediaType: "image/png", data: png }] });
+            expect((await c.call("session.rewindTargets", { id })).map((t: { index: number }) => t.index)).toEqual([1]);
+            // Opened again: once, where it went on, the same snapshot, prompt images and start.
+            await c.call("session.close", { id });
+            const lock = `${findSessionAnywhere(id)}.lock`;
+            for (let i = 0; i < 50 && existsSync(lock); i++) await Bun.sleep(100);
+            await c.open("session.open", { id });
+            const again = c.view(id).turns.filter((t) => t.prompt?.text === "charlie words");
+            expect(again).toHaveLength(1);
+            expect(again[0]).toMatchObject({ pos: { seg: 1, index: 1 }, prompt: { index: 1, imagesKey: live[0]!.prompt!.imagesKey }, startedAt: live[0]!.startedAt });
+            expect(again[0]!.archived).toBeUndefined();
+            expect(again[0]!.snapshotId).toBe(live[0]!.snapshotId);
+            // Rewound to it, it's gone (no copy left among the archived turns).
+            const plan = await c.call("session.rewindPlan", { id, index: 1 });
+            await c.call("session.rewind", { id, index: 1, planId: plan.planId, code: false, conversation: true });
+            await c.until(id, (v) => !v.turns.some((t) => t.prompt?.text === "charlie words"));
+        } finally {
+            writeFileSync(file, saved);
+            c.close();
+        }
+    }, 30_000);
+
     test("an @mentioned image is one of the prompt's images: counted, keyed and returned, live as after a reopen", async () => {
         const c = await client();
         const dir = project();
