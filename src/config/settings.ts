@@ -225,7 +225,8 @@ export class JsonFileError extends Error {
         readonly file: string,
         readonly reason: string,
     ) {
-        super(`Can't update ${file}: it isn't valid JSON (${reason}). Fix or remove the file, then try again.`);
+        // Not the parser's message (kept in `reason`): it can quote what's in the file.
+        super(`Can't update ${file}: it isn't valid JSON. Fix or remove the file, then try again.`);
     }
 }
 
@@ -253,7 +254,7 @@ export function readJson<T>(file: string): T | undefined {
     try {
         return readJsonForUpdate<T>(file);
     } catch (e) {
-        const msg = e instanceof JsonFileError ? `${file} isn't valid JSON, so it's being ignored (${e.reason})` : `could not read ${file}: ${(e as Error).message}`;
+        const msg = e instanceof JsonFileError ? `${file} isn't valid JSON, so it's being ignored` : `could not read ${file}: ${(e as Error).message}`;
         if (!warned.has(msg)) {
             warned.add(msg);
             warn(msg);
@@ -262,13 +263,74 @@ export function readJson<T>(file: string): T | undefined {
     }
 }
 
+/**
+ * One read of a settings file: what it holds (nothing when it's missing, empty or broken); whether it exists but
+ * can't be relied on (unreadable, not JSON, not an object, or with a rejection list that isn't a list); and whether
+ * it exists but is empty. Broken files are warned of by name only: a parser's message can quote what's in them.
+ */
+function readSettingsFile(file: string, warnOf = true): { settings: Settings; unreadable: boolean; empty: boolean } {
+    const note = (msg: string) => {
+        if (warnOf && !warned.has(msg)) {
+            warned.add(msg);
+            warn(msg);
+        }
+    };
+    const none = { settings: {}, unreadable: false, empty: false };
+    let text: string;
+    try {
+        text = readFileSync(file, "utf-8");
+    } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ENOTDIR") return none;
+        note(`could not read ${file} (${code ?? "error"})`);
+        return { ...none, unreadable: true };
+    }
+    if (!text.trim()) return { ...none, empty: true };
+    let v: unknown;
+    try {
+        v = JSON.parse(stripJsonComments(text));
+    } catch {
+        note(`${file} isn't valid JSON, so it's being ignored`);
+        return { ...none, unreadable: true };
+    }
+    if (!v || typeof v !== "object" || Array.isArray(v)) {
+        note(`${file} isn't a JSON object, so it's being ignored`);
+        return { ...none, unreadable: true };
+    }
+    return { settings: v as Settings, unreadable: "disabledMcpjsonServers" in v && !Array.isArray((v as Settings).disabledMcpjsonServers), empty: false };
+}
+
+/** A settings file that exists but can't be relied on to hold MCP approvals and rejections: an empty one counts too (a rejection may have been cut from it). */
+export function unreadableSettings(file: string): boolean {
+    const r = readSettingsFile(file, false);
+    return r.unreadable || r.empty;
+}
+
+/**
+ * Of the files that can hold approvals or rejections of a folder's .mcp.json servers (the user's settings, the
+ * folder's local ones), one that existed but couldn't be read: a rejection in it would be lost, and a blanket or
+ * saved approval win. As they are now, or (`s`) when these settings were loaded from them.
+ */
+export function unreadableMcpApprovals(cwd: string, s?: Settings): string | undefined {
+    return (s && unreadableWhenLoaded.get(s)) ?? [paths.userSettings(), paths.localSettings(cwd)].find(unreadableSettings);
+}
+
+const unreadableWhenLoaded = new WeakMap<Settings, string>();
+
+/** A copy of loaded settings (a run's own on top of them) was loaded as they were: what couldn't be read then counts for it too. */
+export function asLoaded(copy: Settings, loaded: Settings): Settings {
+    const file = unreadableWhenLoaded.get(loaded);
+    if (file) unreadableWhenLoaded.set(copy, file);
+    return copy;
+}
+
 export function writeJson(file: string, data: unknown, mode = 0o644) {
     ensureDir(dirname(file));
     writeFileSync(file, JSON.stringify(data, null, 2) + "\n", { encoding: "utf-8", mode });
 }
 
 export function loadScope(scope: SettingsScope, cwd: string): Settings {
-    return readJson<Settings>(settingsPath(scope, cwd)) ?? {};
+    return readSettingsFile(settingsPath(scope, cwd)).settings;
 }
 
 /**
@@ -293,8 +355,11 @@ export function hookConfigWarnings(s: Settings): readonly string[] {
 
 export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Settings {
     const trusted = opts.trusted ?? true;
-    const user = loadScope("user", cwd);
-    const local = loadScope("local", cwd);
+    // Read once each: what an MCP approval is decided from, and whether its files could be read, agree.
+    const userFile = readSettingsFile(settingsPath("user", cwd));
+    const localFile = readSettingsFile(settingsPath("local", cwd));
+    const user = userFile.settings;
+    const local = localFile.settings;
     const layers = trusted ? [user, loadScope("project", cwd), local] : [user, restrictiveOnly(loadScope("project", cwd)), restrictiveOnly(local)];
     const merged: Settings = {};
     const warnings = new Set<string>();
@@ -331,6 +396,8 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
     else delete merged.reviewModel;
     mergeSandbox(merged, layers, user);
     mergeMcpApprovals(merged, trusted ? [user, local] : [user]);
+    const unreadable = userFile.unreadable || userFile.empty ? settingsPath("user", cwd) : localFile.unreadable || localFile.empty ? settingsPath("local", cwd) : undefined;
+    if (unreadable) unreadableWhenLoaded.set(merged, unreadable);
     if (warnings.size) hookWarnings.set(merged, [...warnings]);
     return merged;
 }

@@ -14,7 +14,7 @@ import { createHmac, randomBytes } from "crypto";
 import { readFileSync, realpathSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import { ensureDir, harnessHome, paths } from "../config/paths";
-import { updateSettings, type McpServerConfig, type Settings } from "../config/settings";
+import { unreadableMcpApprovals, unreadableSettings, updateSettings, type McpServerConfig, type Settings } from "../config/settings";
 import { expandPath } from "../util/files";
 import { redact } from "../util/redact";
 import type { McpApprovalInfo, McpServerInfo, McpServerStatus } from "./info";
@@ -134,6 +134,10 @@ const record = (v: unknown): Record<string, string> => (v && typeof v === "objec
 export function approvalOf(name: string, config: McpServerConfig, s: Settings, projectCwd: string, userTrusted: boolean, runCwd?: string): Approval {
     const fingerprint = mcpFingerprint(config, projectCwd, runCwd);
     if (list(s.disabledMcpjsonServers).includes(name)) return { state: "rejected", fingerprint };
+    // A rejection in a file that can't be read is lost from `s`: nothing is approved until it can be read, both
+    // when `s` was loaded and now.
+    const settingsFile = unreadableMcpApprovals(projectCwd, s);
+    if (settingsFile) return { state: "needs-approval", reason: "unreadable", settingsFile, fingerprint };
     if (userTrusted && Object.hasOwn(s, "enableAllProjectMcpServers") && s.enableAllProjectMcpServers === true) return { state: "approved", viaAll: true, fingerprint };
     const approved = record(s.approvedMcpjsonServers);
     const saved = Object.hasOwn(approved, name) ? approved[name] : undefined;
@@ -156,8 +160,22 @@ function withoutKey(v: unknown, name: string): Record<string, string> | undefine
     return Object.keys(r).length ? r : undefined;
 }
 
+/**
+ * The folder's local settings, read and written back: never over a file that can't be read, nor an emptied one. Either
+ * may have held rejections, and writing would make the rest look whole. A missing file is written.
+ */
+function updateLocal(cwd: string, fn: (s: Settings) => void) {
+    const file = paths.localSettings(cwd);
+    if (unreadableSettings(file)) throw new McpApprovalError(unreadableText(file), "blocked");
+    updateSettings("local", cwd, fn);
+}
+
+function unreadableText(file: string): string {
+    return `Harness can't read ${file}, which can hold your MCP approvals and rejections, so it doesn't start this folder's .mcp.json servers until it can. Fix or remove that file.`;
+}
+
 export function saveApproval(cwd: string, name: string, fingerprint: string) {
-    updateSettings("local", cwd, (s) => {
+    updateLocal(cwd, (s) => {
         s.approvedMcpjsonServers = { ...record(s.approvedMcpjsonServers), [name]: fingerprint };
         // A name-only approval from before has done its job.
         s.enabledMcpjsonServers = without(s.enabledMcpjsonServers, name);
@@ -166,7 +184,7 @@ export function saveApproval(cwd: string, name: string, fingerprint: string) {
 }
 
 export function saveRejection(cwd: string, name: string) {
-    updateSettings("local", cwd, (s) => {
+    updateLocal(cwd, (s) => {
         s.disabledMcpjsonServers = [...(without(s.disabledMcpjsonServers, name) ?? []), name];
         s.approvedMcpjsonServers = withoutKey(s.approvedMcpjsonServers, name);
         s.enabledMcpjsonServers = without(s.enabledMcpjsonServers, name);
@@ -175,7 +193,7 @@ export function saveRejection(cwd: string, name: string) {
 
 /** Back to asking: neither approved nor rejected. */
 export function removeApproval(cwd: string, name: string) {
-    updateSettings("local", cwd, (s) => {
+    updateLocal(cwd, (s) => {
         s.approvedMcpjsonServers = withoutKey(s.approvedMcpjsonServers, name);
         s.enabledMcpjsonServers = without(s.enabledMcpjsonServers, name);
     });
@@ -438,6 +456,7 @@ export function approvalMeaning(provider: string | undefined, userTrusted: boole
 /** Why a server asks (again), in words. */
 export function approvalReason(a: McpApprovalInfo | undefined): string | undefined {
     if (a?.state !== "needs-approval") return undefined;
+    if (a.reason === "unreadable") return unreadableText(a.settingsFile ?? "a settings file");
     if (a.reason === "changed") return "What it runs changed since you approved it.";
     if (a.reason === "legacy") return "You approved it by name only, before approvals were bound to what a server runs. Approve it once more.";
     return undefined;

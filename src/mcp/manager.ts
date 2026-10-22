@@ -20,7 +20,7 @@ import { truncateMiddle } from "../util/files";
 import { createHash } from "crypto";
 import type { McpServerInfo } from "./info";
 import { trustedByUser } from "../config/trust";
-import { approvalOf, describeServer, hasConfigValue, headerClash, serverCwd, maskConfigDeep, maskConfigValues, McpApprovalError, removeApproval, saveApproval, saveRejection, type Approval } from "./approval";
+import { approvalOf, approvalReason, describeServer, hasConfigValue, headerClash, serverCwd, maskConfigDeep, maskConfigValues, McpApprovalError, removeApproval, saveApproval, saveRejection, type Approval } from "./approval";
 
 export interface ServerState {
     name: string;
@@ -533,6 +533,8 @@ export class McpManager {
         const st = this.projectServer(name);
         const a = st.approval!;
         if (a.state === "approved") throw new McpApprovalError(`"${name}" is already approved.`, "not_needed");
+        // Its saved approval wouldn't count until then.
+        if (a.reason === "unreadable") throw new McpApprovalError(approvalReason(a)!, "blocked");
         // Trusted for this session only, for having had nothing to protect when it was opened, isn't the user's say-so.
         if (!trustedByUser(this.cwd)) throw new McpApprovalError("You haven't trusted this folder yourself: Harness trusted it for this session only, because it had nothing to protect when it was opened. Trust the folder first, then approve its servers.", "needs_trust");
         if (st.config.disabled === true) throw new McpApprovalError(`"${name}" is turned off in .mcp.json ("disabled": true).`, "blocked");
