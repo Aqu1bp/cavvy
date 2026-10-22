@@ -484,3 +484,67 @@ test("a whenQuiet that ends lets go of its waiter and its abort listener", async
     expect(listeners).toBe(0);
     expect(waiters()).toBe(0);
 });
+
+test("a report turn that starts isn't reaped as it starts, even with no idle process allowed", async () => {
+    const { fake, pool } = setup({ maxIdle: 0 });
+    const s = pool.session("a", "fake");
+    const wakes: string[] = [];
+    s.onWake((w) => wakes.push(w.ref));
+    await turn(s, "bg t1");
+    expect(s.state).toBe("idle");
+    fake.of(s).send({ type: "finish", task: "t1" });
+    await until(() => wakes.length === 1);
+    const k = sink();
+    const adopted = s.adopt("wake-t1", k, new AbortController().signal);
+    await until(() => s.quiet());
+    expect(await adopted).toMatchObject({ ref: "wake-t1", reason: "done" });
+    expect(k.texts).toEqual(["t1 finished"]);
+    // Once it's over, the cap takes the process.
+    await until(() => s.state === "dead");
+});
+
+test("a report the CLI said it will make holds new settings back like a running task", async () => {
+    const { fake, pool } = setup();
+    const s = pool.session("a", "fake");
+    const one = await turn(s, "bg t1", { system: "v1" });
+    fake.of(s).send({ type: "finish", task: "t1", later: true });
+    await until(() => s.tasks.get("t1")?.status === "done");
+    expect(s.quiet()).toBe(false);
+    const respawn = await turn(s, "two", { system: "v2" });
+    expect(respawn.pid).toBe(one.pid);
+    expect(respawn.deferred).toEqual({ tasks: 1 });
+
+    // The same for a setting the process can't take live (this turn takes v2: nothing's due now).
+    const two = await turn(s, "bg t2", { system: "v2" });
+    fake.of(s).send({ type: "finish", task: "t2", later: true });
+    await until(() => s.tasks.get("t2")?.status === "done");
+    const live = await turn(s, "three", { system: "v2", model: "needs-restart" });
+    expect(live.pid).toBe(two.pid);
+    expect(live.deferred).toEqual({ tasks: 1 });
+});
+
+test("a process whose interrupt went unanswered isn't reaped until the CLI ends that turn", async () => {
+    const { clock, fake, pool } = setup({ maxIdle: 0 });
+    const s = pool.session("a", "fake");
+    const one = await turn(s, "one");
+    await until(() => s.state === "dead");
+    const esc = new AbortController();
+    let done = false;
+    const deaf = turn(s, "deaf", { signal: esc.signal }).finally(() => (done = true));
+    await until(() => s.state === "busy");
+    const pid = s.pid;
+    expect(pid).not.toBe(one.pid);
+    esc.abort();
+    await until(() => done, () => clock.advance(100));
+    expect(await deaf).toMatchObject({ reason: "aborted", unanswered: true });
+    clock.advance(60_000);
+    expect(s.state).toBe("idle");
+    expect(s.unresponsive).toBe(true);
+    expect(s.pid).toBe(pid);
+    expect(alive(pid)).toBe(true);
+
+    // The CLI ends it at last: now it's idle like any other, and the cap takes it.
+    fake.of(s).send({ type: "end", id: "p1" });
+    await until(() => !s.unresponsive);
+    await until(() => s.state === "dead");
+});

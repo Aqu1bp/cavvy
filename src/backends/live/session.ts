@@ -181,12 +181,20 @@ export class LiveCliSession {
 
     /** Nothing in the background: no running task, no turn the CLI started by itself going or due. */
     quiet(): boolean {
-        return !this.wakeDue && this.tasks.running().length === 0 && ![...this.wakes.values()].some((w) => !w.result);
+        return this.background() === 0;
     }
 
-    /** Idle with nothing in the background: the process may be stopped and started again later at no loss. */
+    /**
+     * Idle with nothing in the background, and no turn the CLI may still be on (an interrupt it didn't
+     * answer): the process may be stopped and started again later at no loss.
+     */
     reapable(): boolean {
-        return this._state === "idle" && !this.claimed && this.quiet();
+        return this._state === "idle" && !this.claimed && this.abandoned.size === 0 && this.quiet();
+    }
+
+    /** What runs in the background: running tasks, turns the CLI started by itself, and a report it said it will start. */
+    private background(): number {
+        return this.tasks.running().length + [...this.wakes.values()].filter((w) => !w.result).length + (this.wakeDue ? 1 : 0);
     }
 
     /** Use this host from now on (the session's Agent changed). runTurn binds its own. */
@@ -331,10 +339,9 @@ export class LiveCliSession {
         const spec = this.adapter.spawn(cfg);
         const resume = { resumeId: cfg.resumeId, fork: cfg.forkSession };
         this.stale = false;
-        const busy = () => this.tasks.running().length + [...this.wakes.values()].filter((w) => !w.result).length;
         let deferred: { tasks: number } | undefined;
         if (this.proc && spec.fingerprint !== this.fingerprint) {
-            if (busy()) deferred = { tasks: busy() };
+            if (this.background()) deferred = { tasks: this.background() };
             else await this.stopProcess();
         }
         if (!this.proc) {
@@ -345,7 +352,7 @@ export class LiveCliSession {
         if (changed) {
             const r = await this.conn!.apply(changed).catch(() => "restart" as const);
             if (r === "applied") this.settings = settings;
-            else if (busy()) deferred ??= { tasks: busy() };
+            else if (this.background()) deferred ??= { tasks: this.background() };
             else {
                 await this.stopProcess();
                 await this.start(spec, settings, resume);
@@ -478,19 +485,30 @@ export class LiveCliSession {
         const user = this.turn;
         // Its prompt is still being sent: which turn is whose is known once it's taken.
         if (user && user.ref === undefined && !user.result) return void user.held.push(e);
-        // A turn started or ended: a report that was due is in it.
-        if (e.t !== "turn_event" && this.wakeDue) {
-            this.wakeDue = false;
-            this.changed();
+        // A turn started or ended: a report that was due is in it. Told once the turn is in place, so
+        // nothing sees the session quiet between the report's due and its turn.
+        const reported = e.t !== "turn_event" && this.wakeDue;
+        if (reported) this.wakeDue = false;
+        try {
+            this.routeTurn(e);
+        } finally {
+            if (reported) this.changed();
         }
+    }
+
+    private routeTurn(e: Extract<CliEvent, { t: "turn_started" | "turn_event" | "turn_ended" }>) {
+        const user = this.turn;
         if (e.t === "turn_started") {
             if ((user && answers(user, e.ref, e.answers)) || this.wakes.has(e.ref) || this.abandoned.has(e.ref) || e.origin === "user") return;
             return this.startWake(e.ref, e.origin);
         }
         const turn = this.turnFor(e);
         if (!turn) {
-            if (e.t === "turn_ended") for (const r of [e.ref, ...(e.answers ?? [])]) this.abandoned.delete(r);
-            else this.emitSession(e);
+            if (e.t !== "turn_ended") return this.emitSession(e);
+            // A turn ended here after an unanswered interrupt: the CLI is done with it now.
+            const was = this.abandoned.size;
+            for (const r of [e.ref, ...(e.answers ?? [])]) this.abandoned.delete(r);
+            if (this.abandoned.size !== was) this.changed();
             return;
         }
         if (e.t === "turn_event") return void (turn.sink ? turn.sink.emit(e.event) : turn.held.push(e));

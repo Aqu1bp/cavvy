@@ -9,6 +9,7 @@
 //                                     text "hang": no end until interrupted; "deaf": not even then
 //                                     text "crash": writes "fatal: boom" to stderr and exits 3
 //      interrupt {id}               → ended {id, reason: "aborted"} for a hanging turn; background tasks carry on
+//      end {id}                     → ended {id, reason: "aborted"} for a hanging turn, deaf or not (the CLI got to it at last)
 //      stop_task {id}               → task {id, status: "stopped"}, unless the task's name starts with "stubborn"
 //      finish {task, hold?, later?}  → task {id, status: "done", report: true}, then a turn of its own: started {id: wake-<task>, origin: "wake"},
 //                                     text, ended (with hold, not until interrupted); with later, that turn waits for wake {task}
@@ -44,6 +45,9 @@ function handle(m: Record<string, any>) {
                 hanging.delete(m.id);
                 out({ type: "ended", id: m.id, reason: "aborted" });
             }
+            return;
+        case "end":
+            if (hanging.delete(m.id)) out({ type: "ended", id: m.id, reason: "aborted" });
             return;
         case "stop_task":
             if (tasks.has(m.id) && !String(m.id).startsWith("stubborn")) {
