@@ -51,7 +51,7 @@ mock.module("../../gui/src/state/app", () => ({
         }
     },
     activate: noop, dropHandle: noop, forkSession: noop, handleFor: noop, importCliSession: noop, markSeen: noop, refreshModels: noop, refreshProjects: noop,
-    refreshProviders: noop, refreshSessions: noop, refreshSettings: noop, requestTrust: noop,
+    refreshProviders: noop, refreshSessions: noop, refreshSettings: noop, requestTrust: noop, revealBackground: noop,
 }));
 mock.module("../../gui/src/lib/platform", () => ({ copyText: noop, pickFolder: noop }));
 mock.module("../../gui/src/state/prefs", () => ({ prefs: {}, setPrefs: noop }));

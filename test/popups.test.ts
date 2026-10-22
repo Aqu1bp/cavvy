@@ -578,7 +578,9 @@ describe("approvals are per session", () => {
             checker: c,
             init: { cwd: W },
             session: Session.create(W, { persist: false, system: "S" }),
-            toolState: { fileState: new Map(), todos: [], secrets: undefined },
+            // An App's state as the background list reads it on a session switch (#282): its shells and settings.
+            toolState: { fileState: new Map(), todos: [], secrets: undefined, shells: new Map() },
+            settings: {},
             makeAgent() {},
             schedules: { switchSession() {} },
             replayTranscript() {},
