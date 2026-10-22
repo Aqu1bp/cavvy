@@ -61,6 +61,8 @@ export interface SystemPromptOptions {
      * says where it works, with `note`.
      */
     checkout?: { project: string; note: string };
+    /** Aborted, the git snapshot's calls are stopped (the prompt is no longer wanted). */
+    signal?: AbortSignal;
 }
 
 /**
@@ -87,10 +89,10 @@ export function environmentBlock(cwd: string, model: ModelInfo, checkout = false
  * SESSION_CONTEXT_HEADING, so that everything before it is the same in every
  * session and providers can cache it once.
  */
-export function sessionContextBlock(cwd: string, includeGit = true, extra?: string): string {
+export async function sessionContextBlock(cwd: string, includeGit = true, extra?: string, signal?: AbortSignal): Promise<string> {
     const lines = [SESSION_CONTEXT_HEADING, `Today's date: ${new Date().toISOString().slice(0, 10)}`];
     if (extra) lines.push("", extra);
-    const g = includeGit && gitRoot(cwd) ? gitSnapshot(cwd) : undefined;
+    const g = includeGit && gitRoot(cwd) ? await gitSnapshot(cwd, signal) : undefined;
     if (g) {
         lines.push(
             "",
@@ -119,14 +121,14 @@ export function shellNotes(os: string, shell: string, which: (prog: string) => s
     return notes;
 }
 
-export function buildSystemPrompt(o: SystemPromptOptions): string {
+export async function buildSystemPrompt(o: SystemPromptOptions): Promise<string> {
     const parts = [o.replaceCore ?? CORE, environmentBlock(o.checkout?.project ?? o.cwd, o.model, Boolean(o.checkout))];
     if (o.includeMemory ?? true) {
         const mem = formatMemory(loadMemory(o.cwd, o.projectFiles), o.cwd);
         if (mem) parts.push(mem);
     }
     if (o.append) parts.push(o.append);
-    parts.push(sessionContextBlock(o.cwd, o.includeGit ?? true, o.checkout && `Working directory: ${o.cwd}\n\n${o.checkout.note}`));
+    parts.push(await sessionContextBlock(o.cwd, o.includeGit ?? true, o.checkout && `Working directory: ${o.cwd}\n\n${o.checkout.note}`, o.signal));
     return parts.join("\n\n");
 }
 

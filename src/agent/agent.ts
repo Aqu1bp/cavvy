@@ -3321,7 +3321,7 @@ export class Agent {
         // Each worktree's path and branch are new: they come after what every agent of the type shares (and caches).
         const checkout = worktree && `# Your worktree\nYou work in a git worktree of your own, ${worktree.path}, on branch ${worktree.branch} (from ${worktree.base.slice(0, 12)}). Make your changes there. When you're done, commit them on that branch; the main agent will review and merge it. If you change nothing, the worktree is removed.`;
 
-        const system = buildSystemPrompt({
+        const system = await buildSystemPrompt({
             cwd: projectRoot,
             model,
             replaceCore: own ? `${SUBAGENT_CORE}\n\n${own}` : SUBAGENT_CORE,
