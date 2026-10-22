@@ -40,7 +40,7 @@
 .account-note { display: block; padding: 0 14px 12px 54px; }
 .account-path { overflow-wrap: anywhere; }
 
-@container main (max-width: 520px) {
+:where(.main[data-narrow~="520"]) {
     .account-row { margin-left: 14px; }
     .account-form { margin-left: 14px; padding: 10px; }
     .account-note, .cli-prov > .account-rename { padding-left: 14px; }

@@ -64,27 +64,27 @@
     pointer-events: auto;
 }
 
-@container main (max-width: 700px) {
+:where(.main[data-narrow~="700"]) {
     .stage {
         --lane-l: 22px;
         --lane-r: 22px;
     }
 }
 
-@container main (max-width: 600px) {
+:where(.main[data-narrow~="600"]) {
     .composer-dock {
         padding: 0 10px 10px;
     }
 }
 
-@container main (max-width: 440px) {
+:where(.main[data-narrow~="440"]) {
     .stage {
         --lane-l: 16px;
         --lane-r: 16px;
     }
 }
 
-@container main (max-height: 560px) {
+:where(.main[data-short~="560"]) {
     .stage {
         --stage-top: calc(var(--bar-h, 52px) + 6px);
     }

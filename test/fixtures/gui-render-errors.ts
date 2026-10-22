@@ -10,6 +10,7 @@ import * as liveLine from "../../gui/src/lib/live-line";
 import { createReveal } from "../../gui/src/lib/reveal";
 import * as diffWindow from "../../gui/src/lib/diff-window";
 import { registerSecret, unregisterSecret } from "../../src/util/redact";
+import { columnSteps, COLUMN_NARROW, COLUMN_SHORT } from "../../gui/src/lib/layout";
 
 const source = (file: string) => readFileSync(new URL(`../../gui/src/components/${file}.tsx`, import.meta.url), "utf8").replace(/^import [\s\S]*?;\n/gm, "");
 
@@ -150,7 +151,7 @@ for (const target of ["SettingsPage", "AgentView", "ReviewPane"]) {
         const App = component(appSource.slice(appSource.indexOf("export function App")), "App", {
             RenderBoundary: boundary(), app: { conn: "open", activeId: "session" }, handleFor: () => handle,
             prefs: { sidebar: true }, isTauri: false, document: {}, onMount() {}, setEnterSends() {}, actionOf: () => undefined, skipCovered() {},
-            railDrag: () => undefined, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }), settingsTab, agentFocus, review, setAgentFocus() {}, setReview() {}, attentionCount: () => 0,
+            railDrag: () => undefined, columnSteps, COLUMN_NARROW, COLUMN_SHORT, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, column: { w: 1100, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }), settingsTab, agentFocus, review, setAgentFocus() {}, setReview() {}, attentionCount: () => 0,
             ...Object.fromEntries(tags.map((tag) => [tag, () => { if (tag === target) throw Error("injected " + target); return node(tag); }])),
         });
         const root = node("root");

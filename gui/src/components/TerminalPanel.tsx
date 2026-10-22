@@ -7,7 +7,7 @@ import "../styles/terminal.css";
 import { app, refreshProviders, reportError, rpc, toast, trustRequest } from "../state/app";
 import { RpcError } from "../lib/rpc";
 import { prefs, setPrefs } from "../state/prefs";
-import { terminalActions, terminalOpen, setTerminalOpen, setSettingsTab, setupObscured, terminalMax, setTerminalMax, setTerminalShown, setTerminalDrag, shellLayout, type SetupRun } from "../state/ui";
+import { terminalActions, terminalOpen, setTerminalOpen, setSettingsTab, setupObscured, terminalMax, setTerminalMax, setTerminalShown, setTerminalDrag, shellLayout, panelHold, type SetupRun } from "../state/ui";
 import { frameDrag } from "../lib/drag";
 import { basename, tildify } from "../lib/format";
 import { EarlyInput, loadTabs, restoreTabs, saveTabs, TerminalClosures, terminalInputChunks, type SavedTab } from "../lib/terminal";
@@ -158,7 +158,8 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
         target.addEventListener("lostpointercapture", end);
     };
     return (
-        <section ref={panel} class={`terminal-panel ${terminalMax() ? "max" : ""} ${dragging() ? "dragging" : ""}`} aria-label="Terminal panel" style={{ display: visible() ? "flex" : "none" }}>
+        <section ref={panel} class={`terminal-panel ${terminalMax() ? "max" : ""} ${dragging() ? "dragging" : ""}`} classList={{ held: !!panelHold() }} aria-label="Terminal panel"
+            style={{ display: visible() ? "flex" : "none", width: panelHold() && `${panelHold()!.sheetWidth}px`, height: panelHold() && `${panelHold()!.terminal}px` }}>
             <div class="terminal-resize" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" tabIndex={0} onPointerDown={resize}
                 onKeyDown={(e) => { if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); setTerminalMax(false); setHeight((panel?.offsetHeight ?? prefs.terminalHeight) + (e.key === "ArrowUp" ? 24 : -24)); } }} />
             <div class="terminal-toolbar">
@@ -276,10 +277,18 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
             if (!disposed) void start();
         });
     };
-    const fitNow = () => {
+    /** The size last sent to the shell: a resize that leaves it the same isn't sent again. */
+    let sent = "";
+    /** `changed`: send the size only if it changed (a resize); otherwise always (a full-screen program draws itself again). */
+    const fitNow = (changed = false) => {
         if (disposed || !p.visible || !container?.clientHeight || !term) return;
         fit.fit();
-        if (opened && !ended() && app.conn === "open") void rpc.call("terminal.resize", { id, cols: Math.min(500, term.cols), rows: Math.min(300, term.rows) }).catch(() => {});
+        const size = `${term.cols}x${term.rows}`;
+        if (changed && size === sent) return;
+        if (opened && !ended() && app.conn === "open") {
+            sent = size;
+            void rpc.call("terminal.resize", { id, cols: Math.min(500, term.cols), rows: Math.min(300, term.rows) }).catch(() => {});
+        }
     };
     const lost = (e: unknown) => e instanceof RpcError && e.code === "disconnected";
     /** Back to the shell the server kept: what it printed meanwhile comes first (as terminal.data, ahead of the reply). */
@@ -440,7 +449,8 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
                 }
             } else if (away()) void reattach();
         });
-        const observer = new ResizeObserver(() => { cancelAnimationFrame(fitting); fitting = requestAnimationFrame(fitNow); });
+        // While the panels slide, the panel keeps one size (lib/layout.ts heldSizes): this fits once as it opens.
+        const observer = new ResizeObserver(() => { cancelAnimationFrame(fitting); fitting = requestAnimationFrame(() => fitNow(true)); });
         observer.observe(container);
         void start();
         onCleanup(() => {

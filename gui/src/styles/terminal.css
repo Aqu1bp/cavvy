@@ -11,6 +11,13 @@
     overflow: hidden;
 }
 
+/* While the panels slide, the size it's sliding to or from, whichever is larger (App.tsx holds it), from
+   the row's top and the sheet's left, clipped by the sheet: it's laid out and fitted once, not every frame. */
+.terminal-panel.held {
+    justify-self: start;
+    align-self: start;
+}
+
 /* Maximized, it's the whole sheet. */
 .terminal-panel.max {
     border-top: 0;

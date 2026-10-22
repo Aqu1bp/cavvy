@@ -15,7 +15,7 @@
     width: 100%;
     max-width: calc(var(--column-w) + 100px);
     margin: 0 auto;
-    padding: max(70px, calc(50cqh - 172px)) 18px 48px;
+    padding: max(70px, calc(var(--column-h, 100vh) / 2 - 172px)) 18px 48px;
     display: flex;
     flex-direction: column;
     gap: 14px;
@@ -136,7 +136,7 @@
     color: var(--fg-3);
 }
 
-@container main (max-height: 600px) {
+:where(.main[data-short~="600"]) {
     .home-hero .logo,
     .home-starts {
         display: none;

@@ -3,7 +3,7 @@ import { ArrowDown, GitFork } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { fork, forkAnchor } from "../state/actions";
 import { activate, toast, type SessionHandle } from "../state/app";
-import { findOpen, jumpTarget, openFind, setFindQuery, setJumpTarget, setRewindOpen } from "../state/ui";
+import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setJumpTarget, setRewindOpen } from "../state/ui";
 import { prefs } from "../state/prefs";
 import { anchoredTop, atBottom, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
@@ -347,6 +347,43 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         });
     });
 
+    // While the panels slide (lib/layout.ts heldSizes), the conversation keeps one size, placed where it ends up
+    // and drawn from where it was by a translate in step with the slide: laid out once, moved by the compositor.
+    // From the column's end if it's following the end, else from its top.
+    let box: HTMLDivElement | undefined;
+    let moving: Animation | undefined;
+    /** This slide's box is held from the column's end (it was following the end as the slide began). */
+    let fromEnd = false;
+    const atEnd = createMemo(on(() => panelHold()?.slide, (slide) => !!slide && untrack(stick)));
+    const hold = () => {
+        const held = panelHold();
+        return held && { width: `${held.column.w}px`, height: `${held.column.h}px`, top: `${atEnd() ? held.to.h - held.column.h : 0}px` };
+    };
+    // The hold ending puts the box back at the column's top. Held from the end and scrolled up meanwhile (not
+    // following the end any more), it's scrolled by as much, so what's read stays where it is.
+    createEffect(on(panelHold, (held, before) => {
+        if (held || !before || !scroller || !fromEnd || stick()) return;
+        const top = before.to.h - before.column.h;
+        if (!top) return;
+        scroller.scrollTop -= top;
+        wrote();
+        reading = capture();
+    }, { defer: true }));
+    createEffect(on(() => panelHold()?.slide, (slide) => {
+        moving?.cancel();
+        moving = undefined;
+        const held = panelHold();
+        if (slide) fromEnd = atEnd();
+        const x = held ? (held.from.w - held.to.w) / 2 : 0;
+        const y = held && atEnd() ? held.from.h - held.to.h : 0;
+        if (!slide || !box || (!x && !y)) return;
+        const { duration, easing } = slide.effect!.getTiming();
+        moving = box.animate([{ transform: `translate(${x}px, ${y}px)` }, { transform: "none" }], { duration: Number(duration), easing });
+        // Both start on the next frame; this keeps them together if they don't.
+        void slide.ready.then(() => { if (moving && slide.startTime !== null) moving.startTime = slide.startTime; }, () => {});
+    }));
+    onCleanup(() => moving?.cancel());
+
     const rewind = (index: number) => {
         rewindTarget.set(index);
         setRewindOpen(true);
@@ -355,6 +392,8 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     return (
         <div class="transcript-wrap">
             <div class="transcript-fade" aria-hidden="true" />
+            {/* Keeps one size while the panels slide (lib/layout.ts heldSizes): the conversation is laid out once, not every frame. */}
+            <div class="transcript-hold" ref={box} classList={{ held: !!hold() }} style={hold()}>
             <div class="transcript" ref={scroller} onScroll={onScroll} onWheel={onWheel} onTouchStart={press} onPointerDown={press} onKeyDown={onKey} aria-label="Conversation">
                 {/* Clips the column's glide, so a translate never adds to what the conversation scrolls through. */}
                 <div class="transcript-glide">
@@ -389,6 +428,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                     <div class="transcript-end" style={{ "--dock-h": dock() }} />
                 </div>
                 </div>
+            </div>
             </div>
             <Show when={findOpen()}>
                 <FindBar turns={turns} scroller={() => scroller} dock={() => p.dock ?? 0} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={navigated} />

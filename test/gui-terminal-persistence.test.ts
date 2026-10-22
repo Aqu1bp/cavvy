@@ -121,7 +121,7 @@ import { RpcError } from "../gui/src/lib/rpc";
 import { frameDrag } from "../gui/src/lib/drag";
 import { fakeFrames } from "./helpers/frames";
 
-function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string; saved?: SavedTabs; script?: SavedTabs["tabs"][number]["script"]; fresh?: boolean; login?: { provider: string; accountId: string; name: string }; cwd?: string; terminalKey?: (e: KeyboardEvent) => string; setPrefs?: (key: string, value: unknown) => void; setTerminalDrag?: (h: number | undefined) => void; frames?: ReturnType<typeof fakeFrames> } = {}) {
+function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string; saved?: SavedTabs; script?: SavedTabs["tabs"][number]["script"]; fresh?: boolean; login?: { provider: string; accountId: string; name: string }; cwd?: string; terminalKey?: (e: KeyboardEvent) => string; setPrefs?: (key: string, value: unknown) => void; setTerminalDrag?: (h: number | undefined) => void; frames?: ReturnType<typeof fakeFrames>; visible?: boolean; panelHold?: () => unknown } = {}) {
     const [conn, setConn] = solid.createSignal(opts.conn ?? "open");
     const [panelOpen, setPanelOpen] = solid.createSignal(false);
     const calls: { method: string; params: any; resolve: (v: any) => void; reject: (e: any) => void }[] = [];
@@ -131,6 +131,10 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
     const terminals: Emulator[] = [];
     const closed: string[] = [];
     const saved: SavedTabs[] = [];
+    /** What the fit addon fits the screen to (its container's size, in cells), its ResizeObservers, and the frames asked for. */
+    const fitted = { cols: 80, rows: 24 };
+    const resizes = new Set<() => void>();
+    const frameQueue: (() => void)[] = [];
     class Emulator {
         options: any = {}; cols = 80; rows = 24;
         input: (data: string) => void = () => {};
@@ -157,7 +161,7 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
     const resolve = (value: any): any => typeof value === "function" ? resolve(value()) : value;
     const renderer = {
         ...solid, effect: solid.createRenderEffect, memo: solid.createMemo,
-        createElement(tag: string) { const node = { tag, props: {}, clientHeight: 0 }; nodes.push(node); return node; },
+        createElement(tag: string) { const node = { tag, props: {}, clientHeight: opts.visible ? 200 : 0 }; nodes.push(node); return node; },
         createTextNode: () => ({}), insertNode() {},
         setProp(node: any, key: string, value: any) { node.props[key] = value; },
         insert(_node: any, value: any) { solid.createRenderEffect(() => resolve(value)); },
@@ -173,22 +177,26 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
         setTerminalDrag: opts.setTerminalDrag ?? (() => {}), frameDrag: (o: Parameters<typeof frameDrag>[0]) => frameDrag({ ...o, frames: opts.frames ?? fakeFrames() }),
         basename: (v: string) => v, tildify: (v: string) => v, withShortcut: (label: string) => label, terminalKey: opts.terminalKey ?? (() => "shell"), toast() {}, reportError() {}, refreshProviders() {}, setSettingsTab() {}, setupObscured: () => false, trustRequest: () => undefined,
         Play: noop, Plus: noop, RotateCw: noop, TerminalIcon: noop, X: noop, ChevronDown: noop, Maximize2: noop, Minimize2: noop,
-        terminalMax: () => false, setTerminalMax() {}, setTerminalShown() {}, shellLayout: () => ({ terminal: { most: 560 } }), Terminal: Emulator, FitAddon: class { fit() {} },
-        ResizeObserver: class { observe() {} disconnect() {} }, MutationObserver: class { observe() {} disconnect() {} },
+        terminalMax: () => false, setTerminalMax() {}, setTerminalShown() {}, shellLayout: () => ({ terminal: { most: 560 } }), panelHold: opts.panelHold ?? (() => undefined), Terminal: Emulator,
+        FitAddon: class { fit() { const t = terminals.at(-1)!; t.cols = fitted.cols; t.rows = fitted.rows; } },
+        ResizeObserver: class { constructor(private cb: () => void) {} observe() { resizes.add(this.cb); } disconnect() { resizes.delete(this.cb); } }, MutationObserver: class { observe() {} disconnect() {} },
         getComputedStyle: () => ({ getPropertyValue: () => "#000" }), document: { documentElement: {} },
-        requestAnimationFrame: () => 0, cancelAnimationFrame() {}, isMod: () => false, copyText() {},
+        requestAnimationFrame: (fn: () => void) => frameQueue.push(fn), cancelAnimationFrame() {}, isMod: () => false, copyText() {},
     };
     const component = new Function(...Object.keys(deps), `${js}; return ${name};`)(...Object.values(deps));
     let dispose!: () => void;
     solid.createRoot((d: () => void) => {
         dispose = d;
         component(name === "TerminalPanel" ? { cwd: opts.cwd ?? "/p" } : {
-            tab: { id: "tab", terminal: "shell", cwd: "/p", number: 1, attach: !opts.fresh, script: opts.script, login: opts.login }, visible: false,
+            tab: { id: "tab", terminal: "shell", cwd: "/p", number: 1, attach: !opts.fresh, script: opts.script, login: opts.login }, visible: !!opts.visible,
             onClose: (id: string) => closed.push(id),
             onRestart: async (_next: string, previous?: string) => { if (previous) await rpc.call("terminal.close", { id: previous }); },
         });
     });
-    return { calls, terminals, nodes, closed, saved, dispose, setPanelOpen,
+    return { calls, terminals, nodes, closed, saved, dispose, setPanelOpen, fitted,
+        /** The screen's container changing size, and the next frame. */
+        resized() { for (const fn of resizes) fn(); },
+        frame() { for (const fn of frameQueue.splice(0)) fn(); },
         event(e: any) { for (const fn of events) fn(e); },
         connection(state: string) { setConn(state); for (const fn of states) fn(state); },
     };
@@ -237,6 +245,38 @@ test("real panel waits for a connection and retries interrupted reconciliation",
         m.calls[1]!.resolve([{ id: "server-shell", cwd: "/p", script: { id: "dev", name: "Dev" } }]); await tick();
         expect(m.calls.map((c) => c.method)).toEqual(["terminal.list", "terminal.list", "terminal.attach"]);
         expect(m.saved.at(-1)?.tabs[0]?.script?.name).toBe("Dev");
+    } finally { m.dispose(); }
+});
+
+test("the screen tells its shell a new size only when fitting changes it, not on every resize while a panel slides", async () => {
+    const m = mounted("TerminalScreen", { visible: true });
+    try {
+        m.calls.find((c) => c.method === "terminal.attach")!.resolve({ id: "shell", cwd: "/p" }); await tick();
+        m.frame();
+        const sizes = () => m.calls.filter((c) => c.method === "terminal.resize").map((c) => `${c.params.cols}x${c.params.rows}`);
+        // Attaching sends its size (a full-screen program draws itself again), as does showing it.
+        expect(sizes().length).toBeGreaterThan(0);
+        const sent = sizes().length;
+        // Its box resized each frame of a slide, still fitting the same cells: nothing to tell the shell.
+        for (let i = 0; i < 8; i++) { m.resized(); m.frame(); }
+        expect(sizes().length).toBe(sent);
+        m.fitted.cols = 120;
+        m.resized(); m.frame(); m.resized(); m.frame();
+        expect(sizes().slice(sent)).toEqual(["120x24"]);
+    } finally { m.dispose(); }
+});
+
+test("while the panels slide the terminal keeps the size held for it (lib/layout.ts heldSizes), from the row's top", () => {
+    const [held, setHeld] = solid.createSignal<any>();
+    const m = mounted("TerminalPanel", { panelHold: held });
+    try {
+        const panel = m.nodes.find((n) => n.tag === "section")!;
+        const style = () => (typeof panel.props.style === "function" ? panel.props.style() : panel.props.style);
+        expect([style().width, style().height, panel.props.classList?.held]).toEqual([undefined, undefined, false]);
+        setHeld({ column: { w: 732, h: 604 }, from: { w: 732, h: 864 }, to: { w: 732, h: 604 }, sheetWidth: 1092, terminal: 260 });
+        expect([style().width, style().height, panel.props.classList?.held]).toEqual(["1092px", "260px", true]);
+        setHeld(undefined);
+        expect([style().width, style().height]).toEqual([undefined, undefined]);
     } finally { m.dispose(); }
 });
 

@@ -125,7 +125,7 @@
     transform: scale(0.88);
 }
 
-@container main (max-width: 640px) {
+:where(.main[data-narrow~="640"]) {
     .agent-bar-note,
     .agent-bar-model,
     .agent-sep {

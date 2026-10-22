@@ -85,7 +85,7 @@ const deps = { ...solid, ...components, renderer, createComposerDraft, composerS
     app: appState,
     handleFor: () => ({ view: { state: sessionState, turns }, draft: noop }),
     contextCardOpen: () => false, setContextCardOpen: noop, contextView: () => ({ ring: false }),
-    focusComposer: () => 0, modelPickerOpen: () => false, modePickerOpen: () => false, settingsTab: () => undefined,
+    focusComposer: () => 0, modelPickerOpen: () => false, modePickerOpen: () => false, settingsTab: () => undefined, columnHeight: () => "800px",
     setModelPickerOpen: noop, setModePickerOpen: noop, blockedBy: () => false,
     readAttachment: async (f: { name: string }) => ({ kind: "image", name: f.name, size: 3, mediaType: "image/png", data: "cG5n" }),
     prefs: { enterSends: true }, mod: "⌘", isMod: (e: any) => e.metaKey, interrupt: () => void interrupts++,

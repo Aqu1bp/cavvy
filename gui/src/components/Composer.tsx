@@ -5,7 +5,7 @@ import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } fro
 import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
 import { interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
-import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, settingsTab } from "../state/ui";
+import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, settingsTab, columnHeight } from "../state/ui";
 import { keymap, matchKey, shortcut, shortcutHint, withShortcut } from "../state/keybindings";
 import { eventStrokes } from "../lib/keystrokes";
 import type { MatchResult } from "../../../src/keybindings/core";
@@ -644,6 +644,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     <textarea
                         ref={ta}
                         rows={1}
+                        style={{ "--column-h": columnHeight() }}
                         value={text()}
                         placeholder={placeholder()}
                         spellcheck={!shell()}

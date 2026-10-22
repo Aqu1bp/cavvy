@@ -604,7 +604,7 @@
 }
 
 /* Narrow: tighter margins; a row's control drops under its text when they don't fit side by side. */
-@container main (max-width: 520px) {
+:where(.main[data-narrow~="520"]) {
     .set-in {
         padding: 0 16px 50px;
     }
@@ -859,7 +859,7 @@
     background: var(--sheet-2);
 }
 
-@container main (max-width: 520px) {
+:where(.main[data-narrow~="520"]) {
     .ap-tiles {
         flex-wrap: wrap;
     }

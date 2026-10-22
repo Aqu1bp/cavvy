@@ -5,7 +5,7 @@ import { createResource, createSignal, For, Show } from "solid-js";
 import { ChevronDown, Folder, FolderGit2, FolderOpen, KeyRound, ListChecks, MessageSquareText, ShieldAlert, TerminalIcon } from "lucide-solid";
 import { app, refreshProjects, reportError, rpc } from "../state/app";
 import { chooseProject, connectCli, openProject, trustAndContinue } from "../state/actions";
-import { requestComposerFocus, setSettingsTab } from "../state/ui";
+import { columnHeight, requestComposerFocus, setSettingsTab } from "../state/ui";
 import { ago, basename, tildify } from "../lib/format";
 import { now } from "../lib/clock";
 import { CliSessions } from "./CliSessions";
@@ -63,7 +63,7 @@ export function Home() {
 
     return (
         <div class="home">
-            <div class="home-col">
+            <div class="home-col" style={{ "--column-h": columnHeight() }}>
                 <div class="home-hero">
                     <Logo size={44} />
                     <h1 class="home-q">{app.homeCwd ? "What should we work on?" : "Choose a project to start"}</h1>

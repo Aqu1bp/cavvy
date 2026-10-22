@@ -10,7 +10,7 @@ import { AlertTriangle, Bot, ClipboardList, Eye, EyeOff, FilePen, FolderGit2, Gl
 import type { Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction, SecretInteraction } from "@shared/protocol";
 import { openAgents, respond } from "../state/actions";
 import { rpc } from "../state/app";
-import { setPlanDialog, settingsTab } from "../state/ui";
+import { columnHeight, setPlanDialog, settingsTab } from "../state/ui";
 import { DiffView } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
 
@@ -53,7 +53,7 @@ export function InteractionTab(p: { sessionId: string; items: Interaction[] }) {
     return (
         <Show when={first()?.id} keyed>
             {(_id) => (
-                <div class={`ask glass itab itab-${first()!.kind} ${first()!.kind === "permission" && (first() as PermissionInteraction).dangerous ? "danger" : ""}`} role="alertdialog" aria-label="Waiting for you">
+                <div class={`ask glass itab itab-${first()!.kind} ${first()!.kind === "permission" && (first() as PermissionInteraction).dangerous ? "danger" : ""}`} style={{ "--column-h": columnHeight() }} role="alertdialog" aria-label="Waiting for you">
                     <Show when={p.items.length > 1}>
                         <div class="itab-count">1 of {p.items.length} waiting</div>
                     </Show>

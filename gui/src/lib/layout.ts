@@ -107,12 +107,30 @@ export function requestCloses(cleared: string | undefined, wasOpen: boolean, o: 
     return { close: false, cleared };
 }
 
+/**
+ * The conversation column's sizes that change how what's in it is laid out: widths and heights it's
+ * at most. App.tsx marks the column with the ones it's within (`data-narrow`, `data-short`), which
+ * the styles read where they'd use `@container main (max-width: …)` (shell.css says why they don't).
+ */
+export const COLUMN_NARROW = [700, 640, 600, 520, 440] as const;
+export const COLUMN_SHORT = [600, 560, 360] as const;
+
+/** The steps `size` is within, as an attribute's words: 650 against [700, 640, 600] is "700 640". */
+export function columnSteps(size: number, steps: readonly number[]): string {
+    return steps.filter((s) => size <= s).join(" ");
+}
+
 /** The whole layout for one window size and state; what the shell draws. */
 export interface WindowLayout {
     railMode: RailMode;
     /** The rail is showing: docked and turned on, or the drawer is open. */
     railShown: boolean;
     sheet: Size;
+    /**
+     * The conversation column: the sheet less a docked inspector and the terminal's row. Its height is
+     * the terminal's restored one while the terminal is maximized (the column waits behind it at that size).
+     */
+    column: Size;
     inspector: { open: boolean; mode: InspectorMode; width: number; short: boolean; bottom: number };
     terminal: { shown: boolean; height: number; maximized: boolean; most: number };
 }
@@ -140,11 +158,49 @@ export function windowLayout(o: {
     const width = o.review ? reviewWidth(o.reviewBase, sheet.w, o.split, inspector) : inspector;
     const term = o.terminalShown ? terminalHeight(o.terminalPreferred, sheet.h, o.terminalMax) : 0;
     const short = floatShort(sheet.h, term, o.dock);
+    const open = o.panel || o.review;
+    const docks = inspectorMode(sheet.w, width);
     return {
         railMode: mode,
         railShown: mode === "dock" ? o.rail : o.railOpen,
         sheet,
-        inspector: { open: o.panel || o.review, mode: inspectorMode(sheet.w, width), width, short, bottom: floatBottom(term, o.dock, short) },
+        column: {
+            w: sheet.w - (open && docks === "dock" ? width : 0),
+            h: sheet.h - (o.terminalShown ? terminalHeight(o.terminalPreferred, sheet.h, false) : 0),
+        },
+        inspector: { open, mode: docks, width, short, bottom: floatBottom(term, o.dock, short) },
         terminal: { shown: o.terminalShown, height: term, maximized: o.terminalShown && o.terminalMax, most: Math.max(TERMINAL_MIN, sheet.h - TERMINAL_KEEP) },
+    };
+}
+
+/**
+ * The sheet's tracks as shell.css slides them: the rail's column (docked and showing), a docked
+ * inspector's, the terminal's row. A change in one opens or closes a panel; the window resizing
+ * the column alone doesn't move them.
+ */
+export function tracks(l: WindowLayout): string {
+    const rail = l.railMode === "dock" && l.railShown;
+    const inspector = l.inspector.open && l.inspector.mode === "dock" ? l.inspector.width : 0;
+    return `${rail}:${inspector}:${l.terminal.height}`;
+}
+
+/**
+ * What's held while the tracks slide: the conversation and the terminal, which are costly to lay out,
+ * keep one size for the whole move rather than one a frame (App.tsx, Transcript.tsx, TerminalPanel.tsx).
+ * `column`: the conversation's box, as wide as the column ends up and as tall as its taller end; it's
+ * placed where it ends up and drawn from where it was (`from`) to there (`to`) by a translate.
+ * The terminal is as wide and tall as the larger end (clipped by the sheet, nothing shows round it).
+ */
+export interface Held { column: Size; from: Size; to: Size; sheetWidth: number; terminal: number }
+
+/** What's held moving from `from` to `to`, from `held` if a move is under way. */
+export function heldSizes(held: Held | undefined, from: WindowLayout, to: WindowLayout): Held {
+    const was = held ?? { column: from.column, sheetWidth: from.sheet.w, terminal: from.terminal.height };
+    return {
+        column: { w: to.column.w, h: Math.max(was.column.h, to.column.h) },
+        from: from.column,
+        to: to.column,
+        sheetWidth: Math.max(was.sheetWidth, to.sheet.w),
+        terminal: Math.max(was.terminal, to.terminal.height),
     };
 }
