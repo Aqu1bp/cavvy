@@ -585,6 +585,19 @@ describe("background work across turns", () => {
         expect(reminders.some((r) => r.includes("sign-in strategies") && r.includes("Claude Code"))).toBe(true);
     });
 
+    test("#305 (final review, blocker 4): a monitor's wake carries no report; what its turn said shows, and the model is told", async () => {
+        process.env.FAKE_SCENARIO = "monitor-repeated-reports";
+        const { run, wakes, adopt, agent, events } = await makeAgent();
+        expect(await run("watch the checks")).toBe("done");
+        await until(() => wakes.length > 0, 5000, "the monitor's wake");
+        expect(wakes[0]!.report).toBeUndefined();
+        agent.setModel({ provider: "openai", id: "gpt-x", name: "GPT X" } as any, {} as any);
+        expect(await adopt(wakes[0]!)).toBe("error");
+        await until(() => notices(events).some((n) => /Monitor notification \d/.test(n)), 5000, "what the monitor's turn said");
+        const reminders: string[] = ((agent as any).pendingReminders as { text: string }[]).map((r) => r.text);
+        expect(reminders.some((r) => /Monitor notification \d/.test(r) && r.includes("Claude Code"))).toBe(true);
+    });
+
     test("a permission prompt from a background sub-agent between turns is asked (no turn running), and its answer reaches it", async () => {
         process.env.FAKE_SCENARIO = "agent-background-ask";
         const asked: PermissionRequest[] = [];

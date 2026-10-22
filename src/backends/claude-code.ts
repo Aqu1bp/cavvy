@@ -50,7 +50,7 @@ import { CLAUDE_PREFIX, claudeNames, claudePrompt, forClaudeCode, skillFolder } 
 import { CLAUDE_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
 import { claudeMcpPolicy } from "./claude-mcp-policy";
 import { writeAgentsFile } from "./claude-agents";
-import { backendModel, type AgentBackendClient, type BackgroundStop, type SessionHost, type TurnSink, type BackendResult, type BackendTurn, type SteerMessage } from "./types";
+import { backendModel, type AgentBackendClient, type BackgroundStop, type SessionHost, type TurnSink, type BackendResult, type BackendTurn, type SteerMessage, type BackendWake } from "./types";
 import type { BackgroundTaskInfo } from "./live/info";
 import type { TurnEndReason } from "../agent/agent";
 import type { NativeGoal } from "../agent/goal";
@@ -366,6 +366,10 @@ export class ClaudeCodeBackend implements AgentBackendClient {
 
     sendNow(sessionKey: string, text: string): boolean {
         return this._live?.sendNow(sessionKey, text) ?? false;
+    }
+
+    async wakeReport(w: BackendWake): Promise<string | undefined> {
+        return this._live?.wakeReport(w.ref);
     }
 
     async restart(sessionKey: string): Promise<void> {

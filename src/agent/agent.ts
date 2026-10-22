@@ -1758,8 +1758,26 @@ export class Agent {
         const about = w.label?.trim() ? ` (${w.label.trim()})` : "";
         this.endNotice("warn", `${name} started a turn of its own, but this session can't take it over now${on}.${report ? ` What it reported${about}:\n${report}` : ""}`);
         if (report) this.addReminder(`${name}, which this session ran on earlier, reported on background work it was doing${about}:\n${report}`);
+        else void this.laterReport(w, name, about);
         this.emit({ type: "turn_end", reason: "error" });
         return "error";
+    }
+
+    /**
+     * A wake not taken over that carried no report (a Claude Code monitor's event: only the turn it started saw its
+     * output): what that turn said, once it ends, is shown and told to the model, as a report is (#305).
+     */
+    private async laterReport(w: BackendWake, name: string, about: string) {
+        for (const b of this.backendsUsed) {
+            const said = await b.wakeReport?.(w).catch(() => undefined);
+            if (said === undefined) continue;
+            const text = redact(said.trim());
+            if (!text || this.disposed) return;
+            const report = text.length > WAKE_REPORT_CHARS ? `${text.slice(0, WAKE_REPORT_CHARS)}…` : text;
+            this.emit({ type: "notice", level: "info", message: `What ${name}'s turn said${about}:\n${report}` });
+            this.addReminder(`${name}, which this session ran on earlier, took a turn of its own on background work it was doing${about}, and said:\n${report}`);
+            return;
+        }
     }
 
     /** Session-level news from a backend: its background tasks, a notice outside any turn. */
