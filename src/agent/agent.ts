@@ -255,6 +255,7 @@ export interface AgentOptions {
 }
 
 const MAX_RETRIES = 10;
+const MAX_RETRY_AFTER_MS = 5 * 60_000;
 /** Requests that got nothing back for minutes (sse.ts) are tried this many more times. */
 const MAX_STALL_RETRIES = 2;
 /** After the results of tools a turn was stopped in. */
@@ -1143,9 +1144,13 @@ export class Agent {
                     const pe = e instanceof ProviderError ? e : new ProviderError((e as Error)?.message ?? String(e), undefined, false);
                     // Each stall waits minutes for a byte: after a few, the provider is down, and the turn says so.
                     if (pe.stalled && ++stalls > MAX_STALL_RETRIES) throw pe;
-                    if (!pe.retryable || attempt >= MAX_RETRIES) throw pe;
+                    if (!pe.retryable) throw pe;
+                    if (pe.retryAfterMs !== undefined && pe.retryAfterMs > MAX_RETRY_AFTER_MS) {
+                        throw new ProviderError(`${pe.message}. Provider requested retry after ${Math.ceil(pe.retryAfterMs / 1000)}s; automatic retries stop above ${MAX_RETRY_AFTER_MS / 1000}s. Try again after that wait.`, pe.status, false, pe.retryAfterMs, pe.body);
+                    }
+                    if (attempt >= MAX_RETRIES) throw pe;
                     const base = Math.min(32_000, 1000 * 2 ** (attempt - 1));
-                    const delay = Math.min(60_000, pe.retryAfterMs ?? Math.round(base * (0.75 + Math.random() * 0.5)));
+                    const delay = pe.retryAfterMs ?? Math.round(base * (0.75 + Math.random() * 0.5));
                     const reason = redact(pe.message);
                     this.retrying = `${reason} (attempt ${attempt})`;
                     this.emit({ type: "retry", attempt, delayMs: delay, reason });

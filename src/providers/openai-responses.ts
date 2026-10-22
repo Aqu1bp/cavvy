@@ -10,7 +10,7 @@ import type { ProviderDef } from "./registry";
 import { resolveBaseUrl, customProviderModels } from "./registry";
 import { parseSse, stallError, stallTimer } from "./sse";
 import { fileAsText, fitRequest, frameName, readsPdf } from "./files";
-import { httpError } from "./openai-compat";
+import { isUsageLimit, usageLimitHint, httpError } from "./openai-compat";
 import {
     ProviderError,
     type AssistantContent,
@@ -217,12 +217,14 @@ export class OpenAIResponsesProvider implements ProviderClient {
                             break;
                         case "response.failed": {
                             const err = e.response?.error ?? {};
-                            throw new ProviderError(`${def.name}: ${err.message ?? "response failed"}${err.code ? ` (${err.code})` : ""}`, undefined, /server_error|overloaded|rate_limit/i.test(String(err.code ?? "")));
+                            const usageLimit = isUsageLimit(err);
+                            throw new ProviderError(`${def.name}: ${err.message ?? "response failed"}${err.code ? ` (${err.code})` : ""}${usageLimit ? usageLimitHint : ""}`, undefined, !usageLimit && /server_error|overloaded|rate_limit/i.test(String(err.code ?? "")));
                         }
                         case "error": {
                             const code = String(e.code ?? e.error?.code ?? "");
                             const msg = e.message ?? e.error?.message ?? "stream error";
-                            throw new ProviderError(`${def.name}: ${msg}${code ? ` (${code})` : ""}`, undefined, /server_error|overloaded|rate_limit|timeout/i.test(code));
+                            const usageLimit = isUsageLimit(e.error ?? e);
+                            throw new ProviderError(`${def.name}: ${msg}${code ? ` (${code})` : ""}${usageLimit ? usageLimitHint : ""}`, undefined, !usageLimit && /server_error|overloaded|rate_limit|timeout/i.test(code));
                         }
                     }
                 }

@@ -2648,7 +2648,10 @@ export class App {
                 : quiet >= 10_000 && this.agentWork && this.model && !this.status && !this.active.size && !this.receiving.size
                   ? ` · waiting for ${shortModel(this.model)} ${formatDuration(quiet)}`
                   : "";
-            status.push(`${theme.accent(glyph)} ${theme.accent(label)} ${theme.muted(`(${elapsed}${tokens ? ` · ↓ ${formatTokens(tokens)} tokens` : ""}${waiting} · ${this.idleCompacting ? "send a message or esc to cancel" : this.queued.length ? "esc to take back the queued message" : "esc to interrupt"})`)}`);
+            const cancel = this.keys.label("chat:cancel")?.replace(/^escape$/, "esc");
+            const cancelHint = this.idleCompacting ? `send a message${cancel ? ` or ${cancel} to cancel` : ""}`
+                : cancel ? `${cancel} ${this.queued.length ? "to take back the queued message" : "to interrupt"}` : "";
+            status.push(`${theme.accent(glyph)} ${theme.accent(label)} ${theme.muted(`(${elapsed}${tokens ? ` · ↓ ${formatTokens(tokens)} tokens` : ""}${waiting}${cancelHint ? ` · ${cancelHint}` : ""})`)}`);
         }
         const todos = this.toolState.todos;
         if (this.showTodos && todos.length && todos.some((t) => t.status !== "completed")) status.push(...renderTodos(todos, cols).slice(0, 10));
