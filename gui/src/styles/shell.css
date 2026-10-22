@@ -114,6 +114,8 @@
    the rail under the settings sections, the session under the settings page. Not positioned, so
    what's absolutely placed in it (the stage, Home) still fills the column it's in. */
 .keep {
+    /* The rail's width passes through to the sidebar (--rail-w isn't inherited; see above). */
+    --rail-w: inherit;
     display: flex;
     flex-direction: column;
     flex: 1;
