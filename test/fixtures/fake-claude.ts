@@ -33,6 +33,7 @@
 // FAKE_TIMEOUT      shell-background*: the background Bash call's timeout (ms; default none)
 // FAKE_SHELL_STATUS shell-background*: how its task_notification says it ended (default completed; after it left the list)
 // FAKE_STOP_TASK    hang: stop_task unanswered; reject: refused; complete-reject: the task completes, then the stop is refused;
+//                   fail-first: the task fails by itself, then the stop is answered success;
 //                   late: the first stop of a task goes through FAKE_STOP_MS later (default 300), and a second asked
 //                   meanwhile is refused once the first is answered (it's over); complete-exit: the task completes with a
 //                   report, then the process exits without answering; complete-first: the task completes (said, then
@@ -1126,6 +1127,16 @@ for await (const chunk of Bun.stdin.stream()) {
                         out({ type: "control_response", response: { subtype: "success", request_id: m.request_id } });
                         out({ type: "system", subtype: "task_notification", task_id: id, status: "stopped", summary: "Stopped by host", session_id: sessionId });
                     }));
+                    continue;
+                }
+                // fail-first: the task fails by itself just as it's asked to stop; the stop is answered success all the same
+                // (as Claude Code answers for a task it no longer runs).
+                if (process.env.FAKE_STOP_TASK === "fail-first") {
+                    const tid = m.request.task_id;
+                    bgTasks.delete(tid);
+                    backgroundChanged();
+                    out({ type: "system", subtype: "task_notification", task_id: tid, status: "failed", summary: "Failed by itself", session_id: sessionId });
+                    out({ type: "control_response", response: { subtype: "success", request_id: m.request_id } });
                     continue;
                 }
                 // The task completes just as it's asked to stop: it leaves the list, says it completed, and the stop fails.

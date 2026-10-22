@@ -420,6 +420,17 @@ describe("background work across turns", () => {
         expect(wakes[0]!.label).toBe("Background command finished: Check background-1");
     });
 
+    test("review #295 P2-6: a task that fails by itself as its stop goes out, the stop answered success: its failure stands (ended, not the user's)", async () => {
+        process.env.FAKE_SCENARIO = "two-shells";
+        process.env.FAKE_SHELL_MS = "60000";
+        process.env.FAKE_STOP_TASK = "fail-first";
+        const { run, agent } = await makeAgent();
+        expect(await run("start two")).toBe("done");
+        expect(await agent.stopBackground(["background-1"])).toEqual({ "background-1": "ended" });
+        expect(agent.backgroundTasks().find((t) => t.id === "background-1")).toMatchObject({ status: "failed" });
+        expect(agent.backgroundTasks().find((t) => t.id === "background-1")?.byUser).toBeUndefined();
+    });
+
     test("a sub-agent said to be done, then to have failed: the session follows the revised outcome", async () => {
         process.env.FAKE_SCENARIO = "agent-fails-later";
         const { run, agent, background } = await makeAgent();
