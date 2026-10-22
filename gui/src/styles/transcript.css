@@ -542,6 +542,61 @@
     color: var(--danger);
 }
 
+/* A notice about several things (the background tasks Harness stopped): one line, their names folded under it. */
+.notice.folds {
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.notice-h {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    max-width: calc(100% + 4px);
+    min-height: 24px;
+    margin-left: -4px;
+    padding: 0 8px 0 4px;
+    border-radius: var(--pill);
+    text-align: left;
+    transition: background 140ms;
+}
+
+.notice-h:hover {
+    background: var(--hover);
+}
+
+.notice .notice-h svg {
+    margin-top: 0;
+}
+
+.notice-h .chev {
+    color: var(--fg-3);
+    transition: transform 220ms var(--ease);
+}
+
+.notice-h[aria-expanded="true"] .chev {
+    transform: rotate(90deg);
+}
+
+.notice-peek {
+    color: var(--fg-3);
+}
+
+.notice-details {
+    display: flex;
+    flex-direction: column;
+    max-width: 100%;
+    min-width: 0;
+    margin: 0 0 4px 6px;
+    padding: 0 0 0 16px;
+    border-left: 1px solid var(--line);
+    list-style: none;
+    font-size: 0.857rem;
+    line-height: 1.6;
+    color: var(--fg-3);
+}
+
 /* ---- The work log ---------------------------------------------------- */
 
 .worklog {

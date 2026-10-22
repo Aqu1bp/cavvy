@@ -28,7 +28,7 @@ const { claudeRule, claudePermissions } = await import("../src/backends/claude-c
 const { untrustedArgs, requestedPaths, elicitationForm } = await import("../src/backends/codex");
 const { deniedWithin } = await import("../src/permissions/rules");
 const { stopTiming } = await import("../src/backends/cli");
-const { backendActionsNote } = await import("../src/agent/agent");
+const { backendActionsNote, stoppedTasksNotice } = await import("../src/agent/agent");
 const { withoutActionsNote } = await import("../src/server/history");
 const { backgroundTiming } = await import("../src/backends/claude-code");
 const { forkSession, forkCut } = await import("../src/agent/fork");
@@ -1692,6 +1692,26 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
     });
 });
 
+describe("the notice of stopped background tasks (#300)", () => {
+    test("is one short line for the user, each task's name on one short line, nothing written for the model", () => {
+        const command = `cd /private/tmp/fix-steer-image-lost && bun run typecheck 2>&1 | tail -2 &&\n  bun test ./test/attachments.test.ts ./test/backends.test.ts > /tmp/steer-tests2.log 2>&1`;
+        const notice = stoppedTasksNotice([`background command: Wait for the #284 and #289 reviews`, `background command: ${command}`]);
+        expect(notice.text).toBe("Stopped 2 background tasks");
+        expect(notice.details[0]).toBe("Wait for the #284 and #289 reviews");
+        expect(notice.details[1]).toStartWith("cd /private/tmp/fix-steer-image-lost && bun run typecheck");
+        expect(notice.details[1]).toEndWith("…");
+        expect(notice.details[1]!.length).toBeLessThanOrEqual(60);
+        expect(notice.details[1]).not.toContain("\n");
+        expect(JSON.stringify(notice)).not.toMatch(/task IDs|Restart them|background command:/);
+    });
+
+    test("names sub-agents as such, and one task in the singular", () => {
+        expect(stoppedTasksNotice(["sub-agent: Map auth", "sub-agent: Check tests"]).text).toBe("Stopped 2 background sub-agents");
+        expect(stoppedTasksNotice(["background monitor: Watch checks"])).toEqual({ text: "Stopped 1 background task", details: ["Watch checks"] });
+        expect(stoppedTasksNotice(["sub-agent: Map auth", "background task: Poll"])).toEqual({ text: "Stopped 2 background tasks", details: ["Map auth", "Poll"] });
+    });
+});
+
 describe("review findings (PR #1)", () => {
     const turnStarts = () => received().filter((m) => m.method === "turn/start").map((m) => m.params);
     const claudeArgs = () => starts()[0]!.argv as string[];
@@ -2792,7 +2812,8 @@ describe("Claude Code background grace (#60 follow-up)", () => {
             session.release();
             const reopened = Session.load(session.file);
             try {
-                expect(reopened.notices.some((n) => n.text.includes("Wait for checks"))).toBe(true);
+                // The user's notice is short, the task's name folded under it; the model's reminder (below) has the rest.
+                expect(reopened.notices).toContainEqual(expect.objectContaining({ level: "warn", text: "Stopped 1 background task", details: ["Wait for checks"] }));
                 process.env.FAKE_SCENARIO = "none";
                 const b = await makeAgent({ provider: "claude-code", session: reopened });
                 expect(await b.run("continue")).toBe("done");

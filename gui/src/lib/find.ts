@@ -59,7 +59,8 @@ function blockText(b: Block): string | undefined {
             return [head, command.includes("\n") ? command : undefined, output.trim() ? output : undefined].filter(Boolean).join("\n");
         }
         case "notice":
-            return b.text;
+            // As it reads unfolded: the line, then each of its details.
+            return [b.text, ...(b.details ?? [])].join("\n");
         case "compact":
             return plain(b.summary);
         case "shell":

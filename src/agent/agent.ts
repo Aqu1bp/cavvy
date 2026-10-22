@@ -1907,9 +1907,10 @@ export class Agent {
     /** The turn in this session's history, as text: other models (and /export) see what the backend said and did. */
     private recordBackendTurn(provider: string, name: string, r: BackendResult) {
         if (r.backgroundStopped?.length) {
-            const message = `Harness stopped these ${name} background tasks: ${r.backgroundStopped.join("; ")}. They are no longer running and will not produce further results. Restart them only if still needed; do not wait for their old task IDs.`;
-            this.session.recordNotice("warn", message);
-            this.backendStopReminders.push(message);
+            // The model hears all of it; the user sees a short line, the tasks' names folded under it.
+            this.backendStopReminders.push(`Harness stopped these ${name} background tasks: ${r.backgroundStopped.join("; ")}. They are no longer running and will not produce further results. Restart them only if still needed; do not wait for their old task IDs.`);
+            const notice = stoppedTasksNotice(r.backgroundStopped);
+            this.session.recordNotice("warn", notice.text, notice.details);
         }
         const content: AssistantMessage["content"] = [];
         if (r.text.trim()) content.push({ type: "text", text: r.text });
@@ -3015,6 +3016,23 @@ export function backendActionsNote(name: string, actions: string[], maxChars = A
     }
     const more = actions.length - shown.length;
     return `[${name} used: ${shown.join(", ")}${more ? `, and ${more} more` : ""}]`;
+}
+
+/** How long a stopped task's name in the user's notice can be: one short line. */
+const STOPPED_NAME_CHARS = 60;
+
+/**
+ * The user's notice for background tasks a backend's run stopped (BackendResult.backgroundStopped, each
+ * "background command: …"): "Stopped 2 background tasks", and each task's name on one short line (its
+ * description, or the start of its command).
+ */
+export function stoppedTasksNotice(stopped: string[]): { text: string; details: string[] } {
+    const agents = stopped.every((s) => s.startsWith("sub-agent: "));
+    const details = stopped.map((s) => {
+        const one = s.replace(/^(?:sub-agent|background (?:command|monitor|task)): /, "").replace(/\s+/g, " ").trim();
+        return one.length > STOPPED_NAME_CHARS ? `${one.slice(0, STOPPED_NAME_CHARS - 1).trimEnd()}…` : one;
+    });
+    return { text: `Stopped ${stopped.length} background ${agents ? "sub-agent" : "task"}${stopped.length === 1 ? "" : "s"}`, details };
 }
 
 /** What the main agent hears when a task it started in the background (or delegated, on a backend) has ended. */

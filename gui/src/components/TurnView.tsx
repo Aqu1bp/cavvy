@@ -173,27 +173,65 @@ const GOAL_MARK = /^([◎✓✗]) /;
 export function Notice(p: { block: NoticeBlock }) {
     const mark = () => GOAL_MARK.exec(p.block.text)?.[1];
     const text = () => (mark() ? p.block.text.slice(2) : p.block.text);
+    const icon = () => (
+        <Switch fallback={<Info size={14} />}>
+            <Match when={mark() === "◎"}>
+                <Goal size={14} />
+            </Match>
+            <Match when={mark() === "✓"}>
+                <CircleCheck size={14} />
+            </Match>
+            <Match when={mark() === "✗"}>
+                <CircleX size={14} />
+            </Match>
+            <Match when={p.block.level === "error"}>
+                <AlertCircle size={14} />
+            </Match>
+            <Match when={p.block.level === "warn"}>
+                <AlertTriangle size={14} />
+            </Match>
+        </Switch>
+    );
+    // What it's about (the background tasks it stopped): one line, the names folded under it.
+    const [open, setOpen] = createSignal(false);
+    createEffect(on(findReveal, (r) => r?.part === p.block.id && p.block.details?.length && setOpen(true)));
     return (
-        <div class={`notice ${p.block.level}${mark() === "✓" ? " goal-met" : ""}`} data-find={p.block.id}>
-            <Switch fallback={<Info size={14} />}>
-                <Match when={mark() === "◎"}>
-                    <Goal size={14} />
-                </Match>
-                <Match when={mark() === "✓"}>
-                    <CircleCheck size={14} />
-                </Match>
-                <Match when={mark() === "✗"}>
-                    <CircleX size={14} />
-                </Match>
-                <Match when={p.block.level === "error"}>
-                    <AlertCircle size={14} />
-                </Match>
-                <Match when={p.block.level === "warn"}>
-                    <AlertTriangle size={14} />
-                </Match>
-            </Switch>
-            <span>{text()}</span>
-        </div>
+        <Show
+            when={p.block.details?.length}
+            fallback={
+                <div class={`notice ${p.block.level}${mark() === "✓" ? " goal-met" : ""}`} data-find={p.block.id}>
+                    {icon()}
+                    <span>{text()}</span>
+                </div>
+            }
+        >
+            <div class={`notice ${p.block.level} folds`} data-find={p.block.id}>
+                <button class="notice-h" aria-expanded={open()} onClick={() => setOpen(!open())}>
+                    {icon()}
+                    <span class="truncate">
+                        {text()}
+                        <Show when={!open()}>
+                            <span class="notice-peek" data-find-skip>
+                                {" · "}
+                                {p.block.details!.join(", ")}
+                            </span>
+                        </Show>
+                    </span>
+                    <ChevronRight size={14} class="chev" />
+                </button>
+                <Show when={open()}>
+                    <ul class="notice-details">
+                        <For each={p.block.details}>
+                            {(d) => (
+                                <li class="truncate" title={d}>
+                                    {d}
+                                </li>
+                            )}
+                        </For>
+                    </ul>
+                </Show>
+            </div>
+        </Show>
     );
 }
 
