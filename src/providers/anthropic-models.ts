@@ -7,6 +7,9 @@ import type { Effort } from "../config/settings";
 export interface AnthropicTraits {
     /** Accepts thinking: {type: "adaptive"}. */
     adaptive: boolean;
+    /** Supports manual extended thinking on a non-adaptive model. */
+    budget?: boolean;
+    /** Native output_config.effort levels, separate from our manual budget mapping. */
     effort: Effort[];
     /** Supports thinking.display = "updates" (between-tool progress notes). */
     displayUpdates: boolean;
@@ -20,6 +23,18 @@ export interface AnthropicTraits {
     maxOutput: number;
     pricing: { input: number; output: number; cacheRead: number; cacheWrite: number };
 }
+
+// Harness effort -> manual thinking tokens. Keep even max below the older
+// Opus 4 output ceiling (32k), leaving room for the answer at default limits.
+// https://platform.claude.com/docs/en/build-with-claude/extended-thinking
+export const ANTHROPIC_THINKING_BUDGETS: Record<Effort, number> = {
+    low: 1024,
+    medium: 4096,
+    high: 8192,
+    xhigh: 16384,
+    max: 24576,
+};
+export const ANTHROPIC_BUDGET_EFFORTS = Object.keys(ANTHROPIC_THINKING_BUDGETS) as Effort[];
 
 const ALL: Effort[] = ["low", "medium", "high", "xhigh", "max"];
 const NO_XHIGH: Effort[] = ["low", "medium", "high", "max"];
@@ -39,11 +54,11 @@ const TABLE: [RegExp, AnthropicTraits][] = [
     [/^claude-sonnet-5(?!-)/, { adaptive: true, effort: ALL, displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20260209", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(2, 10) }],
     [/^claude-sonnet-4-6/, { adaptive: true, effort: NO_XHIGH, displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20260209", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(3, 15) }],
     [/^claude-haiku-5-5/, { adaptive: true, effort: ALL, displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20250305", contextWindow: 1_000_000, maxOutput: 128_000, pricing: price(0.1, 0.5) }],
-    [/^claude-haiku-4-5/, { adaptive: false, effort: [], displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20250305", contextWindow: 200_000, maxOutput: 64_000, pricing: price(1, 5) }],
-    [/^claude-opus-4-5/, { adaptive: false, effort: ["low", "medium", "high"], displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20250305", contextWindow: 200_000, maxOutput: 64_000, pricing: price(5, 25) }],
-    [/^claude-sonnet-4-5/, { adaptive: false, effort: [], displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20250305", contextWindow: 200_000, maxOutput: 64_000, pricing: price(3, 15) }],
-    [/^claude-opus-4/, { adaptive: false, effort: [], displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20250305", contextWindow: 200_000, maxOutput: 32_000, pricing: price(15, 75) }],
-    [/^claude-sonnet-4/, { adaptive: false, effort: [], displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20250305", contextWindow: 200_000, maxOutput: 64_000, pricing: price(3, 15) }],
+    [/^claude-haiku-4-5/, { adaptive: false, budget: true, effort: [], displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20250305", contextWindow: 200_000, maxOutput: 64_000, pricing: price(1, 5) }],
+    [/^claude-opus-4-5/, { adaptive: false, budget: true, effort: ["low", "medium", "high"], displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20250305", contextWindow: 200_000, maxOutput: 64_000, pricing: price(5, 25) }],
+    [/^claude-sonnet-4-5/, { adaptive: false, budget: true, effort: [], displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20250305", contextWindow: 200_000, maxOutput: 64_000, pricing: price(3, 15) }],
+    [/^claude-opus-4/, { adaptive: false, budget: true, effort: [], displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20250305", contextWindow: 200_000, maxOutput: 32_000, pricing: price(15, 75) }],
+    [/^claude-sonnet-4/, { adaptive: false, budget: true, effort: [], displayUpdates: false, fallbacks: false, webSearchVersion: "web_search_20250305", contextWindow: 200_000, maxOutput: 64_000, pricing: price(3, 15) }],
 ];
 
 const UNKNOWN: AnthropicTraits = {

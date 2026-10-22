@@ -4,7 +4,7 @@ import { isolate, FAKE } from "./helpers/isolate";
 const iso = isolate();
 const { OpenAICompatProvider, toOpenAIMessages, httpError } = await import("../src/providers/openai-compat");
 const { OpenAIResponsesProvider, toResponsesInput } = await import("../src/providers/openai-responses");
-const { toAnthropicMessages, sanitizeToolId } = await import("../src/providers/anthropic");
+const { AnthropicProvider, toAnthropicMessages, sanitizeToolId } = await import("../src/providers/anthropic");
 const { BUILTIN_PROVIDERS } = await import("../src/providers/registry");
 const { ProviderError } = await import("../src/providers/types");
 const { stall } = await import("../src/providers/sse");
@@ -978,6 +978,164 @@ describe("Anthropic streaming", () => {
             { type: "thinking", text: "", signature: "sig" },
             { type: "text", text: "Done." },
         ]);
+    });
+});
+
+describe("Anthropic budget thinking", () => {
+    const models = ["claude-haiku-4-5", "claude-sonnet-4-5", "claude-opus-4-5", "claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-opus-4-1-20250805"];
+    const budgets = { low: 1024, medium: 4096, high: 8192, xhigh: 16384, max: 24576 } as const;
+    const levels = Object.keys(budgets) as (keyof typeof budgets)[];
+    const provider = () => new AnthropicProvider(builtin("anthropic", { baseUrl: `http://127.0.0.1:${server.port}` }), FAKE.anthropic);
+    const prompt: Message = { role: "user", content: [{ type: "text", text: "q" }] };
+    const ask = async (model: ModelInfo, extra: Partial<ChatRequest> = {}) => {
+        const ev = (type: string, data: Json) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+        respond = () => new Response([
+            ev("message_start", { message: { id: "msg_1", type: "message", role: "assistant", model: model.id, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } } }),
+            ev("content_block_start", { index: 0, content_block: { type: "text", text: "OK" } }),
+            ev("content_block_stop", { index: 0 }),
+            ev("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 2 } }),
+            ev("message_stop", {}),
+        ].join(""), { headers: { "content-type": "text/event-stream" } });
+        await provider().stream(req(model, [prompt], extra), () => {});
+        return seen.at(-1)!;
+    };
+
+    for (const id of models) {
+        test(`${id}: each effort enables a budget and only supported wire parameters`, async () => {
+            const model = provider().staticInfo(id);
+            expect(model.supportsReasoning).toBe(true);
+            expect(model.effortLevels).toEqual(levels);
+            for (const effort of levels) {
+                const { body, headers } = await ask(model, { effort });
+                expect(body.thinking).toEqual({ type: "enabled", budget_tokens: budgets[effort] });
+                expect(body.thinking.budget_tokens).toBeLessThan(body.max_tokens);
+                expect(body.temperature).toBeUndefined();
+                expect(body.top_k).toBeUndefined();
+                // Omitted tool_choice defaults to auto; forced tool use is incompatible.
+                expect(body.tool_choice).toBeUndefined();
+                expect(body.output_config).toEqual(id === "claude-opus-4-5" ? { effort: effort === "xhigh" || effort === "max" ? "high" : effort } : undefined);
+                expect(headers["anthropic-beta"]?.includes("interleaved-thinking-2025-05-14") ?? false).toBe(!id.includes("haiku"));
+            }
+        });
+
+        test(`${id}: unset/off keeps thinking disabled`, async () => {
+            const model = provider().staticInfo(id);
+            for (const extra of [{}, { effort: "high" as const, noThinking: true }]) {
+                const { body, headers } = await ask(model, extra);
+                expect(body.thinking).toBeUndefined();
+                expect(headers["anthropic-beta"] ?? "").not.toContain("interleaved-thinking");
+            }
+        });
+    }
+
+    test("budget respects request and model output caps, including the minimum boundary", async () => {
+        const model = provider().staticInfo("claude-opus-4-5");
+        for (const [cap, budget] of [[4096, 3072], [4000, 2976], [1025, 1024]] as const) {
+            expect((await ask(model, { effort: "max", maxTokens: cap })).body.thinking.budget_tokens).toBe(budget);
+            expect((await ask({ ...model, maxOutput: cap }, { effort: "max" })).body.thinking.budget_tokens).toBe(budget);
+        }
+        for (const maxTokens of [1024, 100]) {
+            const before = seen.length;
+            await expect(ask(model, { effort: "low", maxTokens })).rejects.toThrow("requires max_tokens of at least 1025");
+            expect(seen.length).toBe(before);
+        }
+    });
+
+    test("interleaving is only requested with tools, including server web search", async () => {
+        const model = provider().staticInfo("claude-sonnet-4-5");
+        expect((await ask(model, { effort: "high", tools: [] })).headers["anthropic-beta"] ?? "").not.toContain("interleaved-thinking");
+        expect((await ask(model, { effort: "high", tools: [], webSearch: true })).headers["anthropic-beta"]).toContain("interleaved-thinking-2025-05-14");
+    });
+
+    test("explicit capabilities override static budget support; unknown models stay conservative", async () => {
+        expect((await ask({ ...provider().staticInfo("claude-haiku-4-5"), budgetThinking: false }, { effort: "high" })).body.thinking).toBeUndefined();
+        expect((await ask(provider().staticInfo("unknown"), { effort: "high" })).body.thinking).toBeUndefined();
+        expect((await ask({ provider: "anthropic", id: "custom", adaptiveThinking: false, budgetThinking: true }, { effort: "high" })).body.thinking).toEqual({ type: "enabled", budget_tokens: 8192 });
+    });
+
+    test("discovered native effort support stays separate from the budget controls", async () => {
+        respond = () => Response.json({ data: [{
+            id: "claude-opus-4-5", display_name: "Opus", type: "model", created_at: "2025-01-01T00:00:00Z",
+            capabilities: {
+                image_input: { supported: true },
+                thinking: { supported: true, types: { adaptive: { supported: false }, enabled: { supported: true } } },
+                effort: { supported: false },
+            },
+        }], has_more: false });
+        const [model] = await provider().listModels();
+        expect(model!.effortLevels).toEqual(levels);
+        const { body } = await ask(model!, { effort: "max" });
+        expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 24576 });
+        expect(body.output_config).toBeUndefined();
+    });
+
+    test("adaptive models retain adaptive thinking and native effort", async () => {
+        for (const id of ["claude-sonnet-4-6", "claude-opus-4-6", "claude-opus-4-8", "claude-haiku-5-5", "claude-sonnet-5-5"]) {
+            const model = provider().staticInfo(id);
+            for (const effort of model.effortLevels!) {
+                const { body, headers } = await ask(model, { effort, lightweight: true, showThinking: true });
+                expect(body.thinking).toEqual({ type: "adaptive", display: "summarized" });
+                expect(body.output_config).toEqual({ effort });
+                expect(headers["anthropic-beta"] ?? "").not.toContain("interleaved-thinking");
+            }
+        }
+    });
+
+    test("existing cached budget models gain controls without losing native effort or other providers", async () => {
+        const { resolveModelInfo } = await import("../src/providers/models");
+        const { paths } = await import("../src/config/paths");
+        const { mkdirSync, rmSync } = await import("fs");
+        const { dirname } = await import("path");
+        const path = paths.modelCache();
+        mkdirSync(dirname(path), { recursive: true });
+        const oldModels: ModelInfo[] = models.map((id) => ({
+            provider: "anthropic", id, supportsReasoning: false, adaptiveThinking: false, budgetThinking: true,
+            effortLevels: id === "claude-opus-4-5" ? ["low", "medium", "high"] : [],
+        }));
+        const unrelated = { provider: "openai", id: "cached-fixture", supportsReasoning: true, effortLevels: ["low"] };
+        await Bun.write(path, JSON.stringify({ version: 3, providers: {
+            anthropic: { fetchedAt: Date.now(), fp: "fixture", models: oldModels },
+            openai: { fetchedAt: Date.now(), fp: "fixture", models: [unrelated] },
+        } }));
+        try {
+            for (const old of oldModels) {
+                const model = resolveModelInfo(`anthropic:${old.id}`)!;
+                expect(model.supportsReasoning).toBe(true);
+                expect(model.effortLevels).toEqual(levels);
+                expect(model.nativeEffortLevels).toEqual(old.effortLevels);
+                const { body } = await ask(model, { effort: "max" });
+                expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 24576 });
+                expect(body.output_config).toEqual(old.id === "claude-opus-4-5" ? { effort: "high" } : undefined);
+            }
+            expect(resolveModelInfo("openai:cached-fixture")).toEqual(unrelated);
+        } finally {
+            rmSync(path, { force: true });
+        }
+    });
+
+    test("discovery and static resolution expose the mapped effort levels to GUI/TUI", async () => {
+        const { resolveModelInfo } = await import("../src/providers/models");
+        for (const withCaps of [false, true]) {
+            respond = () => Response.json({ data: models.map((id) => ({
+                id, display_name: id, type: "model", created_at: "2025-01-01T00:00:00Z",
+                ...(withCaps ? { capabilities: {
+                    image_input: { supported: true },
+                    thinking: { supported: true, types: { adaptive: { supported: false }, enabled: { supported: true } } },
+                    effort: { supported: id === "claude-opus-4-5", low: { supported: true }, medium: { supported: true }, high: { supported: true } },
+                } } : {}),
+            })), has_more: false });
+            const listed = await provider().listModels();
+            expect(listed).toHaveLength(models.length);
+            for (const model of listed) {
+                expect(model.supportsReasoning).toBe(true);
+                expect(model.budgetThinking).toBe(true);
+                expect(model.effortLevels).toEqual(levels);
+                const resolved = resolveModelInfo(`anthropic:${model.id}`)!;
+                expect(resolved.supportsReasoning).toBe(true);
+                expect(resolved.effortLevels).toEqual(levels);
+                expect((await ask(model, { effort: "max" })).body.thinking).toEqual({ type: "enabled", budget_tokens: 24576 });
+            }
+        }
     });
 });
 

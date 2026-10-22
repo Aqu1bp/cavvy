@@ -13,7 +13,7 @@ import { apiFastModeInfo } from "./fast-mode";
 import { OpenAIResponsesProvider, responsesModelInfo } from "./openai-responses";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, resolveBaseUrl, type ProviderDef } from "./registry";
 import { VertexProvider, forgetTokens } from "./vertex";
-import { anthropicTraits } from "./anthropic-models";
+import { anthropicTraits, ANTHROPIC_BUDGET_EFFORTS } from "./anthropic-models";
 import { ProviderError, parseModelRef, type ModelInfo, type ProviderClient } from "./types";
 import { getKey } from "../auth/credentials";
 import { createBackend } from "../backends/index";
@@ -107,6 +107,18 @@ interface CacheFile {
 function readCache(): CacheFile {
     const c = readJson<CacheFile>(paths.modelCache());
     if (!c || c.version !== CACHE_VERSION || typeof c.providers !== "object") return { version: CACHE_VERSION, providers: {} };
+    // Older Anthropic cache entries stored only native API effort levels.
+    // Upgrade those controls without discarding other providers' cached models.
+    for (const [provider, entry] of Object.entries(c.providers)) {
+        if (getProvider(provider)?.kind !== "anthropic") continue;
+        for (const model of entry.models) {
+            const t = anthropicTraits(model.id);
+            if ((model.adaptiveThinking ?? t.adaptive) || !(model.budgetThinking ?? t.budget)) continue;
+            model.nativeEffortLevels ??= model.effortLevels ?? t.effort;
+            model.effortLevels = ANTHROPIC_BUDGET_EFFORTS;
+            model.supportsReasoning = true;
+        }
+    }
     return c;
 }
 
@@ -272,10 +284,11 @@ export function resolveModelInfo(ref: string): ModelInfo | undefined {
             ...apiFastModeInfo(def.id, parsed.id, resolveBaseUrl(def)),
             supportsTools: true,
             supportsImages: true,
-            supportsReasoning: t.adaptive,
+            supportsReasoning: t.adaptive || !!t.budget,
             adaptiveThinking: t.adaptive,
-            budgetThinking: !t.adaptive,
-            effortLevels: t.effort,
+            budgetThinking: !!t.budget,
+            effortLevels: t.budget ? ANTHROPIC_BUDGET_EFFORTS : t.effort,
+            nativeEffortLevels: t.effort,
         };
     }
     return { provider: def.id, id: parsed.id };

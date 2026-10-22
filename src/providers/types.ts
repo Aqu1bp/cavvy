@@ -165,8 +165,10 @@ export interface ModelInfo {
     fastPricingLong?: ModelInfo["pricing"];
     pricingLong?: ModelInfo["pricing"];
     longContextThreshold?: number;
-    /** Anthropic: effort levels this model accepts. */
+    /** Effort levels offered by Harness, including mapped manual thinking budgets. */
     effortLevels?: Effort[];
+    /** Anthropic native output_config.effort support, separate from budget controls. */
+    nativeEffortLevels?: Effort[];
     /** Anthropic: adaptive thinking supported. */
     adaptiveThinking?: boolean;
     /** Anthropic: budget-style thinking (older models). */
