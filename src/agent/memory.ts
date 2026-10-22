@@ -164,6 +164,15 @@ const PROSE: Bun.markdown.RenderCallbacks = {
     td: cell,
 };
 
+/** A document's shape: its elements, nested, without their text (code and HTML as a mark each). */
+const SHAPE = Object.fromEntries(
+    ["heading", "paragraph", "blockquote", "list", "listItem", "hr", "table", "thead", "tbody", "tr", "th", "td", "strong", "emphasis", "link", "image", "strikethrough", "code", "codespan", "html", "text"].map((k) => [
+        k,
+        k === "text" ? () => "" : ["code", "codespan", "html"].includes(k) ? () => `<${k}/>` : (children: string) => `<${k}>${children}</${k}>`,
+    ]),
+) as Bun.markdown.RenderCallbacks;
+const PARSE: Bun.markdown.Options = { strikethrough: false, autolinks: false };
+
 /** `@path` after the start of a line or a space; `\ ` is a space in the path. */
 const IMPORT = /(?<=^|\s)@((?:\\ |[^\s])+)/g;
 
@@ -175,7 +184,9 @@ const IMPORT = /(?<=^|\s)@((?:\\ |[^\s])+)/g;
  * `@docs/_draft_.md` into docs/draft.md. Instead each `@` in the source gets
  * a marker of letters and digits just before it (after the space or line
  * start the `@` needs, so it changes no Markdown around it), and a path
- * counts if its marker comes out in the rendered prose. Without the parser
+ * counts if its marker comes out in the rendered prose. Where a marker does
+ * change how the file parses (a reference definition's label at its length
+ * limit), the file's shape tells, and none count. Without the parser
  * (an older Bun), none: an import missed, not one made.
  */
 function proseImports(text: string): string[] {
@@ -192,9 +203,12 @@ function proseImports(text: string): string[] {
         from = m.index;
     });
     marked += text.slice(from);
+    // The markers mustn't change how the file parses (they can: a reference definition's label at
+    // its length limit becomes a paragraph). If they did, no imports: an import missed, not one made.
+    if (Bun.markdown.render(marked, SHAPE, PARSE) !== Bun.markdown.render(text, SHAPE, PARSE)) return [];
     // No strikethrough: GFM reads `@~/a.md and @~/b.md` as struck-through text. Inline HTML stays
     // in a paragraph's text; a comment there hides what's in it.
-    const prose = Bun.markdown.render(marked, PROSE, { strikethrough: false, autolinks: false }).replace(/<!--[\s\S]*?-->/g, " ");
+    const prose = Bun.markdown.render(marked, PROSE, PARSE).replace(/<!--[\s\S]*?-->/g, " ");
     return found.filter((_, i) => prose.includes(mark(i))).map((m) => m[1]!);
 }
 
@@ -501,12 +515,13 @@ export async function committedExternalImports(top: string, read: (path: string)
         const rel = relative(worktrees, p).split(sep);
         return isInside(p, worktrees) && rel.length > 1 && /\.md$/i.test(p) && !lexists(join(worktrees, rel[0]!));
     };
+    const full = () => seen.size >= MAX_FILES || bytes >= MAX_TOTAL_BYTES;
     // Breadth first, so each file's imports are followed from its shortest route, as collect() does.
     const queue: { path: string; real: string; text: string; depth: number }[] = [];
     const visit = async (path: string, f: TreeFile | undefined, depth: number) => {
         if (!f?.head || !isInside(f.real, top) || !/\.md$/i.test(f.real) || seen.has(f.real)) return;
+        if (full()) return;
         const left = MAX_TOTAL_BYTES - bytes;
-        if (seen.size >= MAX_FILES || left <= 0) return;
         seen.add(f.real);
         const text = await f.head(Math.min(MAX_BYTES, left));
         if (!text.trim()) return;
@@ -520,7 +535,8 @@ export async function committedExternalImports(top: string, read: (path: string)
             // The first spelling that's there: in the tree inside the checkout, on disk outside it.
             let hit: { path: string; f: TreeFile } | undefined;
             for (const p of forms) {
-                const f = isInside(p, top) ? await read(p) : existsSync(p) || unmade(p) ? { real: p } : undefined;
+                // Inside, once the budget is spent, nothing more is read: loadMemory wouldn't load it, and each read lists folders.
+                const f = isInside(p, top) ? (full() ? undefined : await read(p)) : existsSync(p) || unmade(p) ? { real: p } : undefined;
                 if (f) {
                     hit = { path: p, f };
                     break;

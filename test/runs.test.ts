@@ -254,6 +254,43 @@ describe("runs.start", () => {
         expect(await read(join(top, "nope.md"))).toBeUndefined();
     });
 
+    test("folder listings stay within the file budget: 250 imports in 250 folders list about 200 (review 4 of #246)", async () => {
+        const { treeReader } = await import("../src/server/runs");
+        const { committedExternalImports, MAX_FILES } = await import("../src/agent/memory");
+        const files: Record<string, string> = { "CLAUDE.md": Array.from({ length: 250 }, (_, i) => `@d${i}/f.md`).join("\n") };
+        for (let i = 0; i < 250; i++) files[`d${i}/f.md`] = `F${i}`;
+        const main = repo(files);
+        const top = join(main, ".claude", "worktrees", "new-worktree");
+        const read = treeReader(main, git(main, "rev-parse", "HEAD"), top);
+        await committedExternalImports(top, read);
+        expect(read.stats.listings).toBeLessThanOrEqual(MAX_FILES + 1);
+    });
+
+    test("a commit's tree too large to check asks for trust, and trusting the folder (or declining) starts the run (review 4 of #246)", async () => {
+        const { TREE_LIMITS } = await import("../src/server/runs");
+        const was = { ...TREE_LIMITS };
+        const files: Record<string, string> = { "CLAUDE.md": "@docs/a.md\n", "docs/a.md": "a\n" };
+        for (let i = 0; i < 20; i++) files[`file-with-a-long-name-${i}.txt`] = "x\n";
+        TREE_LIMITS.bytes = 300;
+        try {
+            const main = repo(files);
+            const err = await c.call("runs.start", { path: main, models: ["mock:mock-opus", "mock:mock-sonnet"], text: "too big" }).catch((e) => e);
+            expect(err).toMatchObject({ code: "needs_project_trust", folder: main });
+            expect(err.message).toContain("too large to check");
+            expect(existsSync(join(main, ".claude"))).toBe(false);
+            await c.call("projects.trust", { path: main, trust: true });
+            const r = await c.call<{ results: RunResult[] }>("runs.start", { path: main, models: ["mock:mock-opus", "mock:mock-sonnet"], text: "too big" });
+            expect(r.results.every((x) => x.ok)).toBe(true);
+
+            const other = repo(files);
+            await c.call("projects.trust", { path: other, trust: false });
+            const d = await c.call<{ results: RunResult[] }>("runs.start", { path: other, models: ["mock:mock-opus", "mock:mock-sonnet"], text: "too big" });
+            expect(d.results.every((x) => x.ok)).toBe(true);
+        } finally {
+            Object.assign(TREE_LIMITS, was);
+        }
+    });
+
     test("a committed memory file that imports only inside the project doesn't ask (review 2 of #246)", async () => {
         const main = repo({ "CLAUDE.md": "@docs/more.md @missing.md\n", "docs/more.md": "@../AGENTS.md\n", "AGENTS.md": "agents\n" });
         const r = await c.call<{ results: RunResult[] }>("runs.start", { path: main, models: ["mock:mock-opus", "mock:mock-sonnet"], text: "look inside" });

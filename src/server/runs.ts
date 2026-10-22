@@ -8,7 +8,7 @@ import { lstatSync, realpathSync, statSync } from "fs";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import { getKey } from "../auth/credentials";
 import { projectConfigSummary, trustedByUser } from "../config/trust";
-import { committedExternalImports, type TreeFile } from "../agent/memory";
+import { committedExternalImports, MAX_FILES, type TreeFile } from "../agent/memory";
 import { PERMISSION_MODES } from "../permissions/modes";
 import { clientFor, type ProviderListing } from "../providers/models";
 import { formatPrice } from "../providers/pricing";
@@ -228,7 +228,13 @@ async function committedConfig(main: string, commit: string): Promise<string[]> 
     const linked = records.filter((r) => r.startsWith("120000 ")).map((r) => r.slice(r.indexOf("\t") + 1)).filter((p) => [".harness", ".claude", ".codex"].includes(p));
     // Where the worktrees go; their names aren't known yet.
     const top = join(main, WORKTREES_DIR, "new-worktree");
-    const imports = await committedExternalImports(top, treeReader(main, commit, top));
+    let imports: string[];
+    try {
+        imports = await committedExternalImports(top, treeReader(main, commit, top));
+    } catch (e) {
+        if (!(e instanceof TreeTooLarge)) throw e;
+        imports = ["memory files (too large to check what they import)"];
+    }
     return [...projectConfigSummary(main, (path) => entries.has(relative(main, path))), ...linked, ...imports];
 }
 
@@ -236,8 +242,16 @@ async function committedConfig(main: string, commit: string): Promise<string[]> 
 const MAX_LINK_HOPS = 40;
 /** A link's target longer than a path can be isn't one the system would follow. */
 const MAX_LINK_BYTES = 4096;
-/** A folder's listing, read whole: a folder with more than this in it isn't checked (the run asks instead of guessing). */
-const MAX_LISTING_BYTES = 4 * 1024 * 1024;
+/**
+ * What the preflight reads of a commit's tree to follow its memory files'
+ * imports, all paths together: folder listings fetched, and their bytes (each
+ * listing is read whole, within what's left). Past either it stops: the run
+ * asks for trust (TreeTooLarge), which it then doesn't need. Exported for tests.
+ */
+export const TREE_LIMITS = { listings: 2 * MAX_FILES, bytes: 8 * 1024 * 1024 };
+
+/** The preflight read as much of a commit's tree as TREE_LIMITS allow, and couldn't finish. */
+class TreeTooLarge extends Error {}
 
 interface TreeEntry {
     mode: string;
@@ -254,13 +268,18 @@ interface TreeEntry {
  * asked for, and then only that much of it. Undefined: not there, or not a
  * file (a folder, a submodule).
  */
-export function treeReader(main: string, commit: string, top: string): (path: string) => Promise<TreeFile | undefined> {
+export function treeReader(main: string, commit: string, top: string): ((path: string) => Promise<TreeFile | undefined>) & { stats: { listings: number; bytes: number } } {
+    const stats = { listings: 0, bytes: 0 };
     const listings = new Map<string, Promise<Map<string, TreeEntry>>>();
     const list = (tree: string) => {
         let l = listings.get(tree);
         if (!l) {
-            l = readGit(main, ["ls-tree", "-l", "-z", tree], MAX_LISTING_BYTES).then(({ out, cut }) => {
-                if (cut) throw new RpcError("A folder in this repository's HEAD is too large to check what its memory files import, so nothing was created. Trust the folder to start the run.", "git_failed");
+            // The shared limits are checked before anything is fetched or kept.
+            if (stats.listings >= TREE_LIMITS.listings || stats.bytes >= TREE_LIMITS.bytes) throw new TreeTooLarge();
+            stats.listings++;
+            l = readGit(main, ["ls-tree", "-l", "-z", tree], TREE_LIMITS.bytes - stats.bytes).then(({ out, cut }) => {
+                stats.bytes += Buffer.byteLength(out);
+                if (cut) throw new TreeTooLarge();
                 const m = new Map<string, TreeEntry>();
                 for (const rec of out.split("\0").filter(Boolean)) {
                     const tab = rec.indexOf("\t");
@@ -282,7 +301,7 @@ export function treeReader(main: string, commit: string, top: string): (path: st
         return t;
     };
     const root = `${commit}^{tree}`;
-    return async (path) => {
+    const read = async (path: string): Promise<TreeFile | undefined> => {
         if (!isInside(path, top)) return undefined;
         let pending = relative(top, path).split(sep).filter(Boolean);
         // The folders the path is in so far, by name and tree.
@@ -321,6 +340,7 @@ export function treeReader(main: string, commit: string, top: string): (path: st
         }
         return undefined;
     };
+    return Object.assign(read, { stats });
 }
 
 /**
@@ -330,11 +350,12 @@ export function treeReader(main: string, commit: string, top: string): (path: st
  * worktree. Otherwise they may have nothing to protect; if they would have
  * configuration, the user decides first (one question, nothing created yet).
  */
-function configTrust(host: RunHost, home: string, main: string, committed: string[]): "trusted" | "declined" | "none" {
+async function configTrust(host: RunHost, home: string, main: string, committed: () => Promise<string[]>): Promise<"trusted" | "declined" | "none"> {
     // The folder they all go in (or one above it): trusting one sibling worktree says nothing about new ones.
     if (trustedByUser(join(main, WORKTREES_DIR))) return "trusted";
     if (host.declined(home) || host.declined(main)) return "declined";
-    const found = [...new Set([...committed, ...projectConfigSummary(home)])];
+    // Only now the commit is read: a choice already made doesn't wait on it (or fail on it).
+    const found = [...new Set([...(await committed()), ...projectConfigSummary(home)])];
     if (found.length) {
         throw new RpcError(`The new worktrees will have this project's configuration (${found.join(", ")}), which can run commands on your machine. Trust ${main}, or open them without it.`, "needs_project_trust", main);
     }
@@ -424,7 +445,7 @@ async function run(host: RunHost, req: RunRequest, main: string): Promise<{ runI
     }
     const ready = checked.filter((c) => c.ok);
     const commit = ready.length ? await headCommit(req.path) : "";
-    const trust = ready.length ? configTrust(host, req.path, main, await committedConfig(main, commit)) : "none";
+    const trust = ready.length ? await configTrust(host, req.path, main, () => committedConfig(main, commit)) : "none";
     const branches = ready.length ? await branchNames(main) : new Set<string>();
 
     const runId = `run-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;

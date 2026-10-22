@@ -618,6 +618,12 @@ describe("Claude Code's and Codex's global instructions, and @imports (#246)", (
         const t = text(p);
         for (const marker of Object.values(files)) (marker.startsWith("RIGHT") ? expect(t) : expect(t).not).toContain(marker);
     });
+    test("a marker that would change how the file parses (a reference definition's label at its limit) imports nothing (review 4 of #246)", () => {
+        const p = project();
+        writeFileSync(join(p, "CLAUDE.md"), "[" + "a".repeat(987) + " @secret.md ]: /url\n");
+        writeFileSync(join(p, "secret.md"), "UNINTENDED-INSTRUCTIONS");
+        expect(text(p)).not.toContain("UNINTENDED-INSTRUCTIONS");
+    });
     test("with nothing loaded, a crowded rules folder's notice still reaches the prompt (review 3 of #246)", () => {
         const none = Object.assign([], { budget: { omitted: [], more: false, crowded: "/x/rules/big" } });
         expect(formatMemory(none, tempDir())).toContain("/x/rules/big has more entries");
