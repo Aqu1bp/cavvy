@@ -175,7 +175,8 @@ async function makeAgent(o: Opts) {
 
 const notices = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "notice" ? [`${e.level}: ${e.message}`] : []));
 const toolEnds = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "tool_end" ? [e] : []));
-const userTexts = () => received().flatMap((m) => (m.type === "user" ? m.message.content.filter((c: any) => c.type === "text").map((c: any) => c.text as string) : []));
+/** Each user message's text: its text blocks (Harness's catch-up in one of its own, then the user's words) joined. */
+const userTexts = () => received().flatMap((m) => (m.type === "user" && Array.isArray(m.message.content) && m.message.content.some((c: any) => c.type === "text") ? [m.message.content.filter((c: any) => c.type === "text").map((c: any) => c.text as string).join("\n\n")] : []));
 const permissionReplies = () => received().filter((m) => m.type === "control_response").map((m) => m.response.response);
 
 describe("agent providers", () => {
