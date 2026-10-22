@@ -314,7 +314,9 @@ test("whenQuiet waits for background tasks and the turns the CLI starts for them
     await until(() => wakes.length === 1);
     expect(wakes).toEqual(["wake:wake-t1"]);
     expect(s.tasks.get("t1")?.status).toBe("done");
-    await Bun.sleep(20);
+    // Its text has come in, held until it's adopted.
+    const held = () => (s as unknown as { wakes: Map<string, { held: unknown[] }> }).wakes.get("wake-t1")?.held.length;
+    await until(() => held() === 1);
     expect(quiet).toBeUndefined();
 
     // Adopted, its events so far come first; interrupting it ends it, and then it's quiet.
