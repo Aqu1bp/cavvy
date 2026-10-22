@@ -108,6 +108,22 @@ export interface ToolSchema {
     parameters: Record<string, unknown>; // JSON Schema (type: object)
 }
 
+/**
+ * The heading of a system prompt's last section, what it says of its session
+ * only (the date, the git status at its start; src/agent/system-prompt.ts).
+ */
+export const SESSION_CONTEXT_HEADING = "# Session context";
+
+/**
+ * A system prompt as the part every session of a project shares and the
+ * session's own context after it ("" when there's none, as in prompts frozen
+ * before there was a section for it).
+ */
+export function splitSystemPrompt(system: string): { shared: string; session: string } {
+    const at = system.lastIndexOf(`\n\n${SESSION_CONTEXT_HEADING}\n`);
+    return at > 0 ? { shared: system.slice(0, at), session: system.slice(at + 2) } : { shared: system, session: "" };
+}
+
 export interface ChatRequest {
     model: ModelInfo;
     system: string;
@@ -122,7 +138,12 @@ export interface ChatRequest {
     lightweight?: boolean;
     /** No extended thinking, where the model can turn it off (a quick answer matters more). */
     noThinking?: boolean;
-    /** Cache the system prompt even when lightweight: it's the same on every call (the auto-mode reviewer's). */
+    /**
+     * Cache the system prompt (and the tools ahead of it) on its own, up to its
+     * session context, so requests whose messages differ share it: every session
+     * and sub-agent of a kind in a project sends the same one, as the auto-mode
+     * reviewer does on each call (even lightweight).
+     */
     cacheSystem?: boolean;
     /** Anthropic server-side web search. */
     webSearch?: boolean;

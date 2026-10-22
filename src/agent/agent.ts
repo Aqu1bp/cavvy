@@ -548,6 +548,8 @@ export class Agent {
             showThinking: s.showThinking,
             signal,
             webSearch: this.o.nativeWebSearch,
+            // The tools and instructions are the same in each session (and sub-agent of a type) in the project: cached once for all of them.
+            cacheSystem: true,
             cacheKey: this.session.meta.id,
             ...extra,
         };

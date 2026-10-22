@@ -20,6 +20,7 @@ import {
     type Message,
     type ModelInfo,
     type ProviderClient,
+    splitSystemPrompt,
     type StopReason,
     type StreamEvent,
     type Usage,
@@ -182,7 +183,7 @@ export class AnthropicProvider implements ProviderClient {
         const params: Omit<BetaParams, "messages"> = {
             model: m.id,
             max_tokens: maxOut,
-            system: req.system ? [{ type: "text", text: req.system, ...(req.cacheSystem ? { cache_control: { type: "ephemeral" as const } } : {}) }] : undefined,
+            system: req.system ? systemBlocks(req.system, req.cacheSystem) : undefined,
             tools: tools.length ? tools : undefined,
             stream: true,
         };
@@ -191,6 +192,8 @@ export class AnthropicProvider implements ProviderClient {
             params.speed = "fast";
             betas.push("fast-mode-2026-02-01");
         }
+        // The conversation's breakpoint, which moves forward with it. Both it and the system prompt's
+        // are five-minute entries (src/agent/idle-compact.ts counts on it); a longer one must come first.
         if (!req.lightweight) params.cache_control = { type: "ephemeral" };
 
         if (adaptive && req.noThinking && t.thinkingOff === "between_tools") {
@@ -312,6 +315,18 @@ export class AnthropicProvider implements ProviderClient {
             raw: { anthropic: JSON.parse(JSON.stringify(blocks)) },
         };
     }
+}
+
+/**
+ * The system prompt, with a cache breakpoint where `cache` asks: at the end of
+ * the part every session shares, so a new session (or a sub-agent of a type
+ * that ran before) reads the tools and instructions instead of writing them
+ * again. Its own context (the date, the git status) comes after it.
+ */
+function systemBlocks(system: string, cache?: boolean): Anthropic.Beta.Messages.BetaTextBlockParam[] {
+    if (!cache) return [{ type: "text", text: system }];
+    const { shared, session } = splitSystemPrompt(system);
+    return [{ type: "text", text: shared, cache_control: { type: "ephemeral" } }, ...(session ? [{ type: "text" as const, text: session }] : [])];
 }
 
 function nearestEffort(want: Effort, have: Effort[]): Effort {

@@ -1024,6 +1024,22 @@ describe("quick requests (the auto-mode reviewer's first step)", () => {
         expect(plain.system).toEqual([{ type: "text", text: "You are a test." }]);
         expect(plain.cache_control).toBeUndefined();
     });
+
+    test("an agent request caches the system prompt up to its session context, and the conversation after it", async () => {
+        const system = "You are a test.\n\n# Notes\nShared.\n\n# Session context\nToday's date: 2026-10-22\n\nAppended.";
+        const agent = await ask("claude-sonnet-5-5", { system, cacheSystem: true, lightweight: false });
+        expect(agent.system).toEqual([
+            { type: "text", text: "You are a test.\n\n# Notes\nShared.", cache_control: { type: "ephemeral" } },
+            { type: "text", text: "# Session context\nToday's date: 2026-10-22\n\nAppended." },
+        ]);
+        expect(agent.cache_control).toEqual({ type: "ephemeral" });
+        // A prompt frozen before it had the section: cached whole.
+        const older = await ask("claude-sonnet-5-5", { system: "You are a test.\n\n# Environment\nToday's date: 2026-10-22", cacheSystem: true, lightweight: false });
+        expect(older.system).toEqual([{ type: "text", text: "You are a test.\n\n# Environment\nToday's date: 2026-10-22", cache_control: { type: "ephemeral" } }]);
+        // Not cached on its own: sent as it is.
+        const uncached = await ask("claude-sonnet-5-5", { system, lightweight: false });
+        expect(uncached.system).toEqual([{ type: "text", text: system }]);
+    });
 });
 
 describe("stop reasons and cut-off streams", () => {

@@ -2,7 +2,7 @@ import { platform, release } from "os";
 import { APP_TITLE } from "../config/paths";
 import { gitSnapshot, gitRoot } from "../util/git";
 import { formatMemory, loadMemory } from "./memory";
-import type { ModelInfo } from "../providers/types";
+import { SESSION_CONTEXT_HEADING, type ModelInfo } from "../providers/types";
 import { pickShell } from "../tools/bash";
 
 const CORE = `You are ${APP_TITLE}, an interactive command-line coding agent. You help the user with software engineering work in their terminal: fixing bugs, adding features, refactoring, explaining code, running commands and more. Use the instructions below and the tools available to you.
@@ -57,31 +57,38 @@ export interface SystemPromptOptions {
     projectFiles?: boolean;
 }
 
-export function environmentBlock(cwd: string, model: ModelInfo, includeGit = true): string {
+/** What the prompt says of the machine and project: the same for every session in the folder (on one model). */
+export function environmentBlock(cwd: string, model: ModelInfo): string {
     const root = gitRoot(cwd);
-    const lines = [
+    return [
         "# Environment",
         `Working directory: ${cwd}`,
         `Is a git repository: ${root ? "yes" : "no"}${root && root !== cwd ? ` (root: ${root})` : ""}`,
         `Platform: ${platform()} ${release()}`,
         `Shell: ${pickShell()}`,
         ...shellNotes(platform(), pickShell()),
-        `Today's date: ${new Date().toISOString().slice(0, 10)}`,
         `Model: ${model.name ?? model.id} (${model.provider}:${model.id})`,
-    ];
-    if (includeGit && root) {
-        const g = gitSnapshot(cwd);
-        if (g) {
-            lines.push(
-                "",
-                "Git status at the start of this session (a snapshot; it won't update):",
-                `Current branch: ${g.branch ?? "(detached)"}`,
-                ...(g.mainBranch ? [`Main branch (usually the PR target): ${g.mainBranch}`] : []),
-                "",
-                ...(g.status === undefined ? [`Git status was not read: ${g.statusSkipped}.`] : ["Status:", g.status]),
-                ...(g.recentCommits ? ["", "Recent commits:", g.recentCommits] : []),
-            );
-        }
+    ].join("\n");
+}
+
+/**
+ * What the prompt says of this session only: the date and the git status at
+ * its start. It goes last, under SESSION_CONTEXT_HEADING, so that everything
+ * before it is the same in every session and providers can cache it once.
+ */
+export function sessionContextBlock(cwd: string, includeGit = true): string {
+    const lines = [SESSION_CONTEXT_HEADING, `Today's date: ${new Date().toISOString().slice(0, 10)}`];
+    const g = includeGit && gitRoot(cwd) ? gitSnapshot(cwd) : undefined;
+    if (g) {
+        lines.push(
+            "",
+            "Git status at the start of this session (a snapshot; it won't update):",
+            `Current branch: ${g.branch ?? "(detached)"}`,
+            ...(g.mainBranch ? [`Main branch (usually the PR target): ${g.mainBranch}`] : []),
+            "",
+            ...(g.status === undefined ? [`Git status was not read: ${g.statusSkipped}.`] : ["Status:", g.status]),
+            ...(g.recentCommits ? ["", "Recent commits:", g.recentCommits] : []),
+        );
     }
     return lines.join("\n");
 }
@@ -101,12 +108,13 @@ export function shellNotes(os: string, shell: string, which: (prog: string) => s
 }
 
 export function buildSystemPrompt(o: SystemPromptOptions): string {
-    const parts = [o.replaceCore ?? CORE, environmentBlock(o.cwd, o.model, o.includeGit ?? true)];
+    const parts = [o.replaceCore ?? CORE, environmentBlock(o.cwd, o.model)];
     if (o.includeMemory ?? true) {
         const mem = formatMemory(loadMemory(o.cwd, o.projectFiles), o.cwd);
         if (mem) parts.push(mem);
     }
     if (o.append) parts.push(o.append);
+    parts.push(sessionContextBlock(o.cwd, o.includeGit ?? true));
     return parts.join("\n\n");
 }
 
