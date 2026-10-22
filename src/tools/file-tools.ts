@@ -1,5 +1,6 @@
 import { mkdir, readFile, stat } from "fs/promises";
 import { existsSync } from "fs";
+import { isUtf8 } from "buffer";
 import { randomBytes } from "crypto";
 import { dirname, isAbsolute } from "path";
 import type { Tool, ToolContext, ToolResult } from "./types";
@@ -35,6 +36,35 @@ async function checkFresh(ctx: ToolContext, abs: string): Promise<string | undef
         return `${rel(abs, ctx)} has been modified since you last read it (by the user or another process). Read it again before editing.`;
     }
     return undefined;
+}
+
+/** Why a file isn't UTF-8 text: these tools only write UTF-8, so changing one would change bytes nobody edited. */
+const NOT_TEXT = {
+    utf16: "starts with a UTF-16 byte-order mark (FF FE or FE FF)",
+    nul: "has NUL bytes in its first 8 KB: binary data, UTF-16/UTF-32 without a byte-order mark, or text with embedded NULs",
+    not_utf8: "is not valid UTF-8: it uses a legacy encoding such as Windows-1252, Latin-1, Shift-JIS or GBK, or it is binary",
+};
+
+function notText(buf: Uint8Array): keyof typeof NOT_TEXT | undefined {
+    if ((buf[0] === 0xff && buf[1] === 0xfe) || (buf[0] === 0xfe && buf[1] === 0xff)) return "utf16";
+    if (buf.subarray(0, 8000).includes(0)) return "nul";
+    return isUtf8(buf) ? undefined : "not_utf8";
+}
+
+/** A file's text for Edit and Write, or why they refuse it: decoding it and writing it back as UTF-8 would change bytes outside the edit. */
+async function readEditable(abs: string, label: string): Promise<{ text: string } | { error: string }> {
+    const buf = await readFile(abs);
+    const why = notText(buf);
+    if (!why) return { text: buf.toString("utf-8") };
+    return {
+        error: `${label} ${NOT_TEXT[why]}. Edit and Write only write UTF-8 and never convert a file's encoding, so nothing was written. If it's text, make the change with a shell command that reads and writes it in its own encoding (iconv, for one), or ask the user whether to convert it to UTF-8 first. To replace the whole file with new UTF-8 text anyway, delete it first, then Write it.`,
+    };
+}
+
+/** Whether most of a text's line breaks are CRLF: the line breaks Edit and Write add then are too. */
+function usesCrlf(text: string): boolean {
+    const crlf = text.match(/\r\n/g)?.length ?? 0;
+    return crlf > (text.match(/\n/g)?.length ?? 0) - crlf;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +122,7 @@ Usage:
         if (looksBinary(buf)) return { content: `${abs} appears to be a binary file and cannot be displayed as text.`, isError: true };
 
         const text = buf.toString("utf-8");
+        const why = notText(buf);
         if (text.length === 0) {
             await recordRead(ctx, abs, false);
             return { content: `<system-reminder>The file ${abs} exists but is empty.</system-reminder>`, display: { summary: "Empty file" } };
@@ -112,6 +143,10 @@ Usage:
             out += `\n\n(Showing lines ${start}-${start - 1 + slice.length} of ${all.length}. Use offset/limit to read more.)`;
         }
         if (redacted.some((line, i) => line !== slice[i])) out += "\n\n<system-reminder>Some secrets in this file were redacted.</system-reminder>";
+        if (why) {
+            const shown = why === "not_utf8" ? " Its undecodable bytes show above as U+FFFD (\uFFFD)." : "";
+            out += `\n\n<system-reminder>This file ${NOT_TEXT[why]}.${shown} Edit and Write will refuse it: change it with a shell command that keeps its encoding, or ask the user whether to convert it to UTF-8.</system-reminder>`;
+        }
         return { content: out, display: { summary: `Read ${slice.length} line${slice.length === 1 ? "" : "s"}${partial ? ` (of ${all.length})` : ""}` } };
     },
 };
@@ -158,7 +193,10 @@ Usage:
     async validate(input, ctx) {
         if (typeof input.content !== "string") return "content must be a string";
         const abs = expandPath(input.file_path, ctx.state.cwd);
-        return checkFresh(ctx, abs);
+        const stale = await checkFresh(ctx, abs);
+        if (stale || !existsSync(abs)) return stale;
+        const r = await readEditable(abs, rel(abs, ctx)).catch(() => ({ text: "" }));
+        return "error" in r ? r.error : undefined;
     },
     async preview(input, ctx) {
         const abs = expandPath(input.file_path, ctx.state.cwd);
@@ -171,17 +209,27 @@ Usage:
         const stale = await checkFresh(ctx, abs);
         if (stale) return { content: stale, isError: true };
         const existed = existsSync(abs);
-        const before = existed ? await readFile(abs, "utf-8").catch(() => "") : "";
+        let before = "";
+        let content = input.content;
+        if (existed) {
+            // A file it can't read is overwritten as before.
+            const r = await readEditable(abs, rel(abs, ctx)).catch(() => ({ text: "" }));
+            if ("error" in r) return { content: r.error, isError: true };
+            before = r.text;
+            // A rewrite keeps the file's CRLF line breaks and its byte-order mark.
+            if (usesCrlf(before)) content = content.replace(/\r?\n/g, "\r\n");
+            if (before.startsWith("\uFEFF") && content && !content.startsWith("\uFEFF")) content = "\uFEFF" + content;
+        }
         await mkdir(dirname(abs), { recursive: true });
-        await writeTracked(ctx.state, abs, input.content);
+        await writeTracked(ctx.state, abs, content);
         await recordRead(ctx, abs, false);
-        const lines = input.content ? input.content.replace(/\n$/, "").split("\n").length : 0;
-        const stats = diffStats(diffLines(before, input.content));
+        const lines = content ? content.replace(/\r?\n$/, "").split("\n").length : 0;
+        const stats = diffStats(diffLines(before, content));
         return {
             content: existed ? `The file ${abs} has been updated.` : `File created successfully at: ${abs}`,
             display: {
                 summary: existed ? `Updated with ${stats.added} addition${stats.added === 1 ? "" : "s"} and ${stats.removed} removal${stats.removed === 1 ? "" : "s"}` : `Wrote ${lines} line${lines === 1 ? "" : "s"}`,
-                diff: { path: rel(abs, ctx), before, after: input.content },
+                diff: { path: rel(abs, ctx), before, after: content },
             },
         };
     },
@@ -201,16 +249,19 @@ export function applyEdit(text: string, e: EditSpec, label: string): { text: str
     let oldS = e.old_string;
     let newS = e.new_string;
     let count = countOccurrences(text, oldS);
+    let crlf = usesCrlf(text);
     if (count === 0 && text.includes("\r\n") && !oldS.includes("\r\n")) {
         // The model writes \n; the file uses \r\n.
         const o2 = oldS.replace(/\n/g, "\r\n");
         const c2 = countOccurrences(text, o2);
         if (c2 > 0) {
             oldS = o2;
-            newS = newS.replace(/\n/g, "\r\n");
+            crlf = true;
             count = c2;
         }
     }
+    // Lines the edit adds end like the file's, even when old_string is a single line.
+    if (crlf) newS = newS.replace(/\r?\n/g, "\r\n");
     if (count === 0) {
         const hint = /^\s*\d+\t/m.test(oldS) ? " It looks like old_string contains line-number prefixes from Read output; remove them." : "";
         return { error: `old_string was not found in ${label}. It must match the file exactly, including whitespace and indentation.${hint} Read the file again if unsure.` };
@@ -235,7 +286,8 @@ function countOccurrences(text: string, sub: string): number {
 }
 
 function snippetAround(after: string, needle: string): string {
-    const idx = needle ? after.indexOf(needle) : 0;
+    let idx = needle ? after.indexOf(needle) : 0;
+    if (idx < 0) idx = after.indexOf(needle.replace(/\r?\n/g, "\r\n"));
     const lineNo = idx >= 0 ? after.slice(0, idx).split("\n").length : 1;
     const lines = after.split("\n");
     const span = needle.split("\n").length;
@@ -273,13 +325,16 @@ Usage:
         if (!existsSync(abs)) return `File does not exist: ${abs}. To create it, use Write or an Edit with an empty old_string.`;
         const stale = await checkFresh(ctx, abs);
         if (stale) return stale;
-        const text = await readFile(abs, "utf-8");
-        const r = applyEdit(text, input, rel(abs, ctx));
+        const file = await readEditable(abs, rel(abs, ctx));
+        if ("error" in file) return file.error;
+        const r = applyEdit(file.text, input, rel(abs, ctx));
         return "error" in r ? r.error : undefined;
     },
     async preview(input, ctx) {
         const abs = expandPath(input.file_path, ctx.state.cwd);
-        const before = existsSync(abs) ? await readFile(abs, "utf-8") : "";
+        const file = existsSync(abs) ? await readEditable(abs, rel(abs, ctx)) : { text: "" };
+        if ("error" in file) return undefined;
+        const before = file.text;
         const r = input.old_string === "" && !before ? { text: input.new_string } : applyEdit(before, input, rel(abs, ctx));
         if ("error" in r) return undefined;
         return { diff: { path: rel(abs, ctx), before, after: r.text } };
@@ -298,7 +353,9 @@ Usage:
         }
         const stale = await checkFresh(ctx, abs);
         if (stale) return { content: stale, isError: true };
-        const before = await readFile(abs, "utf-8");
+        const file = await readEditable(abs, rel(abs, ctx));
+        if ("error" in file) return { content: file.error, isError: true };
+        const before = file.text;
         const r = applyEdit(before, input, rel(abs, ctx));
         if ("error" in r) return { content: r.error, isError: true };
         await writeTracked(ctx.state, abs, r.text);
@@ -348,7 +405,9 @@ Same rules as Edit: Read the file first, match text exactly, make each old_strin
         if (!existsSync(abs)) return `File does not exist: ${abs}`;
         const stale = await checkFresh(ctx, abs);
         if (stale) return stale;
-        let text = await readFile(abs, "utf-8");
+        const file = await readEditable(abs, rel(abs, ctx));
+        if ("error" in file) return file.error;
+        let text = file.text;
         for (const [i, e] of input.edits.entries()) {
             const r = applyEdit(text, e, rel(abs, ctx));
             if ("error" in r) return `Edit ${i + 1}: ${r.error}`;
@@ -358,7 +417,9 @@ Same rules as Edit: Read the file first, match text exactly, make each old_strin
     },
     async preview(input, ctx) {
         const abs = expandPath(input.file_path, ctx.state.cwd);
-        const before = await readFile(abs, "utf-8").catch(() => "");
+        const file = await readEditable(abs, rel(abs, ctx)).catch(() => ({ text: "" }));
+        if ("error" in file) return undefined;
+        const before = file.text;
         let text = before;
         for (const e of input.edits) {
             const r = applyEdit(text, e, abs);
@@ -371,7 +432,9 @@ Same rules as Edit: Read the file first, match text exactly, make each old_strin
         const abs = expandPath(input.file_path, ctx.state.cwd);
         const stale = await checkFresh(ctx, abs);
         if (stale) return { content: stale, isError: true };
-        const before = await readFile(abs, "utf-8");
+        const file = await readEditable(abs, rel(abs, ctx));
+        if ("error" in file) return { content: file.error, isError: true };
+        const before = file.text;
         let text = before;
         for (const [i, e] of input.edits.entries()) {
             const r = applyEdit(text, e, rel(abs, ctx));
