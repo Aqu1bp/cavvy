@@ -419,14 +419,6 @@ function stateKind(note: string): StateKind | undefined {
 }
 
 /**
- * The backend's turn shows its prompt reached the CLI: it ended well, or said or did something. One that failed
- * (or was stopped) with nothing to show may not have been sent it (a start that failed, Codex's missing login).
- */
-function backendDelivered(r: BackendResult): boolean {
-    return r.reason === "done" || r.reason === "max_turns" || Boolean(r.text.trim()) || r.actions.length > 0;
-}
-
-/**
  * A message without its notes on the mode or model: in the transcript a
  * backend is given of turns it missed they're stale ("You are now running
  * as" another model), and its own turn says where things are now.
@@ -1891,6 +1883,12 @@ export class Agent {
     }
 
     private backendStopReminders: string[] = [];
+    /**
+     * A model turn took this round's prompt: the backend reported a model's usage (input read) or its output (text,
+     * thinking, a tool call). Not a command the CLI answers itself (Codex's /goal status: no model turn, "done"), nor
+     * a start that failed: those weren't delivered, and what was waiting (BackendSession.unsent) stays.
+     */
+    private modelTookPrompt = false;
     /** An adopted turn running: what its CLI wasn't sent, carried with each move of its place (SessionHost.sessionId). */
     private adoptedUnsent?: { provider: string; text: string };
 
@@ -2105,6 +2103,7 @@ export class Agent {
                 const placed = this.session.backends.get(provider);
                 let returned: BackendResult | undefined;
                 if (adopting) this.adoptedUnsent = { provider, text: unsent };
+                this.modelTookPrompt = false;
                 try {
                     result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...sent, synthetic: woken || sent.prompt !== prompt, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork, ...(adopting ? { adopt } : {}) });
                     returned = result;
@@ -2117,7 +2116,7 @@ export class Agent {
                         // already), or at the turn's end (endBackendTurn's sync, after this). Not if it threw before
                         // its place moved: then that is still after its place.
                         if (returned || moved) this.session.setBackendUnsent(provider, unsent || undefined);
-                    } else if (resume?.unsent && returned && backendDelivered(returned)) {
+                    } else if (resume?.unsent && this.modelTookPrompt) {
                         // A prompt of ours carried what was waiting, and the CLI took it (it answered): that's sent.
                         this.session.consumeBackendUnsent(provider, resume.unsent);
                     }
@@ -2292,6 +2291,7 @@ export class Agent {
      * redact theirs (keys in a file the backend read, say).
      */
     private emitFromBackend(e: AgentEvent) {
+        if (e.type === "text" || e.type === "thinking" || e.type === "tool_call_start" || e.type === "tool_start") this.modelTookPrompt = true;
         // Tools' results go back to the model in its next request: the cache is read from about now.
         if (e.type === "tool_end") this.backendRequestAt = Date.now();
         e = redactBackendEvent(e);
@@ -2358,6 +2358,7 @@ export class Agent {
     }
 
     private recordBackendUsage(usage: Usage, o: { contextTokens?: number; contextWindow?: number }) {
+        if (usage.inputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0) > 0) this.modelTookPrompt = true;
         const cost = costOf(usage, this.model);
         this.session.recordUsage(modelRef(this.model), usage, cost.usd, cost.unknown);
         if (o.contextWindow && !this.model.contextWindow) this.model.contextWindow = o.contextWindow;

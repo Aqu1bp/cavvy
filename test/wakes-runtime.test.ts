@@ -243,6 +243,8 @@ describe("an adopted turn's unsent context (#282 review round 3)", () => {
                 turns.push(t);
                 t.session.sessionId("cli-session-1");
                 if (t.adopt) return onAdopt(t);
+                // A model's answer, as a backend streams it (what shows the prompt reached a model turn).
+                t.sink.emit({ type: "text", text: "ok." });
                 return { reason: "done" as const, text: "ok.", actions: [] };
             },
         };
@@ -353,7 +355,8 @@ describe("an adopted turn's unsent context (#282 review round 3)", () => {
 describe("an adopted turn's unsent context: atomic with its place, taken only on delivery (#282 review round 4)", () => {
     const TOKEN = "walrus-teacup-93";
     const count = (s: string, sub: string) => s.split(sub).length - 1;
-    type Plan = { announce?: string | false; result?: any; throwAfter?: boolean; hold?: Promise<void> };
+    /** `local`: a command the CLI answers itself, with no model turn (Codex's /goal status): a notice, and "done". */
+    type Plan = { announce?: string | false; result?: any; throwAfter?: boolean; hold?: Promise<void>; local?: boolean };
 
     /** A CLI backend whose next turns do what `plans` say (by default: say its session id "cli-1", answer). */
     function backend(turns: BackendTurn[], plans: Plan[]) {
@@ -375,7 +378,15 @@ describe("an adopted turn's unsent context: atomic with its place, taken only on
                 if (p.announce !== false) t.session.sessionId(p.announce ?? "cli-1");
                 if (p.hold) await p.hold;
                 if (p.throwAfter) throw new Error("host went away");
-                return p.result ?? { reason: "done" as const, text: t.adopt ? "Auth is mapped." : "ok.", actions: [] };
+                if (p.local) {
+                    t.sink.emit({ type: "notice", level: "info", message: "No goal set. /goal <condition> sets one." });
+                    return { reason: "done" as const, text: "", actions: [] };
+                }
+                if (p.result) return p.result;
+                const answer = t.adopt ? "Auth is mapped." : "ok.";
+                // A model's answer, as a backend streams it (what shows the prompt reached a model turn).
+                t.sink.emit({ type: "text", text: answer });
+                return { reason: "done" as const, text: answer, actions: [] };
             },
         };
     }
@@ -445,6 +456,22 @@ describe("an adopted turn's unsent context: atomic with its place, taken only on
             expect(count(await send(s, "again?", 4), TOKEN)).toBe(1);
             // Taken by the one the CLI answered: not sent a third time.
             expect(count(await send(s, "and after?", 5), TOKEN)).toBe(0);
+        } finally {
+            await s.engine.stop();
+        }
+    });
+
+    test("/goal status, answered by the CLI itself with no model turn: what was waiting goes with the next prompt (#282 review round 5, #2)", async () => {
+        const s = await setup([{}, {}, { local: true }]);
+        try {
+            await adopt(s, 2);
+            // As the runtime sends /goal to a CLI that keeps goals itself (Codex): the command, as typed.
+            await (s.rt as any).startTurn("/goal status", { display: "/goal status", kind: "command" });
+            await until(() => s.turns.length === 3 && s.rt.idle);
+            expect(s.turns[2]!.prompt).toBe("/goal status");
+            expect(s.rt.session.backends.get("fake-cli")?.unsent).toContain(TOKEN);
+            expect(count(await send(s, "continue", 4), TOKEN)).toBe(1);
+            expect(s.rt.session.backends.get("fake-cli")?.unsent).toBeUndefined();
         } finally {
             await s.engine.stop();
         }
