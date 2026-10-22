@@ -2158,3 +2158,11 @@
         min-height: 36px;
     }
 }
+
+/* How many tasks run in the background: opens the side panel on them. */
+.bg-chip {
+    gap: 4px;
+    font-size: 0.821rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}

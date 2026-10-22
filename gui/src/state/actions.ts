@@ -17,6 +17,7 @@ import { prefs, setPrefs } from "./prefs";
 import { railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setDeleteRequest, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, setReview, setRewindOpen, setSettingsTab, shellLayout } from "./ui";
 import { clientAction, slashName } from "../lib/commands";
 import { forkAnchor } from "../lib/fork";
+import { backgroundOf, stopOutcome } from "../lib/background";
 export { forkAnchor } from "../lib/fork";
 
 export type { Attachment } from "../lib/attachments";
@@ -121,13 +122,13 @@ function clientCommand(id: string | undefined, text: string): boolean {
         case "tasks": {
             const [verb, task] = args.trim().split(/\s+/);
             if (verb === "stop" && id) {
-                // By task id (task-1), as in the terminal, or every one still running.
-                const agent = task ? handleFor(id)?.view.agents.find((a) => a.taskId === task || a.id === task) : undefined;
-                if (task && !agent) toast(`No delegated task ${task}`, "error");
-                else void stopAgent(id, agent?.id);
+                // By task id (task-1, bash_2, a CLI's own), as in the terminal, or every one still running.
+                const listed = backgroundOf(handleFor(id)?.view.state);
+                if (task && task !== "all" && !listed.some((t) => t.id === task && t.status === "running")) toast(`No running background task ${task}`, "error");
+                else void stopBackground(id, task && task !== "all" ? [task] : undefined);
                 return true;
             }
-            openAgents();
+            openBackground();
             return true;
         }
     }
@@ -168,6 +169,25 @@ export async function stopAgent(sessionId: string, agentId?: string) {
     } catch (e) {
         reportError(e);
     }
+}
+
+/** Stop background tasks (the Background panel, /tasks stop): these, or every one running. */
+export async function stopBackground(sessionId: string, ids?: string[]) {
+    try {
+        const { results } = await rpc.call("session.stopBackground", { id: sessionId, ids });
+        const { message, level } = stopOutcome(results);
+        toast(message, level);
+    } catch (e) {
+        reportError(e);
+    }
+}
+
+/** The side panel, where the Background section lists what runs in the background. */
+export function openBackground() {
+    setAgentFocus(undefined);
+    setPrefs("panel", true);
+    // Once the panel is drawn.
+    requestAnimationFrame(() => document.getElementById("background-tasks")?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
 }
 
 export async function exportSession(id: string) {

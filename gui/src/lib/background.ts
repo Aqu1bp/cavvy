@@ -1,0 +1,59 @@
+// The session's background work, as the Background panel shows it: every
+// task running in the background (an agent CLI's sub-agents, shells and
+// monitors; tasks delegated to other models; Harness's own background shells
+// and monitors), and those that stopped when Harness quit. A server older than
+// SessionState.backgroundTasks sends only its shells: the list is made from those.
+
+import type { BackgroundStopResult, BackgroundTaskInfo, SessionState } from "@shared/protocol";
+
+type Shell = SessionState["shells"][number];
+
+/** What the panel lists: running tasks, and those lost when Harness quit (until the agent's told). */
+export function backgroundOf(state: Pick<SessionState, "backgroundTasks" | "shells"> | undefined): BackgroundTaskInfo[] {
+    if (!state) return [];
+    if (state.backgroundTasks) return state.backgroundTasks.filter((t) => t.status === "running" || t.lost);
+    return state.shells
+        .filter((s) => s.running)
+        .map((s) => ({ id: s.id, provider: "harness", kind: s.monitor ? "monitor" : "shell", label: s.monitor?.description ?? s.command, startedAt: s.startedAt, status: "running", stoppable: true }));
+}
+
+/** How many run now. */
+export function runningCount(tasks: readonly BackgroundTaskInfo[]): number {
+    return tasks.filter((t) => t.status === "running").length;
+}
+
+/** The kind, as a word for the row and its tooltip. */
+export function kindName(t: Pick<BackgroundTaskInfo, "kind">): string {
+    return t.kind === "agent" ? "Sub-agent" : t.kind === "shell" ? "Shell" : t.kind === "monitor" ? "Monitor" : t.kind === "workflow" ? "Workflow" : "Task";
+}
+
+/** Who runs it: the agent CLI's name, the delegated model's provider, or Harness. */
+export function runnerName(t: Pick<BackgroundTaskInfo, "provider">, providers: readonly { id: string; name: string }[]): string {
+    if (t.provider === "harness") return "Harness";
+    return providers.find((p) => p.id === t.provider)?.name ?? t.provider;
+}
+
+/** "45s left", "12m left": a monitor's, at a glance. */
+function timeLeft(ms: number): string {
+    const s = Math.max(0, Math.ceil(ms / 1000));
+    return s < 60 ? `${s}s left` : `${Math.ceil(s / 60)}m left`;
+}
+
+/** The row's right-hand text: how long it's run, a monitor's time left, or that it stopped when Harness quit. */
+export function taskMeta(t: BackgroundTaskInfo, shells: readonly Shell[], at: number, duration: (ms: number) => string): string {
+    if (t.lost) return "Stopped when Harness quit";
+    const monitor = t.kind === "monitor" ? shells.find((s) => s.id === t.id)?.monitor : undefined;
+    if (monitor) return timeLeft(monitor.expiresAt - at);
+    return duration(Math.max(0, at - t.startedAt));
+}
+
+/** What a stop request came to, for a toast: how many stopped, and what couldn't be. */
+export function stopOutcome(results: Record<string, BackgroundStopResult>): { message: string; level: "success" | "warn" | "info" } {
+    const all = Object.values(results);
+    const ok = all.filter((r) => r === "stopped").length;
+    const pending = all.filter((r) => r === "timeout").length;
+    const refused = all.length - ok - pending;
+    if (!all.length) return { message: "Nothing was running", level: "info" };
+    const parts = [ok ? `Stopped ${ok} task${ok === 1 ? "" : "s"}` : "", pending ? `${pending} didn't confirm yet` : "", refused ? `${refused} couldn't be stopped on ${refused === 1 ? "its" : "their"} own` : ""].filter(Boolean);
+    return { message: parts.join("; "), level: pending || refused ? "warn" : "success" };
+}
