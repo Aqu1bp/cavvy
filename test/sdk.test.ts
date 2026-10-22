@@ -21,7 +21,7 @@ interface Req {
     messages: { role: string; content?: unknown; tool_calls?: unknown[]; tool_call_id?: string }[];
     tools?: { function: { name: string } }[];
 }
-type Reply = { text?: string; calls?: { id: string; name: string; args: unknown }[]; delayMs?: number; status?: number };
+type Reply = { text?: string; calls?: { id: string; name: string; args: unknown }[]; delayMs?: number; status?: number; usage?: Record<string, unknown> };
 type Script = (req: Req, n: number) => Reply | Promise<Reply>;
 
 const chunk = (delta: unknown, finish?: string) => `data: ${JSON.stringify({ choices: [{ index: 0, delta, ...(finish ? { finish_reason: finish } : {}) }] })}\n\n`;
@@ -56,6 +56,7 @@ beforeAll(() => {
                         c.enqueue(enc.encode(chunk({ tool_calls: [{ index: i, id: call.id, type: "function", function: { name: call.name, arguments: JSON.stringify(call.args) } }] })));
                     }
                     c.enqueue(enc.encode(chunk({}, r.calls?.length ? "tool_calls" : "stop")));
+                    if (r.usage) c.enqueue(enc.encode(`data: ${JSON.stringify({ choices: [], usage: r.usage })}\n\n`));
                     c.enqueue(enc.encode("data: [DONE]\n\n"));
                     c.close();
                 },
@@ -125,6 +126,30 @@ async function until(fn: () => boolean, ms = 5000) {
 // ---------------------------------------------------------------------------
 
 describe("the normal path", () => {
+    test("result includes child spend once and matches the saved session", async () => {
+        const cwd = project();
+        const usage = { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 40 }, cost: .0123 };
+        script = (_req, n) => n === 1
+            ? { calls: [{ id: "task", name: "Task", args: { description: "review", prompt: "review", subagent_type: "explore" } }], usage }
+            : { text: n === 2 ? "child answer" : "parent answer", usage };
+        const q = query({ prompt: "delegate", options: { cwd, model: MODEL, permissionMode: "bypassPermissions" } });
+        const ms = await collect(q);
+        const result = results(ms)[0]!;
+        expect(requests).toHaveLength(3);
+        expect(result).toMatchObject({ result: "parent answer", num_turns: 2, total_cost_usd: .0369,
+            usage: { input_tokens: 180, output_tokens: 60, cache_read_input_tokens: 120, cache_creation_input_tokens: 0 } });
+        const { findSession, Session } = await import("../src/agent/session");
+        const sessionId = await q.sessionId;
+        const file = findSession(cwd, sessionId)!;
+        const session = Session.load(file);
+        expect(session.meta.id).toBe(sessionId);
+        // usageRecords is only retained by ephemeral children; saved sessions reload aggregates.
+        const savedUsage = readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(line => line.t === "usage");
+        expect(savedUsage).toHaveLength(3);
+        expect(session.usageByModel.get(MODEL)).toMatchObject({ usage: { inputTokens: 180, outputTokens: 60, cacheReadTokens: 120, cacheWriteTokens: 0 } });
+        expect(session.cost).toBeCloseTo(result.total_cost_usd, 10);
+    });
+
     test("init, the answer and one success result; the session is saved and can be resumed", async () => {
         const cwd = project();
         script = () => ({ text: "hello from the model" });

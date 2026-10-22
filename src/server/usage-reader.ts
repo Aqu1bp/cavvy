@@ -31,7 +31,7 @@ function parse(l: any, f: File, s: State): UsageRecord | undefined {
         if (/^(claude-code|codex):/.test(l.model)) return;
         model = str(l.model);
         const u = l.usage;
-        usage = { inputTokens: n(u.inputTokens), outputTokens: n(u.outputTokens), cacheReadTokens: n(u.cacheReadTokens), cacheWriteTokens: n(u.cacheWriteTokens), cacheWrite1hTokens: n(u.cacheWrite1hTokens) };
+        usage = { inputTokens: n(u.inputTokens), outputTokens: n(u.outputTokens), cacheReadTokens: n(u.cacheReadTokens), cacheWriteTokens: n(u.cacheWriteTokens), cacheWrite1hTokens: n(u.cacheWrite1hTokens), webSearchRequests: n(u.webSearchRequests) };
         if (typeof u.cost === "number" && Number.isFinite(u.cost) && u.cost >= 0) usage.cost = u.cost;
         if (u.fastMode === true) usage.fastMode = true;
         if (typeof u.resolvedModel === "string" && u.resolvedModel.startsWith(model.split(":")[0] + ":")) model = str(u.resolvedModel);

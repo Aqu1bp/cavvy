@@ -100,6 +100,8 @@ export interface Usage {
     /** Portion of cache writes using Anthropic's one-hour TTL. */
     cacheWrite1hTokens?: number;
     reasoningTokens?: number;
+    /** Billable Anthropic server web searches ($10 per 1,000 requests). */
+    webSearchRequests?: number;
     /** The provider actually served this response at fast speed. */
     fastMode?: boolean;
     /** Provider-reported cost in USD, when available (OpenRouter). */

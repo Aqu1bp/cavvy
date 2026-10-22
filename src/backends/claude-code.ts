@@ -1284,7 +1284,7 @@ class ClaudeTurn {
         const had = this.agentTokens.get(id) ?? 0;
         if (total <= had) return;
         this.agentTokens.set(id, total);
-        this.host.emit({ type: "subagent", parentId: id, label: this.agentLabels.get(id) ?? "sub-agent", event: { type: "usage", usage: { inputTokens: total - had, outputTokens: 0 }, cost: { usd: 0, estimated: true, unknown: true }, contextTokens: total } });
+        this.host.emit({ type: "subagent", parentId: id, label: this.agentLabels.get(id) ?? "sub-agent", event: { type: "usage", usage: { inputTokens: total - had, outputTokens: 0 }, cost: { usd: 0, estimated: true, unknown: true }, contextTokens: total, displayOnly: true } });
     }
 
     /**

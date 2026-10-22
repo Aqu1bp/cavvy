@@ -13,7 +13,7 @@ import { apiFastModeInfo } from "./fast-mode";
 import { OpenAIResponsesProvider, responsesModelInfo } from "./openai-responses";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, resolveBaseUrl, type ProviderDef } from "./registry";
 import { VertexProvider, forgetTokens } from "./vertex";
-import { anthropicTraits } from "./anthropic-models";
+import { anthropicPricing, anthropicTraits } from "./anthropic-models";
 import { ProviderError, parseModelRef, type ModelInfo, type ProviderClient } from "./types";
 import { getKey } from "../auth/credentials";
 import { createBackend } from "../backends/index";
@@ -116,6 +116,15 @@ function readCache(): CacheFile {
     // refresh old listings made before these capabilities were discovered.
     for (const def of allProviders()) {
         if (def.kind === "openai" && c.providers[def.id]?.configuration !== providerConfiguration(def)) delete c.providers[def.id];
+    }
+    // Anthropic prices come from our catalog, not the API's cached metadata.
+    for (const [provider, entry] of Object.entries(c.providers)) {
+        if (getProvider(provider)?.kind !== "anthropic") continue;
+        for (const model of entry.models) {
+            if (!anthropicPricing(model.id)) continue;
+            const t = anthropicTraits(model.id);
+            Object.assign(model, { pricing: t.pricing, pricingLong: t.pricingLong, longContextThreshold: t.longContextThreshold });
+        }
     }
     return c;
 }
@@ -279,6 +288,8 @@ export function resolveModelInfo(ref: string): ModelInfo | undefined {
             contextWindow: t.contextWindow,
             maxOutput: t.maxOutput,
             pricing: t.pricing,
+            pricingLong: t.pricingLong,
+            longContextThreshold: t.longContextThreshold,
             ...apiFastModeInfo(def.id, parsed.id, resolveBaseUrl(def)),
             supportsTools: true,
             supportsImages: true,
