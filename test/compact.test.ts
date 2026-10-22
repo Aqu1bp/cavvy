@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { readFileSync } from "fs";
 import { isolate, tempDir } from "./helpers/isolate";
 import type { AgentEvent } from "../src/agent/agent";
 import type { AssistantMessage, ChatRequest, Message, Usage } from "../src/providers/types";
@@ -360,6 +361,11 @@ describe("the agent loop's compaction", () => {
         const chat = toOpenAIMessages("sys", [...sent, say("final")], getProvider("mistral")!);
         expect(chat.map((m) => m.role)).toEqual(["system", "user", "assistant"]);
         expect(chat[1]!.content.map((p: { type: string; text?: string }) => p.type === "text" ? p.text!.slice(0, 20) : p.type)).toEqual([summaryText.slice(0, 20), "What is wrong in thi", "image_url"]);
+
+        // The move is on record (the GUI shows the prompt once, where it went), and said when it happens.
+        expect(events.find((e) => e.type === "compact_end")).toMatchObject({ kept: true });
+        const record = readFileSync(session.path, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((l) => l.t === "compact");
+        expect(record).toMatchObject({ t: "compact", kept: true });
     });
 
     test("consecutive text-only user messages go to Chat Completions as one, in order", () => {

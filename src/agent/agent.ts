@@ -116,7 +116,8 @@ export type AgentEvent =
     | { type: "usage"; usage: Usage; cost: CostEstimate; contextTokens: number }
     /** `idle`: compacting a conversation left idle, before its prompt cache expires. */
     | { type: "compact_start"; auto: boolean; idle?: boolean }
-    | { type: "compact_end"; summary: string; idle?: boolean }
+    /** `kept`: the message waiting for an answer went on after the summary, the same message (it moved, it wasn't sent again). */
+    | { type: "compact_end"; summary: string; idle?: boolean; kept?: boolean }
     | { type: "subagent"; parentId: string; label: string; event: AgentEvent }
     /** An agent CLI reported the user's plan limits (`partial`: earlier windows it left out still stand). */
     | { type: "limits"; limits: PlanLimits; partial: boolean }
@@ -1235,12 +1236,12 @@ export class Agent {
         if (!summary.trim()) throw new Error("The model returned an empty summary");
         // The kept message says what comes next.
         const keep: Message[] = kept ? [summaryMessage(summary, false), kept] : [summaryMessage(summary, Boolean(opts.continuing))];
-        this.session.compact(summary, keep, opts.idle);
+        this.session.compact(summary, keep, opts.idle, Boolean(kept));
         this.contextTokens = 0;
         this.lastUsageTotal = 0;
         this.cache = undefined;
         this.state.fileState.clear();
-        this.emit({ type: "compact_end", summary, ...(opts.idle ? { idle: true } : {}) });
+        this.emit({ type: "compact_end", summary, ...(opts.idle ? { idle: true } : {}), ...(kept ? { kept: true } : {}) });
         if (!this.o.isSubagent) void this.hooks("PostCompact", { trigger: opts.auto ? "auto" : "manual", compact_summary: summary }).then(() => this.compacted());
         return true;
     }
