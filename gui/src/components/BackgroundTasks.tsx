@@ -44,7 +44,7 @@ function TaskRow(p: { handle: SessionHandle; t: BackgroundTaskInfo }) {
                     {kindName(p.t)} · {by()}
                 </span>
             </span>
-            <span class={`meta ${p.t.lost ? "tone-warn" : p.t.status === "failed" ? "tone-err" : p.t.status === "done" ? "tone-ok" : ""}`}>{taskMeta(p.t, p.handle.view.state.shells, now(), duration)}</span>
+            <span class={`meta ${p.t.lost || (p.t.withProcess && p.t.status === "stopped") ? "tone-warn" : p.t.status === "failed" ? "tone-err" : p.t.status === "done" ? "tone-ok" : ""}`}>{taskMeta(p.t, p.handle.view.state.shells, now(), duration, by())}</span>
             <Show when={stoppable()}>
                 <button class="act hb sm stop" title="Stop" aria-label={`Stop ${kindName(p.t).toLowerCase()}: ${p.t.label}`} disabled={stopping()} onClick={() => void stop()}>
                     <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">

@@ -69,13 +69,13 @@ export class BackgroundTasks {
         return promise;
     }
 
-    /** The process went away: whatever was running went with it. */
+    /** The process went away: whatever was running went with it (withProcess; `lost` is for Harness quitting, restore()). */
     lose(): void {
         const now = this.clock.now();
         let any = false;
         for (const t of this.tasks.values()) {
             if (t.status !== "running") continue;
-            this.tasks.set(t.id, { ...t, status: "stopped", endedAt: now, lost: true });
+            this.tasks.set(t.id, { ...t, status: "stopped", endedAt: now, withProcess: true });
             any = true;
         }
         for (const s of [...this.stops.values()]) s.settle("stopped");

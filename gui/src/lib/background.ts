@@ -71,9 +71,10 @@ function timeLeft(ms: number): string {
     return s < 60 ? `${s}s left` : `${Math.ceil(s / 60)}m left`;
 }
 
-/** The row's right-hand text: how long it's run (a monitor's time left), or how it ended and after how long. */
-export function taskMeta(t: BackgroundTaskInfo, shells: readonly Shell[], at: number, duration: (ms: number) => string): string {
+/** The row's right-hand text: how long it's run (a monitor's time left), or how it ended and after how long. `runner`: who ran it (runnerName). */
+export function taskMeta(t: BackgroundTaskInfo, shells: readonly Shell[], at: number, duration: (ms: number) => string, runner = "its process"): string {
     if (t.lost) return "Stopped when Harness quit";
+    if (t.withProcess && t.status === "stopped") return `Stopped with ${runner}`;
     if (t.status !== "running") return `${t.status === "done" ? "Done" : t.status === "failed" ? "Failed" : "Stopped"} · ${duration(Math.max(0, (t.endedAt ?? t.startedAt) - t.startedAt))}`;
     const monitor = t.kind === "monitor" ? shells.find((s) => s.id === t.id)?.monitor : undefined;
     if (monitor) return timeLeft(monitor.expiresAt - at);

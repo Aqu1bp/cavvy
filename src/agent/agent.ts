@@ -1630,6 +1630,13 @@ export class Agent {
             const mine = cli.filter((id) => all.find((t) => t.id === id)?.provider === this.model.provider);
             for (const id of cli) if (!mine.includes(id) || !backend?.stopBackground) out[id] = "not_stoppable";
             if (mine.length && backend?.stopBackground) Object.assign(out, await backend.stopBackground(this.session.meta.id, mine).catch(() => Object.fromEntries(mine.map((id) => [id, "failed" as const]))));
+            // Its CLI doesn't know it (the run it was in is over, without a word of its end): it isn't running.
+            for (const id of mine) {
+                const t = out[id] === "unknown" ? this.state.background?.get(id) : undefined;
+                if (t?.status !== "running") continue;
+                this.state.background!.report({ ...t, status: "stopped", endedAt: Date.now(), withProcess: true });
+                out[id] = "stopped";
+            }
         }
         this.o.host.backgroundChanged?.();
         return out;

@@ -546,7 +546,7 @@ class ClaudeTurn {
             const launch = t.toolUseId ? this.closedLaunches.get(t.toolUseId)?.reason : undefined;
             const stopped = (taskId !== undefined && this.stoppedTaskIds.has(taskId)) || said === "stopped" || launch === "aborted";
             let status: BackgroundTaskInfo["status"] | undefined = stopped ? "stopped" : said === "failed" || launch === "error" ? "failed" : said || launch ? "done" : undefined;
-            let lost = false;
+            let withProcess = false;
             if (!status) {
                 // Off Claude Code's list with no word yet of how it ended (its task_notification comes after the
                 // list changes, or its stop is still being answered): it's said once that word comes.
@@ -559,14 +559,32 @@ class ClaudeTurn {
                 if (this.leftList.has(id) && !stopping) status = "done";
                 else {
                     status = "stopped";
-                    lost = !stopping;
+                    withProcess = !stopping;
                 }
             }
             this.reportedBackground.delete(id);
             this.leftList.delete(id);
-            emit({ type: "background_task", task: { ...t, status, endedAt: Date.now(), ...(lost ? { lost: true } : {}) } });
+            // Ended with the process by the user's Esc: their stop (no news to them), not a crash's.
+            const how = status === "stopped" && this.aborted ? { byUser: true } : withProcess ? { withProcess: true } : {};
+            const ended: BackgroundTaskInfo = { ...t, status, endedAt: Date.now(), ...how };
+            this.endedBackground.set(id, ended);
+            emit({ type: "background_task", task: ended });
+        }
+        // One said to have ended, then said to have ended otherwise (a sub-agent done, then failed after all): so it did.
+        for (const [id, t] of this.endedBackground) {
+            if (t.status === "stopped") continue;
+            const said = this.taskEnds.get((t.toolUseId ? this.agentTasks.get(t.toolUseId) : id) ?? "");
+            const launch = t.toolUseId ? this.closedLaunches.get(t.toolUseId)?.reason : undefined;
+            const status: BackgroundTaskInfo["status"] | undefined = said === "failed" || (!said && launch === "error") ? "failed" : said === "completed" || (!said && launch === "done") ? "done" : undefined;
+            if (!status || status === t.status) continue;
+            const revised = { ...t, status };
+            this.endedBackground.set(id, revised);
+            emit({ type: "background_task", task: revised });
         }
     }
+
+    /** What the session was told of each background task that ended in this run, by its id: said again if Claude Code changes its word. */
+    private endedBackground = new Map<string, BackgroundTaskInfo>();
 
     /** The user's stop of background tasks (these, or every one): how each went, once Claude Code answers. */
     async stopBackground(ids?: string[]): Promise<Record<string, BackgroundStop>> {
@@ -889,56 +907,92 @@ class ClaudeTurn {
     /**
      * Ask Claude Code to stop a background task: how it went. One Harness stops (at a cap) that Claude Code
      * doesn't stop ends the run; one the user stops (`byUser`) that doesn't stop is only said to have failed.
+     * A second stop of a task whose stop is still unanswered (the user's timed out, then Harness's at a cap)
+     * asks nothing more: both take the one answer. Once it's stopped, or has said how it ended, a failure or
+     * a silence after doesn't count against the run.
      */
     private stopTask(task: BackgroundWork, why: string, byUser = false): Promise<BackgroundStop> {
+        // `why`: Harness's reason (noteStopped); the user's stop needs none.
         if (!task.id) {
             if (!byUser) this.stopFailed = true;
             return Promise.resolve("not_stoppable");
         }
         const id = task.id;
-        const request = requestId();
+        if (this.stoppedTaskIds.has(id)) return Promise.resolve("stopped");
         const pending = { task, since: Date.now(), byUser };
-        this.pendingStops.set(id, pending);
-        /** The stop didn't go through (refused, or the user's not answered in time): the task's end, if Claude Code said it meanwhile, counts. */
+        // Harness's own stop decides what an unanswered one does (it ends the run, checkIdle): the user's doesn't take its place.
+        const before = this.pendingStops.get(id);
+        if (!before || before.byUser) this.pendingStops.set(id, pending);
+        const mine = () => this.pendingStops.get(id) === pending;
+        /** Claude Code said how it ended before (not held for a stop): there was nothing left to stop. */
+        const over = () => this.taskEnds.has(id) && !this.heldEnds.has(id);
+        /** The stop didn't go through (refused, or not answered in time): the task's end, if Claude Code said it meanwhile, counts. */
         const notStopped = () => {
-            if (this.pendingStops.get(id) === pending) this.pendingStops.delete(id);
+            if (!mine()) return;
+            this.pendingStops.delete(id);
             const held = this.heldEnds.get(id);
             this.heldEnds.delete(id);
             if (held) this.onSystem(held);
             this.syncBackground();
         };
-        const answered = new Promise<BackgroundStop>((resolve) => {
-            this.controls.set(request, (response) => {
-                this.controls.delete(request);
-                if (response.subtype !== "success") {
-                    if (!byUser) this.stopFailed = true;
-                    notStopped();
-                    return resolve("failed");
-                }
-                if (this.pendingStops.get(id) === pending) this.pendingStops.delete(id);
-                this.heldEnds.delete(id);
-                this.stoppedTaskIds.add(id);
+        const answered = this.askStop(id).then((ok): BackgroundStop => {
+            // Another stop of it has taken this answer already.
+            if (this.stoppedTaskIds.has(id)) return "stopped";
+            if (!ok) {
+                if (!byUser && !over()) this.stopFailed = true;
+                notStopped();
+                return "failed";
+            }
+            const ended = over();
+            this.pendingStops.delete(id);
+            this.heldEnds.delete(id);
+            this.stoppedTaskIds.add(id);
+            if (!ended) {
                 // A sub-agent stopped (at the overall cap, or by the user): over, without a report.
                 if (task.toolUseId) this.endAgent(task.toolUseId, "aborted");
                 this.noteStopped([task], byUser ? "user" : "harness", why);
-                this.syncBackground();
-                resolve("stopped");
-            });
+            }
+            this.syncBackground();
+            return "stopped";
         });
-        this.proc.send({ type: "control_request", request_id: request, request: { subtype: "stop_task", task_id: id } });
         let timer: ReturnType<typeof setTimeout> | undefined;
-        // Its process gone, the task went with it.
-        const gone = this.proc.exited.then(() => "stopped" as const);
+        // Its process gone, the task went with it; unless it said how it ended first (held for this stop): that's how.
+        const gone = this.proc.exited.then((): BackgroundStop => {
+            const held = mine() ? this.heldEnds.get(id) : undefined;
+            if (!held) return "stopped";
+            notStopped();
+            return held.status === "stopped" ? "stopped" : "failed";
+        });
         const late = new Promise<BackgroundStop>(
             (resolve) =>
                 (timer = setTimeout(() => {
                     // The user's: the task runs on as far as Harness knows, and the run with it (an automatic
-                    // stop's timeout ends the run, checkIdle). A late answer still counts.
-                    if (byUser) notStopped();
+                    // stop's timeout ends the run, checkIdle, unless the task said meanwhile how it ended). A
+                    // late answer still counts.
+                    if (byUser || this.heldEnds.has(id)) notStopped();
                     resolve("timeout");
                 }, backgroundTiming.stopTimeoutMs)),
         );
         return Promise.race([answered, gone, late]).finally(() => clearTimeout(timer));
+    }
+
+    /** Each task's stop_task not answered yet, by task id: whether it went through. One request per task at a time. */
+    private stopRequests = new Map<string, Promise<boolean>>();
+
+    private askStop(id: string): Promise<boolean> {
+        const asked = this.stopRequests.get(id);
+        if (asked) return asked;
+        const request = requestId();
+        const answer = new Promise<boolean>((resolve) => {
+            this.controls.set(request, (response) => {
+                this.controls.delete(request);
+                this.stopRequests.delete(id);
+                resolve(response.subtype === "success");
+            });
+        });
+        this.stopRequests.set(id, answer);
+        this.proc.send({ type: "control_request", request_id: request, request: { subtype: "stop_task", task_id: id } });
+        return answer;
     }
 
     private clearWaitStatus() {
@@ -1046,6 +1100,7 @@ class ClaudeTurn {
         // The prompt waits for the MCP server, so its first request has the harness's tools.
         void this.attach().then(() => this.aborted || this.sendUser(content, this.t.synthetic));
         const goalTimer = setInterval(() => this.goals?.poll(), GOAL_POLL_MS);
+        let threw = true;
         try {
             // Claude Code gone (a crash) while something it started holds its output open: once all it wrote is
             // read and nothing more comes for a moment, the run ends rather than waiting for good.
@@ -1072,6 +1127,7 @@ class ClaudeTurn {
                 // Between turns, what changes in the background can end the run.
                 if (!this.busy && (await this.idle())) break;
             }
+            threw = false;
         } finally {
             clearInterval(goalTimer);
             this.goals?.poll();
@@ -1081,6 +1137,16 @@ class ClaudeTurn {
             clearTimeout(this.settleTimer);
             this.finishing = true;
             await this.proc.stop(this.aborted ? 1000 : 3000);
+            // How tasks ended that Claude Code said while their stop was pending (a report among them): the
+            // process is gone, so no answer will come, and that's how they ended.
+            for (const [id, m] of [...this.heldEnds]) {
+                this.pendingStops.delete(id);
+                this.heldEnds.delete(id);
+                this.onSystem(m);
+            }
+            // The run failed (its host gone, say): what still ran in the background stopped with the process
+            // all the same, or the session would list it running for good, with nothing left to stop it.
+            if (threw) this.syncBackground(true);
             this.agentsFile?.remove();
             // Polling may still be recording a queued prompt's start. Finish it before Agent records the end.
             await this.idlePending;

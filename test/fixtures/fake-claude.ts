@@ -31,7 +31,10 @@
 // FAKE_COMMAND      the "bash" scenario's command (default: npm test)
 // FAKE_TIMEOUT      shell-background*: the background Bash call's timeout (ms; default none)
 // FAKE_SHELL_STATUS shell-background*: how its task_notification says it ended (default completed; after it left the list)
-// FAKE_STOP_TASK    hang: stop_task unanswered; reject: refused; complete-reject: the task completes, then the stop is refused
+// FAKE_STOP_TASK    hang: stop_task unanswered; reject: refused; complete-reject: the task completes, then the stop is refused;
+//                   late: the first stop of a task goes through FAKE_STOP_MS later (default 300), and a second asked
+//                   meanwhile is refused once the first is answered (it's over); complete-exit: the task completes with a
+//                   report, then the process exits without answering
 // FAKE_SHELL_MS     shell-background*: the background command finishes this long after the answer (default 150; the
 //                   stuck, mixed and nested ones finish only when it's set)
 // FAKE_API_KEY_SOURCE  system/init apiKeySource (default "none": a plan)
@@ -234,6 +237,8 @@ function result(subtype: string, extra: Record<string, unknown> = {}) {
 const bgTasks = new Map<string, { task_id: string; task_type: string; description: string }>();
 /** Tasks stopped by the host (stop_task): they don't finish or report later. */
 const stoppedTasks = new Set<string>();
+/** FAKE_STOP_TASK=late: each task's first stop, answered later. */
+const lateStops = new Map<string, Promise<void>>();
 function backgroundChanged() {
     out({ type: "system", subtype: "background_tasks_changed", tasks: [...bgTasks.values()], session_id: sessionId });
 }
@@ -832,6 +837,29 @@ for await (const chunk of Bun.stdin.stream()) {
                 out({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response: { added: [...mcpServers.keys()], removed: [], errors } } });
             } else if (sub === "stop_task") {
                 if (process.env.FAKE_STOP_TASK === "hang") continue;
+                if (process.env.FAKE_STOP_TASK === "complete-exit") {
+                    bgTasks.delete(m.request.task_id);
+                    backgroundChanged();
+                    out({ type: "system", subtype: "task_notification", task_id: m.request.task_id, ...(m.request.task_id === "agent-1" ? { tool_use_id: "toolu_agent" } : {}), status: "completed", summary: "Finished just now", handback: "send", handback_report: { text: "Auth keeps its strategies in one list." }, session_id: sessionId });
+                    setTimeout(() => process.exit(0), 50);
+                    continue;
+                }
+                if (process.env.FAKE_STOP_TASK === "late") {
+                    const id = m.request.task_id;
+                    const first = lateStops.get(id);
+                    if (first) {
+                        void first.then(() => out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "No running task" } }));
+                        continue;
+                    }
+                    lateStops.set(id, Bun.sleep(Number(process.env.FAKE_STOP_MS ?? 300)).then(() => {
+                        bgTasks.delete(id);
+                        stoppedTasks.add(id);
+                        backgroundChanged();
+                        out({ type: "control_response", response: { subtype: "success", request_id: m.request_id } });
+                        out({ type: "system", subtype: "task_notification", task_id: id, status: "stopped", summary: "Stopped by host", session_id: sessionId });
+                    }));
+                    continue;
+                }
                 // The task completes just as it's asked to stop: it leaves the list, says it completed, and the stop fails.
                 if (process.env.FAKE_STOP_TASK === "complete-reject") {
                     bgTasks.delete(m.request.task_id);

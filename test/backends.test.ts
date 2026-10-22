@@ -3446,3 +3446,136 @@ describe("the harness's agents on Claude Code", () => {
         expect(agentLogs()).toEqual([]);
     });
 });
+
+describe("Claude Code background tasks: #282 review round 2", () => {
+    const stops = () => received().filter((m) => m.request?.subtype === "stop_task").map((m) => m.request.task_id);
+    const timing = (t: Partial<typeof backgroundTiming>) => {
+        const saved = { ...backgroundTiming };
+        Object.assign(backgroundTiming, t);
+        return () => Object.assign(backgroundTiming, saved);
+    };
+
+    test("a background sub-agent ended by Esc is the user's stop, with Claude Code: not 'Stopped when Harness quit', and no notice (A5)", async () => {
+        const { taskMeta } = await import("../gui/src/lib/background");
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
+        const a = await makeAgent({ provider: "claude-code" });
+        const bg = (a.agent.state.background = new SessionBackground());
+        bg.sync();
+        const ac = new AbortController();
+        const done = a.run("map auth in the background", ac.signal);
+        for (let i = 0; i < 500 && !a.agent.backgroundTasks().some((t) => t.status === "running"); i++) await Bun.sleep(10);
+        expect(bg.sync().length).toBe(0);
+        ac.abort();
+        await done;
+        const t = a.agent.backgroundTasks()[0]!;
+        expect([t.status, t.byUser, t.lost, t.withProcess]).toEqual(["stopped", true, undefined, undefined]);
+        expect(taskMeta(t, [], Date.now(), () => "1s", "Claude Code")).toBe("Stopped · 1s");
+        // The user's own stop: no news.
+        expect(bg.sync()).toEqual([]);
+    });
+
+    test("a background task that goes with Claude Code's process (not Esc, not Harness quitting) says so (A5)", async () => {
+        const { taskMeta } = await import("../gui/src/lib/background");
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
+        process.env.FAKE_EXIT_AFTER_MS = "400";
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            const bg = (a.agent.state.background = new SessionBackground());
+            bg.sync();
+            const done = a.run("map auth in the background");
+            for (let i = 0; i < 500 && !a.agent.backgroundTasks().some((t) => t.status === "running"); i++) await Bun.sleep(10);
+            bg.sync();
+            await done;
+            const t = a.agent.backgroundTasks()[0]!;
+            expect([t.status, t.withProcess, t.lost, t.byUser]).toEqual(["stopped", true, undefined, undefined]);
+            expect(taskMeta(t, [], Date.now(), () => "1s", "Claude Code")).toBe("Stopped with Claude Code");
+            // Not the user's: it's news.
+            expect(bg.sync().map((x) => [x.id, x.status])).toEqual([["toolu_agent", "stopped"]]);
+        } finally {
+            delete process.env.FAKE_EXIT_AFTER_MS;
+        }
+    });
+
+    test("if Claude Code's run throws, the background tasks it reported don't stay running (A2)", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
+        let ref: any;
+        const a = await makeAgent({
+            provider: "claude-code",
+            drainQueued: (() => {
+                if (ref?.backgroundTasks().some((t: any) => t.status === "running")) throw new Error("host went away");
+                return [];
+            }) as any,
+        });
+        ref = a.agent;
+        a.agent.state.background = new SessionBackground();
+        const r = await Promise.race([a.run("map auth in the background").catch((e) => `threw: ${e.message}`), Bun.sleep(8000).then(() => "stuck")]);
+        expect(r).not.toBe("stuck");
+        expect(a.agent.backgroundTasks().map((t) => [t.id, t.status, t.withProcess])).toEqual([["toolu_agent", "stopped", true]]);
+    });
+
+    test("a Stop of a task its CLI no longer knows, listed running: it's over, and shown stopped (A2)", async () => {
+        const a = await makeAgent({ provider: "claude-code" });
+        const bg = (a.agent.state.background = new SessionBackground());
+        bg.report({ id: "toolu_gone", provider: "claude-code", kind: "agent", label: "Map auth", startedAt: Date.now() - 1000, status: "running", stoppable: true });
+        expect(await a.agent.stopBackground(["toolu_gone"])).toEqual({ toolu_gone: "stopped" });
+        expect(a.agent.backgroundTasks().map((t) => [t.id, t.status, t.withProcess])).toEqual([["toolu_gone", "stopped", true]]);
+    });
+
+    test("overlapping stops of one task ask once: the user's late success stands, and Harness's own stop doesn't end the run (B1)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-mixed";
+        process.env.FAKE_COMMAND = "sleep 150";
+        process.env.FAKE_STOP_TASK = "late";
+        // The user's stop times out (300 ms); Harness's own stop of it comes at the grace (350 ms, not while the
+        // user's is pending); the user's answer comes (500 ms) before Harness's own stop would time out.
+        process.env.FAKE_STOP_MS = "500";
+        process.env.FAKE_BACKGROUND_MS = "1500";
+        const restore = timing({ stopTimeoutMs: 300, pollMs: 10 });
+        try {
+            const a = await makeAgent({ provider: "claude-code", settings: { claudeCode: { backgroundWaitSec: 0.35 } } });
+            a.agent.state.background = new SessionBackground();
+            const done = a.run("start both");
+            for (let i = 0; i < 500 && !a.agent.backgroundTasks().some((t) => t.id === "background-1" && t.status === "running"); i++) await Bun.sleep(5);
+            // The user's stop isn't answered in time; Harness then stops the same task at its grace; the user's answer comes.
+            expect(await a.agent.stopBackground(["background-1"])).toEqual({ "background-1": "timeout" });
+            expect(await done).toBe("done");
+            expect(stops()).toEqual(["background-1"]);
+            expect(notices(a.events).join("\n")).not.toContain("did not confirm a task stop");
+            // The sub-agent beside it ran on and reported.
+            expect(JSON.stringify(a.session.messages)).toContain("The explorer reported back");
+            expect(a.agent.backgroundTasks().map((t) => [t.id, t.status]).sort()).toEqual([["background-1", "stopped"], ["toolu_agent", "done"]]);
+        } finally {
+            restore();
+            delete process.env.FAKE_STOP_MS;
+        }
+    });
+
+    test("a task that reports back while its stop is pending, then the process exits: its report and its end stand (B2)", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
+        process.env.FAKE_STOP_TASK = "complete-exit";
+        const a = await makeAgent({ provider: "claude-code" });
+        a.agent.state.background = new SessionBackground();
+        const done = a.run("map auth in the background");
+        for (let i = 0; i < 500 && !a.agent.backgroundTasks().some((t) => t.status === "running" && t.stoppable); i++) await Bun.sleep(10);
+        // It had completed: the stop didn't stop it.
+        expect(await a.agent.stopBackground(["toolu_agent"])).toEqual({ toolu_agent: "failed" });
+        await Promise.race([done, Bun.sleep(5000)]);
+        expect(a.agent.backgroundTasks().map((t) => [t.id, t.status])).toEqual([["toolu_agent", "done"]]);
+        expect(a.events.some((e) => e.type === "subagent" && e.event.type === "text" && e.event.text === "Auth keeps its strategies in one list.")).toBe(true);
+        expect(a.events.filter((e) => e.type === "subagent" && e.event.type === "turn_end").map((e: any) => e.event.reason)).toEqual(["done"]);
+    });
+
+    test("a sub-agent said to be done, then to have failed: the session is told it failed (B3)", async () => {
+        process.env.FAKE_SCENARIO = "agent-fails-later";
+        const a = await makeAgent({ provider: "claude-code" });
+        const bg = (a.agent.state.background = new SessionBackground());
+        const seen: string[] = [];
+        bg.onChange(() => {
+            const t = bg.get("toolu_agent");
+            if (t && seen.at(-1) !== t.status) seen.push(t.status);
+        });
+        bg.sync();
+        await a.run("map auth in the background");
+        expect(seen).toEqual(["running", "done", "failed"]);
+        expect(a.agent.backgroundTasks().map((t) => [t.id, t.status])).toEqual([["toolu_agent", "failed"]]);
+    });
+});
