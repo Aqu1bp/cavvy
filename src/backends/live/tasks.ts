@@ -23,9 +23,13 @@ export class BackgroundTasks {
         private confirmMs: number,
     ) {}
 
-    /** A task the CLI reported: new, or changed. One that isn't running any more settles a stop asked of it. */
+    /**
+     * A task the CLI reported: new, or changed. One that isn't running any more settles a stop asked of it.
+     * One that ended and runs again (an id reused) is a new occurrence: nothing of the last one's end stays.
+     */
     report(task: BackgroundTaskInfo): void {
-        const next = { ...this.tasks.get(task.id), ...task };
+        const was = this.tasks.get(task.id);
+        const next = was && !(was.status !== "running" && task.status === "running") ? { ...was, ...task } : { ...task };
         if (next.status !== "running") next.endedAt ??= this.clock.now();
         this.tasks.set(task.id, next);
         if (next.status !== "running") this.stops.get(task.id)?.settle("stopped");

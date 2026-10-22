@@ -10,8 +10,9 @@
 //                                     text "crash": writes "fatal: boom" to stderr and exits 3
 //      interrupt {id}               → ended {id, reason: "aborted"} for a hanging turn; background tasks carry on
 //      stop_task {id}               → task {id, status: "stopped"}, unless the task's name starts with "stubborn"
-//      finish {task, hold?}         → task {id, status: "done", report: true}, then a turn of its own: started {id: wake-<task>, origin: "wake"},
-//                                     text, ended (with hold, not until interrupted)
+//      finish {task, hold?, later?}  → task {id, status: "done", report: true}, then a turn of its own: started {id: wake-<task>, origin: "wake"},
+//                                     text, ended (with hold, not until interrupted); with later, that turn waits for wake {task}
+//      wake {task, hold?}           → the turn a finish with later held back
 // stdin's end: exits 0.
 
 const out = (o: Record<string, unknown>) => process.stdout.write(JSON.stringify(o) + "\n");
@@ -53,13 +54,20 @@ function handle(m: Record<string, any>) {
         case "finish": {
             if (!tasks.delete(m.task)) return;
             out({ type: "task", id: m.task, status: "done", report: true });
-            const id = `wake-${m.task}`;
-            out({ type: "started", id, origin: "wake" });
-            out({ type: "text", id, text: `${m.task} finished` });
-            if (m.hold) return void hanging.set(id, false);
-            return out({ type: "ended", id, reason: "done" });
+            if (m.later) return;
+            return wake(m.task, m.hold);
         }
+        case "wake":
+            return wake(m.task, m.hold);
     }
+}
+
+function wake(task: string, hold: boolean) {
+    const id = `wake-${task}`;
+    out({ type: "started", id, origin: "wake" });
+    out({ type: "text", id, text: `${task} finished` });
+    if (hold) return void hanging.set(id, false);
+    out({ type: "ended", id, reason: "done" });
 }
 
 let buf = "";

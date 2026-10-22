@@ -292,8 +292,14 @@ export class LiveCliSession {
         while (!this.quiet()) {
             if (signal?.aborted) return false;
             await new Promise<void>((resolve) => {
-                this.quietWaiters.add(resolve);
-                signal?.addEventListener("abort", () => resolve(), { once: true });
+                // Whichever comes first lets go of both.
+                const settle = () => {
+                    this.quietWaiters.delete(settle);
+                    signal?.removeEventListener("abort", settle);
+                    resolve();
+                };
+                this.quietWaiters.add(settle);
+                signal?.addEventListener("abort", settle, { once: true });
             });
         }
         return !signal?.aborted;
@@ -548,8 +554,7 @@ export class LiveCliSession {
             }, this.o.idleMs);
         }
         if (this.quiet()) {
-            for (const w of this.quietWaiters) w();
-            this.quietWaiters.clear();
+            for (const w of [...this.quietWaiters]) w();
         }
         this.o.onChange?.(this);
     }

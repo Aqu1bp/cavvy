@@ -57,6 +57,7 @@ class FakeConnection implements CliConnection {
     constructor(
         readonly proc: JsonLinesProcess,
         private events: CliEventSink,
+        private adapter: FakeAdapter,
     ) {
         this.done = this.read();
     }
@@ -75,12 +76,14 @@ class FakeConnection implements CliConnection {
         this.proc.send(o);
     }
     async open(o: { resumeId?: string; fork?: boolean }) {
+        await this.adapter.hold.open;
         this.opens.push({ resumeId: o.resumeId, fork: o.fork });
         const opened = new Promise<string>((resolve) => (this.opened = resolve));
         this.send({ type: "open", resume: o.resumeId });
         return { sessionId: await opened };
     }
     async prompt(input: TurnInput) {
+        await this.adapter.hold.prompt;
         const ref = `p${++this.n}`;
         this.send({ type: "prompt", id: ref, text: input.text });
         return { ref };
@@ -92,6 +95,9 @@ class FakeConnection implements CliConnection {
         this.send({ type: "stop_task", id });
     }
     async apply(s: Partial<LiveSettings>) {
+        this.adapter.applies++;
+        const held = await this.adapter.hold.apply;
+        if (held) return held;
         return s.model?.id === "needs-restart" ? ("restart" as const) : ("applied" as const);
     }
     async close() {
@@ -102,11 +108,15 @@ class FakeConnection implements CliConnection {
 class FakeAdapter implements AgentCliAdapter {
     readonly def = DEF;
     connections: FakeConnection[] = [];
+    bin = process.execPath;
+    /** Calls that wait for these first (a CLI slow to answer them); apply's settles with its answer. */
+    hold: { open?: Promise<unknown>; prompt?: Promise<unknown>; apply?: Promise<"applied" | "restart"> } = {};
+    applies = 0;
     spawn(cfg: SpawnConfig): SpawnSpec {
-        return { bin: process.execPath, args: [FIXTURE], cwd: cfg.cwd, fingerprint: spawnFingerprint({ system: cfg.appendSystemPrompt }) };
+        return { bin: this.bin, args: [FIXTURE], cwd: cfg.cwd, fingerprint: spawnFingerprint({ system: cfg.appendSystemPrompt }) };
     }
     async connect(proc: JsonLinesProcess, events: CliEventSink) {
-        const c = new FakeConnection(proc, events);
+        const c = new FakeConnection(proc, events, this);
         this.connections.push(c);
         return c;
     }
@@ -433,4 +443,44 @@ test("a task that can't be stopped on its own says so", async () => {
     tasks.report({ id: "b", provider: "fake", kind: "shell", label: "npm test", startedAt: 0, status: "running", stoppable: false });
     expect(await tasks.stop("b", async () => {})).toBe("not_stoppable");
     expect(await tasks.stop("missing", async () => {})).toBe("unknown");
+});
+
+test("a task id that runs again starts a new occurrence, without the last one's end", () => {
+    const clock = new ManualClock();
+    const tasks = new BackgroundTasks(clock, 100);
+    const t = { id: "a", provider: "fake", kind: "shell", label: "npm test", startedAt: 1, status: "running", stoppable: true } as const;
+    tasks.report(t);
+    clock.advance(5);
+    tasks.lose();
+    expect(tasks.get("a")).toMatchObject({ status: "stopped", lost: true, endedAt: 5 });
+    tasks.report({ ...t, startedAt: 7 });
+    expect(tasks.get("a")).toEqual({ ...t, startedAt: 7 });
+    tasks.report({ ...t, startedAt: 7, status: "done" });
+    expect(tasks.get("a")).toEqual({ ...t, startedAt: 7, status: "done", endedAt: 5 });
+});
+
+test("a whenQuiet that ends lets go of its waiter and its abort listener", async () => {
+    const { fake, pool } = setup();
+    const s = pool.session("a", "fake");
+    const waiters = () => (s as unknown as { quietWaiters: Set<unknown> }).quietWaiters.size;
+    await turn(s, "bg t1");
+    for (let i = 0; i < 3; i++) {
+        const abort = new AbortController();
+        const waiting = s.whenQuiet(abort.signal);
+        abort.abort();
+        expect(await waiting).toBe(false);
+    }
+    expect(waiters()).toBe(0);
+
+    const abort = new AbortController();
+    let listeners = 0;
+    const add = abort.signal.addEventListener.bind(abort.signal);
+    const remove = abort.signal.removeEventListener.bind(abort.signal);
+    abort.signal.addEventListener = ((...a: Parameters<typeof add>) => (listeners++, add(...a))) as typeof add;
+    abort.signal.removeEventListener = ((...a: Parameters<typeof remove>) => (listeners--, remove(...a))) as typeof remove;
+    const waiting = s.whenQuiet(abort.signal);
+    fake.of(s).send({ type: "finish", task: "t1" });
+    expect(await waiting).toBe(true);
+    expect(listeners).toBe(0);
+    expect(waiters()).toBe(0);
 });
