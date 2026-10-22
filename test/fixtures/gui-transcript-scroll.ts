@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, type Node } from "../helpers/gui-render";
-import { anchoredTop, atBottom, FAR, restoredShown, positionCache, TURN_PAGE } from "../../gui/src/lib/transcript-scroll";
+import { anchoredTop, atBottom, FAR, firstBelow, restoredShown, positionCache, TURN_PAGE } from "../../gui/src/lib/transcript-scroll";
 import { glideFrom, heldTurns, liveLine, specialActivity } from "../../gui/src/lib/live-line";
 
 // Real Solid effects/reconciliation; deterministic layout and browser scheduling
@@ -60,6 +60,9 @@ const io = { targets: new Set<Node>(), options: undefined as any, cb: undefined 
 let shiftNow = 0;
 /** The conversation's moves while the panels slide (Transcript.tsx hold): what each translates from, and its timing. */
 const slides: { from: string; options: { duration: number; easing?: string }; anim: { playState: string; startTime?: number } }[] = [];
+/** How many times a turn's box was measured, and the column searched for a turn by id. */
+let turnRects = 0;
+let turnSearches = 0;
 const decorate = (n: Node): any => Object.assign(n, {
     animate: (keyframes: { transform: string }[], options: { duration: number; easing?: string }) => {
         const anim = { playState: "running", startTime: undefined as number | undefined, cancel() { anim.playState = "idle"; } };
@@ -70,9 +73,9 @@ const decorate = (n: Node): any => Object.assign(n, {
         glides.push({ el: n, from: Number(/translateY\((-?[\d.]+)px\)/.exec(keyframes[0]!.transform)?.[1]), duration: options.duration, anim });
         return anim;
     },
-    getBoundingClientRect: () => ({ top: has(n, "transcript") ? 0 : absolute(n) - top + drawn(n), bottom: absolute(n) - top + drawn(n) + height(n), height: height(n) }),
+    getBoundingClientRect: () => (n.props["data-turn"] && turnRects++, { top: has(n, "transcript") ? 0 : absolute(n) - top + drawn(n), bottom: absolute(n) - top + drawn(n) + height(n), height: height(n) }),
     querySelectorAll: (selector: string) => all(n).slice(1).filter((child) => matches(child, selector)),
-    querySelector: (selector: string) => all(n).slice(1).find((child) => matches(child, selector)),
+    querySelector: (selector: string) => (selector.startsWith("[data-turn") && turnSearches++, all(n).slice(1).find((child) => matches(child, selector))),
     scrollTo: (options: any) => { scrollBehavior = options.behavior; scrollTarget = Math.max(0, Math.min(options.top, height(n) - viewportHeight)); if (!deferSmooth || options.behavior !== "smooth") (n as any).scrollTop = options.top; },
     classList: { add() {}, remove() {} },
     hasAttribute: (name: string) => n.props[name] !== undefined,
@@ -97,7 +100,7 @@ const [panelHold, setPanelHold] = solid.createSignal<any>();
 let findProps: any;
 const scope = {
     renderer: { ...solid, ...renderer, createElement: create },
-    anchoredTop, atBottom, FAR, restoredShown, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, glideFrom, heldTurns, liveLine, specialActivity,
+    anchoredTop, atBottom, FAR, firstBelow, restoredShown, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, glideFrom, heldTurns, liveLine, specialActivity,
     LiveLine: () => node("live-line"), Spinner: () => node("spinner"),
     getComputedStyle: () => ({ transform: `matrix(1, 0, 0, 1, 0, ${shiftNow})` }),
     DOMMatrixReadOnly: class { m42: number; constructor(m: string) { this.m42 = Number(/, (-?[\d.]+)\)$/.exec(m)?.[1] ?? 0); } },
@@ -132,7 +135,7 @@ const scope = {
     TurnView: (p: any) => {
         restoredOpen ||= p.workOpen;
         const n = create("article"); n.props["data-turn"] = p.turn.id;
-        p.onElement?.(n);
+        p.onElement?.(n, p.turn.id);
         if (omitPromptPart && p.turn.id === "turn-5") return n;
         const part = create("div"); part.props["data-find"] = "prompt";
         part.getBoundingClientRect = () => ({ top: absolute(n) - top + drawn(n) + partShift, bottom: absolute(n) - top + drawn(n) + height(n), height: height(n) - partShift });
@@ -243,7 +246,8 @@ try {
     assert.equal(scrollBehavior, "smooth");
     scroller().props.onScroll();
     dispose(); setATurns(turns(130)); dispose = mount(a);
-    assert.equal(top, 26000, "a session left at bottom follows new turns on return");
+    assert.equal(top, 8050, "a session left at bottom follows new turns on return");
+    assert.equal(all(root).filter((n) => n.tag === "article").length, 40, "showing its last page again, not all 120 it had shown");
     scroll(0); reduced = true;
     button("jump").props.onClick();
     assert.equal(scrollBehavior, "instant", "OS reduced motion prevents smooth jumps");
@@ -463,6 +467,33 @@ try {
     const stray = create("article");
     io.cb!([{ target: stray, isIntersecting: false }]);
     assert.equal(stray.props[FAR], undefined, "and the observer's callback, which may outlive it, no longer reaches the conversation");
+
+    // A long conversation, all shown: a scroll event measures a few turns to find where it's read (they're in order),
+    // following the end it measures none, and an anchor is found by its id, not by searching the column.
+    const [manyTurns] = solid.createSignal(turns(400));
+    const many = { id: "many", view: { state: {}, get turns() { return manyTurns(); } } };
+    dispose = mount(many);
+    turnRects = 0; scroller().props.onScroll();
+    assert.equal(turnRects, 0, "following the end, a scroll measures no turn");
+    scroll(0);
+    for (let i = 0; i < 9; i++) { scroll(0); button("earlier").props.onClick(); }
+    assert.equal(articles().length, 400);
+    turnRects = 0; scroll(60000);
+    assert.equal(turn("turn-300").getBoundingClientRect().top, 0, "read from turn-300");
+    assert.ok(turnRects <= 12, `a scroll measures a few of the 400 turns, not each one before where it's read (${turnRects})`);
+    turnSearches = 0; partShift += 12; resize(); partShift -= 12; resize();
+    assert.equal(turnSearches, 0, "the anchor is found by its id");
+    // Opened again, it shows the pages down from where it was read, not all it had shown...
+    dispose(); dispose = mount(b);
+    dispose(); dispose = mount(many);
+    assert.equal(articles().length, 120, "reopened, it shows the pages down from where it was read");
+    assert.equal(turn("turn-300").getBoundingClientRect().top, 0, "at the same place");
+    // ...and left at the end, only its last page.
+    button("jump").props.onClick(); scroller().props.onScroll();
+    dispose(); dispose = mount(b);
+    dispose(); dispose = mount(many);
+    assert.equal(articles().length, 40, "reopened after being left at the end, it shows its last page");
+    dispose();
 
     // The composer dock's height (SessionView's dock prop) is set on the two boxes that keep room for it, and find
     // keeps a match above it: --dock-h isn't inherited, and WebKit keeps an inherited one stale.

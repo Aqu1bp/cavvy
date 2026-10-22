@@ -5,7 +5,6 @@ export const FAR = "data-far";
 
 export type ScrollAnchor = { turnId: string; offset: number; part?: string; partOffset?: number };
 export type TranscriptPosition = {
-    shown: number;
     bottom: boolean;
     top: number;
     anchor?: ScrollAnchor;
@@ -31,11 +30,27 @@ export function positionCache(limit = 20) {
 
 export const transcriptPositions = positionCache();
 
-/** New turns may have pushed the saved anchor outside its old page. */
+/**
+ * How many turns a session shows when it's opened again: its last page, or, left reading higher up, the pages down
+ * from there (new turns may have pushed it out of its old page). Not every page it once showed: those cost layout and
+ * memory for as long as it's open, and the turns above are a click away.
+ */
 export function restoredShown(ids: string[], saved?: TranscriptPosition) {
     const index = !saved?.bottom && saved?.anchor ? ids.indexOf(saved.anchor.turnId) : -1;
     const needed = index < 0 ? 0 : Math.ceil((ids.length - index) / TURN_PAGE) * TURN_PAGE;
-    return Math.max(TURN_PAGE, saved?.shown ?? 0, needed);
+    return Math.max(TURN_PAGE, needed);
+}
+
+/** The first of `n` items in order whose bottom (`bottomOf(i)`, growing with i) is below `top`; `n` if none is. */
+export function firstBelow(n: number, bottomOf: (i: number) => number, top: number) {
+    let lo = 0;
+    let hi = n;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (bottomOf(mid) > top) hi = mid;
+        else lo = mid + 1;
+    }
+    return lo;
 }
 
 export function anchoredTop(top: number, currentOffset: number, savedOffset: number) {
