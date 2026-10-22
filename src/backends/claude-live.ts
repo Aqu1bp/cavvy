@@ -48,7 +48,8 @@ import { EXIT_DRAIN_MS, spawnFingerprint, type LiveCliSession, type LiveOptions,
 import type { AgentCliAdapter, CliConnection, CliEvent, CliEventSink, LiveSettings, SpawnConfig, SpawnSpec, TurnInput } from "./live/types";
 import type { BackgroundTaskInfo } from "./live/info";
 import { CLAUDE_PREFIX, claudeNames, claudePrompt, forClaudeCode, skillFolder } from "./native-skills";
-import type { BackendResult, BackendTurn, BackgroundStop, SessionHost, TurnSink } from "./types";
+import type { BackendResult, BackendTurn, BackgroundStop, SessionHost, SteerMessage, TurnSink } from "./types";
+import type { ImagePart, PdfPart } from "../providers/types";
 import {
     LAUNCH_END,
     MODES,
@@ -155,8 +156,12 @@ interface CliTurn {
 export interface LiveTurnConfig {
     /** The turn's settings (spawn settings, the orchestrator, hooks…). */
     t: BackendTurn;
-    /** Messages to steer the running turn with (taken between its tool rounds), as Claude Code takes them. */
-    steer?: () => Promise<{ text: string; synthetic?: boolean }[]>;
+    /**
+     * Messages to steer the running turn with (taken between its tool rounds), as Claude Code takes them: the
+     * user's together (their images and files with them), a watch's events apart. `settle`: told once the write is
+     * done whether it went, for those with attachments, which are the queue's until then (SteerMessage.settle, #299).
+     */
+    steer?: () => Promise<{ text: string; synthetic?: boolean; images?: ImagePart[]; documents?: PdfPart[]; settle?: (sent: boolean) => Promise<void> }[]>;
     /** A context block to go before the prompt's text (the conversation so far, beside a /goal). */
     context?: string;
 }
@@ -283,7 +288,7 @@ export class ClaudeConnection implements CliConnection {
         this.prompts.set(uuid, { ref: uuid, kind: "prompt", state: "sent" });
         this.outstanding.set(uuid, new Set([uuid]));
         this.answeredBy.set(uuid, []);
-        this.sendUser(uuid, content, input.synthetic);
+        void this.sendUser(uuid, content, input.synthetic);
         liveDebug("claude", "prompt", { uuid, chars: input.text.length, images: input.images.length });
         return { ref: uuid };
     }
@@ -369,7 +374,7 @@ export class ClaudeConnection implements CliConnection {
     private sendCarrier(text: string | undefined): string {
         const uuid = randomUUID();
         this.prompts.set(uuid, { ref: uuid, kind: "carrier", state: "sent", hidden: text === undefined, text });
-        this.sendUser(uuid, [{ type: "text", text: text ?? CARRIER_COMMAND }]);
+        void this.sendUser(uuid, [{ type: "text", text: text ?? CARRIER_COMMAND }]);
         liveDebug("claude", "carrier", { uuid, followUp: text !== undefined });
         return uuid;
     }
@@ -485,15 +490,32 @@ export class ClaudeConnection implements CliConnection {
         const pending = this.outstanding.get(cur.ref);
         if (pending && pending.size >= 64) return;
         const taken = await steer();
-        if (!taken.length || this.ended) return;
-        for (const m of taken) {
+        if (!taken.length) return;
+        if (this.ended) {
+            // Gone before they went: those with attachments stay queued, to go as a prompt of their own.
+            for (const m of taken) await m.settle?.(false);
+            return;
+        }
+        // Each buffered in order now; each known written (or not) once its write is done.
+        const writes = taken.map((m) => {
             const uuid = randomUUID();
             this.prompts.set(uuid, { ref: cur.ref, kind: "steer", state: "sent" });
             if (!this.outstanding.has(cur.ref)) this.outstanding.set(cur.ref, new Set());
             this.outstanding.get(cur.ref)!.add(uuid);
-            this.sendUser(uuid, [{ type: "text", text: m.text }], m.synthetic);
-            liveDebug("claude", "steer", { ref: cur.ref, uuid });
-        }
+            liveDebug("claude", "steer", { ref: cur.ref, uuid, media: (m.images?.length ?? 0) + (m.documents?.length ?? 0) });
+            // Their images and files first, as a prompt's; the text last (none when there are no words).
+            const content = [...mediaBlocks(m.images ?? [], m.documents ?? []), ...(m.text ? [{ type: "text", text: m.text }] : [])];
+            return this.sendUser(uuid, content, m.synthetic).then((sent) => {
+                if (!sent) {
+                    this.prompts.delete(uuid);
+                    this.outstanding.get(cur.ref)?.delete(uuid);
+                }
+                return sent;
+            });
+        });
+        const sent = await Promise.all(writes);
+        // Written whole to its stdin: one with attachments is the host's to record now; not, it stays queued.
+        for (const [i, m] of taken.entries()) await m.settle?.(sent[i]!);
     }
 
     private onLifecycle(m: Record<string, any>) {
@@ -1207,8 +1229,9 @@ export class ClaudeConnection implements CliConnection {
 
     // ---- control
 
-    private sendUser(uuid: string, content: unknown[], synthetic = false) {
-        this.proc.send({ type: "user", uuid, message: { role: "user", content }, parent_tool_use_id: null, session_id: this.sessionId ?? "", ...(synthetic ? { isSynthetic: true } : {}) });
+    /** False when it didn't go: Claude Code's stdin is gone (known once the write is done: JsonLinesProcess.send). */
+    private sendUser(uuid: string, content: unknown[], synthetic = false): Promise<boolean> {
+        return this.proc.send({ type: "user", uuid, message: { role: "user", content }, parent_tool_use_id: null, session_id: this.sessionId ?? "", ...(synthetic ? { isSynthetic: true } : {}) });
     }
 
     /** Send a control request; its answer, or undefined when none comes (the CLI went away, or `timeoutMs` passed). */
@@ -1495,9 +1518,22 @@ export class ClaudeLive {
             context: t.goalContext ?? preamble,
             steer: async () => {
                 const queued = await rec.sink.drainQueued(() => rec.take());
-                const typed = queued.filter((x) => !rec.sink.fromWake?.(x));
-                const woke = queued.filter((x) => rec.sink.fromWake?.(x));
-                return [...(typed.length ? [{ text: typed.join("\n\n") }] : []), ...(woke.length ? [{ text: woke.join("\n\n"), synthetic: true }] : [])];
+                // One with attachments (settle) is the user's, whatever its words.
+                const fromWake = (m: SteerMessage) => !m.settle && Boolean(rec.sink.fromWake?.(m.text));
+                const typed = queued.filter((m) => !fromWake(m));
+                const woke = queued.filter(fromWake);
+                const settles = typed.flatMap((m) => (m.settle ? [m.settle.bind(m)] : []));
+                return [
+                    ...(typed.length
+                        ? [{
+                              text: typed.map((m) => m.text).filter(Boolean).join("\n\n"),
+                              images: typed.flatMap((m) => m.images),
+                              documents: typed.flatMap((m) => m.documents),
+                              ...(settles.length ? { settle: async (sent: boolean) => void (await Promise.all(settles.map((s) => s(sent)))) } : {}),
+                          }]
+                        : []),
+                    ...(woke.length ? [{ text: woke.map((m) => m.text).join("\n\n"), synthetic: true }] : []),
+                ];
             },
         };
         this.watchAccount(key, live);

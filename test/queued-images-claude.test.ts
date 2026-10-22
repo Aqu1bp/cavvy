@@ -28,7 +28,7 @@ function fakeClaude(): string {
 }
 
 /** A session on the fake Claude Code in `scenario` (then `second` for its later prompts), with its first prompt sent. */
-async function claudeSession(scenario: string, env: Record<string, string> = {}) {
+async function claudeSession(scenario: string, env: Record<string, string> = {}, o: { liveOff?: boolean } = {}) {
     saveAgentConfig("claude-code", { path: fakeClaude() });
     process.env.FAKE_SCENARIO = scenario;
     process.env.FAKE_LOG = join(tempDir("queued-images-log-"), "log.jsonl");
@@ -42,6 +42,8 @@ async function claudeSession(scenario: string, env: Record<string, string> = {})
     const snap = (await engine.handle(c, "session.create", { cwd })) as SessionSnapshot;
     const id = snap.state.id;
     const rt = engine.runtimes.get(id)!;
+    // The kill switch: a process per run, which waits on the background work its turn started.
+    if (o.liveOff) (rt as any).ws.settings = { ...(rt as any).ws.settings, agentCli: { liveSessions: false } };
     await engine.handle(c, "models.list", { refresh: true });
     await engine.handle(c, "session.setModel", { id, ref: "claude-code:default", persist: false });
     await engine.handle(c, "session.send", { id, text: "start" });
@@ -201,7 +203,8 @@ describe("a message with an image sent while Claude Code is busy", () => {
     for (const scenario of ["shell-background", "agent-background"]) {
         for (const mode of ["steer", "queue"] as const) {
             test(`while Claude Code only waits on its background work (${scenario}, ${mode}): it goes at once, with its image`, async () => {
-                const { engine, c, id, rt } = await claudeSession(scenario, { FAKE_SECOND_SCENARIO: "silent", FAKE_SHELL_MS: "4000", FAKE_BACKGROUND_MS: "4000" });
+                // The per-run path's wait (agentCli.liveSessions off): a live session's turn ends at its result instead.
+                const { engine, c, id, rt } = await claudeSession(scenario, { FAKE_SECOND_SCENARIO: "silent", FAKE_SHELL_MS: "4000", FAKE_BACKGROUND_MS: "4000" }, { liveOff: true });
                 try {
                     expect(await until(() => Boolean(rt.snapshot().state.activity?.label?.includes("Waiting for")))).toBe(true);
                     expect(await engine.handle(c, "session.send", { id, text: "look at this screenshot", images: [{ mediaType: "image/png", data: PNG }], mode })).toEqual({ queued: true });
