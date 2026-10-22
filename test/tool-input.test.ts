@@ -133,3 +133,56 @@ describe("malformed property schemas from MCP servers", () => {
         expect(validateInput(t, { cursor: null })).toBeUndefined();
     });
 });
+
+describe("$ref in property schemas", () => {
+    const S = { type: "string" };
+    function refTool(prop: unknown, required: string[] = [], defs: Record<string, unknown> = { S }): Tool<any> {
+        return { parameters: { type: "object", definitions: defs, $defs: { "a/b~c": S, N: { type: ["string", "null"] } }, properties: { x: prop }, required } } as Tool<any>;
+    }
+
+    test("a valid optional null behind a oneOf or not with a $ref is kept", () => {
+        for (const prop of [{ oneOf: [{ $ref: "#/definitions/S" }, { type: "null" }] }, { not: { $ref: "#/definitions/S" } }, { anyOf: [{ $ref: "#/$defs/N" }] }]) {
+            const t = refTool(prop);
+            expect(coerceInput(t, { x: null })).toEqual({ x: null });
+            expect(validateInput(t, { x: null })).toBeUndefined();
+        }
+    });
+
+    test("a required non-nullable $ref rejects null; an optional one drops it", () => {
+        for (const $ref of ["#/definitions/S", "#/$defs/a~1b~0c", "#/%24defs/a~1b~0c"]) {
+            expect(validateInput(refTool({ $ref }, ["x"]), { x: null })).toBe('Parameter "x" does not allow null');
+            expect(coerceInput(refTool({ $ref }), { x: null })).toEqual({});
+        }
+        expect(validateInput(refTool({ $ref: "#/$defs/N" }, ["x"]), { x: null })).toBeUndefined();
+    });
+
+    test("a cyclic $ref is unknown: null is neither rejected nor dropped", () => {
+        const defs = { A: { $ref: "#/definitions/B" }, B: { anyOf: [{ $ref: "#/definitions/A" }, { type: "string" }] } };
+        for (const required of [["x"], []]) {
+            for (const prop of [{ $ref: "#/definitions/A" }, { oneOf: [{ $ref: "#/definitions/A" }, { type: "null" }] }]) {
+                const t = refTool(prop, required, defs);
+                expect(validateInput(t, { x: null })).toBeUndefined();
+                expect(coerceInput(t, { x: null })).toEqual({ x: null });
+            }
+        }
+    });
+
+    test("an unresolvable or remote $ref is unknown: null is neither rejected nor dropped", () => {
+        for (const $ref of ["#/definitions/Missing", "https://example.com/s.json", "#anchor", "#/%E0"]) {
+            for (const required of [["x"], []]) {
+                const t = refTool({ oneOf: [{ $ref }, { type: "null" }] }, required);
+                expect(validateInput(t, { x: null })).toBeUndefined();
+                expect(coerceInput(t, { x: null })).toEqual({ x: null });
+                const bare = refTool({ $ref }, required);
+                expect(validateInput(bare, { x: null })).toBeUndefined();
+                expect(coerceInput(bare, { x: null })).toEqual({ x: null });
+            }
+        }
+    });
+
+    test("a known no still wins over an unknown $ref", () => {
+        const t = refTool({ type: "string", $ref: "#/definitions/Missing" });
+        expect(coerceInput(t, { x: null })).toEqual({});
+        expect(validateInput(refTool({ allOf: [{ $ref: "#/definitions/Missing" }, { type: "string" }] }, ["x"]), { x: null })).toBe('Parameter "x" does not allow null');
+    });
+});

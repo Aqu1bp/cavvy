@@ -49,6 +49,7 @@ interface PropertySchema {
     nullable?: boolean;
     enum?: unknown[];
     const?: unknown;
+    $ref?: string;
     anyOf?: (PropertySchema | boolean)[];
     oneOf?: (PropertySchema | boolean)[];
     allOf?: (PropertySchema | boolean)[];
@@ -60,27 +61,73 @@ function isSchema(prop: unknown): prop is PropertySchema | boolean {
     return typeof prop === "boolean" || (prop !== null && typeof prop === "object" && !Array.isArray(prop));
 }
 
+/** Whether a schema accepts null: yes, no, or unknown (a malformed schema, or a $ref we can't resolve). */
+type NullVerdict = boolean | undefined;
+
+/** Every verdict must hold: one "no" decides it, otherwise any unknown leaves it unknown. */
+function every(verdicts: NullVerdict[]): NullVerdict {
+    if (verdicts.includes(false)) return false;
+    return verdicts.includes(undefined) ? undefined : true;
+}
+
+/** A local $ref ("#", "#/definitions/X", "#/$defs/X", any JSON pointer) resolved in the tool's root schema. */
+function resolveRef(root: unknown, ref: string): unknown {
+    if (!ref.startsWith("#")) return undefined; // remote: unknown
+    let pointer: string;
+    try {
+        pointer = decodeURIComponent(ref.slice(1));
+    } catch {
+        return undefined;
+    }
+    if (pointer === "") return root;
+    if (!pointer.startsWith("/")) return undefined; // an $anchor name: unknown
+    let node: unknown = root;
+    for (const raw of pointer.slice(1).split("/")) {
+        const part = raw.replace(/~1/g, "/").replace(/~0/g, "~");
+        if (node === null || typeof node !== "object" || !Object.hasOwn(node, part)) return undefined;
+        node = (node as Record<string, unknown>)[part];
+    }
+    return node;
+}
+
 /**
  * Null is a value, not a missing key; check the constraints that can exclude it.
- * A malformed schema (null, a string, ...) constrains nothing, so it allows null.
+ * Local $refs are followed in `root`; a malformed schema, a remote or missing
+ * $ref, or a cycle is unknown, which never rejects or drops a value.
  */
-function allowsNull(prop: unknown): boolean {
-    if (!isSchema(prop)) return true;
+function allowsNull(prop: unknown, root: unknown, seen: ReadonlySet<string> = new Set()): NullVerdict {
+    if (!isSchema(prop)) return undefined;
     if (typeof prop === "boolean") return prop;
+    const verdicts: NullVerdict[] = [];
     const types = Array.isArray(prop.type) ? prop.type : prop.type ? [prop.type] : [];
     if (types.length && !types.includes("null") && !prop.nullable) return false;
     if (Array.isArray(prop.enum) && !prop.enum.includes(null)) return false;
     if ("const" in prop && prop.const !== null) return false;
-    if (Array.isArray(prop.anyOf) && !prop.anyOf.some(allowsNull)) return false;
-    if (Array.isArray(prop.oneOf) && prop.oneOf.filter(allowsNull).length !== 1) return false;
-    if (Array.isArray(prop.allOf) && !prop.allOf.every(allowsNull)) return false;
-    if (isSchema(prop.not) && allowsNull(prop.not)) return false;
-    return true;
+    if (typeof prop.$ref === "string") {
+        if (seen.has(prop.$ref)) verdicts.push(undefined);
+        else verdicts.push(allowsNull(resolveRef(root, prop.$ref), root, new Set([...seen, prop.$ref])));
+    }
+    const sub = (list: unknown) => (Array.isArray(list) ? list.map((s) => allowsNull(s, root, seen)) : undefined);
+    const anyOf = sub(prop.anyOf);
+    if (anyOf) verdicts.push(anyOf.includes(true) ? true : anyOf.includes(undefined) ? undefined : false);
+    const oneOf = sub(prop.oneOf);
+    if (oneOf) {
+        const yes = oneOf.filter((v) => v === true).length;
+        const maybe = oneOf.filter((v) => v === undefined).length;
+        verdicts.push(yes > 1 || yes + maybe === 0 ? false : maybe ? undefined : true);
+    }
+    const allOf = sub(prop.allOf);
+    if (allOf) verdicts.push(every(allOf));
+    if (prop.not !== undefined && isSchema(prop.not)) {
+        const inner = allowsNull(prop.not, root, seen);
+        verdicts.push(inner === undefined ? undefined : !inner);
+    }
+    return every(verdicts);
 }
 
 /**
- * An optional key whose null the schema forbids. Models often send null for
- * parameters they don't use; that means "omitted", so the key is dropped.
+ * An optional key whose null the schema certainly forbids. Models often send
+ * null for parameters they don't use; that means "omitted", so the key is dropped.
  */
 function isOmittedNull(t: Tool<any>, key: string, val: unknown): boolean {
     if (val !== null) return false;
@@ -88,7 +135,7 @@ function isOmittedNull(t: Tool<any>, key: string, val: unknown): boolean {
     const required = Array.isArray(schema.required) ? schema.required : [];
     if (required.includes(key)) return false;
     const props = schema.properties ?? {};
-    return Object.hasOwn(props, key) && !allowsNull(props[key]);
+    return Object.hasOwn(props, key) && allowsNull(props[key], t.parameters) === false;
 }
 
 /**
@@ -107,7 +154,7 @@ export function validateInput(t: Tool<any>, input: unknown): string | undefined 
         const prop: unknown = schema.properties?.[key];
         if (val === undefined || !isSchema(prop)) continue;
         if (val === null) {
-            if (!allowsNull(prop) && !isOmittedNull(t, key, val)) return `Parameter "${key}" does not allow null`;
+            if (allowsNull(prop, t.parameters) === false && !isOmittedNull(t, key, val)) return `Parameter "${key}" does not allow null`;
             continue;
         }
         if (typeof prop === "boolean") {
