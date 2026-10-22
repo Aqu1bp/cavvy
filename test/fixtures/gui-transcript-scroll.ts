@@ -110,7 +110,8 @@ const scope = {
         constructor(cb: (entries: any[]) => void, options: any) { io.cb = cb; io.options = options; }
         observe(target: Node) { io.targets.add(target); }
         unobserve(target: Node) { io.targets.delete(target); }
-        disconnect() { io.targets.clear(); io.cb = undefined; }
+        // Its callback stays with it, as in WebKit, where an observer with a root outlives disconnect().
+        disconnect() { io.targets.clear(); }
     },
     ResizeObserver: class {
         constructor(private cb: () => void) {}
@@ -433,6 +434,9 @@ try {
     skippedAt.clear(); turnHeights.clear();
     dispose();
     assert.equal(io.targets.size, 0, "nor is any once the conversation is closed");
+    const stray = create("article");
+    io.cb!([{ target: stray, isIntersecting: false }]);
+    assert.equal(stray.props[FAR], undefined, "and the observer's callback, which may outlive it, no longer reaches the conversation");
 
     // The composer dock's height (SessionView's dock prop) is set on the two boxes that keep room for it, and find
     // keeps a match above it: --dock-h isn't inherited, and WebKit keeps an inherited one stale.

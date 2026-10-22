@@ -25,6 +25,15 @@ const MUTATION_MS = 40;
 const REPIN_MS = 300;
 const GLIDE_EASE = "cubic-bezier(0.2, 0.8, 0.2, 1)";
 
+/**
+ * An observer's callback that can be let go of. WebKit keeps an IntersectionObserver with a root alive after
+ * disconnect(), and its callback with it: one closing over the transcript kept all of it (every turn's elements)
+ * after the session was left. This one holds only `to`, which the transcript empties when it goes.
+ */
+function relay(to: { fn?: IntersectionObserverCallback }): IntersectionObserverCallback {
+    return (entries, observer) => to.fn?.(entries, observer);
+}
+
 /** `dock`: the composer dock's height (undefined until it's measured). */
 export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     // --dock-h goes on each box that reads it (stage.css): not inherited, and not passed down with `inherit`.
@@ -188,7 +197,8 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     onMount(() => {
         if (!scroller || !content) return;
         if (typeof IntersectionObserver !== "undefined") {
-            far = new IntersectionObserver((entries) => {
+            const to: { fn?: IntersectionObserverCallback } = {};
+            to.fn = (entries) => {
                 // One drawn again may not be the size it was skipped at (the column was another width, say). Above
                 // the view, the scroll position takes the difference: what's in view stays put. Measured here, as
                 // the next scroll event's capture() would take the move for the reader's.
@@ -205,9 +215,13 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                     scroller!.scrollTop += moved;
                     wrote();
                 }
-            }, { root: scroller, rootMargin: "100% 0px" });
+            };
+            far = new IntersectionObserver(relay(to), { root: scroller, rootMargin: "100% 0px" });
             for (const el of content.querySelectorAll<HTMLElement>("[data-turn]")) far.observe(el);
-            onCleanup(() => far?.disconnect());
+            onCleanup(() => {
+                far?.disconnect();
+                to.fn = undefined;
+            });
         }
         const ro = new ResizeObserver(() => {
             if (!ready) return;
