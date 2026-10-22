@@ -2440,7 +2440,7 @@ export class App {
         const adopt = this.adopts.shift();
         if (adopt) {
             const label = adopt.label?.trim() || `${getProvider(adopt.provider)?.name ?? adopt.provider} reported back`;
-            return void this.startTurn(label, { display: label, kind: "wake", adopt });
+            return void this.startTurn(label, { display: label, kind: adopt.prompt ? "prompt" : "wake", adopt });
         }
         const wakes = this.toolState.wakes!.takeForTurn();
         if (!wakes.length) return;

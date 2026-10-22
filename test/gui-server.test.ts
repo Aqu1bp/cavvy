@@ -1102,7 +1102,9 @@ describe("connecting", () => {
         (s.c as { send: (e: unknown) => void }).send = (e) => void events.push(e);
         await s.engine.handle(s.c, "models.list", { refresh: true });
         await s.engine.handle(s.c, "session.setModel", { id: s.id, ref: "claude-code:default", persist: false });
-        s.rt.ws.settings = { ...s.rt.ws.settings, hooks: { UserPromptSubmit: [{ command: hook }] } };
+        // The per-run path, whose turn waits for its background work (agentCli.liveSessions off): what's tested is
+        // a message sent during that wait. On a live session the turn is over at its answer (claude-live.test.ts).
+        s.rt.ws.settings = { ...s.rt.ws.settings, agentCli: { liveSessions: false }, hooks: { UserPromptSubmit: [{ command: hook }] } };
         await s.engine.handle(s.c, "session.send", { id: s.id, text: "map the auth module" });
         for (let k = 0; k < 500 && !s.rt.snapshot().state.activity?.label?.includes("Waiting for"); k++) await Bun.sleep(10);
         expect(s.rt.snapshot().state.activity?.label).toContain("Waiting for");
@@ -2383,7 +2385,7 @@ describe("sub-agents", () => {
     }, 45_000);
 
     /** A turn on the fake Claude Code in a scenario; the session's view once it's over. */
-    async function claudeCodeTurn(scenario: string) {
+    async function claudeCodeTurn(scenario: string, settled: (v: { state: SessionState; turns: Turn[]; agents: AgentRun[] }) => boolean = done) {
         const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
         saveAgentConfig("claude-code", { path: fakeClaude() });
         process.env.FAKE_SCENARIO = scenario;
@@ -2393,7 +2395,7 @@ describe("sub-agents", () => {
             const id = await c.open("session.create", { cwd: project() });
             await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
             await c.call("session.send", { id, text: "map the auth module" });
-            await c.until(id, done, 30_000);
+            await c.until(id, settled, 30_000);
             const v = c.view(id);
             c.close();
             return v;
@@ -2431,31 +2433,82 @@ describe("sub-agents", () => {
         ["agent-background", "launched first"],
         ["agent-background-late", "launched after its first step"],
     ])
-        test(`Claude Code's sub-agent in the background (${when}) keeps the turn going until it reports back`, async () => {
-            const v = await claudeCodeTurn(scenario);
+        test(`Claude Code's sub-agent in the background (${when}): the turn ends at its answer, and the report comes in a turn of its own`, async () => {
+            const REPORT = "src/auth registers sign-in strategies in one list.";
+            // While it runs, its call stays open in the turn that's over; then it ends with the report.
+            const seen: string[] = [];
+            const v = await claudeCodeTurn(scenario, (v) => {
+                const call = v.turns[0] && tools(v.turns[0]).find((b) => b.agent);
+                if (call && v.turns[0]!.status === "done") seen.push(call.status);
+                return done(v) && v.agents[0]?.status === "done" && texts(lastTurn(v)).includes("The explorer reported back");
+            });
+            expect(seen[0]).toBe("running");
+            expect(seen).not.toContain("error");
             expect(v.agents).toHaveLength(1);
             const a = v.agents[0]!;
-            const REPORT = "src/auth registers sign-in strategies in one list.";
             expect([a.description, a.status, a.report, a.tokens]).toEqual(["Map auth", "done", REPORT, 4321]);
             expect(a.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t))).toEqual(["Read:ok", "Glob:ok", REPORT]);
-            // A sub-agent row in the transcript, open while it ran, with its report rather than the launch note.
-            const call = tools(lastTurn(v)).find((b) => b.agent)!;
+            // The turn ended at its answer; the report came in a turn of its own, and the call has the report.
+            expect(v.turns.map((t) => [t.prompt?.text, t.status])).toEqual([
+                ["map the auth module", "done"],
+                ["Background sub-agent finished: Map auth", "done"],
+            ]);
+            expect(texts(v.turns[0]!)).not.toContain("The explorer reported back");
+            expect(texts(v.turns[1]!)).toContain("The explorer reported back");
+            const call = tools(v.turns[0]!).find((b) => b.agent)!;
             expect([call.name, call.status, call.output]).toEqual(["Task", "ok", REPORT]);
             expect(call.durationMs).toBeGreaterThanOrEqual(250);
-            expect(texts(lastTurn(v))).toContain("The explorer reported back");
         }, 45_000);
 
-    test("Claude Code's background sub-agent that never finishes: the turn stops waiting, and says so", async () => {
-        const { backgroundTiming } = await import("../src/backends/claude-code");
-        const saved = { ...backgroundTiming };
-        backgroundTiming.maxWaitMs = 500;
+    test("Claude Code's background sub-agent that never finishes: the turn ends at its answer, it's listed as running, and Stop stops it", async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
         try {
-            const v = await claudeCodeTurn("agent-background-stuck");
-            expect(v.agents.map((a) => [a.status, a.report])).toEqual([["stopped", undefined]]);
-            const notices = lastTurn(v).blocks.flatMap((b) => (b.t === "notice" ? [b.text] : []));
-            expect(notices.some((n) => /^Harness stopped 1 background sub-agent \(Map auth\) after waiting/.test(n))).toBe(true);
+            const c = await client();
+            await c.call("models.list", { refresh: true });
+            const id = await c.open("session.create", { cwd: project() });
+            await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
+            await c.call("session.send", { id, text: "map the auth module" });
+            await c.until(id, (v) => done(v) && (v.state.backgroundTasks ?? []).some((t) => t.kind === "agent" && t.status === "running"), 30_000);
+            const task = c.view(id).state.backgroundTasks!.find((t) => t.kind === "agent")!;
+            expect(c.view(id).agents.map((a) => a.status)).toEqual(["running"]);
+            expect(await c.call("session.stopBackground", { id, ids: [task.id] })).toEqual({ results: { [task.id]: "stopped" } });
+            await c.until(id, (v) => (v.state.backgroundTasks ?? []).every((t) => t.status !== "running") && v.agents.every((a) => a.status !== "running"), 10_000);
+            expect(c.view(id).agents.map((a) => a.status)).toEqual(["stopped"]);
+            c.close();
         } finally {
-            Object.assign(backgroundTiming, saved);
+            delete process.env.FAKE_SCENARIO;
+            removeAgentConfig("claude-code");
+        }
+    }, 45_000);
+
+    test("a Claude Code session no window shows stays open while its background sub-agent runs, and its report is kept", async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        process.env.FAKE_SCENARIO = "agent-background";
+        process.env.FAKE_BACKGROUND_MS = "1200";
+        try {
+            const c = await client();
+            await c.call("models.list", { refresh: true });
+            const id = await c.open("session.create", { cwd: project() });
+            await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
+            await c.call("session.send", { id, text: "map the auth module" });
+            await c.until(id, (v) => done(v) && v.agents[0]?.status === "running", 30_000);
+            c.close();
+            // Well past the server's unload delay (300 ms): closing it would stop Claude Code, and the sub-agent with it.
+            await Bun.sleep(800);
+            const rt = srv.engine.runtimes.get(id);
+            expect(rt).toBeDefined();
+            // Its report comes as a turn of its own, with no window open; then the session is closed as usual.
+            for (let i = 0; i < 300 && !rt!.session.messages.some((m) => JSON.stringify(m.content).includes("The explorer reported back")); i++) await Bun.sleep(20);
+            expect(rt!.session.messages.some((m) => JSON.stringify(m.content).includes("The explorer reported back"))).toBe(true);
+            for (let i = 0; i < 200 && srv.engine.runtimes.has(id); i++) await Bun.sleep(20);
+            expect(srv.engine.runtimes.has(id)).toBe(false);
+        } finally {
+            delete process.env.FAKE_SCENARIO;
+            delete process.env.FAKE_BACKGROUND_MS;
+            removeAgentConfig("claude-code");
         }
     }, 45_000);
 
@@ -2649,10 +2702,12 @@ describe("sub-agents", () => {
 
 describe("reopening a Claude Code session", () => {
     /** A session on the fake Claude Code: one turn in `scenario`, in `mode`. */
-    async function claudeCodeSession(scenario: string, mode: string) {
+    /** `later`: the scenario of its prompts after the first (one Claude Code process serves the session: it's set before it starts). */
+    async function claudeCodeSession(scenario: string, mode: string, later?: string) {
         const { saveAgentConfig } = await import("../src/providers/registry");
         saveAgentConfig("claude-code", { path: fakeClaude() });
         process.env.FAKE_SCENARIO = scenario;
+        if (later) process.env.FAKE_SECOND_SCENARIO = later;
         const c = await client();
         await c.call("models.list", { refresh: true });
         const dir = project();
@@ -2666,6 +2721,7 @@ describe("reopening a Claude Code session", () => {
     async function cleanup() {
         const { removeAgentConfig } = await import("../src/providers/registry");
         delete process.env.FAKE_SCENARIO;
+        delete process.env.FAKE_SECOND_SCENARIO;
         removeAgentConfig("claude-code");
     }
     /** The session as a fresh server opens it (after a restart, or once it was unloaded). */
@@ -2736,7 +2792,8 @@ describe("reopening a Claude Code session", () => {
 
     test("after Claude Code compacts its own context, later turns still come back (the transcript itself wasn't compacted)", async () => {
         try {
-            const { c, id } = await claudeCodeSession("write", "acceptEdits");
+            // Its later prompts (the compaction's, the next one's) run the agent scenario.
+            const { c, id } = await claudeCodeSession("write", "acceptEdits", "agent");
             const hitFor = async (query: string) => (await c.call<SessionSearchResult>("sessions.search", { query, limit: 200 })).hits.find((h) => h.id === id)!;
             const target = (turns: Turn[], h: { seg: number; index: number }) => turns.filter((t) => t.pos && (t.pos.seg < h.seg || (t.pos.seg === h.seg && t.pos.index <= h.index))).at(-1)!;
             const before = await hitFor("map the auth module");
@@ -2750,7 +2807,6 @@ describe("reopening a Claude Code session", () => {
             expect(first.startedAt).toBe(after.at);
             expect(c.view(id).turns.find((t) => !t.prompt && t.blocks.some((b) => b.t === "compact"))!.pos).toBeUndefined();
             // (Calls of their own: the fake's ids are the same each turn.)
-            process.env.FAKE_SCENARIO = "agent";
             await c.call("session.send", { id, text: "and the tests?" });
             await c.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 2, 30_000);
             const live = structuredClone(c.view(id));
@@ -3070,6 +3126,11 @@ describe("reopening a Claude Code session", () => {
             const { c, id } = await claudeCodeSession("write", "acceptEdits");
             await c.call("session.setEffort", { id, effort: "high" });
             c.close();
+            // As when the server quits: the session is closed, and its Claude Code process goes with it (the servers
+            // here share one process, so the next server's session would otherwise find it running).
+            for (let i = 0; i < 200 && srv.engine.runtimes.has(id); i++) await Bun.sleep(20);
+            const { clientFor } = await import("../src/providers/models");
+            await ((await clientFor("claude-code")) as { shutdown(): Promise<void> }).shutdown();
             expect((await reopened(id)).state.effort).toBe("high");
             process.env.FAKE_LOG = log;
             const again = await startServer({ token: TOKEN });

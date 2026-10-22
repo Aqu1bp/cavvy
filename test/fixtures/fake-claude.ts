@@ -23,6 +23,7 @@
 // FAKE_SCENARIO     write (default) | shell-cap-late | write-config | read-secret | rm | bash | leak | ask | plan | hang | write-hang | mcp | silent | agent | agent-background | agent-background-late | agent-background-stuck | agent-quiet | agent-waits | agent-renotified | agent-fails-later | agent-fails-then-reports | agent-hands-back-late
 // FAKE_SECOND_SCENARIO  the scenario for its prompts after the first (default: the same)
 // FAKE_BACKGROUND_MS  how long a background sub-agent goes on after the turn's result (default 300)
+// FAKE_BACKGROUND_ASK=1  the background sub-agent asks to run a command (can_use_tool) before it ends
 // FAKE_STALE_TASK=1   resumed, it first reports a background sub-agent of the earlier run as stopped, in a turn of its own with no model call (what Claude Code does for one killed with its process)
 // FAKE_OLD_RESULTS=1  results don't say which prompt they answer (an older CLI)
 // FAKE_LIST_FIRST=ms  a background sub-agent leaves Claude Code's background list this long before its task_notification (1: 200 ms)
@@ -61,6 +62,21 @@
 // shell-background / shell-background-stuck / monitor-background report live tasks;
 // partial-error / partial-error-exit / result-error separate diagnostics from replies.
 // FAKE_CLAUDE_VERSION overrides the initialize version for compatibility tests.
+// Kept between turns, as Claude Code 2.1.304 is (docs/cli-protocol-probes.md): it never exits after a result,
+// only when its stdin closes. As 2.1.304 it says when a prompt is queued, started, completed or cancelled
+// (command_lifecycle), names the prompts a turn takes in its system/init (user_message_uuids), and lists its
+// capabilities there (interrupt_send_now_v1; FAKE_NO_SEND_NOW=1 leaves it out). A plain interrupt stops its
+// background sub-agents too (task_notification stopped), with or without a turn running; interrupt {send_now,
+// message_uuid} for a queued message stops only the running turn, and the message runs next. A command it
+// answers itself (/effort, /cost) is answered by a synthetic message, with no model call.
+// FAKE_EXIT_IDLE_MS  exits (a crash) this long after a result when nothing else comes
+// FAKE_SET_MODEL_FAIL=1  answers set_model and apply_flag_settings with an error
+// FAKE_SEND_NOW      "delivering" or "nothing_waiting": how it answers interrupt send_now (default: as 2.1.304)
+// FAKE_IGNORE_INTERRUPT=1  answers interrupt requests but doesn't stop the turn (an unanswered stop)
+// scenarios for the live layer: agent-background-hang (a background sub-agent, then a foreground command that
+// runs until it's stopped), bg-shell-hang, bg-monitor-hang (the same with a background shell or
+// a monitor), stream-hang (text, then waits mid-answer until stopped), agent-background-ask (a background
+// sub-agent asks to run a command after the turn's result), two-shells (two background commands that finish together)
 // /goal: goal_status entries in the session's transcript (as 2.1.305), and active_goal on stdout only with
 // CLAUDE_CODE_REMOTE; FAKE_GOAL_HOLD=1 waits for an interrupt after the first check, FAKE_GOAL_IMPOSSIBLE=1 ends
 // it judged impossible
@@ -85,7 +101,7 @@ function pluginSkills(): string[] {
     });
 }
 const cwd = process.cwd();
-log({ argv, cwd, sawApiKey: Boolean(process.env.ANTHROPIC_API_KEY), sawOpenAiKey: Boolean(process.env.OPENAI_API_KEY), claudeConfigDir: process.env.CLAUDE_CONFIG_DIR, codexHome: process.env.CODEX_HOME, sawOauthToken: Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN) });
+log({ pid: process.pid, argv, cwd, sawApiKey: Boolean(process.env.ANTHROPIC_API_KEY), sawOpenAiKey: Boolean(process.env.OPENAI_API_KEY), claudeConfigDir: process.env.CLAUDE_CONFIG_DIR, codexHome: process.env.CODEX_HOME, sawOauthToken: Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN) });
 if (process.env.FAKE_LOG_ENV === "1") log({ env: process.env });
 // What --agents gave it (a file under -p), read at start as Claude Code does.
 if (argv.includes("--agents")) {
@@ -120,6 +136,13 @@ if (process.env.FAKE_IGNORE_STOP === "1") process.on("SIGTERM", () => log({ igno
 if (process.env.FAKE_HOLD_STDOUT === "1") Bun.spawn(["sleep", "8"], { stdin: "ignore", stdout: "inherit", stderr: "ignore" }).unref();
 
 const out = (o: unknown) => process.stdout.write(JSON.stringify(o) + "\n");
+/** As 2.1.304's system/init lists them. */
+const CAPABILITIES = ["interrupt_receipt_v1", "interrupt_cancel_queued_v1", ...(process.env.FAKE_NO_SEND_NOW === "1" ? [] : ["interrupt_send_now_v1"])];
+/** A prompt's place in its queue, as 2.1.304 says it (not older ones: FAKE_OLD_RESULTS). */
+const lifecycle = (uuid: string | undefined, state: string) => {
+    if (uuid && process.env.FAKE_OLD_RESULTS !== "1") out({ type: "command_lifecycle", command_uuid: uuid, state, uuid: `lc-${Math.random().toString(36).slice(2)}`, session_id: sessionIdOf() });
+};
+let sessionIdOf = () => "";
 const flag = (name: string) => {
     const i = argv.indexOf(name);
     return i >= 0 ? argv[i + 1] : undefined;
@@ -199,6 +222,31 @@ function selfApproved(tool: string, input: any): boolean {
 
 // --fork-session (with --resume): a copy of the session goes on, under a new id.
 const sessionId = resume && !argv.includes("--fork-session") ? resume : `${resume ? "fork" : "sess"}-${Math.random().toString(36).slice(2, 10)}`;
+sessionIdOf = () => sessionId;
+/** A turn is running, and the prompt it answers. */
+let busy = false;
+/** Prompts waiting behind the running turn, and those withdrawn (cancel_async_message) before they ran. */
+const waiting = new Set<string>();
+const withdrawn = new Set<string>();
+let idleExit: ReturnType<typeof setTimeout> | undefined;
+/** FAKE_EXIT_IDLE_MS: it goes away (a crash) a while after a turn, when nothing else came. */
+function armIdleExit() {
+    clearTimeout(idleExit);
+    if (process.env.FAKE_EXIT_IDLE_MS && !busy && !waiting.size) idleExit = setTimeout(() => process.exit(3), Number(process.env.FAKE_EXIT_IDLE_MS));
+}
+/** Its background sub-agents, stopped (a plain interrupt does this, with or without a turn running). */
+function killAgents() {
+    let any = false;
+    for (const [id, t] of [...bgTasks]) {
+        if (t.task_type !== "local_agent") continue;
+        any = true;
+        bgTasks.delete(id);
+        stoppedTasks.add(id);
+        out({ type: "system", subtype: "task_updated", task_id: id, patch: { status: "killed" }, session_id: sessionId });
+        out({ type: "system", subtype: "task_notification", task_id: id, tool_use_id: "toolu_agent", status: "stopped", summary: "Map auth", session_id: sessionId });
+    }
+    if (any) backgroundChanged();
+}
 /** Servers added with mcp_set_servers, and the tools each lets run without asking. */
 const mcpServers = new Map<string, McpServerRef & { allowed: Set<string> }>();
 const pending = new Map<string, (r: any) => void>();
@@ -253,9 +301,35 @@ function backgroundChanged() {
 }
 
 /** A turn Claude Code takes itself, to pass on what a background sub-agent reported. */
-function followUp(textOut: string) {
+function followUp(textOut: string): void | Promise<void> {
     answering = undefined;
-    out({ type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode });
+    interrupted = false;
+    out({ type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode, capabilities: CAPABILITIES });
+    // FAKE_BACKGROUND_ASK=1  a background sub-agent asks to run a command before it ends
+// FAKE_WAKE_TOOL=1: the report turn reads something first (a tool round, where messages can steer it).
+    // (Each step takes a moment, as the model's requests do: time for the turn to be adopted, and a message to come in.)
+    if (process.env.FAKE_WAKE_TOOL === "1") {
+        return Bun.sleep(200).then(async () => {
+            toolUse("toolu_wake_read", "Read", { file_path: join(cwd, "README.md") });
+            toolResult("toolu_wake_read", "read complete", false);
+            await Bun.sleep(300);
+            text(textOut);
+            result("success", { result: textOut });
+        });
+    }
+    // FAKE_WAKE_HANG=1: the report turn runs a command until it's stopped.
+    if (process.env.FAKE_WAKE_HANG === "1") {
+        text("Looking into the report.");
+        toolUse("toolu_wake_hang", "Bash", { command: "sleep 1000" });
+        return new Promise<void>((r) => (wake = r)).then(() => {
+            if (interrupted) {
+                toolResult("toolu_wake_hang", "The user doesn't want to proceed with this tool use.", true);
+                return void result("error_during_execution", { terminal_reason: "aborted_tools" });
+            }
+            text(textOut);
+            result("success", { result: textOut });
+        });
+    }
     text(textOut);
     result("success", { result: textOut });
 }
@@ -358,6 +432,17 @@ let afterResult: (() => void) | undefined;
  */
 async function backgroundAgentEnds(id: string) {
     if (stoppedTasks.has("agent-1")) return;
+    // FAKE_BACKGROUND_ASK=1: first it asks to run a command (after its turn, maybe one the user stopped).
+    if (process.env.FAKE_BACKGROUND_ASK === "1") {
+        const input = { command: "npm test", description: "Run tests" };
+        sub(id, "assistant", [{ type: "tool_use", id: "toolu_sub_bash", name: "Bash", input }]);
+        const request_id = `req-${++seq}`;
+        out({ type: "control_request", request_id, request: { subtype: "can_use_tool", tool_name: "Bash", display_name: "Bash", input, tool_use_id: "toolu_sub_bash", agent_id: "agent-1", permission_suggestions: [] } });
+        const r: any = await new Promise((resolve) => pending.set(request_id, resolve));
+        log({ backgroundAsk: r.behavior });
+        sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_sub_bash", content: r.behavior === "allow" ? "ok" : String(r.message), is_error: r.behavior !== "allow" }]);
+        if (stoppedTasks.has("agent-1")) return;
+    }
     sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_sub_glob", content: "src/auth/index.ts", is_error: false }]);
     sub(id, "assistant", [{ type: "text", text: REPORT }]);
     out({ type: "system", subtype: "task_updated", task_id: "agent-1", patch: { status: "completed" }, session_id: sessionId });
@@ -380,7 +465,7 @@ async function backgroundAgentEnds(id: string) {
         bgTasks.delete("workflow-1");
         backgroundChanged();
     }
-    followUp("The explorer reported back: sign-in strategies are registered in one list.");
+    queueWake("The explorer reported back: sign-in strategies are registered in one list.");
 }
 
 /**
@@ -512,6 +597,29 @@ async function use(id: string, tool: string, input: any): Promise<boolean> {
     return true;
 }
 
+/** A wake turn, after whatever turn runs now (Claude Code runs one at a time). */
+function queueWake(textOut: string) {
+    turnTail = turnTail.then(async () => {
+        busy = true;
+        try {
+            await followUp(textOut);
+        } finally {
+            busy = false;
+            armIdleExit();
+        }
+    });
+}
+
+/** A background task ends by itself: its frames as 2.1.304 sends them, then the turn that reports it. */
+function finishTask(id: string, description: string) {
+    if (stoppedTasks.has(id) || !bgTasks.has(id)) return;
+    bgTasks.delete(id);
+    out({ type: "system", subtype: "task_updated", task_id: id, patch: { status: "completed" }, session_id: sessionId });
+    out({ type: "system", subtype: "task_notification", task_id: id, status: "completed", summary: `Background command "${description}" completed (exit code 0)`, session_id: sessionId });
+    backgroundChanged();
+    queueWake(`${description}: done.`);
+}
+
 let staleReported = false;
 
 async function turn(content: any[], uuid?: string) {
@@ -529,7 +637,15 @@ async function turn(content: any[], uuid?: string) {
     answering = uuid;
     const scenario = prompts > 1 && process.env.FAKE_SECOND_SCENARIO ? process.env.FAKE_SECOND_SCENARIO : firstScenario;
     // slash_commands: its built-ins and skills, named as 2.1.301 names them (a plugin's skills as plugin:skill, as --plugin-dir's are).
-    out({ ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: "on" } : {}), type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode, slash_commands: [...(process.env.FAKE_SLASH_COMMANDS ? JSON.parse(process.env.FAKE_SLASH_COMMANDS) : ["code-review", "simplify", "compact", "context", "design:ux-copy"]), ...pluginSkills()] });
+    out({ ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: "on" } : {}), ...(uuid && process.env.FAKE_OLD_RESULTS !== "1" ? { user_message_uuids: [uuid] } : {}), capabilities: CAPABILITIES, type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode, slash_commands: [...(process.env.FAKE_SLASH_COMMANDS ? JSON.parse(process.env.FAKE_SLASH_COMMANDS) : ["code-review", "simplify", "compact", "context", "design:ux-copy"]), ...pluginSkills()] });
+    // Commands it answers itself: a synthetic message, no model call, nothing spent.
+    const said = String(content.find((c) => c?.type === "text")?.text ?? "");
+    if (/^\/(effort|cost)\s*$/.test(said)) {
+        const reply = said.startsWith("/effort") ? "Usage: /effort <low|medium|high|xhigh|max|auto>" : "Total cost: $0.00";
+        out({ type: "assistant", message: { role: "assistant", model: "<synthetic>", content: [{ type: "text", text: reply }], usage: { input_tokens: 0, output_tokens: 0 } }, parent_tool_use_id: null, session_id: sessionId });
+        out({ type: "result", subtype: "success", is_error: false, session_id: sessionId, total_cost_usd: spent, num_turns: 0, result: reply, user_message_uuid: uuid ?? null, user_message_uuids: uuid ? [uuid] : [], usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
+        return;
+    }
     // Slash commands are Claude Code's own: /compact compacts the session.
     if (String(content.find((c) => c?.type === "text")?.text ?? "").startsWith("/compact")) {
         out({ type: "system", subtype: "compact_boundary", session_id: sessionId });
@@ -721,8 +837,81 @@ async function turn(content: any[], uuid?: string) {
             // Shell/Monitor notifications may have no tool_use_id.
             out({ type: "system", subtype: "task_notification", task_id: "background-1", status: process.env.FAKE_SHELL_STATUS ?? "completed", summary: "Checks passed", session_id: sessionId });
             await Bun.sleep(80);
-            followUp("Background checks passed.");
+            queueWake("Background checks passed.");
         }, Number(process.env.FAKE_SHELL_MS ?? 150));
+        return;
+    }
+    if (scenario === "agent-background-hang" || scenario === "bg-shell-hang" || scenario === "bg-monitor-hang" || scenario === "stream-hang") {
+        if (scenario === "agent-background-hang") {
+            agentCall(true);
+            // The sub-agent goes on (and ends) by itself, whatever the turn does.
+            const ends = afterResult;
+            afterResult = undefined;
+            ends?.();
+        } else if (scenario !== "stream-hang") {
+            const monitor = scenario === "bg-monitor-hang";
+            const id = monitor ? "monitor-1" : "background-1";
+            if (!monitor) {
+                toolUse("background-tool", "Bash", { command: "sleep 150; echo done", description: "Wait for checks", run_in_background: true });
+                out({ type: "system", subtype: "task_started", task_id: id, tool_use_id: "background-tool", is_backgrounded: true, task_type: "local_bash", session_id: sessionId });
+                toolResult("background-tool", `Command running in background with ID: ${id}`, false);
+            }
+            bgTasks.set(id, { task_id: id, task_type: monitor ? "monitor_mcp" : "local_bash", description: monitor ? "Watch checks" : "Wait for checks" });
+            backgroundChanged();
+            if (process.env.FAKE_SHELL_MS) setTimeout(() => finishTask(id, monitor ? "Watch checks" : "Wait for checks"), Number(process.env.FAKE_SHELL_MS));
+        }
+        if (scenario === "stream-hang") out({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Counting: 1, 2, 3" } }, parent_tool_use_id: null, session_id: sessionId });
+        else toolUse("toolu_h", "Bash", { command: "sleep 1000" });
+        await new Promise<void>((r) => (wake = r));
+        if (interrupted) {
+            if (scenario !== "stream-hang") toolResult("toolu_h", "The user doesn't want to proceed with this tool use.", true);
+            return result("error_during_execution", { terminal_reason: scenario === "stream-hang" ? "aborted_streaming" : "aborted_tools" });
+        }
+        text("Done.");
+        return result("success", { result: "Done." });
+    }
+    if (scenario === "two-shells") {
+        for (const id of ["background-1", "background-2"]) {
+            toolUse(`tool-${id}`, "Bash", { command: `sleep 1; echo ${id}`, description: `Check ${id}`, run_in_background: true });
+            out({ type: "system", subtype: "task_started", task_id: id, tool_use_id: `tool-${id}`, is_backgrounded: true, task_type: "local_bash", session_id: sessionId });
+            toolResult(`tool-${id}`, `Command running in background with ID: ${id}`, false);
+            bgTasks.set(id, { task_id: id, task_type: "local_bash", description: `Check ${id}` });
+        }
+        backgroundChanged();
+        text("Started two checks.");
+        result("success", { result: "Started two checks." });
+        // Both end at once: a report turn for each, one after the other.
+        setTimeout(() => {
+            finishTask("background-1", "Check background-1");
+            finishTask("background-2", "Check background-2");
+        }, Number(process.env.FAKE_SHELL_MS ?? 150));
+        return;
+    }
+    if (scenario === "agent-background-ask") {
+        const id = "toolu_agent";
+        toolUse(id, "Agent", { description: "Map auth", prompt: "Run the tests.", subagent_type: "general-purpose", run_in_background: true });
+        bgTasks.set("agent-1", { task_id: "agent-1", task_type: "local_agent", description: "Map auth" });
+        backgroundChanged();
+        out({ type: "system", subtype: "task_started", task_id: "agent-1", tool_use_id: id, description: "Map auth", is_backgrounded: true, session_id: sessionId });
+        out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: [{ type: "text", text: "Async agent launched successfully.\nagentId: agent-1" }] }] }, parent_tool_use_id: null, session_id: sessionId, tool_use_result: { isAsync: true, status: "async_launched", agentId: "agent-1" } });
+        text("Started it.");
+        result("success", { result: "Started it." });
+        // After the turn: the sub-agent asks to run a command, and reports once it has an answer.
+        setTimeout(async () => {
+            const input = { command: "npm test", description: "Run tests" };
+            sub(id, "assistant", [{ type: "tool_use", id: "toolu_sub_bash", name: "Bash", input }]);
+            const request_id = `req-${++seq}`;
+            out({ type: "control_request", request_id, request: { subtype: "can_use_tool", tool_name: "Bash", display_name: "Bash", input, tool_use_id: "toolu_sub_bash", agent_id: "agent-1", permission_suggestions: [] } });
+            const r: any = await new Promise((resolve) => pending.set(request_id, resolve));
+            log({ backgroundAsk: r.behavior });
+            sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_sub_bash", content: r.behavior === "allow" ? "ok" : String(r.message), is_error: r.behavior !== "allow" }]);
+            if (stoppedTasks.has("agent-1")) return;
+            bgTasks.delete("agent-1");
+            out({ type: "system", subtype: "task_updated", task_id: "agent-1", patch: { status: "completed" }, session_id: sessionId });
+            out({ type: "system", subtype: "task_notification", task_id: "agent-1", tool_use_id: id, status: "completed", summary: `Tests: ${r.behavior}`, session_id: sessionId });
+            backgroundChanged();
+            queueWake(`The sub-agent's command was ${r.behavior === "allow" ? "allowed" : "denied"}.`);
+        }, 100);
         return;
     }
     if (scenario === "write") go = await use("toolu_1", "Write", { file_path: join(cwd, "out.txt"), content: "hi\n" });
@@ -944,6 +1133,7 @@ for await (const chunk of Bun.stdin.stream()) {
                     out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "stop failed" } });
                     continue;
                 }
+                if (bgTasks.has(m.request.task_id)) out({ type: "system", subtype: "task_updated", task_id: m.request.task_id, patch: { status: "killed" }, session_id: sessionId });
                 bgTasks.delete(m.request.task_id);
                 stoppedTasks.add(m.request.task_id);
                 // As in Claude Code: stopping a sub-agent kills the shells it started (shell-background-nested's).
@@ -953,10 +1143,33 @@ for await (const chunk of Bun.stdin.stream()) {
                 out({ type: "system", subtype: "task_notification", task_id: m.request.task_id, status: "stopped", summary: "Stopped by host", session_id: sessionId });
             } else if (sub === "interrupt") {
                 if (process.env.FAKE_IGNORE_STOP === "1") continue;
+                if (m.request.send_now === true) {
+                    // Send now: the queued message goes next, the running turn makes way; nothing else stops.
+                    const target = m.request.message_uuid;
+                    const said = process.env.FAKE_SEND_NOW ?? (busy && typeof target === "string" && waiting.has(target) ? "stopped" : "nothing_waiting");
+                    out({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response: { still_queued: [...waiting], send_now: said } } });
+                    if (said === "stopped") {
+                        interrupted = true;
+                        wake?.();
+                        goalRelease?.();
+                    }
+                    continue;
+                }
+                out({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response: { still_queued: [] } } });
+                if (process.env.FAKE_IGNORE_INTERRUPT === "1") continue;
+                // As 2.1.304: a plain interrupt stops its background sub-agents too, turn or no turn.
+                killAgents();
+                if (!busy) continue;
                 interrupted = true;
-                out({ type: "control_response", response: { subtype: "success", request_id: m.request_id } });
                 wake?.();
                 goalRelease?.();
+            } else if (sub === "cancel_async_message") {
+                const target = String(m.request.message_uuid ?? "");
+                const had = waiting.delete(target);
+                if (had) withdrawn.add(target);
+                out({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response: { cancelled: had } } });
+            } else if ((sub === "set_model" || sub === "apply_flag_settings") && process.env.FAKE_SET_MODEL_FAIL === "1") {
+                out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: `${sub} failed` } });
             } else {
                 if (sub === "set_permission_mode") mode = m.request.mode;
                 out({ type: "control_response", response: { subtype: "success", request_id: m.request_id } });
@@ -973,7 +1186,27 @@ for await (const chunk of Bun.stdin.stream()) {
                 if (dropped) log({ droppedMidTurnDocuments: dropped });
                 steering.push({ uuid: m.uuid, text: m.message.content.map((b: any) => b.text ?? "").join(""), images: m.message.content.filter((b: any) => b?.type === "image").length });
                 steeringWake?.();
-            } else turnTail = turnTail.then(() => turn(m.message?.content ?? [], typeof m.uuid === "string" ? m.uuid : undefined));
+            } else {
+                const uuid = typeof m.uuid === "string" ? m.uuid : undefined;
+                clearTimeout(idleExit);
+                if (uuid) {
+                    waiting.add(uuid);
+                    lifecycle(uuid, "queued");
+                }
+                turnTail = turnTail.then(async () => {
+                    if (uuid && withdrawn.has(uuid)) return lifecycle(uuid, "cancelled");
+                    if (uuid) waiting.delete(uuid);
+                    busy = true;
+                    lifecycle(uuid, "started");
+                    try {
+                        await turn(m.message?.content ?? [], uuid);
+                    } finally {
+                        busy = false;
+                        lifecycle(uuid, "completed");
+                        armIdleExit();
+                    }
+                });
+            }
         }
     }
 }

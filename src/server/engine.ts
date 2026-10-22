@@ -1843,7 +1843,7 @@ export class Engine {
             { name: "rewind", description: "Go back to before an earlier prompt" },
             { name: "fork", description: "Continue in a new session from the latest response, keeping this one as it is" },
             { name: "mcp", description: "MCP servers: status, approval, reconnect", args: "[server]" },
-            { name: "tasks", description: "Background work: sub-agents, shells, monitors and delegated tasks (/tasks stop stops them)", args: "[stop <task-id|all>]" },
+            { name: "tasks", description: "Background work: sub-agents, shells, monitors and delegated tasks (/tasks stop stops them)", args: "[stop <task-id|all> | restart]" },
             { name: "rename", description: "Rename this session", args: "<title>" },
             { name: "new", description: "Start a new session in this project" },
             { name: "export", description: "Copy the conversation as markdown" },
@@ -2243,6 +2243,9 @@ export class Engine {
             }
             case "session.clearBackground":
                 this.runtime(p.id).clearBackground();
+                return null;
+            case "session.restartCli":
+                await this.runtime(p.id).restartCli();
                 return null;
             case "session.stopWatch":
                 this.runtime(p.id).stopWatch(str(p.watchId, "watchId"));

@@ -1417,6 +1417,8 @@ export interface Methods {
     "session.stopBackground": { params: { id: string; ids?: string[] }; result: { results: Record<string, BackgroundStopResult> } };
     /** Clear the finished tasks from the Background panel. */
     "session.clearBackground": { params: { id: string }; result: null };
+    /** Restart the session's agent CLI process (/tasks restart): what it runs in the background stops. */
+    "session.restartCli": { params: { id: string }; result: null };
     "session.stopWatch": { params: { id: string; watchId: string }; result: null };
     /** New shells no longer get this secret. */
     "session.forgetSecret": { params: { id: string; name: string }; result: null };

@@ -1107,7 +1107,11 @@ async function tasksCommand(app: App, args: string) {
         for (const [t, r] of bad) app.notice(`Couldn't stop ${t}: ${r === "not_stoppable" ? "it can't be stopped on its own" : r === "timeout" ? "it didn't confirm in time" : r === "failed" ? "the CLI refused" : "no such task"}.`, "warn");
         return;
     }
-    if (verb) return app.notice("Usage: /tasks, or /tasks stop <task-id|all>", "error");
+    if (verb === "restart") {
+        if (!(await agent?.restartBackend())) return app.notice("This session has no agent CLI process to restart.", "error");
+        return app.notice("Restarted the agent CLI's process. What it ran in the background was stopped.");
+    }
+    if (verb) return app.notice("Usage: /tasks, or /tasks stop <task-id|all>, or /tasks restart", "error");
     const delegated = agent?.delegatedTasks ?? [];
     const others = (agent?.backgroundTasks() ?? []).filter((t) => !delegated.some((d) => d.id === t.id));
     if (!delegated.length && !others.length) return app.notice("No background tasks in this session. Sub-agents run in the background when the model asks (Task with run_in_background) or their definition says background: true; Claude Code and Codex can hand tasks to other providers' models, and run sub-agents and commands in the background.");
@@ -2080,7 +2084,7 @@ const BUILTIN: Command[] = [
     },
     { name: "cost", description: "Token usage and cost for this session", whileBusy: true, run: (app) => costCommand(app) },
     { name: "queue", description: "Messages waiting for the turn: send one now, reorder, edit or remove", whileBusy: true, run: (app) => queueCommand(app) },
-    { name: "tasks", description: "Background work: sub-agents, shells and monitors, and tasks delegated to other models (stop them with /tasks stop)", args: "[stop <task-id|all>]", whileBusy: true, run: (app, args) => tasksCommand(app, args) },
+    { name: "tasks", description: "Background work: sub-agents, shells and monitors, and tasks delegated to other models (stop them with /tasks stop)", args: "[stop <task-id|all> | restart]", whileBusy: true, run: (app, args) => tasksCommand(app, args) },
     { name: "context", description: "How much of the context window is used", whileBusy: true, run: (app) => contextCommand(app) },
     { name: "status", description: "Version, model, key source, mode, MCP, memory", whileBusy: true, run: (app) => statusCommand(app) },
     { name: "resume", aliases: ["continue"], description: "Resume an earlier conversation", args: "[session-id]", run: resumeCommand },
