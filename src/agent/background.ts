@@ -177,13 +177,18 @@ export class SessionBackground {
             const now = byKey.get(taskKey(t));
             if (!now || now.status === "running" || now.status === t.status) return t;
             const revised = { ...now, endedAt: now.endedAt ?? t.endedAt };
-            // Its stop still pending: the end held for its answer is the revised one (a refused stop lets that go).
-            if (this.stopping.has(t.id)) {
-                const held = this.held.get(t.id);
-                if (held && taskKey(held) === taskKey(t)) this.held.set(t.id, revised);
-            } else if (!this.stoppedBy(t) && !now.byUser) news.push(revised);
+            // Its stop still pending: the answer decides whether this is news (held, as an end is), even if the end
+            // it revises was told before the stop (a Stop from a list a moment old).
+            if (this.stopping.has(t.id)) this.held.set(t.id, revised);
+            else if (!this.stoppedBy(t) && !now.byUser) news.push(revised);
             return revised;
         });
+        // An end held for a stop's answer follows the list itself, not the finished ones shown (Clear finished
+        // may have taken it from those): a refused stop lets go the outcome it came to.
+        for (const [id, h] of this.held) {
+            const now = byKey.get(taskKey(h));
+            if (now && now.status !== "running" && now.status !== h.status) this.held.set(id, { ...now, endedAt: now.endedAt ?? h.endedAt });
+        }
         for (const t of tasks) if (t.status === "running") this.live.set(taskKey(t), t);
         return [...news, ...this.released.splice(0)];
     }

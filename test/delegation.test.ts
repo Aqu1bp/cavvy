@@ -2271,6 +2271,42 @@ describe("the background list across sessions, and the delegate tool's own tasks
         }
     });
 
+    for (const live of [true, false]) {
+        test(`a shell that ends on its own is a line in the terminal${live ? "" : ", except with the kill switch off (agentCli.liveSessions false, P2)"}`, async () => {
+            const app = tui();
+            const notes: string[] = [];
+            app.notice = (m: string, level = "info") => void notes.push(`${level}: ${m}`);
+            try {
+                if (!live) app.settings = { ...app.settings, agentCli: { liveSessions: false } };
+                app.session = Session.create(cwd, { system: "sys" });
+                (app as any).bindBackground();
+                const sh = { id: "bash_1", command: "npm run lint", startedAt: Date.now() - 1000, output: "", readOffset: 0, exitCode: null as number | null, kill: async () => "stopped" as const };
+                app.toolState.shells.set(sh.id, sh as never);
+                (app as any).persistBackground();
+                sh.exitCode = 1;
+                (app as any).persistBackground();
+                expect(notes.filter((n) => n.includes("npm run lint"))).toHaveLength(live ? 1 : 0);
+            } finally {
+                stopTimer(app);
+            }
+        });
+    }
+
+    test("/tasks stop on a task that had already ended says so, not that it couldn't be stopped (K1)", async () => {
+        const app = tui();
+        const notes: string[] = [];
+        app.notice = (m: string, level = "info") => void notes.push(`${level}: ${m}`);
+        app.session = Session.create(cwd, { persist: false });
+        app.toolState.background = undefined;
+        (app as any).agent = {
+            delegatedTasks: [],
+            backgroundTasks: () => [{ id: "bash_9", provider: "harness", kind: "shell", label: "npm test", startedAt: 1, status: "running", stoppable: true }],
+            stopBackground: async () => ({ bash_9: "ended" }),
+        };
+        await runCommand(app, "/tasks stop bash_9");
+        expect(notes).toEqual(["info: bash_9 had already ended."]);
+    });
+
     test("after /new, a shell the old session started isn't listed in, or logged to, the new session (A3, its shells passed)", async () => {
         const app = tui();
         try {

@@ -136,7 +136,71 @@ describe("Session persistence", () => {
         expect(bg.shown().map((x) => [x.id, x.status])).toEqual([["cli-1", "failed"]]);
     });
 
-    test("what an adopted turn's CLI wasn't sent is kept with its backend session: through a reload, a cursor move and a fork; a new session id drops it (#282 review round 3, D3)", () => {
+    test("Clear finished while the user's stop is pending: a revision of the held end still decides what's told (#282 review round 4, Astra 2)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const bg = new SessionBackground(undefined, () => 100);
+        const t = { id: "cli-1", provider: "fake-cli", kind: "agent" as const, label: "Map auth", startedAt: 5, status: "running" as const, stoppable: true };
+        bg.report(t);
+        bg.sync();
+        for (const answer of ["ended", "failed"] as const) {
+            const b = new SessionBackground(undefined, () => 100);
+            b.report(t);
+            b.sync();
+            await b.userStop(["cli-1"], async () => {
+                b.report({ ...t, status: "done" });
+                expect(b.sync()).toEqual([]);
+                b.clearEnded();
+                b.report({ ...t, status: "failed" });
+                expect(b.sync()).toEqual([]);
+                return { "cli-1": answer };
+            });
+            expect(b.sync().map((x) => [x.id, x.status])).toEqual([["cli-1", "failed"]]);
+        }
+    });
+
+    test("a revision while the user's stop is pending, of an end told before the stop (a Stop from a list a moment old): held, then told (#282 review round 4, Bug D)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const t = { id: "toolu_x", provider: "claude-code", kind: "agent" as const, label: "Map auth", startedAt: 1000, stoppable: true };
+        const bg = new SessionBackground();
+        bg.report({ ...t, status: "running" });
+        bg.sync();
+        bg.report({ ...t, status: "done" });
+        expect(bg.sync().map((x) => x.status)).toEqual(["done"]);
+        await bg.userStop(["toolu_x"], async () => {
+            bg.report({ ...t, status: "failed" });
+            expect(bg.sync()).toEqual([]);
+            return { toolu_x: "ended" };
+        });
+        expect(bg.sync().map((x) => x.status)).toEqual(["failed"]);
+        // Ended, then revised, both while the stop is pending, in two looks: the revision is what's told.
+        const b2 = new SessionBackground();
+        b2.report({ ...t, status: "running" });
+        b2.sync();
+        await b2.userStop(["toolu_x"], async () => {
+            b2.report({ ...t, status: "done" });
+            b2.sync();
+            b2.report({ ...t, status: "failed" });
+            b2.sync();
+            return { toolu_x: "ended" };
+        });
+        expect(b2.sync().map((x) => x.status)).toEqual(["failed"]);
+    });
+
+    test("a stop not confirmed in time is for that task: a later task with its id that ends stopped is news (#282 review round 4, B3)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const bg = new SessionBackground(undefined, () => 100);
+        const t = (startedAt: number, status: string) => ({ id: "task-1", provider: "gemini", kind: "agent" as const, label: "Review", startedAt, status: status as any, stoppable: true });
+        bg.report(t(1, "running"));
+        bg.sync();
+        expect(await bg.userStop(["task-1"], async () => ({ "task-1": "timeout" }))).toEqual({ "task-1": "timeout" });
+        // It goes (its Agent rebuilt); a new task-1 starts, and is stopped by something else.
+        bg.report(t(50, "running"));
+        bg.sync();
+        bg.report(t(50, "stopped"));
+        expect(bg.sync().map((x) => [x.id, x.startedAt, x.status])).toEqual([["task-1", 50, "stopped"]]);
+    });
+
+    test("what an adopted turn's CLI wasn't sent is kept with its backend session: through a reload, a cursor move, a fork and a new session id; a delivered prompt takes it (#282 review rounds 3-4, D3)", () => {
         const s = Session.create(project());
         s.push(user("hi"));
         s.setBackendSession("claude-code", "cli-1", 1);

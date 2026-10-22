@@ -535,3 +535,84 @@ test("the kill switch (agentCli.liveSessions false): no background notices, and 
         await engine.stop();
     }
 });
+
+test("review round 4 (A3): Stop on a shell whose process is already gone (its exit not taken in yet): it ended, and its failure is its own", async () => {
+    const { engine, c, id, rt } = await session();
+    try {
+        const sh = { ...shell("bash_3", "npm run e2e"), kill: async () => "gone" as const };
+        rt.toolState.shells.set(sh.id, sh as never);
+        await engine.handle(c, "session.stopBackground", { id, ids: [] });
+        expect(await engine.handle(c, "session.stopBackground", { id, ids: ["bash_3"] })).toEqual({ results: { bash_3: "ended" } });
+        sh.exitCode = 1;
+        await engine.handle(c, "session.stopBackground", { id, ids: [] });
+        expect(rt.snapshot().state.backgroundTasks!.map((t) => [t.id, t.status])).toEqual([["bash_3", "failed"]]);
+        expect(notices(c).map((n) => [n.task?.id, n.task?.outcome])).toEqual([["bash_3", "failed"]]);
+    } finally {
+        await engine.stop();
+    }
+});
+
+test("review round 4 (R2): with no agent yet, Stop on a shell that already ended: it ended", async () => {
+    const { engine, c, id, rt } = await session();
+    const agent = (rt as any).agent;
+    try {
+        const sh = shell("bash_4", "npm test");
+        rt.toolState.shells.set(sh.id, sh);
+        await engine.handle(c, "session.stopBackground", { id, ids: [] });
+        sh.exitCode = 0;
+        (rt as any).agent = undefined;
+        expect(await engine.handle(c, "session.stopBackground", { id, ids: ["bash_4"] })).toEqual({ results: { bash_4: "ended" } });
+        expect(sh.killed).toBe(0);
+    } finally {
+        (rt as any).agent = agent;
+        await engine.stop();
+    }
+});
+
+test("review round 4 (R4): stopping a delegated task from its chip after it already failed (not looked at since): its failure stands and is news", async () => {
+    const { Delegations } = await import("../src/agent/delegation");
+    const { engine, c, id, rt } = await session();
+    try {
+        const finish: ((r: any) => void)[] = [];
+        // No look when it ends: the list still has it running when the user stops it.
+        const d = new Delegations(() => new Promise((r) => finish.push(r)));
+        (rt.agent as any).delegations = d;
+        const t = d.start({ description: "Review the diff", prompt: "review", agent: "explore", model: "gemini:gemini-test", writes: false }) as any;
+        await engine.handle(c, "session.stopBackground", { id, ids: [] });
+        finish[0]!({ status: "failed", report: "", error: "quota", model: "gemini:gemini-test", tokens: 1, durationMs: 5 });
+        await t.settled;
+        rt.stopAgent();
+        await engine.handle(c, "session.stopBackground", { id, ids: [] });
+        expect(rt.snapshot().state.backgroundTasks!.map((x) => [x.id, x.status])).toEqual([[t.id, "failed"]]);
+        expect(notices(c).map((n) => [n.task?.id, n.task?.outcome])).toEqual([[t.id, "failed"]]);
+    } finally {
+        await engine.stop();
+    }
+});
+
+test("review round 4 (A9): with the kill switch off, a delegated task's end is a transcript line again; on, it's the window's notice only", async () => {
+    const { Delegations } = await import("../src/agent/delegation");
+    for (const live of [true, false]) {
+        const { engine, rt } = await session();
+        try {
+            if (!live) (rt as any).ws.settings = { ...(rt as any).ws.settings, agentCli: { liveSessions: false } };
+            const said: string[] = [];
+            const notice = (rt as any).notice.bind(rt);
+            (rt as any).notice = (m: string, l?: string) => (said.push(m), notice(m, l));
+            const finish: ((r: any) => void)[] = [];
+            const d = new Delegations(
+                () => new Promise((r) => finish.push(r)),
+                (t) => (rt.agent as any).taskSettled(t),
+                () => (rt as any).syncBackground(),
+            );
+            (rt.agent as any).delegations = d;
+            const t = d.start({ description: "Review the diff", prompt: "review", agent: "explore", model: "gemini:gemini-test", writes: false }) as any;
+            finish[0]!({ status: "done", report: "LGTM", model: "gemini:gemini-test", tokens: 1, durationMs: 5 });
+            await t.settled;
+            await Bun.sleep(20);
+            expect(said.filter((m) => m.includes(`task ${t.id}`))).toHaveLength(live ? 0 : 1);
+        } finally {
+            await engine.stop();
+        }
+    }
+});
