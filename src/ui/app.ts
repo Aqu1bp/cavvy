@@ -2659,7 +2659,7 @@ export class App {
             this.status = undefined;
         }
         // --append-system-prompt isn't frozen in: the agent adds this run's to every request.
-        this.session.setSystem(buildSystemPrompt({ cwd: this.cwd, model: this.model!, append: this.mcp.instructions() || undefined }));
+        this.session.setSystem(await buildSystemPrompt({ cwd: this.cwd, model: this.model!, append: this.mcp.instructions() || undefined }));
     }
 
     private async runBashMode(cmd: string) {

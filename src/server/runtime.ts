@@ -2556,6 +2556,8 @@ export class Runtime {
         if (this.ui.state.mode !== this.mode || this.ui.state.effort !== this.effort) this.recordState({ force: true });
         this.setState({ busy: true, status: "running", activity: { label: "Thinking", since: this.turnStartedAt } });
         this.engine.sessionChanged(this);
+        // The prompt's bubble goes out now, not with the next batch: the user is waiting to see it.
+        this.flush();
         // A command's own text says more than "/init"; a greeting says nothing, so a later prompt names it.
         // A goal's turns are about its condition, not the instructions around it.
         const about = opts.about ?? (opts.goal ? (this.goal.condition ?? display) : reviewGist(opts.kind === "command" ? text : display));
@@ -2859,7 +2861,7 @@ export class Runtime {
             const until = Date.now() + 5000;
             while (connecting() && Date.now() < until && !signal.aborted) await new Promise((r) => setTimeout(r, 100));
         }
-        this.session.setSystem(buildSystemPrompt({ cwd: this.ws.cwd, model: this.model!, append: this.ws.mcp.instructions() || undefined }));
+        this.session.setSystem(await buildSystemPrompt({ cwd: this.ws.cwd, model: this.model!, append: this.ws.mcp.instructions() || undefined }));
     }
 
     private async generateTitle(prompt: string) {
@@ -2920,6 +2922,7 @@ export class Runtime {
         this.setState({ busy: true, status: "running", activity: { label: "Running", since: Date.now(), detail: command.slice(0, 80) } });
         this.lastActive = turn.startedAt!;
         this.engine.sessionChanged(this);
+        this.flush();
         let status: TurnStatus = "done";
         const lines = lineRedactor();
         try {

@@ -205,10 +205,10 @@ test("repository transport config is audited across local, worktree and nested i
     const { cwd, state } = repo();
     for (const key of ["core.sshCommand", "core.gitProxy", "core.askPass", "core.alternateRefsCommand", "credential.helper", "credential.https://example.invalid.helper", "remote.origin.uploadpack", "remote.origin.receivepack", "remote.origin.proxy", "remote.origin.vcs", "http.proxy", "http.https://example.invalid.proxy", "gpg.program", "gpg.openpgp.program", "gpg.ssh.program", "gpg.ssh.defaultKeyCommand", "push.gpgSign", "url.ext::payload.insteadOf", "url./tmp/transport.pushInsteadOf"]) {
         git(cwd, "config", key, "payload");
-        expect(gitNetworkSkipReason(cwd)).toContain("explicit user trust");
+        expect(await gitNetworkSkipReason(cwd)).toContain("explicit user trust");
         git(cwd, "config", "--unset-all", key);
     }
-    expect(gitNetworkSkipReason(cwd)).toBeUndefined();
+    expect(await gitNetworkSkipReason(cwd)).toBeUndefined();
     expect(calls(state, ".git-calls")).toHaveLength(0);
     for (const kind of ["include", "worktree", "worktree-include", "conditional-worktree", "inactive-worktree"]) {
         const project = repo();
@@ -269,7 +269,7 @@ test("ordinary user-global transport config and its includes remain allowed", as
     const saved = process.env.GIT_CONFIG_GLOBAL;
     process.env.GIT_CONFIG_GLOBAL = config;
     try {
-        expect(gitNetworkSkipReason(cwd)).toBeUndefined();
+        expect(await gitNetworkSkipReason(cwd)).toBeUndefined();
         expect((await gitPublishInfo(cwd)).branch).toBe("feature");
     } finally { process.env.GIT_CONFIG_GLOBAL = saved; }
 });

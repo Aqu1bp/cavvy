@@ -1291,6 +1291,21 @@ describe("connecting", () => {
 });
 
 describe("sessions", () => {
+    test("a prompt's turn goes out before the send's reply, not with the next batch of output", async () => {
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project() });
+        await c.call("session.send", { id, text: "explain the layout of the otter module" });
+        const messages = c.raw.map((m) => JSON.parse(m));
+        const turn = messages.findIndex((m) => m.event?.type === "session.ops" && m.event.ops.some((o: { op: string; turn?: Turn }) => o.op === "turn" && o.turn?.prompt?.text === "explain the layout of the otter module"));
+        const reply = messages.findIndex((m) => m.result?.queued === false);
+        expect(turn).toBeGreaterThanOrEqual(0);
+        expect(turn).toBeLessThan(reply);
+        // It went with the state the turn started with, so the window shows it working at once too.
+        expect(messages[turn].event.ops).toContainEqual(expect.objectContaining({ op: "state", patch: expect.objectContaining({ busy: true }) }));
+        await c.until(id, done);
+        c.close();
+    });
+
     test("sessions.search finds a prompt and a reply, at the turn the session draws", async () => {
         const c = await client();
         const id = await c.open("session.create", { cwd: project() });

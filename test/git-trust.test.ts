@@ -73,9 +73,9 @@ test("opening an implicitly trusted repo never executes its filters or signature
     stale();
     trustForSession(repo);
     expect(gitBranch(repo)).toBe("main");
-    expect(gitSnapshot(repo)).toMatchObject({ branch: "main", statusSkipped: "repository filter configuration requires user trust" });
-    expect(gitSnapshot(repo)?.status).toBeUndefined();
-    expect(gitSnapshot(repo)?.recentCommits).toContain("fixture");
+    expect(await gitSnapshot(repo)).toMatchObject({ branch: "main", statusSkipped: "repository filter configuration requires user trust" });
+    expect((await gitSnapshot(repo))?.status).toBeUndefined();
+    expect((await gitSnapshot(repo))?.recentCommits).toContain("fixture");
     const engine = new Engine({ listModels: async () => [] });
     try {
         expect(engine.inspectProject(repo).branch).toBe("main");
@@ -83,13 +83,13 @@ test("opening an implicitly trusted repo never executes its filters or signature
         const runtime = await engine.createSession(repo);
         expect(runtime.snapshot().state.branch).toBe("main");
         untouched();
-        expect(sessionContextBlock(repo, true)).toContain("not read: repository filter configuration requires user trust");
+        expect(await sessionContextBlock(repo, true)).toContain("not read: repository filter configuration requires user trust");
         untouched();
     } finally {
         await engine.stop();
     }
     trustFolder(repo);
-    const snapshot = gitSnapshot(repo)!;
+    const snapshot = (await gitSnapshot(repo))!;
     expect(snapshot.status).toBeDefined();
     expect(snapshot.recentCommits).toContain("fixture");
     expect(existsSync(markers[0]!)).toBe(true);
@@ -103,9 +103,9 @@ test("opening an implicitly trusted repo never executes its filters or signature
     untouched();
     git(["-c", "core.hooksPath=/dev/null", "checkout", "--detach", "HEAD"]);
     expect(gitBranch(repo)).toBeUndefined();
-    expect(gitSnapshot(repo)?.branch).toBeUndefined();
+    expect((await gitSnapshot(repo))?.branch).toBeUndefined();
     expect(gitBranch(plain)).toBeUndefined();
-    expect(gitSnapshot(plain)).toBeUndefined();
+    expect(await gitSnapshot(plain)).toBeUndefined();
 });
 
 const repos: string[] = [];
@@ -146,7 +146,7 @@ function markerScript(dir: string, body = "cat") {
 }
 
 for (const kind of ["clean", "process", "include", "worktree", "conditional-worktree", "fsmonitor", "hookspath", "hook"] as const) {
-    test(`untrusted status skips ${kind} configuration after proving plain status executes it`, () => {
+    test(`untrusted status skips ${kind} configuration after proving plain status executes it`, async () => {
         const dir = freshRepo();
         const { script, marker } = markerScript(dir, kind === "process" || kind === "fsmonitor" ? "exit 1" : "cat");
         let section = "filter";
@@ -181,18 +181,18 @@ for (const kind of ["clean", "process", "include", "worktree", "conditional-work
         expect(existsSync(marker)).toBe(true);
         rmSync(marker);
         staleFile(dir);
-        const snapshot = gitSnapshot(dir)!;
+        const snapshot = (await gitSnapshot(dir))!;
         expect(snapshot.status).toBeUndefined();
         expect(snapshot.statusSkipped).toBe(`repository ${section} configuration requires user trust`);
         expect(snapshot.recentCommits).toContain("fixture");
         expect(existsSync(marker)).toBe(false);
-        const prompt = sessionContextBlock(dir);
+        const prompt = await sessionContextBlock(dir);
         expect(prompt).toContain(`Git status was not read: repository ${section} configuration requires user trust.`);
         expect(prompt).not.toContain(script);
     });
 }
 
-test("submodule configuration skips status before entering a hostile real submodule", () => {
+test("submodule configuration skips status before entering a hostile real submodule", async () => {
     const source = freshRepo();
     const dir = freshRepo();
     run(dir, ["-c", "protocol.file.allow=always", "submodule", "add", source, "nested"]);
@@ -205,41 +205,41 @@ test("submodule configuration skips status before entering a hostile real submod
     expect(existsSync(marker)).toBe(true);
     rmSync(marker);
     staleFile(nested);
-    expect(gitSnapshot(dir)?.statusSkipped).toBe("repository submodule configuration requires user trust");
+    expect((await gitSnapshot(dir))?.statusSkipped).toBe("repository submodule configuration requires user trust");
     expect(existsSync(marker)).toBe(false);
     // Even without a local submodule key, --ignore-submodules=all prevents recursion.
     run(dir, ["config", "--remove-section", "submodule.nested"]);
-    expect(gitSnapshot(dir)?.status).toBe("(clean)");
+    expect((await gitSnapshot(dir))?.status).toBe("(clean)");
     expect(existsSync(marker)).toBe(false);
 });
 
-test("ordinary init and clone repositories keep status and commits before user trust", () => {
+test("ordinary init and clone repositories keep status and commits before user trust", async () => {
     const dir = freshRepo();
-    expect(gitSnapshot(dir)).toMatchObject({ branch: "main", status: "(clean)" });
-    expect(gitSnapshot(dir)?.recentCommits).toContain("fixture");
+    expect(await gitSnapshot(dir)).toMatchObject({ branch: "main", status: "(clean)" });
+    expect((await gitSnapshot(dir))?.recentCommits).toContain("fixture");
     writeFileSync(join(dir, "a"), "changed\n");
-    expect(gitSnapshot(dir)?.status).toContain(" M a");
+    expect((await gitSnapshot(dir))?.status).toContain(" M a");
     const clone = tempDir("git-status-clone-");
     repos.push(clone);
     run(dir, ["clone", dir, clone]);
-    expect(gitSnapshot(clone)?.status).toBe("(clean)");
-    expect(gitSnapshot(clone)?.recentCommits).toContain("fixture");
+    expect((await gitSnapshot(clone))?.status).toBe("(clean)");
+    expect((await gitSnapshot(clone))?.recentCommits).toContain("fixture");
 });
 
-test("a failed included or per-worktree config read skips status", () => {
+test("a failed included or per-worktree config read skips status", async () => {
     for (const worktree of [false, true]) {
         const dir = freshRepo();
-        expect(gitSnapshot(dir)?.status).toBe("(clean)");
+        expect((await gitSnapshot(dir))?.status).toBe("(clean)");
         const file = join(dir, ".git", worktree ? "config.worktree" : "broken-config");
         writeFileSync(file, "[malformed\n");
         if (!worktree) run(dir, ["config", "include.path", file]);
-        const snapshot = gitSnapshot(dir);
+        const snapshot = await gitSnapshot(dir);
         expect(snapshot?.status).toBeUndefined();
         expect(snapshot?.statusSkipped).toBe("repository configuration could not be checked");
     }
 });
 
-for (const legacy of [false, true]) test(`log never lazy-fetches a configured mailmap blob through the repository transport (older git: ${legacy})`, () => {
+for (const legacy of [false, true]) test(`log never lazy-fetches a configured mailmap blob through the repository transport (older git: ${legacy})`, async () => {
     const source = freshRepo();
     writeFileSync(join(source, "a"), "Mapped <mapped@example.invalid> Original <original@example.invalid>\n");
     run(source, ["-c", "commit.gpgsign=false", "commit", "-am", "mailmap blob"]);
@@ -267,15 +267,15 @@ for (const legacy of [false, true]) test(`log never lazy-fetches a configured ma
         process.env.PATH = `${bin}:${before}`;
     }
     try {
-        const snapshot = gitSnapshot(dir);
+        const snapshot = await gitSnapshot(dir);
         expect(existsSync(marker)).toBe(false);
         expect(snapshot?.status).toBe("(clean)");
         expect(snapshot?.recentCommits).toContain("fixture");
         expect(gitBranch(dir)).toBe("main");
         expect(gitListFiles(dir)).toContain("a");
         trustFolder(dir);
-        expect(gitSnapshot(dir)?.status).toBe("(clean)");
-        expect(gitSnapshot(dir)?.recentCommits).toContain("fixture");
+        expect((await gitSnapshot(dir))?.status).toBe("(clean)");
+        expect((await gitSnapshot(dir))?.recentCommits).toContain("fixture");
         expect(existsSync(marker)).toBe(false);
         if (legacy) {
             const protocols = readFileSync(calls, "utf8").trimEnd().split("\n");
@@ -288,7 +288,7 @@ for (const legacy of [false, true]) test(`log never lazy-fetches a configured ma
     }
 });
 
-for (const scope of ["global", "system", "global-include", "global-includeIf", "env-count", "env-parameters", "env-file"]) test(`${scope} clean filters activated by repository attributes never run before trust`, () => {
+for (const scope of ["global", "system", "global-include", "global-includeIf", "env-count", "env-parameters", "env-file"]) test(`${scope} clean filters activated by repository attributes never run before trust`, async () => {
     const dir = freshRepo();
     const { marker } = markerScript(dir);
     const global = join(dir, ".git", "global-config");
@@ -315,7 +315,7 @@ for (const scope of ["global", "system", "global-include", "global-includeIf", "
     const before = Object.fromEntries(Object.keys(configEnv).map((key) => [key, process.env[key]]));
     Object.assign(process.env, configEnv);
     try {
-        const snapshot = gitSnapshot(dir);
+        const snapshot = await gitSnapshot(dir);
         expect(existsSync(marker)).toBe(false);
         expect(snapshot?.branch).toBe("main");
         expect(snapshot?.status).toBeUndefined();
@@ -328,7 +328,7 @@ for (const scope of ["global", "system", "global-include", "global-includeIf", "
     }
 });
 
-for (const key of ["include.path", "includeIf.onbranch:other.path", "diff.external", "diff.x.command", "diff.x.textconv", "core.hooksPath"]) test(`global ${key} with an absolute path keeps status`, () => {
+for (const key of ["include.path", "includeIf.onbranch:other.path", "diff.external", "diff.x.command", "diff.x.textconv", "core.hooksPath"]) test(`global ${key} with an absolute path keeps status`, async () => {
     const dir = freshRepo();
     const global = join(dir, ".git", "global-config");
     const empty = join(dir, ".git", "empty-config");
@@ -337,7 +337,7 @@ for (const key of ["include.path", "includeIf.onbranch:other.path", "diff.extern
     const before = process.env.GIT_CONFIG_GLOBAL;
     process.env.GIT_CONFIG_GLOBAL = global;
     try {
-        const snapshot = gitSnapshot(dir);
+        const snapshot = await gitSnapshot(dir);
         expect(snapshot?.branch).toBe("main");
         expect(snapshot?.status).toBe("(clean)");
         expect(snapshot?.statusSkipped).toBeUndefined();
@@ -347,7 +347,7 @@ for (const key of ["include.path", "includeIf.onbranch:other.path", "diff.extern
     }
 });
 
-test("disabled user-global fsmonitor and user-owned includes keep status", () => {
+test("disabled user-global fsmonitor and user-owned includes keep status", async () => {
     const dir = freshRepo();
     const global = join(dir, ".git", "global-config");
     run(dir, ["config", "--file", global, "core.fsmonitor", "false"]);
@@ -357,15 +357,15 @@ test("disabled user-global fsmonitor and user-owned includes keep status", () =>
     const before = process.env.GIT_CONFIG_GLOBAL;
     process.env.GIT_CONFIG_GLOBAL = global;
     try {
-        expect(gitSnapshot(dir)?.status).toBe("(clean)");
-        expect(gitSnapshot(dir)?.statusSkipped).toBeUndefined();
+        expect((await gitSnapshot(dir))?.status).toBe("(clean)");
+        expect((await gitSnapshot(dir))?.statusSkipped).toBeUndefined();
     } finally {
         if (before === undefined) delete process.env.GIT_CONFIG_GLOBAL;
         else process.env.GIT_CONFIG_GLOBAL = before;
     }
 });
 
-test("a global LFS-style filter runs status through an installed program", () => {
+test("a global LFS-style filter runs status through an installed program", async () => {
     const dir = freshRepo();
     const bin = tempDir("git-lfs-bin-");
     repos.push(bin);
@@ -380,7 +380,7 @@ test("a global LFS-style filter runs status through an installed program", () =>
     process.env.GIT_CONFIG_GLOBAL = global;
     process.env.PATH = `${bin}:${beforePath}`;
     try {
-        const snapshot = gitSnapshot(dir);
+        const snapshot = await gitSnapshot(dir);
         expect(snapshot?.status).toContain(" M .gitattributes");
         expect(snapshot?.statusSkipped).toBeUndefined();
         expect(existsSync(marker)).toBe(true);
@@ -392,7 +392,7 @@ test("a global LFS-style filter runs status through an installed program", () =>
     }
 });
 
-test("a relative PATH entry can't make a bare driver name run the repo's own program", () => {
+test("a relative PATH entry can't make a bare driver name run the repo's own program", async () => {
     const dir = freshRepo();
     const marker = join(dir, ".git", "repo-lfs-ran");
     // The repo ships its own git-lfs; with "." first in PATH it would win over an installed one.
@@ -406,7 +406,7 @@ test("a relative PATH entry can't make a bare driver name run the repo's own pro
     process.env.GIT_CONFIG_GLOBAL = global;
     process.env.PATH = `.:${beforePath}`;
     try {
-        gitSnapshot(dir);
+        await gitSnapshot(dir);
         gitListFiles(dir);
         expect(existsSync(marker)).toBe(false);
     } finally {
@@ -417,21 +417,55 @@ test("a relative PATH entry can't make a bare driver name run the repo's own pro
     }
 });
 
-for (const key of ["credential.helper", "gpg.program", "gpg.ssh.program", "core.sshCommand", "core.askPass"]) test(`local ${key} does not suppress status or execute`, () => {
+for (const key of ["credential.helper", "gpg.program", "gpg.ssh.program", "core.sshCommand", "core.askPass"]) test(`local ${key} does not suppress status or execute`, async () => {
     const dir = freshRepo();
     const { script, marker } = markerScript(dir);
     run(dir, ["config", key, script]);
     writeFileSync(join(dir, "a"), "changed\n");
-    const snapshot = gitSnapshot(dir);
+    const snapshot = await gitSnapshot(dir);
     expect(snapshot?.status).toContain(" M a");
     expect(snapshot?.statusSkipped).toBeUndefined();
     expect(existsSync(marker)).toBe(false);
 });
 
 
-test("a timed-out per-worktree config read skips status", () => {
+test("the snapshot's git calls run side by side, and the server goes on while they run", async () => {
+    const dir = freshRepo();
+    // The folder's root is known (and cached) before git gets slow.
+    expect((await gitSnapshot(dir))?.status).toBe("(clean)");
+    const calls = join(dir, ".git", "calls");
+    const bin = join(dir, ".git", "slow-bin");
+    mkdirSync(bin);
+    // Each call takes a while, so calls made one after another never overlap.
+    const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
+    writeFileSync(join(bin, "git"), `#!/bin/sh\necho start >> ${quote(calls)}\nsleep 0.3\necho end >> ${quote(calls)}\nexec ${quote(Bun.which("git")!)} "$@"\n`, { mode: 0o700 });
+    const before = process.env.PATH;
+    process.env.PATH = `${bin}:${before}`;
+    let ticks = 0;
+    const timer = setInterval(() => ticks++, 10);
+    try {
+        const snapshot = await gitSnapshot(dir);
+        expect(snapshot).toMatchObject({ branch: "main", status: "(clean)" });
+        expect(snapshot?.recentCommits).toContain("fixture");
+    } finally {
+        clearInterval(timer);
+        if (before === undefined) delete process.env.PATH;
+        else process.env.PATH = before;
+    }
+    let running = 0;
+    let most = 0;
+    for (const line of readFileSync(calls, "utf8").trim().split("\n")) {
+        running += line === "start" ? 1 : -1;
+        most = Math.max(most, running);
+    }
+    expect(most).toBeGreaterThan(1);
+    // Timers ran while git did: the event loop wasn't held.
+    expect(ticks).toBeGreaterThan(10);
+}, 15_000);
+
+test("a timed-out per-worktree config read skips status", async () => {
     const dir = freshRepo();
     const fifo = Bun.spawnSync(["mkfifo", join(dir, ".git", "config.worktree")], { stdout: "pipe", stderr: "pipe", timeout: 3000 });
     expect(fifo.exitCode).toBe(0);
-    expect(gitSnapshot(dir)?.statusSkipped).toBe("repository configuration could not be checked");
+    expect((await gitSnapshot(dir))?.statusSkipped).toBe("repository configuration could not be checked");
 }, 10_000);

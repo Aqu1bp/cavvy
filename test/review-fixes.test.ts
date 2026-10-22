@@ -750,7 +750,7 @@ describe("validateKey doesn't echo the key", () => {
 });
 
 describe("the harness's own git calls", () => {
-    test("don't run a repository's core.fsmonitor", () => {
+    test("don't run a repository's core.fsmonitor", async () => {
         const repo = tempDir();
         const mark = join(repo, "pwned");
         Bun.spawnSync(["git", "init", "-q", repo]);
@@ -761,7 +761,7 @@ describe("the harness's own git calls", () => {
         Bun.spawnSync(["git", "-C", repo, "status", "--porcelain"]);
         expect(existsSync(mark)).toBe(true);
         rmSync(mark, { force: true });
-        expect(gitSnapshot(repo)).toBeDefined();
+        expect(await gitSnapshot(repo)).toBeDefined();
         expect(existsSync(mark)).toBe(false);
     });
 });

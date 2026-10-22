@@ -38,19 +38,41 @@ function untrustedGitEnv(): Record<string, string> {
     return { ...env, GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "harness-none" };
 }
 
+/** The command and environment a harness git call runs with. */
+function gitCall(args: string[]): { argv: string[]; env: Record<string, string> } {
+    // Config reads cannot run fsmonitor. Audit the original settings without
+    // adding our own core.fsmonitor override to the list of configured keys.
+    const argv = args[0] === "config" ? ["git", ...args] : gitArgv(args);
+    const env = untrustedGitEnv();
+    // GIT_CONFIG redirects only `git config`, not status. It must not hide
+    // the effective settings that ordinary git commands will actually use.
+    if (args[0] === "config") delete env.GIT_CONFIG;
+    return { argv, env };
+}
+
+function gitOutput(args: string[], exitCode: number | null, stdout: string): string | undefined {
+    if (exitCode === 1 && args[0] === "config" && args.includes("--get-regexp")) return "";
+    if (exitCode !== 0) return undefined;
+    return stdout.trimEnd();
+}
+
 function git(cwd: string, args: string[], timeoutMs = 3000): string | undefined {
     try {
-        // Config reads cannot run fsmonitor. Audit the original settings without
-        // adding our own core.fsmonitor override to the list of configured keys.
-        const argv = args[0] === "config" ? ["git", ...args] : gitArgv(args);
-        const env = untrustedGitEnv();
-        // GIT_CONFIG redirects only `git config`, not status. It must not hide
-        // the effective settings that ordinary git commands will actually use.
-        if (args[0] === "config") delete env.GIT_CONFIG;
+        const { argv, env } = gitCall(args);
         const r = spawnSync(argv, { cwd, stdout: "pipe", stderr: "ignore", timeout: timeoutMs, env });
-        if (r.exitCode === 1 && args[0] === "config" && args.includes("--get-regexp")) return "";
-        if (r.exitCode !== 0) return undefined;
-        return r.stdout.toString().trimEnd();
+        return gitOutput(args, r.exitCode, r.stdout.toString());
+    } catch {
+        return undefined;
+    }
+}
+
+/** git() without blocking: the server goes on serving while it runs. */
+async function gitAsync(cwd: string, args: string[], timeoutMs = 3000): Promise<string | undefined> {
+    try {
+        const { argv, env } = gitCall(args);
+        const p = Bun.spawn(argv, { cwd, stdout: "pipe", stderr: "ignore", timeout: timeoutMs, env });
+        const [stdout] = await Promise.all([new Response(p.stdout).text(), p.exited]);
+        return gitOutput(args, p.exitCode, stdout);
     } catch {
         return undefined;
     }
@@ -104,22 +126,24 @@ const STATUS_EXEC_CONFIG = [/^filter\./, /^core\.(fsmonitor|hookspath)$/, /^subm
 const USER_EXEC_CONFIG = [/^filter\..*\.(clean|smudge|process)$/, /^diff\..*\.(textconv|command)$/, /^diff\.external$/, /^core\.fsmonitor$/];
 
 /** Shared by status and transport audits; includes retain their owning scope. */
-function repositoryConfigKeys(cwd: string): string[] | undefined {
+async function repositoryConfigKeys(cwd: string): Promise<string[] | undefined> {
     // Repository-owned settings and includes require trust regardless of value.
     // Resolve conditional includes with all scopes present, then retain repo keys.
-    const scoped = git(cwd, ["config", "--includes", "--show-scope", "--name-only", "--list", "-z"]);
+    const [scoped, file] = await Promise.all([
+        gitAsync(cwd, ["config", "--includes", "--show-scope", "--name-only", "--list", "-z"]),
+        gitAsync(cwd, ["rev-parse", "--path-format=absolute", "--git-path", "config.worktree"]),
+    ]);
     if (scoped === undefined) return undefined;
     const names = scoped.split("\0");
     const keys: string[] = [];
     for (let i = 0; i < names.length - 1; i += 2) {
         if (names[i] === "local" || names[i] === "worktree") keys.push(names[i + 1]!);
     }
-    const file = git(cwd, ["rev-parse", "--path-format=absolute", "--git-path", "config.worktree"]);
     if (!file) return undefined;
     let worktree = "";
     try {
         lstatSync(file);
-        const keys = git(cwd, ["config", "--file", file, "--includes", "--name-only", "--list", "-z"]);
+        const keys = await gitAsync(cwd, ["config", "--file", file, "--includes", "--name-only", "--list", "-z"]);
         if (keys === undefined) return undefined;
         worktree = keys;
     } catch (error) {
@@ -130,10 +154,10 @@ function repositoryConfigKeys(cwd: string): string[] | undefined {
 }
 
 /** Network transports can execute helpers or redirect traffic before any push. */
-export function gitNetworkSkipReason(cwd: string): string | undefined {
+export async function gitNetworkSkipReason(cwd: string): Promise<string | undefined> {
     try {
         if (trustedByUser(cwd)) return undefined;
-        const keys = repositoryConfigKeys(cwd);
+        const keys = await repositoryConfigKeys(cwd);
         if (!keys) return "repository configuration could not be checked";
         const key = keys.find((key) =>
             /^core\.(sshcommand|gitproxy|askpass|alternaterefscommand)$/.test(key)
@@ -148,16 +172,16 @@ export function gitNetworkSkipReason(cwd: string): string | undefined {
     }
 }
 
-function statusSkipReason(cwd: string): string | undefined {
+async function statusSkipReason(cwd: string): Promise<string | undefined> {
     const unreadable = "repository configuration could not be checked";
-    const keys = repositoryConfigKeys(cwd);
+    const keys = await repositoryConfigKeys(cwd);
     if (!keys) return unreadable;
     let key = keys.find((key) => STATUS_EXEC_CONFIG.some((pattern) => pattern.test(key)))
         ?? keys.find((key) => /^(include|includeif)\./.test(key));
     if (!key) {
         // User-owned scopes (including their includes) may use installed programs.
         // Only relative-path drivers can select programs controlled by this repo.
-        const effective = git(cwd, ["config", "--includes", "--show-scope", "-z", "--get-regexp", "^(filter|diff|core)\\."]);
+        const effective = await gitAsync(cwd, ["config", "--includes", "--show-scope", "-z", "--get-regexp", "^(filter|diff|core)\\."]);
         if (effective === undefined) return unreadable;
         const fields = effective.split("\0");
         for (let i = 0; i < fields.length - 1; i += 2) {
@@ -184,32 +208,43 @@ function statusSkipReason(cwd: string): string | undefined {
     return undefined;
 }
 
-/** Point-in-time git info; untrusted folders only get status after repository config checks. */
-export function gitSnapshot(cwd: string): GitSnapshot | undefined {
+/**
+ * Point-in-time git info; untrusted folders only get status after repository config checks.
+ * Its git calls run at once, side by side (status only once the checks have passed).
+ */
+export async function gitSnapshot(cwd: string): Promise<GitSnapshot | undefined> {
     if (!gitRoot(cwd)) return undefined;
-    const branch = gitBranch(cwd);
-    let main = git(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])?.replace(/^origin\//, "");
-    if (!main) {
-        for (const b of ["main", "master"]) if (git(cwd, ["rev-parse", "--verify", "--quiet", b]) !== undefined) main = b;
-    }
-    // Implicit session trust (no Harness configuration) says nothing about .git/config.
-    let statusSkipped: string | undefined;
-    try {
-        if (!trustedByUser(cwd)) statusSkipped = statusSkipReason(cwd);
-    } catch {
-        statusSkipped = "folder trust could not be checked";
-    }
-    // Log has no diff output by default, so external diff/textconv drivers are unused.
-    // Disable signature verification and lazy fetching (in git()) so gpg programs and
-    // promisor transport/credential helpers cannot run (log.mailmap can fetch a
-    // missing mailmap.blob even without diff output). Output is piped, never paged.
-    // https://git-scm.com/docs/git-log (diff formatting, --show-signature)
-    // https://git-scm.com/docs/git-config (log.showSignature, gpg.program, log.mailmap, mailmap.blob)
-    // https://git-scm.com/docs/git (GIT_NO_LAZY_FETCH, --paginate)
-    const recentCommits = git(cwd, ["log", "--no-show-signature", "--oneline", "-n", "5"]) ?? "";
+    const [branch, main, statusSkipped, recentCommits] = await Promise.all([
+        gitAsync(cwd, ["branch", "--show-current"]).then((b) => b || undefined),
+        mainBranch(cwd),
+        // Implicit session trust (no Harness configuration) says nothing about .git/config.
+        (async () => {
+            try {
+                if (!trustedByUser(cwd)) return await statusSkipReason(cwd);
+            } catch {
+                return "folder trust could not be checked";
+            }
+        })(),
+        // Log has no diff output by default, so external diff/textconv drivers are unused.
+        // Disable signature verification and lazy fetching (in git()) so gpg programs and
+        // promisor transport/credential helpers cannot run (log.mailmap can fetch a
+        // missing mailmap.blob even without diff output). Output is piped, never paged.
+        // https://git-scm.com/docs/git-log (diff formatting, --show-signature)
+        // https://git-scm.com/docs/git-config (log.showSignature, gpg.program, log.mailmap, mailmap.blob)
+        // https://git-scm.com/docs/git (GIT_NO_LAZY_FETCH, --paginate)
+        gitAsync(cwd, ["log", "--no-show-signature", "--oneline", "-n", "5"]).then((l) => l ?? ""),
+    ]);
     if (statusSkipped) return { branch, mainBranch: main, statusSkipped, recentCommits };
-    let status = git(cwd, ["status", "--short", "--ignore-submodules=all"]) ?? "";
+    let status = (await gitAsync(cwd, ["status", "--short", "--ignore-submodules=all"])) ?? "";
     const lines = status.split("\n");
     if (lines.length > 40) status = [...lines.slice(0, 40), `… and ${lines.length - 40} more`].join("\n");
     return { branch, mainBranch: main, status: status || "(clean)", recentCommits };
+}
+
+/** What origin/HEAD points at; else master, else main, if there's one. */
+async function mainBranch(cwd: string): Promise<string | undefined> {
+    const head = (await gitAsync(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]))?.replace(/^origin\//, "");
+    if (head) return head;
+    const [main, master] = await Promise.all(["main", "master"].map((b) => gitAsync(cwd, ["rev-parse", "--verify", "--quiet", b])));
+    return master !== undefined ? "master" : main !== undefined ? "main" : undefined;
 }

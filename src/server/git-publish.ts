@@ -13,14 +13,14 @@ const clean = (s: string, limit = 4000) => redact(s
 const fail = (message: string, code = "git") => new RpcError(clean(message), code);
 export const gitPublishTiming = { commandMs: 120_000, killGraceMs: 1000 };
 
-function checkNetworkTrust(cwd: string) {
-    const reason = gitNetworkSkipReason(cwd);
+async function checkNetworkTrust(cwd: string) {
+    const reason = await gitNetworkSkipReason(cwd);
     if (reason) throw new RpcError(`Trust this folder explicitly before publishing or reading remote state: ${reason}.`, "needs_trust", cwd);
 }
 
 async function run(cwd: string, args: string[], network = false, signal?: AbortSignal) {
     if (signal?.aborted) throw fail("Publishing cancelled; check the remote before retrying.", "git_cancelled");
-    if (network) checkNetworkTrust(cwd);
+    if (network) await checkNetworkTrust(cwd);
     const env = gitEnv();
     delete env.GIT_CONFIG;
     for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE"]) delete env[key];
@@ -96,7 +96,7 @@ export function githubRepo(url: string): string | undefined {
 }
 
 async function local(cwd: string, signal?: AbortSignal) {
-    checkNetworkTrust(cwd);
+    await checkNetworkTrust(cwd);
     const [branch, sha, remoteNames] = await Promise.all([
         git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"], signal, false, true),
         git(cwd, ["rev-parse", "--verify", "HEAD"], signal),

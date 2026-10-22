@@ -228,10 +228,10 @@ async function setupWith(o: RunSetupOptions, settings: Settings, resumed: Sessio
     };
 
     const prompt = () => buildSystemPrompt({ cwd: o.cwd, model, append: mcp.instructions() || undefined, projectFiles: o.trusted });
-    if (!session.meta.system) session.setSystem(prompt());
+    if (!session.meta.system) session.setSystem(await prompt());
     // A resumed session's prompt was frozen with the project's memory files when it was trusted; a run
     // that doesn't trust the folder sends one without them, and leaves the saved one as it was.
-    const system = resumed && !o.trusted ? prompt() : undefined;
+    const system = resumed && !o.trusted ? await prompt() : undefined;
 
     return { cwd: o.cwd, trusted: o.trusted, system, settings, session, original, resumed: Boolean(resumed), ref, model, client, provider, toolState, checker, mcp, nativeWebSearch, skills, listings, tools, complete };
 }
