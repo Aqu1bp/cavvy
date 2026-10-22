@@ -1844,9 +1844,15 @@ class ClaudeTurn {
  * go along as they are), and the message stays the user's: it isn't marked synthetic for Harness's catch-up.
  */
 export function textBlocks(prompt: string, preamble?: string): Record<string, unknown>[] {
+    const split = splitPreamble(prompt, preamble);
+    return [...(split.preamble ? [{ type: "text", text: split.preamble }] : []), { type: "text", text: split.text }];
+}
+
+/** The prompt's preamble (BackendTurn.preamble) and the user's words after it, apart; all of it as theirs if it has none. */
+export function splitPreamble(prompt: string, preamble?: string): { preamble?: string; text: string } {
     const own = preamble && prompt.startsWith(preamble) ? prompt.slice(preamble.length) : undefined;
-    if (!own?.trim() || !preamble!.trim()) return [{ type: "text", text: prompt }];
-    return [{ type: "text", text: preamble!.trimEnd() }, { type: "text", text: own }];
+    if (!own?.trim() || !preamble!.trim()) return { text: prompt };
+    return { preamble: preamble!.trimEnd(), text: own };
 }
 
 /** What claudeArgs reads of a turn: its spawn settings. */

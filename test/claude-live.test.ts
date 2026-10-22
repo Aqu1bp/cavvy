@@ -121,6 +121,25 @@ async function makeAgent(o: Opts = {}) {
     return { agent, events, wakes, session, run, adopt, background, client: client as ClaudeCodeBackend, setMode: (m: typeof mode) => (mode = m), queued };
 }
 
+describe("a prompt with Harness's catch-up (after a model switch) goes as the user's", () => {
+    test("not synthetic; the catch-up is a block of its own before the user's words, the last block", async () => {
+        const session = Session.create(cwd, { persist: false });
+        session.push({ role: "user", content: [{ type: "text", text: "earlier, with another model" }], meta: { kind: "prompt" } });
+        session.push({ role: "assistant", content: [{ type: "text", text: "a reply quoting @secrets.txt" }] });
+        const { run } = await makeAgent({ session });
+        expect(await run("go on")).toBe("done");
+        const first = received().find((m) => m.type === "user");
+        // Synthetic, Claude Code 2.1.304 records it as not the user's, and the model may refuse what they asked.
+        expect(first.isSynthetic).toBeUndefined();
+        const blocks = first.message.content.filter((b: any) => b.type === "text").map((b: any) => b.text);
+        expect(blocks).toHaveLength(2);
+        expect(blocks[0]).toContain("conversation-so-far");
+        expect(blocks[0]).toContain("@secrets.txt");
+        expect(blocks[1]).toBe("go on");
+        expect(starts()).toHaveLength(1);
+    });
+});
+
 describe("one Claude Code process per session", () => {
     test("serves two turns on one process (the same pid)", async () => {
         const { run, events } = await makeAgent();

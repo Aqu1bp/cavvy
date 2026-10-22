@@ -64,6 +64,7 @@ import {
     requestId,
     resultDisplay,
     resultText,
+    splitPreamble,
     titleFor,
     toHarness,
     type PendingTool,
@@ -1484,10 +1485,11 @@ export class ClaudeLive {
         this.watch(key, live);
         const rec = new TurnRecord(t.sink);
         const { names } = claudeSkills(this.provider.id, t);
-        const prompt = claudePrompt(t.prompt, t.request, t.skills ?? [], names, formatSkill, t.requestAfter);
+        // What Harness put before the user's words goes in a block of its own before theirs (see textBlocks).
+        const { preamble, text: prompt } = splitPreamble(claudePrompt(t.prompt, t.request, t.skills ?? [], names, formatSkill, t.requestAfter), t.preamble);
         adapter.current = {
             t,
-            context: t.goalContext,
+            context: t.goalContext ?? preamble,
             steer: async () => {
                 const queued = await rec.sink.drainQueued(() => rec.take());
                 const typed = queued.filter((x) => !rec.sink.fromWake?.(x));
