@@ -301,8 +301,11 @@ export interface AgentBackendClient extends ProviderClient {
     stopBackground?(sessionKey: string, ids?: string[]): Promise<Record<string, BackgroundStop>>;
 }
 
-/** How a request to stop a background task went (see src/backends/live/tasks.ts StopResult). */
-export type BackgroundStop = "stopped" | "timeout" | "failed" | "not_stoppable" | "unknown";
+/**
+ * How a request to stop a background task went (see src/backends/live/tasks.ts StopResult). `ended`: it had
+ * already ended on its own (before the stop, or while it was pending), so the stop wasn't what ended it.
+ */
+export type BackgroundStop = "stopped" | "timeout" | "failed" | "not_stoppable" | "unknown" | "ended";
 
 export function isAgentBackend(c: ProviderClient | undefined): c is AgentBackendClient {
     return Boolean(c && (c as Partial<AgentBackendClient>).agentBackend === true);

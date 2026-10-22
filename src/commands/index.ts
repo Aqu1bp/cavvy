@@ -1099,8 +1099,11 @@ async function tasksCommand(app: App, args: string) {
         const bg = app.toolState.background;
         const results = bg ? await bg.userStop(!id || id === "all" ? running.map((t) => t.id) : [id], stop) : await stop();
         const ok = Object.values(results).filter((r) => r === "stopped").length;
-        const bad = Object.entries(results).filter(([, r]) => r !== "stopped");
+        const ended = Object.entries(results).filter(([, r]) => r === "ended");
+        const bad = Object.entries(results).filter(([, r]) => r !== "stopped" && r !== "ended");
         if (ok) app.notice(`Stopping ${ok} background task${ok === 1 ? "" : "s"}.`);
+        // Ended on its own before the stop could: it keeps its own outcome (and its notice).
+        for (const [t] of ended) app.notice(`${t} had already ended.`);
         for (const [t, r] of bad) app.notice(`Couldn't stop ${t}: ${r === "not_stoppable" ? "it can't be stopped on its own" : r === "timeout" ? "it didn't confirm in time" : r === "failed" ? "the CLI refused" : "no such task"}.`, "warn");
         return;
     }

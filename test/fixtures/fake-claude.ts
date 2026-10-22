@@ -34,7 +34,11 @@
 // FAKE_STOP_TASK    hang: stop_task unanswered; reject: refused; complete-reject: the task completes, then the stop is refused;
 //                   late: the first stop of a task goes through FAKE_STOP_MS later (default 300), and a second asked
 //                   meanwhile is refused once the first is answered (it's over); complete-exit: the task completes with a
-//                   report, then the process exits without answering
+//                   report, then the process exits without answering; complete-first: the task completes (said, then
+//                   off the list) just before the stop is taken, which is answered success (as Claude Code answers for a
+//                   task it no longer runs; FAKE_STOP_ANSWER=error: refused), and its report turn follows FAKE_FOLLOWUP_MS later
+//                   (all of it FAKE_STOP_MS after the stop is asked; default at once)
+// FAKE_RESULT_DELAY_MS  shell-background*: the turn's answer comes this long after the background command is listed
 // FAKE_SHELL_MS     shell-background*: the background command finishes this long after the answer (default 150; the
 //                   stuck, mixed and nested ones finish only when it's set)
 // FAKE_API_KEY_SOURCE  system/init apiKeySource (default "none": a plan)
@@ -679,6 +683,7 @@ async function turn(content: any[], uuid?: string) {
         }
         bgTasks.set("background-1", { task_id: "background-1", task_type: type, description: "Wait for checks" });
         backgroundChanged();
+        if (process.env.FAKE_RESULT_DELAY_MS) await Bun.sleep(Number(process.env.FAKE_RESULT_DELAY_MS));
         text("Waiting for checks.");
         result("success");
         if (process.env.FAKE_SHELL_MS || !["shell-background-stuck", "shell-background-mixed", "shell-background-nested", "monitor-background-stuck"].includes(scenario)) setTimeout(async () => {
@@ -842,6 +847,19 @@ for await (const chunk of Bun.stdin.stream()) {
                     backgroundChanged();
                     out({ type: "system", subtype: "task_notification", task_id: m.request.task_id, ...(m.request.task_id === "agent-1" ? { tool_use_id: "toolu_agent" } : {}), status: "completed", summary: "Finished just now", handback: "send", handback_report: { text: "Auth keeps its strategies in one list." }, session_id: sessionId });
                     setTimeout(() => process.exit(0), 50);
+                    continue;
+                }
+                // The task completes (with its report) just before the stop is processed; Claude Code answers
+                // success for a task it no longer runs (probe: stop_task of an unknown id -> success), then takes its report turn.
+                if (process.env.FAKE_STOP_TASK === "complete-first") {
+                    const tid = m.request.task_id;
+                    setTimeout(() => {
+                        bgTasks.delete(tid);
+                        out({ type: "system", subtype: "task_notification", task_id: tid, ...(tid === "agent-1" ? { tool_use_id: "toolu_agent" } : {}), status: "completed", summary: "Explorer report: auth keeps strategies in one list.", session_id: sessionId });
+                        backgroundChanged();
+                        out(process.env.FAKE_STOP_ANSWER === "error" ? { type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "No running task" } } : { type: "control_response", response: { subtype: "success", request_id: m.request_id } });
+                        setTimeout(() => followUp("Follow-up: the explorer reported back."), Number(process.env.FAKE_FOLLOWUP_MS ?? 100));
+                    }, Number(process.env.FAKE_STOP_MS ?? 0));
                     continue;
                 }
                 if (process.env.FAKE_STOP_TASK === "late") {

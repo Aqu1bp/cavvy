@@ -1770,7 +1770,10 @@ export class Runtime {
     /** Stop a delegated task by its sub-agent's id, or every one still running. Task sub-agents stop with the turn. */
     stopAgent(agentId?: string): number {
         if (!this.agent) return 0;
-        this.toolState.background?.stoppedByUser(agentId ? [this.view.agents.find((x) => x.id === agentId)?.taskId ?? ""] : this.agent.delegatedTasks.map((t) => t.id));
+        // Only those still running: one that already ended keeps its own outcome.
+        const running = this.agent.delegatedTasks.filter((t) => t.status === "running").map((t) => t.id);
+        const taskId = agentId ? this.view.agents.find((x) => x.id === agentId)?.taskId : undefined;
+        this.toolState.background?.stoppedByUser(agentId ? (taskId && running.includes(taskId) ? [taskId] : []) : running);
         if (!agentId) return this.agent.stopDelegated();
         const a = this.view.agents.find((x) => x.id === agentId);
         if (!a?.taskId) throw new Error(a ? "This sub-agent stops with the turn: interrupt it (Esc) to stop it." : "No such sub-agent.");
@@ -3216,8 +3219,8 @@ export class Runtime {
             const results: Record<string, BackgroundStop> = {};
             for (const id of ids ?? [...this.toolState.shells.values()].filter((s) => s.exitCode === null).map((s) => s.id)) {
                 const sh = this.toolState.shells.get(id);
-                if (sh?.exitCode === null) await sh.kill();
-                results[id] = sh ? "stopped" : "unknown";
+                // One that already ended (or whose process is already gone) keeps its own outcome.
+                results[id] = !sh ? "unknown" : sh.exitCode !== null || (await sh.kill()) === "gone" ? "ended" : "stopped";
             }
             return results;
         };
@@ -3255,7 +3258,8 @@ export class Runtime {
     async killShell(shellId: string) {
         const sh = this.toolState.shells.get(shellId);
         if (!sh) throw new Error(`No background shell ${shellId}`);
-        this.toolState.background?.stoppedByUser([shellId]);
+        // Not one that already ended: it keeps its own outcome.
+        if (sh.exitCode === null) this.toolState.background?.stoppedByUser([shellId]);
         // The agent may be counting on it to wake it: it hears it was stopped with the next message.
         if (sh.monitor && sh.exitCode === null) this.agent?.addReminder(stoppedMonitorNote(sh));
         await sh.kill();

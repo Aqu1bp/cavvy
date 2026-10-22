@@ -86,10 +86,12 @@ export function stopOutcome(results: Record<string, BackgroundStopResult>): { me
     const all = Object.values(results);
     const ok = all.filter((r) => r === "stopped").length;
     const pending = all.filter((r) => r === "timeout").length;
-    const refused = all.length - ok - pending;
+    // Ended on its own before the stop could (the list was a moment old): it keeps its own outcome.
+    const ended = all.filter((r) => r === "ended").length;
+    const refused = all.length - ok - pending - ended;
     if (!all.length) return { message: "Nothing was running", level: "info" };
-    const parts = [ok ? `Stopped ${ok} task${ok === 1 ? "" : "s"}` : "", pending ? `${pending} didn't confirm yet` : "", refused ? `${refused} couldn't be stopped on ${refused === 1 ? "its" : "their"} own` : ""].filter(Boolean);
-    return { message: parts.join("; "), level: pending || refused ? "warn" : "success" };
+    const parts = [ok ? `Stopped ${ok} task${ok === 1 ? "" : "s"}` : "", ended ? `${ended} had already ended` : "", pending ? `${pending} didn't confirm yet` : "", refused ? `${refused} couldn't be stopped on ${refused === 1 ? "its" : "their"} own` : ""].filter(Boolean);
+    return { message: parts.join("; "), level: pending || refused ? "warn" : ok ? "success" : "info" };
 }
 
 /**

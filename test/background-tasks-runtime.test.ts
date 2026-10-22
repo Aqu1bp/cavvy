@@ -431,3 +431,64 @@ test("review round 2, B3: a task said to be done, then to have failed: Finished 
         await engine.stop?.();
     }
 });
+
+test("review round 3, B-R3-4: a shell that already failed, then the user's Stop from a list a moment old: it ended, its failure stands and is news", async () => {
+    const { engine, c, id, rt } = await session();
+    try {
+        await engine.handle(c, "session.send", { id, text: "hello" });
+        await until(() => rt.idle && rt.session.messages.some((m) => m.role === "assistant"));
+        const sh = shell("bash_1", "npm test");
+        rt.toolState.shells.set(sh.id, sh);
+        await engine.handle(c, "session.stopBackground", { id, ids: [] }); // a look, as a tool's end or the poll does
+        expect(rt.snapshot().state.backgroundTasks!.map((t) => [t.id, t.status])).toEqual([["bash_1", "running"]]);
+        // It fails on its own (exit 1) between the panel's polls; the panel still shows it running; the user presses Stop.
+        sh.exitCode = 1;
+        expect(await engine.handle(c, "session.stopBackground", { id, ids: ["bash_1"] })).toEqual({ results: { bash_1: "ended" } });
+        expect(sh.killed).toBe(0);
+        expect(rt.snapshot().state.backgroundTasks!.map((t) => [t.id, t.status])).toEqual([["bash_1", "failed"]]);
+        expect(notices(c).map((n) => [n.task?.id, n.task?.outcome])).toEqual([["bash_1", "failed"]]);
+        expect(logLines(rt.session.path).filter((l) => l.t === "bgtask").map((l) => l.task.status)).toEqual(["running", "failed"]);
+    } finally {
+        await engine.stop();
+    }
+});
+
+test("review round 3, B-R3-4: killing a shell (the Shells row) that already failed doesn't make its failure the user's stop", async () => {
+    const { engine, c, id, rt } = await session();
+    try {
+        await engine.handle(c, "session.send", { id, text: "hello" });
+        await until(() => rt.idle && rt.session.messages.some((m) => m.role === "assistant"));
+        const sh = shell("bash_2", "npm run lint");
+        rt.toolState.shells.set(sh.id, sh);
+        await engine.handle(c, "session.stopBackground", { id, ids: [] });
+        sh.exitCode = 2;
+        await rt.killShell("bash_2");
+        expect(rt.snapshot().state.backgroundTasks!.map((t) => [t.id, t.status])).toEqual([["bash_2", "failed"]]);
+        expect(notices(c).map((n) => [n.task?.id, n.task?.outcome])).toEqual([["bash_2", "failed"]]);
+    } finally {
+        await engine.stop();
+    }
+});
+
+test("review round 3, B-R3-4: Stop on a delegated task that already finished: it ended, and it stays done", async () => {
+    const { Delegations } = await import("../src/agent/delegation");
+    const { engine, c, id, rt } = await session();
+    try {
+        const finish: ((r: any) => void)[] = [];
+        const d = new Delegations(
+            () => new Promise((r) => finish.push(r)),
+            undefined,
+            () => (rt as any).syncBackground(),
+        );
+        (rt.agent as any).delegations = d;
+        const t = d.start({ description: "Review the diff", prompt: "review", agent: "explore", model: "gemini:gemini-test", writes: false }) as any;
+        expect(rt.snapshot().state.backgroundTasks!.map((x) => [x.id, x.status])).toEqual([[t.id, "running"]]);
+        finish[0]!({ status: "failed", report: "", error: "quota", model: "gemini:gemini-test", tokens: 1, durationMs: 5 });
+        await t.settled;
+        expect(await engine.handle(c, "session.stopBackground", { id, ids: [t.id] })).toEqual({ results: { [t.id]: "ended" } });
+        expect(rt.snapshot().state.backgroundTasks!.map((x) => [x.id, x.status])).toEqual([[t.id, "failed"]]);
+        expect(notices(c).map((n) => [n.task?.id, n.task?.outcome])).toEqual([[t.id, "failed"]]);
+    } finally {
+        await engine.stop();
+    }
+});

@@ -10,8 +10,11 @@ import type { BackgroundTaskInfo } from "../backends/live/info";
 
 export type { BackgroundTaskInfo } from "../backends/live/info";
 
-/** How a request to stop a background task went: no longer running, not confirmed in time, refused, can't be stopped alone, no such task. */
-export type BackgroundStopResult = "stopped" | "timeout" | "failed" | "not_stoppable" | "unknown";
+/**
+ * How a request to stop a background task went: stopped by it, not confirmed in time, refused, can't be stopped
+ * alone, no such task, or it had already ended on its own (it keeps its own outcome).
+ */
+export type BackgroundStopResult = "stopped" | "timeout" | "failed" | "not_stoppable" | "unknown" | "ended";
 import type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus } from "../mcp/info";
 import type { PluginListing, PluginScope } from "../plugins/info";
 

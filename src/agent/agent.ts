@@ -1608,23 +1608,33 @@ export class Agent {
         const cli: string[] = [];
         await Promise.all(
             targets.map(async (id) => {
+                // One that had already ended (the list the user stopped from was a moment old) keeps its own
+                // outcome: the stop counts as theirs only when it's what ended the task.
                 const task = this.delegations?.get(id);
                 if (task) {
                     if (task.status === "running") this.delegations!.cancel(id);
-                    out[id] = "stopped";
+                    out[id] = task.status === "running" ? "stopped" : "ended";
                     return;
                 }
                 const shell = this.state.shells.get(id);
                 if (shell) {
+                    if (shell.exitCode !== null) {
+                        out[id] = "ended";
+                        return;
+                    }
+                    // Its process already gone (its exit not taken in yet): it ended on its own.
+                    if ((await shell.kill()) === "gone") {
+                        out[id] = "ended";
+                        return;
+                    }
                     // The agent may be counting on a monitor to wake it: it hears it was stopped with the next message.
-                    if (shell.monitor && shell.exitCode === null) this.addReminder(stoppedMonitorNote(shell));
-                    if (shell.exitCode === null) await shell.kill();
+                    if (shell.monitor) this.addReminder(stoppedMonitorNote(shell));
                     out[id] = "stopped";
                     return;
                 }
                 const t = all.find((x) => x.id === id);
                 if (!t) out[id] = "unknown";
-                else if (t.status !== "running") out[id] = "stopped";
+                else if (t.status !== "running") out[id] = "ended";
                 else if (!t.stoppable) out[id] = "not_stoppable";
                 else cli.push(id);
             }),

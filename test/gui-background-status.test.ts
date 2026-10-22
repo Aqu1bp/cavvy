@@ -101,6 +101,9 @@ test("a stop's toast says what stopped and what couldn't be", () => {
     expect(stopOutcome({})).toEqual({ message: "Nothing was running", level: "info" });
     expect(stopOutcome({ a: "stopped" })).toEqual({ message: "Stopped 1 task", level: "success" });
     expect(stopOutcome({ a: "stopped", b: "stopped", c: "not_stoppable", d: "timeout" })).toEqual({ message: "Stopped 2 tasks; 1 didn't confirm yet; 1 couldn't be stopped on its own", level: "warn" });
+    // Ended on its own before the stop could (the list was a moment old): said so, not as a refusal.
+    expect(stopOutcome({ a: "ended" })).toEqual({ message: "1 had already ended", level: "info" });
+    expect(stopOutcome({ a: "stopped", b: "ended" })).toEqual({ message: "Stopped 1 task; 1 had already ended", level: "success" });
 });
 
 test("the side panel draws the Background section in place of the separate shell and monitor lists, and the composer has its count", () => {

@@ -468,6 +468,8 @@ class ClaudeTurn {
     private pendingStops = new Map<string, { task: BackgroundWork; since: number; byUser: boolean }>();
     /** A task's end Claude Code said while its stop was pending: taken as said if the stop doesn't go through. */
     private heldEnds = new Map<string, Record<string, any>>();
+    /** Shells and monitors that left Claude Code's list while their stop was pending: a report turn is due if they didn't stop. */
+    private leftWhileStopping = new Set<string>();
     /** Background tasks that left Claude Code's list before it said how they ended (by the id they're reported with). */
     private leftList = new Set<string>();
     private stopFailed = false;
@@ -594,7 +596,8 @@ class ClaudeTurn {
         await Promise.all(
             targets.map(async (id) => {
                 const w = left.find((t) => t.toolUseId === id || t.id === id);
-                if (!w) out[id] = this.reportedBackground.has(id) ? "stopped" : "unknown";
+                // Off Claude Code's list: ended (how is said once Claude Code says), unless a stop of it is still pending.
+                if (!w) out[id] = this.reportedBackground.has(id) || this.endedBackground.has(id) ? (this.pendingStops.has(this.agentTasks.get(id) ?? id) ? "timeout" : "ended") : "unknown";
                 else if (!w.id || this.finishing) out[id] = "not_stoppable";
                 else out[id] = await this.stopTask(w, "", true);
             }),
@@ -752,7 +755,8 @@ class ClaudeTurn {
         if (this.busy || this.unanswered.size || !this.answered) return false;
         const left = this.inBackground();
         // Only Harness's own stops end the run when they go unanswered; the user's never do.
-        if (this.stopFailed || [...this.pendingStops.values()].some((p) => !p.byUser && Date.now() - p.since >= backgroundTiming.stopTimeoutMs)) {
+        // Not one whose task said meanwhile how it ended: its stop's own timeout lets that end count (stopTask).
+        if (this.stopFailed || [...this.pendingStops].some(([id, p]) => !p.byUser && !this.heldEnds.has(id) && Date.now() - p.since >= backgroundTiming.stopTimeoutMs)) {
             this.noteStopped(left, "harness", "because Claude Code did not confirm a task stop, so its process was ended");
             this.toldStopped = true;
             return true;
@@ -935,23 +939,37 @@ class ClaudeTurn {
             if (held) this.onSystem(held);
             this.syncBackground();
         };
+        /** The answer came (it's the same for every stop of the task waiting on it): its pending stop goes, and the end held for it counts. */
+        const release = () => {
+            this.pendingStops.delete(id);
+            const held = this.heldEnds.get(id);
+            this.heldEnds.delete(id);
+            if (held) this.onSystem(held);
+            this.syncBackground();
+        };
         const answered = this.askStop(id).then((ok): BackgroundStop => {
             // Another stop of it has taken this answer already.
             if (this.stoppedTaskIds.has(id)) return "stopped";
+            // Claude Code answers success for a task it no longer runs, and says a task it stops ended "stopped" before
+            // it answers. An end it said otherwise while the stop was pending (done, failed), or before the stop was
+            // asked: the task ended on its own, and that's how (its report turn is due), whatever the answer.
+            const held = this.heldEnds.get(id);
+            if (over() || (held && (held.status !== "stopped" || !ok))) {
+                release();
+                return "ended";
+            }
             if (!ok) {
-                if (!byUser && !over()) this.stopFailed = true;
-                notStopped();
+                if (!byUser) this.stopFailed = true;
+                release();
                 return "failed";
             }
-            const ended = over();
             this.pendingStops.delete(id);
             this.heldEnds.delete(id);
+            this.leftWhileStopping.delete(id);
             this.stoppedTaskIds.add(id);
-            if (!ended) {
-                // A sub-agent stopped (at the overall cap, or by the user): over, without a report.
-                if (task.toolUseId) this.endAgent(task.toolUseId, "aborted");
-                this.noteStopped([task], byUser ? "user" : "harness", why);
-            }
+            // A sub-agent stopped (at the overall cap, or by the user): over, without a report.
+            if (task.toolUseId) this.endAgent(task.toolUseId, "aborted");
+            this.noteStopped([task], byUser ? "user" : "harness", why);
             this.syncBackground();
             return "stopped";
         });
@@ -961,7 +979,7 @@ class ClaudeTurn {
             const held = mine() ? this.heldEnds.get(id) : undefined;
             if (!held) return "stopped";
             notStopped();
-            return held.status === "stopped" ? "stopped" : "failed";
+            return held.status === "stopped" ? "stopped" : "ended";
         });
         const late = new Promise<BackgroundStop>(
             (resolve) =>
@@ -969,11 +987,17 @@ class ClaudeTurn {
                     // The user's: the task runs on as far as Harness knows, and the run with it (an automatic
                     // stop's timeout ends the run, checkIdle, unless the task said meanwhile how it ended). A
                     // late answer still counts.
-                    if (byUser || this.heldEnds.has(id)) notStopped();
-                    resolve("timeout");
+                    const held = mine() ? this.heldEnds.get(id) : undefined;
+                    if (byUser || held) notStopped();
+                    resolve(held && held.status !== "stopped" ? "ended" : "timeout");
                 }, backgroundTiming.stopTimeoutMs)),
         );
-        return Promise.race([answered, gone, late]).finally(() => clearTimeout(timer));
+        return Promise.race([answered, gone, late]).finally(() => {
+            clearTimeout(timer);
+            // A pending stop holds the run open (checkIdle): once it's settled, whatever else it waited on may be done
+            // (a report turn that came meanwhile), with nothing else to look again (no wait polling yet).
+            this.recheckIdle();
+        });
     }
 
     /** Each task's stop_task not answered yet, by task id: whether it went through. One request per task at a time. */
@@ -1024,6 +1048,14 @@ class ClaudeTurn {
         this.waitingSince = undefined;
         this.commandWaitingSince.clear();
         this.clearWaitStatus();
+    }
+
+    /** Look again whether the run is over, from outside its loop (a stop settled): end it if so. */
+    private recheckIdle() {
+        if (this.busy || this.finishing || this.aborted) return;
+        void this.idle().then((done) => {
+            if (done) this.finish();
+        });
     }
 
     /** End the run from outside its loop: Claude Code is stopped (it would otherwise wait on its background work), and its output ends. */
@@ -1269,7 +1301,10 @@ class ClaudeTurn {
                     const next = m.tasks.map((t: any) => ({ id: String(t?.task_id ?? ""), type: String(t?.task_type ?? ""), description: typeof t?.description === "string" ? t.description : "" }));
                     // A shell/Monitor may leave the list before its notification and
                     // automatic report turn. Give that turn the same grace as agents.
-                    this.reportsDue += (this.background ?? []).filter((t) => t.type !== "local_agent" && !this.pendingStops.has(t.id) && !this.stoppedTaskIds.has(t.id) && !next.some((n: { id: string }) => n.id === t.id)).length;
+                    const left = (this.background ?? []).filter((t) => t.type !== "local_agent" && !this.stoppedTaskIds.has(t.id) && !next.some((n: { id: string }) => n.id === t.id));
+                    // One whose stop is pending: whether a report turn comes depends on how it ended (task_notification).
+                    for (const t of left) if (this.pendingStops.has(t.id)) this.leftWhileStopping.add(t.id);
+                    this.reportsDue += left.filter((t) => !this.pendingStops.has(t.id)).length;
                     for (const id of this.commandWaitingSince.keys()) {
                         if (!next.some((t: { id: string }) => t.id === id)) this.commandWaitingSince.delete(id);
                     }
@@ -1315,6 +1350,9 @@ class ClaudeTurn {
                 const listed = this.background?.find((t) => t.id === m.task_id);
                 if (listed && !this.agentLabels.has(id)) {
                     this.background = this.background!.filter((t) => t.id !== m.task_id);
+                    this.reportsDue++;
+                } else if (this.leftWhileStopping.delete(m.task_id) && !this.agentLabels.has(id)) {
+                    // It left the list while its stop was pending, and didn't stop: it ended on its own, and its report turn is due.
                     this.reportsDue++;
                 }
                 if (!this.agentLabels.has(id)) {
