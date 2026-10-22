@@ -23,13 +23,14 @@ const row = (selector: string) => root.querySelector<HTMLElement>(selector)!;
 const y = (selector: string) => row(selector).getBoundingClientRect().top;
 const click = (selector: string) => row(selector).click();
 let dispose = () => {};
-const mount = async (handle: any) => { dispose(); dispose = render(() => <Transcript handle={handle} />, root); await settle(); };
+// A 100px composer dock under the transcript, as SessionView passes it.
+const mount = async (handle: any) => { dispose(); dispose = render(() => <Transcript handle={handle} dock={100} />, root); await settle(); };
 const scroll = async (value: number) => { scroller().scrollTop = value; await settle(); };
 
 export async function checkTranscriptScroll(target: HTMLElement) {
     root = target;
     const style = root.style.cssText;
-    root.style.cssText = "position:relative;width:900px;height:600px;--dock-h:100px;--lane-l:20px;--lane-r:20px;--column-w:736px";
+    root.style.cssText = "position:relative;width:900px;height:600px;--lane-l:20px;--lane-r:20px;--column-w:736px";
     try {
         setPrefs({ motion: "instant", showThinking: true });
         await mount(a);

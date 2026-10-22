@@ -56,6 +56,8 @@ const create = (tag: string): any => {
     return n;
 };
 const [jump, setJump] = solid.createSignal<any>();
+const [findShown, setFindShown] = solid.createSignal(false);
+let findProps: any;
 const scope = {
     renderer: { ...solid, ...renderer, createElement: create },
     anchoredTop, atBottom, restoredShown, transcriptPositions: cache, PAGE: TURN_PAGE, prefs,
@@ -66,10 +68,10 @@ const scope = {
         disconnect() { observers.delete(this.cb); }
     },
     matchMedia: () => ({ matches: reduced }), CSS: { escape: (s: string) => s },
-    jumpTarget: jump, setJumpTarget: setJump, findOpen: () => false,
+    jumpTarget: jump, setJumpTarget: setJump, findOpen: findShown,
     openFind() {}, setFindQuery() {}, toast() { throw new Error("unexpected toast"); },
     turnAt: (turns: any[], _seg: number, index: number) => turns[index], BAR_ROOM: 48,
-    rewindTarget: { set() {} }, setRewindOpen() {}, ArrowDown: () => node("icon"), FindBar: () => node("find"), CardFoldsProvider: (p: any) => p.children,
+    rewindTarget: { set() {} }, setRewindOpen() {}, ArrowDown: () => node("icon"), FindBar: (p: any) => { findProps = p; return node("find"); }, CardFoldsProvider: (p: any) => p.children,
     setTimeout() {},
     TurnView: (p: any) => {
         restoredOpen ||= p.workOpen;
@@ -257,4 +259,23 @@ try {
         omitPromptPart = false;
         turnHeights.clear();
     }
+
+    // The composer dock's height (SessionView's dock prop) is set on the two boxes that keep room for it, and find
+    // keeps a match above it: --dock-h isn't inherited, and WebKit keeps an inherited one stale.
+    dispose();
+    const [dockH, setDockH] = solid.createSignal<number | undefined>(244);
+    top = 0; root = node("root");
+    dispose = renderer.render(() => Transcript({ handle: a, get dock() { return dockH(); } }), root); flush();
+    scroll(0); setFindShown(true);
+    const box = (cls: string) => all(root).find((n) => has(n, cls))!;
+    const dockOf = (n: Node) => n.props.style?.["--dock-h"];
+    assert.equal(dockOf(box("transcript-end")), "244px", "the transcript's end has the dock's height");
+    assert.equal(dockOf(box("jump")), "244px", "the Latest pill has the dock's height");
+    assert.equal(findProps?.dock(), 244, "find keeps a match above the dock");
+    setDockH(300);
+    assert.equal(dockOf(box("transcript-end")), "300px", "the end follows the dock as it grows");
+    assert.equal(findProps.dock(), 300, "find follows the dock as it grows");
+    setDockH(undefined);
+    assert.equal(dockOf(box("transcript-end")), undefined, "unmeasured, the end has --dock-h's initial value");
+    setFindShown(false);
 } finally { dispose(); }

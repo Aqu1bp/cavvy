@@ -54,7 +54,7 @@ export async function checkEditorFind(root: HTMLElement) {
     let col!: HTMLDivElement;
     const dispose = render(() => <>
         <Show when={findOpen()}>
-            <FindBar turns={() => [turn]} scroller={() => scroller} col={() => col} show={() => {}} anchor={() => undefined} clearAnchor={() => {}} />
+            <FindBar turns={() => [turn]} scroller={() => scroller} col={() => col} dock={() => 0} show={() => {}} anchor={() => undefined} clearAnchor={() => {}} />
         </Show>
         <div ref={scroller} style={{ height: "460px", overflow: "auto" }}>
             <div ref={col}><TurnView turn={turn} state={state} last /></div>

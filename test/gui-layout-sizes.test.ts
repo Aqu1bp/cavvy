@@ -100,6 +100,13 @@ test("the inspector's content fills a track of the inspector's own width, less t
     expect(decl(".insp > :not(.insp-resizer)", "width")).toBeUndefined();
 });
 
+test("the composer dock's measured height reaches the transcript (SessionView, rendered)", () => {
+    // In a browser-conditions process, so Solid's renderer and signals are the same copy. Transcript's side
+    // (its end, the Latest pill and find get it) is rendered in gui-transcript-scroll.
+    const result = Bun.spawnSync([process.execPath, "--no-env-file", "--conditions=browser", "test", join(import.meta.dir, "fixtures/gui-dock-height.ts")], { timeout: 15000 });
+    expect({ code: result.exitCode, output: result.stderr.toString() }).toMatchObject({ code: 0 });
+});
+
 test("the transcript's end and the Latest pill have the composer dock's height set on them", () => {
     const transcript = read("components/Transcript.tsx");
     expect(transcript).toMatch(/<div class="transcript-end" style=\{\{ "--dock-h": dock\(\) \}\} \/>/);
