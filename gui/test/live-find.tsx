@@ -140,23 +140,29 @@ async function checkCards() {
                     continue;
                 }
                 // Folded, as every command card starts (and as this one is left after find opened it).
-                const head = card(id).querySelector<HTMLButtonElement>("button.cmd-h")!;
-                check(head, `${id} ${status}: the header is a button`);
+                const head = card(id).querySelector<HTMLElement>("[role=button].cmd-h")!;
+                check(head, `${id} ${status}: the row is a button`);
                 if (head.getAttribute("aria-expanded") === "true") head.click();
                 await frame();
-                check(!card(id).querySelector(".tcard-body"), `${id} ${status}: folded, the card shows no body`);
+                check(!card(id).querySelector(".cmd-body"), `${id} ${status}: folded, the card shows no body`);
                 const folded = textRanges(card(id), "kiwi").length;
                 check(folded <= counted(i, "kiwi"), `${id} ${status}: folded, no more drawn matches (${folded}) than counted`);
-                // A glimpse of the output in the header isn't counted, since the body find opens has it.
-                const tail = card(id).querySelector<HTMLElement>(".tcard-tail");
+                // Its last line under the row isn't counted, since the body find opens has it.
+                const tail = card(id).querySelector<HTMLElement>(".cmd-tail");
                 check(status === "running" || status === "error" ? tail?.textContent === (status === "running" ? "kiwi progress" : "last kiwi line") : !tail, `${id} ${status}: last line in the header is "${tail?.textContent}"`);
-                check(!tail || tail.closest("[data-find-skip]"), `${id} ${status}: the header's last line is skipped by find`);
+                check(!tail || tail.closest("[data-find-skip]"), `${id} ${status}: the row's last line is skipped by find`);
+                // While its command is still arriving there's nothing to open, and find counts none of it.
+                if (status === "streaming") {
+                    check(!head.hasAttribute("aria-expanded") && head.getAttribute("aria-disabled") === "true", `${id} ${status}: nothing to open yet`);
+                    check(counted(i, "kiwi") === 0, `${id} ${status}: find counts nothing while it arrives`);
+                    continue;
+                }
                 // Find opens it, on everything it counted.
                 setFindReveal({ turnId: "cards", part: id });
                 await frame();
-                // (Its command has more than one line, so there's a body in every state: while it's live, find counts none of it.)
+                // (Once its command has arrived there's a body in every state: while it's live, find counts none of it.)
                 check(head.getAttribute("aria-expanded") === "true", `${id} ${status}: find opens the card (aria-expanded ${head.getAttribute("aria-expanded")})`);
-                check(card(id).querySelector(".tcard-body"), `${id} ${status}: the body is drawn once find opened the card`);
+                check(card(id).querySelector(".cmd-body"), `${id} ${status}: the body is drawn once find opened the card`);
                 same(i, status, "opened by find");
                 check(textRanges(card(id), "Show full output").length === 0, `${id} ${status}: "Show full output" isn't counted`);
             }
@@ -171,19 +177,19 @@ async function checkCards() {
 async function checkCommandFollow() {
     const box = root.appendChild(document.createElement("div"));
     const lines = (from: number, n: number) => Array.from({ length: n }, (_, i) => `line ${from + i}\n`).join("");
-    const [cmd, setCmd] = createStore<ToolBlock>({ t: "tool", id: "follow", name: "Bash", title: "make", input: { command: "make" }, status: "running", progress: lines(0, 9), startedAt: Date.now() });
+    const [cmd, setCmd] = createStore<ToolBlock>({ t: "tool", id: "follow", name: "Bash", title: "make", input: { command: "make" }, status: "running", progress: lines(0, 15), startedAt: Date.now() });
     const dispose = render(() => <ActivityGroup tools={[cmd]} steps={[cmd]} card="command" turnRunning />, box);
     try {
         await paint();
-        // Folded until it's opened: its last line in the header, the output only once opened.
-        check(!box.querySelector(".tcard-out") && box.querySelector(".tcard-tail")?.textContent === "line 8", "follow: a running command starts folded on its last line");
-        box.querySelector<HTMLButtonElement>("button.cmd-h")!.click();
+        // Folded until it's opened: its last line under the row, the output only once opened.
+        check(!box.querySelector(".cmd-body") && box.querySelector(".cmd-tail")?.textContent === "line 14", "follow: a running command starts folded on its last line");
+        box.querySelector<HTMLElement>("[role=button].cmd-h")!.click();
         await paint();
-        const out = box.querySelector<HTMLElement>(".tcard-out")!;
+        const out = box.querySelector<HTMLElement>(".cmd-out pre")!;
         const gap = () => out.scrollHeight - out.scrollTop - out.clientHeight;
         check(out.scrollHeight > out.clientHeight, "follow fixture: output must start scrolling");
         check(gap() < 2, `follow: starts at the end (${gap()}px from it)`);
-        for (let n = 9; n < 30; n += 4) {
+        for (let n = 15; n < 36; n += 4) {
             setCmd("progress", (p) => p + lines(n, 4));
             await paint();
             check(gap() < 2, `follow: four more lines keep it at the end (${gap()}px from it, scrollHeight ${out.scrollHeight})`);
