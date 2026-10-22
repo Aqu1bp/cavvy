@@ -9,11 +9,13 @@ import { isolate, tempDir } from "./helpers/isolate";
 const { home: HARNESS_HOME, cleanup } = isolate();
 const { App } = await import("../src/ui/app");
 const { Session, listSessions, findSession } = await import("../src/agent/session");
+const { summaryMessage } = await import("../src/agent/compact");
 const { runCommand } = await import("../src/commands/index");
 const { KeyParser } = await import("../src/ui/keys");
 const { stripAnsi } = await import("../src/ui/ansi");
 const { formatTokens } = await import("../src/providers/pricing");
 import type { AssistantMessage, ChatRequest, Message } from "../src/providers/types";
+import type { TodoItem } from "../src/tools/types";
 
 beforeAll(() => {
     process.env.HARNESS_HOME = HARNESS_HOME;
@@ -65,13 +67,51 @@ describe("switching sessions", () => {
         expect(app.session.messages.filter((m) => m.meta?.kind === "prompt").length).toBe(2);
     });
 
-    test("/resume doesn't carry over the previous session's todos", () => {
+    test("/resume doesn't carry over the previous session's todos or approved plan", () => {
         const { app } = testApp();
         useClient(app);
         app.toolState.todos = [{ content: "the other session's task", status: "in_progress" }];
+        app.toolState.approvedPlan = "The other session's plan";
         app.resume(saved(app.cwd, prompt("earlier work"), reply("done")).path);
         expect(app.session.messages.length).toBe(2);
         expect(app.toolState.todos).toEqual([]);
+        expect(app.toolState.approvedPlan).toBeUndefined();
+    });
+
+    for (const compacted of [false, true]) test(`/resume restores todos and the approved plan (compacted: ${compacted})`, async () => {
+        const { app } = testApp();
+        useClient(app);
+        const todos: TodoItem[] = [{ content: "Finish the implementation", status: "in_progress", activeForm: "Finishing the implementation" }];
+        const approvedPlan = "Implement the fix and run regression tests.";
+        const session = saved(app.cwd, prompt("Fix the bug"), {
+            ...reply(""),
+            stopReason: "tool_use",
+            content: [
+                { type: "tool_call", id: "todos", name: "TodoWrite", input: { todos } },
+                { type: "tool_call", id: "plan", name: "ExitPlanMode", input: { plan: approvedPlan } },
+            ],
+        }, {
+            role: "user",
+            content: [
+                { type: "tool_result", toolCallId: "todos", toolName: "TodoWrite", content: "Updated" },
+                { type: "tool_result", toolCallId: "plan", toolName: "ExitPlanMode", content: "Approved" },
+            ],
+            meta: { kind: "tool_results" },
+        }, reply("Working on it"));
+        if (compacted) session.compact("Work remains.", [summaryMessage("Work remains.", false, { todos, approvedPlan })]);
+        session.release();
+        app.toolState.todos = [{ content: "Unrelated task", status: "pending" }];
+        app.toolState.approvedPlan = "Unrelated plan";
+        app.toolState.fileState.set("/old.txt", { mtimeMs: 1, size: 1, partial: false });
+        app.resume(session.path);
+        expect(app.session.meta.id).toBe(session.meta.id);
+        expect(app.toolState.todos).toEqual(todos);
+        expect(app.toolState.approvedPlan).toBe(approvedPlan);
+        expect(app.toolState.fileState.size).toBe(0);
+        await app.startTurn("Continue");
+        expect(app.toolState.todos).toEqual(todos);
+        expect(app.toolState.approvedPlan).toBe(approvedPlan);
+        app.session.release();
     });
 
     test("/summary shows the current session's compaction summary: none after /clear, the resumed one's after /resume", async () => {
