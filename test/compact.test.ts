@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { readFileSync } from "fs";
+import { readFileSync, realpathSync } from "fs";
 import { isolate, tempDir } from "./helpers/isolate";
 import type { AgentEvent } from "../src/agent/agent";
 import type { AssistantMessage, ChatRequest, Message, Usage } from "../src/providers/types";
@@ -168,6 +168,115 @@ test("a later message too big for what's left is cut to it, keeping its head and
         expect(r.text).toContain("HEAD ");
         expect(r.text).toContain(" TAIL");
     }
+});
+
+function contextAgent(script: (req: ChatRequest, n: number) => AssistantMessage | Promise<AssistantMessage>) {
+    const cwd = realpathSync(tempDir());
+    const session = Session.create(cwd, { system: "SYSTEM" });
+    // Context exhaustion is meaningful with enough history for a summary to shrink it.
+    session.push(user("earlier task " + "x".repeat(4000)));
+    session.push(assistant("earlier answer"));
+    const settings = { autoCompact: false, delegation: false };
+    const requests: ChatRequest[] = [];
+    const events: any[] = [];
+    const agent = new Agent({
+        session,
+        model: { provider: "test", id: "test" },
+        client: { stream: async (req) => { requests.push(structuredClone({ ...req, signal: undefined })); return script(req, requests.length); }, listModels: async () => [] },
+        settings: () => settings,
+        checker: new PermissionChecker(() => settings, cwd),
+        tools: [],
+        mode: { get: () => "bypassPermissions", set() {} },
+        toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() },
+        host: { emit: (e) => events.push(e), ui: {} },
+    });
+    const run = (signal = new AbortController().signal) => agent.run([{ type: "text", text: "finish the task" }], { signal });
+    return { agent, session, requests, events, run };
+}
+const contextReply = (text: string, stopReason: AssistantMessage["stopReason"] = "end_turn"): AssistantMessage => ({ role: "assistant", provider: "test", model: "test", content: [{ type: "text", text }], stopReason });
+
+test("context exhaustion compacts once even with autoCompact off, retaining partial text and usage", async () => {
+    const a = contextAgent((_req, n) => n === 1
+        ? { ...contextReply("partial answer", "context_window_exceeded"), usage: { inputTokens: 100, outputTokens: 12 } }
+        : contextReply(n === 2 ? "summary of the task and partial answer" : "finished"));
+    try {
+        expect(await a.run()).toBe("done");
+        expect(a.requests).toHaveLength(3);
+        expect(a.requests[1]!.messages).toContainEqual(expect.objectContaining({ role: "assistant", content: [{ type: "text", text: "partial answer" }] }));
+        expect(a.requests[2]!.messages).toContainEqual(expect.objectContaining({ role: "user", meta: expect.objectContaining({ kind: "summary" }) }));
+        expect(a.events.filter((e) => e.type === "compact_start")).toHaveLength(1);
+        expect(a.events.some((e) => e.type === "usage" && e.usage.outputTokens === 12)).toBe(true);
+        expect(JSON.stringify(a.requests)).not.toContain("output token limit");
+    } finally { a.session.release(); }
+});
+
+test("context exhaustion never executes its tool calls and closes them before compacting", async () => {
+    const a = contextAgent((_req, n) => n === 1
+        ? { ...contextReply("partial", "context_window_exceeded"), content: [{ type: "tool_call", id: "cut", name: "Write", input: { path: "partial" } }] }
+        : contextReply(n === 2 ? "summary" : "finished"));
+    try {
+        expect(await a.run()).toBe("done");
+        expect(a.events.some((e) => e.type === "tool_start")).toBe(false);
+        const results = a.requests[1]!.messages.flatMap((m) => m.content).filter((p) => p.type === "tool_result");
+        expect(results).toEqual([expect.objectContaining({ toolCallId: "cut", isError: true, content: expect.stringContaining("context window") })]);
+        expect(JSON.stringify(a.requests)).not.toContain("smaller pieces");
+    } finally { a.session.release(); }
+});
+
+test("repeated context exhaustion ends with context guidance instead of output retries", async () => {
+    const a = contextAgent((_req, n) => contextReply(n % 2 === 0 ? "summary" : "partial " + "x".repeat(1000), n % 2 === 0 ? "end_turn" : "context_window_exceeded"));
+    try {
+        expect(await a.run()).toBe("error");
+        expect(a.requests).toHaveLength(5);
+        expect(a.events.filter((e) => e.type === "compact_start")).toHaveLength(2);
+        expect(a.session.notices.at(-1)?.text).toContain("context window");
+        expect(JSON.stringify(a.events)).not.toContain("output token limit");
+    } finally { a.session.release(); }
+});
+
+test("failed context compaction ends with context guidance and keeps the partial answer", async () => {
+    const a = contextAgent((_req, n) => { if (n === 2) throw new Error("summary unavailable"); return contextReply("partial", "context_window_exceeded"); });
+    try {
+        expect(await a.run()).toBe("error");
+        expect(a.requests).toHaveLength(2);
+        expect(a.session.messages).toContainEqual(expect.objectContaining({ role: "assistant", content: [{ type: "text", text: "partial" }] }));
+        expect(a.session.notices.at(-1)?.text).toContain("context window");
+    } finally { a.session.release(); }
+});
+
+test("abort during context compaction does not retry or replace the transcript", async () => {
+    const controller = new AbortController();
+    const a = contextAgent((_req, n) => {
+        if (n === 2) controller.abort();
+        return contextReply(n === 2 ? "discard this summary" : "partial", n === 2 ? "end_turn" : "context_window_exceeded");
+    });
+    try {
+        expect(await a.run(controller.signal)).toBe("aborted");
+        expect(a.requests).toHaveLength(2);
+        expect(a.events.some((e) => e.type === "compact_end")).toBe(false);
+        expect(a.session.messages.some((m) => m.role === "user" && m.meta?.kind === "summary")).toBe(false);
+    } finally { a.session.release(); }
+});
+
+test("a context-limited compaction summary uses the condensed fallback", async () => {
+    const a = contextAgent((_req, n) => contextReply(n < 3 ? "incomplete" : n === 3 ? "complete summary" : "finished", n < 3 ? "context_window_exceeded" : "end_turn"));
+    try {
+        expect(await a.run()).toBe("done");
+        expect(a.requests).toHaveLength(4);
+        expect(a.requests[2]!.tools).toEqual([]);
+        expect(JSON.stringify(a.requests[3]!.messages)).toContain("complete summary");
+        expect(JSON.stringify(a.requests[3]!.messages)).not.toContain("incomplete");
+    } finally { a.session.release(); }
+});
+
+test("a context-limited fallback summary fails without replacing history", async () => {
+    const a = contextAgent(() => contextReply("incomplete", "context_window_exceeded"));
+    try {
+        expect(await a.run()).toBe("error");
+        expect(a.requests).toHaveLength(3);
+        expect(a.events.some((e) => e.type === "compact_end")).toBe(false);
+        expect(a.session.messages.some((m) => m.role === "user" && m.meta?.kind === "summary")).toBe(false);
+    } finally { a.session.release(); }
 });
 
 // The agent's own compaction (API providers), against a scripted fake client.
@@ -374,6 +483,32 @@ describe("the agent loop's compaction", () => {
             { role: "user", content: "[Request interrupted by user]\n\ntry again" },
             { role: "assistant", content: "ok" },
             { role: "user", content: "next" },
+        ]);
+    });
+
+    test("compaction folds a continuation link into its summary instead of keeping it as an unanswered prompt", async () => {
+        const { agent, session, requests, events } = setup((req) => isSummary(req) ? say("SUMMARY") : say("done"));
+        session.push({ ...user("original task"), meta: { kind: "prompt" } });
+        session.push({ ...say("partial answer"), stopReason: "max_tokens" });
+        session.push({ ...user("Continue exactly where you stopped."), meta: { kind: "continuation" } });
+
+        expect(await agent.compact({ auto: true, signal: new AbortController().signal, continuing: true, keepLast: true })).toBe(true);
+        expect(JSON.stringify(requests[0]!.messages)).toContain("Continue exactly where you stopped.");
+        expect(session.messages.map((m) => m.meta?.kind)).toEqual(["summary"]);
+        expect(events.find((e) => e.type === "compact_end")).not.toHaveProperty("kept");
+    });
+
+    test("Chat Completions merges a kept prompt with its summary without merging a continuation across the assistant", () => {
+        const messages: Message[] = [
+            { ...user("summary"), meta: { kind: "summary" } },
+            { ...user("task"), meta: { kind: "prompt" } },
+            { ...assistant("answer head"), stopReason: "max_tokens" },
+            { ...user("Continue exactly where you stopped."), meta: { kind: "continuation" } },
+        ];
+        expect(toOpenAIMessages("", messages, getProvider("openai")!)).toEqual([
+            { role: "user", content: "summary\n\ntask" },
+            { role: "assistant", content: "answer head" },
+            { role: "user", content: "Continue exactly where you stopped." },
         ]);
     });
 

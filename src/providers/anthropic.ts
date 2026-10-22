@@ -405,7 +405,7 @@ function mapStop(s: string | null | undefined): StopReason {
         case "pause_turn":
             return s;
         case "model_context_window_exceeded":
-            return "max_tokens";
+            return "context_window_exceeded";
         default:
             return "other";
     }
