@@ -25,7 +25,6 @@ import { signInAdvice } from "./account-login";
 import { APP_TITLE, APP_VERSION } from "../config/paths";
 import { redact } from "../util/redact";
 import { registerTools } from "../mcp/server";
-import { accountPermissionConfig, accountPermissionProfile, watchAccountFolders } from "./account-permissions";
 import { CODEX_CLI, extraArgs, requireCli, type JsonLinesProcess } from "./cli";
 import { CODEX_HOOK_EVENTS, CODEX_HOOK_SERVER, codexHookArgs } from "./codex-hooks";
 import { codexInput, pastedPrompt, type CodexSkill } from "./native-skills";
@@ -212,11 +211,9 @@ export class CodexLiveConnection extends CodexTurn {
     /** thread/backgroundTerminals/* work (they need experimentalApi). */
     private terminalsApi = true;
     private closing = false;
-    private stopAccountWatch?: () => void;
     private compactWaiter?: (ref: string) => void;
     private tierNow?: string | null;
     private seq = 0;
-    private accountPermissions?: Record<string, unknown>;
     /** What the thread was opened with: a fork in place takes the same. */
     private threadParams?: Record<string, unknown>;
     private readonly router: TurnSink;
@@ -363,7 +360,6 @@ export class CodexLiveConnection extends CodexTurn {
         const t = this.t;
         await this.readAccount();
         this.accountReadFor = this.adapter.run;
-        this.accountPermissions = accountPermissionConfig(t.additionalDirectories);
         this.nativeEvents = CODEX_HOOK_EVENTS.filter((e) => this.hooked(e));
         if (this.nativeEvents.length) {
             this.hookServer = registerTools(this.nativeEvents.map((e) => this.hookTool(e)));
@@ -394,18 +390,16 @@ export class CodexLiveConnection extends CodexTurn {
         const developerInstructions = [baseInstructions, orch?.instructions].filter(Boolean).join("\n\n") || undefined;
         let config: Record<string, unknown> | undefined = orch && !t.readOnly ? { ...off, mcp_servers: { ...off?.mcp_servers, ...(orchestratorConfig(orch).mcp_servers as Record<string, unknown>) } } : off;
         if (this.nativeHooks && this.hookServer) config = { ...config, mcp_servers: { ...(config?.mcp_servers as Record<string, unknown> | undefined), ...hookServerConfig(this.hookServer) } };
-        if (this.accountPermissions) config = { ...config, ...this.accountPermissions };
         const fastTier = o.settings.fastMode && t.model.supportsFastMode ? t.model.fastModeTier : undefined;
         this.threadMode = startMode;
-        const threadParams = { cwd: t.cwd, model, ...(fastTier ? { serviceTier: fastTier } : {}), approvalPolicy: policy.approvalPolicy, ...(this.accountPermissions ? { permissions: accountPermissionProfile(startMode, t.readOnly) } : { sandbox: policy.sandbox }), approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
+        const threadParams = { cwd: t.cwd, model, ...(fastTier ? { serviceTier: fastTier } : {}), approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox, approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
         // A Codex that won't take the delegation server's config still gets its thread, without it.
         this.threadParams = threadParams;
         const thread = async (method: string, params: Record<string, unknown>) => {
             try {
                 return await this.rpc.request(method, params);
             } catch (e) {
-                // Never fall back by dropping account denies: fail closed instead.
-                if (!orch || this.accountPermissions) throw e;
+                if (!orch) throw e;
                 const kept = this.nativeHooks && this.hookServer ? { ...off, mcp_servers: { ...off?.mcp_servers, ...hookServerConfig(this.hookServer) } } : off;
                 this.threadParams = { ...threadParams, config: kept, developerInstructions: baseInstructions };
                 const r = await this.rpc.request(method, { ...params, config: kept, developerInstructions: baseInstructions });
@@ -434,7 +428,6 @@ export class CodexLiveConnection extends CodexTurn {
             if (typeof r?.model === "string") this.threadModels.set(this.threadId, r.model);
             this.tierNow = r?.serviceTier;
         }
-        this.stopAccountWatch = watchAccountFolders(() => this.accountsChanged());
         liveDebug("codex", "thread open", { thread: this.threadId, how: o.resumeId ? (o.fork ? "fork" : "resume") : "start" });
         return { sessionId: this.threadId! };
     }
@@ -774,7 +767,7 @@ export class CodexLiveConnection extends CodexTurn {
             this.startingThreadMode = this.threadMode;
             this.startingMode = mode;
             try {
-                r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, ...(this.accountPermissions ? { permissions: accountPermissionProfile(mode, t.readOnly) } : { sandboxPolicy: policy.sandboxPolicy }), approvalsReviewer: policy.approvalsReviewer, summary: "auto" }).finally(() => (this.starting = false));
+                r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" }).finally(() => (this.starting = false));
                 break;
             } catch (e) {
                 // Any turn that started meanwhile was Codex's own.
@@ -1189,7 +1182,7 @@ export class CodexLiveConnection extends CodexTurn {
         this.flights.add(p);
         liveDebug("codex", "host wake: starting a turn", { thread: this.threadId, notes: notes.length, goalGoesOn });
         try {
-            const r: any = await this.rpc.request("turn/start", { threadId: this.threadId, input: this.input(note ? `${note}\n\n${text}` : text, []), cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, ...(this.accountPermissions ? { permissions: accountPermissionProfile(mode, t.readOnly) } : { sandboxPolicy: policy.sandboxPolicy }), approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
+            const r: any = await this.rpc.request("turn/start", { threadId: this.threadId, input: this.input(note ? `${note}\n\n${text}` : text, []), cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
             const id: string | undefined = typeof r?.turn?.id === "string" ? r.turn.id : undefined;
             if (!id) throw new Error("Codex didn't start a turn");
             if (serviceTier !== undefined) this.tierNow = serviceTier ?? "default";
@@ -1228,16 +1221,6 @@ export class CodexLiveConnection extends CodexTurn {
 
     // ---------------------------------------------------------------------
 
-    /** Account folders changed: a turn running is stopped at once (its protections are stale); an idle app-server is restarted before the next. */
-    private accountsChanged() {
-        liveDebug("codex", "account folders changed", { thread: this.threadId, busy: Boolean(this.mainTurn || this.liveRun) });
-        this.adapter.stale = true;
-        if (this.mainTurn || this.liveRun) {
-            this.failure = "Account folders changed while Codex was running. Send again to apply their updated protections.";
-            void this.rpc.proc.kill();
-        }
-    }
-
     /**
      * A sub-agent's prompt goes on past the turn of the session's that started it (#310): Codex's sub-agent keeps
      * working, and waits for the answer, after that turn ends. Its own turn's end withdraws it.
@@ -1269,7 +1252,6 @@ export class CodexLiveConnection extends CodexTurn {
         for (const term of this.terminals.values()) if (term.unlisted) clearTimeout(term.unlisted);
         for (const timer of this.modeKills) clearTimeout(timer);
         this.modeKills.clear();
-        this.stopAccountWatch?.();
         this.hookServer?.close();
         this.compactWaiter = undefined;
         liveDebug("codex", "app-server gone", { thread: this.threadId, pid: this.rpc.proc.pid });
@@ -1300,9 +1282,7 @@ export class CodexLiveAdapter implements AgentCliAdapter {
     conn?: CodexLiveConnection;
     /** Its thread couldn't be resumed (or forked): why. */
     resumeFailed?: string;
-    /** Account folders changed while it was idle: restart before the next turn. */
-    stale = false;
-    /** The account and its protections the running app-server was started with. */
+    /** The account the running app-server was started with. */
     accountKey?: string;
     /** For Codex with the next prompt: background work that stopped with an app-server of the session's (crashed, or restarted). */
     carried: string[] = [];
@@ -1334,7 +1314,6 @@ export class CodexLiveAdapter implements AgentCliAdapter {
         const conn = new CodexLiveConnection(this, this.live.providerDef, t, proc, events, host, this.live.labels, this.live.limitOrdering(t.accountId));
         this.conn = conn;
         this.accountKey = accountKey(t);
-        this.stale = false;
         this.resumeFailed = undefined;
         liveDebug("codex", "app-server started", { pid: proc.pid, session: t.sessionKey });
         await conn.initialize();
@@ -1350,9 +1329,9 @@ export class CodexLiveAdapter implements AgentCliAdapter {
         return this.live.backend.listModels(signal);
     }
 
-    /** The account (CODEX_HOME) or its protections changed since the app-server started: it must be restarted, background work or not. */
+    /** The account (CODEX_HOME) changed since the app-server started: it must be restarted, background work or not. */
     needsRestart(t: BackendTurn): boolean {
-        return this.stale || (this.accountKey !== undefined && this.accountKey !== accountKey(t));
+        return this.accountKey !== undefined && this.accountKey !== accountKey(t);
     }
 
     /** A wake the session holds goes to the host, labelled, to be adopted. */
@@ -1366,10 +1345,10 @@ export class CodexLiveAdapter implements AgentCliAdapter {
     }
 }
 
-/** The account a turn runs on, with the protections it gets: another needs another app-server. */
-function accountKey(t: Pick<BackendTurn, "accountId" | "cwd" | "additionalDirectories">): string {
+/** The account a turn runs on: another needs another app-server. */
+function accountKey(t: Pick<BackendTurn, "accountId" | "cwd">): string {
     try {
-        return spawnFingerprint({ env: accountEnv("codex", t.accountId, t.cwd), protections: accountPermissionConfig(t.additionalDirectories) ?? null });
+        return spawnFingerprint({ env: accountEnv("codex", t.accountId, t.cwd) });
     } catch {
         return `${t.accountId ?? "default"}?`;
     }
@@ -1507,7 +1486,7 @@ export class CodexLive {
                 liveDebug("codex", "account changed: restarting the app-server", { session: t.sessionKey, tasks: running });
                 a.t = t;
                 await s.restart();
-                if (running) t.sink.emit({ type: "notice", level: "warn", message: `Codex was restarted for the account's protections, so ${running === 1 ? "its background task" : `its ${running} background tasks`} stopped.` });
+                if (running) t.sink.emit({ type: "notice", level: "warn", message: `Codex was restarted for the account change, so ${running === 1 ? "its background task" : `its ${running} background tasks`} stopped.` });
             }
         }
         a.t = t;

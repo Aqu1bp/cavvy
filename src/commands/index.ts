@@ -519,7 +519,7 @@ async function signInCliAccount(app: App, provider: string, id: string) {
     try {
         selected = account(provider, id);
         const command = accountLoginCommand(provider, selected.id);
-        // Not spawnSync: running CLI children's account-folder watchers must keep checking while the user signs in.
+        // Not spawnSync: running turns and CLI children must keep going while the user signs in.
         await app.screen.suspend(async () => {
             await Bun.spawn(command.argv, { cwd: app.cwd, env: command.env, stdio: ["inherit", "inherit", "inherit"] }).exited;
         });
@@ -538,10 +538,7 @@ async function addCliAccount(app: App, provider: string) {
     if (name === undefined) return;
     const folder = await app.showDialog(new InputDialog({ title: "Account folder (optional)", header: [theme.muted("Leave empty for a private folder in Harness's accounts directory."), theme.muted("A new folder starts with separate CLI settings and history.")], placeholder: "/absolute/path" }));
     if (folder === undefined) return;
-    // As in the desktop app: CLI children keep the protections they started with, so wait for them.
-    // Checked after the dialogs, with no await before the account is added.
-    await app.yieldIdleCompaction();
-    if (app.busy || app.agent?.hasCliChild()) throw new Error("Add accounts once running responses and CLI background tasks finish, so CLI protections can be refreshed.");
+    // An account only selects a CLI's folder (#375): what's running goes on as it is.
     const selected = addAccount(provider, { id: id.trim(), name: name.trim(), ...(folder.trim() ? { folder: folder.trim() } : {}) }, [app.cwd]);
     app.notice(`Created ${selected.name}: ${selected.folder}`);
     if (provider === "claude-code") app.notice("Claude Console sign-ins without an API key are stored outside the config folder and are not isolated per account.", "warn");

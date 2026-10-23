@@ -49,7 +49,7 @@ for (const provider of ["claude-code", "codex"]) test(`${provider}: removing the
         expect(existsSync(selected.folder)).toBe(true);
         // An account only selects a CLI's folder (#375): adding one, or removing one nothing uses, doesn't wait for the child.
         for (const addedProvider of ["claude-code", "codex"]) {
-            await expect(engine.handle(client, "accounts.add", { provider: addedProvider, id: "while-running", name: "While running" })).resolves.toMatchObject({ id: "while-running" });
+            await expect(engine.handle(client, "accounts.add", { provider: addedProvider, id: `while-${provider}`, name: "While running" })).resolves.toMatchObject({ id: `while-${provider}` });
         }
         await engine.handle(client, "accounts.remove", { provider, id: unused.id, confirmedFolder: unused.folder });
         expect(existsSync(unused.folder)).toBe(false);

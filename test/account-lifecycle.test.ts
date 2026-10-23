@@ -432,7 +432,6 @@ test("one CLI's task ending doesn't hide another CLI's task of the same id still
         // The list keeps one X, Codex's ended one; Claude Code's goes on.
         expect(agent.backgroundTasks().filter((t) => t.id === "X").map((t) => [t.provider, t.status])).toEqual([["codex", "stopped"]]);
         await expect(engine.handle(rpc, "accounts.remove", { provider: "claude-code", id: claude.id, confirmedFolder: claude.folder })).rejects.toMatchObject({ code: "busy" });
-        await expect(engine.handle(rpc, "accounts.add", { provider: "codex", id: "while-collided", name: "While collided" })).rejects.toMatchObject({ code: "busy" });
         expect(existsSync(claude.folder)).toBe(true);
         // Only once Claude Code's ends.
         hosts[0]!.emitSession!({ type: "background_task", task: task("claude-code", "stopped"), accountId: claude.id });
@@ -611,9 +610,6 @@ test("a session's idle live CLI background work holds its account's removal unti
         engine.runtimes.set(session.meta.id, { busy: false, session, agent, ws: { cwd }, toolState: { cwd } } as any);
         await expect(engine.handle(rpc, "accounts.remove", { provider: "claude-code", id: selected.id, confirmedFolder: selected.folder })).rejects.toMatchObject({ code: "busy" });
         expect(existsSync(selected.folder)).toBe(true);
-        // Its account stays in use after the session switches: the process signed in with it.
-        session.setAccount("claude-code", "default");
-        await expect(engine.handle(rpc, "accounts.remove", { provider: "claude-code", id: selected.id, confirmedFolder: selected.folder })).rejects.toMatchObject({ code: "busy" });
         // Adding an account to either CLI, or removing one it doesn't use, goes ahead (#375): an account only selects
         // a CLI's folder, so nothing is restarted and the work goes on.
         for (const provider of ["claude-code", "codex"]) {
@@ -623,15 +619,16 @@ test("a session's idle live CLI background work holds its account's removal unti
         expect(existsSync(unrelated.folder)).toBe(false);
         await Bun.sleep(400);
         expect(running()).toHaveLength(1);
-        // The next turn on its account goes to the same process: the new accounts didn't change what it was started with.
-        session.setAccount("claude-code", selected.id);
+        // The next turn goes to the same process: the new accounts didn't change what it was started with.
         expect(await run("anything else?")).toBe("done");
         expect(launches()).toHaveLength(1);
         expect(running()).toHaveLength(1);
+        // Its account stays in use after the session switches: the process signed in with it.
+        session.setAccount("claude-code", "default");
+        await expect(engine.handle(rpc, "accounts.remove", { provider: "claude-code", id: selected.id, confirmedFolder: selected.folder })).rejects.toMatchObject({ code: "busy" });
         // Once it's stopped, its account can go.
         await agent.stopBackground();
         await until(() => running().length === 0, "the background task to stop");
-        session.setAccount("claude-code", "default");
         await engine.handle(rpc, "accounts.remove", { provider: "claude-code", id: selected.id, confirmedFolder: selected.folder });
         expect(existsSync(selected.folder)).toBe(false);
     } finally {
@@ -640,6 +637,26 @@ test("a session's idle live CLI background work holds its account's removal unti
         await (client as any).shutdown?.();
         await engine.stop();
         if (listAccounts("codex").some((a) => a.id === unrelated.id)) removeAccount("codex", unrelated.id, unrelated.folder);
+        rmSync(cwd, { recursive: true, force: true });
+    }
+});
+
+test("an idle live Claude Code process isn't restarted for accounts added or removed between turns (#375)", async () => {
+    const { Session } = await import("../src/agent/session");
+    process.env.FAKE_SCENARIO = "silent";
+    const cwd = realpathSync(tempDir("account-idle-"));
+    const session = Session.create(cwd, { persist: false });
+    const { agent, client, run } = await liveClaudeAgent(cwd, session);
+    try {
+        expect(await run("first")).toBe("done");
+        const added = addAccount("claude-code", { id: "between-turns", name: "Between turns" });
+        expect(await run("second")).toBe("done");
+        removeAccount("claude-code", added.id, added.folder);
+        expect(await run("third")).toBe("done");
+        expect(launches()).toHaveLength(1);
+    } finally {
+        await agent.dispose();
+        await (client as any).shutdown?.();
         rmSync(cwd, { recursive: true, force: true });
     }
 });

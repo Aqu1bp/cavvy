@@ -2307,9 +2307,7 @@ export class Engine {
                 return this.accountsList(str(p.provider, "provider"), p.refresh === true);
             case "accounts.add": {
                 const provider = str(p.provider, "provider");
-                const idle = [...this.runtimes.values()].filter((rt) => rt.compactingWhileIdle);
-                if (idle.length) await Promise.all(idle.map((rt) => rt.yieldIdleCompaction()));
-                if ([...this.runtimes.values()].some((rt) => rt.busy || rt.agent?.hasCliChild())) throw new RpcError("Add accounts once running responses and CLI background tasks finish, so CLI protections can be refreshed", "busy");
+                // An account only selects a CLI's folder (#375): what's running goes on as it is.
                 const added = addAccount(provider, { id: str(p.id, "id"), name: str(p.name, "name"), folder: p.folder === undefined ? undefined : str(p.folder, "folder") }, this.accountProjects());
                 forgetClient(provider);
                 await this.refreshListings(true);
@@ -2336,9 +2334,6 @@ export class Engine {
                 // A login still running would sign in to a folder no longer registered, nor protected once it was the last.
                 // Checked with no await before the removal, so a login can't start in between.
                 if (this.terminals.signingIn(provider, id)) throw new RpcError("Close the account's sign-in terminal before removing it", "busy");
-                // Any removal changes every running CLI's protections, which restarts it: its turn fails and its background
-                // work stops. So, as adding does, it waits for them.
-                if ([...this.runtimes.values()].some((rt) => rt.busy || rt.agent?.hasCliChild())) throw new RpcError("Remove accounts once running responses and CLI background tasks finish, so running CLIs keep their protections", "busy");
                 removeAccount(provider, id, str(p.confirmedFolder, "confirmedFolder"), this.accountProjects());
                 this.accountStatus.delete(`${provider}:${id}`);
                 this.limits.delete(planLimitKey(provider, id));
