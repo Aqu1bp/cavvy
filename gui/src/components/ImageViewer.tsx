@@ -1,10 +1,11 @@
 import { createSignal, createUniqueId, onCleanup, onMount, Show } from "solid-js";
 import { ChevronLeft, ChevronRight } from "lucide-solid";
 import { fromBase64 } from "../lib/attachments";
-import { canZoom, fitSize, flipFrom, imageSize, viewBox, zoomScroll, type Size } from "../lib/image-view";
+import { canZoom, fitSize, flipFrom, imageSize, stepKey, viewBox, zoomScroll, type Size } from "../lib/image-view";
+import { replyUrls } from "../state/images";
 import { setViewedImage, viewedImage, type ViewerImage } from "../state/ui";
 import { motionMs } from "./LiveLine";
-import { Dialog } from "./ui/Dialog";
+import { Dialog, inTopDialog } from "./ui/Dialog";
 
 /** The opening move, from the thumbnail that was clicked. */
 const OPEN_MS = 220;
@@ -55,6 +56,8 @@ function Viewer(p: { captionId: string }) {
     onCleanup(() => {
         for (const s of shown.values()) if (s.owned) URL.revokeObjectURL(s.url);
     });
+    // A reply's images are its URLs (state/images.ts): kept while this shows them, should the reply go first.
+    onCleanup(replyUrls.hold(images.flatMap((i) => [i.preview, i.full].filter((u): u is string => typeof u === "string" && u.startsWith("blob:")))));
 
     // Sizes found by decoding, where the header didn't say (or said otherwise: a rotated JPEG).
     const [decoded, setDecoded] = createSignal(new Map<ViewerImage, Size>());
@@ -133,10 +136,11 @@ function Viewer(p: { captionId: string }) {
     };
 
     const onKey = (e: KeyboardEvent) => {
-        if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-            e.preventDefault();
-            step(e.key === "ArrowLeft" ? -1 : 1);
-        }
+        const typing = Boolean((e.target as HTMLElement | null)?.closest?.("input, textarea, select, [contenteditable]"));
+        const d = stepKey(e.key, typing, inTopDialog(pic));
+        if (!d) return;
+        e.preventDefault();
+        step(d);
     };
     document.addEventListener("keydown", onKey);
     onCleanup(() => document.removeEventListener("keydown", onKey));

@@ -11,6 +11,7 @@ import { ImageCache, imagesKeyOf, promptKey } from "../lib/imagecache";
 import { RpcError } from "../lib/rpc";
 import { thumbnail } from "../lib/thumbnail";
 import { fromBase64, previewOf, type ImageAttachment } from "../lib/attachments";
+import { UrlLeases } from "../lib/object-urls";
 import { handleFor, rpc } from "./app";
 import { sessionReadReady } from "./changes";
 
@@ -37,6 +38,9 @@ async function withThumb(i: { mediaType: string; data: string }): Promise<Prompt
     return { mediaType: i.mediaType, data: i.data, thumb: (await thumbnail(i)) ?? toUrl(i) };
 }
 
+/** Replies' image URLs: the image viewer holds those it shows, past the reply going. */
+export const replyUrls = new UrlLeases();
+
 /** An image as an object URL, to be revoked when it's no longer shown. */
 function objectUrl(i: { mediaType: string; data: string }): string {
     return URL.createObjectURL(new Blob([fromBase64(i.data) as BlobPart], { type: i.mediaType }));
@@ -61,7 +65,8 @@ export async function keepSentImages(sessionId: string, images: readonly ImageAt
 /**
  * One reply's file images, as object URLs: the bytes it was shown with stay
  * while it streams; a later reply reads the file again. `dispose` revokes
- * them, when the reply is no longer shown.
+ * them when the reply is no longer shown, or once the viewer showing one
+ * closes.
  */
 export function replyImages(sessionId: string): { load: (path: string) => Promise<string>; dispose: () => void } {
     const files = new ImageCache(16);
@@ -69,7 +74,7 @@ export function replyImages(sessionId: string): { load: (path: string) => Promis
     let disposed = false;
     const made = (r: { mediaType: string; data: string }) => {
         const url = objectUrl(r);
-        if (disposed) URL.revokeObjectURL(url);
+        if (disposed) replyUrls.drop(url);
         else urls.add(url);
         return [url];
     };
@@ -77,7 +82,7 @@ export function replyImages(sessionId: string): { load: (path: string) => Promis
         load: (path) => files.get(path, () => rpc.call("fs.image", { sessionId, path }).then(made)).then((u) => u[0]!),
         dispose: () => {
             disposed = true;
-            for (const url of urls) URL.revokeObjectURL(url);
+            for (const url of urls) replyUrls.drop(url);
             urls.clear();
         },
     };

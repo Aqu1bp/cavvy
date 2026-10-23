@@ -1,10 +1,10 @@
 // The image viewer's sizing (gui/src/lib/image-view.ts): fitted into most of
 // the window and never past its own size, 1:1 that keeps the clicked point
-// under the cursor, the opening move from the thumbnail, and an image's size
-// read from its header.
+// under the cursor, the opening move from the thumbnail, the stepping keys,
+// and an image's size read from its header.
 
 import { describe, expect, test } from "bun:test";
-import { canZoom, fitScale, fitSize, flipFrom, imageSize, viewBox, zoomScroll } from "../gui/src/lib/image-view";
+import { canZoom, fitScale, fitSize, flipFrom, imageSize, stepKey, viewBox, zoomScroll } from "../gui/src/lib/image-view";
 
 const box = { width: 1000, height: 800 };
 
@@ -133,5 +133,22 @@ describe("an image's size from its header", () => {
         expect(imageSize(new Uint8Array([137, 80, 78, 71]))).toBeUndefined();
         expect(imageSize(new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00]))).toBeUndefined();
         expect(imageSize(new Uint8Array())).toBeUndefined();
+    });
+});
+
+describe("stepping keys", () => {
+    test("← and → step when the viewer is the dialog on top", () => {
+        expect(stepKey("ArrowLeft", false, true)).toBe(-1);
+        expect(stepKey("ArrowRight", false, true)).toBe(1);
+    });
+
+    test("not under another dialog (the palette over it), nor while typing", () => {
+        expect(stepKey("ArrowRight", false, false)).toBe(0);
+        expect(stepKey("ArrowLeft", true, true)).toBe(0);
+    });
+
+    test("other keys don't step", () => {
+        expect(stepKey("ArrowUp", false, true)).toBe(0);
+        expect(stepKey("Enter", false, true)).toBe(0);
     });
 });

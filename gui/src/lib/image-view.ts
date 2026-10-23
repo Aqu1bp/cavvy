@@ -1,8 +1,9 @@
 // How the image viewer (components/ImageViewer.tsx) sizes an image: fitted
 // into most of the window and never past its own size, so a small image stays
 // crisp at 1× and a tall screenshot fits by its height. Also where 1:1 scrolls
-// to, the move it opens with, and an image's size read from its header, so
-// the box is right from the first frame, before the image is decoded.
+// to, the move it opens with, when the arrow keys step, and an image's size
+// read from its header, so the box is right from the first frame, before the
+// image is decoded.
 
 export type Size = { width: number; height: number };
 export type Rect = Size & { left: number; top: number };
@@ -62,6 +63,12 @@ export function flipFrom(from: Rect, to: Rect): { x: number; y: number; scale: n
         y: from.top + from.height / 2 - (to.top + to.height / 2),
         scale: Math.max(from.width / to.width, from.height / to.height),
     };
+}
+
+/** Which way ← or → steps (0 for neither): only when the viewer is the dialog on top (not under the palette) and nothing's being typed in. */
+export function stepKey(key: string, typing: boolean, onTop: boolean): -1 | 0 | 1 {
+    if (typing || !onTop) return 0;
+    return key === "ArrowLeft" ? -1 : key === "ArrowRight" ? 1 : 0;
 }
 
 const be16 = (b: Uint8Array, i: number) => (b[i]! << 8) | b[i + 1]!;
