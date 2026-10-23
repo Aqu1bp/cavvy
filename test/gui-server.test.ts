@@ -2361,7 +2361,7 @@ describe("sub-agents", () => {
             // Shown under the task's call to it, on the task's model, with what it did and what it answered.
             expect([sub.parentId, sub.turnId, sub.model, sub.status, sub.taskId, sub.report]).toEqual([task.id, task.turnId, "codex:gpt-test", "done", undefined, "CHILD_REPORT: 2 files."]);
             expect(task.blocks.some((b) => b.id === sub.id && b.t === "tool" && b.agent)).toBe(true);
-            expect(sub.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t === "notice" ? `${b.level}: ${b.text}` : b.t))).toEqual(["info: Codex: Model metadata for `gpt-test` not found.", "error: child stream hiccup", "Bash:ok", "CHILD_REPORT: 2 files."]);
+            expect(sub.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t === "notice" ? `${b.level}: ${b.text}` : b.t))).toEqual(["info: Model metadata for `gpt-test` not found.", "error: child stream hiccup", "Bash:ok", "CHILD_REPORT: 2 files."]);
             expect(sub.toolCount).toBe(1);
             expect(sub.tokens).toBe(5050);
             // The task's own steps don't take in its sub-agent's.
@@ -2755,7 +2755,7 @@ describe("sub-agents", () => {
             // Its tokens, even those Codex reported before the spawn said whose they were.
             expect(a.tokens).toBe(5050);
             // Its warning and error show on its chip, not as the session's.
-            expect(a.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t === "notice" ? `${b.level}: ${b.text}` : b.t))).toEqual(["info: Codex: Model metadata for `gpt-test` not found.", "error: child stream hiccup", "Bash:ok", "CHILD_REPORT: 2 files."]);
+            expect(a.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t === "notice" ? `${b.level}: ${b.text}` : b.t))).toEqual(["info: Model metadata for `gpt-test` not found.", "error: child stream hiccup", "Bash:ok", "CHILD_REPORT: 2 files."]);
             const turn = lastTurn(v);
             expect(turn.blocks.filter((b) => b.t === "notice")).toEqual([]);
             expect(tools(turn).map((b) => [b.name, b.agent ?? false])).toEqual([["Task", true], ["wait", false]]);
