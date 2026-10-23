@@ -233,7 +233,7 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
         });
     }));
 
-    // Shrinking the window past the docking point closes a docked inspector (the diff reader floats instead).
+    // Shrinking the window past the docking point closes a docked inspector (the diff reader fills the sheet instead).
     createEffect(on(() => layout().inspector.mode, (mode, from) => {
         if (closesOnShrink(from, mode, prefs.panel, p.review)) setPrefs("panel", false);
     }));

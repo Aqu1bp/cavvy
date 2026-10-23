@@ -3,7 +3,7 @@
 import { createSignal } from "solid-js";
 import type { ArchiveOffer } from "@shared/protocol";
 import type { ReviewScope } from "./changes";
-import { INSPECTOR_DEFAULT, type Held, type WindowLayout } from "../lib/layout";
+import { coversConversation, INSPECTOR_DEFAULT, type Held, type WindowLayout } from "../lib/layout";
 
 export type SettingsTab = "general" | "appearance" | "providers" | "plugins" | "usage" | "shortcuts" | "about";
 
@@ -58,11 +58,18 @@ export interface SetupRun { ticket: string; label: string; command: string }
 /** Set while the terminal panel is mounted: opens it on a new tab that runs a project script there (`setup`: a new worktree's setup run). */
 export const terminalActions: { loginAccount?: (provider: string, accountId: string, name: string) => void; runScript?: (cwd: string, script: { id: string; name: string }, setup?: SetupRun) => void } = {};
 
-/** The find bar over the conversation (⌘F), what it looks for, and a bump to take focus again. */
+/**
+ * The find bar over the conversation (⌘F), what it looks for, and a bump to take focus again. Opening it
+ * (and a ⌘K jump to a message, which opens it) closes a diff reader filling the sheet over the conversation.
+ */
 export const [findOpen, setFindOpen] = createSignal(false);
 export const [findQuery, setFindQuery] = createSignal("");
 export const [findFocus, setFindFocus] = createSignal(0);
-export const openFind = () => (setFindOpen(true), setFindFocus((n) => n + 1));
+export const openFind = () => {
+    if (coversConversation(shellLayout())) setReview(undefined);
+    setFindOpen(true);
+    setFindFocus((n) => n + 1);
+};
 /** The row holding the match being shown: rows folded around it open for it. */
 export const [findReveal, setFindReveal] = createSignal<{ turnId: string; part: string } | undefined>();
 /** A message to show once its session is open (a ⌘K hit): where it is, and what was searched. */
