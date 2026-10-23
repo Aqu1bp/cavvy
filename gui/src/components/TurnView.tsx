@@ -463,6 +463,8 @@ type TurnViewProps = {
     held?: boolean;
     /** The turn's element, once (Transcript tracks how far it is from the view, and finds it by id). */
     onElement?: (el: HTMLElement, turnId: string) => void;
+    /** The work, faded out, folds away now (`fold`): Transcript keeps what's in sight from jumping as it does. */
+    onFold?: (el: HTMLElement, fold: () => void) => void;
 };
 
 export function TurnView(p: TurnViewProps) {
@@ -470,6 +472,7 @@ export function TurnView(p: TurnViewProps) {
 }
 
 function TurnViewContent(p: TurnViewProps) {
+    let article: HTMLElement | undefined;
     const items = createMemo(() => groupBlocks(p.turn.blocks));
     const segs = createMemo(() => workSegments(items()));
     const running = () => p.turn.status === "running";
@@ -496,7 +499,7 @@ function TurnViewContent(p: TurnViewProps) {
         const ms = motionMs(200);
         if (!ms) return;
         setFolding(true);
-        setTimeout(() => setFolding(false), ms);
+        setTimeout(() => (article && p.onFold ? p.onFold(article, () => setFolding(false)) : setFolding(false)), ms);
     }));
     const showWork = () => !foldable() || unfolded() || folding();
     // A match in the work log (or in what was said on the way) opens it.
@@ -524,7 +527,8 @@ function TurnViewContent(p: TurnViewProps) {
     const worked = () => workedLabel(p.turn.startedAt, p.turn.endedAt);
 
     // By position, not by object: the items are rebuilt on every streamed token, the rows mustn't be.
-    const renderItem = (it: () => Item) => (
+    // `leaving`: what was said on the way, fading out with the work it's folding away with.
+    const renderItem = (it: () => Item, leaving?: () => boolean) => (
         <Switch>
             <Match when={it().kind === "activity" && (it() as Extract<Item, { kind: "activity" }>)}>
                 {(g) => <ActivityGroup tools={g().tools} steps={g().steps} card={g().card} turnRunning={running()} agents={p.agents} flat hideLive={live()} />}
@@ -533,7 +537,7 @@ function TurnViewContent(p: TurnViewProps) {
                 {(b) => (
                     <Switch>
                         <Match when={b().t === "text" && (b() as TextBlock)}>
-                            {(t) => <Markdown text={t().text} streaming={writing() && t().id === lastText()} sessionId={p.state.id} find={t().id} />}
+                            {(t) => <Markdown text={t().text} streaming={writing() && t().id === lastText()} sessionId={p.state.id} find={t().id} class={leaving?.() ? "leaving" : undefined} />}
                         </Match>
                         <Match when={b().t === "thinking" && (b() as ThinkingBlock)}>{(t) => <Show when={!liveThought(t())}><Thinking block={t()} live={false} /></Show>}</Match>
                         <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} />}</Match>
@@ -547,7 +551,7 @@ function TurnViewContent(p: TurnViewProps) {
     );
 
     return (
-        <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""} ${p.held ? "chained" : ""} ${foldable() ? "done" : ""}`} data-turn={p.turn.id} aria-busy={running()} ref={(el) => p.onElement?.(el, p.turn.id)}>
+        <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""} ${p.held ? "chained" : ""} ${foldable() ? "done" : ""}`} data-turn={p.turn.id} aria-busy={running()} ref={(el) => (article = el, p.onElement?.(el, p.turn.id))}>
             <Show when={p.turn.prompt}>
                 <h2 class="sr-only" data-find-skip>You said</h2>
                 <UserPrompt turn={p.turn} sessionId={p.state.id} onRewind={p.onRewind} />
@@ -571,7 +575,7 @@ function TurnViewContent(p: TurnViewProps) {
                                 when={seg().kind === "work"}
                                 fallback={
                                     <Show when={!(seg() as { interim: boolean }).interim || showWork()}>
-                                        {renderItem(() => (seg() as { item: Item }).item)}
+                                        {renderItem(() => (seg() as { item: Item }).item, () => (seg() as { interim: boolean }).interim && folding())}
                                     </Show>
                                 }
                             >

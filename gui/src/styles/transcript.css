@@ -558,8 +558,9 @@
     color: var(--fg-2);
 }
 
-/* The work, fading out before it folds into "Worked for". */
-.worklog.leaving {
+/* The work, fading out before it folds into "Worked for" (and what was said on the way, with it). */
+.worklog.leaving,
+.reply > .md.leaving {
     animation: fade-out 200ms ease-out both;
 }
 
@@ -894,7 +895,8 @@
     padding: 0 8px 0 2px;
     font-size: 0.964rem;
     color: var(--fg-2);
-    animation: step-in 320ms var(--ease);
+    /* Rows that land together come in one after another (lib/live-line.ts enterRow sets --enter). */
+    animation: step-in 320ms var(--ease) var(--enter, 0ms) backwards;
 }
 
 .steps .tool-line:hover,
@@ -935,6 +937,11 @@
 .steps > .wgroup.thinking > .acts-h,
 .worklog > .wgroup.thinking > .acts-h {
     min-height: 30px;
+}
+
+.steps > .wgroup.thinking,
+.worklog > .wgroup.thinking {
+    animation: step-in 320ms var(--ease) var(--enter, 0ms) backwards;
 }
 
 .acts,
@@ -1362,7 +1369,7 @@
     background: none;
     box-shadow: none;
     overflow: visible;
-    animation: step-in 320ms var(--ease);
+    animation: step-in 320ms var(--ease) var(--enter, 0ms) backwards;
 }
 
 .edit-card > .tcard-h {
@@ -1435,7 +1442,7 @@
     box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px var(--hover);
     overflow: hidden;
     min-width: 0;
-    animation: step-in 380ms var(--ease);
+    animation: step-in 380ms var(--ease) var(--enter, 0ms) backwards;
 }
 
 .tcard-h {
@@ -1508,7 +1515,7 @@
     background: none;
     box-shadow: none;
     overflow: visible;
-    animation: step-in 320ms var(--ease);
+    animation: step-in 320ms var(--ease) var(--enter, 0ms) backwards;
 }
 
 /* A row's columns: its label (icon, what it's for, Copy on hover), then its tags, its result ("14 pass", "Exit 1"),

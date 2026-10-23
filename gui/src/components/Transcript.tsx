@@ -8,7 +8,8 @@ import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
 import { anchoredTop, atBottom, FAR, firstBelow, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
-import { glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
+import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
+import { revealing } from "../lib/reveal";
 import { TurnView } from "./TurnView";
 import { LiveLine, motionMs } from "./LiveLine";
 import { CardFoldsProvider } from "./blocks/Activity";
@@ -160,6 +161,43 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         });
     };
 
+    /**
+     * A finished turn's work folds into "Worked for" (TurnView, once it has faded out). Following the end, the answer
+     * stays put and what's above it comes down by what folded away: drawn from where it was, it glides down rather
+     * than jumping, as growth glides up.
+     */
+    const fold = (turn: HTMLElement, run: () => void) => {
+        const ms = motionMs(GLIDE_MS);
+        if (!scroller || !content || !turn.isConnected || !stick() || smoothScroll || !ms || typeof content.animate !== "function") return run();
+        // The turn's top (its prompt): where it was, and where it is once the work has folded.
+        const was = turn.getBoundingClientRect().top;
+        const running = shift();
+        run();
+        toBottom();
+        const moved = was - turn.getBoundingClientRect().top;
+        // A fold is one move, not growth that goes on: all the way, up to a screen.
+        const max = scroller.clientHeight;
+        if (glideFrom(moved, 0, max) === undefined) return;
+        // What moved: the column's rows above the turn in sight (or coming into it on the way), the turn's parts
+        // before its reply, and "Worked for", which takes the work's place under the prompt.
+        const rows = inSight(Math.min(Math.abs(moved), max));
+        const at = rows.indexOf(turn);
+        const parts = [...turn.children] as HTMLElement[];
+        const reply = parts.find((el) => el.classList.contains("reply"));
+        const els = [
+            ...(at < 0 ? [] : rows.slice(at + 1)),
+            ...parts.filter((el) => el !== reply),
+            ...([...(reply?.children ?? [])] as HTMLElement[]).filter((el) => el.classList.contains("worked")),
+        ];
+        for (const el of els) {
+            // A row still gliding up goes on from where that glide has it.
+            const glide = glides.find((g) => g.el === el);
+            glide?.anim.cancel();
+            const from = glideFrom(moved, glide ? running : 0, max);
+            if (from !== undefined) el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GLIDE_EASE });
+        }
+    };
+
     /** How far a running glide draws this row of the column from its place: rows out of its reach don't move. */
     const shiftOf = (row: Element) => (glides.some((g) => g.el === row) ? shift() : 0);
     const capture = (): ScrollAnchor | undefined => {
@@ -243,10 +281,18 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         }
         const ro = new ResizeObserver(() => {
             if (!ready) return;
-            if (smoothScroll) toBottom(true);
-            // Glides only while a turn is running: the end of a turn (its work folding away above, its footer,
-            // the composer settling) lands at once.
-            else if (stick()) turns().at(-1)?.status === "running" ? pin() : toBottom();
+            const running = turns().at(-1)?.status === "running";
+            // A jump down (a send, "Latest") near the end while a turn grows: the rest of the way is a glide, which
+            // growth carries on. Scrolling there smoothly again on every growth restarts the scroll each time: it
+            // stutters, and a fast reply never lets it arrive.
+            if (smoothScroll && running && scroller!.scrollHeight - scroller!.clientHeight - scroller!.scrollTop <= GLIDE_MAX) {
+                smoothScroll = false;
+                pin();
+            }
+            else if (smoothScroll) toBottom(true);
+            // Glides only while a turn is running, or its reply's last words are still coming out: the end of a
+            // turn (its footer, the composer settling) lands at once. Its work folding away glides (fold()).
+            else if (stick()) running || revealing() ? pin() : toBottom();
             else {
                 restore();
                 // Nothing left to scroll (something folded until it all fits): no scroll event will come to say the
@@ -575,7 +621,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                     </Show>
                     <CardFoldsProvider sessionId={id}>
                         <For each={visible()}>{(t) => <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={rewind} onFork={() => forkFrom(t)}
-                            workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} held={held().has(t.id)} onElement={track} />}</For>
+                            workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} held={held().has(t.id)} onElement={track} onFold={fold} />}</For>
                     </CardFoldsProvider>
                     {/* Work that isn't a turn (a compaction, one while idle): it shows at the end, as a turn's would. */}
                     <Show when={p.handle.view.state.busy && specialActivity(p.handle.view.state.activity?.label) && !turns().some((t) => t.status === "running")}>

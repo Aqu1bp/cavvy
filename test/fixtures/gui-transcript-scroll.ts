@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, type Node } from "../helpers/gui-render";
 import { anchoredTop, atBottom, FAR, firstBelow, restoredShown, positionCache, TURN_PAGE } from "../../gui/src/lib/transcript-scroll";
-import { glideFrom, heldTurns, liveLine, specialActivity } from "../../gui/src/lib/live-line";
+import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../../gui/src/lib/live-line";
 
 // Real Solid effects/reconciliation; deterministic layout and browser scheduling
 // at the DOM boundary let these regressions run without listening on a socket.
@@ -39,6 +39,8 @@ const skippedAt = new Map<string, number>();
 let omitPromptPart = false;
 /** The composer told the conversation its next change of the dock's height is it opening or closing its large size. */
 let dockGlide = false;
+/** Some streamed text is still coming out (lib/reveal.ts revealing()). */
+let revealingNow = false;
 const has = (n: Node, cls: string) => n.props.class?.split(" ").includes(cls);
 const height = (n: Node): number => n.props["data-turn"] ? (n.props["data-far"] !== undefined ? skippedAt.get(n.props["data-turn"]) : undefined) ?? turnHeights.get(n.props["data-turn"]) ?? 200 : has(n, "earlier") ? 50 : has(n, "transcript-end") ? (n.props.style?.["--dock-h"] ? parseFloat(n.props.style["--dock-h"]) + 28 : 500) : n.children.reduce((sum, child) => sum + height(child), 0);
 /** Where a running glide draws a row of the column (and what's in it): shiftNow down, if it's one the glide moves. */
@@ -79,7 +81,7 @@ const decorate = (n: Node): any => Object.assign(n, {
     querySelectorAll: (selector: string) => all(n).slice(1).filter((child) => matches(child, selector)),
     querySelector: (selector: string) => (selector.startsWith("[data-turn") && turnSearches++, all(n).slice(1).find((child) => matches(child, selector))),
     scrollTo: (options: any) => { scrollBehavior = options.behavior; scrollTarget = Math.max(0, Math.min(options.top, height(n) - viewportHeight)); if (!deferSmooth || options.behavior !== "smooth") (n as any).scrollTop = options.top; },
-    classList: { add() {}, remove() {} },
+    classList: { add() {}, remove() {}, contains: (cls: string) => has(n, cls) },
     hasAttribute: (name: string) => n.props[name] !== undefined,
     /** Its listeners (the capture phase's included), by type: listeners.click(event) dispatches one. */
     listeners: {} as Record<string, (e: any) => void>,
@@ -108,9 +110,11 @@ const [panelHold, setPanelHold] = solid.createSignal<any>();
 let findProps: any;
 /** Each turn's work-log toggle (TurnView's onToggleWork), by turn id. */
 const workToggles = new Map<string, (el: any, toggle: () => void) => void>();
+/** Each turn's onFold (TurnView calls it as its work, faded out, folds away). */
+const onFolds = new Map<string, (el: any, fold: () => void) => void>();
 const scope = {
     renderer: { ...solid, ...renderer, createElement: create },
-    anchoredTop, atBottom, FAR, firstBelow, restoredShown, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, glideFrom, heldTurns, liveLine, specialActivity,
+    anchoredTop, atBottom, FAR, firstBelow, restoredShown, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow,
     LiveLine: () => node("live-line"), Spinner: () => node("spinner"),
     getComputedStyle: (el?: any) => ({ transform: `matrix(1, 0, 0, 1, 0, ${shiftNow})`, overflowY: el?.overflowY ?? "visible" }),
     DOMMatrixReadOnly: class { m42: number; constructor(m: string) { this.m42 = Number(/, (-?[\d.]+)\)$/.exec(m)?.[1] ?? 0); } },
@@ -148,6 +152,7 @@ const scope = {
         workToggles.set(p.turn.id, p.onToggleWork);
         const n = create("article"); n.props["data-turn"] = p.turn.id;
         p.onElement?.(n, p.turn.id);
+        onFolds.set(p.turn.id, p.onFold);
         if (omitPromptPart && p.turn.id === "turn-5") return n;
         const part = create("div"); part.props["data-find"] = "prompt";
         part.getBoundingClientRect = () => ({ top: absolute(n) - top + drawn(n) + partShift, bottom: absolute(n) - top + drawn(n) + height(n), height: height(n) - partShift });
@@ -484,6 +489,55 @@ try {
     reduced = false; live.view.turns[44]!.status = "done"; turnHeights.set("turn-44", 1100); resize();
     assert.equal(top, bottom(), "the end of a turn lands at once");
     assert.equal(glides.length, glidesBefore, "a turn's end (its work folding away) doesn't glide");
+    // But the reply's last words, still coming out (lib/reveal.ts), glide in as the rest of it did.
+    revealingNow = true; turnHeights.set("turn-44", 1160); resize(); flush();
+    assert.equal(top, bottom(), "at the end");
+    assert.deepEqual(glides.slice(glidesBefore).map((g) => g.from), [60, 60], "a reply still coming out glides to its end");
+    revealingNow = false; glides.forEach((g) => g.anim.cancel());
+    // The work folding into "Worked for" (TurnView's onFold): following the end, the answer stays put and what's above
+    // it (the turns before, the turn's prompt) comes down by what folded away, gliding from where it was.
+    viewportHeight = 1400; resize(); flush(); scroller().props.onScroll();
+    const folded = turn("turn-44");
+    const promptWas = folded.children[0].getBoundingClientRect().top;
+    const beforeFold = glides.length;
+    let ran = false;
+    onFolds.get("turn-44")!(folded, () => { ran = true; turnHeights.set("turn-44", 760); });
+    assert.ok(ran);
+    assert.equal(top, bottom(), "at the end at once, the answer where it was");
+    const foldMoves = glides.slice(beforeFold);
+    assert.deepEqual(foldMoves.map((g) => g.el), [turn("turn-43"), turn("turn-42"), turn("turn-41"), folded.children[0]], "the turns above in reach and the prompt; not the turn (its answer) or the end's room");
+    assert.ok(foldMoves.every((g) => g.from === -400 && g.duration === 240), "each drawn 400px up, where it was, and gliding down");
+    assert.equal(folded.children[0].getBoundingClientRect().top - 400, promptWas, "the prompt drawn where it was");
+    glides.forEach((g) => g.anim.cancel());
+    // A fold bigger than the screen moves a screen; with reduced motion it just folds.
+    turnHeights.set("turn-44", 3400); resize(); flush(); glides.forEach((g) => g.anim.cancel()); scroller().props.onScroll();
+    const beforeBig = glides.length;
+    onFolds.get("turn-44")!(folded, () => turnHeights.set("turn-44", 300));
+    assert.ok(glides.length > beforeBig && glides.slice(beforeBig).every((g) => g.from === -1400), "no farther than a screen");
+    glides.forEach((g) => g.anim.cancel());
+    reduced = true;
+    const beforeReduced = glides.length;
+    onFolds.get("turn-44")!(folded, () => turnHeights.set("turn-44", 200));
+    resize();
+    assert.equal(top, bottom(), "folded at the end");
+    assert.equal(glides.length, beforeReduced, "reduced motion: no glide");
+    reduced = false;
+    // A jump down ("Latest") near the end while a turn grows hands over to the glide: scrolling smoothly again on
+    // each growth restarts the scroll every time, and never arrives while the reply streams.
+    viewportHeight = 500; live.view.turns[44]!.status = "running"; turnHeights.set("turn-44", 1200); resize(); flush();
+    scroller().props.onWheel({ deltaY: -100 }); scroll(bottom() - 1500);
+    deferSmooth = true;
+    button("jump").props.onClick();
+    assert.equal(scrollBehavior, "smooth");
+    scroll(bottom() - 120); // The smooth scroll, most of the way there.
+    const beforeHandoff = glides.length;
+    turnHeights.set("turn-44", 1240); resize(); flush();
+    assert.equal(top, bottom(), "the rest of the way at once, in the next frame");
+    assert.equal(glides.at(-1)?.from, 160, "drawn where it was, gliding the rest");
+    assert.ok(glides.length > beforeHandoff);
+    turnHeights.set("turn-44", 1280); resize(); flush();
+    assert.equal(top, bottom(), "and growth after it glides as it does when following");
+    deferSmooth = false; glides.forEach((g) => g.anim.cancel()); live.view.turns[44]!.status = "done";
     turnHeights.clear(); dispose();
     // A short conversation, all of it in view, still running: a row opened makes it overflow (the end isn't
     // followed while it's read); folded again, it all fits, and no scroll event can come to say the end is in

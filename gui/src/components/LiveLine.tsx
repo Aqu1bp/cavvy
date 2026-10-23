@@ -1,14 +1,17 @@
 // The running turn's live line: one row at the end of the turn that says what's
 // happening now, with its own timer. A new state rolls in from below as the old
-// one leaves upward, clipped to the row, so the row never changes height. A
+// one leaves upward, clipped to the row, so the row never changes height. Each
+// state stays long enough to be read (DWELL_MS): a fast agent's states that
+// come and go sooner are skipped, the line going straight to the latest. A
 // running command has a fixed three-line window of its output under it, which
-// opens (on a click) to more of it. What it says is chosen in lib/live-line.ts.
+// opens (on a click) to more of it. What it says, and DWELL_MS, are in
+// lib/live-line.ts.
 
-import { createEffect, createMemo, createSignal, For, Match, on, Show, Switch, untrack } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, Show, Switch, untrack } from "solid-js";
 import { Clock, Hand } from "lucide-solid";
 import { now } from "../lib/clock";
 import { turnDuration } from "../lib/format";
-import { lastLines, lineTone, type LiveLineState } from "../lib/live-line";
+import { dwellLeft, lastLines, lineTone, type LiveLineState } from "../lib/live-line";
 import { prefs } from "../state/prefs";
 import { Spinner } from "./ui/bits";
 
@@ -26,7 +29,8 @@ export function motionMs(base: number): number {
 
 const EASE = "cubic-bezier(0.32, 0.72, 0, 1)";
 
-type Layer = { id: number; state: () => LiveLineState; since: number; enter: boolean; leaving: () => boolean; leave: () => void };
+type Layer = { id: number; key: string; state: () => LiveLineState; since: number; enter: boolean; leaving: () => boolean; leave: () => void };
+
 
 /** `state` undefined: the line steps aside (the answer is streaming; its caret says so). `hint`: what the user can do. */
 export function LiveLine(p: { state: LiveLineState | undefined; hint?: string }) {
@@ -36,48 +40,69 @@ export function LiveLine(p: { state: LiveLineState | undefined; hint?: string })
     // A memo, so the state changing within its key (a thought's next words) doesn't count as a new state:
     // `on` alone runs again whenever the state object does, which would roll the line on every update.
     const key = createMemo(() => p.state?.key);
+    /** When the current state began showing; a timer for the move to a state that came before it had been read. */
+    let shownAt: number | undefined;
+    let wait: ReturnType<typeof setTimeout> | undefined;
+    onCleanup(() => clearTimeout(wait));
+    const show = (key: string | undefined) => {
+        const first = p.state;
+        if (key === undefined || !first) {
+            shownAt = undefined;
+            return setLayers([]);
+        }
+        const ms = motionMs(ROLL_MS);
+        const old = layers().filter((l) => !l.leaving());
+        // One roll at a time: a state still leaving from the roll before goes at once, so three don't
+        // show together (a state back again would show twice: the one leaving and the one coming).
+        const gone = new Set(layers().filter((l) => l.leaving()).map((l) => l.id));
+        // Each layer keeps reading the line's state while it's the current one, then holds its last.
+        let last = first;
+        const state = () => {
+            const s = p.state;
+            if (s && s.key === key) last = s;
+            return last;
+        };
+        const [leaving, setLeaving] = createSignal(false);
+        const layer: Layer = { id: ++seq, key, state, since: first.since ?? Date.now(), enter: ms > 0 && old.length > 0, leaving, leave: () => setLeaving(true) };
+        shownAt = performance.now();
+        if (ms > 0) old.forEach((l) => l.leave());
+        setLayers((list) => [...(ms > 0 ? list.filter((l) => !gone.has(l.id)) : []), layer]);
+    };
     createEffect(
-        on(
-            key,
-            (key) =>
-                untrack(() => {
-                    const first = p.state;
-                    if (key === undefined || !first) return setLayers([]);
-                    const ms = motionMs(ROLL_MS);
-                    const old = layers().filter((l) => !l.leaving());
-                    // One roll at a time: a state still leaving from the roll before goes at once, so three don't
-                    // show together (a state back again would show twice: the one leaving and the one coming).
-                    const gone = new Set(layers().filter((l) => l.leaving()).map((l) => l.id));
-                    // Each layer keeps reading the line's state while it's the current one, then holds its last.
-                    let last = first;
-                    const state = () => {
-                        const s = p.state;
-                        if (s && s.key === key) last = s;
-                        return last;
-                    };
-                    const [leaving, setLeaving] = createSignal(false);
-                    const layer: Layer = { id: ++seq, state, since: first.since ?? Date.now(), enter: ms > 0 && old.length > 0, leaving, leave: () => setLeaving(true) };
-                    if (ms > 0) old.forEach((l) => l.leave());
-                    setLayers((list) => [...(ms > 0 ? list.filter((l) => !gone.has(l.id)) : []), layer]);
-                }),
+        on(key, (key) =>
+            untrack(() => {
+                clearTimeout(wait);
+                wait = undefined;
+                const shown = layers().findLast((l) => !l.leaving());
+                // Back to the state on show (it came and went while it dwelt): nothing to do.
+                if (shown && shown.key === key) return;
+                // A state that came too soon after the one on show waits for it to be read; whichever is latest
+                // then is shown, and those in between never are. Stepping aside for the answer is at once: its
+                // text takes the line's place (the line lingering under it would leave a gap as it went).
+                const left = shown && key !== undefined ? dwellLeft(shownAt, performance.now()) : 0;
+                if (left > 0) wait = setTimeout(() => (wait = undefined, show(untrack(() => p.state?.key))), left);
+                else show(key);
+            }),
         ),
     );
     const current = createMemo(() => layers().findLast((l) => !l.leaving()));
+    /** What the line shows: the state on show, which may be behind the latest for a moment (DWELL_MS). */
+    const showing = () => current()?.state();
     /** The output window belongs to the command it shows: another command's starts folded and empty. */
     const out = createMemo(() => {
-        const s = p.state;
+        const s = showing();
         return s?.output !== undefined && s.toolId ? s.toolId : undefined;
     });
     return (
         <Show when={layers().length}>
             <div class="live-line" data-find-skip>
                 {/* What the line says, for a screen reader: only the current state, not the one rolling away. */}
-                <span class="sr-only">{current()?.state().label}</span>
+                <span class="sr-only">{showing()?.label}</span>
                 <div class="live-stack">
                     <For each={layers()}>{(l) => <LayerRow layer={l} hint={p.hint} onGone={() => drop(l.id)} />}</For>
                 </div>
                 <Show when={out()} keyed>
-                    {(id) => <LiveOutput output={() => (p.state?.toolId === id ? p.state.output : undefined)} />}
+                    {(id) => <LiveOutput output={() => (showing()?.toolId === id ? showing()?.output : undefined)} />}
                 </Show>
             </div>
         </Show>

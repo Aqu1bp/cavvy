@@ -10,6 +10,8 @@
 //   "todo"           keeps a todo list while working
 //   "slow"           streams a long answer slowly
 //   "streamdemo"     a long markdown reply (headings, lists, code, a table) at a model's pace: uneven chunks, uneven gaps
+//   "fastdemo N"     a turn of quick steps and a long markdown reply at N tokens a second ("fastdemo burst": a paragraph at a
+//                    time; "fastdemo N short": a two-line reply)
 //   "agents"         hands two reviews to sub-agents on other models (Task), then sums up
 //   "note"           a sub-agent that writes a file (asks permission in Manual mode)
 //   "background"     a sub-agent in the background (Task run_in_background), and a turn that goes on meanwhile
@@ -43,6 +45,8 @@ interface Step {
     text?: string;
     /** Stream the text the way a model does: a few characters to a few words at a time, at uneven gaps (same every run). */
     paced?: boolean;
+    /** Stream reasoning and text at this many tokens a second (about 4 characters each), or "burst": a paragraph at a time. */
+    rate?: number | "burst";
     calls?: { name: string; args: Json }[];
 }
 
@@ -349,6 +353,42 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         return steps[toolRounds];
     }
     if (/\bstubborn\b/.test(p)) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: "trap '' TERM; sleep 3", description: "Wait, ignoring SIGTERM" } }] } : { text: "Done." };
+    // A fast model's turn: quick steps in three rounds, then a long reply, all at one rate.
+    const fast = /\bfastdemo (\d+|burst)\b/.exec(p);
+    if (fast) {
+        const rate = fast[1] === "burst" ? "burst" : Number(fast[1]);
+        const steps: Step[] = [
+            {
+                reasoning: "They want to know how a session is stored and streamed. I'll find the auth module and the session code first, then check the tests.",
+                text: "I'll look at how sign-in is wired first.",
+                calls: [
+                    { name: "Glob", args: { pattern: "src/**/*.ts" } },
+                    { name: "Read", args: { file_path: "src/auth/index.ts" } },
+                    { name: "Read", args: { file_path: "src/auth/email.ts" } },
+                    { name: "Grep", args: { pattern: "strategy", path: "src" } },
+                    { name: "Read", args: { file_path: "src/auth/types.ts" } },
+                ],
+            },
+            {
+                reasoning: "The strategies are a plain list. Now the settings and the tests.",
+                text: "Strategies are one list in `src/auth/index.ts`. Checking the settings and the tests.",
+                calls: [
+                    { name: "Read", args: { file_path: "src/settings/org.ts" } },
+                    { name: "Bash", args: { command: "ls src test", description: "List the sources" } },
+                    { name: "Grep", args: { pattern: "sso", path: "src" } },
+                ],
+            },
+            {
+                calls: [
+                    { name: "Bash", args: { command: "printf '✓ email sign-in\\n\\n 1 pass\\n 0 fail\\n'", description: "Run the auth tests" } },
+                    { name: "Read", args: { file_path: "test/auth.test.ts" } },
+                ],
+            },
+            { reasoning: "Enough to explain it.", text: /\bshort\b/.test(p) ? "Sign-in strategies are one list in `src/auth/index.ts`; SSO can be appended to it.\n\nThe one auth test passes." : `${STREAM_DEMO}\n\n${SUMMARY}` },
+        ];
+        const step = steps[toolRounds];
+        return step && { ...step, rate };
+    }
     if (/\bstreamdemo\b/.test(p)) return { reasoning: "They want the session flow explained with an example.", text: STREAM_DEMO, paced: true };
     if (/\bslow\b/.test(p)) return { reasoning: "Let me think about this carefully. ".repeat(6), text: Array.from({ length: 12 }, (_, i) => `Paragraph ${i + 1}: streaming text arrives a few words at a time so the interface can be checked for smooth rendering and stable scrolling.`).join("\n\n") };
     if (toolRounds > 0) return { text: "Done." };
@@ -441,6 +481,23 @@ function pacedChunks(text: string): [string, number][] {
     return out;
 }
 
+/**
+ * A fast model's stream: `rate` tokens a second (about 4 characters each), sent every 20ms as a provider batches
+ * them; or "burst", a paragraph at a time, 250 to 700ms apart (seeded).
+ */
+function ratedChunks(text: string, rate: number | "burst"): [string, number][] {
+    const out: [string, number][] = [];
+    if (rate === "burst") {
+        let seed = 11;
+        const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+        for (const part of text.split(/(?<=\n\n)/)) out.push([part, Math.round(250 + rand() * 450)]);
+        return out;
+    }
+    const n = Math.max(1, Math.round((rate * 4 * 20) / 1000));
+    for (let i = 0; i < text.length; i += n) out.push([text.slice(i, i + n), 20]);
+    return out;
+}
+
 /** Split text into small chunks the way a model streams it. */
 function chunks(text: string): string[] {
     return text.match(/\S+\s*|\s+/g) ?? [];
@@ -530,17 +587,24 @@ export function startMockLlm(o: MockOptions = {}) {
                     const delta = (d: Json, finish: string | null = null) => send({ id, object: "chat.completion.chunk", model, choices: [{ index: 0, delta: d, finish_reason: finish }] });
                     const wait = () => (delay ? Bun.sleep(delay) : Promise.resolve());
                     try {
-                        if (step.reasoning) for (const c of chunks(step.reasoning)) {
-                            delta({ reasoning_content: c });
-                            await wait();
-                        }
-                        if (step.text && step.paced) for (const [c, ms] of pacedChunks(step.text)) {
-                            delta({ content: c });
+                        // At a set rate: reasoning, then text.
+                        if (step.rate !== undefined) for (const [d, ms] of [...ratedChunks(step.reasoning ?? "", step.rate).map(([c, ms]) => [{ reasoning_content: c }, ms] as const), ...ratedChunks(step.text ?? "", step.rate).map(([c, ms]) => [{ content: c }, ms] as const)]) {
+                            delta(d);
                             await Bun.sleep(delay ? ms : 0);
                         }
-                        else if (step.text) for (const c of chunks(step.text)) {
-                            delta({ content: c });
-                            await wait();
+                        else {
+                            if (step.reasoning) for (const c of chunks(step.reasoning)) {
+                                delta({ reasoning_content: c });
+                                await wait();
+                            }
+                            if (step.text && step.paced) for (const [c, ms] of pacedChunks(step.text)) {
+                                delta({ content: c });
+                                await Bun.sleep(delay ? ms : 0);
+                            }
+                            else if (step.text) for (const c of chunks(step.text)) {
+                                delta({ content: c });
+                                await wait();
+                            }
                         }
                         (step.calls ?? []).forEach((c, i) => {
                             const args = JSON.stringify(c.args);

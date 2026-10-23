@@ -34,7 +34,7 @@ function setup(blocks: any[], expanded = true, agents: any[] = [], session?: str
     const scope = {
         ...format, ...toolWords, ...liveLine, ...commandRow, backgroundOf, RenderBoundary: boundary(),
         // The session the rows are in: its background tasks, and Stop on one (recorded).
-        handleFor: () => ({ view }), stopBackground: (id: string, ids: string[]) => { stops.push([id, ids]); }, now: clock, prefs: { expandActivity: expanded, showThinking: true }, findReveal: reveal,
+        handleFor: () => ({ view }), stopBackground: (id: string, ids: string[]) => { stops.push([id, ids]); }, now: clock, motionMs: () => 0, prefs: { expandActivity: expanded, showThinking: true }, findReveal: reveal,
         CodeBlock: (p: any) => { const n = node("code"); solid.createRenderEffect(() => n.text = p.code); return n; },
         DiffView: (p: any) => { const n = node("diff"); solid.createRenderEffect(() => n.text = `diff ${p.diff.path}`); return n; },
         Markdown: () => node("markdown"), Spinner: icon,

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { backgroundWait, glideFrom, GLIDE_MAX, heldTurns, lastLines, lineTone, liveLine, specialActivity, workedLabel, workSegments, type LiveInput } from "../gui/src/lib/live-line";
+import { backgroundWait, dwellLeft, DWELL_MS, glideFrom, GLIDE_MAX, heldTurns, lastLines, lineTone, liveLine, specialActivity, workedLabel, workSegments, type LiveInput } from "../gui/src/lib/live-line";
 
 // The running turn's live line (gui/src/lib/live-line.ts): what it says, which turns a steer keeps open, what a
 // folded turn says, and the glide's arithmetic. LiveLine.tsx, TurnView.tsx and Transcript.tsx draw from these.
@@ -137,4 +137,18 @@ test("a command's output window: its last lines, cleaned; failures red, passes g
     expect(lineTone("failover configured")).toBeUndefined();
     expect(lineTone("no errors found")).toBeUndefined();
     expect(lineTone("bun test v1.3.2")).toBeUndefined();
+});
+
+test("a live line state dwells long enough to read before the line moves on", () => {
+    expect(dwellLeft(undefined, 5000)).toBe(0);
+    expect(dwellLeft(1000, 1100)).toBe(DWELL_MS - 100);
+    expect(dwellLeft(1000, 1000 + DWELL_MS + 1)).toBe(0);
+    expect(DWELL_MS).toBeGreaterThanOrEqual(250);
+    expect(DWELL_MS).toBeLessThanOrEqual(400);
+});
+
+test("a fold's glide may cover more than growth's, up to what it's given", () => {
+    expect(glideFrom(-467)).toBe(-GLIDE_MAX);
+    expect(glideFrom(-467, 0, 900)).toBe(-467);
+    expect(glideFrom(-2000, 0, 900)).toBe(-900);
 });

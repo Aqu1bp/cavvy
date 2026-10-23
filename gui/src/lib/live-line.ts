@@ -2,7 +2,8 @@
 // What it says is chosen here, from the turn's blocks and the session's state;
 // LiveLine.tsx draws it and rolls between states. Also here: which finished
 // turns stay open because a steer carried their work on (a chain), what a
-// turn folds away and what it says then ("Worked for 2m 5s"), and the glide's arithmetic.
+// turn folds away and what it says then ("Worked for 2m 5s"), the glide's arithmetic, and the
+// pace at which rows that land together come in.
 
 import type { Block, Interaction, ThinkingBlock, ToolBlock, Turn } from "@shared/protocol";
 import { sleepSeconds, stripAnsi, tokens, turnDuration } from "./format";
@@ -220,14 +221,51 @@ export function workSegments<R extends Row>(items: R[]): Seg<R>[] {
     return out;
 }
 
+/** How long a state shows on the live line, at least, before the line moves on to another: long enough to read it. */
+export const DWELL_MS = 400;
+
+/** How long until the live line may move on from a state it began showing at `shownAt`: 0 for now. */
+export function dwellLeft(shownAt: number | undefined, now: number): number {
+    return shownAt === undefined ? 0 : Math.max(0, shownAt + DWELL_MS - now);
+}
+
 /** A glide never covers more than this: farther, the content starts this far off and slides the rest of the way in. */
 export const GLIDE_MAX = 240;
 
 /**
  * Where a glide starts: the content is drawn `delta` px lower than it is (the distance the end moved) plus what's
- * left of a glide still running, so back-to-back growth is one motion. Undefined: nothing to glide.
+ * left of a glide still running, so back-to-back growth is one motion; never farther than `max`. Undefined:
+ * nothing to glide.
  */
-export function glideFrom(delta: number, running = 0): number | undefined {
-    const from = Math.max(-GLIDE_MAX, Math.min(GLIDE_MAX, delta + running));
+export function glideFrom(delta: number, running = 0, max = GLIDE_MAX): number | undefined {
+    const from = Math.max(-max, Math.min(max, delta + running));
     return Math.abs(from) < 1 ? undefined : from;
+}
+
+/** Rows that land together (a fast agent's calls finishing in one update) come in one after another, this far apart. */
+export const STAGGER_MS = 50;
+/** No row waits longer than this to come in, however many land at once. */
+export const STAGGER_MAX = 200;
+/** When the row to come in next may start (ms). */
+let nextRow = -Infinity;
+
+/** How long a row landing at `now` waits to come in: `step` after the row before it started, and never long. */
+export function staggerDelay(now: number, step = STAGGER_MS): number {
+    const delay = Math.min(STAGGER_MAX, Math.max(0, nextRow - now));
+    nextRow = now + delay + step;
+    return delay;
+}
+
+/**
+ * A row of a running turn's work, just made: its step-in (transcript.css) waits for the rows that landed before
+ * it (--enter). `step`: STAGGER_MS as the motion settings have it (0: no motion, no wait).
+ */
+export function enterRow(el: HTMLElement, step: number) {
+    if (!step) return;
+    // Placed in the page by then; only a running turn's rows wait (not those of a finished turn's opened work).
+    queueMicrotask(() => {
+        if (!el.closest?.('.turn[aria-busy="true"]')) return;
+        const delay = staggerDelay(performance.now(), step);
+        if (delay) el.style.setProperty("--enter", `${delay}ms`);
+    });
 }
