@@ -33,7 +33,10 @@ test("special states (a retry, a compaction, a wait on background work) say them
 test("the step under way: its verb and target, a command by its description, an approval first", () => {
     expect(line({ blocks: [tool({})] })).toMatchObject({ kind: "tool", label: "Reading", detail: "src/a.ts", mono: true, since: 5, toolId: "t1" });
     const cmd = tool({ id: "c", name: "Bash", title: "Bash", input: { command: "bun test ./test/a.test.ts\necho done", description: "Run the transcript tests" }, progress: "a\nb\n" });
-    expect(line({ blocks: [cmd] })).toMatchObject({ label: "Run the transcript tests", detail: "bun test ./test/a.test.ts", output: "a\nb\n", title: "bun test ./test/a.test.ts\necho done" });
+    expect(line({ blocks: [cmd] })).toMatchObject({ label: "Run the transcript tests", detail: "bun test ./test/a.test.ts", output: "a\nb\n" });
+    // No native tooltip dumps the whole command, running or waiting for approval (#389).
+    expect(line({ blocks: [cmd] })?.title).toBeUndefined();
+    expect(line({ blocks: [{ ...cmd, status: "awaiting" }] })?.title).toBeUndefined();
     // Codex sends no description: "Running" and the command.
     expect(line({ blocks: [{ ...cmd, input: { command: "rg -n x" } }] })).toMatchObject({ label: "Running", detail: "rg -n x" });
     // Only a running command has an output window; one still arriving says how much of it has.

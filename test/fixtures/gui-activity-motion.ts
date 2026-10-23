@@ -392,8 +392,10 @@ test("folded, a command's row says only its description; without one (Codex) the
         expect(text(label)).toBe("bun run typecheck");
         expect(has(label, "solo")).toBe(true);
         expect(has(label, "more")).toBe(true);
-        // The whole of it is the row's tooltip, and in the row opened.
-        expect(head(codex).props.title).toBe("cd '/Users/me/my repo' && bun run typecheck\nbun test");
+        // The whole of it is in the row opened (and Copy), not a native tooltip: a long one made a wall of one (#389).
+        expect(all(codex).some((n) => typeof n.props.title === "string" && n.props.title.includes("bun test"))).toBe(false);
+        head(codex).props.onClick();
+        expect(text(body(codex)!)).toContain("cd '/Users/me/my repo' && bun run typecheck\nbun test");
     } finally { h.dispose(); }
 });
 
@@ -487,6 +489,8 @@ test("a command running in the background says so, with Stop for its task; finis
         const card = row(h.root, "bg");
         expect(has(card, "bg")).toBe(true);
         expect(text(head(card))).toContain("In the background");
+        // Its tag doesn't repeat the command as a tooltip.
+        expect(all(card).some((n) => typeof n.props.title === "string" && n.props.title.includes("npm run dev"))).toBe(false);
         // No tally while it runs, and its time is the task's.
         expect(text(head(card))).toContain("1s");
         const stop = all(card).find((n) => n.tag === "button" && has(n, "stop"))!;

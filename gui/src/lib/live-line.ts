@@ -30,7 +30,7 @@ export interface LiveLineState {
     output?: string;
     /** The call it's about, for find. */
     toolId?: string;
-    /** The whole of it, on hover. */
+    /** The whole of it, on hover. Never a command: a long one made a wall of a tooltip; its row opens to it, with Copy. */
     title?: string;
 }
 
@@ -96,7 +96,7 @@ function toolState(t: ToolBlock): LiveLineState {
     const first = command.split("\n")[0];
     if (t.status === "awaiting") {
         const asks = t.name === "AskUserQuestion" || t.name === "ExitPlanMode";
-        return { key: `wait:${t.id}`, kind: "wait", label: runningVerb(t), detail: asks ? undefined : [verb, description ?? arg].filter(Boolean).join(" "), toolId: t.id, title: command || arg };
+        return { key: `wait:${t.id}`, kind: "wait", label: runningVerb(t), detail: asks ? undefined : [verb, description ?? arg].filter(Boolean).join(" "), toolId: t.id, title: command ? undefined : arg };
     }
     if (t.status === "streaming") {
         return { key: `tool:${t.id}:streaming`, kind: "tool", label: runningVerb(t), detail: arg, mono: true, meta: t.receiving ? `${tokens(t.receiving)} chars` : undefined, since: t.startedAt, toolId: t.id };
@@ -106,7 +106,7 @@ function toolState(t: ToolBlock): LiveLineState {
     if (t.name === "Bash") {
         // Its description is the label when it has one ("Run the transcript tests"), the command beside it.
         const label = t.status === "queued" ? runningVerb(t) : wait ? "Waiting" : (description ?? "Running");
-        return { ...base, label, detail: first || undefined, mono: true, title: command || undefined, meta: wait ? `of ${turnDuration(wait * 1000)}` : undefined, output: t.status === "running" ? (t.progress ?? "") : undefined };
+        return { ...base, label, detail: first || undefined, mono: true, meta: wait ? `of ${turnDuration(wait * 1000)}` : undefined, output: t.status === "running" ? (t.progress ?? "") : undefined };
     }
     return { ...base, label: runningVerb(t), detail: arg, mono: !t.agent && t.name !== "AskUserQuestion", title: arg };
 }
