@@ -1885,7 +1885,8 @@ async function doctorCommand(app: App) {
             readJsonForUpdate(f);
             lines.push(ok(`${displayPath(f, app.cwd)} parses`));
         } catch (e) {
-            lines.push(bad(`${displayPath(f, app.cwd)}: ${e instanceof JsonFileError ? e.reason : (e as Error).message}`));
+            // Not the parser's message: it can quote what's in the file.
+            lines.push(bad(`${displayPath(f, app.cwd)}: ${e instanceof JsonFileError ? "isn't valid JSON" : (e as Error).message}`));
         }
     }
     if (existsSync(paths.credentialsFile())) {

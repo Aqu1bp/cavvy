@@ -12,7 +12,9 @@ export type McpServerStatus = "pending" | "connecting" | "connected" | "failed" 
  */
 export interface McpApprovalInfo {
     state: "approved" | "needs-approval" | "rejected";
-    reason?: "new" | "changed" | "legacy";
+    reason?: "new" | "changed" | "legacy" | "unreadable";
+    /** reason "unreadable": the settings file that can hold approvals and rejections and can't be read. */
+    settingsFile?: string;
     /** Approved by enableAllProjectMcpServers rather than one by one. */
     viaAll?: boolean;
 }

@@ -9,7 +9,7 @@ import { sessionHookServices, sessionStartHooks } from "./agent/session-hooks";
 import { sessionHookSettings } from "./plugins/native";
 import { Session } from "./agent/session";
 import { buildSystemPrompt } from "./agent/system-prompt";
-import { loadSettings, type Effort, type Settings } from "./config/settings";
+import { asLoaded, loadSettings, type Effort, type Settings } from "./config/settings";
 import type { PermissionMode } from "./permissions/modes";
 import { PermissionChecker } from "./permissions/checker";
 import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "./permissions/classifier";
@@ -103,7 +103,7 @@ export function mergeSettings(base: Settings, over: Settings | undefined): Setti
         out.hooks = hooks as Settings["hooks"];
     }
     for (const k of ["mcpServers", "env"] as const) if (base[k] || over[k]) (out as any)[k] = { ...base[k], ...over[k] };
-    return out;
+    return asLoaded(out, base);
 }
 
 /** Everything up to the agent. Throws SetupError when the run can't start. */
