@@ -36,7 +36,7 @@ import type { AgentRun, Block, ThinkingBlock, TodoEntry, ToolBlock } from "@shar
 import { duration, firstChangedLine, plural, sleepSeconds, stripAnsi, tokens } from "../../lib/format";
 import { commandDescription, isLive, runningVerb, shortModelRef, toolLabel } from "../../lib/tool-words";
 import { commandCut, commandLabel, commandMeta, exitCode, firstLine, highlightShell, outputLines, passTally, taskOf, type ShellToken } from "../../lib/command-row";
-import { lineTone } from "../../lib/live-line";
+import { enterRow, lineTone, STAGGER_MS } from "../../lib/live-line";
 import { backgroundOf } from "../../lib/background";
 import { now } from "../../lib/clock";
 import { app, handleFor, reportError, rpc } from "../../state/app";
@@ -47,6 +47,7 @@ import { CopyButton, Spinner } from "../ui/bits";
 import { CodeBlock } from "./CodeBlock";
 import { DiffView } from "./DiffView";
 import { Markdown } from "./Markdown";
+import { motionMs } from "../LiveLine";
 
 export type Item =
     | { kind: "block"; block: Block }
@@ -315,7 +316,7 @@ export function Thinking(p: { block: ThinkingBlock; live: boolean }) {
     const preview = () => p.block.text.trim().split("\n").filter(Boolean).slice(-2).join(" ");
     return (
         <Show when={prefs.showThinking || p.live}>
-            <div class={`wgroup thinking ${open() ? "open" : ""} ${p.live ? "live" : ""}`}>
+            <div ref={(el) => enterRow(el, motionMs(STAGGER_MS))} class={`wgroup thinking ${open() ? "open" : ""} ${p.live ? "live" : ""}`}>
                 <button class="acts-h wrow" onClick={() => setOpen(!open())} aria-expanded={open()}>
                     <ChevronRight size={14} class="chev" />
                     <span class={`wtext ${p.live ? "shimmer" : ""}`}>{label()}</span>
@@ -608,7 +609,7 @@ function ToolRowContent(p: { tool: ToolBlock; activity?: boolean; detailsOnly?: 
         return t.summary;
     };
     return (
-        <div class={`tool ${open() ? "open" : ""} st-${p.tool.status} ${found() ? "found" : ""}`} data-find={p.tool.id}>
+        <div ref={(el) => enterRow(el, motionMs(STAGGER_MS))} class={`tool ${open() ? "open" : ""} st-${p.tool.status} ${found() ? "found" : ""}`} data-find={p.tool.id}>
             <div class="tool-head" style={p.detailsOnly ? { display: "none" } : undefined}>
                 <button class={p.activity ? `tool-line wrow ${isLive(p.tool) ? "live" : ""} ${p.tool.status === "awaiting" || p.tool.status === "queued" ? p.tool.status : ""}` : "tool-line"} onClick={() => setOpen(!open())} aria-expanded={open()}>
                     <span class="tool-icon">
@@ -738,7 +739,7 @@ function EditCardContent(p: { tool: ToolBlock }) {
     const hasBody = () => Boolean(t().diff || t().diagnostics || input() || showOutput());
     const open = () => !(folded() ?? !(t().diff || t().diagnostics || t().status === "error"));
     return (
-        <div class={`tcard edit-card st-${t().status} ${findReveal()?.part === t().id ? "found" : ""}`} data-find={t().id}>
+        <div ref={(el) => enterRow(el, motionMs(STAGGER_MS))} class={`tcard edit-card st-${t().status} ${findReveal()?.part === t().id ? "found" : ""}`} data-find={t().id}>
             <div class="tcard-h">
                 <span class="tcard-ic">
                     <Show when={!live()} fallback={<Spinner size={12} class="tone-accent" />}>
@@ -930,7 +931,7 @@ function CommandCardContent(p: { tool: ToolBlock }) {
         }
     };
     return (
-        <div class={`tcard cmd-card cmd-row st-${t().status} ${shown() ? "open" : ""} ${failed() ? "fail" : ""} ${background() ? "bg" : ""} ${findReveal()?.part === t().id ? "found" : ""}`} data-find={t().id}>
+        <div ref={(el) => enterRow(el, motionMs(STAGGER_MS))} class={`tcard cmd-card cmd-row st-${t().status} ${shown() ? "open" : ""} ${failed() ? "fail" : ""} ${background() ? "bg" : ""} ${findReveal()?.part === t().id ? "found" : ""}`} data-find={t().id}>
             <div
                 class="cmd-h"
                 role="button"

@@ -19,6 +19,8 @@ const prefs = { showThinking: true, expandActivity: false, motion: "instant" };
 const scope = {
     RenderBoundary: boundary(undefined, (e) => console.error(e)), splitComments,
     ...format, ...live, now: clock, prefs, findReveal: () => undefined,
+    // Each state here is a moment of its own, long after the last: the line moves on at once (its dwell is gui-fast-pacing's).
+    dwellLeft: () => 0,
     ActivityGroup: stub, Markdown: stub, CopyButton: stub, Spinner: stub, Thinking: stub,
     ...Object.fromEntries(["Brain", "ChevronRight", "SquareTerminal", "Info", "AlertCircle", "AlertTriangle", "CircleStop", "GitFork", "Hand", "Clock", "CornerDownRight", "RotateCcw", "BellRing", "MessageSquareText", "FileText"].map((n) => [n, stub])),
 };
