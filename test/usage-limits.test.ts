@@ -472,8 +472,9 @@ describe("a turn that hits the plan's limit says when it resets", () => {
             process.env.FAKE_RATE_LIMIT_LATE = late;
             const r = await runTurn("claude-code");
             expect(r.reason).toBe("error");
-            // An error arriving first also reports the reached account before its window details.
-            expect(r.limits).toHaveLength(2 + Number(late === "1"));
+            // Its two window reports, and the hard stop (reached, no credits), wherever the error comes.
+            expect(r.limits).toHaveLength(3);
+            expect(r.limits.filter((l) => l.credits === false && !l.windows.length)).toHaveLength(1);
             expect(r.notices.find((n) => n.startsWith("error:"))).toContain(resetSentence(reset * 1000, "Claude Code"));
         }
     });
@@ -519,8 +520,9 @@ describe("a turn that hits the plan's limit says when it resets", () => {
             process.env.FAKE_RATE_LIMIT_LATE = late;
             const r = await runTurn("claude-code");
             expect(r.reason).toBe("error");
-            // An error arriving first also reports the reached account before its window details.
-            expect(r.limits).toHaveLength(2 + Number(late === "1"));
+            // Its two window reports, and the hard stop (reached, no credits), wherever the error comes.
+            expect(r.limits).toHaveLength(3);
+            expect(r.limits.filter((l) => l.credits === false && !l.windows.length)).toHaveLength(1);
             expect(r.notices.find((n) => n.startsWith("error:"))).toContain(resetSentence(weekly * 1000, "Claude Code"));
         }
     });
@@ -533,8 +535,9 @@ describe("a turn that hits the plan's limit says when it resets", () => {
             process.env.FAKE_RATE_LIMIT_LATE = late;
             const r = await runTurn("claude-code");
             expect(r.reason).toBe("error");
-            // An error arriving first also reports the reached account before its window details.
-            expect(r.limits).toHaveLength(2 + Number(late === "1"));
+            // Its two window reports, and the hard stop (reached, no credits), wherever the error comes.
+            expect(r.limits).toHaveLength(3);
+            expect(r.limits.filter((l) => l.credits === false && !l.windows.length)).toHaveLength(1);
             expect(r.notices.find((n) => n.startsWith("error:"))).toMatch(/It resets (?:at|on) .*\(in 2h 5m\)/);
         }
     });
@@ -547,9 +550,10 @@ describe("a turn that hits the plan's limit says when it resets", () => {
         const r = await runTurn("codex");
         expect(r.reason).toBe("error");
         expect(received().filter((m) => m.method === "account/rateLimits/read")).toHaveLength(1);
-        // No stale event reaches the engine; the local turn also keeps its reset.
-        expect(r.limits).toHaveLength(1);
+        // No stale event reaches the engine (only the update, then the hard stop); the local turn also keeps its reset.
+        expect(r.limits).toHaveLength(2);
         expect(r.limits[0]!.windows[0]).toMatchObject({ usedPercent: 100, reached: true });
+        expect(r.limits[1]).toMatchObject({ windows: [], reached: true, credits: false });
         expect(r.notices.find((n) => n.startsWith("error:"))).toMatch(/It resets (?:at|on) .*\(in 2h 5m\)/);
     });
 
@@ -1026,6 +1030,24 @@ describe("past a reached limit on credits (#434), the turn goes on and nothing w
         expect(r.limits.at(-1)).toMatchObject({ reached: true, credits: true });
         expect(r.notices).toContainEqual(expect.stringMatching(/^warn: Claude Code · Default: 5-hour usage limit reached · using credits\. Turns go on, billed to extra usage\. It resets (?:at|on) .*\(in 2h 5m\)\.$/));
         expect(r.notices.join("\n")).not.toMatch(hardStop);
+    });
+
+    test("a hard stop always tells the host credits didn't carry it, whatever the backend knew of them", async () => {
+        // The host may hold credits from an earlier turn; this backend only saw a reached update silent on them.
+        process.env.FAKE_SCENARIO = "usage-limit";
+        process.env.FAKE_LIMIT_UPDATE = shifted("codex-update-reached.json", soon());
+        const codex = await runTurn("codex");
+        expect(codex.reason).toBe("error");
+        expect(codex.limits.at(-1)).toMatchObject({ reached: true, credits: false });
+        const host = codex.limits.reduce<PlanLimits | undefined>((prev, l, i) => mergeLimits(prev, l, i > 0), { provider: "codex", accountId: "default", windows: [], reached: true, credits: true, at: 0 });
+        expect(meterOf(host, Date.now())!.usingCredits).toBe(false);
+
+        delete process.env.FAKE_LIMIT_UPDATE;
+        process.env.FAKE_SCENARIO = "rate-limit";
+        process.env.FAKE_RATE_LIMIT = join(FIX, "claude-missing.json");
+        const claude = await runTurn("claude-code");
+        expect(claude.reason).toBe("error");
+        expect(claude.limits.at(-1)).toMatchObject({ reached: true, credits: false });
     });
 
     test("Claude Code: extra usage that runs out stops the turn on the limit, as before", async () => {

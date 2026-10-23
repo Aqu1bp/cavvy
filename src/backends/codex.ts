@@ -1243,8 +1243,7 @@ export class CodexTurn {
         if (error?.codexErrorInfo !== "usageLimitExceeded" || this.limitHit) return;
         this.limitHit = true;
         this.limitUpdates.revision++;
-        const stop = limitStopReport(this.limits, this.def.id, this.t.accountId ?? "default");
-        if (stop) this.noteLimits(stop, true);
+        this.noteLimits(limitStopReport(this.def.id, this.t.accountId ?? "default"), true);
     }
 
     /**

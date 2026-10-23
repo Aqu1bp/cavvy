@@ -279,10 +279,10 @@ export function creditsNote(l: PlanLimits | undefined, billedTo = "credits"): st
 
 /**
  * What a turn that stopped on the plan's limit reports: reached, and whatever
- * credits there were didn't carry it. Nothing when that's what's known already.
+ * credits there were didn't carry it. Always sent: the host may hold credits
+ * from another backend's reports that this one never saw.
  */
-export function limitStopReport(known: PlanLimits | undefined, provider: string, accountId: string): PlanLimits | undefined {
-    if (known?.reached && known.credits !== true) return undefined;
+export function limitStopReport(provider: string, accountId: string): PlanLimits {
     return { provider, accountId, windows: [], reached: true, credits: false, at: Date.now() };
 }
 

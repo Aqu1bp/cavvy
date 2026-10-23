@@ -1096,8 +1096,7 @@ export class ClaudeConnection implements CliConnection {
             this.failure = `Claude Code isn't signed in, or its sign-in expired. ${signInAdvice(this.def.id, this.cfg.accountId)}`;
         } else if (error === "rate_limit") {
             this.limitHit = true;
-            const stop = limitStopReport(this.limits, this.def.id, this.cfg.accountId ?? "default");
-            if (stop) this.noteLimits(stop, true);
+            this.noteLimits(limitStopReport(this.def.id, this.cfg.accountId ?? "default"), true);
             this.failure = this.limitFailure();
         } else if (error === "billing_error") this.failure = "Claude Code reported a billing problem with the account it's signed in to.";
         else this.failure = `Claude Code reported an error: ${error}`;
