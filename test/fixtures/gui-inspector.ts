@@ -147,7 +147,7 @@ test("Unified | Split sets the shared split signal the layout widens the inspect
 
 test("the Changes pane: counts, a row per file opening the reader on it, and the empty and error states", () => {
     const opened: unknown[][] = [];
-    const Pane = component(between(panel, "function FileRow(", "/**\n * The plan the session presented last"), "ChangesPane", {
+    const Pane = component(between(panel, "function FileRow(", "/** Pull requests the agent watches"), "ChangesPane", {
         CHANGE, dirOf, nameOf,
         plural: (n: number, w: string) => `${n} ${n === 1 ? w : `${w}s`}`,
         openReview: (...args: unknown[]) => opened.push(args),

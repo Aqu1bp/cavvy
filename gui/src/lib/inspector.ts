@@ -46,4 +46,4 @@ export function reviewWidthRange(shown: number, sheetWidth: number): { min: numb
 }
 
 /** The side panel's tabs. */
-export type InspectorPane = "changes" | "plan" | "agents" | "commands";
+export type InspectorPane = "changes" | "agents" | "commands";

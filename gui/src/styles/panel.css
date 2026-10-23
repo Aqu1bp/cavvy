@@ -1,5 +1,5 @@
 /* ---- The side panel (RightPanel), in the sheet's inspector column ----
-   design/glass "Inspector": a segmented Changes | Plan | Agents | Commands header,
+   design/glass "Inspector": a segmented Changes | Agents | Commands header,
    the pane under it, Commit and Push at the foot of Changes. The column itself
    (docked or floating, its resizer) is shell.css's. The diff reader is review.css. */
 
@@ -29,7 +29,7 @@
 }
 
 
-/* A count in a segment ("Changes 3", "Plan 2/3"); what runs in a tab now, in the accent. */
+/* A count in a segment ("Changes 3"); what runs in a tab now, in the accent. */
 .segmented .ct {
     font-size: 0.786rem;
     color: var(--fg-3);
@@ -301,110 +301,7 @@
     color: var(--fg-3);
 }
 
-/* ---- Plan ---- */
-
-.plan ul {
-    margin: 0;
-    padding: 0;
-}
-
-.plan li {
-    list-style: none;
-    display: grid;
-    grid-template-columns: calc(20 * var(--sp)) minmax(0, 1fr);
-    gap: calc(8 * var(--sp));
-    padding: calc(9 * var(--sp)) calc(8 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    line-height: 1.45;
-    color: var(--fg);
-    overflow-wrap: anywhere;
-}
-
-.plan .box {
-    display: grid;
-    place-items: center;
-    width: calc(16 * var(--sp));
-    height: calc(16 * var(--sp));
-    margin-top: 1px;
-    border-radius: 50%;
-    box-shadow: inset 0 0 0 1.5px var(--fg-4);
-    transition: background 300ms;
-}
-
-.plan .done .box {
-    background: var(--ok);
-    box-shadow: none;
-    color: var(--accent-ink);
-}
-
-.plan .done > span:last-child {
-    color: var(--fg-3);
-    text-decoration: line-through;
-    text-decoration-color: var(--fg-4);
-}
-
-.plan .now .box {
-    box-shadow: inset 0 0 0 1.5px var(--accent);
-}
-
-.plan .now .box::after {
-    content: "";
-    width: calc(6 * var(--sp));
-    height: calc(6 * var(--sp));
-    border-radius: 50%;
-    background: var(--accent);
-}
-
-.plan .now > span:last-child {
-    font-weight: 500;
-}
-
-/* ---- Sections: the proposed plan ---- */
-
-.sec {
-    padding: calc(2 * var(--sp)) 0 calc(8 * var(--sp));
-}
-
-.prow {
-    display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    width: 100%;
-    min-width: 0;
-    min-height: calc(36 * var(--sp));
-    padding: 0 calc(8 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    color: var(--fg);
-    text-align: left;
-    transition: background 140ms;
-}
-
-button.prow:hover {
-    background: var(--hover);
-}
-
-button.prow:active {
-    background: var(--press);
-}
-
-.prow > svg:first-child {
-    color: var(--fg-3);
-    flex: none;
-}
-
-.prow .meta {
-    margin-left: auto;
-    font-size: 0.821rem;
-    font-weight: 500;
-    color: var(--fg-3);
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-    flex: none;
-}
-
-.prow .meta.tone-warn {
-    color: var(--warn);
-}
+/* ---- Agents and Commands: what runs in the session's background, with Stop ---- */
 
 /* A section's head: "Running 3", "Watching". */
 .sh {
@@ -485,8 +382,6 @@ button.prow:active {
 .nd.st-stopped {
     background: var(--fg-4);
 }
-
-/* ---- Agents and Commands: what runs in the session's background, with Stop ---- */
 
 .grp + .grp,
 .work + .grp {
