@@ -889,11 +889,15 @@ export class Runtime {
         }
         // The CLI's process for this session is signed in as the earlier account: it goes now, with its background
         // work, so no turn it starts by itself (a report) can be taken over under the new account. Turns it started
-        // that are waiting to be taken go with it.
-        const fromProcess = (w: BackendWake) => w.provider === provider;
-        this.adopts = this.adopts.filter((w) => !fromProcess(w));
-        const stopped = (await this.agent?.releaseAccountProcess(provider)) ?? 0;
-        this.adopts = this.adopts.filter((w) => !fromProcess(w));
+        // that are waiting to be taken over, or that it starts while it's let go of, aren't (dropAdopt, #408).
+        let stopped = 0;
+        this.releasing.add(provider);
+        try {
+            for (const w of this.adopts.filter((w) => w.provider === provider)) this.dropAdopt(w);
+            stopped = (await this.agent?.releaseAccountProcess(provider)) ?? 0;
+        } finally {
+            this.releasing.delete(provider);
+        }
         if (stopped) {
             const message = `${name} was restarted for the account change: ${stopped === 1 ? "1 background task" : `${stopped} background tasks`} stopped.`;
             this.session.recordNotice("warn", message);
@@ -2836,11 +2840,32 @@ export class Runtime {
     /** Turns agent CLIs started by themselves, waiting for the session to be free to adopt them (wake). */
     private adopts: BackendWake[] = [];
 
+    /** Agent CLIs whose process for this session an account change is letting go of (setAccount). */
+    private releasing = new Set<string>();
+
     /** An agent CLI started a turn by itself: it becomes a wake turn of this session's, when it's free. */
     adoptWake(w: BackendWake) {
         if (this.closed) return;
+        // From the process an account change is letting go of: not taken over under the new account.
+        if (this.releasing.has(w.provider)) return this.dropAdopt(w);
         this.adopts.push(w);
         this.wake();
+    }
+
+    /**
+     * A turn a CLI started by itself, in the process an account change lets go of (#408): it isn't taken over. What
+     * it reported is shown and told to the model (Agent.dropAdopt), as when the session can't take one over (#305).
+     * One answering the user's message, sent at once on Esc, was taken out of the queue then: the message goes back
+     * to the message box, as one an interrupt kept from going does (returnQueued).
+     */
+    private dropAdopt(w: BackendWake) {
+        this.adopts = this.adopts.filter((x) => x !== w);
+        if (!w.prompt) return void this.agent?.dropAdopt(w);
+        if (!w.label?.trim()) return;
+        this.engine.draft(this, w.label, []);
+        const message = `${getProvider(w.provider)?.name ?? w.provider} was restarted for the account change before it answered your message. It's back in the message box, to send again.`;
+        this.session.recordNotice("warn", message);
+        this.notice(message, "warn");
     }
 
     interrupt() {

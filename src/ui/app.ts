@@ -570,11 +570,16 @@ export class App {
         this.session.recordNotice("info", text);
         this.notice(text);
         this.renderLive();
-        // As the desktop's (Runtime.setAccount): the process signed in as the earlier account goes now, with its work
-        // and the turns it started that wait to be taken.
-        this.adopts = this.adopts.filter((w) => w.provider !== provider);
-        const stopped = (await this.agent?.releaseAccountProcess(provider)) ?? 0;
-        this.adopts = this.adopts.filter((w) => w.provider !== provider);
+        // As the desktop's (Runtime.setAccount): the process signed in as the earlier account goes now, with its work.
+        // Turns it started that wait to be taken over, or that it starts while it's let go of, aren't (dropAdopt, #408).
+        let stopped = 0;
+        this.releasing.add(provider);
+        try {
+            for (const w of this.adopts.filter((w) => w.provider === provider)) this.dropAdopt(w);
+            stopped = (await this.agent?.releaseAccountProcess(provider)) ?? 0;
+        } finally {
+            this.releasing.delete(provider);
+        }
         if (stopped) {
             const message = `${name} was restarted for the account change: ${stopped === 1 ? "1 background task" : `${stopped} background tasks`} stopped.`;
             this.session.recordNotice("warn", message);
@@ -904,8 +909,33 @@ export class App {
     /** An agent CLI started a turn by itself: it becomes a wake turn, when nothing else runs. */
     adoptWake(w: BackendWake) {
         if (this.exiting) return;
+        // From the process an account change is letting go of: not taken over under the new account.
+        if (this.releasing.has(w.provider)) return this.dropAdopt(w);
         this.adopts.push(w);
         this.wake();
+    }
+
+    /** Agent CLIs whose process for this session an account change is letting go of (setAccount). */
+    private releasing = new Set<string>();
+
+    /**
+     * As the desktop's (Runtime.dropAdopt): a turn a CLI started by itself in the process an account change lets go
+     * of isn't taken over (#408). What it reported is shown and told to the model; a message of the user's it answers
+     * goes back to the prompt if nothing's typed there, to history (↑) if something is, as a blocked one does.
+     */
+    private dropAdopt(w: BackendWake) {
+        this.adopts = this.adopts.filter((x) => x !== w);
+        if (!w.prompt) return void this.agent?.dropAdopt(w);
+        if (!w.label?.trim()) return;
+        const back: Draft = { text: w.label, attachments: new Map() };
+        const name = getProvider(w.provider)?.name ?? w.provider;
+        const free = this.editor.isEmpty && this.inputMode === "prompt";
+        if (free) this.editor.restore([back]);
+        else this.editor.pushHistory(w.label, back);
+        const message = `${name} was restarted for the account change before it answered your message. ${free ? "It's back in the prompt" : "It's in history (↑)"}, to send again.`;
+        this.session.recordNotice("warn", message);
+        this.notice(message, "warn");
+        this.renderLive();
     }
 
     /** A controller for the current session's /goal; a resumed session's goal comes back paused. */

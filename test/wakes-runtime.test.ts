@@ -13,6 +13,7 @@ const { Engine } = await import("../src/server/engine");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 const { readSegments, replay, UiLog } = await import("../src/server/history");
+const { addAccount } = await import("../src/providers/accounts");
 import type { ServerEvent, SessionSnapshot } from "../src/server/protocol";
 import { backendModel, type BackendTurn } from "../src/backends/types";
 
@@ -33,7 +34,7 @@ async function session() {
     writeFileSync(join(cwd, "secret-notes.txt"), "TOP-SECRET-CONTENTS\n");
     const snap = (await engine.handle(c as never, "session.create", { cwd })) as SessionSnapshot;
     const id = snap.state.id;
-    return { engine, c: c as never, id, cwd, rt: engine.runtimes.get(id)! };
+    return { engine, c: c as never, id, cwd, rt: engine.runtimes.get(id)!, events };
 }
 
 async function until(pred: () => boolean, ms = 10_000) {
@@ -189,6 +190,100 @@ test("a CLI's own turn that arrives while the session can't start one (a model s
     } finally {
         await engine.stop();
     }
+});
+
+// #408: an account switch lets the CLI's process go, and the turns it started by itself that wait to be taken
+// over go with it. What they reported is still shown and told to the model (#305); the user's own message sent
+// on Esc (a `prompt` adopt) goes back to the message box, once.
+describe("an account switch with CLI-started turns waiting to be taken over (#408)", () => {
+    const work = addAccount("claude-code", { id: "work-408", name: "Work" });
+    const drafts = (events: ServerEvent[]) => events.filter((e): e is Extract<ServerEvent, { type: "draft" }> => e.type === "draft").map((e) => e.text);
+    const taken = (rt: Awaited<ReturnType<typeof session>>["rt"], text: string) =>
+        rt.session.messages.some((m) => JSON.stringify(m).includes(text)) || rt.snapshot().turns.some((t) => t.prompt?.text.includes(text));
+
+    test("a report waiting in the queue is shown, and goes to the model with the next prompt", async () => {
+        const { engine, c, id, rt } = await session();
+        try {
+            await rt.ready;
+            // The session can't start a turn just now: the CLI's turn waits in its queue (wake defers it).
+            (rt as any).switching = true;
+            rt.adoptWake({ provider: "claude-code", ref: "turn-r", label: "Background task finished: Map auth", report: "AUTH-REPORT-408" });
+            await rt.setAccount("claude-code", work.id);
+            (rt as any).switching = false;
+            expect(rt.session.notices.some((n) => n.text.includes("Claude Code started a turn of its own") && n.text.includes("AUTH-REPORT-408"))).toBe(true);
+            // Past wake's 1s deferral: it isn't taken over under the new account.
+            await Bun.sleep(1300);
+            expect(rt.session.messages.some((m) => m.meta?.kind === "wake")).toBe(false);
+            await engine.handle(c, "session.send", { id, text: "and now?" });
+            await until(() => rt.idle && rt.session.messages.some((m) => m.role === "assistant"));
+            expect(lastTurnRequest()).toContain("AUTH-REPORT-408");
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("the user's message sent on Esc, waiting to be taken over, goes back to the message box once, and isn't sent", async () => {
+        const { engine, rt, events } = await session();
+        try {
+            await rt.ready;
+            (rt as any).switching = true;
+            rt.adoptWake({ provider: "claude-code", ref: "turn-p", label: "fix the flaky test 408", prompt: true });
+            await rt.setAccount("claude-code", work.id);
+            (rt as any).switching = false;
+            await Bun.sleep(1300);
+            expect(drafts(events)).toEqual(["fix the flaky test 408"]);
+            expect(taken(rt, "fix the flaky test 408")).toBe(false);
+            // Not a report: nothing about it is told to the model.
+            expect(rt.session.notices.some((n) => n.text.includes("started a turn of its own"))).toBe(false);
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("turns the earlier process starts while it's being let go of get the same: none is taken over", async () => {
+        const { engine, c, id, rt, events } = await session();
+        try {
+            await rt.ready;
+            await rt.setAccount("claude-code", work.id);
+            const agent = rt.agent!;
+            const release = agent.releaseAccountProcess.bind(agent);
+            agent.releaseAccountProcess = async (provider: string) => {
+                // Its process reports as it goes: nothing holds the session from starting a turn meanwhile.
+                rt.adoptWake({ provider: "claude-code", ref: "turn-x", label: "Background command finished: bun test", report: "TESTS-REPORT-408" });
+                rt.adoptWake({ provider: "claude-code", ref: "turn-y", label: "send this now 408", prompt: true });
+                await Bun.sleep(1200);
+                return release(provider);
+            };
+            await rt.setAccount("claude-code", "default");
+            await Bun.sleep(1300);
+            expect(rt.snapshot().turns.some((t) => t.prompt?.wake)).toBe(false);
+            expect(taken(rt, "send this now 408")).toBe(false);
+            expect(drafts(events)).toEqual(["send this now 408"]);
+            expect(rt.session.notices.some((n) => n.text.includes("TESTS-REPORT-408"))).toBe(true);
+            await engine.handle(c, "session.send", { id, text: "and now?" });
+            await until(() => rt.idle && rt.session.messages.some((m) => m.role === "assistant"));
+            expect(lastTurnRequest()).toContain("TESTS-REPORT-408");
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("another CLI's turn waiting to be taken over stays, and is taken over", async () => {
+        const { engine, rt } = await session();
+        try {
+            await rt.ready;
+            const turns: BackendTurn[] = [];
+            rt.agent!.setModel(backendModel("fake-cli", "x"), adoptingBackend(turns) as never);
+            (rt as any).switching = true;
+            rt.adoptWake({ provider: "fake-cli", ref: "turn-o", label: "Background task finished: Write docs" });
+            await rt.setAccount("claude-code", work.id);
+            (rt as any).switching = false;
+            await until(() => turns.length === 1 && rt.idle, 5000);
+            expect(turns[0]!.adopt).toBe("turn-o");
+        } finally {
+            await engine.stop();
+        }
+    });
 });
 
 test("an adopted wake's steps are logged, so it comes back with them, not as one block of text, when reopened (#347)", async () => {
