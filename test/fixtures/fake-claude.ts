@@ -67,6 +67,8 @@
 //                    the prompt is in the transcript): a window in which the prompt is taken but its turn not yet seen
 // FAKE_START_DELAY_MS  a prompt waits in the queue this long (after its "queued" lifecycle) before it starts: a window in
 //                    which cancel_async_message withdraws it (cancelled: true), and it never reaches the transcript
+// FAKE_CANCEL_ANSWER_MS  cancel_async_message is answered this late ("never": not at all); a prompt it withdraws is
+//                    said "cancelled" (command_lifecycle) at once
 // FAKE_CLAUDE_ENV_FILE  a JSON file of FAKE_* settings, read again with each prompt (as fake-codex's FAKE_ENV_FILE):
 //                    a test changes a live process's scenario between its turns
 // FAKE_RATE_LIMIT    a JSON file: the rate_limit_info of a rate_limit_event sent after system/init
@@ -280,6 +282,8 @@ let busy = false;
 /** Prompts waiting behind the running turn, and those withdrawn (cancel_async_message) before they ran. */
 const waiting = new Set<string>();
 const withdrawn = new Set<string>();
+/** Withdrawn prompts whose "cancelled" lifecycle went out already (FAKE_CANCEL_ANSWER_MS). */
+const cancelledSaid = new Set<string>();
 let idleExit: ReturnType<typeof setTimeout> | undefined;
 /** FAKE_EXIT_IDLE_MS: it goes away (a crash) a while after a turn, when nothing else came. */
 function armIdleExit() {
@@ -1281,7 +1285,17 @@ for await (const chunk of Bun.stdin.stream()) {
                 const target = String(m.request.message_uuid ?? "");
                 const had = waiting.delete(target);
                 if (had) withdrawn.add(target);
-                out({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response: { cancelled: had } } });
+                const answer = () => out({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response: { cancelled: had } } });
+                const late = process.env.FAKE_CANCEL_ANSWER_MS;
+                if (!late) answer();
+                else {
+                    // Its lifecycle says it's dropped at once; the answer comes later, or never.
+                    if (had) {
+                        lifecycle(target, "cancelled");
+                        cancelledSaid.add(target);
+                    }
+                    if (late !== "never") setTimeout(answer, Number(late));
+                }
             } else if ((sub === "set_model" || sub === "apply_flag_settings") && process.env.FAKE_SET_MODEL_FAIL === "1") {
                 out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: `${sub} failed` } });
             } else {
@@ -1312,7 +1326,7 @@ for await (const chunk of Bun.stdin.stream()) {
                     // FAKE_START_DELAY_MS: the prompt waits in the queue this long before it starts (it can be withdrawn meanwhile).
                     syncEnv();
                     if (process.env.FAKE_START_DELAY_MS) await Bun.sleep(Number(process.env.FAKE_START_DELAY_MS));
-                    if (uuid && withdrawn.has(uuid)) return lifecycle(uuid, "cancelled");
+                    if (uuid && withdrawn.has(uuid)) return cancelledSaid.has(uuid) ? undefined : lifecycle(uuid, "cancelled");
                     if (uuid) waiting.delete(uuid);
                     busy = true;
                     lifecycle(uuid, "started");

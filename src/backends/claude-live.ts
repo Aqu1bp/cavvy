@@ -137,6 +137,11 @@ interface PromptInfo {
     ref: string;
     kind: "prompt" | "steer" | "carrier";
     state: "sent" | "queued" | "started" | "done" | "cancelled";
+    /**
+     * command_lifecycle said it started: it's in Claude Code's transcript. A "cancelled" after that doesn't mean it
+     * was dropped (2.1.304 says it of a prompt whose turn was stopped: claude-2.1.304-sendnow-effort.jsonl).
+     */
+    taken?: boolean;
     /** A carrier whose turn isn't shown (CARRIER_COMMAND). */
     hidden?: boolean;
     /** The user's message, for a carrier that is one. */
@@ -366,24 +371,36 @@ export class ClaudeConnection implements CliConnection {
      *   The turn is stopped as that comes (startTurn) and ends with its result, as one stopped after its start does,
      *   so its session is known and the prompt counts as delivered. Ended here instead, it would leave the prompt
      *   in a session Harness doesn't know of, and the next prompt would bring it again as context;
-     * - dropped (`cancelled: true`, or its lifecycle said cancelled): never in its transcript, so the turn ends
-     *   refused (LiveTurnResult.refused), and the prompt goes again with the next;
+     * - dropped (`cancelled: true`, or its lifecycle said cancelled, not started: onLifecycle, at once, whenever the
+     *   answer comes): never in its transcript, so the turn ends refused (LiveTurnResult.refused), and the prompt goes
+     *   again with the next;
      * - not known (no answer, an older Claude Code): withdrawn as before, stopped unseen if it starts after all,
      *   and counted as delivered.
      */
     private async unstartedPrompt(ref: string, p: PromptInfo, followUp: string | undefined): Promise<void> {
         this.stopOnStart.set(ref, followUp);
-        if (this.startedUuid === ref) {
+        if (p.taken) {
             liveDebug("claude", "interrupt: taken, stopping it as it starts", { ref });
             return;
         }
         const r = await this.control({ subtype: "cancel_async_message", message_uuid: ref });
         const cancelled: unknown = r?.subtype === "success" ? r.response?.cancelled : undefined;
         liveDebug("claude", "interrupt: withdraw", { ref, cancelled, state: p.state });
-        // Its turn started meanwhile (and is being stopped), or ended (Claude Code exited).
+        // Its turn started meanwhile (and is being stopped), or ended (Claude Code exited, or its lifecycle said it
+        // dropped the prompt: onLifecycle).
         if (!this.stopOnStart.has(ref) || this.cur?.ref === ref || p.state === "started" || p.state === "done") return;
-        const dropped = cancelled === true || p.state === "cancelled";
-        if (!dropped && cancelled === false) return;
+        // Taken meanwhile (started): stopped as its turn starts, whatever the answer.
+        if (p.taken) return;
+        if (cancelled === true) return this.endWithdrawn(ref, p, true);
+        if (cancelled !== false) this.endWithdrawn(ref, p, false);
+    }
+
+    /**
+     * A turn Esc withdrew the prompt of (unstartedPrompt) ends: refused when Claude Code said it dropped the prompt;
+     * otherwise (not known) delivered, and the prompt is stopped unseen if it starts after all.
+     */
+    private endWithdrawn(ref: string, p: PromptInfo, dropped: boolean) {
+        const followUp = this.stopOnStart.get(ref);
         this.stopOnStart.delete(ref);
         p.state = "cancelled";
         if (!dropped) this.withdrawn.add(ref);
@@ -582,10 +599,14 @@ export class ClaudeConnection implements CliConnection {
                 break;
             case "started":
                 this.startedUuid = uuid;
+                p.taken = true;
                 break;
             case "cancelled":
                 // Claude Code dropped it (the turn it waited for was stopped, or it was withdrawn).
                 if (p.state === "sent" || p.state === "queued") {
+                    // Esc withdrew the turn's own prompt (unstartedPrompt), and it never started: never in its
+                    // transcript, so refused now, whenever the withdrawal's answer comes (#435 review).
+                    if (uuid === p.ref && p.kind === "prompt" && this.stopOnStart.has(uuid) && !p.taken) return this.endWithdrawn(uuid, p, true);
                     p.state = "cancelled";
                     this.settleWaiting(p.ref);
                 }

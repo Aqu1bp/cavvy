@@ -322,6 +322,15 @@ export class LiveCliSession {
         // The deadline runs from now, whether or not the CLI has taken the prompt yet.
         turn.timer = this.o.clock.setTimeout(() => {
             if (turn.result) return;
+            // Its prompt went to a process that hasn't said its session yet (a new session's: Claude Code says it with
+            // the turn's system/init). The CLI may have the prompt in a session Harness can't name, so the next prompt
+            // would go there as a new thread's, bringing it again (#435 review): the process goes, and the next prompt
+            // starts a new one. Nothing ran in it before, so nothing is lost but that session.
+            if (turn.origin === "user" && turn.ref !== undefined && !this.cliSessionId && this.proc) {
+                this.finish(turn, { ref: turn.ref, reason: "aborted" });
+                void this.stop();
+                return;
+            }
             // Not taken yet: it's held under a stand-in until its ref comes (prompt()).
             this.abandoned.add(turn.ref ?? (turn.abandonedAs = `?${++this.untaken}`));
             this.finish(turn, { ref: turn.ref, reason: "aborted", unanswered: true });
