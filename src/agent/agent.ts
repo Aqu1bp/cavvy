@@ -1754,30 +1754,49 @@ export class Agent {
     private cannotAdopt(w: BackendWake): TurnEndReason {
         const name = getProvider(w.provider)?.name ?? w.provider;
         const on = this.model.provider === w.provider ? "" : ` (it's on ${this.model.name ?? this.model.id})`;
-        // What its background work reported isn't lost with the turn (#305): shown here, and told to the model now.
+        this.reportUnadopted(w, name, `this session can't take it over now${on}`, "which this session ran on earlier");
+        this.emit({ type: "turn_end", reason: "error" });
+        return "error";
+    }
+
+    /**
+     * A turn its CLI started by itself, waiting to be taken over in the process releaseAccountProcess lets go of for
+     * an account change (#408): it isn't taken over. What it reported is shown and told to the model, as cannotAdopt
+     * does (#305). One answering the user's own message (`prompt`) reported nothing: the caller puts their message
+     * back. Called before the release, so what a turn without a report says is still collected, as it ends with it.
+     */
+    dropAdopt(w: BackendWake) {
+        if (w.prompt) return;
+        const name = getProvider(w.provider)?.name ?? w.provider;
+        this.reportUnadopted(w, name, "it ran on the account this session used before, whose process stops for the account change", "on the account this session used before");
+    }
+
+    /** A wake turn not taken over: what its background work reported isn't lost with it (#305). Shown, and told to the model with the next prompt. */
+    private reportUnadopted(w: BackendWake, name: string, why: string, whose: string) {
         const said = w.report?.trim() ? redact(w.report.trim()) : undefined;
         const report = said && said.length > WAKE_REPORT_CHARS ? `${said.slice(0, WAKE_REPORT_CHARS)}…` : said;
         const about = w.label?.trim() ? ` (${w.label.trim()})` : "";
-        this.endNotice("warn", `${name} started a turn of its own, but this session can't take it over now${on}.${report ? ` What it reported${about}:\n${report}` : ""}`);
-        if (report) this.addReminder(`${name}, which this session ran on earlier, reported on background work it was doing${about}:\n${report}`);
-        else void this.laterReport(w, name, about);
-        this.emit({ type: "turn_end", reason: "error" });
-        return "error";
+        this.endNotice("warn", `${name} started a turn of its own, but ${why}.${report ? ` What it reported${about}:\n${report}` : ""}`);
+        if (report) this.addReminder(`${name}, ${whose}, reported on background work it was doing${about}:\n${report}`);
+        else void this.laterReport(w, name, about, whose);
     }
 
     /**
      * A wake not taken over that carried no report (a Claude Code monitor's event: only the turn it started saw its
      * output): what that turn said, once it ends, is shown and told to the model, as a report is (#305).
      */
-    private async laterReport(w: BackendWake, name: string, about: string) {
-        for (const b of this.backendsUsed) {
-            const said = await b.wakeReport?.(w).catch(() => undefined);
+    private async laterReport(w: BackendWake, name: string, about: string, whose: string) {
+        // Every backend is asked now, not once the one before has answered: a process about to be let go of (an
+        // account change) still has the turn now, and gives what it says until the turn ends with the process.
+        const asks = [...this.backendsUsed].map((b) => b.wakeReport?.(w).catch(() => undefined));
+        for (const ask of asks) {
+            const said = await ask;
             if (said === undefined) continue;
             const text = redact(said.trim());
             if (!text || this.disposed) return;
             const report = text.length > WAKE_REPORT_CHARS ? `${text.slice(0, WAKE_REPORT_CHARS)}…` : text;
             this.emit({ type: "notice", level: "info", message: `What ${name}'s turn said${about}:\n${report}` });
-            this.addReminder(`${name}, which this session ran on earlier, took a turn of its own on background work it was doing${about}, and said:\n${report}`);
+            this.addReminder(`${name}, ${whose}, took a turn of its own on background work it was doing${about}, and said:\n${report}`);
             return;
         }
     }

@@ -285,7 +285,7 @@ run("terminal /account switches with the same handoff and refuses changes during
     session.setBackendSession("codex", "default-thread", 1);
     const notices: string[] = [];
     const app: any = {
-        session, busy: false, model: { provider: "codex" }, customCommands: [], adopts: [],
+        session, busy: false, model: { provider: "codex" }, customCommands: [], adopts: [], releasing: new Map(),
         print() {}, renderLive() {}, notice: (text: string) => notices.push(text),
     };
     app.setAccount = App.prototype.setAccount.bind(app);
