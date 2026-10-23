@@ -47,18 +47,19 @@ import { CopyButton, Spinner } from "../ui/bits";
 import { CodeBlock } from "./CodeBlock";
 import { DiffView } from "./DiffView";
 import { Markdown } from "./Markdown";
+import { PlanCard } from "./PlanCard";
 import { motionMs } from "../LiveLine";
 
 export type Item =
     | { kind: "block"; block: Block }
     | { kind: "activity"; id: string; tools: ToolBlock[]; steps: (ToolBlock | ThinkingBlock)[]; card?: Card };
 
-/** A call shown as its own card rather than a line in a group: an edit (its diff) or a command (its output). */
-export type Card = "edit" | "command";
+/** A call shown as its own card rather than a line in a group: an edit (its diff), a command (its output), or a plan (PlanCard). */
+export type Card = "edit" | "command" | "plan";
 
 /**
  * Fold runs of tool calls (and the thinking between them) into activity groups.
- * Edits and commands stand on their own, as cards, between the groups.
+ * Edits, commands and plans stand on their own, as cards, between the groups.
  */
 export function groupBlocks(blocks: Block[]): Item[] {
     const out: Item[] = [];
@@ -103,6 +104,7 @@ export function cardOf(t: ToolBlock): Card | undefined {
     if (t.agent) return undefined;
     if (EDIT_TOOLS.has(t.name)) return "edit";
     if (t.name === "Bash") return "command";
+    if (t.name === "ExitPlanMode") return "plan";
     return undefined;
 }
 
@@ -293,12 +295,19 @@ type GroupProps = {
 };
 
 export function ActivityGroup(p: GroupProps) {
+    const folds = useContext(CardFoldsContext);
     return (
         <RenderBoundary raw={() => p.steps}>
             <Show when={p.card && p.tools[0]} fallback={p.flat ? <StepRows {...p} /> : <ActivityGroupContent {...p} />}>
                 {(t) => (
-                    <Show when={!(p.hideLive && isLive(t()))}>
-                        {p.card === "edit" ? <EditCard tool={t()} /> : <CommandCard tool={t()} />}
+                    <Show
+                        when={p.card !== "plan"}
+                        // A plan's card shows from when it's presented, waiting on you included; while it's still written, the live line says so.
+                        fallback={<Show when={t().status !== "streaming" && t().status !== "queued"}><PlanCard tool={t()} sessionId={folds.sessionId} /></Show>}
+                    >
+                        <Show when={!(p.hideLive && isLive(t()))}>
+                            {p.card === "edit" ? <EditCard tool={t()} /> : <CommandCard tool={t()} />}
+                        </Show>
                     </Show>
                 )}
             </Show>
@@ -1329,14 +1338,6 @@ function ToolDetailsContent(p: { tool: ToolBlock }) {
                 </Match>
                 <Match when={t().name === "TodoWrite"}>
                     <Todos todos={(input().todos as TodoEntry[]) ?? []} />
-                </Match>
-                <Match when={t().name === "ExitPlanMode"}>
-                    <Section label="Plan">
-                        <Markdown text={String(input().plan ?? "")} class="small" />
-                    </Section>
-                    <Show when={t().summary}>
-                        <div class="detail-note">{t().summary}</div>
-                    </Show>
                 </Match>
                 <Match when={t().name === "AskUserQuestion"}>
                     <Section label="Question">

@@ -1,8 +1,8 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, untrack } from "solid-js";
-import { ArrowDown, GitFork } from "lucide-solid";
+import { ArrowDown, ArrowUpLeft, GitFork } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { fork, forkAnchor } from "../state/actions";
-import { activate, toast, type SessionHandle } from "../state/app";
+import { activate, app, toast, type SessionHandle } from "../state/app";
 import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setJumpTarget, setRewindOpen, takeDockGlide } from "../state/ui";
 import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
@@ -626,6 +626,14 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                             </button>
                         )}
                     </Show>
+                    {/* Started from another session's plan (in a new worktree): that session, a click away. */}
+                    <For each={(p.handle.view.state.planLinks ?? []).filter((l) => l.role === "from")}>
+                        {(l) => (
+                            <button class="forked-from" title={`Implementing a plan from another session, on ${l.branch}. Open that session.`} onClick={() => void activate(l.session)}>
+                                <ArrowUpLeft size={13} /> Plan from <span class="truncate">“{app.sessions.find((s) => s.id === l.session)?.title ?? app.archived.find((s) => s.id === l.session)?.title ?? l.title ?? "another session"}”</span>
+                            </button>
+                        )}
+                    </For>
                     <Show when={hidden()}>
                         <button class="earlier" onClick={earlier}>
                             Show {Math.min(PAGE, hidden())} earlier {hidden() === 1 ? "turn" : "turns"}

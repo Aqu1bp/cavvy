@@ -34,6 +34,7 @@ import { matchSkills, skillToken } from "../lib/commands";
 import { firstSendable, followUpFor, otherFollowUp } from "../lib/queue";
 import { canStop } from "../lib/session-status";
 import { QueueTab } from "./QueueTab";
+import { StepsTray } from "./StepsTray";
 
 /** `mention`: a skill picked from the $ menu, which goes in where the $ is. */
 type MenuItem = { kind: "command"; cmd: CommandInfo; mention?: boolean } | { kind: "file"; path: string } | { kind: "resource"; res: McpResourceInfo };
@@ -677,6 +678,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     </Show>
                 </div>
             </Show>
+            <Show when={p.sessionId ? h() : undefined}>{(handle) => <StepsTray sessionId={p.sessionId!} view={handle().view} />}</Show>
             <Show when={p.sessionId && st()?.queued.length}>
                 <QueueTab sessionId={p.sessionId!} state={st()!} dequeue={(i, edit) => void dequeue(i, edit)} />
             </Show>
