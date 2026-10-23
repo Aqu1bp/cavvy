@@ -111,7 +111,7 @@ const FRAME_RULES: Record<string, RegExp> = {
     "header.css": /^(\.header|\.header::before|\.header\.rail-off|\.header\.traffic\.rail-off|\[data-rail="overlay"\] \.header(\.traffic)?|\.bar-rail.*|\.header \.hb(\.diffchip)?|\.cap( \.sep)?)$/,
     "shell.css": /^(\[data-inspmode="float"\] \.insp|\.insp-resizer)$/,
     "sidebar.css": /^(\.side-top( \.hb)?|\.resize-handle(\.left)?)$/,
-    "terminal.css": /^\.terminal-resize$/,
+    "terminal.css": /^(\.terminal-resize|\.app\.tauri\.os-macos(\.rail-off|\[data-rail="overlay"\]) \.terminal-panel\.max \.terminal-toolbar)$/,
     "overlays.css": /^\.find-bar\.glass$/,
 };
 
