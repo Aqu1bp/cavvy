@@ -892,6 +892,8 @@ export class Runtime {
         // Already this one (added again under the same id, #410): what waited for an account goes now.
         if (!this.session.setAccount(provider, selected.id)) return this.releaseForAccount(provider);
         this.schedules.cancelLimitResume("account");
+        // The new account hasn't read the history: an idle compaction planned on the earlier one's cache would read it all afresh.
+        if (this.agent?.accountChanged(provider)) this.idleCompact.disarm();
         this.setState({ accounts: { "claude-code": this.session.accountId("claude-code"), codex: this.session.accountId("codex") } });
         const name = getProvider(provider)?.name ?? provider;
         const how = switchHow(had, this.session.backends.get(provider)?.id, this.session.messages.length > 0);

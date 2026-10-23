@@ -569,6 +569,16 @@ export class Agent {
         this.session.setModel(modelRef(model));
     }
 
+    /**
+     * The session's account for `provider` changed. Caches are per account too: on that provider, the next request
+     * reads the history afresh (#421). True when it's the provider the agent is on.
+     */
+    accountChanged(provider: string): boolean {
+        if (this.model.provider !== provider) return false;
+        this.cache = undefined;
+        return true;
+    }
+
     /** Take back a note of where the mode or model is that hasn't been sent. */
     dropStateNote(kind: StateKind) {
         this.pendingReminders = this.pendingReminders.filter((r) => r.kind !== kind);

@@ -567,6 +567,8 @@ export class App {
         // Already this one (added again under the same id, #410): what waited for an account goes now.
         if (!this.session.setAccount(provider, selected.id)) return this.releaseForAccount(provider);
         this.schedules.cancelLimitResume("account");
+        // As the desktop's: an idle compaction planned on the earlier account's cache doesn't run on the new one.
+        if (this.agent?.accountChanged(provider)) this.idleCompact.disarm();
         const name = getProvider(provider)?.name ?? provider;
         const how = switchHow(had, this.session.backends.get(provider)?.id, this.session.messages.length > 0);
         const note = accountSwitchNote(provider, selected, name, how, had !== undefined && how !== "native");
