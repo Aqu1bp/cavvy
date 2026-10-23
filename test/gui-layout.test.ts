@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import {
-    clampInspectorWidth, clampTerminalHeight, closesOnShrink, floatBottom, floatShort, inspectorMode, railMode,
+    clampInspectorWidth, clampTerminalHeight, closesOnShrink, coversConversation, floatBottom, floatShort, inspectorMode, railMode,
     requestCloses, reviewWidth, sheetSize, terminalHeight, windowLayout,
 } from "../gui/src/lib/layout";
 
@@ -76,6 +76,17 @@ test("a diff reader that can't dock fills the sheet; the side panel floats", () 
     expect(windowLayout({ ...small, review: true }).inspector).toMatchObject({ mode: "fill", short: true, bottom: 172 });
     // Closed, a narrow sheet's inspector waits as a float, off its edge.
     expect(windowLayout({ ...small }).inspector).toMatchObject({ open: false, mode: "float" });
+});
+
+test("only a diff reader filling the sheet covers the conversation (Find and a jump close it)", () => {
+    const mid = { ...base, win: { w: 1024, h: 700 } };
+    expect(coversConversation(windowLayout({ ...mid, review: true }))).toBe(true);
+    expect(coversConversation(windowLayout({ ...mid, panel: true, review: true }))).toBe(true);
+    expect(coversConversation(windowLayout({ ...base, win: { w: 720, h: 480 }, review: true, terminalShown: true }))).toBe(true);
+    // Docked beside it, floating over a part of it, or closed: it stays.
+    expect(coversConversation(windowLayout({ ...base, review: true }))).toBe(false);
+    expect(coversConversation(windowLayout({ ...mid, panel: true }))).toBe(false);
+    expect(coversConversation(windowLayout(mid))).toBe(false);
 });
 
 test("the inspector's resizer stays within 280-620px and keeps it docked", () => {

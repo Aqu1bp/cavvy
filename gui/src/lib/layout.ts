@@ -180,6 +180,14 @@ export function windowLayout(o: {
 }
 
 /**
+ * A diff reader filling the sheet covers the conversation (shell.css hides it). What needs the conversation,
+ * Find and a jump to a message, closes the reader first; a docked one stays open beside it.
+ */
+export function coversConversation(l: WindowLayout): boolean {
+    return l.inspector.open && l.inspector.mode === "fill";
+}
+
+/**
  * The sheet's tracks as shell.css slides them: the rail's column (docked and showing), a docked
  * inspector's, the terminal's row. A change in one opens or closes a panel; the window resizing
  * the column alone doesn't move them.

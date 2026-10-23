@@ -311,7 +311,8 @@
 }
 
 /* A diff reader too wide to dock fills the sheet under the title bar, ending above the composer like a
-   floating one. The conversation behind it would show only as a cut-off strip under the title bar, so it's hidden. */
+   floating one. The conversation behind it would show only as a cut-off strip under the title bar, so it's hidden;
+   Find and a jump to a message close the reader first (lib/layout.ts coversConversation). */
 [data-inspmode="fill"] .insp {
     grid-area: auto;
     position: absolute;
