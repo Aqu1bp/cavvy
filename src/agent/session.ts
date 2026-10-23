@@ -175,7 +175,7 @@ function samePlace(a: AccountPlace | undefined, b: AccountPlace | undefined): bo
 
 function validLink(l: unknown): l is PlanLink {
     const x = l as Record<string, unknown> | null;
-    return Boolean(x) && (x!.role === "from" || x!.role === "to") && ["session", "folder", "path", "branch"].every((k) => typeof x![k] === "string") && typeof x!.at === "number";
+    return Boolean(x) && (x!.role === "from" || x!.role === "to") && ["session", "folder", "path", "branch"].every((k) => typeof x![k] === "string") && typeof x!.at === "number" && (x!.plan === undefined || typeof x!.plan === "string");
 }
 
 /**

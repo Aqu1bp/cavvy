@@ -86,14 +86,19 @@ test("plans and both link directions survive reload with secrets redacted", () =
         for (const s of [a, b]) s.push({ role: "user", content: [{ type: "text", text: "plan" }] });
         a.addPlan("tool-id", `# Plan\n${FAKE.openai}`);
         const link = { folder: cwd, path: join(cwd, "worktree"), branch: "sso", base: "main", title: FAKE.openai, at: Date.now() };
-        a.addPlanLink({ role: "to", session: b.meta.id, ...link });
+        a.addPlanLink({ role: "to", session: b.meta.id, ...link, plan: "tool-id" });
         b.addPlanLink({ role: "from", session: a.meta.id, ...link });
+        // A plan id that isn't a string isn't a link.
+        b.addPlanLink({ role: "from", session: a.meta.id, ...link, plan: 7 as unknown as string });
         a.release();
         b.release();
         const reopened = [Session.load(a.path), Session.load(b.path)];
         expect(reopened[0]!.plans[0]!.text).not.toContain(FAKE.openai);
-        expect(reopened[0]!.planLinks[0]).toMatchObject({ role: "to", session: b.meta.id });
+        expect(reopened[0]!.planLinks[0]).toMatchObject({ role: "to", session: b.meta.id, plan: "tool-id" });
+        // From before links named their plan: still read.
         expect(reopened[1]!.planLinks[0]).toMatchObject({ role: "from", session: a.meta.id });
+        expect(reopened[1]!.planLinks[0]!.plan).toBeUndefined();
+        expect(reopened[1]!.planLinks).toHaveLength(1);
         for (const s of reopened) {
             expect(readFileSync(s.path, "utf8")).not.toContain(FAKE.openai);
             s.release();

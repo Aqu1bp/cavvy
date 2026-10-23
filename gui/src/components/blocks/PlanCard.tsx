@@ -40,12 +40,13 @@ export function PlanCard(p: { tool: ToolBlock; sessionId?: string }) {
         const r = await rpc.call("session.planInfo", { id: p.sessionId, toolId: p.tool.id }).catch(reportError);
         if (r && (await copyText(r.plan))) toast("Copied the plan", "success");
     };
-    // The worktrees this plan was taken to. Links don't name their plan: each goes on the newest plan before it.
+    // The worktrees this plan was taken to: the links that name it (an older link, the newest plan before it).
     const links = createMemo(() => {
         const to = (view()?.state.planLinks ?? []).filter((l) => l.role === "to");
         if (!to.length) return [];
+        if (to.every((l) => l.plan !== undefined)) return to.filter((l) => l.plan === p.tool.id);
         const plans = planCalls(view()!.turns);
-        return to.filter((l) => linkOwner(plans, l.at) === p.tool.id);
+        return to.filter((l) => linkOwner(plans, l) === p.tool.id);
     });
     return (
         <div class="tcard plan-card" data-find={p.tool.id}>

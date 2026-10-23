@@ -82,12 +82,14 @@ export function planState(t: Pick<ToolBlock, "status" | "summary" | "output">, w
 }
 
 /**
- * The plan card a worktree link goes on: the newest plan presented before the link was made (one without a
- * time, from an older transcript, counts as before it). Links don't name their plan, so this is by time.
+ * The plan card a worktree link goes on: the plan it names (none of these, when that plan isn't among them).
+ * An older link doesn't name one: then the newest plan presented before the link was made (one without a
+ * time, as a reopened session's are, counts as before it).
  */
-export function linkOwner(plans: readonly { id: string; at?: number }[], at: number): string | undefined {
+export function linkOwner(plans: readonly { id: string; at?: number }[], link: { at: number; plan?: string }): string | undefined {
+    if (link.plan !== undefined) return plans.some((p) => p.id === link.plan) ? link.plan : undefined;
     let owner: string | undefined;
-    for (const p of plans) if (p.at === undefined || p.at <= at) owner = p.id;
+    for (const p of plans) if (p.at === undefined || p.at <= link.at) owner = p.id;
     return owner ?? plans[0]?.id;
 }
 

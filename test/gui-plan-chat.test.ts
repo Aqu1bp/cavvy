@@ -124,20 +124,29 @@ describe("the plan card's state", () => {
 describe("which plan card a worktree link belongs to", () => {
     const plans = [{ id: "a", at: 100 }, { id: "b", at: 200 }, { id: "c", at: 300 }];
 
-    test("the newest plan presented before the link was made", () => {
-        expect(linkOwner(plans, 250)).toBe("b");
-        expect(linkOwner(plans, 300)).toBe("c");
-        expect(linkOwner(plans, 1000)).toBe("c");
+    test("a link that names its plan goes on that plan's card, even an older one", () => {
+        // Plan a, then b; the user implemented a from its card.
+        expect(linkOwner(plans, { at: 1000, plan: "a" })).toBe("a");
+        // A reopened session's plans have no times: the id still finds the card.
+        expect(linkOwner([{ id: "a" }, { id: "b" }], { at: 1000, plan: "a" })).toBe("a");
+        // Its plan isn't among these cards (compacted away): none of them gets it.
+        expect(linkOwner(plans, { at: 1000, plan: "gone" })).toBeUndefined();
+    });
+
+    test("an older link, without its plan: the newest plan presented before it", () => {
+        expect(linkOwner(plans, { at: 250 })).toBe("b");
+        expect(linkOwner(plans, { at: 300 })).toBe("c");
+        expect(linkOwner(plans, { at: 1000 })).toBe("c");
     });
 
     test("a plan without a time counts as before (older transcripts)", () => {
-        expect(linkOwner([{ id: "a" }, { id: "b", at: 500 }], 250)).toBe("a");
-        expect(linkOwner([{ id: "a" }, { id: "b" }], 250)).toBe("b");
+        expect(linkOwner([{ id: "a" }, { id: "b", at: 500 }], { at: 250 })).toBe("a");
+        expect(linkOwner([{ id: "a" }, { id: "b" }], { at: 250 })).toBe("b");
     });
 
     test("older than every plan: the first; no plans: none", () => {
-        expect(linkOwner(plans, 50)).toBe("a");
-        expect(linkOwner([], 50)).toBeUndefined();
+        expect(linkOwner(plans, { at: 50 })).toBe("a");
+        expect(linkOwner([], { at: 50 })).toBeUndefined();
     });
 });
 

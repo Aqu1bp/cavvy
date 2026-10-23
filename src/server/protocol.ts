@@ -440,6 +440,8 @@ export interface PlanLink {
     /** What the branch started from, as the user named it (the commit when they didn't). */
     base?: string;
     at: number;
+    /** The plan it carried out: the planning session's ExitPlanMode call (PlanRef.id). Missing from older links. */
+    plan?: string;
 }
 export type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus };
 
