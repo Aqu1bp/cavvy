@@ -3232,7 +3232,7 @@ export class Agent {
         const def = loadAgents(this.state.projectRoot, this.projectTrusted()).find((a) => a.name === agent);
         const req: ChildRequest = { description: opts.description, prompt: opts.prompt, agent, model: opts.model, callId, def };
         // A one-shot run (-p) ends with this turn: nothing would be there to take a background result.
-        if (def && (opts.background || def.background) && !this.oneShot) return this.startBackground(req, def);
+        if (def && (opts.background || def.background) && !this.oneShot) return this.startBackground(req, def, signal);
         const r = await this.runChild(callId, req, signal);
         if (r.status === "cancelled") return { report: "The sub-agent was interrupted by the user.", model: r.model };
         if (r.status === "failed") return { report: r.report, isError: true, model: r.model };
@@ -3240,12 +3240,15 @@ export class Agent {
     }
 
     /** A Task in the background: it returns now, and the result comes with the next tool results or prompt. */
-    private async startBackground(req: ChildRequest, def: AgentDef): Promise<{ report: string; isError?: boolean; model?: string; background?: boolean }> {
+    private async startBackground(req: ChildRequest, def: AgentDef, signal: AbortSignal): Promise<{ report: string; isError?: boolean; model?: string; background?: boolean }> {
+        // Taken before anything is awaited: a Stop (Esc, /tasks stop) while it's being set up means it doesn't start (#259).
+        const generation = this.tasks().generation;
         // The model it runs on, for its row and report: one asked for must be set up; the agent type's falls back to this one.
         let model = req.model;
         if (!model && def.model && def.model !== modelRef(this.model)) model = (await this.o.helpers?.resolveModel?.(def.model)) ? def.model : undefined;
         model ??= modelRef(this.model);
-        const t = this.tasks().start({ ...req, model, writes: !def.readOnly && def.isolation !== "worktree" }, { status: "TaskStatus", cancel: "/tasks stop (the user's)" });
+        if (signal.aborted) return { report: "The user stopped this turn while the background task was being set up, so it wasn't started.", isError: true, model };
+        const t = this.tasks().start({ ...req, model, generation, writes: !def.readOnly && def.isolation !== "worktree" }, { status: "TaskStatus", cancel: "/tasks stop (the user's)" });
         if (typeof t === "string") return { report: t, isError: true, model };
         return { report: `Started background task ${t.id} "${t.description}" (${t.agent} on ${t.model}). Its result comes to you automatically when it finishes; TaskStatus shows how it's going, or waits for it.`, model, background: true };
     }
