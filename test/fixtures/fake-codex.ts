@@ -63,6 +63,7 @@
 // FAKE_CODEX_SKILL    a skill of Codex's own that skills/list reports; FAKE_NO_SKILLS=1: an older Codex, without skills/extraRoots/set
 // FAKE_TRANSCRIPTS=1  keeps each thread's rollout under its home's sessions/ (CODEX_HOME, or ~/.codex), as Codex does;
 //                     thread/resume finds only those
+// FAKE_UNIQUE_THREADS=1  each new thread has an id of its own (thr-new-…), as Codex's do; otherwise all are thr-new
 // FAKE_SLOW_RESUME, FAKE_SLOW_TURN_START  milliseconds before answering thread/resume, turn/start
 // FAKE_TURN_MS        how long every turn works before it answers
 // FAKE_STEER_MS       turn/steer is answered that many ms late (refused with FAKE_STEER_FAIL)
@@ -830,11 +831,12 @@ async function handle(m: any) {
             }
             threadPolicy(p);
             await startMcp(p.config);
-            setTier("thr-new", "serviceTier" in p ? p.serviceTier : (process.env.FAKE_CONFIG_TIER ?? null));
+            const fresh = process.env.FAKE_UNIQUE_THREADS === "1" ? `thr-new-${Math.random().toString(36).slice(2, 8)}` : "thr-new";
+            setTier(fresh, "serviceTier" in p ? p.serviceTier : (process.env.FAKE_CONFIG_TIER ?? null));
             // A new thread starts with no usage.
-            usageOf.delete("thr-new");
-            rollout("thr-new", true);
-            return reply({ thread: { id: "thr-new" }, model: projectModel() ?? p.model ?? "gpt-test", serviceTier: tiers.get("thr-new") ?? "default" });
+            usageOf.delete(fresh);
+            rollout(fresh, true);
+            return reply({ thread: { id: fresh }, model: projectModel() ?? p.model ?? "gpt-test", serviceTier: tiers.get(fresh) ?? "default" });
         case "thread/resume":
             if (process.env.FAKE_SLOW_RESUME) await Bun.sleep(Number(process.env.FAKE_SLOW_RESUME));
             if (String(p.threadId).startsWith("gone") || p.threadId === process.env.FAKE_GONE_ID) return fail(`thread not found: ${p.threadId}`);

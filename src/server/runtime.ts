@@ -42,7 +42,7 @@ import { isAgentBackend, type BackendWake, type BackgroundStop } from "../backen
 import { SessionBackground } from "../agent/background";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { agentCli, type AttachmentKind } from "../backends/defs";
-import { account, accountSwitchNote, removedAccount, removedAccountNote } from "../providers/accounts";
+import { account, accountSwitchNote, removedAccount, removedAccountNote, switchHow } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
 import { continuationGroups, modelRef, parseModelRef, textOf, toolCallsOf, assistantText, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
 import { expandMentions } from "../ui/mentions";
@@ -888,14 +888,14 @@ export class Runtime {
     async setAccount(provider: string, id: string) {
         if (this.busy) throw new RpcError("Switch accounts once this response is done, or interrupt it first.", "busy");
         const selected = account(provider, id);
-        const had = this.session.backends.has(provider);
+        const had = this.session.backends.get(provider)?.id;
         // Already this one (added again under the same id, #410): what waited for an account goes now.
         if (!this.session.setAccount(provider, selected.id)) return this.releaseForAccount(provider);
         this.schedules.cancelLimitResume("account");
         this.setState({ accounts: { "claude-code": this.session.accountId("claude-code"), codex: this.session.accountId("codex") } });
         const name = getProvider(provider)?.name ?? provider;
-        const native = had && this.session.backends.has(provider);
-        const text = accountSwitchNote(provider, selected, name, native ? "native" : this.session.messages.length ? "handoff" : undefined, had && !native);
+        const how = switchHow(had, this.session.backends.get(provider)?.id, this.session.messages.length > 0);
+        const text = accountSwitchNote(provider, selected, name, how, had !== undefined && how !== "native");
         if (text) {
             this.session.recordNotice("info", text);
             this.notice(text);

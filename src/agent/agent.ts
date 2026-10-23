@@ -2046,7 +2046,7 @@ export class Agent {
         const { text: transcript, shortenedChars } = handoffTranscript(missed, 60_000);
         if (!transcript && !shortenedChars) return text;
         const intro = resume
-            ? "While another model answered in this session, the conversation went on. Here is what happened since your last turn:"
+            ? "While another model or account answered in this session, the conversation went on. Here is what happened since your last turn:"
             : "This conversation started before you joined it (with another model, or before the history was compacted or rewound). Here it is so far:";
         const shortened = shortenedChars ? ` Parts of it were shortened or left out (${shortenedChars} characters); the user's messages are given whole where they fit.` : "";
         return `<conversation-so-far>\n${intro}${shortened}\n\n${transcript}\n</conversation-so-far>\n\n${text}`;

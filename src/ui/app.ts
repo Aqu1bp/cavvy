@@ -55,7 +55,7 @@ import { killAllShells, runShell, childEnv } from "../tools/bash";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
 import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveModelInfo, reviewTarget, smallModelFor, lookupModel, type ProviderListing } from "../providers/models";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
-import { account, accountSwitchNote, removedAccount, removedAccountNote } from "../providers/accounts";
+import { account, accountSwitchNote, removedAccount, removedAccountNote, switchHow } from "../providers/accounts";
 import { RpcError } from "../server/rpc-error";
 import { assistantText, modelRef, parseModelRef, textOf, type ImagePart, type Message, type ModelInfo, type ProviderClient, type TextPart, type ToolCallPart, type UserContent } from "../providers/types";
 import { formatCost, formatTokens } from "../providers/pricing";
@@ -563,14 +563,13 @@ export class App {
     async setAccount(provider: string, id: string) {
         if (this.busy) throw new RpcError("Switch accounts once this response is done, or interrupt it first.", "busy");
         const selected = account(provider, id);
-        const had = this.session.backends.has(provider);
+        const had = this.session.backends.get(provider)?.id;
         // Already this one (added again under the same id, #410): what waited for an account goes now.
         if (!this.session.setAccount(provider, selected.id)) return this.releaseForAccount(provider);
         this.schedules.cancelLimitResume("account");
         const name = getProvider(provider)?.name ?? provider;
-        const native = had && this.session.backends.has(provider);
-        const how = native ? "native" : this.session.messages.length ? "handoff" : undefined;
-        const note = accountSwitchNote(provider, selected, name, how, had && !native);
+        const how = switchHow(had, this.session.backends.get(provider)?.id, this.session.messages.length > 0);
+        const note = accountSwitchNote(provider, selected, name, how, had !== undefined && how !== "native");
         const text = how ? note! : [`Using ${name} · ${selected.name}.`, note].filter(Boolean).join(" ");
         this.session.recordNotice("info", text);
         this.notice(text);
