@@ -489,7 +489,7 @@ export function RightPanel(p: { handle: SessionHandle }) {
     };
     return (
         <aside class="panel" aria-label="Session details">
-            <div class="insp-h" data-tauri-drag-region>
+            <div class="insp-h">
                 <Segmented
                     label="Side panel"
                     value={pane()}

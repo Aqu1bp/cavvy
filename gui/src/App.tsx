@@ -6,7 +6,8 @@ import { activate, app, attentionCount, handleFor, restoreActiveSession, rpc, ty
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
 import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, reviewSplit, setAgentFocus, setDockHeight, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold } from "./state/ui";
-import { isTauri, os } from "./lib/platform";
+import { isTauri, os, windowCommand } from "./lib/platform";
+import { installWindowDrag } from "./lib/window-drag";
 import { canStop } from "./lib/session-status";
 import { actionOf, setEnterSends } from "./state/keybindings";
 import { clampInspectorWidth, closesOnShrink, columnSteps, heldSizes, requestCloses, tracks, COLUMN_NARROW, COLUMN_SHORT, INSPECTOR_DEFAULT, windowLayout } from "./lib/layout";
@@ -310,6 +311,11 @@ export function App() {
         if (focused?.closest?.("[data-covered], .keep.covered")) focused.blur();
     }, { defer: true }));
 
+    // The window moves from its top strip and its edges (lib/window-drag.ts).
+    onMount(() => {
+        if (isTauri) onCleanup(installWindowDrag({ invoke: windowCommand, mac: os === "macos" }));
+    });
+
     // Global shortcuts.
     onMount(() => {
         // Bound keys (the keybindings file over the defaults); Esc's ways out stay on Esc.
@@ -430,8 +436,8 @@ export function App() {
         >
             <Show when={app.conn === "open" || app.hello} fallback={<Disconnected />}>
                 <div class="win" style={{ "--rail-w": `${railWidth()}px` }}>
-                    {/* The window's edges drag it, under the rail and the sheet (the rail's top and the title bar drag too). */}
-                    <div class="win-drag" data-tauri-drag-region />
+                    {/* The window's edges move it, under the rail and the sheet (and so does its whole top strip: lib/window-drag.ts). */}
+                    <div class="win-drag" data-window-drag />
                     <div class="rail-scrim" aria-hidden="true" onClick={() => setRailOpen(false)} />
                     {/* The rail sits straight on the window glass; in narrow windows it's a drawer over the sheet. */}
                     <div class="win-rail" inert={!layout().railShown} style={{ "--rail-w": `${railWidth()}px` }}>

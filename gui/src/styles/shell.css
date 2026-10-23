@@ -85,9 +85,9 @@
     padding-left: var(--win-pad);
 }
 
-/* The window drags by its edges: this lies under the rail and the sheet, so
-   only the gaps around them take the drag (the rail's top and the title bar
-   are drag regions of their own). */
+/* The window moves by its edges: this lies under the rail and the sheet, so
+   only the gaps around them take the drag (data-window-drag). The whole top
+   strip moves it too, whatever is on it (lib/window-drag.ts). */
 .win-drag {
     position: absolute;
     inset: 0;

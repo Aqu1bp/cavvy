@@ -37,3 +37,22 @@ test("the rail's top row is centred on the line", () => {
     expect(decl(css("sidebar.css"), ".side-top", "height")).toBe("calc(2 * (var(--top-line) - var(--win-pad, 8px)))");
     expect(winPad + (2 * (line - winPad)) / 2).toBe(line);
 });
+
+// #367: maximized, the terminal is the whole sheet, so its toolbar is the window's top row.
+test("a maximized terminal's toolbar sits on the line, clear of the traffic lights wherever they're over the sheet", () => {
+    const term = css("terminal.css");
+    const height = decl(term, ".terminal-panel.max .terminal-toolbar", "height");
+    expect(height).toBe("calc(2 * (var(--top-line) - var(--win-pad, 8px)))");
+    // align-items: center puts the tabs' centre half its height below the sheet's top (win-pad).
+    expect(decl(term, ".terminal-toolbar", "align-items")).toBe("center");
+    expect(winPad + (2 * (line - winPad)) / 2).toBe(line);
+    // The lights are over the sheet when the rail is hidden or a drawer: the toolbar starts where the title bar's buttons do.
+    const header = css("header.css");
+    const titleBar = decl(header, ".header.traffic.rail-off", "padding-left");
+    expect(decl(header, '[data-rail="overlay"] .header.traffic', "padding-left")).toBe(titleBar);
+    for (const selector of [".app.tauri.os-macos.rail-off .terminal-panel.max .terminal-toolbar", '.app.tauri.os-macos[data-rail="overlay"] .terminal-panel.max .terminal-toolbar']) {
+        expect({ selector, left: decl(term, selector, "padding-left") }).toEqual({ selector, left: titleBar });
+    }
+    // The lights end 78px from the window's left (header.css); the sheet starts win-pad in.
+    expect(winPad + px(titleBar)).toBeGreaterThan(78);
+});

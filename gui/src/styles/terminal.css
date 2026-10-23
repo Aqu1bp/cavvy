@@ -27,6 +27,18 @@
     display: none;
 }
 
+/* Maximized, its toolbar is the window's top row: the title bar's height, so its tabs sit on the
+   traffic lights' line (--top-line), and clear of the lights where they're over the sheet (the rail
+   hidden, or a drawer), as the title bar is (header.css). The empty part moves the window. */
+.terminal-panel.max .terminal-toolbar {
+    height: calc(2 * (var(--top-line) - var(--win-pad, 8px)));
+}
+
+.app.tauri.os-macos.rail-off .terminal-panel.max .terminal-toolbar,
+.app.tauri.os-macos[data-rail="overlay"] .terminal-panel.max .terminal-toolbar {
+    padding-left: 84px;
+}
+
 .terminal-resize {
     position: absolute;
     top: 0;

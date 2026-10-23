@@ -49,6 +49,14 @@ async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
     return invoke<T>(cmd, args);
 }
 
+/**
+ * Runs a window command at once, inside the event that asks for it: moving the window needs the
+ * press still current, so it can't wait for the API module to load (tauriInvoke's import).
+ */
+export function windowCommand(cmd: string): Promise<unknown> {
+    return (window as unknown as { __TAURI_INTERNALS__: { invoke(cmd: string): Promise<unknown> } }).__TAURI_INTERNALS__.invoke(cmd);
+}
+
 let windowShown = !isTauri;
 /**
  * The desktop window is created hidden, so its glass never shows only the desktop behind it:

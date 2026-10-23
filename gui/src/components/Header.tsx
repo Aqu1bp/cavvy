@@ -70,7 +70,7 @@ export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
         onCleanup(() => (ro.disconnect(), window.removeEventListener("resize", place)));
     });
     return (
-        <header ref={el} class={`header ${isTauri && os === "macos" ? "traffic" : ""} ${prefs.sidebar ? "" : "rail-off"}`} data-tauri-drag-region>
+        <header ref={el} class={`header ${isTauri && os === "macos" ? "traffic" : ""} ${prefs.sidebar ? "" : "rail-off"}`}>
             <div class="bar-rail">
                 <button class="hb" title={withShortcut("Show sidebar", "app:toggleSidebar")} aria-label="Show sidebar" onClick={toggleSidebar}>
                     <PanelLeft size={16} />
@@ -79,10 +79,10 @@ export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
                     <SquarePen size={16} />
                 </button>
             </div>
-            <nav class="crumbs" aria-label="Breadcrumb" data-tauri-drag-region>
+            <nav class="crumbs" aria-label="Breadcrumb">
                 {p.children}
             </nav>
-            <span class="grow" data-tauri-drag-region />
+            <span class="grow" />
             <Show when={p.end}>
                 <div class="bar-end">{p.end}</div>
             </Show>

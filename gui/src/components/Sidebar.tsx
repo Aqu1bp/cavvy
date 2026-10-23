@@ -402,8 +402,8 @@ function SelectionBar(p: { count: number; plan: BulkPlan; act: (what: "settle" |
  */
 export function SidebarTop() {
     return (
-        <div class="side-top" data-tauri-drag-region>
-            <span class="grow" data-tauri-drag-region />
+        <div class="side-top">
+            <span class="grow" />
             <button class="hb" title={withShortcut("Hide sidebar", "app:toggleSidebar")} aria-label="Hide sidebar" onClick={toggleSidebar}>
                 <PanelLeft size={16} />
             </button>
