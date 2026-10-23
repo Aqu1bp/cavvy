@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { CASE_INSENSITIVE_FS } from "../src/util/files";
 
 // Isolate from the real ~/.harness before loading anything that reads paths.
 const prevHarnessHome = process.env.HARNESS_HOME;
@@ -732,11 +733,16 @@ describe("here-documents (#448)", () => {
         });
 
         test("data written where it runs later isn't blanked", () => {
-            for (const cmd of ["tee -a ~/.bashrc <<'EOF'\nrm -rf ~\nEOF", "tee .git/hooks/pre-commit <<'EOF' >/dev/null\nrm -rf ~\nEOF", "cat <<'EOF' > .git/hooks/pre-push\nrm -rf ~\nEOF", "cat <<'EOF' >> ~/.ZPROFILE\nrm -rf ~\nEOF"]) {
+            for (const cmd of ["tee -a ~/.bashrc <<'EOF'\nrm -rf ~\nEOF", "tee .git/hooks/pre-commit <<'EOF' >/dev/null\nrm -rf ~\nEOF", "cat <<'EOF' > .git/hooks/pre-push\nrm -rf ~\nEOF", ...(CASE_INSENSITIVE_FS ? ["cat <<'EOF' >> ~/.ZPROFILE\nrm -rf ~\nEOF"] : [])]) {
                 expect(withoutHeredocData(cmd)).toBeUndefined();
                 expect(dangerousReason(cmd)).toBeDefined();
             }
             expect(dangerousReason("tee -a notes.txt <<'EOF'\nrm -rf ~\nEOF")).toBeUndefined();
+            // uniq writes its second operand; aliases, direnv and login items run later too.
+            for (const cmd of ["uniq - ~/.bashrc <<'EOF'\nrm -rf ~\nEOF", "tee -a ~/.bash_aliases <<'EOF'\nrm -rf ~\nEOF", "cat <<'EOF' >> .envrc\nrm -rf ~\nEOF", "cat <<'EOF' > ~/.config/autostart/x.desktop\nExec=rm -rf ~\nEOF", "tee ~/Library/LaunchAgents/x.plist <<'EOF'\nrm -rf ~\nEOF"]) {
+                expect(withoutHeredocData(cmd)).toBeUndefined();
+            }
+            expect(withoutHeredocData("uniq <<'EOF'\nrm -rf ~\nEOF")).toBeDefined();
         });
     });
 
@@ -752,6 +758,18 @@ describe("here-documents (#448)", () => {
             expect(isReadOnlyCommand(cmd)).toBe(false);
             expect(bashRuleMatches("cat:*", cmd, "allow")).toBe(false);
             expect(suggestBashRules(cmd)).toContain("Bash(touch:*)");
+        });
+
+        // An escaped or quoted `<` before `<<` isn't part of a here-string: the `<<` is a here-document.
+        test.each([
+            "cat \\<<<EOF\ncat '\nEOF\ntouch marker # '",
+            "cat x\\<<<EOF\ncat '\nEOF\ntouch marker # '",
+            "cat '<'<<EOF\ncat '\nEOF\ntouch marker # '",
+        ])("%p runs touch after its data", (cmd) => {
+            expect(programs(cmd)).toContain("touch");
+            expect(isReadOnlyCommand(cmd)).toBe(false);
+            expect(bashRuleMatches("cat:*", cmd, "allow")).toBe(false);
+            expect(bashRuleMatches("touch:*", cmd, "deny")).toBe(true);
         });
 
         test("what follows a here-string is judged, not blanked", () => {
@@ -772,11 +790,15 @@ describe("here-documents (#448)", () => {
             "python -v <<'EOF'\nimport os\nEOF",
             "echo 'touch marker' | bash -h",
             "echo 'touch marker' | zsh -V",
+            // dash (sh on Debian and Ubuntu) takes -V as its vi option.
+            "sh -V <<EOF\ntouch marker\nEOF",
+            "echo 'touch marker' | sh -V",
+            "bash -V <<EOF\ntouch marker\nEOF",
         ])("%p", (cmd) => {
             expect(isReadOnlyCommand(cmd)).toBe(false);
         });
 
-        test.each(["bash --version", "bash --help", "sh --version", "zsh --version", "zsh --help", "bash -V", "npx --version", "npx -h", "python3 -V", "python3 --version", "python3 -h", "node -v", "ruby -v", "curl -h", "ssh -V", "git --version"])("%p still is", (cmd) => {
+        test.each(["bash --version", "bash --help", "sh --version", "zsh --version", "zsh --help", "npx --version", "npx -h", "python3 -V", "python3 --version", "python3 -h", "node -v", "ruby -v", "curl -h", "ssh -V", "git --version"])("%p still is", (cmd) => {
             expect(isReadOnlyCommand(cmd)).toBe(true);
         });
     });

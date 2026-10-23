@@ -255,6 +255,8 @@ function scan(cmd: string, discovery: boolean, consume: boolean): CommandAnalysi
     let lastOp: string | undefined;
     let redirectMayFail = false;
     let heredoc = false;
+    /** Where the last `<` that's an operator was: one escaped or quoted (`\\<<<EOF`) isn't part of a `<<<`. */
+    let lessOp = -2;
     /** A command that's only redirections (`2>/dev/null 1>&9`): it has a status of its own, though no words. */
     let bareRedirect = false;
     /** What the word starts with so far: nothing yet, a known character, or a glob or expansion. */
@@ -417,6 +419,9 @@ function scan(cmd: string, discovery: boolean, consume: boolean): CommandAnalysi
             continue;
         }
         if (c === ">" || c === "<") {
+            // The 2nd and 3rd `<` of a here-string (`<<<EOF`) follow an operator `<`.
+            const inHereString = c === "<" && lessOp === i - 1;
+            if (c === "<") lessOp = i;
             const redirectFd = /^\d+$/.test(word) && !wordQuoted ? Number(word) : c === "<" ? 0 : 1;
             // Only the last redirection of stdin supplies the interpreter's input.
             // Other descriptors and superseded heredocs still have data to skip.
@@ -431,7 +436,7 @@ function scan(cmd: string, discovery: boolean, consume: boolean): CommandAnalysi
             endWord();
             if (c === "<") {
                 redirectMayFail = true;
-                if (n === "<" && cmd[i - 1] !== "<" && cmd[i + 2] !== "<") heredoc = true;
+                if (n === "<" && !inHereString && cmd[i + 2] !== "<") heredoc = true;
             }
             if (discovery) {
                 let j = i + 1;
@@ -476,7 +481,7 @@ function scan(cmd: string, discovery: boolean, consume: boolean): CommandAnalysi
             // (`$((1<<2))`, a subshell): what that line flags already keeps it from being approved, and
             // analyzeCommand still has its lines as commands for the checks that refuse. Never inside a
             // here-string: `<<<EOF` is the word EOF, and its 2nd and 3rd `<` aren't a here-document.
-            if (consume && !discovery && c === "<" && n === "<" && cmd[i + 2] !== "<" && cmd[i - 1] !== "<") {
+            if (consume && !discovery && c === "<" && n === "<" && cmd[i + 2] !== "<" && !inHereString) {
                 const tabs = cmd[i + 2] === "-";
                 let j = i + (tabs ? 3 : 2);
                 while (cmd[j] === " " || cmd[j] === "\t" || (cmd[j] === "\\" && cmd[j + 1] === "\n")) j += cmd[j] === "\\" ? 2 : 1;
@@ -808,9 +813,10 @@ const VERSION_FLAGS = new Set(["--version", "-V", "--help", "-h"]);
  * from stdin and run it (`bash -h <<EOF`, `… | zsh -V`): to the shells they're
  * options (bash's -h remembers command locations), and python's -v is verbose.
  * Checked by running each flag here with stdin left open: these waited for it,
- * and ran a script given there.
+ * and ran a script given there. dash, which is sh on Debian and Ubuntu, takes
+ * -V as its vi option (bash only rejects -V, so it's no loss there).
  */
-const NOT_VERSION_FLAGS: Record<string, string[]> = { bash: ["-h"], sh: ["-h"], zsh: ["-h", "-V"], npx: ["-V"], python: ["-v"], python3: ["-v"] };
+const NOT_VERSION_FLAGS: Record<string, string[]> = { bash: ["-h", "-V"], sh: ["-h", "-V"], zsh: ["-h", "-V"], npx: ["-V"], python: ["-v"], python3: ["-v"] };
 const versionFlag = (base: string, flag: string) => !NOT_VERSION_FLAGS[base]?.includes(flag);
 const INTERPRETER_VERSION_FLAGS = new Set(["--version", "-v", "-V", "--help", "-h"]);
 
@@ -1470,7 +1476,7 @@ const STARTUP_FILE = anyCase(/>\s*~\/\.(bash|zsh)(rc|_profile|env)|>\s*~\/\.prof
 const DATA_READERS = new Set(["cat", "tee", "wc", "head", "tail", "uniq", "cut", "tr", "nl", "grep", "egrep", "fgrep"]);
 
 /** Files whose contents run later: shell startup files, anything in a .git, the harness's and agent CLIs' configuration. */
-const RUNS_LATER = anyCase(/(^|\/)\.(bash(rc|_profile|_login|_logout|env)|zsh(rc|env|_profile)|zprofile|zlogin|zlogout|profile|kshrc|mkshrc)$|(^|\/)\.git(\/|$)|(^|\/)\.(harness|claude|codex)(\/|$)|(^|\/)\.mcp\.json$|(^|\/)(crontab|\.config\/(fish|git|nvim|systemd))(\/|$)/);
+const RUNS_LATER = anyCase(/(^|\/)\.(bash(rc|_profile|_login|_logout|env|_aliases)|zsh(rc|env|_profile)|zprofile|zlogin|zlogout|profile|kshrc|mkshrc|envrc)$|(^|\/)\.git(\/|$)|(^|\/)\.(harness|claude|codex)(\/|$)|(^|\/)\.mcp\.json$|(^|\/)(crontab|\.config\/(fish|git|nvim|systemd|autostart)|Library\/LaunchAgents)(\/|$)/);
 
 /**
  * The line with its here-documents' data blanked (lines kept), when that data
@@ -1483,8 +1489,8 @@ export function withoutHeredocData(cmd: string): string | undefined {
     if (!a.heredoc || !a.heredocBodies || a.unparsable || a.heredocOpen || a.hasSubstitution || a.unsafeExpansion || a.bareRedirect) return undefined;
     if (!a.commands.every((c) => DATA_READERS.has(c.argv[0] ?? "") && !c.expands?.includes(0) && !c.globbed?.includes(0))) return undefined;
     // Data written where something runs it later is code: a shell startup file, a git hook or
-    // config, the agents' configuration. Whatever writes it there (`>`, `>>`, `tee -a`).
-    const targets = [...a.redirects, ...a.commands.filter((c) => c.argv[0] === "tee").flatMap((c) => c.argv.slice(1).filter((w) => !w.startsWith("-")))];
+    // config, the agents' configuration. Whatever writes it there (`>`, `>>`, `tee -a`, uniq's OUTPUT).
+    const targets = [...a.redirects, ...a.commands.filter((c) => c.argv[0] === "tee" || c.argv[0] === "uniq").flatMap((c) => c.argv.slice(1).filter((w) => !w.startsWith("-")))];
     if (targets.some((t) => RUNS_LATER.test(t) || [t, ...spellings(t)].some((s) => RUNS_LATER.test(s)))) return undefined;
     let t = cmd;
     for (const [from, to] of a.heredocBodies) t = t.slice(0, from) + t.slice(from, to).replace(/[^\n]/g, " ") + t.slice(to);

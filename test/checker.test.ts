@@ -1087,6 +1087,12 @@ describe("here-documents (#448)", () => {
             expect(noSandbox().check(T("Bash"), bash(HIDDEN), "auto", W)).toMatchObject({ behavior: "ask", needsClassifier: true });
         });
 
+        test("so is one after an escaped `<` (`\\<<<EOF` is `\\<` and a here-document)", () => {
+            const cmd = "cat \\<<<EOF\ncat '\nEOF\ntouch marker # '";
+            expect(noSandbox().check(T("Bash"), bash(cmd), "default", W).behavior).toBe("ask");
+            expect(noSandbox().check(T("Bash"), bash(cmd), "plan", W).behavior).toBe("deny");
+        });
+
         test("an allow rule for the data's program doesn't approve it", () => {
             settings.permissions!.allow = ["Bash(cat:*)"];
             for (const mode of ["default", "acceptEdits", "auto"] as const) expect(noSandbox().check(T("Bash"), bash(HIDDEN), mode, W).behavior).not.toBe("allow");
