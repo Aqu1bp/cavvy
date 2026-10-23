@@ -216,8 +216,8 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
         <Dialog open={help()} onClose={() => setHelp(false)} title={`${p.provider.name} accounts`} width={420}>
             <p>Add an account to keep separate sign-ins, for example personal and work. Each one signs in on its own in the CLI terminal.</p>
             <p>{p.provider.id === "claude-code"
-                ? "A folder Harness makes links Default's settings, CLAUDE.md, rules, skills, agents, commands, plugins and history, so only the sign-in differs. MCP servers added for your user are kept with each sign-in and are not shared. Claude Console sign-in without an API key is stored outside this folder and is not isolated per account."
-                : "A folder Harness makes links everything in Default's Codex home, including config.toml, MCP servers, skills and history, except the sign-in, the model list and .env."}</p>
+                ? "A folder Harness makes links Default's settings, CLAUDE.md, rules, skills, agents, commands, plugins and history, so only the sign-in differs; settings.json isn't shared while it sets a sign-in (an API key, apiKeyHelper or cloud provider). MCP servers added for your user are kept with each sign-in and are not shared. Claude Console sign-in without an API key is stored outside this folder and is not isolated per account."
+                : "A folder Harness makes links everything in Default's Codex home, including config.toml, MCP servers, skills and history, except the sign-in (auth.json and secrets), the model list and .env."}</p>
             <p>An existing folder you choose is used as it is, with nothing linked.</p>
         </Dialog>
         <Show when={removing()}>{(a) => <Dialog open onClose={() => { if (!busy()) setRemoving(undefined); }} title={`Remove ${a().name}?`} width={460}>

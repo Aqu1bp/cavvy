@@ -18,7 +18,8 @@ const write = (p: string, text = "x") => { mkdirSync(join(p, ".."), { recursive:
 function seedClaude() {
     rmSync(claudeDefault, { recursive: true, force: true });
     mkdirSync(claudeDefault);
-    for (const f of ["settings.json", "CLAUDE.md", "keybindings.json", "history.jsonl", ".claude.json", ".credentials.json", "stats-cache.json", "remote-settings.json", "policy-limits.json"]) write(join(claudeDefault, f), `default ${f}`);
+    for (const f of ["CLAUDE.md", "keybindings.json", "history.jsonl", ".claude.json", ".credentials.json", "stats-cache.json", "remote-settings.json", "policy-limits.json"]) write(join(claudeDefault, f), `default ${f}`);
+    write(join(claudeDefault, "settings.json"), JSON.stringify({ model: "default settings.json", env: { ANTHROPIC_BASE_URL: "https://proxy.example" } }));
     for (const d of ["rules", "agents", "commands", "output-styles", "workflows", "agent-memory", "themes", "backups", "statsig", "cache", "session-env", "shell-snapshots", "ide", "debug", "sessions", "jobs", "daemon", "uploads", "telemetry", "todos"]) write(join(claudeDefault, d, "entry"), `default ${d}`);
     write(join(claudeDefault, "projects", "-p", "s.jsonl"), "transcript");
     write(join(claudeDefault, "skills", "mine", "SKILL.md"), "my skill");
@@ -143,7 +144,7 @@ test("an account's own files and foreign links are left alone and reported, neve
     expect(readFileSync(join(folder, "projects", "mine.jsonl"), "utf8")).toBe("account transcript");
     expect(readlinkSync(join(folder, "CLAUDE.md"))).toBe(outside);
     expect(readFileSync(join(folder, "skills", "mine", "SKILL.md"), "utf8")).toBe("account skill");
-    expect(readFileSync(join(claudeDefault, "settings.json"), "utf8")).toBe("default settings.json");
+    expect(readFileSync(join(claudeDefault, "settings.json"), "utf8")).toContain("default settings.json");
     const warning = accountSharingWarning("claude-code", "own")!;
     for (const name of ["settings.json", "projects", "CLAUDE.md", "skills/mine"]) expect(warning).toContain(name);
     // Other entries are still linked.
@@ -259,4 +260,142 @@ test("Claude Code's skills linked from Default are its own, not plugged in again
     rmSync(join(a.folder, "skills", "mine"));
     expect(forClaudeCode([skill], outside, false, a.folder)).toEqual([skill]);
     removeAccount("claude-code", a.id, a.folder);
+});
+
+test("Default's settings.json isn't shared while it carries a sign-in, and its values are never reported", () => {
+    seedClaude();
+    const settings = join(claudeDefault, "settings.json");
+    const a = addAccount("claude-code", { id: "signin", name: "Sign-in" });
+    expect(isLink(join(a.folder, "settings.json"))).toBe(true);
+    const cases: [Record<string, unknown>, string][] = [
+        [{ apiKeyHelper: "/bin/echo helper-value-1" }, "apiKeyHelper"],
+        [{ env: { ANTHROPIC_API_KEY: "sk-ant-value-2" } }, "env.ANTHROPIC_API_KEY"],
+        [{ env: { ANTHROPIC_AUTH_TOKEN: "token-value-3" } }, "env.ANTHROPIC_AUTH_TOKEN"],
+        [{ env: { CLAUDE_CODE_OAUTH_TOKEN: "token-value-4" } }, "env.CLAUDE_CODE_OAUTH_TOKEN"],
+        [{ env: { CLAUDE_CODE_USE_BEDROCK: "1", AWS_PROFILE: "value-5" } }, "env.CLAUDE_CODE_USE_BEDROCK"],
+        [{ env: { ANTHROPIC_PROFILE: "value-6" } }, "env.ANTHROPIC_PROFILE"],
+        [{ awsCredentialExport: "value-7" }, "awsCredentialExport"],
+    ];
+    for (const [value, key] of cases) {
+        writeFileSync(settings, JSON.stringify(value));
+        accountEnv("claude-code", a.id);
+        expect({ key, linked: existsSync(join(a.folder, "settings.json")) || isLink(join(a.folder, "settings.json")) }).toEqual({ key, linked: false });
+        const warning = accountSharingWarning("claude-code", a.id)!;
+        expect(warning).toContain(key);
+        expect(warning).not.toMatch(/value-\d|helper-value/);
+        // Default's own file is untouched.
+        expect(JSON.parse(readFileSync(settings, "utf8"))).toEqual(value);
+    }
+    // Unreadable as settings: not shared either.
+    writeFileSync(settings, "{ not json");
+    accountEnv("claude-code", a.id);
+    expect(isLink(join(a.folder, "settings.json"))).toBe(false);
+    expect(accountSharingWarning("claude-code", a.id)).toContain("couldn't be read");
+    // Without a sign-in it is shared again.
+    writeFileSync(settings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://proxy.example" }, model: "opus" }));
+    accountEnv("claude-code", a.id);
+    expect(readlinkSync(join(a.folder, "settings.json"))).toBe(settings);
+    expect(accountSharingWarning("claude-code", a.id)).toBeUndefined();
+    // The account's own settings.json is never touched, sign-in or not.
+    rmSync(join(a.folder, "settings.json"));
+    writeFileSync(join(a.folder, "settings.json"), "account's own");
+    writeFileSync(settings, JSON.stringify({ apiKeyHelper: "x" }));
+    accountEnv("claude-code", a.id);
+    expect(readFileSync(join(a.folder, "settings.json"), "utf8")).toBe("account's own");
+    removeAccount("claude-code", a.id, a.folder);
+});
+
+test("Codex secrets stay the account's: Harness's old link is removed, nothing else is", () => {
+    seedCodex();
+    write(join(codexDefault, "secrets", "local.age"), "default secrets");
+    const a = addAccount("codex", { id: "secrets", name: "Secrets" });
+    expect(existsSync(join(a.folder, "secrets")) || isLink(join(a.folder, "secrets"))).toBe(false);
+    // An account laid out when secrets/ was still shared.
+    symlinkSync(join(codexDefault, "secrets"), join(a.folder, "secrets"));
+    accountEnv("codex", a.id);
+    expect(isLink(join(a.folder, "secrets"))).toBe(false);
+    expect(readFileSync(join(codexDefault, "secrets", "local.age"), "utf8")).toBe("default secrets");
+    // A link the user made elsewhere, and the account's own folder, stay.
+    const elsewhere = join(outside, "my-secrets");
+    mkdirSync(elsewhere, { recursive: true });
+    symlinkSync(elsewhere, join(a.folder, "secrets"));
+    accountEnv("codex", a.id);
+    expect(readlinkSync(join(a.folder, "secrets"))).toBe(elsewhere);
+    rmSync(join(a.folder, "secrets"));
+    write(join(a.folder, "secrets", "local.age"), "account secrets");
+    accountEnv("codex", a.id);
+    expect(readFileSync(join(a.folder, "secrets", "local.age"), "utf8")).toBe("account secrets");
+    removeAccount("codex", a.id, a.folder);
+    expect(readFileSync(join(codexDefault, "secrets", "local.age"), "utf8")).toBe("default secrets");
+});
+
+test("Codex rollout writer locks are always shared, and the account's own are replaced only while none is held", () => {
+    seedCodex();
+    rmSync(join(codexDefault, "thread-writer-locks"), { recursive: true });
+    const a = addAccount("codex", { id: "locks", name: "Locks" });
+    // Made in Default when missing, so both homes lock the same rollouts.
+    expect(lstatSync(join(codexDefault, "thread-writer-locks")).isDirectory()).toBe(true);
+    expect(readlinkSync(join(a.folder, "thread-writer-locks"))).toBe(join(codexDefault, "thread-writer-locks"));
+    // An account whose Codex made its own: replaced when no lock is held...
+    rmSync(join(a.folder, "thread-writer-locks"));
+    write(join(a.folder, "thread-writer-locks", "thread.lock"), "");
+    accountEnv("codex", a.id);
+    expect(readlinkSync(join(a.folder, "thread-writer-locks"))).toBe(join(codexDefault, "thread-writer-locks"));
+    // ...and kept and reported while a writer holds one.
+    rmSync(join(a.folder, "thread-writer-locks"));
+    write(join(a.folder, "thread-writer-locks", "thread.lock"), "");
+    const { openSync, closeSync } = require("fs") as typeof import("fs");
+    const held = openSync(join(a.folder, "thread-writer-locks", "thread.lock"), "r+");
+    try {
+        accountEnv("codex", a.id);
+        expect(lstatSync(join(a.folder, "thread-writer-locks")).isDirectory()).toBe(true);
+        expect(existsSync(join(a.folder, "thread-writer-locks", "thread.lock"))).toBe(true);
+        expect(accountSharingWarning("codex", a.id)).toContain("thread-writer-locks");
+    } finally { closeSync(held); }
+    accountEnv("codex", a.id);
+    expect(isLink(join(a.folder, "thread-writer-locks"))).toBe(true);
+    removeAccount("codex", a.id, a.folder);
+});
+
+test("when Default moves, Harness's links follow it and foreign links are still refused", () => {
+    seedClaude();
+    seedCodex();
+    const a = addAccount("codex", { id: "moved", name: "Moved" });
+    const c = addAccount("claude-code", { id: "moved", name: "Moved" });
+    expect(readlinkSync(join(a.folder, "config.toml"))).toBe(join(codexDefault, "config.toml"));
+    const previous = { codex: process.env.CODEX_HOME, claude: process.env.CLAUDE_CONFIG_DIR };
+    const codexNew = join(outside, "codex-new");
+    const claudeNew = join(outside, "claude-new");
+    write(join(codexNew, "config.toml"), "new config");
+    write(join(claudeNew, "CLAUDE.md"), "new memory");
+    write(join(claudeNew, "skills", "fresh", "SKILL.md"), "fresh");
+    process.env.CODEX_HOME = codexNew;
+    process.env.CLAUDE_CONFIG_DIR = claudeNew;
+    try {
+        expect(accountEnv("codex", a.id).CODEX_HOME).toBe(a.folder);
+        expect(readlinkSync(join(a.folder, "config.toml"))).toBe(join(codexNew, "config.toml"));
+        // What only the old Default had is no longer linked.
+        expect(isLink(join(a.folder, "AGENTS.md"))).toBe(false);
+        expect(readFileSync(join(codexDefault, "AGENTS.md"), "utf8")).toBe("default AGENTS.md");
+        accountEnv("claude-code", c.id);
+        expect(readlinkSync(join(c.folder, "CLAUDE.md"))).toBe(join(claudeNew, "CLAUDE.md"));
+        expect(isLink(join(c.folder, "rules"))).toBe(false);
+        expect(readlinkSync(join(c.folder, "skills", "fresh"))).toBe(join(claudeNew, "skills", "fresh"));
+        expect(isLink(join(c.folder, "skills", "mine"))).toBe(false);
+        // A config.toml link that isn't Harness's is refused, whichever Default it names.
+        rmSync(join(a.folder, "config.toml"));
+        symlinkSync(join(outside, "elsewhere.toml"), join(a.folder, "config.toml"));
+        writeFileSync(join(outside, "elsewhere.toml"), "");
+        expect(() => accountEnv("codex", a.id)).toThrow(/config.toml links outside/);
+        rmSync(join(a.folder, "config.toml"));
+    } finally {
+        process.env.CODEX_HOME = previous.codex;
+        process.env.CLAUDE_CONFIG_DIR = previous.claude;
+    }
+    // And back again.
+    accountEnv("codex", a.id);
+    expect(readlinkSync(join(a.folder, "config.toml"))).toBe(join(codexDefault, "config.toml"));
+    removeAccount("codex", a.id, a.folder);
+    removeAccount("claude-code", c.id, c.folder);
+    expect(readFileSync(join(codexNew, "config.toml"), "utf8")).toBe("new config");
 });

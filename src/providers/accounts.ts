@@ -1,4 +1,6 @@
-// Account metadata and folder ownership. Never open files inside a CLI home.
+// Account metadata and folder ownership. Never open files inside a CLI home (except
+// what account-layout.ts says it opens: its own marker, and the names of Default's
+// Claude Code sign-in settings).
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { dirname, isAbsolute, join, resolve, sep } from "path";
 import { homedir } from "os";
@@ -7,7 +9,7 @@ import { paths } from "../config/paths";
 import { canonical } from "../util/files";
 import { readAgentConfig, readProvidersFileForUpdate, writeProvidersFile, type CliAccount, validAccountFolder } from "./registry";
 import { RpcError } from "../server/rpc-error";
-import { ensureSharedLayout, isSharedLink } from "./account-layout";
+import { ensureSharedLayout, isSharedLink, type SharedLayout } from "./account-layout";
 
 export const ACCOUNT_PROVIDERS = ["claude-code", "codex"] as const;
 export function accountProvider(provider: string): asserts provider is typeof ACCOUNT_PROVIDERS[number] {
@@ -113,19 +115,25 @@ function sharesDefault(provider: string, a: CliAccount, real: string): boolean {
     const expected = join(accountRealPath(paths.home()), "accounts", provider, a.id);
     return a.folder === expected && real === expected;
 }
-/** What couldn't be shared with Default, by account: entries the account already has of its own. */
-const sharingConflicts = new Map<string, string[]>();
+/** What wasn't shared with Default, by account. */
+const sharingConflicts = new Map<string, SharedLayout>();
 function shareDefault(provider: string, id: string, folder: string): void {
-    const conflicts = ensureSharedLayout(provider, folder, defaultFolder(provider));
-    if (conflicts.length) sharingConflicts.set(`${provider}:${id}`, conflicts);
+    const layout = ensureSharedLayout(provider, folder, defaultFolder(provider));
+    if (layout.conflicts.length || layout.withheld.length) sharingConflicts.set(`${provider}:${id}`, layout);
     else sharingConflicts.delete(`${provider}:${id}`);
 }
-/** Said of a Harness-made account whose folder keeps some entries of its own instead of Default's. */
+/** Said of a Harness-made account that doesn't share all of Default's entries. */
 export function accountSharingWarning(provider: string, id: string): string | undefined {
-    const conflicts = sharingConflicts.get(`${provider}:${id}`);
-    if (!conflicts?.length) return undefined;
-    const names = conflicts.slice(0, 8).join(", ") + (conflicts.length > 8 ? ` and ${conflicts.length - 8} more` : "");
-    return `Not shared with Default, because this account's folder has its own: ${names}. Move them out of the folder to share Default's.`;
+    const layout = sharingConflicts.get(`${provider}:${id}`);
+    if (!layout) return undefined;
+    const said: string[] = [];
+    const { conflicts, withheld } = layout;
+    if (withheld.length) said.push(`Not shared with Default: ${withheld.join("; ")}.`);
+    if (conflicts.length) {
+        const names = conflicts.slice(0, 8).join(", ") + (conflicts.length > 8 ? ` and ${conflicts.length - 8} more` : "");
+        said.push(`Not shared with Default, because this account's folder has its own: ${names}. Move them out of the folder to share Default's.`);
+    }
+    return said.join(" ");
 }
 export function hasNamedAccounts(): boolean {
     return ACCOUNT_PROVIDERS.some((p) => readAgentConfig(p)?.accounts?.length);

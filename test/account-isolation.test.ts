@@ -81,7 +81,7 @@ if (!scenario) {
     // History folders each CLI makes on its first run: a named account's links share them (account-layout.ts),
     // and Harness makes them in Default only when missing.
     for (const d of ["projects", "file-history", "plans", "tasks", "paste-cache"]) mkdirSync(join(claudeHome, d), { recursive: true });
-    for (const d of ["sessions", "archived_sessions"]) mkdirSync(join(codexHome, d), { recursive: true });
+    for (const d of ["sessions", "archived_sessions", "thread-writer-locks"]) mkdirSync(join(codexHome, d), { recursive: true });
     const { claudeSession, codexSession } = await import("./helpers/cli-stores");
     const native = {
         "claude-code": claudeSession(claudeHome, { cwd, turns: [{ prompt: "Before Harness", reply: "Existing Claude conversation" }] }),
