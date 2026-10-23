@@ -760,12 +760,14 @@
     gap: 8px;
 }
 
+/* A modest height, seven lines of the text size or less in a short column; past it the text scrolls, and the expand
+   button (Composer.tsx) opens it large. */
 .composer textarea {
     display: block;
     flex: 1;
     width: 100%;
     min-height: 44px;
-    max-height: calc(var(--column-h, 100vh) * 0.3);
+    max-height: min(calc(7lh + 2px), calc(var(--column-h, 100vh) * 0.3));
     padding: 2px 0 0;
     border: 0;
     resize: none;
@@ -785,6 +787,11 @@
     font-size: 0.929rem;
 }
 
+/* Large: as tall as Composer.tsx makes it. */
+.composer.expanded textarea {
+    max-height: none;
+}
+
 .composer textarea::placeholder {
     color: var(--fg-3);
 }
@@ -792,6 +799,28 @@
 /* The card shows focus; the field inside doesn't need its own ring. */
 .composer textarea:focus-visible {
     outline: none;
+}
+
+/* At the card's top right while the text runs past its modest height (or it's open large). The first row keeps
+   clear of it: the text's own padding when that's the first row, so its scrollbar stays at the edge. */
+.composer-box > .c-expand {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 1;
+    height: 26px;
+    min-width: 26px;
+    padding: 0;
+    color: var(--fg-3);
+    animation: fade 160ms var(--ease);
+}
+
+.composer.expandable .composer-box > :first-child:not(.composer-input, .c-expand) {
+    padding-right: 30px;
+}
+
+.composer.expandable .composer-input:first-child textarea {
+    padding-right: 30px;
 }
 
 .shell-badge {

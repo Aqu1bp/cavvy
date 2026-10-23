@@ -3,7 +3,8 @@ import { ArrowDown, GitFork } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { fork, forkAnchor } from "../state/actions";
 import { activate, toast, type SessionHandle } from "../state/app";
-import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setJumpTarget, setRewindOpen } from "../state/ui";
+import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setJumpTarget, setRewindOpen, takeDockGlide } from "../state/ui";
+import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
 import { anchoredTop, atBottom, FAR, firstBelow, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
@@ -327,6 +328,20 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         wrote();
         reading = capture();
     };
+
+    // The composer opening or closing its large size (Composer.tsx): following the end, the end stays just above it,
+    // gliding with its edge from where it was drawn. Here, as the dock's new height is set: before it's drawn.
+    createEffect(on(() => p.dock, (now, was) => {
+        if (!takeDockGlide() || now === undefined || was === undefined || !scroller || !stick() || smoothScroll) return;
+        stopGlide();
+        scroller.scrollTop = scroller.scrollHeight - scroller.clientHeight;
+        wrote();
+        const ms = motionMs(GROW_MS);
+        const from = now - was;
+        if (!ms || Math.abs(from) < 1 || !content || typeof content.animate !== "function") return;
+        pinned = { at: performance.now(), from: scroller.scrollTop - from };
+        glides = inSight(Math.abs(from)).map((el) => ({ el, anim: el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GROW_EASE }) }));
+    }));
 
     // Sending a prompt jumps back down.
     createEffect(

@@ -74,6 +74,16 @@ export const [terminalMax, setTerminalMax] = createSignal(false);
 export const [terminalShown, setTerminalShown] = createSignal(false);
 /** The composer dock's height, requests included: a floating inspector ends above it. */
 export const [dockHeight, setDockHeight] = createSignal(0);
+/** Until when the dock's next change of height is the composer opening or closing its large size: the conversation glides with it. */
+let dockGlideUntil = -Infinity;
+/** The composer is about to open or close its large size (Composer.tsx). */
+export const glideDock = () => { dockGlideUntil = performance.now() + 100; };
+/** The dock's change of height is the composer's large size opening or closing, once (Transcript.tsx). */
+export const takeDockGlide = () => {
+    const glides = performance.now() < dockGlideUntil;
+    dockGlideUntil = -Infinity;
+    return glides;
+};
 /** The diff reader shows changes side by side: the inspector widens further for it. */
 export const [reviewSplit, setReviewSplit] = createSignal(false);
 /** The inspector's width (its resizer), when it isn't the diff reader. */
