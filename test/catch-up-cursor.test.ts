@@ -4,7 +4,7 @@
 // signed in, a turn Codex wouldn't start). A prompt it took and then failed on is in its session, and isn't sent again.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -18,13 +18,14 @@ const { PermissionChecker } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const { readAgentConfig, saveAgentConfig } = await import("../src/providers/registry");
 const { clientFor, forgetClient } = await import("../src/providers/models");
+const { stopTiming } = await import("../src/backends/cli");
 import { backendModel, type BackendResult, type BackendTurn } from "../src/backends/types";
 
 const mock = startMockLlm({ delayMs: 0 });
 writeFileSync(join(iso.home, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: mock.url, requiresKey: false }] }));
 writeFileSync(join(iso.home, "settings.json"), JSON.stringify({ model: "mock:mock-opus", smallModel: "mock:mock-haiku" }));
 const root = tempDir("catch-up-cursor-");
-const FAKE_KEYS = ["FAKE_LOG", "FAKE_SCENARIO", "FAKE_SECOND_SCENARIO", "FAKE_CODEX_SCENARIO", "FAKE_CODEX_SCENARIOS", "FAKE_ACCOUNT", "FAKE_EXIT_AT_START", "FAKE_FAIL_TURN_START_AT", "FAKE_GOAL_ACTIVATE_FAIL", "FAKE_SLOW_TURN_START", "FAKE_CRASH_FILE", "FAKE_HANG_INIT", "FAKE_HANG_INITIALIZE"];
+const FAKE_KEYS = ["FAKE_LOG", "FAKE_SCENARIO", "FAKE_SECOND_SCENARIO", "FAKE_CODEX_SCENARIO", "FAKE_CODEX_SCENARIOS", "FAKE_ACCOUNT", "FAKE_EXIT_AT_START", "FAKE_FAIL_TURN_START_AT", "FAKE_GOAL_ACTIVATE_FAIL", "FAKE_SLOW_TURN_START", "FAKE_CRASH_FILE", "FAKE_HANG_INIT", "FAKE_HANG_INITIALIZE", "FAKE_TRANSCRIPTS", "FAKE_CLAUDE_ENV_FILE", "FAKE_INIT_DELAY_MS", "FAKE_START_DELAY_MS", "FAKE_CANCEL_ANSWER_MS", "FAKE_SLOW_TURN_START_AT"];
 const prior = Object.fromEntries(FAKE_KEYS.map((k) => [k, process.env[k]]));
 afterAll(() => {
     setEnv(prior);
@@ -416,4 +417,176 @@ describe("delivered or not, as known (#417 review)", () => {
                 await h.agent.dispose();
             }
         }, 40_000);
+});
+
+// #424: Esc in each window of a live prompt's way to the CLI. Whether the CLI's thread got the stopped message decides
+// what the next prompt carries: in total (its transcript, FAKE_TRANSCRIPTS), the thread has it once, and the turn the
+// other model answered (TOKEN) once.
+describe("#424: Esc on a live prompt, in each window of its delivery: the CLI's thread has the message once", () => {
+    type Provider = "claude-code" | "codex";
+    type H = Awaited<ReturnType<typeof harness>>;
+    /** The fake's processes started so far (not its `auth status` checks). */
+    const runs = (h: H) => h.lines().filter((l) => l.pid && l.argv?.[0] !== "auth").length;
+    /** Each thread's transcript: what its model was sent since `since`, by file. */
+    function threads(provider: Provider, since: number): Map<string, string[]> {
+        const home = provider === "codex" ? join(process.env.CODEX_HOME!, "sessions") : join(process.env.CLAUDE_CONFIG_DIR!, "projects");
+        const out = new Map<string, string[]>();
+        if (!existsSync(home)) return out;
+        const dirs = provider === "codex" ? [home] : readdirSync(home).map((d) => join(home, d)).filter((d) => statSync(d).isDirectory());
+        for (const d of dirs)
+            for (const f of readdirSync(d).filter((f) => f.endsWith(".jsonl"))) {
+                const lines = readFileSync(join(d, f), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+                const sent = lines.filter((l) => l.type === "fake-sent" && l.at >= since).map((l) => String(l.text));
+                if (sent.length) out.set(join(d, f), sent);
+            }
+        return out;
+    }
+    const envFile = join(root, "fake-claude-env.json");
+    /** Claude Code's settings for its next prompt: a live process reads them again with each (FAKE_CLAUDE_ENV_FILE); a new one starts with them. */
+    function claudeEnv(env: Record<string, string>) {
+        const all = { FAKE_TRANSCRIPTS: "1", ...OK["claude-code"], ...env };
+        setEnv({ FAKE_SCENARIO: undefined, FAKE_INIT_DELAY_MS: undefined, FAKE_START_DELAY_MS: undefined, FAKE_CANCEL_ANSWER_MS: undefined, FAKE_HANG_INITIALIZE: undefined, ...all });
+        writeFileSync(envFile, JSON.stringify(all));
+    }
+
+    /**
+     * A window: the CLI's settings for the stopped prompt (`env`), when Esc comes (`at`), and whether the thread got
+     * the prompt: taken (it's in its transcript, so the next prompt doesn't bring it again) or not (the next brings it).
+     * `deadlineMs`: the stop's deadline (stopTiming.interruptMs), shortened so the CLI's answer comes after it.
+     * `carried`: whether the next prompt brings it, when that isn't `!taken`.
+     */
+    type Window = {
+        name: string;
+        env: Record<string, string>;
+        at: (h: H, text: string, since: number, started: number) => Promise<void>;
+        taken: boolean;
+        deadlineMs?: number;
+        carried?: (fresh: boolean) => boolean;
+    };
+    const inTranscript = (provider: Provider) => (_h: H, text: string, since: number) => until(() => [...threads(provider, since).values()].some((s) => s.some((x) => x.includes(text))));
+    const windows: Record<Provider, Window[]> = {
+        "claude-code": [
+            // Its process still starting (initialize unanswered): nothing was written to it.
+            {
+                name: "before the prompt is written (Claude Code still starting)",
+                env: { FAKE_HANG_INITIALIZE: "1" },
+                at: async (h, _t, _s, started) => {
+                    await until(() => runs(h) > started);
+                    await Bun.sleep(300);
+                },
+                taken: false,
+            },
+            // Written, and waiting in Claude Code's queue: withdrawn (cancel_async_message answers cancelled: true).
+            {
+                name: "written, still in Claude Code's queue",
+                env: { FAKE_START_DELAY_MS: "1500" },
+                at: async (h, text) => {
+                    await until(() => h.prompts().some((p) => p.includes(text)));
+                    await Bun.sleep(150);
+                },
+                taken: false,
+            },
+            // In the queue; Claude Code says at once it dropped it (command_lifecycle cancelled), but doesn't answer the
+            // withdrawal before the stop's deadline (#435 review): dropped, so refused.
+            {
+                name: "written, in Claude Code's queue, said dropped but the withdrawal unanswered",
+                env: { FAKE_START_DELAY_MS: "3000", FAKE_CANCEL_ANSWER_MS: "never" },
+                at: async (h, text) => {
+                    await until(() => h.prompts().some((p) => p.includes(text)));
+                    await Bun.sleep(150);
+                },
+                taken: false,
+                deadlineMs: 1500,
+            },
+            // Started (command_lifecycle), in its transcript, its system/init not out yet: the issue's window.
+            { name: "started, before its system/init", env: { FAKE_SCENARIO: "hang", FAKE_INIT_DELAY_MS: "800" }, at: inTranscript("claude-code"), taken: true },
+            // The same, its system/init only after the stop's deadline (#435 review). A new session's process, whose
+            // session isn't known yet, goes: the next prompt starts a new thread, with the stopped message in its
+            // catch-up. A known thread's process stays, and its thread has the message already.
+            {
+                name: "started, its system/init after the stop's deadline",
+                env: { FAKE_SCENARIO: "hang", FAKE_INIT_DELAY_MS: "2500" },
+                at: inTranscript("claude-code"),
+                taken: true,
+                deadlineMs: 800,
+                carried: (fresh) => fresh,
+            },
+            {
+                name: "after its system/init",
+                env: { FAKE_SCENARIO: "hang" },
+                at: async (h, text, since) => {
+                    await inTranscript("claude-code")(h, text, since);
+                    await Bun.sleep(300);
+                },
+                taken: true,
+            },
+        ],
+        codex: [
+            // turn/start sent (Codex has the prompt), its answer not back yet.
+            { name: "turn/start sent, before its answer", env: {}, at: inTranscript("codex"), taken: true },
+            {
+                name: "after turn/start's answer",
+                env: {},
+                at: async (h, text, since) => {
+                    await inTranscript("codex")(h, text, since);
+                    await Bun.sleep(300);
+                },
+                taken: true,
+            },
+        ],
+    };
+
+    for (const provider of ["claude-code", "codex"] as const)
+        for (const w of windows[provider])
+            for (const fresh of [true, false])
+                test(`${provider}: Esc ${w.name}, ${fresh ? "on a new session's first prompt" : "on a thread that missed another model's turn"}: ${w.taken ? "taken, so not sent again" : "not taken, so it goes with the next prompt"}`, async () => {
+                    const stop = `stop-me-${provider === "codex" ? "cx" : "cc"}-${fresh ? "new" : "old"}-${w.name.replace(/\W+/g, "-")}`;
+                    const since = Date.now();
+                    if (provider === "claude-code") {
+                        setEnv({ ...CLEAR, FAKE_CLAUDE_ENV_FILE: envFile });
+                        claudeEnv(fresh ? w.env : {});
+                    } else {
+                        // The stopped prompt's turn hangs until Esc; a slow turn/start is its (the process's first, or second).
+                        const slow = w.name.startsWith("turn/start sent") ? { FAKE_SLOW_TURN_START_AT: `${fresh ? 1 : 2}:1500` } : {};
+                        setEnv({ ...CLEAR, ...OK.codex, FAKE_TRANSCRIPTS: "1", FAKE_CODEX_SCENARIOS: fresh ? "hang,cmd" : "cmd,hang,cmd", ...slow });
+                    }
+                    const deadline = stopTiming.interruptMs;
+                    if (w.deadlineMs) stopTiming.interruptMs = w.deadlineMs;
+                    const h = await harness(provider, true, `424-${stop}`);
+                    try {
+                        if (!fresh) {
+                            expect(await h.run("first")).toBe("done");
+                            h.otherModel();
+                            if (provider === "claude-code") claudeEnv(w.env);
+                            // Before the prompt is written: a new process, stuck starting.
+                            if (w.env.FAKE_HANG_INITIALIZE) await h.agent.releaseBackends();
+                        }
+                        const started = runs(h);
+                        const ac = new AbortController();
+                        const turn = h.run(stop, ac.signal);
+                        await w.at(h, stop, since, started);
+                        const esc = Date.now();
+                        ac.abort();
+                        expect(await turn).toBe("aborted");
+                        // Ended by the CLI's answer (or at once), not by the stop's deadline.
+                        expect(Date.now() - esc).toBeLessThan(5000);
+                        if (provider === "claude-code") claudeEnv({});
+                        expect(await h.run("and now?")).toBe("done");
+                        expect(await h.run("and after?")).toBe("done");
+                        // No thread has it twice; the one the session goes on in has it once, and the missed turn once.
+                        const all = threads(provider, since);
+                        for (const sent of all.values()) expect(count(sent.join("\n"), stop)).toBeLessThanOrEqual(1);
+                        const current = [...all.values()].filter((s) => s.some((x) => x.includes("and after?")));
+                        expect(current.length).toBe(1);
+                        expect(count(current[0]!.join("\n"), stop)).toBe(1);
+                        if (!fresh) expect(count(current[0]!.join("\n"), TOKEN)).toBe(1);
+                        // Where it came from: its own prompt (taken), or the next prompt's catch-up.
+                        expect(count(h.prompts().at(-2)!, stop)).toBe((w.carried?.(fresh) ?? !w.taken) ? 1 : 0);
+                        expect(count(h.prompts().at(-1)!, stop)).toBe(0);
+                    } finally {
+                        stopTiming.interruptMs = deadline;
+                        await h.agent.dispose();
+                        setEnv({ FAKE_TRANSCRIPTS: undefined, FAKE_CLAUDE_ENV_FILE: undefined });
+                    }
+                }, 40_000);
 });
