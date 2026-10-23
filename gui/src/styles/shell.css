@@ -8,7 +8,7 @@
      .app      the window. data-rail: docked (beside the sheet) or overlay
                (a drawer over it, below 900px), always set; .rail-off while
                the sidebar preference hides a docked rail; data-railopen
-               (the drawer), data-insp, data-inspmode (dock|float),
+               (the drawer), data-insp, data-inspmode (dock|float|fill),
                data-inspshort, data-term, data-tmax, data-settings
      .win-rail the rail column (Sidebar, or SettingsNav in Settings)
      .sheet    the sheet's grid
@@ -308,6 +308,28 @@
 
 [data-inspmode="float"][data-insp="on"] .insp {
     transform: none;
+}
+
+/* A diff reader too wide to dock fills the sheet under the title bar, ending above the composer like a
+   floating one. The conversation behind it would show only as a cut-off strip under the title bar, so it's hidden. */
+[data-inspmode="fill"] .insp {
+    grid-area: auto;
+    position: absolute;
+    z-index: 9;
+    top: 54px;
+    left: 8px;
+    right: 8px;
+    bottom: var(--insp-bottom);
+    grid-template-columns: minmax(0, 1fr);
+    border-left: 0;
+    border-radius: calc(12 * var(--sp));
+    box-shadow: var(--pop-shadow);
+    transition: bottom var(--dur-panel) var(--ease);
+    animation: rise var(--dur-panel) var(--ease);
+}
+
+[data-inspmode="fill"] .main .transcript-wrap {
+    visibility: hidden;
 }
 
 .insp-resizer {

@@ -24,7 +24,8 @@ export const INSPECTOR_MAX = 620;
 export const INSPECTOR_DEFAULT = 360;
 
 export type RailMode = "dock" | "overlay";
-export type InspectorMode = "dock" | "float";
+/** Where the inspector goes: docked beside the conversation, floating over it, or (the diff reader) filling the sheet. */
+export type InspectorMode = "dock" | "float" | "fill";
 export interface Size { w: number; h: number }
 
 export function railMode(windowWidth: number): RailMode {
@@ -52,7 +53,7 @@ export function reviewWidth(base: number, sheetWidth: number, split: boolean, in
 }
 
 /** The inspector docks while the conversation keeps `CONVERSATION_MIN` beside it. */
-export function inspectorMode(sheetWidth: number, inspectorWidth: number): InspectorMode {
+export function inspectorMode(sheetWidth: number, inspectorWidth: number): "dock" | "float" {
     return sheetWidth - inspectorWidth >= CONVERSATION_MIN ? "dock" : "float";
 }
 
@@ -74,7 +75,7 @@ export function clampTerminalHeight(height: number, sheetHeight: number): number
 }
 
 /**
- * A floating inspector ends above the composer and any request card (`dock`: their height),
+ * A floating (or filling) inspector ends above the composer and any request card (`dock`: their height),
  * so it never hides them. When that leaves it shorter than `FLOAT_MIN`, it's "short": it takes
  * the full height instead.
  */
@@ -82,14 +83,14 @@ export function floatShort(sheetHeight: number, terminal: number, dock: number):
     return sheetHeight - terminal - FLOAT_TOP - dock - FLOAT_GAP < FLOAT_MIN;
 }
 
-/** Where a floating inspector's bottom edge is, from the sheet's bottom. */
+/** Where a floating (or filling) inspector's bottom edge is, from the sheet's bottom. */
 export function floatBottom(terminal: number, dock: number, short: boolean): number {
     return terminal + (short ? 0 : dock) + FLOAT_GAP;
 }
 
 /**
  * Shrinking the window past the point where the inspector fits closes it, like a Mac inspector;
- * opening it again on a narrow window floats it. The diff reader stays open (it floats).
+ * opening it again on a narrow window floats it. The diff reader stays open (it fills the sheet).
  */
 export function closesOnShrink(from: InspectorMode | undefined, to: InspectorMode, open: boolean, reviewing: boolean): boolean {
     return from === "dock" && to === "float" && open && !reviewing;
@@ -103,7 +104,7 @@ export function closesOnShrink(from: InspectorMode | undefined, to: InspectorMod
  */
 export function requestCloses(cleared: string | undefined, wasOpen: boolean, o: { request?: string; mode: InspectorMode; short: boolean; open: boolean }): { close: boolean; cleared?: string } {
     if (o.open && !wasOpen) cleared = o.request;
-    if (o.request && o.request !== cleared && o.mode === "float" && o.short && o.open) return { close: true, cleared: o.request };
+    if (o.request && o.request !== cleared && o.mode !== "dock" && o.short && o.open) return { close: true, cleared: o.request };
     return { close: false, cleared };
 }
 
@@ -131,6 +132,10 @@ export interface WindowLayout {
      * the terminal's restored one while the terminal is maximized (the column waits behind it at that size).
      */
     column: Size;
+    /**
+     * `width` is its width docked or floating (the diff reader's while reviewing). A diff reader that can't
+     * dock fills the sheet instead: floating at that width, it would leave a cut-off strip of conversation beside it.
+     */
     inspector: { open: boolean; mode: InspectorMode; width: number; short: boolean; bottom: number };
     terminal: { shown: boolean; height: number; maximized: boolean; most: number };
 }
@@ -159,7 +164,8 @@ export function windowLayout(o: {
     const term = o.terminalShown ? terminalHeight(o.terminalPreferred, sheet.h, o.terminalMax) : 0;
     const short = floatShort(sheet.h, term, o.dock);
     const open = o.panel || o.review;
-    const docks = inspectorMode(sheet.w, width);
+    const fits = inspectorMode(sheet.w, width);
+    const docks = fits === "float" && o.review ? "fill" : fits;
     return {
         railMode: mode,
         railShown: mode === "dock" ? o.rail : o.railOpen,
