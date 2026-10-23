@@ -77,6 +77,8 @@ export interface LiveTurnResult {
     unanswered?: boolean;
     /** The spawn settings changed while background work ran: this turn ran on the old process, and the new settings wait for it. */
     deferred?: { tasks: number };
+    /** The prompt never reached the CLI: its process couldn't start, or the CLI refused the prompt (BackendResult.refused). */
+    refused?: boolean;
 }
 
 /** A turn the CLI started by itself, waiting to be adopted. */
@@ -236,7 +238,7 @@ export class LiveCliSession {
                 deferred = await this.prepare(o.spawn, o.settings, signal);
             } catch (e) {
                 if (e instanceof Stopped || (e instanceof StartError && (this.closed || signal.aborted))) return { reason: "aborted" };
-                if (e instanceof StartError) return { reason: "error", error: e.message };
+                if (e instanceof StartError) return { reason: "error", error: e.message, refused: true };
                 throw e;
             }
             if (signal.aborted) return { reason: "aborted" };
@@ -570,7 +572,7 @@ export class LiveCliSession {
                 (e) => {
                     known(undefined);
                     if (turn.abandonedAs !== undefined && this.abandoned.delete(turn.abandonedAs)) this.changed();
-                    this.finish(turn, { reason: "error", error: e instanceof Error ? e.message : String(e) });
+                    this.finish(turn, { reason: "error", error: e instanceof Error ? e.message : String(e), refused: true });
                     // Held while it was sent; not taken, so it had none of them: those that named no turn are no turn's.
                     if (gen === this.generation) for (const e of turn.held.splice(0)) e.t === "turn_event" && e.ref === undefined ? this.emitSession(e) : this.route(e);
                 },

@@ -64,8 +64,9 @@
 //                    (shapes from Claude Code 2.1.301, test/fixtures/limits); FAKE_RATE_LIMIT_LATE=1 sends it
 //                    after the "rate-limit" scenario's error instead; FAKE_RATE_LIMIT_REPEAT=n sends it n times (as
 //                    Claude Code sends one per request)
-// FAKE_SCENARIO=rate-limit  the turn ends on the plan's limit (an assistant error "rate_limit", an error result)
-// FAKE_SCENARIO=auth-failed  the turn ends signed out (an assistant error "authentication_failed", an error result)
+// FAKE_SCENARIO=rate-limit  the turn ends on the plan's limit (an assistant error "rate_limit", an error result; no usage)
+// FAKE_SCENARIO=auth-failed  the turn ends signed out (an assistant error "authentication_failed", an error result; no usage)
+// FAKE_SCENARIO=chat  (or any name not listed) the turn says something and answers, with nothing done
 // Reliability cases: steering / steering-many fold stdin input between tool rounds (dropping its document blocks,
 // as Claude Code 2.1.304 does: images reach the model mid-turn, PDFs don't);
 // shell-background / shell-background-stuck / monitor-background report live tasks;
@@ -744,17 +745,22 @@ async function turn(content: any[], uuid?: string) {
         if (process.env.FAKE_RATE_LIMIT_FOLLOWUP) out({ type: "rate_limit_event", rate_limit_info: JSON.parse(readFileSync(process.env.FAKE_RATE_LIMIT_FOLLOWUP, "utf-8")), session_id: sessionId });
     };
     if (process.env.FAKE_RATE_LIMIT_LATE !== "1") rateLimit();
+    // A request refused before any model read it (signed out, the plan's limit): as Claude Code 2.1.304 says it (checked
+    // against a local stub API answering 401 and 429), a synthetic message and a result with nothing used. It keeps
+    // the prompt in its transcript all the same, and sends it again on resume (#407).
+    const unread = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
     if (scenario === "rate-limit" || scenario.startsWith("partial-error")) {
-        if (scenario.startsWith("partial-error")) text("The first check passed.");
-        out({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "You've hit your limit" }] }, error: "rate_limit", parent_tool_use_id: null, session_id: sessionId });
+        const partial = scenario.startsWith("partial-error");
+        if (partial) text("The first check passed.");
+        out({ type: "assistant", message: { role: "assistant", ...(partial ? {} : { model: "<synthetic>", usage: unread }), content: [{ type: "text", text: "You've hit your limit" }] }, error: "rate_limit", parent_tool_use_id: null, session_id: sessionId });
         if (process.env.FAKE_RATE_LIMIT_LATE === "1") rateLimit();
         if (scenario === "partial-error-exit") process.exit(3);
-        return result("success", { is_error: true, result: "You've hit your limit" });
+        return result("success", { is_error: true, result: "You've hit your limit", ...(partial ? {} : { usage: unread }) });
     }
     if (scenario === "result-error") return result("error_during_execution", { errors: ["CLI diagnostic: execution failed"], usage: {} });
     if (scenario === "auth-failed") {
-        out({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Invalid API key" }] }, error: "authentication_failed", parent_tool_use_id: null, session_id: sessionId });
-        return result("success", { is_error: true, result: "Invalid API key" });
+        out({ type: "assistant", message: { role: "assistant", model: "<synthetic>", usage: unread, content: [{ type: "text", text: "Invalid API key" }] }, error: "authentication_failed", parent_tool_use_id: null, session_id: sessionId });
+        return result("success", { is_error: true, result: "Invalid API key", usage: unread });
     }
     // A reply with nothing in it.
     if (scenario === "silent") return result("success", { result: "", usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });

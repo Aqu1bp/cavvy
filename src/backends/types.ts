@@ -343,6 +343,12 @@ export interface BackendResult {
     backgroundStopped?: string[];
     /** The session in resumeId couldn't be resumed (gone, or another folder's). */
     resumeFailed?: boolean;
+    /**
+     * An error before the CLI took the prompt: nothing of it reached the CLI's session (its process didn't start or
+     * exited first, it isn't signed in where that's checked before the prompt goes, it refused to start the turn).
+     * Not set when the CLI took the prompt and then failed: it keeps that prompt in its session (#407).
+     */
+    refused?: boolean;
     /** It stopped on the plan's usage limit; `resetsAt` (ms) when the backend said when that lifts. */
     limit?: { resetsAt?: number };
 }

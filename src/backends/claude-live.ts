@@ -1590,7 +1590,7 @@ export class ClaudeLive {
         const out = rec.take();
         const error = r.error;
         const resumeFailed = Boolean(t.resumeId && !t.adopt && r.reason === "error" && !live.sessionId && /no conversation found|session.{0,40}(not found|doesn't exist|does not exist)/i.test(error ?? ""));
-        if (r.reason === "error") return { ...out, reason: "error", error: resumeFailed ? `Couldn't resume the Claude Code session: ${error}` : (error ?? "Claude Code stopped with an error."), resumeFailed, ...(r.limit ? { limit: r.limit } : {}) };
+        if (r.reason === "error") return { ...out, reason: "error", error: resumeFailed ? `Couldn't resume the Claude Code session: ${error}` : (error ?? "Claude Code stopped with an error."), resumeFailed, ...(r.limit ? { limit: r.limit } : {}), ...(r.refused && !t.adopt ? { refused: true } : {}) };
         if (r.reason === "done" && !rec.any && !t.adopt && !t.prompt.trimStart().startsWith("/")) t.sink.emit({ type: "notice", level: "warn", message: "Claude Code ended the turn without a reply." });
         return { ...out, reason: r.reason };
     }

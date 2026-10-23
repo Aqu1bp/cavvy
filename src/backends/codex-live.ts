@@ -1575,6 +1575,8 @@ export class CodexLive {
         const error = (message: string, extra: Partial<BackendResult> = {}): BackendResult => ({ reason: "error", text: run.out.texts.join("\n\n"), actions: run.out.actions, error: message, ...extra });
         let r: LiveTurnResult;
         let first = true;
+        /** The run's prompt never reached Codex (its app-server didn't start, turn/start was refused): BackendResult.refused. */
+        let refused = false;
         for (;;) {
             if (first && t.adopt) {
                 const conn = a.conn;
@@ -1591,6 +1593,7 @@ export class CodexLive {
                 r = await s.runTurn({ text: run.next.text, images: run.next.images }, t.sink, t.signal, { spawn: t, settings, host: t.session });
                 // Never sent (stopped first): the messages it carried go to the next turn.
                 if (!run.next.started && run.next.queued) run.conn?.keepUnsent(run.next.queued);
+                if (first && r.refused) refused = true;
             }
             first = false;
             if (r.deferred && !run.saidDeferred) {
@@ -1609,10 +1612,13 @@ export class CodexLive {
             // It never got as far as a turn (it couldn't start, or the turn was stopped before).
             if (!conn) {
                 if (r.reason === "aborted" || t.signal.aborted) return { reason: "aborted", text: "", actions: [] };
-                return error(r.error ?? "Codex didn't start");
+                return error(r.error ?? "Codex didn't start", refused ? { refused } : {});
             }
             const next = await conn.nextSegment(run, r);
-            if (!next) return conn.result(run, r);
+            if (!next) {
+                const out = await conn.result(run, r);
+                return refused && out.reason === "error" ? { ...out, refused } : out;
+            }
             run.next = next;
         }
     }

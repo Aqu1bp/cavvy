@@ -602,6 +602,8 @@ export class CodexTurn {
     protected unclaimed = new Map<string, [string, any][]>();
     /** Turns (of any thread) that started while connected: their usage is new spend. */
     protected turnsSeen = new Set<string>();
+    /** The run's prompt went into a turn of Codex's (turn/start answered, or a turn of its own took it): Codex has it. */
+    private promptTaken = false;
     /** Each thread's token totals as Codex last reported them. */
     protected totals = new Map<string, Tokens>();
     protected threadModels = new Map<string, string>();
@@ -830,7 +832,7 @@ export class CodexTurn {
             await withTimeout(handshake(this.rpc), 30_000, "Codex didn't start (no answer to initialize)");
             const account = parseAccount(await this.rpc.request("account/read", {}));
             if (!account.type && account.requiresAuth) {
-                return { reason: "error", text: "", actions: [], error: `Codex isn't signed in. ${signInAdvice(this.def.id, this.t.accountId)}` };
+                return { reason: "error", text: "", actions: [], error: `Codex isn't signed in. ${signInAdvice(this.def.id, this.t.accountId)}`, refused: true };
             }
             this.billedToPlan = account.type === "chatgpt";
             // Where the plan stands before the first update comes (they come only as it changes).
@@ -841,7 +843,7 @@ export class CodexTurn {
             const model = t.model.id === "default" ? undefined : t.model.id;
             let o = t.orchestrator;
             const overrides = await this.mcpOverrides(t.cwd, Boolean(t.readOnly), [o?.name, this.nativeHooks ? CODEX_HOOK_SERVER : undefined].filter((n): n is string => Boolean(n)));
-            if (typeof overrides === "string") return { reason: "error", text: "", actions: [], error: overrides };
+            if (typeof overrides === "string") return { reason: "error", text: "", actions: [], error: overrides, refused: true };
             const off = overrides.config;
             if (overrides.collisions.includes(CODEX_HOOK_SERVER)) {
                 this.sink.emit({ type: "notice", level: "warn", message: `Codex already has a server named ${CODEX_HOOK_SERVER}; it is disabled, and ${APP_TITLE} runs your hooks the older way this turn${this.nativeEvents.includes("PreToolUse") ? ", asking about every command so your PreToolUse hooks see them" : ""}.` });
@@ -943,6 +945,7 @@ export class CodexTurn {
                     if (model) this.threadModels.set(this.threadId!, model);
                     await this.waitFor(async () => {
                         if (adopt) {
+                            this.promptTaken = true;
                             // Codex's own turn runs under the thread's policy: a mode changed since restarts it (waitFor checks).
                             this.turnMode = this.running.get(adopt) ?? this.threadMode;
                             this.adopted = true;
@@ -975,10 +978,12 @@ export class CodexTurn {
                                 // Under the thread's policy, as any turn Codex starts itself, not this one's mode.
                                 this.turnMode = this.running.get(id) ?? this.threadMode;
                                 this.adopted = true;
+                                this.promptTaken = true;
                                 return this.adoptTurn(id, [{ text, images, documents: [] }]);
                             }
                         }
                         this.turnId = r?.turn?.id;
+                        this.promptTaken = true;
                         this.threadMode = mode;
                         // Which turn that started meanwhile was this one: the others were Codex's own.
                         this.settleStarted(this.turnId, mode);
@@ -1091,7 +1096,7 @@ export class CodexTurn {
         const text = this.texts.join("\n\n");
         const answer = answerOf(this.answer) || undefined;
         if (this.aborted) return { reason: "aborted", text, answer, actions: this.actions };
-        if (this.failure) return { reason: "error", text, answer, actions: this.actions, error: this.limitHit ? `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached. ${resetSentence(this.limits?.resetsAt, "Codex")} Choose another account with /account or the plan meter, then send again.` : this.failure, ...(this.limitHit ? { limit: { resetsAt: this.limits?.resetsAt } } : {}) };
+        if (this.failure) return { reason: "error", text, answer, actions: this.actions, error: this.limitHit ? `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached. ${resetSentence(this.limits?.resetsAt, "Codex")} Choose another account with /account or the plan meter, then send again.` : this.failure, ...(this.limitHit ? { limit: { resetsAt: this.limits?.resetsAt } } : {}), ...(this.promptTaken ? {} : { refused: true }) };
         return { reason: "done", text, answer, actions: this.actions };
     }
 

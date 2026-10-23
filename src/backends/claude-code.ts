@@ -1276,7 +1276,10 @@ class ClaudeTurn {
         if (!this.answered || this.unanswered.size || resumeFailed) {
             const code = await this.proc.exited;
             const why = [error, cliMessage(err)].filter(Boolean).join(": ") || `claude exited with code ${code}`;
-            return { reason: "error", text, actions: this.actions, backgroundStopped, error: resumeFailed ? `Couldn't resume the Claude Code session: ${why}` : `Claude Code stopped: ${why}`, resumeFailed, ...this.limitStop() };
+            // No turn started (no init): it exited before taking the prompt, which isn't in its session. Once a turn has
+            // started, it keeps the prompt in its transcript, even when the request then fails (signed out, the limit).
+            const refused = this.turnCount === 0 && !resumeFailed;
+            return { reason: "error", text, actions: this.actions, backgroundStopped, error: resumeFailed ? `Couldn't resume the Claude Code session: ${why}` : `Claude Code stopped: ${why}`, resumeFailed, ...this.limitStop(), ...(refused ? { refused } : {}) };
         }
         const reason = this.reason ?? "done";
         // An answer with nothing in it (not a command of Claude Code's own, like /compact): said, so the turn isn't just blank.
