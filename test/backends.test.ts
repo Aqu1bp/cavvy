@@ -3192,6 +3192,40 @@ describe("Claude Code background commands' own timeouts (#193)", () => {
         } finally { restore(); }
     });
 
+    test("a command's grace running out while a sub-agent's report is due stops the command and waits for that report (#308)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-mixed";
+        process.env.FAKE_BACKGROUND_MS = "50";
+        process.env.FAKE_WAKE_START_MS = "600";
+        const restore = timing({ commandWaitMs: 250, settleMs: 3000 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            expect(await a.run("start both")).toBe("done");
+            expect(stops()).toEqual(["background-1"]);
+            expect(JSON.stringify(a.session.messages)).toContain("The explorer reported back");
+        } finally { restore(); }
+    });
+
+    test("a message the user sent before a finished command's notification came doesn't take that command's report (#308)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background";
+        process.env.FAKE_SHELL_MS = "400";
+        process.env.FAKE_SHELL_NOTIFY_MS = "600";
+        // No polls while it waits: the message goes when the command leaves Claude Code's list, before its notification.
+        const restore = timing({ settleMs: 3000, pollMs: 60_000 });
+        let ready = false;
+        let sent = false;
+        try {
+            const a = await makeAgent({
+                provider: "claude-code",
+                drainQueued: () => (ready && !sent ? ((sent = true), ["also check the docs"]) : []),
+            });
+            setTimeout(() => (ready = true), 150);
+            expect(await a.run("run the checks")).toBe("done");
+            expect(sent).toBe(true);
+            expect(userTexts().some((t) => t.includes("also check the docs"))).toBe(true);
+            expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
+        } finally { restore(); }
+    });
+
     test("a recognized server is stopped at the answer even with a timeout", async () => {
         process.env.FAKE_SCENARIO = "shell-background-stuck";
         process.env.FAKE_COMMAND = "bun run dev";

@@ -46,6 +46,7 @@
 //                   the task leaves the list and the stop is refused, then its notification and report turn come
 // FAKE_RESULT_DELAY_MS  shell-background*: the turn's answer comes this long after the background command is listed
 // FAKE_SHELL_NOTIFY_MS  shell-background*: its task_notification comes this long after it leaves the list (default 80)
+// FAKE_WAKE_START_MS  a report turn Claude Code takes itself starts this long after the report is due
 // FAKE_SHELL_MS     shell-background*: the background command finishes this long after the answer (default 150; the
 //                   stuck, mixed and nested ones finish only when it's set)
 // FAKE_API_KEY_SOURCE  system/init apiKeySource (default "none": a plan)
@@ -610,6 +611,8 @@ async function use(id: string, tool: string, input: any): Promise<boolean> {
 /** A wake turn, after whatever turn runs now (Claude Code runs one at a time). */
 function queueWake(textOut: string) {
     turnTail = turnTail.then(async () => {
+        // FAKE_WAKE_START_MS: the report turn starts (its init) this long after it's due.
+        if (process.env.FAKE_WAKE_START_MS) await Bun.sleep(Number(process.env.FAKE_WAKE_START_MS));
         busy = true;
         try {
             await followUp(textOut);
