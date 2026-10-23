@@ -938,7 +938,6 @@ function CommandCardContent(p: { tool: ToolBlock }) {
                 tabindex={hasBody() ? 0 : -1}
                 aria-expanded={hasBody() ? shown() : undefined}
                 aria-disabled={hasBody() ? undefined : true}
-                title={command() || undefined}
                 onClick={toggle}
                 onKeyDown={(e) => {
                     if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
@@ -984,11 +983,9 @@ function CommandCardContent(p: { tool: ToolBlock }) {
                     <Approved tool={t()} />
                     {/* Started in the background: how its task is doing, when the session still lists it. */}
                     <Show when={task()} fallback={<Show when={t().input?.run_in_background === true && t().status === "ok"}><span class="cmd-tag badge" data-find-skip>Started in the background</span></Show>}>
-                        {(tk) => (
-                            <span class="cmd-tag badge" data-find-skip title={tk().label}>
-                                {taskWord()}
-                            </span>
-                        )}
+                        <span class="cmd-tag badge" data-find-skip>
+                            {taskWord()}
+                        </span>
                     </Show>
                     <Show when={t().status === "awaiting"}>
                         <span class="cmd-tag warn" data-find-skip>
