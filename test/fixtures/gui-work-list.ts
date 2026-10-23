@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { createSignal } from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, text } from "../helpers/gui-render";
 import * as background from "../../gui/src/lib/background";
+import { agentStep } from "../../gui/src/lib/agent-marks";
 
 // The Agents tab's list (BackgroundTasks.tsx WorkList) with its real reactive grouping and keyed rows.
 const source = readFileSync(new URL("../../gui/src/components/BackgroundTasks.tsx", import.meta.url), "utf8");
@@ -11,8 +12,8 @@ const icon = () => node("icon");
 const WorkList = component(list, "WorkList", {
     ...background,
     Bot: icon, ChevronRight: icon, Radar: icon, Terminal: icon, Workflow: icon,
-    ProviderIcon: icon,
-    hasProviderIcon: () => true,
+    AgentMark: icon,
+    agentStep,
     ConfirmDialog: () => node("dialog"),
     app: { providers: [] },
     openAgents() {}, stopAgent() {}, stopBackground() {}, clearBackground() {},

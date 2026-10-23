@@ -17,7 +17,8 @@ import { shortModelRef } from "../lib/tool-words";
 import { duration, plural } from "../lib/format";
 import { now } from "../lib/clock";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
-import { hasProviderIcon, ProviderIcon } from "./ui/ProviderIcon";
+import { AgentMark } from "./ui/AgentMark";
+import { agentStep } from "../lib/agent-marks";
 
 /** Rows cleared from a session's Finished folds, by clearKey: the server keeps no list of sub-agents to clear. */
 const [cleared, setCleared] = createSignal<Record<string, readonly string[]>>({});
@@ -37,14 +38,16 @@ function Item(p: { handle: SessionHandle; at: Placed }) {
     const r = () => p.at.row;
     const live = () => rowLive(r());
     const target = () => stopTarget(r());
-    const provider = () => rowProvider(r(), p.handle.view.state.model?.provider);
+    const provider = () => rowProvider(r(), p.handle.view.state.model?.provider, p.handle.view.agents);
     const runner = () => (provider() ? runnerName({ provider: provider()! }, app.providers) : "Harness");
     const command = () => r().kind === "shell" || r().kind === "monitor";
     // Who runs it: the provider and model for a sub-agent; a command's (or another task's) kind and runner.
     const who = () => (r().kind === "agent" ? [runner(), shortModelRef(r().agent?.model)].filter(Boolean).join(" · ") : `${kindName(r())} · ${runner()}`);
-    // What it does now, while it runs; who ran it once it's over.
-    const doing = () => (live() && r().agent?.activity) || undefined;
-    const mark = () => !command() && r().kind !== "workflow" && provider() && hasProviderIcon(provider()!);
+    // What it does now, in a few words (the whole call in its tooltip), while it runs; who ran it once it's over.
+    const step = () => (live() && r().agent ? agentStep(r().agent!) : undefined);
+    const doing = () => step()?.text;
+    // A sub-agent's (or another task's) provider's mark, as the transcript's card draws it; a command's kind.
+    const mark = () => !command() && r().kind !== "workflow" && provider();
     const stop = async () => {
         const t = target();
         if (!t) return;
@@ -62,13 +65,15 @@ function Item(p: { handle: SessionHandle; at: Placed }) {
             {/* Who runs it is said on the second line, except while that says what it's doing. */}
             <span class="ki" title={doing() ? who() : undefined}>
                 <Show when={mark()} fallback={<KindIcon kind={r().kind} />}>
-                    <ProviderIcon id={provider()!} size={14} class="pm" />
+                    {(id) => <AgentMark provider={id()} class="pm" />}
                 </Show>
                 <span class={`nd st-${r().status}`} />
             </span>
             <span class="tx">
                 <b class={r().kind === "shell" ? "mono" : ""}>{r().label}</b>
-                <span class={doing() ? "doing" : ""}>{doing() ?? who()}</span>
+                <span class={doing() ? "doing" : ""} title={step()?.full} aria-label={step()?.full}>
+                    {doing() ?? who()}
+                </span>
             </span>
             <span class={`meta ${rowTone(r()) ? `tone-${rowTone(r())}` : ""}`}>{rowMeta(r(), p.handle.view.state.shells, now(), duration, runner())}</span>
             <Show when={target()}>
