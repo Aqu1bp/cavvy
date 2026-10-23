@@ -613,6 +613,8 @@ describe("Codex", () => {
             stoppedForMode: new Set(),
             completedTurns: new Map(),
             modeKills: new Set(),
+            turnStates: new Map(),
+            interruptRetries: new Map(),
         });
         turn.stopStale();
         for (const timer of turn.modeKills) clearTimeout(timer);

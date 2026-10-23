@@ -493,8 +493,9 @@ export class CodexLiveConnection extends CodexTurn {
                 (r) => r?.goal && this.setGoal(r.goal),
                 () => {},
             );
-        for (const [thread, sub] of this.subs) if (sub.turnId && this.subRoots.get(thread) === ref) void this.rpc.request("turn/interrupt", { threadId: thread, turnId: sub.turnId }).catch(() => {});
-        await this.rpc.request("turn/interrupt", { threadId: this.threadId, turnId: ref }).catch(() => {});
+        for (const [thread, sub] of this.subs) if (sub.turnId && this.subRoots.get(thread) === ref) void this.sendInterrupt(thread, sub.turnId);
+        // Refused before the turn is active (Codex answers turn/start first): again once it is (#439).
+        if (this.threadId) await this.sendInterrupt(this.threadId, ref);
     }
 
     /** Stop a background terminal (terminate, confirmed by its end or the list) or a sub-agent still working (its turn's interrupt). */
@@ -999,6 +1000,7 @@ export class CodexLiveConnection extends CodexTurn {
     private mainCompleted(p: any) {
         const id: string = p.turn.id;
         const status = typeof p.turn.status === "string" ? p.turn.status : "completed";
+        this.turnState(this.threadId, id, "ended");
         this.running.delete(id);
         this.completedTurns.set(id, { status, ...(status === "failed" ? { error: p.turn.error } : {}) });
         if (this.completedTurns.size > 64) this.completedTurns.delete(this.completedTurns.keys().next().value!);
