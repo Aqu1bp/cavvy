@@ -82,21 +82,19 @@ function Label(p: { text: string }) {
     return <For each={p.text.split(/(`[^`]+`)/)}>{(part) => (part.startsWith("`") && part.endsWith("`") && part.length > 2 ? <span class="mono">{part.slice(1, -1)}</span> : part)}</For>;
 }
 
-function Head(p: { icon: JSX.Element; title: string; aside?: string; sub?: JSX.Element }) {
+/** A card's title, then its lines under it: `sub` (a hint, or who asked) and `note` (why it's asking), each whole. */
+function Head(p: { icon: JSX.Element; title: string; sub?: JSX.Element; note?: string }) {
     return (
         <>
             <div class="ask-h">
                 <span class="ask-ic">{p.icon}</span>
                 <span class="ask-title selectable">{p.title}</span>
-                <span class="grow" />
-                <Show when={p.aside}>
-                    <span class="aside truncate" title={p.aside}>
-                        {p.aside}
-                    </span>
-                </Show>
             </div>
             <Show when={p.sub}>
                 <div class="itab-sub selectable">{p.sub}</div>
+            </Show>
+            <Show when={p.note}>
+                <div class="itab-sub selectable">{p.note}</div>
             </Show>
         </>
     );
@@ -166,7 +164,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
             <Head
                 icon={<PermIcon it={p.it} />}
                 title={p.it.heading}
-                aside={p.it.classifierReason ? `Auto mode asked because: ${p.it.classifierReason}` : undefined}
+                note={p.it.classifierReason ? `Auto mode asked because: ${p.it.classifierReason}` : undefined}
                 sub={
                     p.it.agentLabel ? (
                         <>
