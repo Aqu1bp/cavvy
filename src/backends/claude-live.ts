@@ -339,6 +339,12 @@ export class ClaudeConnection implements CliConnection {
     private tasks = new Map<string, BackgroundTaskInfo>();
     /** Task ids by the call that launched them. */
     private taskOf = new Map<string, string>();
+    /** Each sub-agent's task id, and the Agent call it runs as: the task Claude Code starts when SendMessage resumes it is that one's (#458). */
+    private agentOfTask = new Map<string, string>();
+    /** A call that resumed a sub-agent (SendMessage), or a call an earlier process started it with, and the call it runs as here. */
+    private resumedBy = new Map<string, string>();
+    /** Sub-agents this process didn't start, resumed by a SendMessage call they run as here: by task id. */
+    private strangers = new Map<string, string>();
     /** Each background command (by task id) and the file Claude Code writes its output to, for its report (#430). */
     private commands = new Map<string, { command?: string; file?: string }>();
     /** Tasks that left Claude Code's list without a word on how they ended. */
@@ -1009,7 +1015,8 @@ export class ClaudeConnection implements CliConnection {
     private taskRunning(id: string, o: { type?: string; label?: string; toolUseId?: string; agent?: boolean }) {
         const was = this.tasks.get(id);
         const running = was?.status === "running" ? was : undefined;
-        const toolUseId = o.toolUseId ?? running?.toolUseId;
+        // A sub-agent's task listed again before its task_started says so (resumed, #458): its Agent call's.
+        const toolUseId = o.toolUseId ?? running?.toolUseId ?? this.agentOfTask.get(id);
         const agent = Boolean(o.agent || (toolUseId && this.agentLabels.has(toolUseId)));
         const command = toolUseId ? this.bashCommands.get(toolUseId) : undefined;
         const task: BackgroundTaskInfo = {
@@ -1107,6 +1114,8 @@ export class ClaudeConnection implements CliConnection {
                 const toolUseId = String(m.tool_use_id ?? "");
                 const taskId = typeof m.task_id === "string" ? m.task_id : undefined;
                 if (taskId && typeof m.subagent_type === "string") this.agentTypes.set(taskId, m.subagent_type);
+                if (taskId && toolUseId && !this.agentLabels.has(toolUseId) && this.resumedAgent(taskId, toolUseId, m)) return;
+                if (taskId && this.agentLabels.has(toolUseId) && !this.agentOfTask.has(taskId)) this.agentOfTask.set(taskId, toolUseId);
                 if (m.is_backgrounded === true && this.agentLabels.has(toolUseId)) this.backgroundAgents.add(toolUseId);
                 if (taskId && toolUseId) this.taskOf.set(toolUseId, taskId);
                 if (taskId && m.is_backgrounded === true) this.taskRunning(taskId, { type: typeof m.task_type === "string" ? m.task_type : undefined, label: typeof m.description === "string" ? m.description : undefined, toolUseId: toolUseId || undefined });
@@ -1124,7 +1133,7 @@ export class ClaudeConnection implements CliConnection {
                 return;
             }
             case "task_progress":
-                this.agentUsage(String(m.tool_use_id ?? ""), m.usage);
+                this.agentUsage(this.agentCall(String(m.tool_use_id ?? "")), m.usage);
                 return;
             case "task_notification":
                 return this.onTaskNotification(m);
@@ -1151,8 +1160,9 @@ export class ClaudeConnection implements CliConnection {
         const status = typeof m.status === "string" ? m.status : "";
         const summary = typeof m.summary === "string" ? m.summary.trim() : "";
         const known = taskId ? this.tasks.get(taskId) : undefined;
-        // Not every notification names the call (one for a stop may not): the task's own does.
-        const toolUseId = String(m.tool_use_id ?? known?.toolUseId ?? "");
+        // Not every notification names the call (one for a stop may not): the task's own does. A resumed sub-agent's
+        // names the SendMessage call that resumed it: it's its Agent call's (#458).
+        const toolUseId = this.agentCall(String(m.tool_use_id ?? known?.toolUseId ?? ""));
         const ended: Exclude<BackgroundTaskInfo["status"], "running"> = status === "completed" ? "done" : status === "failed" ? "failed" : "stopped";
         // Reported in a turn Claude Code starts by itself, when none runs (not for a stop: none follows that).
         const reports = Boolean(known && !this.cur && (status === "completed" || status === "failed") && m.owned_by_subagent !== true);
@@ -1230,7 +1240,7 @@ export class ClaudeConnection implements CliConnection {
     private onAssistant(m: Record<string, any>) {
         const msg = m.message ?? {};
         const blocks: any[] = Array.isArray(msg.content) ? msg.content : [];
-        const parent: string | undefined = m.parent_tool_use_id ?? undefined;
+        const parent = this.parentOf(m);
         if (parent) {
             const label = this.agentLabels.get(parent) ?? "sub-agent";
             this.agentStarted(parent);
@@ -1300,6 +1310,9 @@ export class ClaudeConnection implements CliConnection {
             if (!p) continue;
             let content = resultText(b.content);
             if (p.name === "Task") {
+                // Its result names the sub-agent (agentId: its task's id), for one whose task_started didn't come.
+                const agentId = m.tool_use_result?.agentId;
+                if (typeof agentId === "string" && agentId && !this.agentOfTask.has(agentId)) this.agentOfTask.set(agentId, b.tool_use_id);
                 const background = m.tool_use_result?.status === "async_launched";
                 if (background) {
                     this.backgroundAgents.add(b.tool_use_id);
@@ -1371,7 +1384,7 @@ export class ClaudeConnection implements CliConnection {
     }
 
     private onSubToolResults(m: Record<string, any>) {
-        this.agentStarted(String(m.parent_tool_use_id));
+        this.agentStarted(this.parentOf(m) ?? "");
         const blocks: any[] = (Array.isArray(m.message?.content) ? m.message.content : []).filter((b: any) => b?.type === "tool_result");
         for (const b of blocks) {
             const p = this.subTools.get(b.tool_use_id);
@@ -1427,6 +1440,54 @@ export class ClaudeConnection implements CliConnection {
 
     private agentStarted(id: string) {
         if (this.agentLabels.has(id) && !this.endedAgents.has(id)) this.liveAgents.add(id);
+    }
+
+    /** The call a sub-agent runs as here, for a call that resumed it (SendMessage) or one an earlier process started it with. */
+    private agentCall(id: string): string {
+        return this.resumedBy.get(id) ?? id;
+    }
+
+    /**
+     * The sub-agent a message of a sub-agent's is from: the call it runs as here. Claude Code 2.1.304 tags a resumed
+     * one's messages with the Agent call that first started it (parent_tool_use_id) and its task id (agent_id).
+     */
+    private parentOf(m: Record<string, any>): string | undefined {
+        const raw = typeof m.parent_tool_use_id === "string" && m.parent_tool_use_id ? m.parent_tool_use_id : undefined;
+        if (!raw) return undefined;
+        const agentId = typeof m.agent_id === "string" ? m.agent_id : undefined;
+        // Started by a call an earlier process made (resumed from the session's transcript): it runs as the SendMessage call here.
+        const stranger = agentId ? this.strangers.get(agentId) : undefined;
+        if (stranger && raw !== stranger && !this.agentLabels.has(raw) && !this.subTools.has(raw) && !this.resumedBy.has(raw)) this.resumedBy.set(raw, stranger);
+        return this.agentCall(raw);
+    }
+
+    /**
+     * A sub-agent Claude Code starts again: SendMessage to one that had finished (#458). As 2.1.304 says it, its
+     * task_started has the task id it ran with before (the agent's id) and the SendMessage call's id, not its Agent
+     * call's. It's that sub-agent going on: running again, its steps and report its run's, its task its row's. One this
+     * process didn't start (it was resumed from an earlier process's transcript) runs as that SendMessage call. False:
+     * not a sub-agent resumed.
+     */
+    private resumedAgent(taskId: string, callId: string, m: Record<string, any>): boolean {
+        let agent = this.agentOfTask.get(taskId);
+        if (agent === undefined || !this.agentLabels.has(agent)) {
+            if (m.task_type !== "local_agent" || m.owned_by_subagent === true || !this.tools.has(callId)) return false;
+            agent = callId;
+            this.agentLabels.set(agent, typeof m.description === "string" && m.description.trim() ? m.description : "sub-agent");
+            this.agentOfTask.set(taskId, agent);
+            this.strangers.set(taskId, agent);
+        } else this.resumedBy.set(callId, agent);
+        const background = m.is_backgrounded === true;
+        if (!this.liveAgents.has(agent)) {
+            // What it said, reported and used before is its earlier run's; its launch's row keeps that run's result.
+            for (const kept of [this.reports, this.lastWords, this.agentTokens, this.closedLaunches, this.endedAgents]) kept.delete(agent);
+            if (background) this.backgroundAgents.add(agent);
+            else this.backgroundAgents.delete(agent);
+            this.liveAgents.add(agent);
+            this.emit({ type: "subagent", parentId: agent, label: this.agentLabels.get(agent)!, event: { type: "request_start" } });
+        }
+        if (background) this.taskRunning(taskId, { type: typeof m.task_type === "string" ? m.task_type : undefined, label: typeof m.description === "string" ? m.description : undefined, toolUseId: agent });
+        return true;
     }
 
     private endAgent(id: string, reason: TurnEndReason, report?: string) {

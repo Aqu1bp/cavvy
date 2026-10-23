@@ -425,8 +425,8 @@
     transition: background 140ms;
 }
 
-.task.click:hover,
-.task.swap:hover {
+/* Only a row that opens something looks it: one that can't (a task with no run to show) only swaps in its Stop. */
+.task.click:hover {
     background: var(--hover);
 }
 

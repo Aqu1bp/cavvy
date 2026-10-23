@@ -129,6 +129,7 @@ function renderList(tasks: BackgroundTaskInfo[], agents: AgentRun[] = [], tab: W
     const agentStops: { id: string; agent?: string }[] = [];
     const cleared: string[] = [];
     const sets: unknown[] = [];
+    const opened: string[] = [];
     const node = (tag: any, props: Record<string, any> | null, ...children: any[]): any => (typeof tag === "function" ? tag({ ...(props ?? {}), children: children.length === 1 ? children[0] : children }) : { tag, props: props ?? {}, children });
     const state = { backgroundTasks: tasks, shells: [] as never[], model: { provider: "claude-code" } };
     const List = componentCode("WorkList", {
@@ -142,7 +143,7 @@ function renderList(tasks: BackgroundTaskInfo[], agents: AgentRun[] = [], tab: W
         agentStep,
         app: { providers: [{ id: "claude-code", name: "Claude Code" }] },
         handleFor: () => undefined,
-        openAgents() {},
+        openAgents: (id: string) => void opened.push(id),
         openBackground() {},
         stopBackground: async (id: string, ids?: string[]) => void stops.push({ id, ids }),
         stopAgent: async (id: string, agent?: string) => void agentStops.push({ id, agent }),
@@ -159,7 +160,7 @@ function renderList(tasks: BackgroundTaskInfo[], agents: AgentRun[] = [], tab: W
     const rows = tab === "agents" ? agentRows(tasks, agents) : commandRows(tasks);
     const tree = List({ handle, tab, rows });
     const text = (t: any): string => (Array.isArray(t) ? t.map(text).join("") : t && typeof t === "object" ? text(t.children) : t == null || t === false ? "" : String(t));
-    return { tree, stops, agentStops, cleared, sets, text: text(tree), buttons: elements(tree, "button") };
+    return { tree, stops, agentStops, cleared, sets, opened, text: text(tree), buttons: elements(tree, "button") };
 }
 
 const stopsOf = (r: ReturnType<typeof renderList>) => r.buttons.filter((b) => String(b.props["aria-label"] ?? "").startsWith("Stop "));
@@ -188,6 +189,28 @@ test("the Agents tab: a row per agent with its runner and time, Stop on each tha
     await confirm.props.onConfirm();
     expect(r.stops.at(-1)).toEqual({ id: "s1", ids: ["t1"] });
     expect(r.agentStops.at(-1)).toEqual({ id: "s1", agent: "call_d" });
+});
+
+test("a sub-agent resumed with SendMessage is its run's row, which opens it; a task with no run to open doesn't look like it opens (#458)", () => {
+    const row = (r: ReturnType<typeof renderList>) => elements(r.tree, "div").filter((d) => String(d.props.class).startsWith("task "));
+    const hits = (r: ReturnType<typeof renderList>) => r.buttons.filter((b) => b.props.class === "task-hit");
+    // As the server has it once Claude Code resumes the agent: the task it ran with, running again, named by its Agent call.
+    const run: AgentRun = { id: "toolu_agent", turnId: "x", description: "Map auth", agentType: "general-purpose", status: "running", startedAt: 1000, toolCount: 2, tokens: 0, blocks: [], turnAfter: "b3" };
+    const resumed = renderList([task({ id: "agent-1", toolUseId: "toolu_agent", startedAt: 8000 })], [run]);
+    expect(resumed.text).toContain("Running1");
+    expect(row(resumed).map((d) => String(d.props.class).split(" ").includes("click"))).toEqual([true]);
+    expect(hits(resumed).map((b) => b.props["aria-label"])).toEqual(["Open Map auth"]);
+    hits(resumed)[0]!.props.onClick();
+    expect(resumed.opened).toEqual(["toolu_agent"]);
+    // A task no run is known for (as a resume showed before #458): it can stop, but nothing opens, and it isn't styled as if it did.
+    const loose = renderList([task({ id: "agent-1", toolUseId: "toolu_send" })], [{ ...run, status: "done", endedAt: 2000 }]);
+    const looseRow = row(loose).find((d) => !String(d.props.class).split(" ").includes("gone"))!;
+    expect(String(looseRow.props.class).split(" ")).not.toContain("click");
+    expect(hits(loose).filter((b) => b.props["aria-label"] === "Open Map auth")).toHaveLength(1);
+    expect(stopsOf(loose).map((b) => b.props["aria-label"])).toEqual(["Stop sub-agent: Map auth"]);
+    const css = readFileSync(new URL("../gui/src/styles/panel.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    const hovered = [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)].filter(([, sel, body]) => /background:/.test(body!) && /:hover/.test(sel!)).flatMap(([, sel]) => sel!.split(",").map((x) => x.trim()));
+    expect(hovered.filter((s) => s.startsWith(".task.") && s.endsWith(":hover"))).toEqual([".task.click:hover"]);
 });
 
 test("no row has a tooltip that says what it shows", () => {

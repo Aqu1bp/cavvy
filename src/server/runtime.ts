@@ -1900,13 +1900,16 @@ export class Runtime {
     }
 
     /** A sub-agent's run, from its call: in a turn, or (a sub-agent's own) in its parent's activity, on its parent's model unless the call names one. */
-    private startAgent(id: string, parent?: string): AgentRun | undefined {
+    private startAgent(id: string, parent?: string, label?: string): AgentRun | undefined {
         const own = this.model && modelRef(this.model);
         if (parent === undefined) {
             const turnId = this.toolTurn.get(id);
             const call = turnId ? this.blockIn(turnId, id) : undefined;
             if (!turnId || call?.t !== "tool") return undefined;
-            this.op({ op: "agent", agent: { ...agentFromCall(call, turnId, own), startedAt: Date.now() } });
+            const run = agentFromCall(call, turnId, own);
+            // Claude Code's SendMessage resuming a sub-agent an earlier process started (#458): its run is that call's, named as the CLI names the agent, with what it was sent.
+            const resumed = call.name === "SendMessage" ? { description: label ? redact(label) : run.description, prompt: typeof call.input?.message === "string" ? call.input.message : run.prompt } : {};
+            this.op({ op: "agent", agent: { ...run, ...resumed, startedAt: Date.now() } });
         } else {
             const p = this.view.agents.find((x) => x.id === parent);
             const call = p?.blocks.find((b) => b.id === id);
@@ -1920,7 +1923,7 @@ export class Runtime {
     private trackAgent(id: string, label: string, e: AgentEvent, parent?: string) {
         let a = this.view.agents.find((x) => x.id === id);
         if (!a || a.replayed) {
-            a = this.startAgent(id, parent);
+            a = this.startAgent(id, parent, label);
             if (!a) return;
         }
         this.agentLabels.set(id, label);
