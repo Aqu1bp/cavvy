@@ -1,10 +1,10 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show } from "solid-js";
-import { Check, ChevronDown, Layers, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
-import type { EffortLevel, ModelSummary } from "@shared/protocol";
+import { Check, ChevronDown, CircleAlert, Layers, Plus, RefreshCw, Search, Settings2, Star, UserRound, Zap } from "lucide-solid";
+import type { AccountInfo, EffortLevel, ModelSummary } from "@shared/protocol";
 import { app, handleFor, refreshModels, toast } from "../state/app";
 import { setEffort, setModel, setFastMode, setAccount } from "../state/actions";
-import { prefs, setPrefs } from "../state/prefs";
-import { comparePicks, setComparePicks, setSettingsTab } from "../state/ui";
+import { prefs, setPrefs, sp } from "../state/prefs";
+import { comparePicks, setAddAccountFor, setComparePicks, setSettingsTab } from "../state/ui";
 import { isMod, mod } from "../lib/platform";
 import { menuIndex, menuTypeahead } from "../lib/menu";
 import { Menu } from "./ui/Menu";
@@ -27,6 +27,20 @@ export function shortModel(m?: ModelSummary | { name?: string; id: string }): st
     return (m.name ?? m.id).replace(/^claude-/i, "Claude ");
 }
 
+/** What a parenthesis holds when it's an id ("claude-opus-5-5", "openai/gpt-6"), not words ("recommended"). */
+const ID_LIKE = /^[\w.:/@-]*[\d/-][\w.:/@-]*$/;
+
+/**
+ * A model's name as the picker shows it, without ids. Claude Code names an alias with what it resolves
+ * to, "Opus 5.5 (claude-opus-5-5)": that's "Opus 5.5". A model with no name goes by its id. Search
+ * still matches the full name and the id.
+ */
+export function modelName(m: { name?: string; id: string }): string {
+    const full = m.name || m.id;
+    const paren = full.match(/^(.*\S)\s+\(([^()\s]+)\)$/);
+    return paren && ID_LIKE.test(paren[2]!) ? paren[1]! : full;
+}
+
 /** The model a session (or the next one) uses: what the server says, else the listed model with that ref. */
 function resolve(current: ModelSummary | undefined, ref: string | undefined): ModelSummary | undefined {
     return current ?? app.models.flatMap((g) => g.models).find((m) => m.ref === ref);
@@ -35,6 +49,11 @@ function resolve(current: ModelSummary | undefined, ref: string | undefined): Mo
 const FAVORITES = "favorites";
 
 type Row = { m: ModelSummary; sub?: string };
+
+/** The CLIs report plans in lower case ("max", "plus"). */
+const planLabel = (plan?: string) => (plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : undefined);
+/** Under an account's name in the switcher: who it is, its plan, and what's wrong with it, if anything. */
+const accountDetail = (a: Partial<AccountInfo>) => [a.email, planLabel(a.plan), a.invalid ? "Unavailable" : a.signedIn === false ? "Not signed in" : undefined].filter(Boolean).join(" · ");
 
 /** A menu from a button in the composer: just above it in a session, below it on Home, where the composer sits higher. */
 export interface ComposerMenu {
@@ -55,12 +74,20 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     let anchor: HTMLButtonElement | undefined;
     let input: HTMLInputElement | undefined;
     let list: HTMLDivElement | undefined;
+    let railEl: HTMLDivElement | undefined;
+    let acctBtn: HTMLButtonElement | undefined;
+    let acctMenu: HTMLDivElement | undefined;
     const listId = createUniqueId();
     const typeahead = menuTypeahead();
     const [q, setQ] = createSignal("");
     const [sel, setSel] = createSignal(0);
     const [rail, setRail] = createSignal<string>(FAVORITES);
+    /** The account list under the provider's header. */
+    const [acctOpen, setAcctOpen] = createSignal(false);
+    /** A rail button's name beside it, while it's hovered or focused. */
+    const [tip, setTip] = createSignal<{ name: string; top: number }>();
     const currentRef = () => p.current?.ref ?? p.currentRef;
+    const isCurrent = (ref: string) => ref === currentRef();
     const currentModel = createMemo(() => resolve(p.current, currentRef()));
     const currentProvider = () => currentModel()?.provider ?? currentRef()?.split(":")[0];
 
@@ -69,7 +96,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     const accountChoices = (provider = currentProvider()) => accountInfo(provider)?.accounts ?? [{ id: "default", name: "Default" }];
     const missingAccount = (provider = currentProvider()) => !accountChoices(provider).some((a) => a.id === selectedAccount(provider));
     const showAccounts = (provider = currentProvider()) => !!accountInfo(provider) && (accountChoices(provider).length > 1 || missingAccount(provider));
-    const accountName = () => accountChoices().find((a) => a.id === selectedAccount())?.name ?? "Removed account";
+    const accountName = (provider = currentProvider()) => accountChoices(provider).find((a) => a.id === selectedAccount(provider))?.name ?? "Removed account";
 
     // Providers with something to pick, or an error worth seeing.
     const groups = createMemo(() =>
@@ -83,6 +110,12 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
         const name = currentModel()?.name ?? currentRef() ?? "Model";
         const provider = currentProvider();
         return provider ? `${name} · ${providerName(provider)}` : name;
+    };
+    /** On the chip, the name alone: what an alias resolves to, "(claude-opus-5-5)", is in the list and the tooltip. */
+    const chipModel = () => {
+        const m = currentModel();
+        if (m) return modelName(m).replace(/^claude[- ]/i, "");
+        return currentRef() ? currentRef()!.split(":").slice(1).join(":") : "No model";
     };
     const favorites = createMemo(() => {
         const all = new Map(groups().flatMap((g) => g.models.map((m) => [m.ref, m] as const)));
@@ -108,10 +141,58 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     };
     const toggleCompare = () => setComparePicks(multi() ? undefined : currentRef() ? [currentRef()!] : []);
 
+    // The provider whose header shows an account switcher: a CLI provider, in its own list.
+    const acctProvider = () => (!q() && rail() !== FAVORITES && accountInfo(rail()) ? rail() : undefined);
+    const acctItems = () => [...(acctMenu?.querySelectorAll<HTMLButtonElement>('[role^="menuitem"]') ?? [])];
+    /** Focus an account (or Add account…) and scroll the list to it. */
+    const focusAccount = (el?: HTMLElement) => {
+        el?.focus({ preventScroll: true });
+        el?.scrollIntoView({ block: "nearest" });
+    };
+    /**
+     * The list fits inside the picker, which clips what overflows it: below the header if there's room,
+     * else moved up over the header as far as it needs. The accounts scroll; Add account… stays at the
+     * bottom. Measured from layout (the header, the list's scrollHeight), not the opening transform.
+     */
+    const placeAccounts = () => {
+        const menu = acctMenu;
+        const panel = menu?.closest<HTMLElement>(".popover")?.getBoundingClientRect();
+        const head = menu?.parentElement?.getBoundingClientRect();
+        if (!menu || !panel || !head) return;
+        const pad = sp(8);
+        const top = head.bottom + sp(2);
+        const shift = Math.max(0, Math.min(menu.scrollHeight - (panel.bottom - pad - top), top - panel.top - pad));
+        menu.style.marginTop = shift ? `${-shift}px` : "";
+        menu.style.maxHeight = `${panel.bottom - pad - (top - shift)}px`;
+    };
+    const openAccounts = () => {
+        setAcctOpen(true);
+        placeAccounts();
+        const items = acctItems();
+        focusAccount(items.find((el) => el.getAttribute("aria-checked") === "true") ?? items[0]);
+    };
+    const closeAccounts = (refocus = true) => {
+        setAcctOpen(false);
+        if (refocus) acctBtn?.focus();
+    };
+    const pickAccount = (provider: string, a: { id: string }) => {
+        closeAccounts();
+        if (a.id !== selectedAccount(provider) || missingAccount(provider)) void setAccount(provider, a.id);
+    };
+    const addAccount = (provider: string) => {
+        setAcctOpen(false);
+        p.setOpen(false);
+        setAddAccountFor(provider);
+        setSettingsTab("providers");
+    };
+    const showTip = (el: HTMLElement, name: string) => setTip({ name, top: el.offsetTop - (railEl?.scrollTop ?? 0) + el.offsetHeight / 2 });
+
     createEffect(
         on(
             () => p.open,
             (open) => {
+                setAcctOpen(false);
+                setTip(undefined);
                 if (!open) return;
                 setQ("");
                 // Start where the current model lives.
@@ -126,7 +207,14 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
             },
         ),
     );
-    createEffect(on([q, rail], () => setSel(0), { defer: true }));
+    // A new list starts at its top. Set here, not in an effect on q and rail: opening the picker moves
+    // the rail to the current model's provider, and that must not undo its highlight on the current model.
+    const show = (provider: string) => {
+        setQ("");
+        setRail(provider);
+        setSel(0);
+        setAcctOpen(false);
+    };
 
     const choose = (m: ModelSummary) => {
         if (multi()) return togglePick(m.ref);
@@ -141,6 +229,18 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
             return;
         }
         const target = e.target as HTMLElement;
+        // The account list: arrows move through it; Enter and Space are the buttons' own.
+        if (acctOpen() && acctMenu?.contains(target) && ["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) {
+            e.preventDefault();
+            const items = acctItems();
+            focusAccount(items[menuIndex(items.length, items.indexOf(target as HTMLButtonElement), e.key)]);
+            return;
+        }
+        if (target === acctBtn && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+            e.preventDefault();
+            openAccounts();
+            return;
+        }
         const tab = target.closest<HTMLElement>('[role="tab"]');
         if (tab && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) {
             e.preventDefault();
@@ -173,12 +273,15 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
             }
         }
     };
-    const empty = () => {
-        if (app.modelsLoading && !app.models.length) return "Loading models…";
-        if (q()) return "No models match.";
-        if (!groups().length) return "No providers yet. Add an API key in Providers.";
-        if (rail() === FAVORITES) return "Star a model to keep it here.";
-        return group()?.status === "error" ? (group()?.error ?? "Couldn't list this provider's models.") : "No models.";
+    /** What the list says when it has nothing to show, and the one thing to do about it. */
+    const empty = (): { text: string; icon?: "loading" | "error" | "star" | "search"; action?: { label: string; run: () => void } } => {
+        const providers = { label: "Set up providers", run: () => (p.setOpen(false), setSettingsTab("providers")) };
+        if (app.modelsLoading && !app.models.length) return { text: "Loading models…", icon: "loading" };
+        if (q()) return { text: `No models match “${q()}”.`, icon: "search" };
+        if (!groups().length) return { text: "No providers yet. Add an API key or sign in to a CLI.", action: providers };
+        if (rail() === FAVORITES) return { text: "Star a model to keep it here.", icon: "star" };
+        if (group()?.status === "error") return { text: group()?.error ?? "Couldn't list this provider's models.", icon: "error", action: { label: "Try again", run: () => void refreshModels(true) } };
+        return { text: "No models." };
     };
 
     return (
@@ -188,11 +291,10 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                 <Show when={multi()} fallback={
                     <>
                         <Show when={currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={15} />}</Show>
-                        {/* What an alias resolves to, "(claude-opus-5-5)", is in the list and the tooltip. */}
-                        <span class="truncate">{(currentModel() ? shortModel(currentModel()) : currentRef() ? currentRef()!.split(":").slice(1).join(":") : "No model").replace(/^Claude /, "").replace(/\s+\([^()]*\)$/, "")}</span>
+                        <span class="truncate">{chipModel()}</span>
                         {/* The icon is hidden from assistive tech, so the provider is named for it here. */}
                         <Show when={currentProvider()}>{(id) => <span class="sr-only">, {providerName(id())}</span>}</Show>
-                        <Show when={showAccounts()}><span> · {accountName() ?? "Default"}</span></Show>
+                        <Show when={showAccounts()}><span class="pick-acct truncate"> · {accountName()}</span></Show>
                     </>
                 }>
                     <Layers size={15} />
@@ -200,32 +302,85 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                 </Show>
                 <ChevronDown size={13} class="chev" />
             </button>
-            <Menu label="Choose a model" kind="dialog" initialFocus={() => input} onKeyDown={onKey} open={p.open} anchor={() => anchor} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={360} maxHeight={340} minHeight={240} class="mp">
-                <Show when={showAccounts(rail())}>
-                    <label class="small">{providerName(rail())} · Account <select aria-label="Session account" value={selectedAccount(rail())} onChange={(e) => void setAccount(rail(), e.currentTarget.value)}>
-                        <Show when={missingAccount(rail())}><option value={selectedAccount(rail())} disabled>Removed account — choose another</option></Show>
-                        <For each={accountChoices(rail())}>{(a) => <option value={a.id}>{a.name}</option>}</For>
-                    </select></label>
-                </Show>
-                <div class="mp-wrap">
-                    <div class="mp-rail" role="tablist" aria-label="Providers">
-                        <button class={`rb ${rail() === FAVORITES && !q() ? "on" : ""}`} role="tab" aria-selected={rail() === FAVORITES} title="Favorites" aria-label="Favorites" onClick={() => (setQ(""), setRail(FAVORITES))}>
+            <Menu
+                label="Choose a model"
+                kind="dialog"
+                initialFocus={() => input}
+                onKeyDown={onKey}
+                onEscape={() => {
+                    if (!acctOpen()) return false;
+                    closeAccounts();
+                    return true;
+                }}
+                open={p.open}
+                anchor={() => anchor}
+                onClose={() => p.setOpen(false)}
+                placement={p.placement ?? "top"}
+                width={360}
+                maxHeight={340}
+                minHeight={240}
+                class="mp"
+                exit
+            >
+                <div
+                    class="mp-wrap"
+                    // The account list closes when the pointer or focus goes elsewhere in the picker.
+                    onPointerDown={(e) => {
+                        const t = e.target as Node;
+                        if (acctOpen() && !acctMenu?.contains(t) && !acctBtn?.contains(t)) closeAccounts(false);
+                    }}
+                    onFocusIn={(e) => {
+                        const t = e.target as Node;
+                        if (acctOpen() && !acctMenu?.contains(t) && t !== acctBtn) setAcctOpen(false);
+                    }}
+                >
+                    <div class="mp-rail" ref={railEl} role="tablist" aria-label="Providers" aria-orientation="vertical" onScroll={() => setTip(undefined)}>
+                        <button
+                            class={`rb ${rail() === FAVORITES && !q() ? "on" : ""}`}
+                            role="tab"
+                            aria-selected={rail() === FAVORITES}
+                            aria-label="Favorites"
+                            onClick={() => show(FAVORITES)}
+                            onPointerEnter={(e) => showTip(e.currentTarget, "Favorites")}
+                            onPointerLeave={() => setTip(undefined)}
+                            onFocus={(e) => showTip(e.currentTarget, "Favorites")}
+                            onBlur={() => setTip(undefined)}
+                        >
                             <Star size={18} />
-                            <Show when={rail() === FAVORITES && !q()}>
-                                <span class="bar" />
-                            </Show>
                         </button>
                         <For each={groups()}>
-                            {(g) => (
-                                <button class={`rb ${rail() === g.provider && !q() ? "on" : ""}`} role="tab" aria-selected={rail() === g.provider} title={g.providerName} aria-label={g.providerName} onClick={() => (setQ(""), setRail(g.provider))}>
-                                    <ProviderIcon id={g.provider} name={g.providerName} size={20} />
-                                    <Show when={rail() === g.provider && !q()}>
-                                        <span class="bar" />
-                                    </Show>
-                                </button>
-                            )}
+                            {(g) => {
+                                const cur = () => g.provider === currentProvider();
+                                // No mark on the rail (the composer's button already names the model); screen readers still hear it.
+                                const label = () => (cur() ? `${g.providerName}, current model` : g.providerName);
+                                return (
+                                    <button
+                                        class={`rb ${rail() === g.provider && !q() ? "on" : ""}`}
+                                        role="tab"
+                                        aria-selected={rail() === g.provider}
+                                        aria-label={label()}
+                                        onClick={() => show(g.provider)}
+                                        onPointerEnter={(e) => showTip(e.currentTarget, g.providerName)}
+                                        onPointerLeave={() => setTip(undefined)}
+                                        onFocus={(e) => showTip(e.currentTarget, g.providerName)}
+                                        onBlur={() => setTip(undefined)}
+                                    >
+                                        <ProviderIcon id={g.provider} name={g.providerName} size={20} />
+                                        <Show when={g.status === "error"}>
+                                            <span class="rb-err" aria-hidden="true" />
+                                        </Show>
+                                    </button>
+                                );
+                            }}
                         </For>
                     </div>
+                    <Show when={tip()}>
+                        {(t) => (
+                            <div class="mp-tip" aria-hidden="true" style={{ top: `${t().top}px` }}>
+                                {t().name}
+                            </div>
+                        )}
+                    </Show>
                     <div class="mp-main">
                         <Show when={p.compare}>
                             {(c) => (
@@ -244,15 +399,16 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                         </Show>
                         <div class="mp-search">
                             <Search size={14} />
-                            <input ref={input} role="combobox" aria-expanded="true" aria-controls={listId} aria-autocomplete="list" aria-activedescendant={rows()[sel()] ? `${listId}-${sel()}` : undefined} value={q()} onInput={(e) => setQ(e.currentTarget.value)} placeholder="Search models…" aria-label="Search models" spellcheck={false} />
+                            <input ref={input} role="combobox" aria-expanded="true" aria-controls={listId} aria-autocomplete="list" aria-activedescendant={rows()[sel()] ? `${listId}-${sel()}` : undefined} value={q()} onInput={(e) => (setQ(e.currentTarget.value), setSel(0))} placeholder="Search models…" aria-label="Search models" spellcheck={false} />
                             <button class="hb sm" title="Refresh model lists" aria-label="Refresh model lists" onClick={() => void refreshModels(true)} disabled={app.modelsLoading}>
                                 <Show when={app.modelsLoading} fallback={<RefreshCw size={13} />}>
                                     <Spinner size={13} />
                                 </Show>
                             </button>
                         </div>
+                        <div class="mp-head">
                         <div class="mp-label">
-                            <span class="truncate">{label()}</span>
+                            <span class="mp-label-name truncate">{label()}</span>
                             <Show when={!q() && group()?.status === "cached"}>
                                 <span class="mp-note" title="The provider didn't answer; this is the last list it gave">
                                     cached
@@ -263,35 +419,130 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                                     {group()!.error ?? "unavailable"}
                                 </span>
                             </Show>
+                            <Show when={acctProvider()}>
+                                {(provider) => (
+                                    <button
+                                        ref={acctBtn}
+                                        class={`mp-acct ${missingAccount(provider()) ? "missing" : ""} ${acctOpen() ? "open" : ""}`}
+                                        aria-haspopup="menu"
+                                        aria-expanded={acctOpen()}
+                                        aria-controls={acctOpen() ? `${listId}-acct` : undefined}
+                                        aria-label={`${providerName(provider())} account: ${missingAccount(provider()) ? "removed, choose another" : accountName(provider())}`}
+                                        title={missingAccount(provider()) ? "This session's account was removed. Choose another." : `${providerName(provider())} account`}
+                                        onClick={() => (acctOpen() ? closeAccounts() : openAccounts())}
+                                    >
+                                        <Show when={missingAccount(provider())} fallback={<UserRound size={13} />}>
+                                            <CircleAlert size={13} />
+                                        </Show>
+                                        <span class="truncate">{accountName(provider())}</span>
+                                        <ChevronDown size={12} class="chev" />
+                                    </button>
+                                )}
+                            </Show>
                         </div>
-                        <div class="mp-list" ref={list} id={listId} role="listbox" aria-label={label()} aria-multiselectable={multi()}>
-                            <Show when={rows().length} fallback={<div class="mp-empty">{empty()}</div>}>
-                                <For each={rows()}>
-                                    {(r, i) => (
-                                        <div class={`mr ${i() === sel() ? "sel" : ""} ${(multi() ? picked(r.m.ref) : r.m.ref === currentRef()) ? "on" : ""}`} onMouseMove={() => setSel(i())}>
-                                            <button class="mr-pick" id={`${listId}-${i()}`} onFocus={() => setSel(i())} role="option" aria-selected={multi() ? picked(r.m.ref) : r.m.ref === currentRef()} onClick={() => choose(r.m)}>
-                                                <Show when={multi()}>
-                                                    <span class={`mr-check ${picked(r.m.ref) ? "on" : ""}`} aria-hidden="true">
-                                                        <Show when={picked(r.m.ref)}>
-                                                            <Check size={11} stroke-width={3} />
-                                                        </Show>
-                                                    </span>
-                                                </Show>
-                                                <span class="mr-text">
-                                                    <span class="mr-name truncate">{r.m.name}</span>
-                                                    <Show when={r.sub}>
-                                                        <span class="mr-sub truncate">{r.sub}</span>
+                        <Show when={acctOpen() && acctProvider()}>
+                            {(provider) => (
+                                <div ref={acctMenu} id={`${listId}-acct`} class="mp-acct-menu" role="menu" aria-label={`${providerName(provider())} accounts`}>
+                                    <Show when={missingAccount(provider())}>
+                                        <div class="mp-acct-note">
+                                            <CircleAlert size={13} />
+                                            <span>This session's account was removed. Choose another.</span>
+                                        </div>
+                                    </Show>
+                                    <div class="mp-acct-list">
+                                    <For each={accountChoices(provider())}>
+                                        {(a) => (
+                                            <button class="menu-item" role="menuitemradio" aria-checked={a.id === selectedAccount(provider())} onClick={() => pickAccount(provider(), a)}>
+                                                <span class="menu-text">
+                                                    <span class="menu-label truncate">{a.name}</span>
+                                                    <Show when={accountDetail(a)}>
+                                                        <span class="menu-desc truncate">{accountDetail(a)}</span>
                                                     </Show>
                                                 </span>
-                                                <Show when={i() < 9}>
-                                                    <kbd>{`${mod === "⌘" ? "⌘" : "Ctrl+"}${i() + 1}`}</kbd>
+                                                <Show when={a.id === selectedAccount(provider())}>
+                                                    <Check size={14} class="menu-check" />
                                                 </Show>
                                             </button>
-                                            <button onFocus={() => setSel(i())} class={`mr-star ${isFav(r.m.ref) ? "f" : ""}`} aria-pressed={isFav(r.m.ref)} title={isFav(r.m.ref) ? "Remove from Favorites" : "Add to Favorites"} aria-label={isFav(r.m.ref) ? `Remove ${r.m.name} from Favorites` : `Add ${r.m.name} to Favorites`} onClick={() => toggleFav(r.m.ref)}>
-                                                <Star size={14} />
-                                            </button>
-                                        </div>
-                                    )}
+                                        )}
+                                    </For>
+                                    </div>
+                                    <div class="menu-sep" role="separator" />
+                                    <button class="menu-item" role="menuitem" onClick={() => addAccount(provider())}>
+                                        <Plus size={14} />
+                                        Add account…
+                                    </button>
+                                </div>
+                            )}
+                        </Show>
+                        </div>
+                        <div class="mp-list" ref={list} id={listId} role="listbox" aria-label={label()} aria-multiselectable={multi()}>
+                            <Show
+                                when={rows().length}
+                                fallback={
+                                    <div class={`mp-empty ${empty().icon === "error" ? "err" : ""}`} role="status">
+                                        <Show when={empty().icon}>
+                                            {(icon) => (icon() === "loading" ? <Spinner size={16} /> : icon() === "error" ? <CircleAlert size={16} /> : icon() === "star" ? <Star size={16} /> : <Search size={16} />)}
+                                        </Show>
+                                        <span>{empty().text}</span>
+                                        <Show when={empty().action}>
+                                            {(a) => (
+                                                <button class="btn secondary sm" onClick={() => a().run()}>
+                                                    {a().label}
+                                                </button>
+                                            )}
+                                        </Show>
+                                    </div>
+                                }
+                            >
+                                <For each={rows()}>
+                                    {(r, i) => {
+                                        const name = modelName(r.m);
+                                        const on = () => (multi() ? picked(r.m.ref) : isCurrent(r.m.ref));
+                                        return (
+                                            <div class={`mr ${i() === sel() ? "sel" : ""} ${on() ? "on" : ""}`} onMouseMove={() => sel() !== i() && setSel(i())}>
+                                                <button
+                                                    class="mr-pick"
+                                                    id={`${listId}-${i()}`}
+                                                    onFocus={() => setSel(i())}
+                                                    role="option"
+                                                    aria-selected={on()}
+                                                    aria-keyshortcuts={i() < 9 ? `${mod === "⌘" ? "Meta" : "Control"}+${i() + 1}` : undefined}
+                                                    title={[name, r.sub].filter(Boolean).join(" · ")}
+                                                    onClick={() => choose(r.m)}
+                                                >
+                                                    <span class="mr-mark" aria-hidden="true">
+                                                        <Show
+                                                            when={multi()}
+                                                            fallback={
+                                                                <Show when={isCurrent(r.m.ref)}>
+                                                                    <Check size={14} stroke-width={2.5} />
+                                                                </Show>
+                                                            }
+                                                        >
+                                                            <span class={`mr-check ${picked(r.m.ref) ? "on" : ""}`}>
+                                                                <Show when={picked(r.m.ref)}>
+                                                                    <Check size={11} stroke-width={3} />
+                                                                </Show>
+                                                            </span>
+                                                        </Show>
+                                                    </span>
+                                                    {/* The provider, in mixed lists, drops out of sight rather than show a few letters when there's no room. */}
+                                                    <span class="mr-text">
+                                                        <span class="mr-name truncate">{name}</span>
+                                                        <Show when={r.sub}>
+                                                            <span class="mr-sub truncate">{r.sub}</span>
+                                                        </Show>
+                                                    </span>
+                                                    <Show when={i() < 9}>
+                                                        <kbd aria-hidden="true">{`${mod === "⌘" ? "⌘" : "Ctrl+"}${i() + 1}`}</kbd>
+                                                    </Show>
+                                                </button>
+                                                <button onFocus={() => setSel(i())} class={`mr-star ${isFav(r.m.ref) ? "f" : ""}`} aria-pressed={isFav(r.m.ref)} title={isFav(r.m.ref) ? "Remove from Favorites" : "Add to Favorites"} aria-label={isFav(r.m.ref) ? `Remove ${name} from Favorites` : `Add ${name} to Favorites`} onClick={() => toggleFav(r.m.ref)}>
+                                                    <Star size={14} />
+                                                </button>
+                                            </div>
+                                        );
+                                    }}
                                 </For>
                             </Show>
                         </div>
@@ -310,6 +561,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
         </>
     );
 }
+
 
 /** Effort as a glyph: five bars, filled up to the level (1 low … 5 max; 0 none chosen). */
 export function EffortGlyph(p: { level: number }) {

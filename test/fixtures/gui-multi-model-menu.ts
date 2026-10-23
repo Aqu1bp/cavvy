@@ -46,7 +46,7 @@ function picker(available = true) {
         });
         return Object.assign(n, {
             ownerDocument: doc,
-            focus() { active = n; n.props.onFocus?.(); },
+            focus() { active = n; n.props.onFocus?.({ currentTarget: n, target: n }); },
             click() { if (!n.props.disabled) n.props.onClick?.(); },
             scrollIntoView() {}, getClientRects: () => [{}],
             // mountMenu's click guard for aria-disabled rows; click() here calls the handler directly.
@@ -82,9 +82,9 @@ function picker(available = true) {
         Menu, menuIndex, menuTypeahead, comparePicks, setComparePicks,
         app: { models: [{ provider: "mock", providerName: "Mock", models }], providers: [] },
         prefs: { favoriteModels: [] }, setPrefs() {}, handleFor() {}, refreshModels() {},
-        setModel: (ref: string) => chosen.push(ref), toast: (msg: string) => warnings.push(msg),
+        setModel: (ref: string) => chosen.push(ref), setAddAccountFor() {}, setSettingsTab() {}, toast: (msg: string) => warnings.push(msg),
         isMod: (e: any) => e.ctrlKey, mod: "Ctrl", withShortcut: (label: string, action: string) => (action === "chat:modelPicker" ? `${label} (Ctrl+/)` : label), ProviderIcon: () => node("icon"),
-        ...Object.fromEntries(["Brain", "Check", "ChevronDown", "Layers", "RefreshCw", "Search", "Settings2", "Star", "Zap", "Spinner"].map((name) => [name, () => node("icon")])),
+        ...Object.fromEntries(["Brain", "Check", "ChevronDown", "CircleAlert", "Layers", "Plus", "RefreshCw", "Search", "Settings2", "Star", "UserRound", "Zap", "Spinner"].map((name) => [name, () => node("icon")])),
     });
     cleanups.push(renderer.render(() => ModelPicker({ get open() { return open(); }, setOpen, currentRef: models[0]!.ref, compare: { available, why: "Requires a Git project" } }), root));
     const find = (predicate: (n: Node) => boolean) => adapt(all(root).find(predicate)!);

@@ -1790,10 +1790,35 @@
 }
 
 .mp-wrap {
+    position: relative;
     display: flex;
     flex: 1;
     width: 100%;
     min-height: 0;
+}
+
+/* Closing: a still copy of the panel fades and settles back toward its button (Popover's exit). */
+@keyframes mp-out {
+    to {
+        opacity: 0;
+        transform: scale(0.97) translateY(4px);
+    }
+}
+
+.popover.mp.closing {
+    pointer-events: none;
+    animation: mp-out calc(var(--dur-panel) * 0.75) var(--ease-in-out) forwards;
+}
+
+.popover.mp.closing[data-side="bottom"] {
+    animation-name: mp-out-down;
+}
+
+@keyframes mp-out-down {
+    to {
+        opacity: 0;
+        transform: scale(0.97) translateY(-4px);
+    }
 }
 
 .mp-rail {
@@ -1829,17 +1854,48 @@
     color: var(--fg);
 }
 
-.rb .bar {
+/* A provider that couldn't list its models: a small dot at its icon's corner. */
+.rb-err {
     position: absolute;
-    right: calc(-4 * var(--sp));
-    top: calc(11 * var(--sp));
-    width: calc(3 * var(--sp));
-    height: calc(20 * var(--sp));
-    border-radius: calc(3 * var(--sp)) 0 0 calc(3 * var(--sp));
-    background: var(--accent);
+    top: calc(9 * var(--sp));
+    right: calc(9 * var(--sp));
+    width: calc(5 * var(--sp));
+    height: calc(5 * var(--sp));
+    border-radius: 50%;
+    background: var(--danger);
+    box-shadow: 0 0 0 1.5px var(--ctl-strong);
+}
+
+/* A rail button's name, beside it: the rail is only marks. */
+@keyframes mp-tip-in {
+    from {
+        opacity: 0;
+        transform: translate(-3px, -50%);
+    }
+}
+
+.mp-tip {
+    position: absolute;
+    left: calc(52 * var(--sp));
+    z-index: 3;
+    max-width: calc(220 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(9 * var(--sp));
+    border-radius: calc(8 * var(--sp));
+    background: var(--fg);
+    color: var(--sheet);
+    font-size: 0.857rem;
+    font-weight: 500;
+    line-height: 1.35;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+    transform: translateY(-50%);
+    animation: mp-tip-in var(--dur-fast) var(--ease-out);
 }
 
 .mp-main {
+    position: relative;
     display: flex;
     flex-direction: column;
     flex: 1;
@@ -1893,10 +1949,141 @@
     color: var(--fg-3);
 }
 
+.mp-label-name {
+    flex: 1;
+}
+
+/* The header and the account list that drops from it. */
+.mp-head {
+    position: relative;
+    flex: none;
+}
+
 .mp-note {
     margin-left: auto;
     font-weight: 400;
     color: var(--fg-3);
+}
+
+/* The provider's account, in its header: the active one by name, the others a click away. */
+.mp-acct {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 1 auto;
+    gap: calc(5 * var(--sp));
+    min-width: 0;
+    max-width: 60%;
+    height: calc(24 * var(--sp));
+    margin: calc(-4 * var(--sp)) 0;
+    padding: 0 calc(6 * var(--sp)) 0 calc(8 * var(--sp));
+    border-radius: var(--pill);
+    font-size: 0.857rem;
+    font-weight: 500;
+    color: var(--fg-2);
+    transition: background var(--dur-fast), color var(--dur-fast);
+}
+
+.mp-acct:hover,
+.mp-acct.open {
+    background: var(--hover);
+    color: var(--fg);
+}
+
+.mp-acct svg {
+    flex: none;
+}
+
+.mp-acct .chev {
+    color: var(--fg-3);
+    transition: transform var(--dur-fast) var(--ease);
+}
+
+.mp-acct.open .chev {
+    transform: rotate(180deg);
+}
+
+.mp-acct.missing,
+.mp-acct.missing:hover {
+    color: var(--warn);
+}
+
+.mp-acct-menu {
+    position: absolute;
+    top: calc(100% + 2 * var(--sp));
+    right: calc(8 * var(--sp));
+    z-index: 2;
+    width: calc(236 * var(--sp));
+    padding: calc(4 * var(--sp));
+    border-radius: calc(12 * var(--sp));
+    /* Opaque: it sits over the model list, whose text would show through glass. */
+    background: var(--seg-on);
+    box-shadow: 0 0 0 0.5px var(--line-strong), var(--pop-shadow), inset 0 1px 0 var(--ctl-hi);
+    transform-origin: top right;
+    /* Grows in without fading, so it's never see-through over the rows. */
+    animation: mp-acct-in var(--dur-panel) var(--ease-out);
+}
+
+@keyframes mp-acct-in {
+    from {
+        transform: scale(0.96) translateY(-4px);
+    }
+}
+
+/* Its accounts scroll inside it (placeAccounts sets its max-height); the note and Add account… stay put. */
+.mp-acct-menu {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.mp-acct-menu > * {
+    flex: none;
+}
+
+.mp-acct-menu > .mp-acct-list {
+    flex: 0 1 auto;
+    min-height: calc(40 * var(--sp));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.mp-acct-menu .menu-item {
+    min-height: 0;
+    padding: calc(5 * var(--sp)) calc(8 * var(--sp));
+    font-size: 0.893rem;
+}
+
+.mp-acct-menu .menu-desc {
+    margin-top: 0;
+    font-size: 0.786rem;
+}
+
+.mp-acct-menu .menu-item[aria-checked="true"] .menu-label {
+    font-weight: 600;
+}
+
+.mp-acct-note {
+    display: flex;
+    align-items: flex-start;
+    gap: calc(7 * var(--sp));
+    margin-bottom: calc(2 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(8 * var(--sp));
+    border-radius: calc(8 * var(--sp));
+    background: color-mix(in srgb, var(--warn) 12%, transparent);
+    font-size: 0.857rem;
+    line-height: 1.35;
+    color: var(--fg);
+}
+
+.mp-acct-note svg {
+    flex: none;
+    margin-top: calc(2 * var(--sp));
+    color: var(--warn);
+}
+
+.pick-acct {
+    flex: 0 1 auto;
+    color: var(--fg-2);
 }
 
 .mp-list {
@@ -1905,65 +2092,122 @@
     flex: 1;
     gap: 1px;
     min-height: calc(120 * var(--sp));
-    padding: 0 calc(5 * var(--sp)) calc(5 * var(--sp));
+    padding: calc(2 * var(--sp)) calc(5 * var(--sp)) calc(5 * var(--sp));
     overflow-y: auto;
 }
 
 .mp-empty {
-    padding: calc(24 * var(--sp)) calc(12 * var(--sp));
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    padding: calc(28 * var(--sp)) calc(16 * var(--sp));
     font-size: 0.893rem;
+    line-height: 1.4;
     text-align: center;
     color: var(--fg-3);
+    overflow-wrap: anywhere;
 }
 
+.mp-empty > svg {
+    color: var(--fg-4);
+}
+
+.mp-empty.err > svg {
+    color: var(--danger);
+}
+
+.mp-empty .btn {
+    margin-top: calc(2 * var(--sp));
+}
+
+/* A model row. The current model: an accent check and a slightly heavier name, no fill (the composer's
+   button already names it). The row under the keyboard or pointer: the only fill, a neutral one. */
 .mr {
     display: flex;
     align-items: center;
+    flex: none;
     min-width: 0;
+    height: calc(34 * var(--sp));
     border-radius: calc(10 * var(--sp));
+    /* OpenRouter lists hundreds: rows out of view skip layout and paint. */
+    content-visibility: auto;
+    contain-intrinsic-size: auto calc(34 * var(--sp));
 }
 
 .mr.sel {
-    background: var(--hover);
-}
-
-.mr.on {
-    background: color-mix(in srgb, var(--accent) 13%, transparent);
+    background: var(--press);
 }
 
 .mr-pick {
     display: flex;
     align-items: center;
     flex: 1;
-    gap: calc(9 * var(--sp));
+    gap: calc(8 * var(--sp));
     min-width: 0;
-    min-height: calc(32 * var(--sp));
-    padding: calc(6 * var(--sp)) calc(4 * var(--sp)) calc(6 * var(--sp)) calc(10 * var(--sp));
+    height: 100%;
+    padding: 0 calc(4 * var(--sp)) 0 calc(8 * var(--sp));
+    border-radius: calc(10 * var(--sp));
     font-size: 0.929rem;
     text-align: left;
 }
 
+.mr-pick:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+/* The check's column, kept on every row so names line up; Compare's checkboxes sit in it too. */
+.mr-mark {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: calc(16 * var(--sp));
+    color: var(--accent);
+}
+
 .mr-pick kbd {
+    flex: none;
     height: auto;
-    padding: calc(3 * var(--sp)) calc(5 * var(--sp));
+    margin-left: auto;
+    padding: calc(2 * var(--sp)) calc(5 * var(--sp));
     font-size: 0.75rem;
     color: var(--fg-3);
     background: var(--hover);
+    opacity: 0;
+    transition: opacity var(--dur-fast);
+}
+
+.mr.sel kbd {
+    opacity: 1;
 }
 
 .mr-text {
     display: flex;
-    flex-direction: column;
+    flex-wrap: wrap;
+    align-items: baseline;
     flex: 1;
+    column-gap: calc(8 * var(--sp));
     min-width: 0;
+    height: calc(20 * var(--sp));
+    line-height: calc(20 * var(--sp));
+    overflow: hidden;
 }
 
 .mr-name {
+    flex: 0 1 auto;
+    max-width: 100%;
     font-weight: 500;
 }
 
+.mr.on .mr-name {
+    font-weight: 550;
+}
+
+/* The provider, in Favorites and results: after the name, taking only the room left. */
 .mr-sub {
-    margin-top: 1px;
+    flex: 1 1 0;
+    min-width: min(9ch, 100%);
     font-size: 0.821rem;
     color: var(--fg-3);
 }
@@ -1977,6 +2221,15 @@
     margin-right: calc(2 * var(--sp));
     border-radius: 50%;
     color: var(--fg-3);
+    opacity: 0;
+    transition: opacity var(--dur-fast), color var(--dur-fast);
+}
+
+/* Shown for a favorite, and on the row under the pointer or keyboard. */
+.mr.sel .mr-star,
+.mr-star.f,
+.mr-star:focus-visible {
+    opacity: 1;
 }
 
 .mr-star:hover {
