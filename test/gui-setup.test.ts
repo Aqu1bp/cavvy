@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { EarlyInput, terminalInputChunks, restoreTabs, TerminalClosures } from "../gui/src/lib/terminal";
 import { RpcError } from "../gui/src/lib/rpc";
+import { terminalFontSize } from "../gui/src/lib/text-size";
 import { node } from "./gui-component-harness";
 import { asksForSetup, setupNote, setupTabLabel } from "../gui/src/lib/setup";
 
@@ -55,7 +56,7 @@ async function panel() {
         },
         createEffect: (callback: () => void) => effects.push(callback), on: () => () => {}, onCleanup() {}, onMount: (callback: () => void) => mounts.push(callback),
         app, terminalActions, setupObscured, setSettingsTab, trustRequest: () => undefined, terminalOpen: () => opened, setTerminalOpen: (value: boolean) => { opened = value; },
-        prefs: { terminalHeight: 260 }, basename: (path: string) => path.split("/").pop(), tildify: (path: string) => path,
+        prefs: { terminalHeight: 260, fontSize: 14 }, terminalFontSize, basename: (path: string) => path.split("/").pop(), tildify: (path: string) => path,
         withShortcut: (label: string) => label, terminalKey: () => "shell", toast: (text: string, kind: string) => notices.push({ text, kind }),
         rpc: {
             call: (method: string, params: any) => { calls.push({ method, params }); return response(method); },

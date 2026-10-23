@@ -30,7 +30,7 @@ const PAGE = SESSION_PAGE;
 export function Monogram(p: { name: string; cwd?: string; label?: string; size?: number }) {
     return (
         <span class="mg" style={{ "background-color": projectColor(p.cwd ?? p.name),
-            ...(p.size ? { width: `${p.size}px`, height: `${p.size}px`, "font-size": `${(p.size * 0.47).toFixed(1)}px` } : {}),
+            ...(p.size ? { width: `calc(${p.size} * var(--sp))`, height: `calc(${p.size} * var(--sp))`, "font-size": `calc(${(p.size * 0.47).toFixed(1)} * var(--sp))` } : {}),
         }} aria-hidden="true">
             {p.label ?? monogram(p.name)}
         </span>

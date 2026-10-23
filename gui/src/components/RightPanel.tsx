@@ -379,7 +379,7 @@ function AgentRow(p: { handle: SessionHandle; a: AgentRun; depth?: number }) {
     const depth = () => p.depth ?? 0;
     return (
         <>
-            <div class={`prow ${stoppable() ? "swap" : ""} agent-row`} style={depth() ? { "padding-left": `${10 + Math.min(depth(), 4) * 16}px` } : undefined}>
+            <div class={`prow ${stoppable() ? "swap" : ""} agent-row`} style={depth() ? { "padding-left": `calc(${10 + Math.min(depth(), 4) * 16} * var(--sp))` } : undefined}>
                 <button class="agent-hit" onClick={() => openAgents(p.a.id)} title={waiting() ? "It's asking you something in the composer" : p.a.description} aria-label={p.a.description || "Sub-agent"} />
                 <span class="lic">
                     <Bot size={16} />

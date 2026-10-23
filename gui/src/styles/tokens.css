@@ -26,33 +26,42 @@
     --font: var(--font-ui);
     --mono: var(--font-mono);
     --font-scale: 1;
+    /* A pixel at Settings → Appearance → Text size: 1px at 14 (the default),
+       more or less with the text (prefs-core.ts sets --font-scale, which also
+       sizes 1rem, base.css). Sizes that sit with text are calc(N * var(--sp)):
+       rows, controls, icons, padding, gaps, radii, the column's width. Not rem
+       over 14: the minifier rounds that, and 14 would move by 1/64px. The
+       window's frame stays in px: the top line and the title bar on it, the
+       rail's top row, the window's inset, resize handles, scrollbars,
+       hairlines and shadows. */
+    --sp: calc(1px * var(--font-scale));
 
     /* Shape rule: containers 12-18px, every control is a full pill. */
     --r-window: 16px;
     --r-sheet: 12px;
-    --r-card: 12px;
+    --r-card: calc(12 * var(--sp));
     --pill: 999px;
 
-    --radius-xs: 6px;
-    --radius-sm: 8px;
-    --radius-md: 10px;
-    --radius-lg: 14px;
-    --radius-xl: 18px;
-    --radius-2xl: 22px;
-    --radius-card: 14px;
+    --radius-xs: calc(6 * var(--sp));
+    --radius-sm: calc(8 * var(--sp));
+    --radius-md: calc(10 * var(--sp));
+    --radius-lg: calc(14 * var(--sp));
+    --radius-xl: calc(18 * var(--sp));
+    --radius-2xl: calc(22 * var(--sp));
+    --radius-card: calc(14 * var(--sp));
 
     --gutter: 8px;
     --sidebar-w: 260px;
     --panel-w: 280px;
     --review-w: 720px;
-    --column-w: 736px;
+    --column-w: calc(736 * var(--sp));
     --header-h: 52px;
     /* One centre line across the top of the window, from its top edge: the
        traffic lights (desktop/src-tauri/tauri.conf.json, trafficLightPosition),
        the rail's two buttons and the title bar all sit on it. Fixed: the
        lights don't move with the density, so a shorter title bar keeps it too. */
     --top-line: 34px;
-    --row-h: 34px;
+    --row-h: calc(34 * var(--sp));
     --gap: 1;
 
     --ease: cubic-bezier(0.22, 1, 0.36, 1);
@@ -84,7 +93,7 @@
 }
 
 [data-density="compact"] {
-    --row-h: 30px;
+    --row-h: calc(30 * var(--sp));
     --header-h: 46px;
     --gap: 0.8;
 }

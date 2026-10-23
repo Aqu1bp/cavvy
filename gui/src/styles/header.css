@@ -110,7 +110,7 @@
 .crumbs {
     display: flex;
     align-items: baseline;
-    gap: 10px;
+    gap: calc(10 * var(--sp));
     min-width: 0;
     flex: 0 1 auto;
 }
@@ -119,9 +119,9 @@
     display: none;
     align-items: baseline;
     min-width: 0;
-    max-width: 200px;
+    max-width: calc(200 * var(--sp));
     flex: none;
-    margin-right: -6px;
+    margin-right: calc(-6 * var(--sp));
     color: var(--fg-3);
     font-weight: 500;
     white-space: nowrap;
@@ -132,7 +132,7 @@
 }
 
 .proj .proj-sep {
-    margin: 0 6px;
+    margin: 0 calc(6 * var(--sp));
     color: var(--fg-4);
 }
 
@@ -142,10 +142,10 @@
 }
 
 .ttl-h {
-    margin: 0 0 0 -4px;
+    margin: 0 0 0 calc(-4 * var(--sp));
     min-width: 0;
-    padding: 2px 4px;
-    border-radius: 6px;
+    padding: calc(2 * var(--sp)) calc(4 * var(--sp));
+    border-radius: calc(6 * var(--sp));
     font-size: 1rem;
     font-weight: 650;
     letter-spacing: -0.01em;
@@ -155,13 +155,13 @@
 }
 
 .title-input {
-    min-width: 200px;
-    max-width: 460px;
-    height: 26px;
-    margin-left: -4px;
-    padding: 0 4px;
+    min-width: calc(200 * var(--sp));
+    max-width: calc(460 * var(--sp));
+    height: calc(26 * var(--sp));
+    margin-left: calc(-4 * var(--sp));
+    padding: 0 calc(4 * var(--sp));
     border: 0;
-    border-radius: 6px;
+    border-radius: calc(6 * var(--sp));
     background: var(--hover);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
     color: var(--fg);
@@ -177,9 +177,9 @@
 .br {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
+    gap: calc(5 * var(--sp));
     min-width: 0;
-    max-width: 240px;
+    max-width: calc(240 * var(--sp));
     flex: 0 1 auto;
     color: var(--fg-3);
     font-size: 0.893rem;
@@ -199,9 +199,9 @@
 .bc {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     min-width: 0;
-    max-width: 260px;
+    max-width: calc(260 * var(--sp));
     color: var(--fg-3);
     font-weight: 500;
     white-space: nowrap;
@@ -224,7 +224,7 @@ button.bc:hover {
 }
 
 .bc-sep {
-    margin: 0 -4px;
+    margin: 0 calc(-4 * var(--sp));
     color: var(--fg-4);
     flex: none;
     align-self: center;
@@ -235,7 +235,7 @@ button.bc:hover {
 .bar-end {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
     min-width: 0;
     flex: none;
 }

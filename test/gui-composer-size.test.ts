@@ -13,7 +13,7 @@ const decl = (selector: string, property: string) => css.findLast((r) => r.selec
 
 test("the text stops at seven lines of its own size (or less in a short column), and only the large size lifts that", () => {
     // It was 30% of the column alone: a tall window let a draft take a third of it.
-    expect(decl(".composer textarea", "max-height")).toBe("min(calc(7lh + 2px), calc(var(--column-h, 100vh) * 0.3))");
+    expect(decl(".composer textarea", "max-height")).toBe("min(calc(7lh + 2 * var(--sp)), calc(var(--column-h, 100vh) * 0.3))");
     expect(decl(".composer.expanded textarea", "max-height")).toBe("none");
 });
 

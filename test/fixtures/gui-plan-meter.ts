@@ -30,7 +30,7 @@ function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; h
         n.focus = () => { doc.activeElement = n; n.props.onFocus?.(); };
         return n;
     } };
-    const Popover = component(source("components/ui/Popover.tsx"), "Popover", { settingsTab: () => undefined, document: doc, window: { addEventListener() {}, removeEventListener() {} }, requestAnimationFrame() {}, renderer: domRenderer });
+    const Popover = component(source("components/ui/Popover.tsx"), "Popover", { settingsTab: () => undefined, sp: (n: number) => n, document: doc, window: { addEventListener() {}, removeEventListener() {} }, requestAnimationFrame() {}, renderer: domRenderer });
     const Ring = component(source("components/ui/bits.tsx"), "Ring", {});
     let settingsTab: string | undefined;
     const Meter = component(source("components/ComposerMeter.tsx"), "ComposerMeter", {

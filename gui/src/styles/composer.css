@@ -9,7 +9,7 @@
 .composer-dock::before {
     content: "";
     position: absolute;
-    inset: -28px 0 0 0;
+    inset: calc(-28 * var(--sp)) 0 0 0;
     z-index: -1;
     background: linear-gradient(transparent, var(--sheet) 62%);
     pointer-events: none;
@@ -19,7 +19,7 @@
     position: relative;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
     min-height: 0;
 }
 
@@ -29,8 +29,8 @@
     position: relative;
     z-index: 2;
     flex: none;
-    border-radius: 24px;
-    padding: 10px 10px 8px 16px;
+    border-radius: calc(24 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(10 * var(--sp)) calc(8 * var(--sp)) calc(16 * var(--sp));
     transition: box-shadow 200ms;
 }
 
@@ -81,8 +81,8 @@
 .composer kbd.c-alt {
     flex: none;
     height: auto;
-    margin-right: 2px;
-    padding: 3px 6px;
+    margin-right: calc(2 * var(--sp));
+    padding: calc(3 * var(--sp)) calc(6 * var(--sp));
     font-size: 0.786rem;
     color: var(--fg-3);
     background: var(--hover);
@@ -91,7 +91,7 @@
 
 /* While a turn runs: how to stop it, beside the stop button (the box doesn't grow a status row). */
 .composer kbd.c-esc {
-    margin-right: 4px;
+    margin-right: calc(4 * var(--sp));
     animation: fade 200ms var(--ease);
 }
 
@@ -105,13 +105,13 @@
 .queue {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    margin-bottom: 8px;
+    gap: calc(4 * var(--sp));
+    margin-bottom: calc(8 * var(--sp));
     min-width: 0;
 }
 
 .queue-tab {
-    max-height: min(160px, 20vh);
+    max-height: min(160 * var(--sp), 20vh);
     overflow-y: auto;
     overscroll-behavior: contain;
 }
@@ -120,11 +120,11 @@
 .goal-row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
     min-width: 0;
-    min-height: 34px;
-    padding: 4px 6px 4px 10px;
-    border-radius: 12px;
+    min-height: calc(34 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(6 * var(--sp)) calc(4 * var(--sp)) calc(10 * var(--sp));
+    border-radius: calc(12 * var(--sp));
     background: var(--hover);
     color: var(--fg-2);
     white-space: nowrap;
@@ -132,8 +132,8 @@
 }
 
 .queue .hb.sm {
-    width: 22px;
-    height: 22px;
+    width: calc(22 * var(--sp));
+    height: calc(22 * var(--sp));
     border-radius: var(--pill);
 }
 
@@ -152,7 +152,7 @@
 .queue-attached {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: calc(4 * var(--sp));
     max-width: 40%;
     font-size: 0.857rem;
     color: var(--fg-3);
@@ -176,22 +176,22 @@
     flex: none;
     min-width: 0;
     /* 6px above the box: the composer's column gap is 8px. */
-    margin: 0 14px -2px;
-    padding: 4px;
-    border-radius: 16px;
+    margin: 0 calc(14 * var(--sp)) calc(-2 * var(--sp));
+    padding: calc(4 * var(--sp));
+    border-radius: calc(16 * var(--sp));
     animation: c-in 260ms var(--ease);
 }
 
 .uq-list {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: calc(2 * var(--sp));
     min-width: 0;
 }
 
 /* Past four rows it scrolls, so the transcript keeps its room. */
 .uq-list:has(> .uq-row:nth-child(5)) {
-    max-height: min(178px, 30vh);
+    max-height: min(178 * var(--sp), 30vh);
     overflow-y: auto;
     overscroll-behavior: contain;
 }
@@ -200,12 +200,12 @@
     position: relative;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
     flex: none;
     min-width: 0;
-    height: 34px;
-    padding: 0 6px 0 4px;
-    border-radius: 12px;
+    height: calc(34 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(4 * var(--sp));
+    border-radius: calc(12 * var(--sp));
     font-size: 0.929rem;
     color: var(--fg);
     white-space: nowrap;
@@ -234,9 +234,9 @@
     display: grid;
     place-items: center;
     flex: none;
-    width: 22px;
-    height: 22px;
-    border-radius: 7px;
+    width: calc(22 * var(--sp));
+    height: calc(22 * var(--sp));
+    border-radius: calc(7 * var(--sp));
     color: var(--fg-3);
 }
 
@@ -303,8 +303,8 @@
 .uq-hint {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding-right: 6px;
+    gap: calc(6 * var(--sp));
+    padding-right: calc(6 * var(--sp));
     font-size: 0.857rem;
     color: var(--fg-3);
 }
@@ -313,8 +313,8 @@
 .uq-hint.joining::before {
     content: "";
     flex: none;
-    width: 6px;
-    height: 6px;
+    width: calc(6 * var(--sp));
+    height: calc(6 * var(--sp));
     border-radius: 50%;
     background: var(--accent);
     animation: uq-joining 1.2s ease-in-out infinite;
@@ -330,7 +330,7 @@
 .uq-acts {
     display: flex;
     align-items: center;
-    gap: 2px;
+    gap: calc(2 * var(--sp));
     opacity: 0;
     pointer-events: none;
 }
@@ -352,9 +352,9 @@
 .uq-ib {
     display: grid;
     place-items: center;
-    width: 26px;
-    height: 26px;
-    border-radius: 8px;
+    width: calc(26 * var(--sp));
+    height: calc(26 * var(--sp));
+    border-radius: calc(8 * var(--sp));
     color: var(--fg-3);
     transition: background 140ms, color 140ms;
 }
@@ -368,10 +368,10 @@
 .uq-send {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    height: 24px;
-    margin-right: 2px;
-    padding: 0 9px;
+    gap: calc(4 * var(--sp));
+    height: calc(24 * var(--sp));
+    margin-right: calc(2 * var(--sp));
+    padding: 0 calc(9 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.857rem;
     font-weight: 600;
@@ -382,7 +382,7 @@
 }
 
 .uq-send:has(svg) {
-    padding-left: 7px;
+    padding-left: calc(7 * var(--sp));
 }
 
 .uq-send:hover {
@@ -460,7 +460,7 @@
 
 .schedule-more {
     align-self: flex-start;
-    margin: 0 0 0 10px;
+    margin: 0 0 0 calc(10 * var(--sp));
     font-size: 0.857rem;
 }
 
@@ -487,7 +487,7 @@
 
 .goal-by {
     flex: none;
-    padding: 0 7px;
+    padding: 0 calc(7 * var(--sp));
     border-radius: var(--pill);
     box-shadow: inset 0 0 0 0.5px var(--line);
     font-size: 0.786rem;
@@ -508,16 +508,16 @@
 }
 
 .goal-details {
-    max-height: min(140px, 18vh);
+    max-height: min(140 * var(--sp), 18vh);
     overflow-y: auto;
     overscroll-behavior: contain;
-    padding: 0 10px 2px;
+    padding: 0 calc(10 * var(--sp)) calc(2 * var(--sp));
     font-size: 0.857rem;
     color: var(--fg-3);
 }
 
 .goal-details p {
-    margin: 2px 0;
+    margin: calc(2 * var(--sp)) 0;
     white-space: pre-wrap;
 }
 
@@ -526,7 +526,7 @@
 .attachments-wrap {
     display: flex;
     flex-direction: column;
-    margin-bottom: 8px;
+    margin-bottom: calc(8 * var(--sp));
     min-width: 0;
 }
 
@@ -534,14 +534,14 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
 }
 
 .attachment {
     position: relative;
-    width: 44px;
-    height: 44px;
-    border-radius: 10px;
+    width: calc(44 * var(--sp));
+    height: calc(44 * var(--sp));
+    border-radius: calc(10 * var(--sp));
     overflow: hidden;
     /* Under the thumbnail, while it's made. */
     background: var(--sheet);
@@ -556,10 +556,10 @@
 
 .attachment-x {
     position: absolute;
-    top: 2px;
-    right: 2px;
-    width: 16px;
-    height: 16px;
+    top: calc(2 * var(--sp));
+    right: calc(2 * var(--sp));
+    width: calc(16 * var(--sp));
+    height: calc(16 * var(--sp));
     border-radius: 50%;
     display: grid;
     place-items: center;
@@ -570,11 +570,11 @@
 .file-chip {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    height: 28px;
-    max-width: 320px;
+    gap: calc(6 * var(--sp));
+    height: calc(28 * var(--sp));
+    max-width: calc(320 * var(--sp));
     min-width: 0;
-    padding: 0 3px 0 9px;
+    padding: 0 calc(3 * var(--sp)) 0 calc(9 * var(--sp));
     border-radius: var(--pill);
     background: var(--sheet);
     box-shadow: 0 0 0 0.5px var(--line);
@@ -607,7 +607,7 @@
 .file-chip-body {
     display: flex;
     align-items: baseline;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     min-width: 0;
     flex: 1;
 }
@@ -623,8 +623,8 @@
 }
 
 .file-chip .hb.sm {
-    width: 20px;
-    height: 20px;
+    width: calc(20 * var(--sp));
+    height: calc(20 * var(--sp));
     border-radius: 50%;
 }
 
@@ -633,11 +633,11 @@
 }
 
 .attachment-preview {
-    margin: 6px 0 0;
-    padding: 9px 12px;
-    max-height: 200px;
+    margin: calc(6 * var(--sp)) 0 0;
+    padding: calc(9 * var(--sp)) calc(12 * var(--sp));
+    max-height: calc(200 * var(--sp));
     overflow: auto;
-    border-radius: 10px;
+    border-radius: calc(10 * var(--sp));
     background: var(--sheet-2);
     font-family: var(--font-mono);
     font-size: 0.786rem;
@@ -646,7 +646,7 @@
 }
 
 .attachments-note {
-    padding: 6px 0 0;
+    padding: calc(6 * var(--sp)) 0 0;
     font-size: 0.857rem;
     color: var(--danger);
 }
@@ -656,16 +656,16 @@
 .rc-wrap {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    margin-bottom: 8px;
+    gap: calc(6 * var(--sp));
+    margin-bottom: calc(8 * var(--sp));
     min-width: 0;
 }
 
 .rc-chips {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
-    max-height: 92px;
+    gap: calc(6 * var(--sp));
+    max-height: calc(92 * var(--sp));
     overflow-y: auto;
     /* Room for the chips' hairline rings at the scroll edges. */
     padding: 1px;
@@ -675,10 +675,10 @@
 .rc-chip {
     display: inline-flex;
     align-items: center;
-    height: 28px;
-    max-width: 320px;
+    height: calc(28 * var(--sp));
+    max-width: calc(320 * var(--sp));
     min-width: 0;
-    padding: 0 3px 0 0;
+    padding: 0 calc(3 * var(--sp)) 0 0;
     border-radius: var(--pill);
     background: var(--sheet);
     box-shadow: 0 0 0 0.5px var(--line);
@@ -695,10 +695,10 @@
 .rc-open {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     height: 100%;
     min-width: 0;
-    padding: 0 4px 0 9px;
+    padding: 0 calc(4 * var(--sp)) 0 calc(9 * var(--sp));
     border-radius: var(--pill);
     color: inherit;
     font: inherit;
@@ -733,17 +733,17 @@
 
 .rc-chip .hb.sm {
     flex: none;
-    width: 20px;
-    height: 20px;
+    width: calc(20 * var(--sp));
+    height: calc(20 * var(--sp));
     border-radius: 50%;
 }
 
 .rc-foot {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
     min-width: 0;
-    padding-left: 2px;
+    padding-left: calc(2 * var(--sp));
     font-size: 0.786rem;
     color: var(--fg-3);
 }
@@ -757,7 +757,7 @@
 .composer-input {
     display: flex;
     align-items: flex-start;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
 }
 
 /* A modest height, seven lines of the text size or less in a short column; past it the text scrolls, and the expand
@@ -766,9 +766,9 @@
     display: block;
     flex: 1;
     width: 100%;
-    min-height: 44px;
-    max-height: min(calc(7lh + 2px), calc(var(--column-h, 100vh) * 0.3));
-    padding: 2px 0 0;
+    min-height: calc(44 * var(--sp));
+    max-height: min(calc(7lh + 2 * var(--sp)), calc(var(--column-h, 100vh) * 0.3));
+    padding: calc(2 * var(--sp)) 0 0;
     border: 0;
     resize: none;
     overflow-y: auto;
@@ -779,7 +779,7 @@
 }
 
 .composer.v-home textarea {
-    min-height: 58px;
+    min-height: calc(58 * var(--sp));
 }
 
 .composer.shell textarea {
@@ -805,26 +805,26 @@
    clear of it: the text's own padding when that's the first row, so its scrollbar stays at the edge. */
 .composer-box > .c-expand {
     position: absolute;
-    top: 8px;
-    right: 8px;
+    top: calc(8 * var(--sp));
+    right: calc(8 * var(--sp));
     z-index: 1;
-    height: 26px;
-    min-width: 26px;
+    height: calc(26 * var(--sp));
+    min-width: calc(26 * var(--sp));
     padding: 0;
     color: var(--fg-3);
     animation: fade 160ms var(--ease);
 }
 
 .composer.expandable .composer-box > :first-child:not(.composer-input, .c-expand) {
-    padding-right: 30px;
+    padding-right: calc(30 * var(--sp));
 }
 
 .composer.expandable .composer-input:first-child textarea {
-    padding-right: 30px;
+    padding-right: calc(30 * var(--sp));
 }
 
 .shell-badge {
-    margin-top: 3px;
+    margin-top: calc(3 * var(--sp));
     color: var(--fg-2);
 }
 
@@ -833,9 +833,9 @@
 .composer-bar {
     display: flex;
     align-items: center;
-    gap: 2px;
+    gap: calc(2 * var(--sp));
     min-width: 0;
-    margin: 4px 0 0 -8px;
+    margin: calc(4 * var(--sp)) 0 0 calc(-8 * var(--sp));
 }
 
 .cb {
@@ -843,9 +843,9 @@
     align-items: center;
     justify-content: center;
     flex: none;
-    height: 28px;
-    min-width: 28px;
-    padding: 0 6px;
+    height: calc(28 * var(--sp));
+    min-width: calc(28 * var(--sp));
+    padding: 0 calc(6 * var(--sp));
     border-radius: var(--pill);
     color: var(--fg-2);
     transition: background 140ms, color 140ms, transform 160ms var(--ease);
@@ -864,8 +864,8 @@
 .vsep {
     flex: none;
     width: 1px;
-    height: 16px;
-    margin: 0 3px;
+    height: calc(16 * var(--sp));
+    margin: 0 calc(3 * var(--sp));
     background: var(--line);
 }
 
@@ -873,10 +873,10 @@
     display: inline-flex;
     align-items: center;
     flex: none;
-    gap: 6px;
-    height: 28px;
+    gap: calc(6 * var(--sp));
+    height: calc(28 * var(--sp));
     min-width: 0;
-    padding: 0 8px 0 9px;
+    padding: 0 calc(8 * var(--sp)) 0 calc(9 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.929rem;
     font-weight: 500;
@@ -926,7 +926,7 @@
 /* Fast mode: a filled ⚡ in the accent before the effort glyph. */
 .pick .fz {
     display: inline-grid;
-    margin-right: -2px;
+    margin-right: calc(-2 * var(--sp));
     color: var(--accent);
 }
 
@@ -939,12 +939,12 @@
     display: inline-flex;
     align-items: flex-end;
     flex: none;
-    gap: 1.5px;
-    height: 12px;
+    gap: calc(1.5 * var(--sp));
+    height: calc(12 * var(--sp));
 }
 
 .eg i {
-    width: 2.5px;
+    width: calc(2.5 * var(--sp));
     border-radius: 1px;
     background: color-mix(in srgb, currentColor 28%, transparent);
 }
@@ -959,9 +959,9 @@
     display: grid;
     place-items: center;
     flex: none;
-    width: 26px;
-    height: 26px;
-    margin: 0 6px;
+    width: calc(26 * var(--sp));
+    height: calc(26 * var(--sp));
+    margin: 0 calc(6 * var(--sp));
     padding: 0;
     border-radius: 50%;
     transition: transform 140ms;
@@ -982,7 +982,7 @@
 }
 
 .ctx-num {
-    font: 600 9px/1 var(--font-ui);
+    font: 600 calc(9 * var(--sp))/1 var(--font-ui);
     letter-spacing: -0.02em;
     color: var(--fg-2);
 }
@@ -999,8 +999,8 @@
     display: grid;
     place-items: center;
     flex: none;
-    width: 34px;
-    height: 34px;
+    width: calc(34 * var(--sp));
+    height: calc(34 * var(--sp));
     border-radius: 50%;
     background: var(--accent);
     color: var(--accent-ink);
@@ -1029,9 +1029,9 @@
 .send.wide {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     width: auto;
-    padding: 0 12px 0 14px;
+    padding: 0 calc(12 * var(--sp)) 0 calc(14 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.857rem;
     font-weight: 600;
@@ -1052,9 +1052,9 @@
     flex-direction: column;
     flex: 0 1 auto;
     min-height: 0;
-    max-height: min(calc(var(--column-h, 100vh) * 0.46), 560px);
-    padding: 14px 14px 12px 16px;
-    border-radius: 20px;
+    max-height: min(calc(var(--column-h, 100vh) * 0.46), 560 * var(--sp));
+    padding: calc(14 * var(--sp)) calc(14 * var(--sp)) calc(12 * var(--sp)) calc(16 * var(--sp));
+    border-radius: calc(20 * var(--sp));
     box-shadow:
         0 0 0 1px color-mix(in srgb, var(--warn) 32%, transparent),
         inset 0 1px 0 var(--ctl-hi),
@@ -1078,7 +1078,7 @@
 }
 
 .itab-count {
-    margin: -2px 0 6px;
+    margin: calc(-2 * var(--sp)) 0 calc(6 * var(--sp));
     font-size: 0.786rem;
     font-weight: 500;
     color: var(--fg-3);
@@ -1087,7 +1087,7 @@
 .ask-h {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
     min-width: 0;
     font-weight: 600;
 }
@@ -1125,8 +1125,8 @@
 .itab-sub {
     display: flex;
     align-items: center;
-    gap: 5px;
-    margin: 4px 0 0 24px;
+    gap: calc(5 * var(--sp));
+    margin: calc(4 * var(--sp)) 0 0 calc(24 * var(--sp));
     font-size: 0.857rem;
     color: var(--fg-3);
 }
@@ -1134,18 +1134,18 @@
 .itab-body {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     min-height: 0;
-    margin-top: 10px;
+    margin-top: calc(10 * var(--sp));
     overflow-y: auto;
 }
 
 .itab-code {
     margin: 0;
-    padding: 9px 12px;
-    max-height: 150px;
+    padding: calc(9 * var(--sp)) calc(12 * var(--sp));
+    max-height: calc(150 * var(--sp));
     overflow: auto;
-    border-radius: 10px;
+    border-radius: calc(10 * var(--sp));
     background: var(--sheet-2);
     font-size: 0.893rem;
     line-height: 1.5;
@@ -1169,32 +1169,32 @@
 .itab-warn {
     display: flex;
     align-items: flex-start;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     font-size: 0.857rem;
     color: var(--danger);
 }
 
 .itab-warn svg {
     flex: none;
-    margin-top: 2px;
+    margin-top: calc(2 * var(--sp));
 }
 
 .itab-diff {
     flex: none;
-    border-radius: 10px;
+    border-radius: calc(10 * var(--sp));
     overflow: hidden;
 }
 
 .itab-diff .diff-scroll {
-    max-height: 150px;
+    max-height: calc(150 * var(--sp));
 }
 
 .itab-feedback,
 .itab-input {
     width: 100%;
-    padding: 8px 10px;
+    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
     border: 0;
-    border-radius: 10px;
+    border-radius: calc(10 * var(--sp));
     resize: none;
     background: var(--sheet-2);
     box-shadow: inset 0 0 0 0.5px var(--line);
@@ -1220,7 +1220,7 @@
 }
 
 .secret-purpose {
-    margin: 0 0 4px;
+    margin: 0 0 calc(4 * var(--sp));
     font-size: 0.929rem;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -1229,7 +1229,7 @@
 .secret-field {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
 }
 
 .secret-field .hb.sm {
@@ -1239,14 +1239,14 @@
 .secret-names {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     color: var(--warn);
 }
 
 .plan-body {
-    max-height: 260px;
+    max-height: calc(260 * var(--sp));
     overflow-y: auto;
-    padding-right: 6px;
+    padding-right: calc(6 * var(--sp));
     color: var(--fg-2);
 }
 
@@ -1254,16 +1254,16 @@
 .q-options {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: calc(2 * var(--sp));
 }
 
 .q-option {
     display: flex;
     align-items: flex-start;
-    gap: 10px;
+    gap: calc(10 * var(--sp));
     width: 100%;
-    padding: 7px 10px;
-    border-radius: 10px;
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp));
+    border-radius: calc(10 * var(--sp));
     text-align: left;
     transition: background 140ms;
 }
@@ -1292,9 +1292,9 @@
 }
 
 .q-desc {
-    margin-top: 2px;
+    margin-top: calc(2 * var(--sp));
     font-size: 0.857rem;
-    line-height: 16px;
+    line-height: calc(16 * var(--sp));
     color: var(--fg-3);
 }
 
@@ -1304,10 +1304,10 @@
     align-items: center;
     justify-content: flex-end;
     flex-wrap: wrap;
-    gap: 6px 8px;
+    gap: calc(6 * var(--sp)) calc(8 * var(--sp));
     flex: none;
     min-width: 0;
-    margin-top: 12px;
+    margin-top: calc(12 * var(--sp));
 }
 
 /* The plan's first row (keep planning, save, worktree) starts at the leading edge. */
@@ -1317,8 +1317,8 @@
 }
 
 .ask-row.plan-row + .ask-row.plan-row {
-    margin-top: 8px;
-    padding-top: 8px;
+    margin-top: calc(8 * var(--sp));
+    padding-top: calc(8 * var(--sp));
     border-top: 0.5px solid var(--line);
 }
 
@@ -1327,11 +1327,11 @@
     align-items: center;
     justify-content: center;
     flex: none;
-    gap: 8px;
-    height: 30px;
+    gap: calc(8 * var(--sp));
+    height: calc(30 * var(--sp));
     max-width: 100%;
     min-width: 0;
-    padding: 0 14px;
+    padding: 0 calc(14 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.929rem;
     font-weight: 600;
@@ -1343,7 +1343,7 @@
 }
 
 .pbtn:has(> kbd) {
-    padding-right: 8px;
+    padding-right: calc(8 * var(--sp));
 }
 
 .pbtn:hover:not(:disabled) {
@@ -1355,7 +1355,7 @@
 }
 
 .ask-row.plan-row.quiet-row .pbtn {
-    height: 28px;
+    height: calc(28 * var(--sp));
 }
 
 .pbtn.primary {
@@ -1377,7 +1377,7 @@
 
 .pbtn svg {
     flex: none;
-    margin-right: -2px;
+    margin-right: calc(-2 * var(--sp));
 }
 
 .pbtn .mono {
@@ -1386,9 +1386,9 @@
 
 .ask kbd {
     height: auto;
-    min-width: 16px;
-    padding: 3px 5px;
-    border-radius: 5px;
+    min-width: calc(16 * var(--sp));
+    padding: calc(3 * var(--sp)) calc(5 * var(--sp));
+    border-radius: calc(5 * var(--sp));
     font-size: 0.786rem;
     color: var(--fg-3);
     background: var(--hover);
@@ -1406,12 +1406,12 @@
     position: absolute;
     left: 0;
     right: 0;
-    bottom: calc(100% + 8px);
+    bottom: calc(100% + 8 * var(--sp));
     z-index: 10;
-    max-height: 320px;
+    max-height: calc(320 * var(--sp));
     overflow-y: auto;
-    padding: 5px;
-    border-radius: 16px;
+    padding: calc(5 * var(--sp));
+    border-radius: calc(16 * var(--sp));
     background: var(--ctl-strong);
     -webkit-backdrop-filter: blur(20px) saturate(1.9);
     backdrop-filter: blur(20px) saturate(1.9);
@@ -1430,11 +1430,11 @@
 .cm-item {
     display: flex;
     align-items: center;
-    gap: 9px;
+    gap: calc(9 * var(--sp));
     width: 100%;
     min-width: 0;
-    padding: 7px 10px;
-    border-radius: 10px;
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp));
+    border-radius: calc(10 * var(--sp));
     color: var(--fg);
 }
 
@@ -1446,7 +1446,7 @@
     display: grid;
     place-items: center;
     flex: none;
-    width: 20px;
+    width: calc(20 * var(--sp));
     color: var(--fg-2);
 }
 
@@ -1477,7 +1477,7 @@
 }
 
 .cm-status {
-    padding: 9px 10px;
+    padding: calc(9 * var(--sp)) calc(10 * var(--sp));
     font-size: 0.857rem;
     color: var(--fg-3);
 }
@@ -1485,25 +1485,25 @@
 /* ---- Context and plan limits, from the ring --------------------------------- */
 
 .popover.ctx-card {
-    padding: 5px 5px 10px;
-    border-radius: 16px;
-    max-width: calc(100vw - 16px);
+    padding: calc(5 * var(--sp)) calc(5 * var(--sp)) calc(10 * var(--sp));
+    border-radius: calc(16 * var(--sp));
+    max-width: calc(100vw - 16 * var(--sp));
     overflow-wrap: anywhere;
 }
 
 .usage-section {
-    padding: 0 10px;
+    padding: 0 calc(10 * var(--sp));
 }
 
 .usage-section + .usage-section {
-    margin-top: 6px;
-    padding-top: 2px;
+    margin-top: calc(6 * var(--sp));
+    padding-top: calc(2 * var(--sp));
     border-top: 0.5px solid var(--line);
 }
 
 .ctx-label {
     margin: 0;
-    padding: 7px 0 4px;
+    padding: calc(7 * var(--sp)) 0 calc(4 * var(--sp));
     font-size: 0.821rem;
     font-weight: 600;
     color: var(--fg-3);
@@ -1512,13 +1512,13 @@
 .usage-heading {
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: calc(5 * var(--sp));
     min-width: 0;
 }
 
 .usage-account {
     min-width: 0;
-    padding: 7px 0 4px;
+    padding: calc(7 * var(--sp)) 0 calc(4 * var(--sp));
     font-size: 0.821rem;
     font-weight: 600;
     color: var(--fg-3);
@@ -1531,8 +1531,8 @@
 .cc-line {
     display: flex;
     justify-content: space-between;
-    gap: 8px;
-    margin-top: 4px;
+    gap: calc(8 * var(--sp));
+    margin-top: calc(4 * var(--sp));
     font-size: 0.893rem;
     color: var(--fg-2);
 }
@@ -1544,8 +1544,8 @@
 }
 
 .cc-bar {
-    height: 5px;
-    margin: 6px 0 4px;
+    height: calc(5 * var(--sp));
+    margin: calc(6 * var(--sp)) 0 calc(4 * var(--sp));
     overflow: hidden;
     border-radius: var(--pill);
     background: var(--press);
@@ -1559,7 +1559,7 @@
 }
 
 .cc-sub {
-    margin-bottom: 6px;
+    margin-bottom: calc(6 * var(--sp));
     font-size: 0.821rem;
     color: var(--fg-3);
 }
@@ -1568,14 +1568,14 @@
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: 8px;
-    margin: 8px 0 4px;
+    gap: calc(8 * var(--sp));
+    margin: calc(8 * var(--sp)) 0 calc(4 * var(--sp));
     font-size: 0.821rem;
     color: var(--fg-3);
 }
 
 .usage-actions > span {
-    flex: 1 1 120px;
+    flex: 1 1 calc(120 * var(--sp));
 }
 
 /* The card's small buttons, like the mockup's ghost pills. */
@@ -1583,9 +1583,9 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    height: 26px;
+    height: calc(26 * var(--sp));
     max-width: 100%;
-    padding: 0 11px;
+    padding: 0 calc(11 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.857rem;
     font-weight: 600;
@@ -1608,7 +1608,7 @@
 }
 
 .cbtn.quiet {
-    height: 24px;
+    height: calc(24 * var(--sp));
     background: none;
     box-shadow: none;
     color: var(--accent);
@@ -1617,13 +1617,13 @@
 .usage-switches {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
-    margin-top: 8px;
+    gap: calc(6 * var(--sp));
+    margin-top: calc(8 * var(--sp));
 }
 
 .usage-switches .cbtn {
     height: auto;
-    min-height: 26px;
+    min-height: calc(26 * var(--sp));
     white-space: normal;
 }
 
@@ -1633,9 +1633,9 @@
 }
 
 .plan-reached {
-    margin: 4px 0 6px;
-    padding: 6px 9px;
-    border-radius: 10px;
+    margin: calc(4 * var(--sp)) 0 calc(6 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(9 * var(--sp));
+    border-radius: calc(10 * var(--sp));
     background: color-mix(in srgb, var(--danger) 11%, transparent);
     font-size: 0.857rem;
     font-weight: 500;
@@ -1643,7 +1643,7 @@
 }
 
 .plan-window + .plan-window {
-    margin-top: 6px;
+    margin-top: calc(6 * var(--sp));
 }
 
 .plan-account-hint {
@@ -1654,8 +1654,8 @@
 .ctx-grid {
     display: grid;
     grid-template-columns: auto 1fr;
-    gap: 4px 12px;
-    margin-top: 4px;
+    gap: calc(4 * var(--sp)) calc(12 * var(--sp));
+    margin-top: calc(4 * var(--sp));
     font-size: 0.893rem;
 }
 
@@ -1671,8 +1671,8 @@
 /* ---- Effort: the popover and the bars ------------------------------------------ */
 
 .popover.effort-pop {
-    padding: 10px 12px 12px;
-    border-radius: 16px;
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp)) calc(12 * var(--sp));
+    border-radius: calc(16 * var(--sp));
     overflow: visible;
 }
 
@@ -1680,9 +1680,9 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
-    height: 22px;
-    margin-bottom: 10px;
+    gap: calc(8 * var(--sp));
+    height: calc(22 * var(--sp));
+    margin-bottom: calc(10 * var(--sp));
 }
 
 .ep-lv {
@@ -1694,9 +1694,9 @@
 .ep-fast {
     display: inline-flex;
     align-items: center;
-    gap: 3px;
-    height: 22px;
-    padding: 0 8px 0 6px;
+    gap: calc(3 * var(--sp));
+    height: calc(22 * var(--sp));
+    padding: 0 calc(8 * var(--sp)) 0 calc(6 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.821rem;
     font-weight: 600;
@@ -1728,9 +1728,9 @@
 .es {
     display: flex;
     align-items: flex-end;
-    gap: 4px;
-    height: 28px;
-    border-radius: 8px;
+    gap: calc(4 * var(--sp));
+    height: calc(28 * var(--sp));
+    border-radius: calc(8 * var(--sp));
     cursor: pointer;
     touch-action: none;
     outline: none;
@@ -1742,8 +1742,8 @@
 }
 
 .es.sm {
-    height: 22px;
-    gap: 3px;
+    height: calc(22 * var(--sp));
+    gap: calc(3 * var(--sp));
 }
 
 .eb {
@@ -1757,7 +1757,7 @@
     display: block;
     width: 100%;
     height: calc(22% + var(--h) * 78%);
-    border-radius: 3.5px;
+    border-radius: calc(3.5 * var(--sp));
     background: color-mix(in srgb, var(--fg) 11%, transparent);
     transform-origin: bottom;
     transition: background 160ms, transform 220ms var(--spring);
@@ -1786,7 +1786,7 @@
     display: flex;
     padding: 0;
     overflow: hidden;
-    border-radius: 16px;
+    border-radius: calc(16 * var(--sp));
 }
 
 .mp-wrap {
@@ -1800,9 +1800,9 @@
     display: flex;
     flex-direction: column;
     flex: none;
-    gap: 4px;
-    width: 50px;
-    padding: 5px 4px;
+    gap: calc(4 * var(--sp));
+    width: calc(50 * var(--sp));
+    padding: calc(5 * var(--sp)) calc(4 * var(--sp));
     overflow-y: auto;
     scrollbar-width: none;
 }
@@ -1812,9 +1812,9 @@
     display: grid;
     place-items: center;
     flex: none;
-    width: 42px;
-    height: 42px;
-    border-radius: 12px;
+    width: calc(42 * var(--sp));
+    height: calc(42 * var(--sp));
+    border-radius: calc(12 * var(--sp));
     color: var(--fg-2);
     transition: background 140ms, color 140ms;
 }
@@ -1831,11 +1831,11 @@
 
 .rb .bar {
     position: absolute;
-    right: -4px;
-    top: 11px;
-    width: 3px;
-    height: 20px;
-    border-radius: 3px 0 0 3px;
+    right: calc(-4 * var(--sp));
+    top: calc(11 * var(--sp));
+    width: calc(3 * var(--sp));
+    height: calc(20 * var(--sp));
+    border-radius: calc(3 * var(--sp)) 0 0 calc(3 * var(--sp));
     background: var(--accent);
 }
 
@@ -1850,10 +1850,10 @@
 .mp-search {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin: 6px 6px 0;
-    padding: 0 6px 0 10px;
-    height: 34px;
+    gap: calc(8 * var(--sp));
+    margin: calc(6 * var(--sp)) calc(6 * var(--sp)) 0;
+    padding: 0 calc(6 * var(--sp)) 0 calc(10 * var(--sp));
+    height: calc(34 * var(--sp));
     border-radius: var(--pill);
     background: var(--hover);
     color: var(--fg-3);
@@ -1862,7 +1862,7 @@
 .mp-search input {
     flex: 1;
     min-width: 0;
-    height: 26px;
+    height: calc(26 * var(--sp));
     border: 0;
     background: none;
     font-size: 0.929rem;
@@ -1884,10 +1884,10 @@
 .mp-label {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
     min-width: 0;
-    margin-top: 4px;
-    padding: 7px 10px 4px 16px;
+    margin-top: calc(4 * var(--sp));
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(4 * var(--sp)) calc(16 * var(--sp));
     font-size: 0.821rem;
     font-weight: 600;
     color: var(--fg-3);
@@ -1904,13 +1904,13 @@
     flex-direction: column;
     flex: 1;
     gap: 1px;
-    min-height: 120px;
-    padding: 0 5px 5px;
+    min-height: calc(120 * var(--sp));
+    padding: 0 calc(5 * var(--sp)) calc(5 * var(--sp));
     overflow-y: auto;
 }
 
 .mp-empty {
-    padding: 24px 12px;
+    padding: calc(24 * var(--sp)) calc(12 * var(--sp));
     font-size: 0.893rem;
     text-align: center;
     color: var(--fg-3);
@@ -1920,7 +1920,7 @@
     display: flex;
     align-items: center;
     min-width: 0;
-    border-radius: 10px;
+    border-radius: calc(10 * var(--sp));
 }
 
 .mr.sel {
@@ -1935,17 +1935,17 @@
     display: flex;
     align-items: center;
     flex: 1;
-    gap: 9px;
+    gap: calc(9 * var(--sp));
     min-width: 0;
-    min-height: 32px;
-    padding: 6px 4px 6px 10px;
+    min-height: calc(32 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(4 * var(--sp)) calc(6 * var(--sp)) calc(10 * var(--sp));
     font-size: 0.929rem;
     text-align: left;
 }
 
 .mr-pick kbd {
     height: auto;
-    padding: 3px 5px;
+    padding: calc(3 * var(--sp)) calc(5 * var(--sp));
     font-size: 0.75rem;
     color: var(--fg-3);
     background: var(--hover);
@@ -1972,9 +1972,9 @@
     display: grid;
     place-items: center;
     flex: none;
-    width: 26px;
-    height: 26px;
-    margin-right: 2px;
+    width: calc(26 * var(--sp));
+    height: calc(26 * var(--sp));
+    margin-right: calc(2 * var(--sp));
     border-radius: 50%;
     color: var(--fg-3);
 }
@@ -1995,9 +1995,9 @@
 .mp-foot {
     display: flex;
     align-items: center;
-    gap: 8px;
-    min-height: 36px;
-    padding: 0 14px;
+    gap: calc(8 * var(--sp));
+    min-height: calc(36 * var(--sp));
+    padding: 0 calc(14 * var(--sp));
     border-top: 0.5px solid var(--line);
     font-size: 0.893rem;
     text-align: left;
@@ -2011,18 +2011,18 @@
 
 /* Compare: one prompt to several models (Home). */
 .mp-compare {
-    margin: 6px 6px 0;
-    padding-bottom: 6px;
+    margin: calc(6 * var(--sp)) calc(6 * var(--sp)) 0;
+    padding-bottom: calc(6 * var(--sp));
     border-bottom: 0.5px solid var(--line);
 }
 
 .mp-compare-btn {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
     width: 100%;
-    padding: 6px 8px;
-    border-radius: 10px;
+    padding: calc(6 * var(--sp)) calc(8 * var(--sp));
+    border-radius: calc(10 * var(--sp));
     font-size: 0.893rem;
     font-weight: 500;
     text-align: left;
@@ -2044,8 +2044,8 @@
 .mp-switch {
     position: relative;
     flex: none;
-    width: 26px;
-    height: 15px;
+    width: calc(26 * var(--sp));
+    height: calc(15 * var(--sp));
     border-radius: var(--pill);
     background: var(--press);
     transition: background 140ms;
@@ -2054,10 +2054,10 @@
 .mp-switch::after {
     content: "";
     position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 11px;
-    height: 11px;
+    top: calc(2 * var(--sp));
+    left: calc(2 * var(--sp));
+    width: calc(11 * var(--sp));
+    height: calc(11 * var(--sp));
     border-radius: 50%;
     background: var(--sheet);
     transition: transform 140ms var(--ease);
@@ -2068,11 +2068,11 @@
 }
 
 .mp-switch.on::after {
-    transform: translateX(11px);
+    transform: translateX(calc(11 * var(--sp)));
 }
 
 .mp-compare-note {
-    padding: 2px 8px 0 30px;
+    padding: calc(2 * var(--sp)) calc(8 * var(--sp)) 0 calc(30 * var(--sp));
     font-size: 0.786rem;
     line-height: 1.35;
     color: var(--fg-3);
@@ -2082,9 +2082,9 @@
     display: grid;
     place-items: center;
     flex: none;
-    width: 15px;
-    height: 15px;
-    border-radius: 5px;
+    width: calc(15 * var(--sp));
+    height: calc(15 * var(--sp));
+    border-radius: calc(5 * var(--sp));
     box-shadow: inset 0 0 0 1.5px var(--fg-4);
     color: var(--accent-ink);
 }
@@ -2104,7 +2104,7 @@
     display: inline-grid;
     place-items: center;
     flex: none;
-    font: 700 9.5px/1 var(--font-mono);
+    font: 700 calc(9.5 * var(--sp))/1 var(--font-mono);
     letter-spacing: -0.02em;
     color: var(--fg-2);
 }
@@ -2128,13 +2128,13 @@
 }
 
 .mode-menu .menu-item {
-    padding: 7px 10px;
-    border-radius: 10px;
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp));
+    border-radius: calc(10 * var(--sp));
 }
 
 .mode-menu .menu-head kbd {
     height: auto;
-    padding: 3px 5px;
+    padding: calc(3 * var(--sp)) calc(5 * var(--sp));
     font-size: 0.75rem;
 }
 
@@ -2145,10 +2145,10 @@
     display: inline-flex;
     align-items: center;
     flex: none;
-    gap: 6px;
-    height: 28px;
+    gap: calc(6 * var(--sp));
+    height: calc(28 * var(--sp));
     min-width: 0;
-    padding: 0 10px;
+    padding: 0 calc(10 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.929rem;
     font-weight: 500;
@@ -2179,8 +2179,8 @@
 .vs {
     flex: none;
     width: 1px;
-    height: 16px;
-    margin: 0 2px;
+    height: calc(16 * var(--sp));
+    margin: 0 calc(2 * var(--sp));
     background: var(--line);
 }
 
@@ -2188,10 +2188,10 @@
 .dbadge {
     display: inline-flex;
     align-items: center;
-    height: 17px;
-    margin-left: 6px;
-    padding: 0 6px;
-    border-radius: 6px;
+    height: calc(17 * var(--sp));
+    margin-left: calc(6 * var(--sp));
+    padding: 0 calc(6 * var(--sp));
+    border-radius: calc(6 * var(--sp));
     background: color-mix(in srgb, var(--fg) 7%, transparent);
     font-size: 0.75rem;
     font-weight: 500;
@@ -2203,7 +2203,7 @@
 .wt-row {
     display: flex;
     align-items: flex-start;
-    gap: 2px;
+    gap: calc(2 * var(--sp));
 }
 
 .wt-row .menu-item {
@@ -2211,7 +2211,7 @@
 }
 
 .wt-remove {
-    margin-top: 4px;
+    margin-top: calc(4 * var(--sp));
     opacity: 0;
 }
 
@@ -2243,14 +2243,14 @@
     }
 
     .pbtn:has(> kbd) {
-        padding-right: 14px;
+        padding-right: calc(14 * var(--sp));
     }
 
     .ask-row,
     .ask-row.plan-row {
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 6px;
+        gap: calc(6 * var(--sp));
     }
 
     .ask-row .grow {
@@ -2261,8 +2261,8 @@
     .ask-row .pbtn {
         width: 100%;
         height: auto;
-        min-height: 30px;
-        padding-block: 5px;
+        min-height: calc(30 * var(--sp));
+        padding-block: calc(5 * var(--sp));
         line-height: 1.25;
         white-space: normal;
         text-align: center;
@@ -2299,7 +2299,7 @@
 
 :where(.main[data-short~="560"]) {
     .ask.glass {
-        padding: 10px 12px 10px 14px;
+        padding: calc(10 * var(--sp)) calc(12 * var(--sp)) calc(10 * var(--sp)) calc(14 * var(--sp));
     }
 
     .ask .itab-desc.why {
@@ -2309,25 +2309,25 @@
     .ask .itab-code,
     .ask .itab-diff .diff-scroll,
     .ask .plan-body {
-        max-height: 84px;
+        max-height: calc(84 * var(--sp));
     }
 
     .ask .itab-body {
-        margin-top: 8px;
+        margin-top: calc(8 * var(--sp));
     }
 
     .ask-row {
-        margin-top: 10px;
+        margin-top: calc(10 * var(--sp));
     }
 
     .composer textarea {
-        min-height: 36px;
+        min-height: calc(36 * var(--sp));
     }
 }
 
 /* How many tasks run in the background: opens the side panel on them. */
 .bg-chip {
-    gap: 4px;
+    gap: calc(4 * var(--sp));
     font-size: 0.821rem;
     font-weight: 600;
     font-variant-numeric: tabular-nums;

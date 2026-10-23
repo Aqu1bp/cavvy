@@ -7,15 +7,15 @@
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
 }
 
 .usage-view .usage-tools {
-    margin-bottom: 18px;
+    margin-bottom: calc(18 * var(--sp));
 }
 
 .usage-view .set-h {
-    margin: 22px 4px 8px;
+    margin: calc(22 * var(--sp)) calc(4 * var(--sp)) calc(8 * var(--sp));
     font-size: 0.857rem;
     font-weight: 600;
     color: var(--fg-3);
@@ -43,7 +43,7 @@
 
 /* One limit window: its name and where it stands, then the bar. */
 .useb {
-    padding: 12px 14px;
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
 }
 
 .useb + .useb,
@@ -54,8 +54,8 @@
 .useb-top {
     display: flex;
     align-items: baseline;
-    gap: 8px;
-    margin-bottom: 8px;
+    gap: calc(8 * var(--sp));
+    margin-bottom: calc(8 * var(--sp));
 }
 
 .useb-top b {
@@ -71,7 +71,7 @@
 }
 
 .useb-bar {
-    height: 6px;
+    height: calc(6 * var(--sp));
     border-radius: var(--pill);
     background: var(--press);
     overflow: hidden;
@@ -93,7 +93,7 @@
 }
 
 .usage-plan .plan-reached {
-    padding: 10px 14px;
+    padding: calc(10 * var(--sp)) calc(14 * var(--sp));
     color: var(--danger);
     font-weight: 500;
     font-size: 0.857rem;
@@ -101,17 +101,17 @@
 
 /* The local dashboard. */
 .usage-view .usage-sub {
-    margin: 2px 0 0;
+    margin: calc(2 * var(--sp)) 0 0;
     font-size: 0.821rem;
     color: var(--fg-3);
 }
 
 .usage-view .usage-dashboard > .usage-sub {
-    margin: 0 4px;
+    margin: 0 calc(4 * var(--sp));
 }
 
 .usage-view .usage-headline {
-    margin: 2px 4px 0;
+    margin: calc(2 * var(--sp)) calc(4 * var(--sp)) 0;
     font-size: clamp(1.8rem, 5vw, 2.6rem);
     font-weight: 650;
     letter-spacing: -0.03em;
@@ -119,15 +119,15 @@
 
 .usage-view .usage-sources {
     display: block;
-    margin: 18px 0 0;
+    margin: calc(18 * var(--sp)) 0 0;
 }
 
 .usage-view .usage-source {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: calc(10 * var(--sp));
     min-width: 0;
-    padding: 12px 14px;
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
 }
 
 .usage-view .usage-source + .usage-source {
@@ -139,12 +139,12 @@
 }
 
 .usage-view .usage-chart {
-    margin: 12px 0 0;
-    padding: 12px 14px 10px;
+    margin: calc(12 * var(--sp)) 0 0;
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp)) calc(10 * var(--sp));
 }
 
 .usage-view .usage-chart figcaption {
-    margin-bottom: 8px;
+    margin-bottom: calc(8 * var(--sp));
     font-size: 0.821rem;
     color: var(--fg-3);
 }
@@ -154,13 +154,13 @@
 }
 
 .usage-view .usage-cards {
-    gap: 8px;
+    gap: calc(8 * var(--sp));
 }
 
 .usage-view .usage-card {
-    padding: 12px 14px;
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
     border: 0;
-    border-radius: 12px;
+    border-radius: calc(12 * var(--sp));
     background: var(--group);
     box-shadow: inset 0 0 0 0.5px var(--line);
 }
@@ -171,22 +171,22 @@
 }
 
 .usage-view .usage-card strong {
-    margin-top: 6px;
+    margin-top: calc(6 * var(--sp));
     font-weight: 600;
 }
 
 .usage-cost {
-    padding: 14px;
+    padding: calc(14 * var(--sp));
 }
 
 .usage-view .usage-cost-bar {
-    height: 8px;
+    height: calc(8 * var(--sp));
     border-radius: var(--pill);
     background: var(--press);
 }
 
 .usage-view .usage-cost-legend {
-    margin: 12px 0 0;
+    margin: calc(12 * var(--sp)) 0 0;
     color: var(--fg-2);
 }
 
@@ -195,7 +195,7 @@
 }
 
 .usage-view .usage-share > div {
-    height: 6px;
+    height: calc(6 * var(--sp));
     border-radius: var(--pill);
     background: var(--press);
 }
@@ -211,7 +211,7 @@
 }
 
 .usage-table th {
-    padding: 10px 12px 8px;
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp)) calc(8 * var(--sp));
     text-align: left;
     font-size: 0.786rem;
     font-weight: 600;
@@ -222,7 +222,7 @@
 
 .usage-table td,
 .usage-table tbody th {
-    padding: 10px 12px;
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
     vertical-align: top;
     border-bottom: 0.5px solid var(--line);
 }
@@ -245,14 +245,14 @@
 .usage-model {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     min-width: 0;
     font-weight: 500;
     overflow-wrap: anywhere;
 }
 
 .usage-sub {
-    margin-top: 2px;
+    margin-top: calc(2 * var(--sp));
     font-size: 0.786rem;
     color: var(--fg-3);
 }

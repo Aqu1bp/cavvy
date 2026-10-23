@@ -6,10 +6,10 @@
     z-index: 2;
     display: flex;
     align-items: center;
-    gap: 10px;
-    min-height: 54px;
-    padding: 9px 10px 9px 14px;
-    border-radius: 24px;
+    gap: calc(10 * var(--sp));
+    min-height: calc(54 * var(--sp));
+    padding: calc(9 * var(--sp)) calc(10 * var(--sp)) calc(9 * var(--sp)) calc(14 * var(--sp));
+    border-radius: calc(24 * var(--sp));
     min-width: 0;
 }
 
@@ -30,7 +30,7 @@
 .agent-bar-state {
     font-size: 0.929rem;
     font-weight: 600;
-    line-height: 17px;
+    line-height: calc(17 * var(--sp));
     white-space: nowrap;
     color: var(--fg);
 }
@@ -57,16 +57,16 @@
 
 .agent-bar-note {
     font-size: 0.857rem;
-    line-height: 16px;
+    line-height: calc(16 * var(--sp));
     color: var(--fg-3);
 }
 
 .agent-bar-model {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     min-width: 0;
-    max-width: 180px;
+    max-width: calc(180 * var(--sp));
     font-size: 0.857rem;
     color: var(--fg-2);
 }
@@ -77,8 +77,8 @@
 
 .agent-sep {
     width: 1px;
-    height: 16px;
-    margin: 0 2px;
+    height: calc(16 * var(--sp));
+    margin: 0 calc(2 * var(--sp));
     background: var(--line);
     flex: none;
 }
@@ -87,9 +87,9 @@
 .agent-back {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    height: 30px;
-    padding: 0 13px 0 10px;
+    gap: calc(6 * var(--sp));
+    height: calc(30 * var(--sp));
+    padding: 0 calc(13 * var(--sp)) 0 calc(10 * var(--sp));
     border-radius: var(--pill);
     font-weight: 600;
     color: var(--fg-2);
@@ -110,8 +110,8 @@
 
 /* Stop, as the composer's: a round button in the text colour. */
 .stop-btn {
-    width: 34px;
-    height: 34px;
+    width: calc(34 * var(--sp));
+    height: calc(34 * var(--sp));
     border-radius: 50%;
     display: grid;
     place-items: center;
@@ -137,24 +137,24 @@
 .from-parent {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
 }
 
 .from-parent-label {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     font-size: 0.857rem;
     color: var(--fg-3);
-    padding-left: 4px;
+    padding-left: calc(4 * var(--sp));
 }
 
 .agent-reply {
-    margin-top: 16px;
+    margin-top: calc(16 * var(--sp));
 }
 
 .agent-dropped {
-    margin: 0 0 8px;
+    margin: 0 0 calc(8 * var(--sp));
     font-size: 0.893rem;
     color: var(--fg-3);
 }
@@ -163,10 +163,10 @@
     align-self: flex-start;
     display: flex;
     align-items: center;
-    gap: 6px;
-    height: 26px;
-    margin: 6px 0 0 -4px;
-    padding: 0 8px 0 4px;
+    gap: calc(6 * var(--sp));
+    height: calc(26 * var(--sp));
+    margin: calc(6 * var(--sp)) 0 0 calc(-4 * var(--sp));
+    padding: 0 calc(8 * var(--sp)) 0 calc(4 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.893rem;
     color: var(--fg-3);
