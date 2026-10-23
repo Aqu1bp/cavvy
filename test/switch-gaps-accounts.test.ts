@@ -347,3 +347,46 @@ for (const provider of CLIS)
         }, 30_000);
 
     });
+
+// #429: an account switch that let go of Claude Code with a background command running. Resumed under the new home,
+// Claude Code says the command didn't finish and takes a turn of its own for it, with no model call. The next turn is
+// the user's (its answer in it), with no warning that it ended without a reply, and no turn of Claude Code's own after.
+for (const live of [true, false])
+    test(`#429: claude-code, ${mode(live)}: after an account switch that stopped a background command, the next turn is the user's alone`, async () => {
+        const shared = account("claude-code", "shared");
+        await withApp(
+            "claude-code",
+            live,
+            async (h) => {
+                // Live, not idle once it's answered: the command runs on.
+                const before = h.turns().length;
+                await h.rt.send("start the checks");
+                await until(() => h.turns().length > before && h.turns().at(-1)!.status !== "running" && (!live || h.rt.agent!.backgroundTasks().some((t) => t.status === "running")));
+                expect(h.turns().at(-1)!.status).toBe("done");
+                const pid = h.lastProc().pid;
+                // Live, the command was running in the process the switch lets go of; per run, the run's process ended
+                // with it (as when Harness quits): either way the next process resumes the session and says so.
+                process.env.FAKE_SCENARIO = "chat";
+                process.env.FAKE_STALE_TASK = "shell";
+                await h.rt.setAccount("claude-code", shared.id);
+                if (live) {
+                    expect(alive(pid)).toBe(false);
+                    expect(h.notices()).toContain("Claude Code was restarted for the account change: 1 background task stopped.");
+                }
+                const n = h.turns().length;
+                const turn = await h.send("Reply with one word: ok.");
+                // A turn of Claude Code's own would come right after.
+                await Bun.sleep(500);
+                expect(h.opened().at(-1)).not.toBe("new");
+                expect(h.lastProc().home).toBe(real(shared.folder));
+                expect(turn.status).toBe("done");
+                expect(h.turns().length).toBe(n + 1);
+                expect(h.lastAnswer()).toContain("All done.");
+                expect(h.rt.session.messages.some((m) => m.meta?.kind === "wake")).toBe(false);
+                const notices = h.notices();
+                expect(notices.filter((t) => t.includes("ended the turn without a reply"))).toEqual([]);
+                expect(notices.filter((t) => t.includes("didn't finish before the previous session ended"))).toEqual(["Claude Code: Background shell command didn't finish before the previous session ended."]);
+            },
+            { env: live ? { FAKE_SCENARIO: "shell-background", FAKE_SHELL_MS: "60000" } : {} },
+        );
+    }, 30_000);
