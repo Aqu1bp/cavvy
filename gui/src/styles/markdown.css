@@ -9,14 +9,14 @@
     overflow-wrap: anywhere;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: calc(12 * var(--sp));
     min-width: 0;
 }
 
 .md.small {
     font-size: 0.929rem;
     line-height: 1.6;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
 }
 
 .md-block > :first-child {
@@ -47,11 +47,11 @@
    it, so it reads with what follows. (The block, not the heading: a block's
    first and last child have no margins of their own.) */
 .md > .md-block:has(> :is(h1, h2, h3, h4)) {
-    margin-bottom: -4px;
+    margin-bottom: calc(-4 * var(--sp));
 }
 
 .md > .md-block:not(:first-child):has(> :is(h1, h2, h3, h4)) {
-    margin-top: 10px;
+    margin-top: calc(10 * var(--sp));
 }
 
 .md h1 {
@@ -79,7 +79,7 @@
     padding-left: 1.25em;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
 }
 
 .md li {
@@ -97,8 +97,8 @@
 
 /* A nested list is the detail: closer, a step quieter, with dashes. */
 .md li > :is(ul, ol) {
-    margin-top: 6px;
-    gap: 4px;
+    margin-top: calc(6 * var(--sp));
+    gap: calc(4 * var(--sp));
     color: var(--fg-2);
 }
 
@@ -119,8 +119,8 @@
 .md :not(pre) > code {
     font-family: var(--font-mono);
     font-size: 0.85em;
-    padding: 1.5px 5px;
-    border-radius: 5px;
+    padding: calc(1.5 * var(--sp)) calc(5 * var(--sp));
+    border-radius: calc(5 * var(--sp));
     color: var(--fg);
     background: var(--sheet-2);
     box-shadow: inset 0 0 0 0.5px var(--line);
@@ -174,8 +174,8 @@
 .md .md-image {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 1px 8px;
+    gap: calc(4 * var(--sp));
+    padding: 1px calc(8 * var(--sp));
     border-radius: var(--pill);
     background: var(--sheet-2);
     color: var(--fg-2);
@@ -192,16 +192,16 @@
 .md img.md-img {
     display: block;
     max-width: 100%;
-    max-height: 480px;
-    margin: 4px 0;
+    max-height: calc(480 * var(--sp));
+    margin: calc(4 * var(--sp)) 0;
     border-radius: var(--r-card);
     box-shadow: 0 0 0 0.5px var(--line);
     cursor: zoom-in;
 }
 
 .md img.md-img:not([src]) {
-    width: 240px;
-    height: 135px;
+    width: calc(240 * var(--sp));
+    height: calc(135 * var(--sp));
     background: var(--sheet-2);
 }
 
@@ -228,7 +228,7 @@
 
 .md th,
 .md td {
-    padding: 8px 12px;
+    padding: calc(8 * var(--sp)) calc(12 * var(--sp));
     text-align: left;
     border-bottom: 0.5px solid var(--line);
     vertical-align: top;
@@ -275,7 +275,7 @@
 
 .md .md-pre,
 .md .code:not(.bare) .code-body {
-    padding: 12px 14px;
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
     font: 0.893rem/1.65 var(--font-mono);
 }
 
@@ -288,12 +288,12 @@
 
 .md-check {
     display: inline-block;
-    width: 13px;
-    height: 13px;
-    border-radius: 4px;
+    width: calc(13 * var(--sp));
+    height: calc(13 * var(--sp));
+    border-radius: calc(4 * var(--sp));
     border: 1.5px solid var(--fg-4);
     vertical-align: -1px;
-    margin-right: 6px;
+    margin-right: calc(6 * var(--sp));
 }
 
 .md-check.on {

@@ -315,7 +315,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
 export function EffortGlyph(p: { level: number }) {
     return (
         <span class="eg" aria-hidden="true">
-            <For each={[1, 2, 3, 4, 5]}>{(i) => <i class={i <= p.level ? "on" : ""} style={{ height: `${2 + i * 2}px` }} />}</For>
+            <For each={[1, 2, 3, 4, 5]}>{(i) => <i class={i <= p.level ? "on" : ""} style={{ height: `calc(${2 + i * 2} * var(--sp))` }} />}</For>
         </span>
     );
 }

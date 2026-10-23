@@ -179,7 +179,7 @@
     top: var(--win-pad);
     bottom: var(--win-pad);
     width: var(--rail-w);
-    border-radius: 14px;
+    border-radius: calc(14 * var(--sp));
     transform: translateX(calc(-100% - 16px));
 }
 
@@ -297,10 +297,10 @@
     top: 54px;
     right: 8px;
     bottom: var(--insp-bottom);
-    width: min(var(--insp-w), calc(100% - 16px));
+    width: min(var(--insp-w), calc(100% - 16 * var(--sp)));
     grid-template-columns: minmax(0, 1fr);
     border-left: 0;
-    border-radius: 12px;
+    border-radius: calc(12 * var(--sp));
     box-shadow: var(--pop-shadow);
     transform: translateX(calc(100% + 16px));
     transition: transform var(--dur-panel) var(--ease), bottom var(--dur-panel) var(--ease);
@@ -348,15 +348,15 @@
 /* Not connected: a small note under the title bar. */
 .main > .banner {
     position: absolute;
-    top: calc(var(--bar-h) + 6px);
+    top: calc(var(--bar-h) + 6 * var(--sp));
     left: 50%;
     transform: translateX(-50%);
     z-index: 7;
     display: flex;
     align-items: center;
-    gap: 8px;
-    height: 30px;
-    padding: 0 14px;
+    gap: calc(8 * var(--sp));
+    height: calc(30 * var(--sp));
+    padding: 0 calc(14 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.857rem;
     font-weight: 500;
@@ -367,7 +367,7 @@
 }
 
 .main > .banner + .banner {
-    top: calc(var(--bar-h) + 42px);
+    top: calc(var(--bar-h) + 42 * var(--sp));
 }
 
 .hb:active:not(:disabled),

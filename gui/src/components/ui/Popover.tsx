@@ -2,6 +2,7 @@ import { createEffect, createSignal, onCleanup, onMount, Show, type JSX } from "
 import { Portal } from "solid-js/web";
 import { mountMenu, type MenuBehavior } from "../../lib/menu";
 import { placePopover, type PopoverPlace } from "../../lib/popover";
+import { sp } from "../../state/prefs";
 import { settingsTab } from "../../state/ui";
 
 export interface PopoverProps {
@@ -15,6 +16,7 @@ export interface PopoverProps {
     /** Preferred side; flips when there's no room. */
     placement?: "top" | "bottom";
     align?: "start" | "end";
+    /** Its width (default 320), and the heights below, in px at text size 14: they follow the text (`sp`). */
     width?: number;
     /** Its tallest (default 560); a longer list scrolls inside. */
     maxHeight?: number;
@@ -34,8 +36,8 @@ export function Popover(p: PopoverProps) {
         if (!a) return;
         const r = p.point ? { top: p.point.y, bottom: p.point.y, left: p.point.x, right: p.point.x } : a.getBoundingClientRect();
         // Its own height once rendered, so a tall menu opens on the side it fits.
-        const need = Math.min(el?.scrollHeight || 220, p.maxHeight ?? 560);
-        setPos(placePopover(r, { width: p.width ?? 320, least: Math.min(need, p.minHeight ?? need), placement: p.placement ?? "bottom", align: p.point ? "start" : p.align, vw: window.innerWidth, vh: window.innerHeight }));
+        const need = Math.min(el?.scrollHeight || 220, sp(p.maxHeight ?? 560));
+        setPos(placePopover(r, { width: sp(p.width ?? 320), least: Math.min(need, p.minHeight === undefined ? need : sp(p.minHeight)), placement: p.placement ?? "bottom", align: p.point ? "start" : p.align, vw: window.innerWidth, vh: window.innerHeight }));
     };
 
     createEffect(() => {
@@ -89,8 +91,8 @@ export function Popover(p: PopoverProps) {
                         left: `${pos()?.left ?? -9999}px`,
                         top: pos()?.top !== undefined ? `${pos()!.top}px` : undefined,
                         bottom: pos()?.bottom !== undefined ? `${pos()!.bottom}px` : undefined,
-                        width: `${p.width ?? 320}px`,
-                        "max-height": `${Math.min(pos()?.maxHeight ?? 480, p.maxHeight ?? 560)}px`,
+                        width: `${sp(p.width ?? 320)}px`,
+                        "max-height": `${Math.min(pos()?.maxHeight ?? 480, sp(p.maxHeight ?? 560))}px`,
                     }}
                     data-side={pos()?.bottom !== undefined ? "top" : "bottom"}
                     data-align={!p.point && p.align === "end" ? "end" : "start"}

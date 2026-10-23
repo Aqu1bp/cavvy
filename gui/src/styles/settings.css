@@ -1,17 +1,17 @@
 /* ---- Settings: a page, with its sections where the sidebar was ----------- */
 
 .set-back-wrap {
-    padding: 0 8px;
+    padding: 0 calc(8 * var(--sp));
 }
 
 .set-back {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: calc(10 * var(--sp));
     width: 100%;
-    height: 32px;
-    padding: 0 10px;
-    border-radius: 8px;
+    height: calc(32 * var(--sp));
+    padding: 0 calc(10 * var(--sp));
+    border-radius: calc(8 * var(--sp));
     font-size: 0.964rem;
     font-weight: 500;
     color: var(--fg-2);
@@ -32,17 +32,17 @@
     display: flex;
     flex-direction: column;
     gap: 1px;
-    padding: 10px 8px 0;
+    padding: calc(10 * var(--sp)) calc(8 * var(--sp)) 0;
 }
 
 .navi {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: calc(10 * var(--sp));
     width: 100%;
-    height: 34px;
-    padding: 0 10px;
-    border-radius: 8px;
+    height: calc(34 * var(--sp));
+    padding: 0 calc(10 * var(--sp));
+    border-radius: calc(8 * var(--sp));
     font-size: 0.964rem;
     font-weight: 500;
     color: var(--fg-2);
@@ -62,7 +62,7 @@
 
 /* Lines up with the icon column of the rows above. */
 .prow .mcp-spacer {
-    width: 16px;
+    width: calc(16 * var(--sp));
     flex: none;
 }
 
@@ -102,9 +102,9 @@
 }
 
 .set-in {
-    max-width: 680px;
+    max-width: calc(680 * var(--sp));
     margin: 0 auto;
-    padding: 0 28px 60px;
+    padding: 0 calc(28 * var(--sp)) calc(60 * var(--sp));
 }
 
 .set-top {
@@ -113,10 +113,10 @@
     z-index: 2;
     display: flex;
     align-items: center;
-    gap: 10px;
-    height: 58px;
-    padding-top: 12px;
-    margin-bottom: 18px;
+    gap: calc(10 * var(--sp));
+    height: calc(58 * var(--sp));
+    padding-top: calc(12 * var(--sp));
+    margin-bottom: calc(18 * var(--sp));
     background: var(--sheet);
     box-shadow: 0 10px 12px -12px var(--sheet);
 }
@@ -136,8 +136,8 @@
 .set-close {
     display: inline-grid;
     place-items: center;
-    width: 28px;
-    height: 28px;
+    width: calc(28 * var(--sp));
+    height: calc(28 * var(--sp));
     flex: none;
     border-radius: var(--pill);
     color: var(--fg-2);
@@ -157,8 +157,8 @@
 /* Sections as pills, for when there's no sidebar showing their list. */
 .set-pills {
     display: none;
-    gap: 4px;
-    margin: -6px 0 16px;
+    gap: calc(4 * var(--sp));
+    margin: calc(-6 * var(--sp)) 0 calc(16 * var(--sp));
     overflow-x: auto;
     scrollbar-width: none;
 }
@@ -169,8 +169,8 @@
 
 .set-pills button {
     flex: none;
-    height: 28px;
-    padding: 0 12px;
+    height: calc(28 * var(--sp));
+    padding: 0 calc(12 * var(--sp));
     border-radius: var(--pill);
     color: var(--fg-3);
     font-weight: 500;
@@ -189,8 +189,8 @@
 /* No sidebar (hidden, or a drawer below 900px): the header drops below the
    window controls, and the sections show as pills under it. */
 .settings-page.rail-off .set-top {
-    height: 96px;
-    padding-top: 50px;
+    height: calc(96 * var(--sp));
+    padding-top: calc(50 * var(--sp));
 }
 
 .settings-page.rail-off .set-pills {
@@ -199,8 +199,8 @@
 
 @media (max-width: 899px) {
     .settings-page .set-top {
-        height: 96px;
-        padding-top: 50px;
+        height: calc(96 * var(--sp));
+        padding-top: calc(50 * var(--sp));
     }
 
     .settings-page .set-pills {
@@ -211,8 +211,8 @@
 .set-h {
     display: flex;
     align-items: center;
-    gap: 6px;
-    margin: 22px 4px 8px;
+    gap: calc(6 * var(--sp));
+    margin: calc(22 * var(--sp)) calc(4 * var(--sp)) calc(8 * var(--sp));
     font-size: 0.857rem;
     font-weight: 600;
     color: var(--fg-3);
@@ -232,15 +232,15 @@
 }
 
 .set-group + .set-group {
-    margin-top: 12px;
+    margin-top: calc(12 * var(--sp));
 }
 
 .set-row {
     display: flex;
     align-items: center;
-    gap: 16px;
-    min-height: 52px;
-    padding: 12px 14px;
+    gap: calc(16 * var(--sp));
+    min-height: calc(52 * var(--sp));
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
 }
 
 .set-row + .set-row {
@@ -257,7 +257,7 @@
 }
 
 .set-desc {
-    margin-top: 2px;
+    margin-top: calc(2 * var(--sp));
     font-size: 0.857rem;
     line-height: 1.4;
     color: var(--fg-3);
@@ -281,10 +281,10 @@
 .set-reset {
     display: grid;
     place-items: center;
-    width: 24px;
-    height: 24px;
+    width: calc(24 * var(--sp));
+    height: calc(24 * var(--sp));
     flex: none;
-    margin-left: -8px;
+    margin-left: calc(-8 * var(--sp));
 }
 
 /* With nothing to reset, the control keeps the row's edge like its neighbours.
@@ -303,7 +303,7 @@
 }
 
 .set-note {
-    margin: 10px 4px 0;
+    margin: calc(10 * var(--sp)) calc(4 * var(--sp)) 0;
     font-size: 0.857rem;
     line-height: 1.5;
     color: var(--fg-3);
@@ -313,12 +313,12 @@
 .set-effort {
     display: inline-flex;
     align-items: center;
-    gap: 12px;
+    gap: calc(12 * var(--sp));
     flex: none;
 }
 
 .set-effort-l {
-    min-width: 70px;
+    min-width: calc(70 * var(--sp));
     text-align: right;
     font-weight: 500;
     color: var(--fg);
@@ -326,7 +326,7 @@
 }
 
 .set-effort .es {
-    width: 120px;
+    width: calc(120 * var(--sp));
 }
 
 /* A native select drawn as a small raised button, with a glyph before its value. */
@@ -336,15 +336,15 @@
     align-items: center;
     flex: none;
     min-width: 0;
-    max-width: 260px;
+    max-width: calc(260 * var(--sp));
 }
 
 .selbtn .select {
-    height: 28px;
-    max-width: 260px;
-    padding: 0 26px 0 10px;
+    height: calc(28 * var(--sp));
+    max-width: calc(260 * var(--sp));
+    padding: 0 calc(26 * var(--sp)) 0 calc(10 * var(--sp));
     border: 0;
-    border-radius: 8px;
+    border-radius: calc(8 * var(--sp));
     background-color: var(--sheet);
     box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px var(--line);
     color: var(--fg);
@@ -355,7 +355,7 @@
 }
 
 .selbtn.has-ic .select {
-    padding-left: 32px;
+    padding-left: calc(32 * var(--sp));
 }
 
 .selbtn .select:hover {
@@ -374,7 +374,7 @@
 
 .selbtn-chev {
     position: absolute;
-    right: 8px;
+    right: calc(8 * var(--sp));
     top: 50%;
     transform: translateY(-50%);
     color: var(--fg-3);
@@ -383,7 +383,7 @@
 
 .selbtn-ic {
     position: absolute;
-    left: 10px;
+    left: calc(10 * var(--sp));
     top: 50%;
     display: grid;
     place-items: center;
@@ -396,8 +396,8 @@
 
 .keyin {
     display: flex;
-    gap: 8px;
-    padding: 12px 14px;
+    gap: calc(8 * var(--sp));
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
 }
 
 .settings-page .keyin .input,
@@ -405,8 +405,8 @@
 .settings-page .prov-quick .input {
     flex: 1;
     min-width: 0;
-    height: 30px;
-    border-radius: 8px;
+    height: calc(30 * var(--sp));
+    border-radius: calc(8 * var(--sp));
     font: 0.857rem var(--font-mono);
 }
 
@@ -421,18 +421,18 @@
 .prov-line {
     display: flex;
     align-items: center;
-    gap: 12px;
-    min-height: 52px;
-    padding: 11px 14px;
+    gap: calc(12 * var(--sp));
+    min-height: calc(52 * var(--sp));
+    padding: calc(11 * var(--sp)) calc(14 * var(--sp));
 }
 
 .prov-logo {
     display: grid;
     place-items: center;
-    width: 28px;
-    height: 28px;
+    width: calc(28 * var(--sp));
+    height: calc(28 * var(--sp));
     flex: none;
-    border-radius: 8px;
+    border-radius: calc(8 * var(--sp));
     background: var(--sheet);
     box-shadow: 0 0 0 0.5px var(--line);
     color: var(--fg);
@@ -446,7 +446,7 @@
 .prov-name {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
     min-width: 0;
     font-weight: 500;
 }
@@ -467,13 +467,13 @@
     align-items: center;
     justify-content: flex-end;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
     flex: none;
     max-width: 55%;
 }
 
 .tag {
-    padding: 2px 6px;
+    padding: calc(2 * var(--sp)) calc(6 * var(--sp));
     border-radius: var(--pill);
     background: var(--hover);
     color: var(--fg-3);
@@ -489,17 +489,17 @@
 
 .prov-add {
     display: flex;
-    gap: 8px;
-    padding: 0 14px 12px 54px;
+    gap: calc(8 * var(--sp));
+    padding: 0 calc(14 * var(--sp)) calc(12 * var(--sp)) calc(54 * var(--sp));
 }
 
 /* The marketplace field on the Plugins page: a field in a rounded group. */
 .prov-quick {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 12px 14px;
-    border-radius: 12px;
+    gap: calc(10 * var(--sp));
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
+    border-radius: calc(12 * var(--sp));
     background: var(--group);
     box-shadow: inset 0 0 0 0.5px var(--line);
 }
@@ -517,15 +517,15 @@
     flex-wrap: wrap;
     justify-content: flex-end;
     align-items: center;
-    gap: 6px 12px;
+    gap: calc(6 * var(--sp)) calc(12 * var(--sp));
 }
 
 /* Key caps: 12.5px, raised a little off the group. */
 .sc-keys kbd {
     height: auto;
-    min-width: 24px;
-    padding: 4px 8px;
-    border-radius: 6px;
+    min-width: calc(24 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(8 * var(--sp));
+    border-radius: calc(6 * var(--sp));
     background: var(--sheet);
     box-shadow: 0 0 0 0.5px var(--line), 0 1px 0 var(--line);
     color: var(--fg-2);
@@ -536,7 +536,7 @@
 .sc-seq {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
+    gap: calc(5 * var(--sp));
 }
 
 .sc-then,
@@ -546,7 +546,7 @@
 }
 
 .sc-custom {
-    padding: 2px 7px;
+    padding: calc(2 * var(--sp)) calc(7 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.75rem;
     font-weight: 600;
@@ -565,13 +565,13 @@
     display: inline-flex;
     flex-wrap: wrap;
     justify-content: flex-end;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
 }
 
 .sc-issues {
-    margin-top: 12px;
-    padding: 10px 12px;
-    border-radius: 12px;
+    margin-top: calc(12 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
+    border-radius: calc(12 * var(--sp));
     background: var(--warn-bg);
     box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--warn) 40%, transparent);
     font-size: 0.857rem;
@@ -581,14 +581,14 @@
 .sc-issues-title {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     font-weight: 600;
     color: var(--warn);
 }
 
 .sc-issues ul {
-    margin: 6px 0 0;
-    padding-left: 20px;
+    margin: calc(6 * var(--sp)) 0 0;
+    padding-left: calc(20 * var(--sp));
 }
 
 .sc-issues li {
@@ -606,7 +606,7 @@
 /* Narrow: tighter margins; a row's control drops under its text when they don't fit side by side. */
 :where(.main[data-narrow~="520"]) {
     .set-in {
-        padding: 0 16px 50px;
+        padding: 0 calc(16 * var(--sp)) calc(50 * var(--sp));
     }
 
     .set-row,
@@ -620,7 +620,7 @@
     }
 
     .prov-add {
-        padding-left: 14px;
+        padding-left: calc(14 * var(--sp));
     }
 }
 
@@ -631,7 +631,7 @@
    segmented controls, a text-size stepper with a preview. */
 
 .ap > .set-h {
-    margin: 24px 4px 8px;
+    margin: calc(24 * var(--sp)) calc(4 * var(--sp)) calc(8 * var(--sp));
     padding: 0;
     font-size: 0.857rem;
     font-weight: 600;
@@ -646,9 +646,9 @@
 }
 
 .ap-group > .set-row {
-    min-height: 52px;
-    padding: 12px 8px 12px 14px;
-    gap: 12px;
+    min-height: calc(52 * var(--sp));
+    padding: calc(12 * var(--sp)) calc(8 * var(--sp)) calc(12 * var(--sp)) calc(14 * var(--sp));
+    gap: calc(12 * var(--sp));
     border-bottom: 0;
 }
 
@@ -663,7 +663,7 @@
 }
 
 .ap-group .set-desc {
-    margin-top: 2px;
+    margin-top: calc(2 * var(--sp));
     font-size: 0.857rem;
     line-height: 1.4;
     color: var(--fg-3);
@@ -672,15 +672,15 @@
 /* Colour scheme: System, Light, Dark. */
 .ap-tiles {
     display: flex;
-    gap: 12px;
-    padding: 14px;
+    gap: calc(12 * var(--sp));
+    padding: calc(14 * var(--sp));
 }
 
 .ap-tile {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
     font-size: 0.929rem;
     font-weight: 500;
     color: var(--fg-2);
@@ -692,9 +692,9 @@
 
 .ap-pv {
     position: relative;
-    width: 112px;
-    height: 72px;
-    border-radius: 10px;
+    width: calc(112 * var(--sp));
+    height: calc(72 * var(--sp));
+    border-radius: calc(10 * var(--sp));
     overflow: hidden;
     box-shadow: 0 0 0 0.5px var(--line);
     transition: box-shadow 200ms;
@@ -714,8 +714,8 @@
     inset: 0;
     display: grid;
     grid-template-columns: 30% 1fr;
-    gap: 4px;
-    padding: 5px;
+    gap: calc(4 * var(--sp));
+    padding: calc(5 * var(--sp));
     background: var(--backdrop);
 }
 
@@ -726,7 +726,7 @@
 .ap-face i,
 .ap-face u {
     display: block;
-    border-radius: 5px;
+    border-radius: calc(5 * var(--sp));
 }
 
 .ap-face i {
@@ -741,25 +741,25 @@
    draws it (the tint over the window tint over the backdrop), smaller tiles
    than the scheme's as they sit in a row. */
 .ap-tint-tiles {
-    gap: 10px;
+    gap: calc(10 * var(--sp));
     padding: 0;
 }
 
 .ap-tint-tiles .ap-pv {
-    width: 76px;
-    height: 50px;
-    border-radius: 8px;
+    width: calc(76 * var(--sp));
+    height: calc(50 * var(--sp));
+    border-radius: calc(8 * var(--sp));
 }
 
 .ap-face.ap-tint {
-    padding: 4px;
-    gap: 3px;
+    padding: calc(4 * var(--sp));
+    gap: calc(3 * var(--sp));
     background: var(--win-wash), linear-gradient(var(--win-tint), var(--win-tint)), var(--tint-backdrop);
 }
 
 .ap-face.ap-tint i,
 .ap-face.ap-tint u {
-    border-radius: 4px;
+    border-radius: calc(4 * var(--sp));
 }
 
 /* The rail is the tint itself, with one selected row on it. */
@@ -772,12 +772,12 @@
     display: flex;
     flex-wrap: wrap;
     justify-content: flex-end;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
 }
 
 .ap-swatches button {
-    width: 20px;
-    height: 20px;
+    width: calc(20 * var(--sp));
+    height: calc(20 * var(--sp));
     border-radius: 50%;
     flex: none;
     box-shadow: inset 0 0 0 1px var(--line);
@@ -792,7 +792,7 @@
 .ap .segmented {
     display: inline-flex;
     gap: 0;
-    padding: 3px;
+    padding: calc(3 * var(--sp));
     border-radius: var(--pill);
     background: var(--sheet-2);
     box-shadow: inset 0 0 0 0.5px var(--line);
@@ -800,8 +800,8 @@
 
 .ap .segmented button,
 .ap .segmented.seg-sm button {
-    height: 26px;
-    padding: 0 12px;
+    height: calc(26 * var(--sp));
+    padding: 0 calc(12 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.929rem;
     font-weight: 500;
@@ -823,8 +823,8 @@
 .ap-stepper {
     display: inline-flex;
     align-items: center;
-    gap: 2px;
-    padding: 2px;
+    gap: calc(2 * var(--sp));
+    padding: calc(2 * var(--sp));
     border-radius: var(--pill);
     background: var(--sheet);
     box-shadow: 0 0 0 0.5px var(--line);
@@ -835,7 +835,7 @@
 }
 
 .ap-stepper .num {
-    min-width: 44px;
+    min-width: calc(44 * var(--sp));
     text-align: center;
     font-variant-numeric: tabular-nums;
     font-weight: 500;
@@ -843,7 +843,7 @@
 
 /* Reads at the chosen size: 1rem is the text size. */
 .ap-preview {
-    padding: 14px;
+    padding: calc(14 * var(--sp));
     font-size: 1rem;
     line-height: 1.6;
     color: var(--fg);
@@ -854,8 +854,8 @@
 .ap-preview code {
     font-family: var(--font-mono);
     font-size: 0.86em;
-    padding: 1px 5px;
-    border-radius: 5px;
+    padding: 1px calc(5 * var(--sp));
+    border-radius: calc(5 * var(--sp));
     background: var(--sheet-2);
 }
 
@@ -865,7 +865,7 @@
     }
 
     .ap-pv {
-        width: 88px;
-        height: 58px;
+        width: calc(88 * var(--sp));
+        height: calc(58 * var(--sp));
     }
 }

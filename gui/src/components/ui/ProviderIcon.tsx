@@ -44,7 +44,7 @@ export function ProviderIcon(p: { id: string; name?: string; size?: number; clas
         <Show
             when={mark()}
             fallback={
-                <span class={`provider-mono ${p.class ?? ""}`} style={{ width: `${size()}px`, height: `${size()}px`, "font-size": `${Math.round(size() * 0.42)}px` }} aria-hidden="true">
+                <span class={`provider-mono ${p.class ?? ""}`} style={{ width: `calc(${size()} * var(--sp))`, height: `calc(${size()} * var(--sp))`, "font-size": `calc(${Math.round(size() * 0.42)} * var(--sp))` }} aria-hidden="true">
                     {(p.name ?? p.id).replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase()}
                 </span>
             }

@@ -79,7 +79,7 @@ function DialogInner(p: DialogProps) {
                 <div
                     ref={box}
                     class={`dialog glass ${p.class ?? ""}`}
-                    style={{ width: `min(${p.width ?? 520}px, calc(100vw - 32px))` }}
+                    style={{ width: `min(calc(${p.width ?? 520} * var(--sp)), calc(100vw - 32px))` }}
                     role="dialog"
                     aria-modal="true"
                     aria-labelledby={p.bare ? p.labelledBy : p.title ? titleId : undefined}
