@@ -70,7 +70,7 @@ export interface LiveTurnResult {
     reason: TurnEndReason;
     error?: string;
     usage?: Usage;
-    limit?: { resetsAt?: number };
+    limit?: { resetsAt?: number; window?: string };
     /** Every prompt the turn answered: its own, and steering messages folded into it. */
     answers?: string[];
     /** The CLI didn't end the turn within interruptMs of the interrupt: it was ended here, and the CLI may still be on it. */

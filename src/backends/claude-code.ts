@@ -35,7 +35,8 @@ import { ONE_OFF_TIMEOUT_MS, oneOffAnswer, oneOffPrompt, oneOffRefusal } from ".
 import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
 import type { PlanLimits } from "../server/protocol";
-import { creditsNote, limitAccountLabel, limitNews, limitStopReport, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
+import { cliNotice } from "./notice-data";
+import { creditsNote, limitAccountLabel, limitNews, limitNotice, limitStopOf, limitStopReport, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
 import { accountEnv, defaultAccount } from "../providers/accounts";
 import { signInAdvice } from "./account-login";
 import { accountProtectionFolders } from "./account-permissions";
@@ -1290,7 +1291,7 @@ class ClaudeTurn {
 
     /** The turn stopped on the plan's usage limit: when it resets, for an automatic resume. */
     private limitStop(): Pick<BackendResult, "limit"> {
-        return this.limitHit ? { limit: { resetsAt: this.limits?.reached ? this.limits.resetsAt : undefined } } : {};
+        return this.limitHit ? { limit: limitStopOf(this.limits, this.limits?.reached ? this.limits.resetsAt : undefined) } : {};
     }
 
     private fastModeNotice?: string;
@@ -1441,7 +1442,10 @@ class ClaudeTurn {
                 break;
             }
             case "informational":
-                if (typeof m.content === "string" && m.content.trim()) this.sink.emit({ type: "notice", level: m.level === "warning" ? "warn" : m.level === "error" ? "error" : "info", message: m.content });
+                if (typeof m.content === "string" && m.content.trim()) {
+                    const level = m.level === "warning" ? "warn" : m.level === "error" ? "error" : "info";
+                    this.sink.emit({ type: "notice", level, message: m.content, data: cliNotice(this.def.id, level, m.content) });
+                }
                 break;
         }
     }
@@ -1709,8 +1713,9 @@ class ClaudeTurn {
             if (this.reachedNoted) return;
             this.reachedNoted = true;
             // On extra usage it isn't a stop: the turn goes on, and it costs.
-            this.sink.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: ${which}usage limit reached${creditsNote(this.limits, "extra usage")}. ${resetSentence(this.limits?.resetsAt, "Claude Code")}` });
-        } else if (news) this.sink.emit({ type: "notice", level: "info", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: close to the ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}` });
+            const credits = creditsNote(this.limits, "extra usage");
+            this.sink.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: ${which}usage limit reached${credits}. ${resetSentence(this.limits?.resetsAt, "Claude Code")}`, data: { source: this.def.id, limit: limitNotice(this.def.id, this.t.accountId, this.limits, { window: w?.label, credits: Boolean(credits) }) } });
+        } else if (news) this.sink.emit({ type: "notice", level: "info", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: close to the ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}`, data: { source: this.def.id } });
     }
 
     /** A result: one answering the run's prompts (`ours`), or one for a turn Claude Code took itself. */

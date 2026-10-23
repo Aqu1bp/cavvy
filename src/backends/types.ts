@@ -15,7 +15,7 @@ import type { HookConfig } from "../config/settings";
 import type { HookEvent, HookOutcome, HookResult } from "../agent/hooks";
 import type { Skill } from "../agent/skills";
 import type { ClaudeAgentDefinition } from "./claude-agents";
-import type { PlanLimits } from "../server/protocol";
+import type { NoticeData, PlanLimits } from "../server/protocol";
 import type { BackgroundTaskInfo } from "./live/info";
 
 /** A permission prompt raised by the backend's own permission system. */
@@ -120,7 +120,7 @@ export interface SteerMessage {
 export type SessionEvent =
     /** `accountId`: the account the CLI process reporting it signed in with (it can differ from the session's selection now). */
     | { type: "background_task"; task: BackgroundTaskInfo; accountId?: string }
-    | { type: "notice"; level: "info" | "warn" | "error"; message: string }
+    | { type: "notice"; level: "info" | "warn" | "error"; message: string; /** What it is, for the GUI to draw (#426); `message` stays the whole of it, as text. */ data?: NoticeData }
     /** Something the CLI did outside any turn (a background sub-agent's steps, its Agent call ending): shown where it belongs (by its call's id). */
     | { type: "event"; event: AgentEvent };
 
@@ -352,7 +352,7 @@ export interface BackendResult {
      */
     refused?: boolean;
     /** It stopped on the plan's usage limit; `resetsAt` (ms) when the backend said when that lifts. */
-    limit?: { resetsAt?: number };
+    limit?: { resetsAt?: number; /** The window that's reached ("5-hour"), when known. */ window?: string };
 }
 
 export interface AgentBackendClient extends ProviderClient {

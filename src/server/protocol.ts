@@ -202,13 +202,131 @@ export interface AgentRun {
     replayed?: boolean;
 }
 
-export interface NoticeBlock {
+export interface NoticeBlock extends NoticeData {
     t: "notice";
     id: string;
     level: "info" | "warn" | "error";
+    /** What it says (under `title`, when it has one). Plain text; `code` in backticks reads as code. */
     text: string;
     /** One short line each, folded under the text (TurnNotice.details). */
     details?: string[];
+}
+
+/**
+ * What a notice is, beyond its text (#426), so it's drawn as what it is rather than as a sentence. Every field is
+ * optional: a notice from before these (a plain string) is an info line, a warning or an error by its level.
+ */
+export interface NoticeData {
+    /** What the notice shows, where it isn't the message as said (a titled warning's body; Codex's words, without "Codex: "). */
+    text?: string;
+    /** The agent CLI that said it ("claude-code", "codex"): its logo is the icon, in place of a "Codex:" prefix. */
+    source?: string;
+    /** A short title (a warning's pill, an error card's sentence): `text` is then what folds under it. */
+    title?: string;
+    /** A link the CLI gave with it (its docs). */
+    link?: string;
+    /** An account switch: one line between turns. */
+    account?: NoticeAccount;
+    /**
+     * Tasks a switch's restart stopped, said after its line was no longer the latest (a message came since): a line
+     * of their own, which switches nothing.
+     */
+    stopped?: NoticeStopped;
+    /** A plan limit: reached (warn), on credits (warn, `credits`), or stopping the turn (error). */
+    limit?: NoticeLimit;
+}
+
+/** A background task an account switch's restart stopped. */
+export interface StoppedTask {
+    /** Its description (Claude Code's Bash `description`), or its command, cut short (Codex's have no description). */
+    label: string;
+    /** The whole command, when it isn't the label. */
+    command?: string;
+}
+
+/**
+ * A session's switch to another account of an agent CLI. Switches with no message between them are one notice,
+ * the latest (Session.recordSwitch), with every task they stopped.
+ */
+export interface NoticeAccount {
+    provider: string;
+    /** The CLI's name ("Claude Code"). */
+    cli: string;
+    /** The account's display name. */
+    name: string;
+    /**
+     * native: the same CLI session goes on, resumed natively (the account shares its history). returned: the earlier
+     * thread this account finds is picked up again. handoff: a new thread is handed the conversation.
+     */
+    how: "native" | "returned" | "handoff";
+    /** A handoff from a native session the new account can't resume. */
+    dropped?: true;
+    stopped?: StoppedTask[];
+}
+
+/** Background tasks an account switch's restart stopped, on a line of their own (NoticeData.stopped). */
+export interface NoticeStopped {
+    provider: string;
+    /** The CLI's name ("Claude Code"). */
+    cli: string;
+    tasks: StoppedTask[];
+}
+
+/** A plan limit an account of an agent CLI reached. */
+export interface NoticeLimit {
+    provider: string;
+    accountId: string;
+    /** The account's display name. */
+    name: string;
+    /** The window that's reached ("5-hour", "Weekly"), when known. */
+    window?: string;
+    /** When it resets (ms), when known. */
+    resetsAt?: number;
+    /** Past it, turns go on, billed to credits. */
+    credits?: true;
+}
+
+/** "resumed", "new thread": how a switch's conversation goes on, in a word. */
+export function switchWord(how: NoticeAccount["how"]): string {
+    return how === "handoff" ? "new thread" : "resumed";
+}
+
+/** What a switch's word means, for its tooltip and a screen reader. */
+export function switchMeaning(a: NoticeAccount): string {
+    const said =
+        a.how === "native"
+            ? "Same session, resumed: this account shares its history."
+            : a.how === "returned"
+              ? "Its earlier thread on this account is picked up again, with what happened since."
+              : `New thread: this conversation was handed over${a.dropped ? " (this account doesn't share the earlier thread)" : ""}.`;
+    return `Switched to ${a.cli} · ${a.name}. ${said}`;
+}
+
+/** The tasks a switch stopped, for a tooltip: each by its description, then its command (Codex's are their command). */
+export function stoppedTasksTip(provider: string, tasks: StoppedTask[]): string {
+    const line = (t: StoppedTask) => (provider === "codex" ? `$ ${t.command ?? t.label}` : t.command ? `${t.label}\n  $ ${t.command}` : t.label);
+    return ["Stopped by the switch's restart:", ...tasks.map(line)].join("\n");
+}
+
+/** A switch as one line of text (the terminal, a copy, find): "Codex · Second · resumed", then what it stopped. */
+export function accountNoticeText(a: NoticeAccount): string {
+    const line = `${a.cli} · ${a.name} · ${switchWord(a.how)}`;
+    const stopped = a.stopped ?? [];
+    if (!stopped.length) return line;
+    return `${line}\n${stoppedText(stopped)}`;
+}
+
+/** What a switch stopped, in a line: "Stopped: <its description>", or "3 tasks stopped". */
+export function stoppedText(tasks: StoppedTask[]): string {
+    return tasks.length === 1 ? `Stopped: ${tasks[0]!.label}` : `${tasks.length} tasks stopped`;
+}
+
+/**
+ * A CLI's model catalog (its models, and their effort and speed options) is listed by its starting account only:
+ * said where a session on another account picks a model.
+ */
+export function catalogSentence(cli: string, source: string, selected: string): string {
+    return `${cli}'s model list, with each model's effort and speed options, comes from its starting account (${source}); ${selected} may not offer all of them.`;
 }
 
 export interface CompactBlock {

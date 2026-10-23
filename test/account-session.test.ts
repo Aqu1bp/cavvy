@@ -392,7 +392,8 @@ run("terminal /account switches with the same handoff and refuses changes during
     await runCommand(app, "/account codex personal");
     expect(session.accountId("codex")).toBe("personal");
     expect(session.backends.has("codex")).toBe(false);
-    expect(session.notices.at(-1)?.text).toMatch(/Continuing on Codex · Personal: starting a new/);
+    expect(session.notices.at(-1)?.account).toEqual({ provider: "codex", cli: "Codex", name: "Personal", how: "handoff", dropped: true });
+    expect(notices).toContain("Codex · Personal · new thread");
     app.busy = true;
     await runCommand(app, "/account default");
     expect(session.accountId("codex")).toBe("personal");
@@ -405,7 +406,7 @@ run("terminal /account switches with the same handoff and refuses changes during
     expect(session.accountId("codex")).toBe("default");
     // Default's earlier thread, kept for it (#413), is taken up again.
     expect(session.backends.get("codex")?.id).toBe("default-thread");
-    expect(session.notices.at(-1)?.text).toMatch(/^Continuing on Codex · Default: the earlier Codex thread this account finds goes on/);
+    expect(session.notices.at(-1)?.account).toEqual({ provider: "codex", cli: "Codex", name: "Default", how: "returned" });
 });
 
 run("terminal add-account cancellation and invalid input never launch a login", async () => {

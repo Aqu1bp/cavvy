@@ -371,7 +371,8 @@ for (const live of [true, false])
                 await h.rt.setAccount("claude-code", shared.id);
                 if (live) {
                     expect(alive(pid)).toBe(false);
-                    expect(h.notices()).toContain("Claude Code was restarted for the account change: 1 background task stopped.");
+                    // Under the switch's line, by its description (#426).
+                    expect(h.notices().at(-1)).toEndWith("· resumed\nStopped: Wait for checks");
                 }
                 const n = h.turns().length;
                 const turn = await h.send("Reply with one word: ok.");

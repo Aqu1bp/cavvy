@@ -14,7 +14,7 @@
 // 2.1.304, which sets isUsingOverage when the plan's limit is rejected and
 // overageStatus allows overage.
 
-import { usingCredits, type LimitWindow, type PlanLimits } from "../server/protocol";
+import { usingCredits, type LimitWindow, type NoticeLimit, type PlanLimits } from "../server/protocol";
 import { listAccounts } from "../providers/accounts";
 import { redact } from "../util/redact";
 
@@ -302,6 +302,27 @@ export function limitNews(seen: Map<string, string>, window: string, status: str
 
 /** A local display name is safe in notices; signed-in email and plan stay out. */
 export function limitAccountLabel(provider: string, accountId = "default"): string {
-    const name = listAccounts(provider).find((a) => a.id === accountId)?.name ?? accountId;
-    return `${provider === "codex" ? "Codex" : "Claude Code"} · ${name}`;
+    return `${provider === "codex" ? "Codex" : "Claude Code"} · ${accountName(provider, accountId)}`;
+}
+
+function accountName(provider: string, accountId: string): string {
+    return listAccounts(provider).find((a) => a.id === accountId)?.name ?? accountId;
+}
+
+/** The window of a reached limit ("5-hour"), when the report names one. */
+export function reachedWindow(l: PlanLimits | undefined): string | undefined {
+    return l?.windows.find((w) => w.reached)?.label;
+}
+
+/** What a turn stopped on the plan's limit says of it (BackendResult.limit): when it lifts, and which window it is. */
+export function limitStopOf(l: PlanLimits | undefined, resetsAt: number | undefined): { resetsAt?: number; window?: string } {
+    const window = reachedWindow(l);
+    return { ...(resetsAt !== undefined ? { resetsAt } : {}), ...(window ? { window } : {}) };
+}
+
+/** A reached limit as a notice draws it (#426): whose, which window, until when, and whether turns go on, on credits. */
+export function limitNotice(provider: string, accountId = "default", l: PlanLimits | undefined, o: { resetsAt?: number; window?: string; credits?: boolean } = {}): NoticeLimit {
+    const window = o.window ?? reachedWindow(l);
+    const resetsAt = o.resetsAt ?? l?.resetsAt;
+    return { provider, accountId, name: accountName(provider, accountId), ...(window ? { window } : {}), ...(resetsAt !== undefined ? { resetsAt } : {}), ...(o.credits ? { credits: true as const } : {}) };
 }

@@ -8,7 +8,7 @@ import { join, resolve } from "path";
 import { randomBytes } from "crypto";
 import { ensureDir, paths, projectStateDir, APP_TITLE, APP_VERSION } from "../config/paths";
 import type { Message, Usage } from "../providers/types";
-import type { PlanLink } from "../server/protocol";
+import { accountNoticeText, stoppedText, type NoticeAccount, type NoticeData, type NoticeLimit, type NoticeStopped, type PlanLink, type StoppedTask } from "../server/protocol";
 import type { GoalRecord } from "./goal";
 import type { BackgroundTaskInfo } from "../backends/live/info";
 import { textOf } from "../providers/types";
@@ -86,7 +86,7 @@ export function redactMessage(m: Message): Message {
  * sent to a model. `index` is how many messages there were when it happened,
  * so it belongs to the turn of the prompt before it.
  */
-export interface TurnNotice {
+export interface TurnNotice extends NoticeData {
     index: number;
     level: "info" | "warn" | "error";
     text: string;
@@ -267,6 +267,8 @@ export class Session {
     private parked: ParkedBackend[] = [];
     /** How turns of the current history ended, where the messages don't say (see TurnNotice). */
     notices: TurnNotice[] = [];
+    /** Each switch notice recordSwitch wrote, to its run: the switches merged into one line (in memory only). */
+    private switchRuns = new WeakMap<TurnNotice, object>();
     /** The Claude Code or Codex session this one was imported from. */
     imported?: ImportRecord;
     /** Durable schedules as last saved (src/agent/schedule.ts), for restoring when it's opened again. */
@@ -476,11 +478,48 @@ export class Session {
         this.write({ t: "title", title });
     }
 
-    /** Keep a note of how the current turn ended (redacted, like everything written). */
-    recordNotice(level: TurnNotice["level"], text: string, details?: string[]) {
-        const n: TurnNotice = { index: this.messages.length, level, text: redact(text), at: Date.now(), ...(details?.length ? { details: details.map((d) => redact(d)) } : {}) };
-        this.notices.push(n);
+    /** Keep a note of how the current turn ended (redacted, like everything written), with what it is (NoticeData). */
+    recordNotice(level: TurnNotice["level"], text: string, extra: { details?: string[] } & NoticeData = {}): TurnNotice {
+        // What it shows: the data's text, if it has one (as a live notice: history.liveNotice).
+        const { details, text: shown, ...data } = extra;
+        const n: TurnNotice = { index: this.messages.length, level, text: redact(shown ?? text), at: Date.now(), ...(details?.length ? { details: details.map((d) => redact(d)) } : {}), ...redactedData(data) };
+        addNotice(this.notices, n);
         this.write({ t: "notice", ...n });
+        return n;
+    }
+
+    /**
+     * An account switch (#426). With no message since a switch on the same CLI, it's one notice with that one, the
+     * latest: who and how are this switch's, and every task the run stopped stays said. `merged`: it took that
+     * notice's place (as reading the file back does).
+     */
+    recordSwitch(a: NoticeAccount): { notice: TurnNotice; merged: boolean } {
+        const last = this.notices.at(-1);
+        const prev = last && mergesWith(last, a.provider, this.messages.length) ? last : undefined;
+        const all = [...(prev?.account?.stopped ?? []), ...(a.stopped ?? [])];
+        const { stopped: _had, ...who } = a;
+        const account: NoticeAccount = { ...who, ...(all.length ? { stopped: all } : {}) };
+        const notice = this.recordNotice("info", accountNoticeText(account), { account });
+        this.switchRuns.set(notice, (prev && this.switchRuns.get(prev)) || {});
+        return { notice, merged: Boolean(prev) };
+    }
+
+    /**
+     * The background tasks a switch's restart stopped, said once the restart is done. Under the switch's line while
+     * it's still the latest with no message since (`origin`, or a switch merged into it): that line, with them. Else
+     * (a message came since, another notice, or no line: `origin` undefined) a line of their own, which switches
+     * nothing: the tasks never say a switch that isn't the latest, and a reopened session reads them the same.
+     */
+    recordStopped(origin: TurnNotice | undefined, stopped: NoticeStopped): { notice: TurnNotice; merged: boolean } {
+        const last = this.notices.at(-1);
+        const run = origin && this.switchRuns.get(origin);
+        if (run && last?.account && this.switchRuns.get(last) === run && mergesWith(last, stopped.provider, this.messages.length)) {
+            const account: NoticeAccount = { ...last.account, stopped: [...(last.account.stopped ?? []), ...stopped.tasks] };
+            const notice = this.recordNotice("info", accountNoticeText(account), { account });
+            this.switchRuns.set(notice, run);
+            return { notice, merged: true };
+        }
+        return { notice: this.recordNotice("info", stoppedText(stopped.tasks), { stopped }), merged: false };
     }
 
     /** `unknown`: no price is known for it (`cost` is then 0, which doesn't mean free). */
@@ -777,7 +816,7 @@ export class Session {
             }
             else if (l.t === "notice") {
                 const n = turnNotice(l);
-                if (n) s.notices.push(n);
+                if (n) addNotice(s.notices, n);
             }
             else if (l.t === "backend") {
                 if (typeof l.provider !== "string") continue;
@@ -874,7 +913,61 @@ export function turnNotice(l: Partial<TurnNotice>): TurnNotice | undefined {
     if (typeof l.text !== "string" || typeof l.index !== "number") return undefined;
     const level = l.level === "error" || l.level === "warn" ? l.level : "info";
     const details = Array.isArray(l.details) ? l.details.filter((d): d is string => typeof d === "string") : [];
-    return { index: l.index, level, text: l.text, at: typeof l.at === "number" ? l.at : 0, ...(details.length ? { details } : {}) };
+    return { index: l.index, level, text: l.text, at: typeof l.at === "number" ? l.at : 0, ...(details.length ? { details } : {}), ...noticeData(l) };
+}
+
+const str = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+
+/** A notice's NoticeData as read from disk: what isn't well formed is left out (it's then drawn by its level). */
+export function noticeData(l: Partial<NoticeData>): NoticeData {
+    const out: NoticeData = {};
+    if (str(l.source)) out.source = l.source;
+    if (str(l.title)) out.title = l.title;
+    if (str(l.link) && /^https?:\/\//.test(l.link)) out.link = l.link;
+    const a = l.account as Partial<NoticeAccount> | undefined;
+    if (a && str(a.provider) && str(a.cli) && str(a.name) && (a.how === "native" || a.how === "returned" || a.how === "handoff")) {
+        const stopped = Array.isArray(a.stopped) ? stoppedTasks(a.stopped) : [];
+        out.account = { provider: a.provider, cli: a.cli, name: a.name, how: a.how, ...(a.dropped === true ? { dropped: true as const } : {}), ...(stopped.length ? { stopped } : {}) };
+    }
+    const s = l.stopped as Partial<NoticeStopped> | undefined;
+    const tasks = s && Array.isArray(s.tasks) ? stoppedTasks(s.tasks) : [];
+    if (s && str(s.provider) && str(s.cli) && tasks.length) out.stopped = { provider: s.provider, cli: s.cli, tasks };
+    const m = l.limit as Partial<NoticeLimit> | undefined;
+    if (m && str(m.provider) && str(m.accountId) && str(m.name)) {
+        out.limit = { provider: m.provider, accountId: m.accountId, name: m.name, ...(str(m.window) ? { window: m.window } : {}), ...(typeof m.resetsAt === "number" ? { resetsAt: m.resetsAt } : {}), ...(m.credits === true ? { credits: true as const } : {}) };
+    }
+    return out;
+}
+
+/** NoticeData redacted as a notice's text is: what a CLI said, and the commands of tasks a switch stopped. */
+function redactedData(d: NoticeData): NoticeData {
+    const out: NoticeData = { ...d };
+    const tasks = (l: StoppedTask[]) => l.map((t) => ({ label: redact(t.label), ...(t.command ? { command: redact(t.command) } : {}) }));
+    if (d.title) out.title = redact(d.title);
+    if (d.link) out.link = redact(d.link);
+    if (d.account?.stopped) out.account = { ...d.account, stopped: tasks(d.account.stopped) };
+    if (d.stopped) out.stopped = { ...d.stopped, tasks: tasks(d.stopped.tasks) };
+    return out;
+}
+
+function stoppedTasks(l: unknown[]): StoppedTask[] {
+    return l.filter((t): t is StoppedTask => Boolean(t) && str((t as StoppedTask).label)).map((t) => ({ label: t.label, ...(str(t.command) ? { command: t.command } : {}) }));
+}
+
+/** The last notice is a switch on `provider` with no message since (at `index`): the next switch there is one with it. */
+function mergesWith(last: TurnNotice, provider: string, index: number): boolean {
+    return last.account?.provider === provider && last.index === index;
+}
+
+/**
+ * Adds a notice as it's kept: a switch on the CLI the last one switched, with no message between them, takes that
+ * one's place (Session.recordSwitch wrote it merged). Reading the file back does the same, so a reopened session
+ * shows what the live one did.
+ */
+export function addNotice(notices: TurnNotice[], n: TurnNotice) {
+    const last = notices.at(-1);
+    if (n.account && last && mergesWith(last, n.account.provider, n.index)) notices[notices.length - 1] = n;
+    else notices.push(n);
 }
 
 /** The notices of the turns a rewind to `count` messages keeps. */

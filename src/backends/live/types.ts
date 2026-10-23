@@ -70,7 +70,7 @@ export type CliEvent =
      * A turn ended. `answers`: every prompt it answered (steering messages folded into it). `refused`: its prompt never
      * reached the CLI's session (Esc withdrew it, and the CLI said it dropped it): LiveTurnResult.refused.
      */
-    | { t: "turn_ended"; ref: string; answers?: string[]; reason: TurnEndReason; error?: string; usage?: Usage; limit?: { resetsAt?: number }; refused?: boolean }
+    | { t: "turn_ended"; ref: string; answers?: string[]; reason: TurnEndReason; error?: string; usage?: Usage; limit?: { resetsAt?: number; window?: string }; refused?: boolean }
     /**
      * A background task started, changed or ended. `wakeDue`: the CLI will start a turn of its own to report
      * it (Claude Code after a task_notification); until a turn starts or ends, the session isn't quiet.

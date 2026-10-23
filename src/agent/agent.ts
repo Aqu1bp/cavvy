@@ -56,6 +56,7 @@ import { FileHistory, promptNotes, resetToolState } from "./checkpoints";
 import { TurnSnapshots, type TurnCapture } from "./turn-snapshots";
 import { redact } from "../util/redact";
 import type { Skill } from "./skills";
+import { limitNotice } from "../backends/limits";
 import { claudeAgents } from "../backends/claude-agents";
 import { isAgentBackend, type AgentBackendClient, type BackendPermission, type BackgroundStop, type BackendWake, type SessionEvent, type SessionHost, type TurnSink, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer, type SteerMessage } from "../backends/types";
 import { getProvider, imageTypesOf } from "../providers/registry";
@@ -95,7 +96,7 @@ import { suggestBashRules } from "../permissions/bash-safety";
 import { isTrusted, trustedByUser } from "../config/trust";
 import { deniedWithin } from "../permissions/rules";
 import { canonical, expandPath, isInside } from "../util/files";
-import type { PlanLimits } from "../server/protocol";
+import type { NoticeData, PlanLimits, StoppedTask } from "../server/protocol";
 import type { NativeGoal } from "./goal";
 
 // ---------------------------------------------------------------------------
@@ -114,7 +115,7 @@ export type AgentEvent =
     | { type: "tool_progress"; id: string; text: string }
     | { type: "tool_approved"; id: string; reason: string; sandboxed?: boolean }
     | { type: "tool_end"; call: ToolCallPart; result: ToolResult; durationMs: number; /** Its title now, when what it did was only known at its end (a backend's web search). */ title?: string }
-    | { type: "notice"; level: "info" | "warn" | "error"; message: string }
+    | { type: "notice"; level: "info" | "warn" | "error"; message: string; /** What it is, for the GUI to draw (#426); `message` stays the whole of it, as text. */ data?: NoticeData }
     | { type: "retry"; attempt: number; delayMs: number; reason: string }
     | { type: "usage"; usage: Usage; cost: CostEstimate; contextTokens: number; /** Already accounted for by the backend; only updates a sub-agent's display. */ displayOnly?: boolean }
     /** `idle`: compacting a conversation left idle, before its prompt cache expires. */
@@ -1190,10 +1191,10 @@ export class Agent {
      * session file, so a reopened session shows why the turn stopped (it's
      * never sent to a model).
      */
-    private endNotice(level: "warn" | "error", message: string) {
+    private endNotice(level: "warn" | "error", message: string, data?: NoticeData) {
         if (level === "error") this.turnError = message;
-        this.session.recordNotice(level, message);
-        this.emit({ type: "notice", level, message });
+        this.session.recordNotice(level, message, data);
+        this.emit({ type: "notice", level, message, ...(data ? { data } : {}) });
     }
 
     private emit(e: AgentEvent) {
@@ -1979,12 +1980,15 @@ export class Agent {
      * next turn starts one on the new account (resuming the native session where it shares its history). Returns how
      * many of its background tasks were running and stopped with it.
      */
-    async releaseAccountProcess(provider: string): Promise<number> {
+    async releaseAccountProcess(provider: string): Promise<StoppedTask[]> {
         const used = [...this.backendsUsed].filter((b) => (b as { def?: { id?: string } }).def?.id === provider);
-        if (!used.length) return 0;
+        if (!used.length) return [];
         const running = new Set(this.backgroundTasks().filter((t) => t.provider === provider && t.status === "running").map((t) => t.id));
         await Promise.all(used.map((b) => b.release?.(this.session.meta.id).catch(() => undefined)));
-        return this.backgroundTasks().filter((t) => running.has(t.id) && t.status !== "running").length;
+        // Each by its label (Claude Code's description, Codex's command cut short), the whole command for the tooltip.
+        return this.backgroundTasks()
+            .filter((t) => running.has(t.id) && t.status !== "running")
+            .map((t) => ({ label: t.label, ...(t.command && t.command !== t.label ? { command: t.command } : {}) }));
     }
 
     /**
@@ -2376,7 +2380,11 @@ export class Agent {
                 if (result.resumeFailed && !adopting) {
                     // Gone, or made in another folder: start a new one with this conversation as context.
                     this.session.forgetBackendSession(provider);
-                    this.emit({ type: "notice", level: "warn", message: `${redact(result.error ?? `Couldn't continue the earlier ${name} session`)}. Starting a new one with this conversation as context.` });
+                    const why = redact(result.error ?? `Couldn't continue the earlier ${name} session`);
+                    // The pill says what happened; what the CLI said folds under it.
+                    const said = why.replace(/^Couldn't resume the [^:]+ session:\s*/, "");
+                    const title = /no conversation found/i.test(said) ? "Session not found · started a new one" : "Couldn't resume · started a new one";
+                    this.emit({ type: "notice", level: "warn", message: `${why}. Starting a new one with this conversation as context.`, data: { source: provider, title, text: said === why ? `${why}.` : `\`${said}\`` } });
                     const fresh = toSend();
                     syncedBefore = undefined;
                     result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...fresh, ...this.preamble(fresh.prompt, prompt), synthetic: woken, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: undefined });
@@ -2405,7 +2413,9 @@ export class Agent {
             if (declined) return this.endBackendTurn(provider, "denied", delivered);
             if (result.reason === "error") {
                 this.limitStop = result.limit;
-                this.endNotice("error", redact(result.error || `${name} stopped with an error.`));
+                // On the plan's limit, the card says whose and until when, and offers another account.
+                const limit = result.limit && limitNotice(provider, this.session.accountId(provider), undefined, result.limit);
+                this.endNotice("error", redact(result.error || `${name} stopped with an error.`), limit ? { source: provider, limit } : undefined);
                 return this.endBackendTurn(provider, "error", delivered);
             }
             if (result.reason === "max_turns") {
@@ -2444,7 +2454,7 @@ export class Agent {
             // The model hears all of it; the user sees a short line, the tasks' names folded under it.
             this.backendStopReminders.push(`Harness stopped these ${name} background tasks: ${r.backgroundStopped.join("; ")}. They are no longer running and will not produce further results. Restart them only if still needed; do not wait for their old task IDs.`);
             const notice = stoppedTasksNotice(r.backgroundStopped);
-            this.session.recordNotice("warn", notice.text, notice.details);
+            this.session.recordNotice("warn", notice.text, { details: notice.details });
         }
         const content: AssistantMessage["content"] = [];
         if (r.text.trim()) content.push({ type: "text", text: r.text });

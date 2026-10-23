@@ -279,7 +279,7 @@ describe("an account switch with CLI-started turns waiting to be taken over (#40
             // The first release waits for its process to stop; the second finds nothing left to let go of.
             agent.releaseAccountProcess = async () => {
                 if (calls++ === 0) await new Promise<void>((r) => (finishFirst = r));
-                return 0;
+                return [];
             };
             const first = rt.setAccount("codex", codex.id);
             await rt.setAccount("codex", "default");

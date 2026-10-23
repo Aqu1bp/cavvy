@@ -503,7 +503,8 @@ test("a Stop the CLI answers after the session moved to another CLI clears only 
     }
 });
 
-test("model lists come from the starting account, and a session switched to another account is told so", async () => {
+test("model lists come from the starting account, and the model picker says so for a session switched to another account (#426)", async () => {
+    const { account, catalogNote } = await import("../src/providers/accounts");
     const alpha = addAccount("codex", { id: "cat-alpha", name: "Alpha" });
     const beta = addAccount("codex", { id: "cat-beta", name: "Beta" });
     // The fake lists one more model, different for each account's folder.
@@ -513,27 +514,28 @@ test("model lists come from the starting account, and a session switched to anot
     const engine = new Engine({ startCwd: root });
     const client = { subs: new Set<string>(), send() {} };
     const listed = async (refresh: boolean) => ((await engine.handle(client, "models.list", { refresh })) as any[]).find((p) => p.provider === "codex")?.models.map((m: any) => m.id) ?? [];
-    const lastNotice = (rt: { session: { notices: { text: string }[] } }) => rt.session.notices.at(-1)?.text ?? "";
+    // Said in the model picker, not the transcript (#426): with no conversation yet, a switch leaves no notice.
+    const caveat = (rt: { session: { accountId(p: string): string } }) => catalogNote("codex", account("codex", rt.session.accountId("codex")), "Codex") ?? "";
     try {
         const fromAlpha = await listed(true);
         expect(fromAlpha).toContain("alpha-only");
         expect(fromAlpha).not.toContain("beta-only");
         const rt = await engine.createSession(root);
         await engine.handle(client, "session.setAccount", { id: rt.session.meta.id, provider: "codex", accountId: beta.id });
-        expect(lastNotice(rt)).toContain("Codex's model list, with each model's effort and speed options, comes from its starting account (Alpha); Beta may not offer all of them.");
+        expect(caveat(rt)).toBe("Codex's model list, with each model's effort and speed options, comes from its starting account (Alpha); Beta may not offer all of them.");
+        expect(rt.session.notices).toHaveLength(0);
         // Refreshing doesn't make it Beta's: the policy is the starting account's list.
         expect(await listed(true)).toEqual(fromAlpha);
         // Switching back to the starting account says nothing more about it.
-        const before = rt.session.notices.length;
         await engine.handle(client, "session.setAccount", { id: rt.session.meta.id, provider: "codex", accountId: alpha.id });
-        expect(rt.session.notices.length).toBe(before);
+        expect(caveat(rt)).toBe("");
         // A new starting account lists its own.
         await engine.handle(client, "accounts.setDefault", { provider: "codex", id: beta.id });
         const fromBeta = await listed(false);
         expect(fromBeta).toContain("beta-only");
         expect(fromBeta).not.toContain("alpha-only");
         await engine.handle(client, "session.setAccount", { id: rt.session.meta.id, provider: "codex", accountId: "default" });
-        expect(lastNotice(rt)).toContain("comes from its starting account (Beta); Default may not offer all of them.");
+        expect(caveat(rt)).toContain("comes from its starting account (Beta); Default may not offer all of them.");
     } finally {
         await engine.stop();
     }
@@ -547,13 +549,14 @@ test("a session's account switch says whether the CLI session goes on natively o
     const client = { subs: new Set<string>(), send() {} };
     const setAccount = (id: string) => engine.handle(client, "session.setAccount", { id: rt.session.meta.id, provider: "codex", accountId: id });
     const rt = await engine.createSession(root);
-    const lastNotice = () => rt.session.notices.at(-1)?.text ?? "";
+    const lastSwitch = () => rt.session.notices.at(-1)?.account;
     try {
         rt.session.push({ role: "user", content: [{ type: "text", text: "Earlier" }], meta: { kind: "prompt" } });
         rt.session.setBackendSession("codex", "thread-1", 1, accountPlace("codex"));
         // Shares Default's sessions/: the same thread goes on there.
         await setAccount(shared.id);
-        expect(lastNotice()).toStartWith("Continuing on Codex · Shared: the same Codex session goes on, resumed natively (this account shares its history). Codex's model list");
+        expect(lastSwitch()).toEqual({ provider: "codex", cli: "Codex", name: "Shared", how: "native" });
+        expect(rt.session.notices.at(-1)?.text).toBe("Codex · Shared · resumed");
         expect(rt.session.backends.get("codex")?.id).toBe("thread-1");
         // Busy: refused, nothing changes.
         rt.busy = true;
@@ -563,17 +566,24 @@ test("a session's account switch says whether the CLI session goes on natively o
         rt.busy = false;
         // Its own history: a new thread, handed the conversation.
         await setAccount(own.id);
-        expect(lastNotice()).toStartWith("Continuing on Codex · Own: starting a new Codex thread with this conversation as context (this account doesn't share the earlier Codex thread's history). Codex's model list");
+        expect(lastSwitch()).toEqual({ provider: "codex", cli: "Codex", name: "Own", how: "handoff", dropped: true });
+        // No message between the switches: one notice, the latest.
+        expect(rt.session.notices).toHaveLength(1);
         expect(rt.session.backends.has("codex")).toBe(false);
         // Back where the earlier thread lives (#413): that thread goes on, sent what it missed.
         await setAccount("default");
-        expect(lastNotice()).toStartWith("Continuing on Codex · Default: the earlier Codex thread this account finds goes on, resumed natively, with what happened since its last turn.");
+        expect(lastSwitch()).toEqual({ provider: "codex", cli: "Codex", name: "Default", how: "returned" });
         expect(rt.session.backends.get("codex")?.id).toBe("thread-1");
         // No native thread to keep or take up: the handoff, without the reason.
         rt.session.forgetBackendSession("codex");
         await setAccount(own.id);
         await setAccount("default");
-        expect(lastNotice()).toBe("Continuing on Codex · Default: starting a new Codex thread with this conversation as context.");
+        expect(lastSwitch()).toEqual({ provider: "codex", cli: "Codex", name: "Default", how: "handoff" });
+        expect(rt.session.notices).toHaveLength(1);
+        // The live transcript has it as one line between turns.
+        const line = rt.snapshot().turns.at(-1)!;
+        expect(line.prompt).toBeUndefined();
+        expect(line.blocks).toEqual([expect.objectContaining({ t: "notice", level: "info", account: lastSwitch(), text: "Codex · Default · new thread" })]);
     } finally {
         await engine.stop();
         removeAccount("codex", shared.id, shared.folder);
@@ -611,7 +621,12 @@ for (const provider of ["claude-code", "codex"] as const) test(`${provider}: an 
         expect(alive(first!.pid)).toBe(false);
         expect(running()).toHaveLength(0);
         const name = provider === "codex" ? "Codex" : "Claude Code";
-        expect(rt.session.notices.map((n) => n.text)).toContain(`${name} was restarted for the account change: 1 background task stopped.`);
+        // Under the switch's line: the task it stopped, by its label (Claude Code's description; Codex's command).
+        const switched = rt.session.notices.at(-1)!;
+        expect(switched.account).toMatchObject({ provider, cli: name, name: "Shared", how: "native", stopped: [{ label: provider === "codex" ? "sleep 1; echo bg 1" : "Map auth" }] });
+        const line = rt.snapshot().turns.at(-1)!;
+        expect(line.prompt).toBeUndefined();
+        expect(line.blocks).toEqual([expect.objectContaining({ t: "notice", account: switched.account })]);
         // Its work would have ended, and its report turn come, by now: none is taken over under the new account.
         await Bun.sleep(3500)
         expect(turns()).toBe(1);

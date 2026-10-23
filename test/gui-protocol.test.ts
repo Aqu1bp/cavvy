@@ -407,7 +407,7 @@ describe("replay", () => {
         const session = Session.create(join(tempDir(), "proj-notice-details"));
         try {
             session.push(user("wait for checks"));
-            session.recordNotice("warn", "Stopped 2 background tasks", ["Wait for checks", "bun test ./test/a.test.ts…"]);
+            session.recordNotice("warn", "Stopped 2 background tasks", { details: ["Wait for checks", "bun test ./test/a.test.ts…"] });
             session.recordNotice("info", "Plain");
             session.release();
             const reopened = Session.load(session.file);
