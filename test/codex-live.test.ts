@@ -1068,3 +1068,244 @@ describe("#439: Esc after turn/start is answered, before the turn is active", ()
         expect(sent).toHaveLength(3);
     });
 });
+
+// #438: Codex answers turn/steer at once but holds steered input until the turn's next model step, and an interrupt
+// before that drops it without a word. A steered message counts as delivered only once Codex takes it (its userMessage
+// item); dropped, it goes with the next prompt. Either way Codex's thread has it once, and the catch-up cursor stays right.
+describe("#438: a steer Codex accepted but hadn't taken when Esc came", () => {
+    const TOKEN = "otter-kettle-438";
+    /** How many times `word` is in what the thread's model was sent (its rollout's fake-sent lines, FAKE_TRANSCRIPTS). */
+    const inRollout = (word: string) => {
+        const f = join(process.env.CODEX_HOME!, "sessions", "thr-new.jsonl");
+        if (!existsSync(f)) return 0;
+        return readFileSync(f, "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((l) => l.type === "fake-sent").reduce((n, l) => n + String(l.text).split(word).length - 1, 0);
+    };
+    const count = (s: string | undefined, word: string) => (s ?? "").split(word).length - 1;
+    beforeEach(() => rmSync(join(process.env.CODEX_HOME!, "sessions"), { recursive: true, force: true }));
+
+    /** A turn ("first"), another model's (TOKEN), then a turn running a command, steered with `word` once Codex runs it. */
+    async function steered(live: boolean, word: string, env: Record<string, string> = {}) {
+        Object.assign(process.env, { FAKE_TRANSCRIPTS: "1", FAKE_STEER_PENDING: "1", FAKE_SCENARIO: "cmd" });
+        const a = await makeAgent(live ? {} : { settings: { agentCli: { liveSessions: false } } });
+        expect(await a.run("first")).toBe("done");
+        a.session.push({ role: "user", content: [{ type: "text", text: `hello ${TOKEN}` }], meta: { kind: "prompt", display: `hello ${TOKEN}` } });
+        a.session.push({ role: "assistant", content: [{ type: "text", text: "Noted." }], provider: "mock", model: "mock-opus", stopReason: "end_turn" } as any);
+        Object.assign(process.env, { FAKE_SCENARIO: "hang", FAKE_HANG_MS: "20000", ...env });
+        const stop = new AbortController();
+        const running = a.run("go", stop.signal);
+        await until(() => JSON.stringify(a.events).includes("sleep 60"), "the command");
+        a.queue.push(word);
+        a.agent.queueChanged();
+        await until(() => calls("turn/steer").length === 1, "the steer");
+        return { a, stop, running };
+    }
+    /** The prompts after: the next carries what it must, and the one after nothing. */
+    async function after(a: Awaited<ReturnType<typeof makeAgent>>) {
+        for (const k of ["FAKE_HANG_MS", "FAKE_STEER_MS"]) delete process.env[k];
+        process.env.FAKE_SCENARIO = "cmd";
+        expect(await a.run("next")).toBe("done");
+        const next = turnTexts().at(-1);
+        expect(await a.run("and after")).toBe("done");
+        return { next, last: turnTexts().at(-1) };
+    }
+
+    for (const live of [true, false]) {
+        const how = live ? "live" : "per run";
+        test(`${how}: accepted while a command runs, then Esc before Codex's next step: it goes with the next prompt, once`, async () => {
+            const word = `kumquat-${live ? "live" : "run"}`;
+            const { a, stop, running } = await steered(live, word);
+            await until(() => logLines().some((l) => l.steerPending), "Codex to hold it");
+            stop.abort();
+            expect(await running).toBe("aborted");
+            expect(logLines().find((l) => l.steerDropped)?.steerDropped.text).toBe(word);
+            expect(inRollout(word)).toBe(0);
+            const { next, last } = await after(a);
+            expect(count(next, word)).toBe(1);
+            expect(count(last, word)).toBe(0);
+            // The catch-up cursor: the other model's turn went with "go", once.
+            expect(count(turnTexts().at(-3), TOKEN)).toBe(1);
+            expect(count(next, TOKEN)).toBe(0);
+            expect(inRollout(word)).toBe(1);
+            expect(inRollout(TOKEN)).toBe(1);
+        }, 30_000);
+
+        // As live Codex 0.163 did: it took the steer a moment after answering, the command still running.
+        test(`${how}: accepted and taken while a command runs, then Esc: Codex's thread has it, so the next prompt doesn't carry it`, async () => {
+            const word = `cherimoya-${live ? "live" : "run"}`;
+            const { a, stop, running } = await steered(live, word, { FAKE_STEER_TAKE_MS: "5" });
+            await until(() => logLines().some((l) => l.steerTaken), "Codex to take it");
+            stop.abort();
+            expect(await running).toBe("aborted");
+            expect(logLines().some((l) => l.steerDropped)).toBe(false);
+            delete process.env.FAKE_STEER_TAKE_MS;
+            const { next, last } = await after(a);
+            expect(count(next, word)).toBe(0);
+            expect(count(last, word)).toBe(0);
+            expect(inRollout(word)).toBe(1);
+        }, 30_000);
+
+        test(`${how}: dropped, then a new thread (another account's, say): its catch-up has the message once, not again in the note`, async () => {
+            const word = `loquat-${live ? "live" : "run"}`;
+            const { a, stop, running } = await steered(live, word);
+            await until(() => logLines().some((l) => l.steerPending), "Codex to hold it");
+            stop.abort();
+            expect(await running).toBe("aborted");
+            await a.agent.releaseBackends();
+            a.session.forgetBackendSession("codex");
+            const { next, last } = await after(a);
+            // The whole conversation: the steered message (as the user sent it) once, the other model's turn once.
+            expect(count(next, word)).toBe(1);
+            expect(count(next, TOKEN)).toBe(1);
+            expect(count(last, word)).toBe(0);
+        }, 30_000);
+
+        test(`${how}: accepted while a command runs, and the command ends: Codex takes it, so the next prompt doesn't carry it`, async () => {
+            const word = `tamarind-${live ? "live" : "run"}`;
+            const { a, running } = await steered(live, word, { FAKE_HANG_MS: "800" });
+            expect(await running).toBe("done");
+            expect(logLines().find((l) => l.steerTaken)?.steerTaken.text).toBe(word);
+            const { next, last } = await after(a);
+            expect(count(next, word)).toBe(0);
+            expect(count(last, word)).toBe(0);
+            expect(inRollout(word)).toBe(1);
+        }, 30_000);
+
+        test(`${how}: Esc while its turn/steer is on its way: Codex refuses it, and it goes with the next prompt, once`, async () => {
+            const word = `rambutan-${live ? "live" : "run"}`;
+            const { a, stop, running } = await steered(live, word, { FAKE_STEER_MS: "400" });
+            stop.abort();
+            expect(await running).toBe("aborted");
+            const { next, last } = await after(a);
+            expect(count(next, word)).toBe(1);
+            expect(count(last, word)).toBe(0);
+            expect(inRollout(word)).toBe(1);
+        }, 30_000);
+    }
+});
+
+// #451 review: more ways a message counted as delivered on Codex's answer, or came back only in part.
+describe("#451 review: delivered only once Codex takes it, and back whole when it doesn't", () => {
+    const inRollout = (word: string) => {
+        const f = join(process.env.CODEX_HOME!, "sessions", "thr-new.jsonl");
+        if (!existsSync(f)) return 0;
+        return readFileSync(f, "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((l) => l.type === "fake-sent").reduce((n, l) => n + String(l.text).split(word).length - 1, 0);
+    };
+    const count = (s: string | undefined, word: string) => (s ?? "").split(word).length - 1;
+    beforeEach(() => rmSync(join(process.env.CODEX_HOME!, "sessions"), { recursive: true, force: true }));
+
+    test("one userMessage item (no clientId) takes one steer, though its started and completed both come and two wait with its words", async () => {
+        const { CodexTurn } = await import("../src/backends/codex");
+        const turn = new CodexTurn(registry.getProvider("codex")!, {} as never) as any;
+        turn.threadId = "thr";
+        turn.rpc = { closed: false, request: async () => ({}) };
+        const taken: number[] = [];
+        const dropped: number[] = [];
+        for (const n of [1, 2]) await turn.steerTurn("turn-1", [{ type: "text", text: "same words" }], "same words", { taken: async () => void taken.push(n), dropped: () => void dropped.push(n) });
+        const item = { type: "userMessage", id: "user-9", clientId: null, content: [{ type: "text", text: "same words", text_elements: [] }] };
+        turn.steerTaken(item);
+        turn.steerTaken(item);
+        await Bun.sleep(5);
+        expect(taken).toEqual([1]);
+        turn.steersDropped("turn-1");
+        await turn.steering;
+        expect(dropped).toEqual([2]);
+    });
+
+    test("a prompt steered into a wake turn (turn/start refused for it), then stopped before Codex took it: it goes with the next prompt, once", async () => {
+        Object.assign(process.env, { FAKE_CODEX_SCENARIOS: "bg,hang,cmd", FAKE_BG_MS: "100", FAKE_HANG_MS: "20000", FAKE_ONE_TURN: "1", FAKE_STEER_PENDING: "1", FAKE_TRANSCRIPTS: "1" });
+        const a = await makeAgent();
+        expect(await a.run("start it")).toBe("done");
+        const w = await a.nextWake();
+        await until(() => logLines().some((l) => l.received?.method === "turn/start" && l.received.params.input?.[0]?.text?.includes("has finished")), "the wake turn");
+        const word = "feijoa-wake";
+        const stop = new AbortController();
+        const running = a.run(`what's the status? ${word}`, stop.signal);
+        await until(() => logLines().some((l) => l.steerPending?.text.includes(word)), "Codex to hold it");
+        // Esc: the run waits for how it went, so its stop stops that turn too. (Had the run ended already, the wake is stopped.)
+        stop.abort();
+        await running;
+        await Bun.sleep(100);
+        if (!logLines().some((l) => l.hangEnded)) {
+            const esc = new AbortController();
+            const wake = a.adopt(w, esc.signal);
+            await Bun.sleep(100);
+            esc.abort();
+            await wake;
+        }
+        expect(logLines().find((l) => l.steerDropped)?.steerDropped.text).toContain(word);
+        delete process.env.FAKE_CODEX_SCENARIOS;
+        process.env.FAKE_SCENARIO = "cmd";
+        expect(await a.run("next")).toBe("done");
+        expect(count(turnTexts().at(-1), word)).toBe(1);
+        expect(inRollout(word)).toBe(1);
+    }, 30_000);
+
+    test("an image prompt Codex's own turn took (claim), stopped before Codex took it: the next prompt carries its words and its image", async () => {
+        Object.assign(process.env, { FAKE_CODEX_SCENARIOS: "cmd,hang,cmd", FAKE_HANG_MS: "20000", FAKE_REFUSE_TURN_START_AT: "2", FAKE_STEER_PENDING: "1" });
+        const a = await makeAgent();
+        expect(await a.run("one")).toBe("done");
+        fakeEnv.write();
+        const stop = new AbortController();
+        const running = a.agent.run([{ type: "text", text: "match this mockup" }, { type: "image", mediaType: "image/png", data: "iVBORw0KGgo=" }], { signal: stop.signal });
+        await until(() => logLines().some((l) => l.steerPending?.text.includes("match this mockup")), "Codex to hold it");
+        stop.abort();
+        expect(await running).toBe("aborted");
+        expect(logLines().some((l) => l.steerDropped)).toBe(true);
+        delete process.env.FAKE_CODEX_SCENARIOS;
+        process.env.FAKE_SCENARIO = "cmd";
+        expect(await a.run("next")).toBe("done");
+        const next = calls("turn/start").at(-1)!;
+        expect(JSON.stringify(next.input)).toContain("match this mockup");
+        expect(next.input).toContainEqual({ type: "image", url: "data:image/png;base64,iVBORw0KGgo=" });
+        expect(await a.run("after")).toBe("done");
+        expect(calls("turn/start").at(-1)!.input.filter((i: any) => i.type === "image")).toEqual([]);
+    }, 30_000);
+
+    for (const live of [true, false])
+        test(`${live ? "live" : "per run"}: what the user said declining a command, stopped before Codex took it: it goes with the next prompt, once`, async () => {
+            Object.assign(process.env, { FAKE_SCENARIO: "cmd", FAKE_DECLINE: "1", FAKE_STEP_MS: "20000", FAKE_STEER_PENDING: "1", FAKE_TRANSCRIPTS: "1" });
+            const said = "Use staging instead";
+            let feedback: string | undefined = said;
+            const a = await makeAgent({ mode: "default", ask: async () => (feedback ? { allow: false, feedback } : { allow: true }) as any, ...(live ? {} : { settings: { agentCli: { liveSessions: false } } }) });
+            const stop = new AbortController();
+            const running = a.run("deploy it", stop.signal);
+            await until(() => logLines().some((l) => l.steerPending?.text.includes(said)), "Codex to hold it", 10_000);
+            stop.abort();
+            expect(await running).toBe("aborted");
+            expect(logLines().find((l) => l.steerDropped)?.steerDropped.text).toContain(said);
+            for (const k of ["FAKE_STEP_MS", "FAKE_DECLINE"]) delete process.env[k];
+            feedback = undefined;
+            expect(await a.run("next")).toBe("done");
+            expect(count(turnTexts().at(-1), said)).toBe(1);
+            expect(inRollout(said)).toBe(1);
+        }, 30_000);
+});
+
+// #451 final review: a turn's own input comes as a userMessage item too. With an id of ours (clientUserMessageId), it's
+// never taken for a steer waiting with the same words, which Esc would then lose.
+describe("#451 final review: the prompt's own item isn't a steer's", () => {
+    for (const live of [true, false])
+        test(`${live ? "live" : "per run"}: a steer with the prompt's words, waiting as the prompt's item comes, then Esc: it goes with the next prompt`, async () => {
+            Object.assign(process.env, { FAKE_SCENARIO: "hang", FAKE_HANG_MS: "20000", FAKE_STEER_PENDING: "1", FAKE_PROMPT_ITEM_MS: "600" });
+            const a = await makeAgent(live ? {} : { settings: { agentCli: { liveSessions: false } } });
+            const words = "look at this";
+            const stop = new AbortController();
+            const running = a.run(words, stop.signal);
+            await until(() => JSON.stringify(a.events).includes("sleep 60"), "the command");
+            a.queue.push(words);
+            a.agent.queueChanged();
+            await until(() => logLines().some((l) => l.steerPending), "Codex to hold the steer");
+            // The prompt's own item, after it.
+            await Bun.sleep(800);
+            stop.abort();
+            expect(await running).toBe("aborted");
+            expect(logLines().find((l) => l.steerDropped)?.steerDropped.text).toBe(words);
+            for (const k of ["FAKE_HANG_MS", "FAKE_PROMPT_ITEM_MS"]) delete process.env[k];
+            process.env.FAKE_SCENARIO = "cmd";
+            expect(await a.run("next")).toBe("done");
+            expect(turnTexts().at(-1)!.split(words).length - 1).toBe(1);
+            // Each with an id of ours, which Codex gives back as its item's clientId.
+            expect(calls("turn/start").every((p) => /-turn-/.test(p.clientUserMessageId))).toBe(true);
+            expect(calls("turn/steer")[0]!.clientUserMessageId).toMatch(/-steer-/);
+        }, 30_000);
+});

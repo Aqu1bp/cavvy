@@ -46,6 +46,7 @@ import {
     LISTENER_NOTE,
     Rpc,
     answerOf,
+    clientMessageId,
     codexGoalCommand,
     codexPolicy,
     hookServerConfig,
@@ -688,11 +689,13 @@ export class CodexLiveConnection extends CodexTurn {
             this.goalPausedForMode = false;
             run.t.sink.emit({ type: "goal", goal: this.goal ?? null });
         }
+        // Steers Codex hadn't taken when the run ended (its turn's end didn't come: the stop went unanswered, or Codex went).
+        this.steersDropped();
         // Settled once Codex is gone (its pending requests fail): nothing records a prompt after the turn's end.
         await this.steering;
-        // Recorded as sent but never taken (the turn failed or was stopped): saved for the next turn.
-        // Words only: a prompt's images kept here (claim) aren't a queued message's to save (SteerMessage.settle).
-        if (this.unsteered.length) run.t.sink.undelivered?.(this.unsteered.splice(0).map((m) => ({ text: m.text, images: [], documents: [] })).filter((m) => m.text));
+        // Recorded as sent but never taken (the turn failed or was stopped): saved for the next turn. A prompt's images
+        // kept here (claim, steerInto) go with it (#438): none of a queued message's (holdOver keeps those queued).
+        if (this.unsteered.length) run.t.sink.undelivered?.(this.unsteered.splice(0).map((m) => ({ text: m.text, images: m.images, documents: [] })).filter((m) => m.text || m.images.length));
         this.liveRun = undefined;
         this.aborted = false;
         this.failure = undefined;
@@ -810,7 +813,7 @@ export class CodexLiveConnection extends CodexTurn {
             this.startingThreadMode = this.threadMode;
             this.startingMode = mode;
             try {
-                r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" }).finally(() => (this.starting = false));
+                r = await this.rpc.request("turn/start", { threadId: this.threadId, input, clientUserMessageId: clientMessageId("turn"), cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" }).finally(() => (this.starting = false));
                 break;
             } catch (e) {
                 // Any turn that started meanwhile was Codex's own.
@@ -829,16 +832,18 @@ export class CodexLiveConnection extends CodexTurn {
                 // A turn of Codex's that started before (a wake): the message goes into it.
                 const other = this.mainTurn && !run.turns.has(this.mainTurn) ? this.mainTurn : undefined;
                 if (other && attempt < 2) {
-                    try {
-                        await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: other, input: this.input(text, seg.images) });
-                        liveDebug("codex", "turn/start refused: steered into the running turn", { thread: this.threadId, turn: other });
-                        // To this run (the sink would put it in that turn, which the session shows later as a wake).
-                        run.t.sink.emit({ type: "notice", level: "info", message: "Codex was already in a turn of its own, so your message went into that turn: its answer shows there." });
+                    const how = await this.steerInto(run, other, text, seg.images);
+                    // Refused (it ended meanwhile), or dropped with it before Codex took it (#438): start one now.
+                    if (how === "refused" || (how === "dropped" && !this.aborted && !run.aborted)) continue;
+                    if (how === "dropped") {
+                        // Stopped: it goes with the next prompt, its images with it (detach).
+                        this.keepForNext(text, seg.images);
                         return this.answered();
-                    } catch {
-                        // It ended meanwhile: start one now.
-                        continue;
                     }
+                    liveDebug("codex", "turn/start refused: steered into the running turn", { thread: this.threadId, turn: other });
+                    // To this run (the sink would put it in that turn, which the session shows later as a wake).
+                    run.t.sink.emit({ type: "notice", level: "info", message: "Codex was already in a turn of its own, so your message went into that turn: its answer shows there." });
+                    return this.answered();
                 }
                 // The messages this turn was for aren't lost with it: saved for the next turn, and the notes for the next prompt.
                 if (seg.queued) this.unsteered.push(...seg.queued);
@@ -873,6 +878,26 @@ export class CodexLiveConnection extends CodexTurn {
         return { ref: id };
     }
 
+    /**
+     * The prompt steered into a turn of Codex's own that isn't the run's (a wake): how it went, once Codex took it, or
+     * dropped it with that turn's end (#438), or refused it. The run waits for that, so a prompt it drops can still go
+     * in a turn of its own. Stopped meanwhile, that turn (the message's now) is interrupted, so it's known soon. Codex
+     * gone first: taken, as a prompt it may have had counts as delivered (prompt()).
+     */
+    private async steerInto(run: LiveRun, turnId: string, text: string, images: BackendTurn["images"]): Promise<"taken" | "dropped" | "refused"> {
+        let settle!: (how: "taken" | "dropped") => void;
+        const outcome = new Promise<"taken" | "dropped">((resolve) => (settle = resolve));
+        if (!(await this.steerTurn(turnId, this.input(text, images), text, { taken: async () => settle("taken"), dropped: () => settle("dropped") }))) return "refused";
+        const stop = () => void (this.threadId && this.sendInterrupt(this.threadId, turnId));
+        run.t.signal.addEventListener("abort", stop, { once: true });
+        try {
+            if (run.t.signal.aborted) stop();
+            return await Promise.race([outcome, this.rpc.done.then(() => "taken" as const)]);
+        } finally {
+            run.t.signal.removeEventListener("abort", stop);
+        }
+    }
+
     /** A prompt Codex's own turn took but that couldn't go into it: kept for the next turn, its images with it (#304 on the live path). */
     private keepForNext(text: string, images: BackendTurn["images"]) {
         if (text || images.length) this.unsteered.push({ text, images, documents: [] });
@@ -899,7 +924,7 @@ export class CodexLiveConnection extends CodexTurn {
             this.keepForNext(text, images);
             return { ref: id };
         }
-        if (text || images.length) await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: id, input: this.input(text, images) }).catch(() => this.keepForNext(text, images));
+        if (text || images.length) await this.steerTurn(id, this.input(text, images), text, { dropped: () => this.keepForNext(text, images) });
         if (this.steerWaiting) this.steerQueued();
         return { ref: id };
     }
@@ -1001,6 +1026,8 @@ export class CodexLiveConnection extends CodexTurn {
         const id: string = p.turn.id;
         const status = typeof p.turn.status === "string" ? p.turn.status : "completed";
         this.turnState(this.threadId, id, "ended");
+        // What was steered into it that it never took goes with the next turn (#438).
+        this.steersDropped(id);
         this.running.delete(id);
         this.completedTurns.set(id, { status, ...(status === "failed" ? { error: p.turn.error } : {}) });
         if (this.completedTurns.size > 64) this.completedTurns.delete(this.completedTurns.keys().next().value!);
@@ -1232,7 +1259,7 @@ export class CodexLiveConnection extends CodexTurn {
         this.flights.add(p);
         liveDebug("codex", "host wake: starting a turn", { thread: this.threadId, notes: notes.length, goalGoesOn });
         try {
-            const r: any = await this.rpc.request("turn/start", { threadId: this.threadId, input: this.input(note ? `${note}\n\n${text}` : text, []), cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
+            const r: any = await this.rpc.request("turn/start", { threadId: this.threadId, input: this.input(note ? `${note}\n\n${text}` : text, []), clientUserMessageId: clientMessageId("turn"), cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
             const id: string | undefined = typeof r?.turn?.id === "string" ? r.turn.id : undefined;
             if (!id) throw new Error("Codex didn't start a turn");
             if (serviceTier !== undefined) this.tierNow = serviceTier ?? "default";

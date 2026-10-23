@@ -10,6 +10,7 @@
 // reviewer answers them instead). The harness never reads Codex's
 // credentials (~/.codex/auth.json) and never signs in on its behalf.
 
+import { randomUUID } from "crypto";
 import { existsSync, readFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
@@ -386,7 +387,7 @@ export class CodexBackend implements AgentBackendClient {
             const r: any = await rpc.request("thread/start", { cwd: homedir(), model, ephemeral: true, approvalPolicy: "never", sandbox: "read-only", baseInstructions: req.system, config: { ...ONE_OFF_CONFIG, ...mcp } });
             threadId = r?.thread?.id;
             if (!threadId) throw new ProviderError("Codex didn't start a thread");
-            const t: any = await rpc.request("turn/start", { threadId, input: [{ type: "text", text: oneOffPrompt(req), text_elements: [] }] });
+            const t: any = await rpc.request("turn/start", { threadId, input: [{ type: "text", text: oneOffPrompt(req), text_elements: [] }], clientUserMessageId: clientMessageId("turn") });
             turnId = typeof t?.turn?.id === "string" ? t.turn.id : undefined;
             await done;
             return oneOffAnswer(this.def.id, typeof r?.model === "string" ? r.model : req.model.id, said.join("\n\n"));
@@ -686,6 +687,10 @@ export class CodexTurn {
     private turnStates = new Map<string, "active" | "ended">();
     /** Interrupts Codex refused because their turn wasn't active yet, with how many more tries each has (sendInterrupt). */
     private interruptRetries = new Map<string, number>();
+    /** Steers sent that Codex hasn't taken into their turn yet, by the clientUserMessageId each went with (steerTurn). */
+    private pendingSteers = new Map<string, { turnId: string; text: string; taken?: () => Promise<void>; dropped: () => Promise<void> | void }>();
+    /** userMessage items that took a steer of ours (the last 64): its other event doesn't take another. */
+    private takenItems = new Set<string>();
 
     constructor(
         protected def: ProviderDef,
@@ -978,7 +983,7 @@ export class CodexTurn {
                             this.startingMode = mode;
                             if (this.promptDelivery !== "taken") this.promptDelivery = "sending";
                             try {
-                                r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" }).finally(() => (this.starting = false));
+                                r = await this.rpc.request("turn/start", { threadId: this.threadId, input, clientUserMessageId: clientMessageId("turn"), cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" }).finally(() => (this.starting = false));
                                 break;
                             } catch (e) {
                                 // Any turn that started meanwhile was Codex's own.
@@ -1103,6 +1108,8 @@ export class CodexTurn {
             this.modeKills.clear();
             await this.rpc.proc.stop(1000);
             this.hookServer?.close();
+            // Steers Codex hadn't taken by then never will be (its turn's end may not have come: it was stopped).
+            this.steersDropped();
             // Settled once Codex is gone (its pending requests fail): nothing records a prompt after the turn's end.
             await this.steering;
             // Recorded as sent but never taken (the turn failed or was stopped): saved for the next turn.
@@ -1196,7 +1203,7 @@ export class CodexTurn {
             if (some) this.unsteered.push(...messages!);
             return;
         }
-        if (some) await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: id, input: this.input(joined(messages!), imagesOf(messages!)) }).catch(() => this.unsteered.push(...messages!));
+        if (some) await this.steerTurn(id, this.input(joined(messages!), imagesOf(messages!)), joined(messages!), { dropped: () => void this.unsteered.push(...messages!) });
         // Sent while no turn was running (waiting for this one): it can take them now.
         if (this.steerWaiting) this.steerQueued();
     }
@@ -1401,12 +1408,16 @@ export class CodexTurn {
                 this.patchUpdated(p);
                 break;
             case "item/started":
+                if (p.item?.type === "userMessage") this.steerTaken(p.item);
                 this.onItemStarted(p.item ?? {});
                 break;
             case "item/completed":
+                if (p.item?.type === "userMessage") this.steerTaken(p.item);
                 this.onItemCompleted(p.item ?? {}, p.turnId);
                 break;
             case "turn/completed":
+                // What was steered into it that it never took goes with the next turn.
+                if (typeof p.turn?.id === "string") this.steersDropped(p.turn.id);
                 if (typeof p.turn?.id === "string") this.running.delete(p.turn.id);
                 if (typeof p.turn?.id === "string") this.completedTurns.set(p.turn.id, { status: typeof p.turn.status === "string" ? p.turn.status : "completed", ...(p.turn.status === "failed" ? { error: p.turn.error } : {}) });
                 if (p.turn?.id && this.turnId && p.turn.id !== this.turnId) break;
@@ -2232,17 +2243,67 @@ export class CodexTurn {
                 this.unsteered.push(...(await this.holdOver(messages)));
                 return;
             }
-            try {
-                // With what's attached to them: turn/steer takes the same input items as turn/start (an image alone too).
-                await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: turnId, input: this.input(joined(messages), imagesOf(messages)) });
-            } catch {
-                // Each as it was queued, so the user's words and a watch's events stay told apart.
-                this.unsteered.push(...(await this.holdOver(messages)));
-                return;
-            }
-            // Codex has it: one with attachments is the host's to record now.
-            for (const m of messages) await m.settle?.(true);
+            // With what's attached to them: turn/steer takes the same input items as turn/start (an image alone too).
+            await this.steerTurn(turnId, this.input(joined(messages), imagesOf(messages)), joined(messages), {
+                // Codex has it: one with attachments is the host's to record now.
+                taken: async () => {
+                    for (const m of messages) await m.settle?.(true);
+                },
+                // Refused, or dropped with its turn: each as it was queued, so the user's words and a watch's events stay told apart.
+                dropped: async () => void this.unsteered.push(...(await this.holdOver(messages))),
+            });
         }).catch(() => {});
+    }
+
+    /**
+     * Steer the main thread's turn (turn/steer). Codex answers before it takes the input into the turn, and an interrupt
+     * in between drops it without a word (seen with 0.163: an Esc sent with the steer, #438; unhindered, it took one 2 ms
+     * after answering, a command still running). So it's delivered only once Codex takes it: its userMessage item, whose
+     * clientId is the clientUserMessageId it went with (`taken`). Refused, or its turn over before that, it wasn't
+     * (`dropped`, in the steering chain, so a turn's end waits for it). One or the other, once. Returns whether Codex
+     * accepted it.
+     */
+    protected async steerTurn(turnId: string, input: unknown[], text: string, on: { taken?: () => Promise<void>; dropped: () => Promise<void> | void }): Promise<boolean> {
+        const id = clientMessageId("steer");
+        this.pendingSteers.set(id, { turnId, text, taken: on.taken, dropped: on.dropped });
+        try {
+            await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: turnId, input, clientUserMessageId: id });
+            return true;
+        } catch {
+            if (this.pendingSteers.delete(id)) await on.dropped();
+            return false;
+        }
+    }
+
+    /** Codex took input into a turn of the main thread (a userMessage item): the steer of ours it was is delivered. */
+    protected steerTaken(item: any) {
+        // Its item/started and item/completed: one item takes one steer, however many wait with the same words.
+        const itemId = typeof item?.id === "string" ? item.id : undefined;
+        if (itemId !== undefined && this.takenItems.has(itemId)) return;
+        let id: string | undefined = typeof item?.clientId === "string" && this.pendingSteers.has(item.clientId) ? item.clientId : undefined;
+        if (!id && item?.clientId == null) {
+            // A Codex that doesn't say whose it is: the first waiting with the same words.
+            const text = (Array.isArray(item?.content) ? item.content : []).map((c: any) => (c?.type === "text" && typeof c.text === "string" ? c.text : "")).join("");
+            if (text) id = [...this.pendingSteers].find(([, s]) => s.text === text)?.[0];
+        }
+        const s = id !== undefined ? this.pendingSteers.get(id) : undefined;
+        if (!s) return;
+        this.pendingSteers.delete(id!);
+        if (itemId !== undefined) {
+            this.takenItems.add(itemId);
+            if (this.takenItems.size > 64) this.takenItems.delete(this.takenItems.keys().next().value!);
+        }
+        void s.taken?.().catch(() => {});
+    }
+
+    /** Steers Codex hadn't taken when their turn ended (`turnId`; none: any, as the run ends): they go with the next turn. */
+    protected steersDropped(turnId?: string) {
+        for (const [id, s] of [...this.pendingSteers]) {
+            if (turnId !== undefined && s.turnId !== turnId) continue;
+            this.pendingSteers.delete(id);
+            liveDebug("codex", "steer dropped: its turn ended before Codex took it", { thread: this.threadId, turn: s.turnId });
+            this.steering = this.steering.then(() => s.dropped()).catch(() => {});
+        }
     }
 
     /**
@@ -2278,7 +2339,8 @@ export class CodexTurn {
 
     /**
      * Add text to the running turn (turn/steer). The user's words start the
-     * next turn if that fails; the harness's own notes (followUp false) don't.
+     * next turn if Codex refuses them or drops them (its turn ended or was
+     * stopped before it took them, #438); the harness's own notes (followUp false) don't.
      * A sub-agent's turn is steered the same way (checked with 0.163), but
      * nothing starts another of its turns.
      */
@@ -2292,14 +2354,18 @@ export class CodexTurn {
             if (followUp) this.addFollowUp(text);
             return;
         }
-        // In the steering chain, so a turn that ends meanwhile waits to see whether Codex took it.
-        const sent = this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: this.turnId, input: this.input(text, []) }).then(
-            () => {},
-            () => {
-                if (followUp) this.addFollowUp(text);
+        // In the steering chain, so a turn that ends meanwhile waits to see whether Codex took it. Not taken, the
+        // user's words go with the next turn, or the next prompt after a stop.
+        const sent = this.steerTurn(this.turnId, this.input(text, []), text, {
+            // Stopped: kept for the next prompt. Otherwise a follow-up, which is capped like a hook's (a refused
+            // decline's feedback would start turns without end).
+            dropped: () => {
+                if (!followUp) return;
+                if (this.aborted) this.unsteered.push({ text, images: [], documents: [] });
+                else this.addFollowUp(text);
             },
-        );
-        this.steering = this.steering.then(() => sent);
+        });
+        this.steering = this.steering.then(() => sent).then(() => {});
     }
 }
 
@@ -2574,6 +2640,13 @@ export function applyHunks(text: string, diff: string): string | undefined {
     out.push(...src.slice(pos));
     return out.join("\n");
 }
+
+/**
+ * An id for input we send (turn/start's, turn/steer's clientUserMessageId), which Codex 0.163 gives back as its userMessage
+ * item's clientId. A turn's own input has one too, so its item is never taken for a steer waiting with the same words
+ * (CodexTurn.steerTaken): only an item with no clientId (an older Codex) is matched by its words.
+ */
+export const clientMessageId = (kind: "turn" | "steer") => `${CODEX_CLIENT_NAME}-${kind}-${randomUUID()}`;
 
 /** Codex's answer to turn/interrupt for a turn that isn't active (not yet, or not any more). */
 const NO_ACTIVE_TURN = /no active turn/i;
