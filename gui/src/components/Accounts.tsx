@@ -1,9 +1,9 @@
 import "../styles/accounts.css";
-import { createSignal, createUniqueId, For, onMount, Show } from "solid-js";
+import { createEffect, createSignal, createUniqueId, For, onMount, Show } from "solid-js";
 import { Check, ExternalLink, MoreHorizontal } from "lucide-solid";
 import type { AccountInfo, ProviderInfo } from "@shared/protocol";
 import { refreshModels, refreshProviders, rpc } from "../state/app";
-import { terminalActions } from "../state/ui";
+import { addAccountFor, setAddAccountFor, terminalActions } from "../state/ui";
 import { openExternal } from "../lib/platform";
 import { Menu } from "./ui/Menu";
 import { Dialog } from "./ui/Dialog";
@@ -55,6 +55,16 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
         await refreshProviders();
     };
     onMount(() => { if (installed() && (p.provider.configured || accounts().length > 1)) void refresh().catch((e) => setActionError(message(e))); });
+    let section: HTMLElement | undefined;
+    // "Add account…" in the model picker: open the form here, in view.
+    createEffect(() => {
+        if (addAccountFor() !== p.provider.id) return;
+        setAddAccountFor(undefined);
+        if (!installed()) return;
+        setActionError(undefined);
+        setAdding(true);
+        requestAnimationFrame(() => section?.scrollIntoView({ block: "nearest" }));
+    });
     const work = async (fn: () => Promise<void>, fail = setActionError) => {
         if (busy()) return;
         setBusy(true); fail(undefined);
@@ -126,7 +136,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
     };
     // Under the name: what's missing, or the one account's email.
     const sub = () => !installed() ? "Not installed" : !p.provider.configured ? "Not set up" : single()?.email;
-    return <section class="cli-prov" aria-label={p.provider.name}>
+    return <section ref={section} class="cli-prov" aria-label={p.provider.name}>
         <div class="prov-line">
             <span class="prov-logo"><ProviderIcon id={p.provider.id} name={p.provider.name} size={18} /></span>
             <div class="prov-lab">

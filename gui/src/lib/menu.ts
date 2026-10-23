@@ -42,6 +42,8 @@ export interface MenuBehavior {
     returnFocus: () => HTMLElement | undefined;
     initialFocus?: () => HTMLElement | undefined;
     onKeyDown?: (e: KeyboardEvent) => void;
+    /** Escape, before it closes the panel: true when the panel took it (closing a list open inside it). */
+    onEscape?: () => boolean;
 }
 
 const ITEMS = '[role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"]';
@@ -79,6 +81,7 @@ export function mountMenu(panel: HTMLElement, behavior: MenuBehavior): () => voi
         e.stopPropagation();
         if (e.key === "Escape") {
             e.preventDefault();
+            if (behavior.onEscape?.()) return;
             behavior.close();
             return;
         }

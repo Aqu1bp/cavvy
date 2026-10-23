@@ -23,7 +23,37 @@ export interface PopoverProps {
     /** How short it can get, scrolling, and still stay on the preferred side (default: its full height). */
     minHeight?: number;
     class?: string;
+    /** Fade out on close: a still copy of the panel, which no one can focus or click, goes after the real one has. */
+    exit?: boolean;
     children: JSX.Element;
+}
+
+/**
+ * The closing copy: the real panel is gone already (focus is back on the anchor, its keys
+ * are off), so the copy is only a picture of it. Scrolled lists keep their place; a detached
+ * element reads 0, so the positions come from its scroll events.
+ */
+function fadeOut(el: HTMLElement, scrolled: Map<Element, number>) {
+    const doc = el.ownerDocument;
+    if (doc.documentElement.dataset.motion === "instant" || doc.defaultView?.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const ghost = el.cloneNode(true) as HTMLElement;
+    for (const n of [ghost, ...ghost.querySelectorAll("[id]")]) n.removeAttribute("id");
+    ghost.removeAttribute("role");
+    ghost.setAttribute("aria-hidden", "true");
+    ghost.inert = true;
+    ghost.classList.add("closing");
+    doc.body.append(ghost);
+    if (scrolled.size) {
+        const from = [...el.querySelectorAll("*")];
+        const to = ghost.querySelectorAll("*");
+        for (const [n, top] of scrolled) {
+            const copy = n === el ? ghost : to[from.indexOf(n)];
+            if (copy) copy.scrollTop = top;
+        }
+    }
+    const done = () => ghost.remove();
+    ghost.addEventListener("animationend", (e) => e.target === ghost && done());
+    setTimeout(done, 400);
 }
 
 /** A floating panel next to an anchor, in a portal so no overflow clips it. */
@@ -78,11 +108,26 @@ export function Popover(p: PopoverProps) {
         });
     });
 
+    // Tracked while open, for fadeOut.
+    const scrolled = new Map<Element, number>();
+    const onScroll = (e: Event) => scrolled.set(e.target as Element, (e.target as Element).scrollTop);
+
     return (
         <Show when={p.open}>
+            {(() => {
+                if (p.exit) {
+                    scrolled.clear();
+                    onCleanup(() => el && fadeOut(el, scrolled));
+                }
+                return null;
+            })()}
             <Portal>
                 <div
-                    ref={el}
+                    ref={(e) => {
+                        el = e;
+                        // Scroll doesn't bubble: the lists inside are heard in the capture phase.
+                        if (p.exit) e.addEventListener("scroll", onScroll, true);
+                    }}
                     role={p.role}
                     aria-label={p.label}
                     tabIndex={p.behavior ? -1 : undefined}

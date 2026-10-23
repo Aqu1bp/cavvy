@@ -11,6 +11,7 @@ import { checkTranscriptScroll } from "./transcript-scroll";
 import { checkCommandColumns } from "./command-columns";
 import { checkPaletteDelete } from "./palette-delete";
 import { checkDiffComments } from "./diff-comments";
+import { checkModelPicker } from "./model-picker";
 import "../src/styles/tokens.css";
 import "../src/styles/base.css";
 import "../src/styles/transcript.css";
@@ -239,8 +240,8 @@ async function checkNoticeDetails() {
     }
 }
 
-run().then(() => checkNoticeDetails()).then(() => checkCommandFollow()).then(() => checkCommandColumns(root)).then(() => checkEditorFind(root)).then(() => checkPaletteDelete(root)).then(() => checkTranscriptScroll(root)).then(() => checkDiffComments(root)).then(() => {
-    result.textContent = "PASS: live tool find; notice details; command output follows; command columns; deferred file links and ranges; editor actions and find keys; deleted palette hits; transcript scroll; diff comments";
+run().then(() => checkNoticeDetails()).then(() => checkCommandFollow()).then(() => checkCommandColumns(root)).then(() => checkEditorFind(root)).then(() => checkPaletteDelete(root)).then(() => checkTranscriptScroll(root)).then(() => checkDiffComments(root)).then(() => checkModelPicker(root)).then(() => {
+    result.textContent = "PASS: live tool find; notice details; command output follows; command columns; deferred file links and ranges; editor actions and find keys; deleted palette hits; transcript scroll; diff comments; model picker";
     result.dataset.status = "passed";
 }).catch((error) => {
     result.textContent = String(error.stack ?? error);

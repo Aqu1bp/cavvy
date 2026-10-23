@@ -8,6 +8,7 @@ export function Menu(p: PopoverProps & {
     returnFocus?: () => HTMLElement | undefined;
     initialFocus?: () => HTMLElement | undefined;
     onKeyDown?: (e: KeyboardEvent) => void;
+    onEscape?: () => boolean;
 }) {
     return <Popover {...p} role={p.kind ?? "menu"} label={p.label} behavior={{
         kind: p.kind ?? "menu",
@@ -15,5 +16,6 @@ export function Menu(p: PopoverProps & {
         returnFocus: p.returnFocus ?? p.anchor,
         initialFocus: p.initialFocus,
         onKeyDown: p.onKeyDown,
+        onEscape: p.onEscape,
     }} />;
 }

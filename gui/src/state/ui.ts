@@ -9,6 +9,8 @@ export type SettingsTab = "general" | "appearance" | "providers" | "plugins" | "
 
 export const [paletteOpen, setPaletteOpen] = createSignal(false);
 export const [settingsTab, setSettingsTab] = createSignal<SettingsTab | undefined>();
+/** "Add account…" in the model picker: the CLI provider whose new-account form Settings → Providers opens. */
+export const [addAccountFor, setAddAccountFor] = createSignal<string | undefined>();
 export const [rewindOpen, setRewindOpen] = createSignal(false);
 /** What the delete dialog asks about: one session (with its project), or several picked in the rail. */
 export type DeleteRequest = { id: string; title: string; projectName: string } | { ids: string[]; titles: string[] };
