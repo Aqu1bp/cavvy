@@ -37,7 +37,12 @@ function PromptImages(p: { sessionId?: string; turn: Turn; count: number }) {
         <Show when={images()?.length} fallback={<span class="chip tiny">{label()}</span>}>
             <For each={images()}>
                 {(img, i) => (
-                    <button class="prompt-image" title="View full size" aria-label={`View image ${i() + 1} of ${images()!.length}`} onClick={() => setViewedImage({ src: img.src, alt: `Image ${i() + 1} attached to the prompt` })}>
+                    <button
+                        class="prompt-image"
+                        title="View full size"
+                        aria-label={`View image ${i() + 1} of ${images()!.length}`}
+                        onClick={(e) => setViewedImage({ images: images()!.map((m, k) => ({ name: `Image ${k + 1}`, full: m, preview: m.thumb })), index: i(), from: e.currentTarget })}
+                    >
                         <img src={img.thumb} alt="" />
                     </button>
                 )}
