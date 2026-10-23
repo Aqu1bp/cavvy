@@ -391,6 +391,8 @@ class PacedOutput {
 interface Fifo { read: number; write: number }
 /** FIFOs made ahead: mkfifo is a process of its own, and starting a command shouldn't wait for one. */
 const spareFifos: Fifo[] = [];
+/** How many are ready (for tests: each holds two descriptors). */
+export const spareFifoCount = () => spareFifos.length;
 const SPARE_FIFOS = 4;
 let makingFifos = false;
 /** There's no mkfifo: ordinary pipes for the rest of the process. */
@@ -447,7 +449,8 @@ function makeSpareFifos() {
         }
     };
     try {
-        const made = fifoPaths(SPARE_FIFOS);
+        // Up to SPARE_FIFOS ready, not that many more: the pool tops up, it doesn't grow.
+        const made = fifoPaths(SPARE_FIFOS - spareFifos.length);
         dir = made.dir;
         const maker = spawn("mkfifo", ["-m", "600", ...made.paths], { stdio: "ignore" });
         maker.once("error", (e) => done(undefined, e));

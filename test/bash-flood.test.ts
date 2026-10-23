@@ -9,7 +9,7 @@ import type { BackgroundShell, ToolContext, ToolState } from "../src/tools/types
 
 const iso = isolate();
 const { SecretStore } = await import("../src/agent/secrets");
-const { BashTool, BashOutputTool, KillShellTool, killAllShells, appendOutput, spawnPaced } = await import("../src/tools/bash");
+const { BashTool, BashOutputTool, KillShellTool, killAllShells, appendOutput, spawnPaced, spareFifoCount } = await import("../src/tools/bash");
 const { MonitorTool } = await import("../src/tools/monitor");
 const { WakeQueue } = await import("../src/agent/wakes");
 const { redact, redactPrefix, registerSecret, unregisterSecret } = await import("../src/util/redact");
@@ -65,6 +65,8 @@ async function exited(sh: BackgroundShell) {
     expect(sh.exitCode).not.toBeNull();
 }
 const fds = () => readdirSync("/dev/fd").length;
+/** Descriptors open apart from the spare FIFOs made ahead (two each), which come and go with other commands. */
+const ownFds = () => fds() - 2 * spareFifoCount();
 /** A BashOutput's lines, but for the partial ones its head and tail are cut to around an omission notice. */
 function wholeLines(content: string): string[] {
     const body = /<output>\n([\s\S]*?)\n<\/output>/.exec(content)![1]!;
@@ -154,7 +156,7 @@ describe("a background flood", () => {
         // Spare FIFOs are made ahead (two pairs): count from where they're made.
         for (let i = 0; i < 3; i++) await BashTool.run({ command: "true" }, ctx);
         await Bun.sleep(200);
-        const before = fds();
+        const before = ownFds();
         const tag = `FLOOD${process.pid}${Date.now()}`;
         const { id, shell } = await background(ctx, `yes ${tag}`);
         const { turns } = await turnsDuring(async () => {
@@ -167,7 +169,17 @@ describe("a background flood", () => {
         expect(shell.exitCode).not.toBeNull();
         expect(Bun.spawnSync(["pgrep", "-f", `yes ${tag}`]).stdout.toString().trim()).toBe("");
         await Bun.sleep(200);
-        expect(fds()).toBeLessThanOrEqual(before);
+        expect(ownFds()).toBeLessThanOrEqual(before);
+    }, 60_000);
+
+    test("the spare FIFOs top up to how many are kept, whatever ran before", async () => {
+        const { ctx } = setup();
+        for (let i = 0; i < 6; i++) {
+            await BashTool.run({ command: "true" }, ctx);
+            await Bun.sleep(100);
+            expect(spareFifoCount()).toBeLessThanOrEqual(4);
+        }
+        expect(spareFifoCount()).toBe(4);
     }, 60_000);
 });
 
