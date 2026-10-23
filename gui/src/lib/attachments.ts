@@ -69,7 +69,13 @@ export function fromBase64(data: string): Uint8Array {
 export type ImageAttachment = Extract<Attachment, { kind: "image" }>;
 const dataUrl = (mediaType: string, data: string) => `data:${mediaType};base64,${data}`;
 const previews = new WeakMap<ImageAttachment, Promise<string>>();
-const preview = (thumb: Promise<string | undefined>, a: ImageAttachment) => thumb.then((t) => t ?? dataUrl(a.mediaType, a.data));
+const made = new WeakMap<ImageAttachment, string>();
+const preview = (thumb: Promise<string | undefined>, a: ImageAttachment) =>
+    thumb.then((t) => {
+        const url = t ?? dataUrl(a.mediaType, a.data);
+        made.set(a, url);
+        return url;
+    });
 
 /**
  * What an attached image is shown as: a thumbnail (lib/thumbnail.ts), or the
@@ -80,6 +86,11 @@ export function previewOf(a: ImageAttachment): Promise<string> {
     let p = previews.get(a);
     if (!p) previews.set(a, (p = preview(thumbnail({ data: a.data, mediaType: a.mediaType }), a)));
     return p;
+}
+
+/** The preview, if it's made already (the chip shows it): what the image viewer shows until the image itself is decoded. */
+export function previewNow(a: ImageAttachment): string | undefined {
+    return made.get(a);
 }
 
 const isPdf = (b: Uint8Array) => b.length >= 5 && b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46 && b[4] === 0x2d; // %PDF-

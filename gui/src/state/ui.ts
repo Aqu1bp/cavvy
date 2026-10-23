@@ -16,8 +16,15 @@ export const [rewindOpen, setRewindOpen] = createSignal(false);
 /** What the delete dialog asks about: one session (with its project), or several picked in the rail. */
 export type DeleteRequest = { id: string; title: string; projectName: string } | { ids: string[]; titles: string[] };
 export const [deleteRequest, setDeleteRequest] = createSignal<DeleteRequest | undefined>();
-/** The image shown full size over everything (a prompt's or a reply's). */
-export const [viewedImage, setViewedImage] = createSignal<{ src: string; alt: string } | undefined>();
+/**
+ * An image the viewer can show. `full`: the whole image, as a URL that's cheap
+ * to set (an object URL, or a small data: URL), or as base64 it makes an object
+ * URL of. `preview`: already decoded (a thumbnail, or the transcript's own),
+ * shown at once and until `full` is. `size`: its pixels, where they're known.
+ */
+export type ViewerImage = { name: string; full: string | { mediaType: string; data: string }; preview?: string; size?: { width: number; height: number } };
+/** The image shown full size over everything, the others it steps to (a prompt's, a reply's, the composer's), and what it was opened from. */
+export const [viewedImage, setViewedImage] = createSignal<{ images: ViewerImage[]; index: number; from?: Element } | undefined>();
 /** Files checked in the review pane when Commit was clicked. */
 export const [commitRequest, setCommitRequest] = createSignal<{ id: string; paths: string[] } | undefined>();
 /** The browser's folder picker; `then` gets undefined when it's cancelled. */

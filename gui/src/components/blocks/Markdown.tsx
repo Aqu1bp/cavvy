@@ -15,10 +15,22 @@ function openFile(a: HTMLElement) {
     void openInEditor(a.dataset.file ?? "", n(a.dataset.line), { col: n(a.dataset.col) });
 }
 
+/** An image in a reply, full size, with the reply's others to step to. Each is shown as it is: already decoded, and an object URL (state/images.ts). */
+function viewImage(img: HTMLImageElement) {
+    const all = [...(img.closest(".md") ?? img).querySelectorAll<HTMLImageElement>("img.md-img[src]")];
+    const images = all.map((i) => ({
+        name: i.alt || i.dataset.imageFile?.split("/").pop() || "Image",
+        full: i.src,
+        preview: i.src,
+        size: i.naturalWidth ? { width: i.naturalWidth, height: i.naturalHeight } : undefined,
+    }));
+    setViewedImage({ images, index: Math.max(0, all.indexOf(img)), from: img });
+}
+
 /** Links in rendered markdown open outside the app, never in its window; file links open in the editor; images open full size. */
 export function onLinkClick(e: MouseEvent) {
     const img = (e.target as HTMLElement).closest<HTMLImageElement>("img.md-img");
-    if (img?.src) return setViewedImage({ src: img.src, alt: img.alt });
+    if (img?.getAttribute("src")) return viewImage(img);
     const a = (e.target as HTMLElement).closest("a");
     if (!a) return;
     e.preventDefault();
@@ -54,9 +66,9 @@ function loadImages(root: HTMLElement, load: (path: string) => Promise<string>) 
 
 function onLinkKey(e: KeyboardEvent) {
     const img = (e.target as HTMLElement).closest<HTMLImageElement>("img.md-img");
-    if (img?.src && e.key === "Enter") {
+    if (img?.getAttribute("src") && e.key === "Enter") {
         e.preventDefault();
-        setViewedImage({ src: img.src, alt: img.alt });
+        viewImage(img);
         return;
     }
     const a = (e.target as HTMLElement).closest("a");
@@ -82,7 +94,12 @@ function MarkdownContent(p: { text: string; streaming?: boolean; class?: string;
     const [text, behind] = createReveal(() => p.text, () => Boolean(p.streaming));
     const live = () => Boolean(p.streaming) || behind();
     let root: HTMLDivElement | undefined;
-    const images = createMemo(() => (p.sessionId ? replyImages(p.sessionId) : undefined));
+    const images = createMemo(() => {
+        if (!p.sessionId) return undefined;
+        const r = replyImages(p.sessionId);
+        onCleanup(r.dispose);
+        return r.load;
+    });
     // Unchanged blocks keep their objects; positional owners also keep a growing
     // code block mounted when its source changes. Only a reply
     // with paths in it looks again when what's known changes.

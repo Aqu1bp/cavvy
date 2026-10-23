@@ -393,6 +393,11 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
     }
     if (/\bstreamdemo\b/.test(p)) return { reasoning: "They want the session flow explained with an example.", text: STREAM_DEMO, paced: true };
     if (/\bslow\b/.test(p)) return { reasoning: "Let me think about this carefully. ".repeat(6), text: Array.from({ length: 12 }, (_, i) => `Paragraph ${i + 1}: streaming text arrives a few words at a time so the interface can be checked for smooth rendering and stable scrolling.`).join("\n\n") };
+    // "imagedemo shot.png icon.png": a reply that shows those files of the project as images (the image viewer).
+    if (/\bimagedemo\b/.test(p)) {
+        const files = prompt.match(/[\w./-]+\.(?:png|jpe?g|gif|webp)\b/gi) ?? [];
+        return { text: files.length ? `Here they are.\n\n${files.map((f) => `![${f}](${f})`).join("\n\n")}` : "Name some image files to show." };
+    }
     if (toolRounds > 0) return { text: "Done." };
     return {
         reasoning: "A short, direct answer will do.",
