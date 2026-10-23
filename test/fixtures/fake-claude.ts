@@ -24,8 +24,11 @@
 // FAKE_SECOND_SCENARIO  the scenario for its prompts after the first (default: the same)
 // FAKE_BACKGROUND_MS  how long a background sub-agent goes on after the turn's result (default 300)
 // FAKE_BACKGROUND_ASK=1  the background sub-agent asks to run a command (can_use_tool) before it ends
-// FAKE_STALE_TASK=1   resumed, it first reports a background sub-agent of the earlier run as stopped, in a turn of its own with no model call (what Claude Code does for one killed with its process)
-//                    =2: a background shell command of the earlier run too (its notification names the earlier process's call, as 2.1.304's does), in a turn of its own
+// FAKE_STALE_TASK=1   resumed, it reports a background sub-agent of the earlier run as stopped (before initialize is answered),
+//                    then takes a turn of its own for it at once, with no model call, ahead of any prompt (what 2.1.304 does for
+//                    one killed with its process, #429); =2: a background shell command of the earlier run too (its notification
+//                    names the earlier process's call, as 2.1.304's does), in a turn of its own; =shell: only the shell command.
+//                    FAKE_STALE_MS: those turns start this long after initialize is answered; FAKE_STALE_TURN_MS: each takes this long
 // FAKE_FG_TASK=1     hang: its foreground Bash is a task (task_started, not backgrounded), and Esc's interrupt says it stopped (task_notification), as 2.1.304 does
 // FAKE_SUB_COMMANDS=1  a background sub-agent runs two foreground commands before it ends, one failing and one stopped, as 2.1.304 says of them:
 //                    task_started owned_by_subagent, then a task_notification naming the sub-agent's call, without owned_by_subagent
@@ -82,7 +85,7 @@
 // as Claude Code 2.1.304 does: images reach the model mid-turn, PDFs don't);
 // shell-background / shell-background-stuck / monitor-background report live tasks;
 // partial-error / partial-error-exit / result-error separate diagnostics from replies.
-// FAKE_CLAUDE_VERSION overrides the initialize version for compatibility tests.
+// FAKE_CLAUDE_VERSION overrides the initialize version for compatibility tests (default 2.1.304; 2.1.301 with FAKE_OLD_RESULTS).
 // Kept between turns, as Claude Code 2.1.304 is (docs/cli-protocol-probes.md): it never exits after a result,
 // only when its stdin closes. As 2.1.304 it says when a prompt is queued, started, completed or cancelled
 // (command_lifecycle), names the prompts a turn takes in its system/init (user_message_uuids), and lists its
@@ -693,23 +696,41 @@ function finishTask(id: string, description: string) {
     queueWake(`${description}: done.`);
 }
 
-let staleReported = false;
+/** FAKE_STALE_TASK: what the earlier run left behind, as its reports' summaries (and the call each names). */
+function staleReports(): { task_id: string; tool_use_id?: string; summary: string }[] {
+    const agent = { task_id: "agent-0", summary: 'Background agent "Map auth" didn\'t finish before the previous session ended' };
+    const shell = { task_id: "shell-0", tool_use_id: "toolu_earlier_shell", summary: "Background shell command didn't finish before the previous session ended" };
+    const which = process.env.FAKE_STALE_TASK;
+    return which === "1" ? [agent] : which === "2" ? [agent, shell] : which === "shell" ? [shell] : [];
+}
+
+/**
+ * Resumed with FAKE_STALE_TASK, as Claude Code 2.1.304 does (probed for #429; test/fixtures/protocol/claude-311-c2-resume.jsonl):
+ * each report of what the earlier run left behind is said before initialize is answered, then each gets a turn of its
+ * own at once, with no model call (num_turns 0, nothing spent), ahead of any prompt. Its init names no prompt; its
+ * result has origin task-notification.
+ */
+function staleTurns() {
+    const reports = resume ? staleReports() : [];
+    if (!reports.length) return;
+    for (const r of reports) out({ type: "system", subtype: "task_notification", ...r, status: "stopped", output_file: "", uuid: `n-${r.task_id}`, session_id: sessionId });
+    turnTail = turnTail.then(async () => {
+        // FAKE_STALE_MS: they start this long after initialize is answered (a prompt sent meanwhile is queued behind them).
+        if (process.env.FAKE_STALE_MS) await Bun.sleep(Number(process.env.FAKE_STALE_MS));
+        for (const _ of reports) {
+            busy = true;
+            out({ type: "system", subtype: "init", capabilities: CAPABILITIES, session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode });
+            // FAKE_STALE_TURN_MS: how long each takes (an Esc meanwhile).
+            if (process.env.FAKE_STALE_TURN_MS) await Bun.sleep(Number(process.env.FAKE_STALE_TURN_MS));
+            out({ type: "result", subtype: "success", is_error: false, session_id: sessionId, total_cost_usd: spent, num_turns: 0, duration_api_ms: 0, result: "", user_message_uuid: null, origin: { kind: "task-notification" }, usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
+            busy = false;
+        }
+    });
+}
 
 async function turn(content: any[], uuid?: string) {
     interrupted = false;
     if (++prompts === 2 && process.env.FAKE_CRASH_ON_SECOND === "1") process.exit(3);
-    if (resume && (process.env.FAKE_STALE_TASK === "1" || process.env.FAKE_STALE_TASK === "2") && !staleReported) {
-        // The earlier run's background sub-agent, killed with it: a turn of its own, with no model call, before the prompt's.
-        staleReported = true;
-        out({ type: "system", subtype: "task_notification", task_id: "agent-0", status: "stopped", output_file: "", summary: 'Background agent "Map auth" didn\'t finish before the previous session ended', session_id: sessionId });
-        if (process.env.FAKE_STALE_TASK === "2") out({ type: "system", subtype: "task_notification", task_id: "shell-0", tool_use_id: "toolu_earlier_shell", status: "stopped", output_file: "", summary: "Background shell command didn't finish before the previous session ended", session_id: sessionId });
-        answering = undefined;
-        for (let i = process.env.FAKE_STALE_TASK === "2" ? 2 : 1; i > 0; i--) {
-            out({ type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode });
-            result("success", { result: "", num_turns: 0, usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
-        }
-        await Bun.sleep(50);
-    }
     answering = uuid;
     syncEnv();
     const scenario = prompts > 1 && process.env.FAKE_SECOND_SCENARIO ? process.env.FAKE_SECOND_SCENARIO : firstScenario();
@@ -1120,13 +1141,15 @@ for await (const chunk of Bun.stdin.stream()) {
             if (sub === "initialize" && process.env.FAKE_HANG_INITIALIZE === "1") continue;
             if (sub === "initialize") {
                 sdkHooks = m.request.hooks ?? {};
+                staleTurns();
                 out({
                     type: "control_response",
                     response: {
                         subtype: "success",
                         request_id: m.request_id,
                         response: {
-                            claude_code_version: process.env.FAKE_CLAUDE_VERSION ?? "2.1.301",
+                            // An older CLI's (FAKE_OLD_RESULTS) names no prompt in a turn's init: one before 2.1.304.
+                            claude_code_version: process.env.FAKE_CLAUDE_VERSION ?? (process.env.FAKE_OLD_RESULTS === "1" ? "2.1.301" : "2.1.304"),
                             models: [
                                 { value: "default", supportsFastMode: true, resolvedModel: "claude-test-1", displayName: "Default (recommended)", supportedEffortLevels: ["low", "high"] },
                                 { value: "sonnet", resolvedModel: "claude-test-2", displayName: "Sonnet", supportedEffortLevels: ["low", "high"] },

@@ -26,6 +26,7 @@ type PermissionRequest = import("../src/agent/agent").PermissionRequest;
 type PermissionResponse = import("../src/agent/agent").PermissionResponse;
 type BackendWake = import("../src/backends/types").BackendWake;
 type ClaudeCodeBackend = import("../src/backends/claude-code").ClaudeCodeBackend;
+type ModelInfo = import("../src/providers/types").ModelInfo;
 
 const bin = tempDir("fake-claude-live-");
 const LOG = join(bin, "log.jsonl");
@@ -1110,4 +1111,116 @@ describe("#311: a notice of a task only when an earlier process left it behind",
             "info: Claude Code: Background shell command didn't finish before the previous session ended.",
         ]);
     }, 15000);
+});
+
+// Resumed after background work was stopped with its process, Claude Code 2.1.304 says so of each task and takes a turn
+// of its own for each at once, with no model call, ahead of any prompt (probed for #429). Those turns are the notice's,
+// not the prompt's (whose answer is its own), nor wakes.
+describe("#429: Claude Code's turns for what an earlier process left behind", () => {
+    const LEFT = "info: Claude Code: Background shell command didn't finish before the previous session ended.";
+    const leftBehind = (events: AgentEvent[]) => notices(events).filter((n) => n.includes("didn't finish before the previous session ended"));
+    const unanswered = (events: AgentEvent[]) => notices(events).filter((n) => n.includes("ended the turn without a reply"));
+
+    /** A background command running, then the process restarted with it (/tasks restart stops it): the next one resumes the session. */
+    async function leftRunning(o: Opts = {}) {
+        process.env.FAKE_SCENARIO = "shell-background";
+        process.env.FAKE_SHELL_MS = "60000";
+        const a = await makeAgent(o);
+        expect(await a.run("start the checks")).toBe("done");
+        await until(() => a.agent.backgroundTasks().some((t) => t.status === "running"), 3000, "the background command");
+        await a.client.restart(a.session.meta.id);
+        await until(() => a.agent.backgroundTasks().every((t) => t.status !== "running"), 3000, "the command stopped with it");
+        process.env.FAKE_SCENARIO = "chat";
+        process.env.FAKE_STALE_TASK = "shell";
+        return a;
+    }
+
+    for (const [when, ms] of [["before the prompt is taken", "0"], ["with the prompt queued behind them (claude-311-c2-resume.jsonl)", "150"]] as const)
+        test(`live: the next prompt's turn is its own, its answer in it; no warning, no wake (the report's turns come ${when})`, async () => {
+            const { run, events, wakes } = await leftRunning();
+            process.env.FAKE_STALE_MS = ms;
+            const from = events.length;
+            expect(await run("Reply with one word: ok.")).toBe("done");
+            expect(starts().at(-1).argv).toContain("--resume");
+            // A wake would come right after.
+            await Bun.sleep(300);
+            const later = events.slice(from);
+            expect(texts(later).join("")).toBe("Working on it.All done.");
+            expect(unanswered(later)).toEqual([]);
+            expect(wakes).toEqual([]);
+            expect(leftBehind(later)).toEqual([LEFT]);
+            // Nothing to stop: it makes no model call.
+            expect(controls("interrupt")).toEqual([]);
+        }, 15000);
+
+    test("live: two left behind, two turns of Claude Code's own, then the prompt's: its answer, no wake", async () => {
+        const { run, events, wakes } = await leftRunning();
+        process.env.FAKE_STALE_TASK = "2";
+        const from = events.length;
+        expect(await run("Reply with one word: ok.")).toBe("done");
+        await Bun.sleep(300);
+        const later = events.slice(from);
+        expect(texts(later).join("")).toBe("Working on it.All done.");
+        expect(unanswered(later)).toEqual([]);
+        expect(wakes).toEqual([]);
+        expect(leftBehind(later)).toHaveLength(2);
+    }, 15000);
+
+    test("live: Esc while Claude Code's turn for it runs withdraws the prompt (not taken yet), and stops nothing else; the next prompt is answered", async () => {
+        const { run, events, wakes } = await leftRunning();
+        process.env.FAKE_STALE_TURN_MS = "800";
+        const ac = new AbortController();
+        const from = events.length;
+        const done = run("Reply with one word: ok.", ac.signal);
+        await until(() => userTexts().includes("Reply with one word: ok."), 5000, "the prompt sent");
+        await Bun.sleep(100);
+        ac.abort();
+        expect(await done).toBe("aborted");
+        const uuid = received().find((m) => m.type === "user" && m.message.content.some((c: any) => c.text === "Reply with one word: ok.")).uuid;
+        // Written as the turn ends: in the fake's log a moment later.
+        await until(() => controls("cancel_async_message").length > 0, 3000, "the withdrawal");
+        expect(controls("cancel_async_message")).toEqual([{ subtype: "cancel_async_message", message_uuid: uuid }]);
+        expect(controls("interrupt")).toEqual([]);
+        delete process.env.FAKE_STALE_TURN_MS;
+        expect(await run("again")).toBe("done");
+        await Bun.sleep(300);
+        const later = events.slice(from);
+        expect(texts(later).join("")).toBe("Working on it.All done.");
+        expect(unanswered(later)).toEqual([]);
+        expect(wakes).toEqual([]);
+        expect(starts().length).toBe(2);
+    }, 15000);
+
+    test("live: a model switch on the running process stops nothing, so nothing is left behind: the command reports as usual", async () => {
+        process.env.FAKE_SCENARIO = "shell-background";
+        process.env.FAKE_SHELL_MS = "400";
+        process.env.FAKE_SECOND_SCENARIO = "chat";
+        const { run, events, wakes, agent, client } = await makeAgent();
+        expect(await run("start the checks")).toBe("done");
+        agent.setModel({ provider: "claude-code", id: "sonnet" } as ModelInfo, client);
+        const from = events.length;
+        expect(await run("Reply with one word: ok.")).toBe("done");
+        expect(controls("set_model")).toEqual([{ subtype: "set_model", model: "sonnet" }]);
+        await until(() => wakes.length === 1, 5000, "the command's report");
+        const later = events.slice(from);
+        expect(texts(later).join("")).toBe("Working on it.All done.");
+        expect(leftBehind(later)).toEqual([]);
+        expect(unanswered(later)).toEqual([]);
+        expect(starts().length).toBe(1);
+    });
+
+    test("per run (agentCli.liveSessions off): a resumed run's answer is its own after Claude Code's turn for what the last run left behind", async () => {
+        process.env.FAKE_SCENARIO = "chat";
+        const { run, events, wakes } = await makeAgent({ settings: { agentCli: { liveSessions: false } } });
+        expect(await run("one")).toBe("done");
+        process.env.FAKE_STALE_TASK = "shell";
+        const from = events.length;
+        expect(await run("Reply with one word: ok.")).toBe("done");
+        expect(starts()[1].argv).toContain("--resume");
+        const later = events.slice(from);
+        expect(texts(later).join("")).toBe("Working on it.All done.");
+        expect(unanswered(later)).toEqual([]);
+        expect(leftBehind(later)).toEqual([LEFT]);
+        expect(wakes).toEqual([]);
+    });
 });

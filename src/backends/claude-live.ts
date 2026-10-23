@@ -177,6 +177,17 @@ export class ClaudeConnection implements CliConnection {
     sendNowCap = false;
     /** Steering messages are acknowledged by uuid (2.1.301 on): they can go mid-turn. */
     private midTurnInput = false;
+    /**
+     * A turn's system/init names the prompts it answers (user_message_uuids): 2.1.304's always does (each probe in
+     * test/fixtures/protocol), so one that names none is a turn Claude Code started by itself, never a waiting prompt's.
+     */
+    private namesPrompts = false;
+    /**
+     * Claude Code said, as it resumed, what an earlier process left behind (#311). It takes a turn of its own for each
+     * report at once, before any prompt's, with no model call (2.1.304: test/fixtures/protocol/claude-311-c2-resume.jsonl,
+     * #429). Those turns are hidden (the notice said it), until a turn of ours starts.
+     */
+    private leftBehind = false;
     private initialized?: Promise<void>;
     private ended = false;
     private controls = new Map<string, (r: Record<string, any> | undefined) => void>();
@@ -281,6 +292,7 @@ export class ClaudeConnection implements CliConnection {
             if (r.subtype !== "success") throw new Error(`${this.def.name}: ${String(r.error ?? "initialize failed")}`);
             const res = r.response ?? {};
             this.midTurnInput = claudeVersionAtLeast(res.claude_code_version, 301);
+            this.namesPrompts = claudeVersionAtLeast(res.claude_code_version, 304);
             this.noteCapabilities(res.capabilities);
             liveDebug("claude", "initialized", { version: res.claude_code_version, sendNow: this.sendNowCap, pid: this.proc.pid });
             if (!this.midTurnInput) this.emit({ type: "notice", level: "info", message: "This Claude Code version has no verified mid-turn input acknowledgements. Queued messages will be delivered when its current turn ends." });
@@ -642,7 +654,7 @@ export class ClaudeConnection implements CliConnection {
         }
         let uuids = this.ours(m);
         // An older Claude Code names none: the one command_lifecycle said started, else the oldest still waiting, unless a report is due.
-        if (!uuids.length && !Array.isArray(m.user_message_uuids)) {
+        if (!uuids.length && !Array.isArray(m.user_message_uuids) && !this.namesPrompts) {
             const started = this.startedUuid && this.prompts.has(this.startedUuid) ? this.startedUuid : undefined;
             const waiting = [...this.prompts.entries()].find(([, p]) => p.state === "sent" || p.state === "queued")?.[0];
             const pick = started ?? (this.dues.length ? undefined : waiting);
@@ -651,6 +663,13 @@ export class ClaudeConnection implements CliConnection {
         this.startedUuid = undefined;
         for (const u of uuids) this.prompts.get(u)!.state = "started";
         this.resetTurnState(m);
+        // One of Claude Code's own for what an earlier process left behind: no model call, nothing to show (#429).
+        if (uuids.length) this.leftBehind = false;
+        else if (this.leftBehind) {
+            this.cur = { ref: `left-behind-${++wakeRefs}`, kind: "hidden" };
+            liveDebug("claude", "turn: report of what was left behind (hidden)", { ref: this.cur.ref });
+            return;
+        }
         const first = uuids.length ? this.prompts.get(uuids[0]!)! : undefined;
         if (first?.kind === "carrier") {
             if (first.hidden) {
@@ -1055,7 +1074,11 @@ export class ClaudeConnection implements CliConnection {
         if (!this.agentLabels.has(toolUseId)) {
             // One an earlier process left behind (stopped with it), said as the session is resumed. Not a command of this
             // process's that ended (a foreground one stopped by Esc, a sub-agent's that failed): its own row says so (#311).
-            if (this.resuming && !known && m.owned_by_subagent !== true && summary && (status === "stopped" || status === "failed")) this.emit({ type: "notice", level: "info", message: `Claude Code: ${summary}.` });
+            // Claude Code then takes a turn of its own for it: this notice is all the user sees of it (#429).
+            if (this.resuming && !known && m.owned_by_subagent !== true && (status === "stopped" || status === "failed")) {
+                this.leftBehind = true;
+                if (summary) this.emit({ type: "notice", level: "info", message: `Claude Code: ${summary}.` });
+            }
             return;
         }
         const background = this.backgroundAgents.has(toolUseId);
