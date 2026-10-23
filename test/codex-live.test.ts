@@ -1280,3 +1280,32 @@ describe("#451 review: delivered only once Codex takes it, and back whole when i
             expect(inRollout(said)).toBe(1);
         }, 30_000);
 });
+
+// #451 final review: a turn's own input comes as a userMessage item too. With an id of ours (clientUserMessageId), it's
+// never taken for a steer waiting with the same words, which Esc would then lose.
+describe("#451 final review: the prompt's own item isn't a steer's", () => {
+    for (const live of [true, false])
+        test(`${live ? "live" : "per run"}: a steer with the prompt's words, waiting as the prompt's item comes, then Esc: it goes with the next prompt`, async () => {
+            Object.assign(process.env, { FAKE_SCENARIO: "hang", FAKE_HANG_MS: "20000", FAKE_STEER_PENDING: "1", FAKE_PROMPT_ITEM_MS: "600" });
+            const a = await makeAgent(live ? {} : { settings: { agentCli: { liveSessions: false } } });
+            const words = "look at this";
+            const stop = new AbortController();
+            const running = a.run(words, stop.signal);
+            await until(() => JSON.stringify(a.events).includes("sleep 60"), "the command");
+            a.queue.push(words);
+            a.agent.queueChanged();
+            await until(() => logLines().some((l) => l.steerPending), "Codex to hold the steer");
+            // The prompt's own item, after it.
+            await Bun.sleep(800);
+            stop.abort();
+            expect(await running).toBe("aborted");
+            expect(logLines().find((l) => l.steerDropped)?.steerDropped.text).toBe(words);
+            for (const k of ["FAKE_HANG_MS", "FAKE_PROMPT_ITEM_MS"]) delete process.env[k];
+            process.env.FAKE_SCENARIO = "cmd";
+            expect(await a.run("next")).toBe("done");
+            expect(turnTexts().at(-1)!.split(words).length - 1).toBe(1);
+            // Each with an id of ours, which Codex gives back as its item's clientId.
+            expect(calls("turn/start").every((p) => /-turn-/.test(p.clientUserMessageId))).toBe(true);
+            expect(calls("turn/steer")[0]!.clientUserMessageId).toMatch(/-steer-/);
+        }, 30_000);
+});

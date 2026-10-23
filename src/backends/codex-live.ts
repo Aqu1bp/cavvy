@@ -46,6 +46,7 @@ import {
     LISTENER_NOTE,
     Rpc,
     answerOf,
+    clientMessageId,
     codexGoalCommand,
     codexPolicy,
     hookServerConfig,
@@ -812,7 +813,7 @@ export class CodexLiveConnection extends CodexTurn {
             this.startingThreadMode = this.threadMode;
             this.startingMode = mode;
             try {
-                r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" }).finally(() => (this.starting = false));
+                r = await this.rpc.request("turn/start", { threadId: this.threadId, input, clientUserMessageId: clientMessageId("turn"), cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" }).finally(() => (this.starting = false));
                 break;
             } catch (e) {
                 // Any turn that started meanwhile was Codex's own.
@@ -1258,7 +1259,7 @@ export class CodexLiveConnection extends CodexTurn {
         this.flights.add(p);
         liveDebug("codex", "host wake: starting a turn", { thread: this.threadId, notes: notes.length, goalGoesOn });
         try {
-            const r: any = await this.rpc.request("turn/start", { threadId: this.threadId, input: this.input(note ? `${note}\n\n${text}` : text, []), cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
+            const r: any = await this.rpc.request("turn/start", { threadId: this.threadId, input: this.input(note ? `${note}\n\n${text}` : text, []), clientUserMessageId: clientMessageId("turn"), cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" });
             const id: string | undefined = typeof r?.turn?.id === "string" ? r.turn.id : undefined;
             if (!id) throw new Error("Codex didn't start a turn");
             if (serviceTier !== undefined) this.tierNow = serviceTier ?? "default";

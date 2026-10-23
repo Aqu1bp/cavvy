@@ -72,7 +72,8 @@
 // FAKE_STEER_DELAY_MS  milliseconds before answering turn/steer (refused then, with FAKE_STEER_FAIL)
 // FAKE_STEP_MS        in the "cmd" scenario, how long the step after the command takes (an interrupt meanwhile ends the turn)
 // Input a turn takes (turn/start's, a turn/steer's) comes as a userMessage item, with the clientUserMessageId it was sent
-//                     with as its clientId, as Codex 0.163 sends it: a steer's at once by default. FAKE_STEER_PENDING=1: as
+//                     with as its clientId, as Codex 0.163 sends it: turn/start's after turn/started (FAKE_PROMPT_ITEM_MS later
+//                     if set), a steer's at once by default. FAKE_STEER_PENDING=1: as
 //                     Codex does, an accepted steer is pending until the turn takes it, and an interrupt meanwhile drops it
 //                     without a word (#438; logged: steerPending, steerTaken, steerDropped). It's taken at the turn's next
 //                     step (a steer's wake in "slow"/"edit", or the step it ends with), or FAKE_STEER_TAKE_MS after it was
@@ -400,7 +401,7 @@ function threadPolicy(p: any) {
 let delayedLimits: (() => void) | undefined;
 let releasedLimits: Promise<void> | undefined;
 
-async function runTurn(threadId: string, turnId: string, policy: { approvalPolicy?: string; sandboxPolicy?: { type?: string }; approvalsReviewer?: string }, input?: any[]) {
+async function runTurn(threadId: string, turnId: string, policy: { approvalPolicy?: string; sandboxPolicy?: { type?: string }; approvalsReviewer?: string }, input?: any[], clientId: string | null = null) {
     const scenario = scenarioOf(turnId);
     const t: NonNullable<typeof current> = { threadId, turnId, interrupted: false };
     current = t;
@@ -427,7 +428,9 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     };
     if (!startedEarly.delete(turnId)) notify("turn/started", { threadId, turn: { id: turnId, status: "inProgress" } });
     // What a turn/start started it with, as Codex shows it first (Codex's own turns have none).
-    if (input) userMessage(threadId, turnId, input, null);
+    // FAKE_PROMPT_ITEM_MS=n: n ms after turn/started (live, 0.163's came 1 ms to a second after).
+    if (input && process.env.FAKE_PROMPT_ITEM_MS) setTimeout(() => !t.done && userMessage(threadId, turnId, input, clientId), Number(process.env.FAKE_PROMPT_ITEM_MS));
+    else if (input) userMessage(threadId, turnId, input, clientId);
     for (let i = 0; process.env.FAKE_LIMIT_UPDATE && i < Number(process.env.FAKE_LIMIT_REPEAT ?? 1); i++) notify("account/rateLimits/updated", JSON.parse(readFileSync(process.env.FAKE_LIMIT_UPDATE, "utf-8")));
     // Answer an earlier read after the push, before completing the turn.
     delayedLimits?.();
@@ -969,7 +972,7 @@ async function handle(m: any) {
             }
             // FAKE_WHOLE_TURN_AT=n: the nth turn/start's turn runs to its end before turn/start answers.
             if (process.env.FAKE_WHOLE_TURN_AT && ++wholeTurns === Number(process.env.FAKE_WHOLE_TURN_AT)) {
-                await runTurn(p.threadId, turnId, p, p.input);
+                await runTurn(p.threadId, turnId, p, p.input, typeof p.clientUserMessageId === "string" ? p.clientUserMessageId : null);
                 return reply({ turn: { id: turnId, status: "inProgress" } });
             }
             reply({ turn: { id: turnId, status: "inProgress" } });
@@ -979,11 +982,11 @@ async function handle(m: any) {
                 startingTurn = turnId;
                 setTimeout(() => {
                     if (startingTurn === turnId) startingTurn = undefined;
-                    void runTurn(p.threadId, turnId, p, p.input);
+                    void runTurn(p.threadId, turnId, p, p.input, typeof p.clientUserMessageId === "string" ? p.clientUserMessageId : null);
                 }, late);
                 return;
             }
-            void runTurn(p.threadId, turnId, p, p.input);
+            void runTurn(p.threadId, turnId, p, p.input, typeof p.clientUserMessageId === "string" ? p.clientUserMessageId : null);
             return;
         }
         case "skills/extraRoots/set":

@@ -387,7 +387,7 @@ export class CodexBackend implements AgentBackendClient {
             const r: any = await rpc.request("thread/start", { cwd: homedir(), model, ephemeral: true, approvalPolicy: "never", sandbox: "read-only", baseInstructions: req.system, config: { ...ONE_OFF_CONFIG, ...mcp } });
             threadId = r?.thread?.id;
             if (!threadId) throw new ProviderError("Codex didn't start a thread");
-            const t: any = await rpc.request("turn/start", { threadId, input: [{ type: "text", text: oneOffPrompt(req), text_elements: [] }] });
+            const t: any = await rpc.request("turn/start", { threadId, input: [{ type: "text", text: oneOffPrompt(req), text_elements: [] }], clientUserMessageId: clientMessageId("turn") });
             turnId = typeof t?.turn?.id === "string" ? t.turn.id : undefined;
             await done;
             return oneOffAnswer(this.def.id, typeof r?.model === "string" ? r.model : req.model.id, said.join("\n\n"));
@@ -983,7 +983,7 @@ export class CodexTurn {
                             this.startingMode = mode;
                             if (this.promptDelivery !== "taken") this.promptDelivery = "sending";
                             try {
-                                r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" }).finally(() => (this.starting = false));
+                                r = await this.rpc.request("turn/start", { threadId: this.threadId, input, clientUserMessageId: clientMessageId("turn"), cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" }).finally(() => (this.starting = false));
                                 break;
                             } catch (e) {
                                 // Any turn that started meanwhile was Codex's own.
@@ -2264,7 +2264,7 @@ export class CodexTurn {
      * accepted it.
      */
     protected async steerTurn(turnId: string, input: unknown[], text: string, on: { taken?: () => Promise<void>; dropped: () => Promise<void> | void }): Promise<boolean> {
-        const id = `${CODEX_CLIENT_NAME}-steer-${randomUUID()}`;
+        const id = clientMessageId("steer");
         this.pendingSteers.set(id, { turnId, text, taken: on.taken, dropped: on.dropped });
         try {
             await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: turnId, input, clientUserMessageId: id });
@@ -2355,10 +2355,14 @@ export class CodexTurn {
             return;
         }
         // In the steering chain, so a turn that ends meanwhile waits to see whether Codex took it. Not taken, the
-        // user's words are kept as an unsent message: with the next turn, or the next prompt after a stop.
+        // user's words go with the next turn, or the next prompt after a stop.
         const sent = this.steerTurn(this.turnId, this.input(text, []), text, {
+            // Stopped: kept for the next prompt. Otherwise a follow-up, which is capped like a hook's (a refused
+            // decline's feedback would start turns without end).
             dropped: () => {
-                if (followUp) this.unsteered.push({ text, images: [], documents: [] });
+                if (!followUp) return;
+                if (this.aborted) this.unsteered.push({ text, images: [], documents: [] });
+                else this.addFollowUp(text);
             },
         });
         this.steering = this.steering.then(() => sent).then(() => {});
@@ -2636,6 +2640,13 @@ export function applyHunks(text: string, diff: string): string | undefined {
     out.push(...src.slice(pos));
     return out.join("\n");
 }
+
+/**
+ * An id for input we send (turn/start's, turn/steer's clientUserMessageId), which Codex 0.163 gives back as its userMessage
+ * item's clientId. A turn's own input has one too, so its item is never taken for a steer waiting with the same words
+ * (CodexTurn.steerTaken): only an item with no clientId (an older Codex) is matched by its words.
+ */
+export const clientMessageId = (kind: "turn" | "steer") => `${CODEX_CLIENT_NAME}-${kind}-${randomUUID()}`;
 
 /** Codex's answer to turn/interrupt for a turn that isn't active (not yet, or not any more). */
 const NO_ACTIVE_TURN = /no active turn/i;
