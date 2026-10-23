@@ -767,7 +767,8 @@ function listSkills() {
 
 async function handle(m: any) {
     syncEnv();
-    log({ received: m });
+    // `proc`: the process that received it (its start line has its pid, argv and homes).
+    log({ received: m, proc: process.pid });
     if (m.method === undefined) {
         const r = pending.get(m.id);
         pending.delete(m.id);
@@ -855,6 +856,8 @@ async function handle(m: any) {
             if (String(p.threadId).startsWith("gone")) return fail(`thread not found: ${p.threadId}`);
             await startMcp(p.config);
             const id = `thr-fork-${Math.random().toString(36).slice(2, 8)}`;
+            // The copy has a rollout of its own, in this home (FAKE_TRANSCRIPTS): a later app-server can resume it.
+            rollout(id, true);
             const u = usageOf.get(p.threadId);
             if (u) {
                 usageOf.set(id, { ...u });

@@ -1073,7 +1073,8 @@ for await (const chunk of Bun.stdin.stream()) {
         buf = buf.slice(i + 1);
         if (!line) continue;
         const m = JSON.parse(line);
-        log({ received: m });
+        // `proc`: the process that received it (its start line has its pid, argv and homes).
+        log({ received: m, proc: process.pid });
         if (m.type === "control_request") {
             const sub = m.request?.subtype;
             // FAKE_HANG_INITIALIZE=1: never answers initialize (a CLI stuck starting).
