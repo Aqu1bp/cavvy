@@ -82,21 +82,19 @@ function Label(p: { text: string }) {
     return <For each={p.text.split(/(`[^`]+`)/)}>{(part) => (part.startsWith("`") && part.endsWith("`") && part.length > 2 ? <span class="mono">{part.slice(1, -1)}</span> : part)}</For>;
 }
 
-function Head(p: { icon: JSX.Element; title: string; aside?: string; sub?: JSX.Element }) {
+/** A card's title, then its lines under it: `sub` (a hint, or who asked) and `note` (why it's asking), each whole. */
+function Head(p: { icon: JSX.Element; title: string; sub?: JSX.Element; note?: string }) {
     return (
         <>
             <div class="ask-h">
                 <span class="ask-ic">{p.icon}</span>
                 <span class="ask-title selectable">{p.title}</span>
-                <span class="grow" />
-                <Show when={p.aside}>
-                    <span class="aside truncate" title={p.aside}>
-                        {p.aside}
-                    </span>
-                </Show>
             </div>
             <Show when={p.sub}>
                 <div class="itab-sub selectable">{p.sub}</div>
+            </Show>
+            <Show when={p.note}>
+                <div class="itab-sub selectable">{p.note}</div>
             </Show>
         </>
     );
@@ -166,7 +164,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
             <Head
                 icon={<PermIcon it={p.it} />}
                 title={p.it.heading}
-                aside={p.it.classifierReason ? `Auto mode asked because: ${p.it.classifierReason}` : undefined}
+                note={p.it.classifierReason ? `Auto mode asked because: ${p.it.classifierReason}` : undefined}
                 sub={
                     p.it.agentLabel ? (
                         <>
@@ -298,7 +296,7 @@ function QuestionCard(p: { sessionId: string; it: QuestionInteraction }) {
     });
     return (
         <>
-            <Head icon={<MessageCircleQuestion size={16} />} title={p.it.question} aside={!p.it.options.length ? "Type your answer" : p.it.multi ? "Pick any that apply" : "Pick one, or type your own answer"} />
+            <Head icon={<MessageCircleQuestion size={16} />} title={p.it.question} sub={!p.it.options.length ? "Type your answer" : p.it.multi ? "Pick any that apply" : "Pick one, or type your own answer"} />
             <div class="itab-body">
                 <div class="q-options">
                     <For each={p.it.options}>
@@ -388,7 +386,7 @@ function SecretCard(p: { sessionId: string; it: SecretInteraction }) {
     });
     return (
         <>
-            <Head icon={<KeyRound size={16} />} title={`The agent asks for a secret: ${p.it.name}`} aside="Only its shell commands see the value" />
+            <Head icon={<KeyRound size={16} />} title={`The agent asks for a secret: ${p.it.name}`} sub="Only its shell commands see the value" />
             <div class="itab-body">
                 <p class="secret-purpose selectable" id={descriptionId}>{p.it.purpose}<span class="sr-only"> At least {MIN_SECRET} characters.</span></p>
                 <div class="secret-field">
@@ -460,7 +458,7 @@ function PlanCard(p: { sessionId: string; it: PlanInteraction }) {
     });
     return (
         <>
-            <Head icon={<ClipboardList size={16} />} title="Plan ready for review" aside="Nothing has been changed yet" />
+            <Head icon={<ClipboardList size={16} />} title="Plan ready for review" sub="Nothing has been changed yet" />
             <div class="itab-body">
                 <div class="plan-body" ref={body}>
                     <Markdown text={p.it.plan} />

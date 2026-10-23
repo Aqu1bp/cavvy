@@ -1114,14 +1114,6 @@
     white-space: pre-line;
 }
 
-.ask-h .aside {
-    flex: 0 1 auto;
-    max-width: 50%;
-    font-size: 0.857rem;
-    font-weight: 400;
-    color: var(--fg-3);
-}
-
 .itab-sub {
     display: flex;
     align-items: center;
