@@ -5,7 +5,7 @@
 // Esc stops only the answer. Nothing here runs the real CLI.
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -17,7 +17,7 @@ const { Session } = await import("../src/agent/session");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const { SessionBackground } = await import("../src/agent/background");
-const { liveTiming, CARRIER_COMMAND } = await import("../src/backends/claude-live");
+const { liveTiming, CARRIER_COMMAND, outputTail, claudePathSlug } = await import("../src/backends/claude-live");
 const { stopTiming } = await import("../src/backends/cli");
 const trust = await import("../src/config/trust");
 
@@ -667,7 +667,7 @@ describe("background work across turns", () => {
                 expect(await reportWith({ FAKE_SHELL_OUTPUT_PATH: elsewhere, FAKE_SHELL_OUTPUT_FILE: file })).toBe(SUMMARY);
             });
 
-        test("a long output read from part of the file: nothing from before the first line break in what's read (a secret cut there isn't recognised)", async () => {
+        test("a long output read from part of the file: nothing from before the line break past the longest known secret (a secret cut where the read starts isn't recognised)", async () => {
             const { registerSecret, unregisterSecret } = await import("../src/util/redact");
             const secret = `zz9-${"q7Lm".repeat(249)}`;
             registerSecret(secret, "test key");
@@ -684,7 +684,8 @@ describe("background work across turns", () => {
                 writeFileSync(file, out);
                 const report = (await reportWith({ FAKE_SHELL_OUTPUT_FROM: file }))!;
                 expect(report).toContain("The end of its output:\n");
-                expect(report).toContain("[REDACTED test key]");
+                // Only what follows the line break past the longest known secret: the 64 that follow it are on that line.
+                expect(report).toBe(`The background command \`sleep 150; echo done\` finished with exit code 0. The end of its output:\n${"e".repeat(570)}`);
                 expect(report.endsWith("e".repeat(570))).toBe(true);
                 expect(report).not.toContain(secret.slice(-40));
                 expect(report).not.toContain("q7Lmq7Lm");
@@ -710,6 +711,62 @@ describe("background work across turns", () => {
             } finally {
                 unregisterSecret(secret);
             }
+        });
+
+        // Round 2.
+        test("a multiline secret the read starts in, then the same secret again and again: none of its lines is kept", async () => {
+            const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+            const lines = Array.from({ length: 10 }, (_, i) => `ml${i}-${"Qx9z".repeat(24)}`);
+            const secret = lines.join("\n");
+            registerSecret(secret, "test key");
+            try {
+                // The read (the last 64 KiB) starts 250 characters into the first one, in its third line; what follows,
+                // redacted, is short enough that what's left of the first would be within the tail kept.
+                const rest = `\n${`${secret} `.repeat(64)}\n${"e".repeat(135)}`;
+                expect(Buffer.byteLength(secret.slice(250) + rest)).toBe(65536);
+                const file = join(tempDir("claude-long-"), "out.txt");
+                writeFileSync(file, `${"x".repeat(1000)}\n${secret}${rest}`);
+                const report = (await reportWith({ FAKE_SHELL_OUTPUT_FROM: file }))!;
+                expect(report).toContain("The end of its output:\n");
+                expect(report).toContain("[REDACTED test key]");
+                expect(report.endsWith("e".repeat(135))).toBe(true);
+                for (const l of lines) expect(report).not.toContain(l.slice(4));
+                expect(report).not.toContain("Qx9z");
+            } finally {
+                unregisterSecret(secret);
+            }
+        });
+
+        test("a FIFO put where the output file is: not waited on (the event loop goes on), and not read", async () => {
+            const dir = realpathSync(tempDir("claude-fifo-"));
+            const made = Bun.spawnSync(["mkfifo", join(dir, "t1.output")]);
+            expect(made.exitCode).toBe(0);
+            const started = Date.now();
+            expect(outputTail(dir, "t1")).toBeUndefined();
+            expect(Date.now() - started).toBeLessThan(1000);
+        });
+
+        test("opened through a folder that's a link (as when it's swapped for one while the file is opened): not read", async () => {
+            const real = realpathSync(tempDir("claude-real-"));
+            writeFileSync(join(real, "t1.output"), "secret-ish output\n");
+            const parent = realpathSync(tempDir("claude-parent-"));
+            symlinkSync(real, join(parent, "tasks"));
+            expect(outputTail(join(parent, "tasks"), "t1")).toBeUndefined();
+            // The same file, by its own folder: read.
+            expect(outputTail(real, "t1")).toEqual({ text: "secret-ish output\n", partial: false });
+        });
+
+        test("a folder whose path, sanitized, is past 200 characters: its name as Claude Code 2.1.304 makes it, and the output is read", async () => {
+            // Past 200 characters: the first 200, "-", and the path's Java String.hashCode in base 36.
+            const hashCode = (s: string) => [...s].reduce((h, c) => (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0);
+            expect(hashCode("hello")).toBe(99162322);
+            expect(claudePathSlug(`/${"a".repeat(250)}`)).toBe(`-${"a".repeat(199)}-${Math.abs(hashCode(`/${"a".repeat(250)}`)).toString(36)}`);
+            expect(claudePathSlug("/private/tmp/h429proj")).toBe("-private-tmp-h429proj");
+            const deep = join(realpathSync(tempDir("claude-deep-")), ...Array.from({ length: 6 }, (_, i) => `segment-${i}-${"d".repeat(30)}`));
+            mkdirSync(deep, { recursive: true });
+            expect(deep.replace(/[^a-zA-Z0-9]/g, "-").length).toBeGreaterThan(200);
+            cwd = deep;
+            expect(await reportWith({})).toBe("The background command `sleep 150; echo done` finished with exit code 0. The end of its output:\ncompiling\nfinished-c13");
         });
     });
 

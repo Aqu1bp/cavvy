@@ -22,7 +22,7 @@
 // one process per turn, as before.
 
 import { createHash, randomUUID } from "crypto";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, writeFileSync, type Stats } from "fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readlinkSync, readSync, realpathSync, writeFileSync, type Stats } from "fs";
 import { basename, dirname, join } from "path";
 import type { HookConfig } from "../config/settings";
 import { harnessHome } from "../config/paths";
@@ -35,7 +35,7 @@ import type { ProviderDef } from "../providers/registry";
 import type { ModelInfo, Usage } from "../providers/types";
 import type { PlanLimits } from "../server/protocol";
 import type { ToolDisplay } from "../tools/types";
-import { redact } from "../util/redact";
+import { knownSecrets, redact, redactPrefix } from "../util/redact";
 import { cliCommandNames } from "../commands/custom";
 import { ClaudeGoalWatch, claudeTranscriptFile } from "./claude-goal";
 import { CLAUDE_CLI, cliMessage, requireCli, type JsonLinesProcess } from "./cli";
@@ -106,9 +106,21 @@ const REPORT_OUTPUT_CHARS = 3000;
 const OUTPUT_READ_BYTES = 64 * 1024;
 
 /**
+ * A folder's name under Claude Code's temporary folder, as 2.1.304 makes it: its path, each other character a "-"; past
+ * 200 characters, cut there, with "-" and the path's hash (Java's String.hashCode, in base 36).
+ */
+export function claudePathSlug(path: string): string {
+    const slug = path.replace(/[^a-zA-Z0-9]/g, "-");
+    if (slug.length <= 200) return slug;
+    let h = 0;
+    for (let i = 0; i < path.length; i++) h = ((h << 5) - h + path.charCodeAt(i)) | 0;
+    return `${slug.slice(0, 200)}-${Math.abs(h).toString(36)}`;
+}
+
+/**
  * The folder Claude Code writes a session's background commands' output to, worked out as 2.1.304 does (not taken from
- * a path it names): <CLAUDE_CODE_TMPDIR, else /tmp>/claude-<uid>/<the folder's real path, each other character a "-">/
- * <session>/tasks. Undefined when it can't be, or its root isn't a folder of the user's own.
+ * a path it names): <CLAUDE_CODE_TMPDIR, else /tmp>/claude-<uid>/<the folder's real path, as claudePathSlug>/<session>/
+ * tasks. Undefined when it can't be, or its root isn't a folder of the user's own.
  */
 function taskOutputDir(cwd: string, sessionId: string | undefined): string | undefined {
     const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
@@ -117,40 +129,48 @@ function taskOutputDir(cwd: string, sessionId: string | undefined): string | und
         const root = join(realpathSync(process.env.CLAUDE_CODE_TMPDIR || "/tmp"), `claude-${uid}`);
         const st = lstatSync(root);
         if (!st.isDirectory() || st.uid !== uid) return undefined;
-        return join(root, realpathSync(cwd).replace(/[^a-zA-Z0-9]/g, "-"), sessionId, "tasks");
+        return join(root, claudePathSlug(realpathSync(cwd)), sessionId, "tasks");
     } catch {
         return undefined;
     }
 }
 
 /**
- * The end of a background command's output file, from Claude Code's task-output folder only (#430 review): undefined
- * (the summary stands) unless every folder on the way is a real one, and the file is a regular file of the user's with
- * no other name (not a symlink, nor a hard link to another file: the command can repoint its own output file before it
- * ends, and Claude Code's own reads guard against that). Read from part way, it starts after the first line break: a
- * secret cut where the read starts wouldn't be recognised by redaction.
+ * Where an open file is now, as the system says (not as the path it was opened by says): macOS answers the real path of
+ * /dev/fd/N (Bun's realpath asks F_GETPATH), Linux has /proc/self/fd/N. Undefined elsewhere, or when it can't be told.
  */
-function outputTail(dir: string, taskId: string): string | undefined {
+function openedPath(fd: number): string | undefined {
+    try {
+        if (process.platform === "darwin") return realpathSync(`/dev/fd/${fd}`);
+        if (process.platform === "linux") return readlinkSync(`/proc/self/fd/${fd}`);
+    } catch {}
+    return undefined;
+}
+
+/**
+ * The end of a background command's output file, from Claude Code's task-output folder only (#430 review): undefined
+ * (the summary stands) unless the file opened is a regular file of the user's with no other name, at that very path
+ * (not a symlink, a hard link to another file, or one reached through a folder that's a link: the command can repoint
+ * its own output file or folder before it ends, and Claude Code's own reads guard against that). Opened without waiting
+ * (O_NONBLOCK), so a FIFO put there can't hold up the event loop. `partial`: its last OUTPUT_READ_BYTES only.
+ */
+export function outputTail(dir: string, taskId: string): { text: string; partial: boolean } | undefined {
     if (!/^[A-Za-z0-9_-]+$/.test(taskId)) return undefined;
     const path = join(dir, `${taskId}.output`);
     const uid = process.getuid?.();
+    const plain = (st: Stats) => st.isFile() && st.nlink === 1 && st.uid === uid;
     let fd: number | undefined;
     try {
-        if (realpathSync(dir) !== dir) return undefined;
-        const named = lstatSync(path);
-        const plain = (st: Stats) => st.isFile() && st.nlink === 1 && st.uid === uid;
-        if (!plain(named)) return undefined;
-        fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-        // The file opened is the one looked at, and still a plain one; its folder still Claude Code's.
+        fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
         const st = fstatSync(fd);
-        if (!plain(st) || st.dev !== named.dev || st.ino !== named.ino || realpathSync(dir) !== dir) return undefined;
+        if (!plain(st)) return undefined;
+        // The file opened is the one at the path (no folder on the way swapped for a link while it was opened).
+        const named = lstatSync(path);
+        if (!plain(named) || named.dev !== st.dev || named.ino !== st.ino || openedPath(fd) !== path) return undefined;
         const n = Math.min(st.size, OUTPUT_READ_BYTES);
         const buf = Buffer.alloc(n);
         readSync(fd, buf, 0, n, st.size - n);
-        const text = buf.toString("utf8");
-        if (n === st.size) return text;
-        const line = text.indexOf("\n");
-        return line < 0 ? undefined : text.slice(line + 1);
+        return { text: buf.toString("utf8"), partial: n < st.size };
     } catch {
         return undefined;
     } finally {
@@ -1318,7 +1338,16 @@ export class ClaudeConnection implements CliConnection {
         const out = outputTail(dir, id);
         if (out === undefined) return undefined;
         // Each redacted whole, then cut: a secret across the cut would leave a piece of itself unredacted.
-        const clean = redact(out).trimEnd();
+        let clean = redact(out.text);
+        if (out.partial) {
+            // Read from part way, a secret the read starts in isn't recognised: what's left of a known one (all its lines)
+            // is within the first of them as long as the longest, and of a known-format key (one line) within the first
+            // line. Kept: what the whole read redacts to after the line break past both (a secret across it left out whole).
+            const at = out.text.indexOf("\n", Math.max(0, ...knownSecrets().map((s) => s.length)));
+            if (at < 0) return undefined;
+            clean = clean.slice(redactPrefix(out.text, at + 1).length);
+        }
+        clean = clean.trimEnd();
         const tail = clean.length > REPORT_OUTPUT_CHARS ? `…${clean.slice(-REPORT_OUTPUT_CHARS)}` : clean;
         const command = known?.command ? redact(known.command).trim() : undefined;
         const what = command ? `\`${command.length > 300 ? `${command.slice(0, 300)}…` : command}\`` : `"${this.tasks.get(id)?.label ?? "background command"}"`;
