@@ -91,7 +91,7 @@ export function Popover(p: PopoverProps) {
                         left: `${pos()?.left ?? -9999}px`,
                         top: pos()?.top !== undefined ? `${pos()!.top}px` : undefined,
                         bottom: pos()?.bottom !== undefined ? `${pos()!.bottom}px` : undefined,
-                        width: `${sp(p.width ?? 320)}px`,
+                        width: `${pos()?.width ?? sp(p.width ?? 320)}px`,
                         "max-height": `${Math.min(pos()?.maxHeight ?? 480, sp(p.maxHeight ?? 560))}px`,
                     }}
                     data-side={pos()?.bottom !== undefined ? "top" : "bottom"}
