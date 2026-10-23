@@ -688,6 +688,8 @@ export class CodexLiveConnection extends CodexTurn {
             this.goalPausedForMode = false;
             run.t.sink.emit({ type: "goal", goal: this.goal ?? null });
         }
+        // Steers Codex hadn't taken when the run ended (its turn's end didn't come: the stop went unanswered, or Codex went).
+        this.steersDropped();
         // Settled once Codex is gone (its pending requests fail): nothing records a prompt after the turn's end.
         await this.steering;
         // Recorded as sent but never taken (the turn failed or was stopped): saved for the next turn.
@@ -899,7 +901,7 @@ export class CodexLiveConnection extends CodexTurn {
             this.keepForNext(text, images);
             return { ref: id };
         }
-        if (text || images.length) await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: id, input: this.input(text, images) }).catch(() => this.keepForNext(text, images));
+        if (text || images.length) await this.steerTurn(id, this.input(text, images), text, { dropped: () => this.keepForNext(text, images) });
         if (this.steerWaiting) this.steerQueued();
         return { ref: id };
     }
@@ -1001,6 +1003,8 @@ export class CodexLiveConnection extends CodexTurn {
         const id: string = p.turn.id;
         const status = typeof p.turn.status === "string" ? p.turn.status : "completed";
         this.turnState(this.threadId, id, "ended");
+        // What was steered into it that it never took goes with the next turn (#438).
+        this.steersDropped(id);
         this.running.delete(id);
         this.completedTurns.set(id, { status, ...(status === "failed" ? { error: p.turn.error } : {}) });
         if (this.completedTurns.size > 64) this.completedTurns.delete(this.completedTurns.keys().next().value!);

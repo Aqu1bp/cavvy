@@ -2049,7 +2049,11 @@ export class Agent {
     }
 
     private missedPrompt(text: string, promptIndex: number, resume?: { synced: number }): string {
-        const missed = this.session.messages.slice(resume ? resume.synced : 0, promptIndex).map(withoutStateNotes);
+        const all = this.session.messages.slice(resume ? resume.synced : 0, promptIndex);
+        // A note sending again what a turn ended before taking (#438) isn't for a catch-up that has those messages (a new
+        // thread's whole conversation, a place from before them): they'd go twice.
+        const has = (t: string) => all.some((x) => x.role === "user" && !x.meta?.resends && ((x.content[0]?.type === "text" && x.content[0].text === t) || textOf(x) === t));
+        const missed = all.filter((m) => !(m.role === "user" && m.meta?.resends?.length && m.meta.resends.every(has))).map(withoutStateNotes);
         // Only that its last turn was stopped, which it never heard (Harness stopped or died part way), and
         // Harness's notes to it since (a message that missed that turn): said plainly, not as another model's turn.
         if (resume && missed.length && missed.every((m) => m.role === "user" && (m.meta?.kind === "interrupt" || m.meta?.kind === "reminder"))) {
@@ -2090,10 +2094,17 @@ export class Agent {
             if (this.backendStopReminders.length) {
                 this.session.push({ role: "user", content: [reminder(this.backendStopReminders.splice(0).join("\n"))], meta: { kind: "reminder" } });
             }
+            // Messages its turn ended before taking: a note of their own, which says what it sends again.
+            if (this.undeliveredNotes.length) {
+                const notes = this.undeliveredNotes.splice(0);
+                this.session.push({ role: "user", content: [reminder(notes.map((n) => n.text).join("\n"))], meta: { kind: "reminder", resends: notes.flatMap((n) => n.resends) } });
+            }
         }
     }
 
     private backendStopReminders: string[] = [];
+    /** Messages the backend's turn ended before taking (TurnSink.undelivered): for its next prompt. */
+    private undeliveredNotes: { text: string; resends: string[] }[] = [];
     /**
      * A model turn took this round's prompt: the backend reported a model's usage (input read) or its output (text,
      * thinking, a tool call). Not a command the CLI answers itself (Codex's /goal status: no model turn, "done"), nor
@@ -2206,9 +2217,10 @@ export class Agent {
             // Messages with attachments never get here: they go only once the backend has them (SteerMessage.settle).
             undelivered: (messages) => {
                 const news = messages.filter((m) => wakeTexts.has(m.text)).map((m) => m.text);
-                const typed = messages.filter((m) => !wakeTexts.has(m.text)).map((m) => m.text);
-                if (typed.length) this.backendStopReminders.push(`The user sent this while you were working, but your turn ended before it reached you:\n${typed.join("\n\n")}`);
-                if (news.length) this.backendStopReminders.push(`This arrived while you were working, but your turn ended before it reached you:\n${news.join("\n\n")}`);
+                const said = messages.filter((m) => !wakeTexts.has(m.text)).map((m) => m.text);
+                // With the words they were stored with: a catch-up that has those leaves the note out (missedPrompt).
+                if (said.length) this.undeliveredNotes.push({ text: `The user sent this while you were working, but your turn ended before it reached you:\n${said.join("\n\n")}`, resends: said.map((t) => typed.get(t) ?? t) });
+                if (news.length) this.undeliveredNotes.push({ text: `This arrived while you were working, but your turn ended before it reached you:\n${news.join("\n\n")}`, resends: news });
             },
             fromWake: (text) => wakeTexts.has(text),
             requestOf: (text) => typed.get(text),
@@ -2435,7 +2447,7 @@ export class Agent {
                 }
                 if (h?.blocked) {
                     stopRounds++;
-                    prompt = reminder([`A ${stopEvent} hook asked you to keep going:\n${redact(h.blocked)}`, ...this.backendStopReminders.splice(0)].join("\n\n")).text;
+                    prompt = reminder([`A ${stopEvent} hook asked you to keep going:\n${redact(h.blocked)}`, ...this.backendStopReminders.splice(0), ...this.undeliveredNotes.splice(0).map((n) => n.text)].join("\n\n")).text;
                     promptImages = [];
                     promptDocuments = [];
                     this.session.push({ role: "user", content: [{ type: "text", text: prompt }], meta: { kind: "reminder" } });

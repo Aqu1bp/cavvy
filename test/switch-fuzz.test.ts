@@ -79,6 +79,8 @@ const BASE_ENV: Record<string, string> = {
     FAKE_UNIQUE_THREADS: "1",
     FAKE_SCENARIO: "plain",
     FAKE_CODEX_SCENARIO: "steps",
+    // As Codex 0.163 does: steered input waits for the turn's next step, and an interrupt drops it (#438).
+    FAKE_STEER_PENDING: "1",
     FAKE_ENV_FILE: envFile,
     FAKE_CLAUDE_ENV_FILE: envFile,
 };
@@ -132,7 +134,8 @@ type Op =
     | { k: "rewind"; s: number; pick: number }
     | { k: "fail"; s: number; how: FailHow }
     | { k: "interrupt"; s: number; at?: number; init?: number }
-    | { k: "steer"; s: number }
+    /** `esc`: on Codex, Esc this many ms after the steer is sent (Codex may have accepted it and not taken it yet, #438). */
+    | { k: "steer"; s: number; esc?: number }
     | { k: "wake"; s: number }
     | { k: "remove"; provider: Cli; acct: Exclude<AcctKey, "default"> }
     | { k: "readd"; provider: Cli; acct: Exclude<AcctKey, "default"> }
@@ -227,7 +230,8 @@ const rtOf = (w: World, s: FuzzSession) => w.engine.runtimes.get(s.id);
 const textOf = (m: any): string => (Array.isArray(m.content) ? m.content.map((p: any) => (typeof p.text === "string" ? p.text : "")).join("\n") : typeof m.content === "string" ? m.content : "");
 function userText(w: World, s: FuzzSession): string {
     const rt = rtOf(w, s);
-    return rt ? rt.session.messages.filter((m: any) => m.role === "user").map(textOf).join("\n") : "";
+    // Not Harness's reminders: one quotes a steered message its turn ended before taking, for the next prompt (#438).
+    return rt ? rt.session.messages.filter((m: any) => m.role === "user" && m.meta?.kind !== "reminder").map(textOf).join("\n") : "";
 }
 /** The account a session has selected for a CLI, and its folder (undefined: the account is gone). */
 function selected(w: World, s: FuzzSession, provider: Cli): { id: string; folder?: string } {
@@ -335,6 +339,8 @@ function candidates(w: World, r: ReturnType<typeof prng>): [number, Op | Op[]][]
     // Esc once the CLI has the prompt, or `at` ms after sending it (while it may be on its way).
     out.push([2, { k: "interrupt", s, ...(r.next() < 0.5 ? { at: r.int(60) } : {}), ...(cli === "claude-code" && r.next() < 0.3 ? { init: 300 } : {}) }]);
     out.push([2, { k: "steer", s }]);
+    // On Codex, Esc soon after a steer: it may have been accepted and not taken yet (#438).
+    if (cli === "codex") out.push([3, { k: "steer", s, esc: r.int(300) }]);
     if (cli && w.live) out.push([3, { k: "wake", s }]);
     if (cli === "codex" && w.live) out.push([1, { k: "goal", s }]);
     for (const provider of CLIS) for (const acct of ["shared", "own"] as const) {
@@ -530,11 +536,16 @@ async function apply(w: World, op: Op): Promise<boolean | string> {
         case "steer": {
             const a = nextToken(w);
             const b = nextToken(w);
-            setFakeEnv({ FAKE_SCENARIO: "steering", FAKE_CODEX_SCENARIO: "hang", FAKE_HANG_MS: "900" });
+            const esc = op.esc !== undefined && model?.startsWith("codex:");
+            setFakeEnv({ FAKE_SCENARIO: "steering", FAKE_CODEX_SCENARIO: "hang", FAKE_HANG_MS: esc ? "20000" : "900" });
             try {
                 await send(w, s, isCli(model) ? a : `${a} pause`, a);
                 await reached(w, s, a);
                 await send(w, s, b, b, "steer");
+                if (esc) {
+                    await Bun.sleep(op.esc!);
+                    await rpc(w, "session.interrupt", { id: s.id });
+                }
                 await settle(w, describe(op));
             } finally {
                 setFakeEnv();

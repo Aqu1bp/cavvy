@@ -1068,3 +1068,102 @@ describe("#439: Esc after turn/start is answered, before the turn is active", ()
         expect(sent).toHaveLength(3);
     });
 });
+
+// #438: Codex answers turn/steer at once but holds steered input until the turn's next model step, and an interrupt
+// before that drops it without a word. A steered message counts as delivered only once Codex takes it (its userMessage
+// item); dropped, it goes with the next prompt. Either way Codex's thread has it once, and the catch-up cursor stays right.
+describe("#438: a steer Codex accepted but hadn't taken when Esc came", () => {
+    const TOKEN = "otter-kettle-438";
+    /** How many times `word` is in what the thread's model was sent (its rollout's fake-sent lines, FAKE_TRANSCRIPTS). */
+    const inRollout = (word: string) => {
+        const f = join(process.env.CODEX_HOME!, "sessions", "thr-new.jsonl");
+        if (!existsSync(f)) return 0;
+        return readFileSync(f, "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((l) => l.type === "fake-sent").reduce((n, l) => n + String(l.text).split(word).length - 1, 0);
+    };
+    const count = (s: string | undefined, word: string) => (s ?? "").split(word).length - 1;
+    beforeEach(() => rmSync(join(process.env.CODEX_HOME!, "sessions"), { recursive: true, force: true }));
+
+    /** A turn ("first"), another model's (TOKEN), then a turn running a command, steered with `word` once Codex runs it. */
+    async function steered(live: boolean, word: string, env: Record<string, string> = {}) {
+        Object.assign(process.env, { FAKE_TRANSCRIPTS: "1", FAKE_STEER_PENDING: "1", FAKE_SCENARIO: "cmd" });
+        const a = await makeAgent(live ? {} : { settings: { agentCli: { liveSessions: false } } });
+        expect(await a.run("first")).toBe("done");
+        a.session.push({ role: "user", content: [{ type: "text", text: `hello ${TOKEN}` }], meta: { kind: "prompt", display: `hello ${TOKEN}` } });
+        a.session.push({ role: "assistant", content: [{ type: "text", text: "Noted." }], provider: "mock", model: "mock-opus", stopReason: "end_turn" } as any);
+        Object.assign(process.env, { FAKE_SCENARIO: "hang", FAKE_HANG_MS: "20000", ...env });
+        const stop = new AbortController();
+        const running = a.run("go", stop.signal);
+        await until(() => JSON.stringify(a.events).includes("sleep 60"), "the command");
+        a.queue.push(word);
+        a.agent.queueChanged();
+        await until(() => calls("turn/steer").length === 1, "the steer");
+        return { a, stop, running };
+    }
+    /** The prompts after: the next carries what it must, and the one after nothing. */
+    async function after(a: Awaited<ReturnType<typeof makeAgent>>) {
+        for (const k of ["FAKE_HANG_MS", "FAKE_STEER_MS"]) delete process.env[k];
+        process.env.FAKE_SCENARIO = "cmd";
+        expect(await a.run("next")).toBe("done");
+        const next = turnTexts().at(-1);
+        expect(await a.run("and after")).toBe("done");
+        return { next, last: turnTexts().at(-1) };
+    }
+
+    for (const live of [true, false]) {
+        const how = live ? "live" : "per run";
+        test(`${how}: accepted while a command runs, then Esc before Codex's next step: it goes with the next prompt, once`, async () => {
+            const word = `kumquat-${live ? "live" : "run"}`;
+            const { a, stop, running } = await steered(live, word);
+            await until(() => logLines().some((l) => l.steerPending), "Codex to hold it");
+            stop.abort();
+            expect(await running).toBe("aborted");
+            expect(logLines().find((l) => l.steerDropped)?.steerDropped.text).toBe(word);
+            expect(inRollout(word)).toBe(0);
+            const { next, last } = await after(a);
+            expect(count(next, word)).toBe(1);
+            expect(count(last, word)).toBe(0);
+            // The catch-up cursor: the other model's turn went with "go", once.
+            expect(count(turnTexts().at(-3), TOKEN)).toBe(1);
+            expect(count(next, TOKEN)).toBe(0);
+            expect(inRollout(word)).toBe(1);
+            expect(inRollout(TOKEN)).toBe(1);
+        }, 30_000);
+
+        test(`${how}: dropped, then a new thread (another account's, say): its catch-up has the message once, not again in the note`, async () => {
+            const word = `loquat-${live ? "live" : "run"}`;
+            const { a, stop, running } = await steered(live, word);
+            await until(() => logLines().some((l) => l.steerPending), "Codex to hold it");
+            stop.abort();
+            expect(await running).toBe("aborted");
+            await a.agent.releaseBackends();
+            a.session.forgetBackendSession("codex");
+            const { next, last } = await after(a);
+            // The whole conversation: the steered message (as the user sent it) once, the other model's turn once.
+            expect(count(next, word)).toBe(1);
+            expect(count(next, TOKEN)).toBe(1);
+            expect(count(last, word)).toBe(0);
+        }, 30_000);
+
+        test(`${how}: accepted while a command runs, and the command ends: Codex takes it, so the next prompt doesn't carry it`, async () => {
+            const word = `tamarind-${live ? "live" : "run"}`;
+            const { a, running } = await steered(live, word, { FAKE_HANG_MS: "800" });
+            expect(await running).toBe("done");
+            expect(logLines().find((l) => l.steerTaken)?.steerTaken.text).toBe(word);
+            const { next, last } = await after(a);
+            expect(count(next, word)).toBe(0);
+            expect(count(last, word)).toBe(0);
+            expect(inRollout(word)).toBe(1);
+        }, 30_000);
+
+        test(`${how}: Esc while its turn/steer is on its way: Codex refuses it, and it goes with the next prompt, once`, async () => {
+            const word = `rambutan-${live ? "live" : "run"}`;
+            const { a, stop, running } = await steered(live, word, { FAKE_STEER_MS: "400" });
+            stop.abort();
+            expect(await running).toBe("aborted");
+            const { next, last } = await after(a);
+            expect(count(next, word)).toBe(1);
+            expect(count(last, word)).toBe(0);
+            expect(inRollout(word)).toBe(1);
+        }, 30_000);
+    }
+});

@@ -70,6 +70,11 @@
 // FAKE_TURN_MS        how long every turn works before it answers
 // FAKE_STEER_MS       turn/steer is answered that many ms late (refused with FAKE_STEER_FAIL)
 // FAKE_STEER_DELAY_MS  milliseconds before answering turn/steer (refused then, with FAKE_STEER_FAIL)
+// Input a turn takes (turn/start's, a turn/steer's) comes as a userMessage item, with the clientUserMessageId it was sent
+//                     with as its clientId, as Codex 0.163 sends it: a steer's at once, or with FAKE_STEER_PENDING=1 (as Codex
+//                     does) at the turn's next model step (a steer's wake in "slow"/"edit", or the step it ends with),
+//                     until when it's pending, and an interrupt drops it without a word (#438; logged: steerPending,
+//                     steerTaken, steerDropped). Its rollout line (FAKE_TRANSCRIPTS) is written when it's taken.
 // FAKE_FAIL_TURN_START_AT=n  the nth turn/start fails (no turn starts)
 // FAKE_TERMINATE_LATE  1: a terminated command had finished by itself (terminated: false); fail: failed by itself;
 //                     after: not terminated, gone from the list, and its own end (a failure) comes after the answer
@@ -296,7 +301,30 @@ const setTier = (id: string, tier: unknown) => {
     tiers.set(id, typeof tier === "string" ? tier : "default");
     if (tierFile) writeFileSync(tierFile, JSON.stringify(Object.fromEntries(tiers)));
 };
-let current: { threadId: string; turnId: string; interrupted: boolean; wake?: () => void; steered?: string[]; done?: boolean } | undefined;
+let current: { threadId: string; turnId: string; interrupted: boolean; wake?: () => void; steered?: string[]; done?: boolean; pending?: { input: any[]; clientId: string | null }[] } | undefined;
+/** Input as Codex takes it into the turn: its userMessage item (with the clientUserMessageId it came with, if any). */
+let userSeq = 0;
+function userMessage(threadId: string, turnId: string, input: any[], clientId: string | null) {
+    const item = { type: "userMessage", id: `user-${++userSeq}`, clientId, content: Array.isArray(input) ? input : [] };
+    notify("item/started", { threadId, turnId, item });
+    notify("item/completed", { threadId, turnId, item });
+}
+const textOf = (input: any) => (Array.isArray(input) ? input : []).map((i: any) => i?.text ?? "").join("");
+/**
+ * FAKE_STEER_PENDING=1: the turn's next model step takes the input steered since (#438): its userMessage item, a line of
+ * the rollout, and what the turn heard. Until then it's pending, and an interrupt drops it (dropPending).
+ */
+function takePending(t: NonNullable<typeof current>) {
+    for (const s of (t.pending ?? []).splice(0)) {
+        userMessage(t.threadId, t.turnId, s.input, s.clientId);
+        recordSent(t.threadId, s.input);
+        (t.steered ??= []).push(s.input?.[0]?.text ?? "");
+        log({ steerTaken: { turnId: t.turnId, text: textOf(s.input) } });
+    }
+}
+function dropPending(t: NonNullable<typeof current>) {
+    for (const s of (t.pending ?? []).splice(0)) log({ steerDropped: { turnId: t.turnId, text: textOf(s.input) } });
+}
 /** Sub-agents' turns still working (bgagent), by their thread. */
 const childTurns = new Map<string, { turnId: string; stop: (status: string) => void }>();
 type Tokens = { totalTokens: number; inputTokens: number; cachedInputTokens: number; cacheWriteInputTokens: number; outputTokens: number; reasoningOutputTokens: number };
@@ -369,11 +397,14 @@ function threadPolicy(p: any) {
 let delayedLimits: (() => void) | undefined;
 let releasedLimits: Promise<void> | undefined;
 
-async function runTurn(threadId: string, turnId: string, policy: { approvalPolicy?: string; sandboxPolicy?: { type?: string }; approvalsReviewer?: string }) {
+async function runTurn(threadId: string, turnId: string, policy: { approvalPolicy?: string; sandboxPolicy?: { type?: string }; approvalsReviewer?: string }, input?: any[]) {
     const scenario = scenarioOf(turnId);
     const t: NonNullable<typeof current> = { threadId, turnId, interrupted: false };
     current = t;
     const finish = (status: string) => {
+        // Steered input still pending: a turn that goes on to its end takes it in a last step; an interrupted one drops it.
+        if (status === "interrupted") dropPending(t);
+        else takePending(t);
         t.done = true;
         const g = goals.get(threadId);
         const going = g?.status === "active" && status === "completed";
@@ -392,6 +423,8 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         if (going && g.status === "active") process.env.FAKE_GOAL_CONTINUE_MS === "0" ? goOn() : setTimeout(goOn, Number(process.env.FAKE_GOAL_CONTINUE_MS ?? 5));
     };
     if (!startedEarly.delete(turnId)) notify("turn/started", { threadId, turn: { id: turnId, status: "inProgress" } });
+    // What a turn/start started it with, as Codex shows it first (Codex's own turns have none).
+    if (input) userMessage(threadId, turnId, input, null);
     for (let i = 0; process.env.FAKE_LIMIT_UPDATE && i < Number(process.env.FAKE_LIMIT_REPEAT ?? 1); i++) notify("account/rateLimits/updated", JSON.parse(readFileSync(process.env.FAKE_LIMIT_UPDATE, "utf-8")));
     // Answer an earlier read after the push, before completing the turn.
     delayedLimits?.();
@@ -496,6 +529,8 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     if (scenario === "slow" && turnSeq === 1) {
         // The first turn works until interrupted (or a while).
         await Promise.race([new Promise<void>((r) => (t.wake = r)), Bun.sleep(5000)]);
+        // Its next step takes what was steered (FAKE_STEER_PENDING).
+        if (!t.interrupted) takePending(t);
         // FAKE_STEER_WAKES=1: a steer ends the wait, and the answer says what it heard.
         if (t.steered?.length && !t.interrupted) notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg-heard-${turnId}`, text: `Heard: ${t.steered.join(" | ")}` } });
         return finish(t.interrupted ? "interrupted" : "completed");
@@ -523,6 +558,7 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         notify("item/started", { threadId, turnId, item: change });
         notify("item/completed", { threadId, turnId, item: { ...change, status: "completed" } });
         await Promise.race([new Promise<void>((r) => (t.wake = r)), Bun.sleep(Number(process.env.FAKE_EDIT_WAIT ?? 3000))]);
+        if (!t.interrupted) takePending(t);
         log({ steered: t.steered ?? [] });
         notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `msg-heard-${turnId}`, text: t.steered?.length ? `Heard: ${t.steered.join(" | ")}` : "Done." } });
         return finish(t.interrupted ? "interrupted" : "completed");
@@ -928,7 +964,7 @@ async function handle(m: any) {
             }
             // FAKE_WHOLE_TURN_AT=n: the nth turn/start's turn runs to its end before turn/start answers.
             if (process.env.FAKE_WHOLE_TURN_AT && ++wholeTurns === Number(process.env.FAKE_WHOLE_TURN_AT)) {
-                await runTurn(p.threadId, turnId, p);
+                await runTurn(p.threadId, turnId, p, p.input);
                 return reply({ turn: { id: turnId, status: "inProgress" } });
             }
             reply({ turn: { id: turnId, status: "inProgress" } });
@@ -938,11 +974,11 @@ async function handle(m: any) {
                 startingTurn = turnId;
                 setTimeout(() => {
                     if (startingTurn === turnId) startingTurn = undefined;
-                    void runTurn(p.threadId, turnId, p);
+                    void runTurn(p.threadId, turnId, p, p.input);
                 }, late);
                 return;
             }
-            void runTurn(p.threadId, turnId, p);
+            void runTurn(p.threadId, turnId, p, p.input);
             return;
         }
         case "skills/extraRoots/set":
@@ -999,10 +1035,29 @@ async function handle(m: any) {
                 current.wake?.();
             }
             return reply({});
-        case "turn/steer":
+        case "turn/steer": {
+            /** The main thread's turn it names, still running. */
+            const running = () => (current && !current.done && current.threadId === p.threadId && current.turnId === p.expectedTurnId ? current : undefined);
+            const clientId = typeof p.clientUserMessageId === "string" ? p.clientUserMessageId : null;
+            // Taken: at the turn's next step (FAKE_STEER_PENDING=1, as Codex 0.163 does), or at once.
+            const accept = () => {
+                const t = running();
+                if (process.env.FAKE_STEER_PENDING === "1") {
+                    // As Codex does: only a turn running now takes it (one interrupted while it was on its way doesn't).
+                    if (!t) return fail("no active turn to steer");
+                    (t.pending ??= []).push({ input: p.input, clientId });
+                    log({ steerPending: { turnId: t.turnId, text: textOf(p.input) } });
+                    reply({ turnId: p.expectedTurnId });
+                    if (process.env.FAKE_STEER_WAKES === "1") t.wake?.();
+                    return;
+                }
+                recordSent(String(p.threadId), p.input);
+                reply({ turnId: p.expectedTurnId });
+                if (t) userMessage(t.threadId, t.turnId, p.input, clientId);
+            };
             // FAKE_STEER_MS: answered that late (as FAKE_STEER_FAIL says), and other requests go on meanwhile.
             if (process.env.FAKE_STEER_MS) {
-                setTimeout(() => (process.env.FAKE_STEER_FAIL ? fail("no active turn to steer") : reply({ turnId: p.expectedTurnId })), Number(process.env.FAKE_STEER_MS));
+                setTimeout(() => (process.env.FAKE_STEER_FAIL ? fail("no active turn to steer") : accept()), Number(process.env.FAKE_STEER_MS));
                 return;
             }
             // FAKE_STEER_DELAY_MS: answered this late (refused then, with FAKE_STEER_FAIL).
@@ -1012,11 +1067,13 @@ async function handle(m: any) {
             if (process.env.FAKE_STEER_WAKES === "1") {
                 // As Codex checks it: only the turn running now takes it.
                 if (!current || current.done || current.turnId !== p.expectedTurnId) return fail("expected turn does not match the active turn");
-                (current.steered ??= []).push(p.input?.[0]?.text ?? "");
-                current.wake?.();
+                if (process.env.FAKE_STEER_PENDING !== "1") {
+                    (current.steered ??= []).push(p.input?.[0]?.text ?? "");
+                    current.wake?.();
+                }
             }
-            recordSent(String(p.threadId), p.input);
-            return reply({ turnId: p.expectedTurnId });
+            return accept();
+        }
         case "thread/compact/start": {
             reply({});
             // As 0.163 runs it: a turn, which first reports the usage as it was, then the compaction's.
