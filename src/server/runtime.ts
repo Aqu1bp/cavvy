@@ -938,8 +938,9 @@ export class Runtime {
         this.model = info;
         this.client = client;
         this.schedules.cancelLimitResume("model");
-        // A CLI's own goal stays with that CLI: another provider doesn't carry it on, and it pauses there (#412).
-        await this.switchNativeGoal(this.agent?.model.provider, info);
+        // A CLI's own goal stays with that CLI: another provider doesn't carry it on, and it pauses there (#412). The
+        // pause goes on while the agent takes the new model, never with the agent still on the CLI's (waited on below).
+        const leaving = this.switchNativeGoal(this.agent?.model.provider, info);
         // Nor does the loop's go on with a CLI, which keeps goals of its own (and gets /goal and the tab's buttons).
         if (nativeGoals(info.provider)) {
             const dropped = this.goal.clear();
@@ -958,6 +959,7 @@ export class Runtime {
             // Before it, a note still queued (one a rewind to the start kept) would be about another model.
             else this.agent.dropStateNote("model");
         }
+        await leaving;
         if (opts.persist) {
             try {
                 updateSettings("user", this.ws.cwd, (s) => (s.model = ref));
@@ -1089,6 +1091,14 @@ export class Runtime {
     private async switchNativeGoal(from: string | undefined, to: ModelInfo) {
         const had = this.nativeGoal;
         if (had && had.provider !== to.provider) this.nativeGoalReported(null);
+        const left = this.goalLeft;
+        if (left && left.provider === to.provider) {
+            this.goalLeft = undefined;
+            this.nativeGoalReported(left);
+            const message = nativeGoalBack(left);
+            this.session.recordNotice("info", message);
+            this.notice(message, "info");
+        }
         if (from && from !== to.provider && nativeGoals(from) && this.agent) {
             const name = getProvider(from)?.name ?? from;
             let paused: NativeGoal | undefined;
@@ -1105,16 +1115,8 @@ export class Runtime {
                 this.session.recordNotice("info", message);
                 this.notice(message, "info");
             }
-            const left = paused ?? (had?.provider === from && had.status === "paused" ? had : undefined);
-            if (left) this.goalLeft = left;
-        }
-        const left = this.goalLeft;
-        if (left && left.provider === to.provider) {
-            this.goalLeft = undefined;
-            this.nativeGoalReported(left);
-            const message = nativeGoalBack(left);
-            this.session.recordNotice("info", message);
-            this.notice(message, "info");
+            const kept = paused ?? (had?.provider === from && had.status === "paused" ? had : undefined);
+            if (kept) this.goalLeft = kept;
         }
     }
 

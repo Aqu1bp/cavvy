@@ -199,6 +199,8 @@ export class CodexLiveConnection extends CodexTurn {
     private hostFailures = 0;
     /** The session switched to another model with the goal going on (leaveGoal): a turn Codex starts for it is stopped, until a run is back here. */
     private goalLeft = false;
+    /** Times the session left with the goal going on: a host turn started before one doesn't make the goal active after it (hostTurn). */
+    private goalLeaves = 0;
     private terminals = new Map<string, Terminal>();
     /** Sub-agent threads still working after their turn ended. */
     private bgSubs = new Map<string, { stopping?: boolean }>();
@@ -707,12 +709,15 @@ export class CodexLiveConnection extends CodexTurn {
         this.goalPausedForMode = false;
         if (!going) return undefined;
         this.goalLeft = true;
+        this.goalLeaves++;
         liveDebug("codex", "goal paused: the session switched to another model", { thread: this.threadId });
         try {
             const r = await withTimeout(this.rpc.request("thread/goal/set", { threadId: this.threadId, status: "paused" }), 2000, "Codex didn't answer in time");
             this.setGoal(r?.goal);
         } finally {
-            for (const id of this.running.keys()) if (!this.ownTurns.has(id) && !this.hostTurns.has(id)) void this.interruptTurn(id);
+            // Codex's own, known as such. One that started while a turn/start of ours is unanswered may be ours (a host
+            // turn with a report): the answer tells, and announce stops it then if it's Codex's.
+            for (const id of this.running.keys()) if (!this.ownTurns.has(id) && !this.hostTurns.has(id) && !this.undecided.includes(id)) void this.interruptTurn(id);
         }
         return this.goal ?? undefined;
     }
@@ -1198,6 +1203,7 @@ export class CodexLiveConnection extends CodexTurn {
         if (!t || this.hostFailures >= 3) return;
         const notes = this.notes.splice(0);
         const mode = this.host.mode();
+        const leaves = this.goalLeaves;
         const text = [notes.length ? `<system-reminder>\n${notes.map((n) => n.text).join("\n\n")}\n</system-reminder>` : "", goalGoesOn ? modeSwitched(mode) : ""].filter(Boolean).join("\n\n");
         const label = notes.length === 1 ? notes[0]!.label : notes.length ? `${notes.length} background commands finished` : "Codex goes on with the goal under the new mode";
         const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks);
@@ -1230,10 +1236,21 @@ export class CodexLiveConnection extends CodexTurn {
             if (this.hostReports.size > 32) this.hostReports.delete(this.hostReports.keys().next().value!);
             this.decideStarted();
             liveDebug("codex", "host wake: turn started", { thread: this.threadId, turn: id });
-            if (goalGoesOn) {
+            if (goalGoesOn && this.goalLeaves !== leaves) {
+                // The session left Codex while this turn was being started (leaveGoal): the goal stays paused, and the
+                // turn, told to go on with it, stops while the session is elsewhere. What it reports (hostReports) still
+                // reaches the session's model.
+                liveDebug("codex", "host wake: the goal stays paused, the session having left", { thread: this.threadId, turn: id });
+                if (this.goalLeft) void this.interruptTurn(id);
+            } else if (goalGoesOn) {
                 const g = (await this.rpc.request("thread/goal/set", { threadId: this.threadId, status: "active" }).catch(() => undefined))?.goal;
                 this.goalPausedForMode = false;
                 if (g) this.setGoal(g);
+                // Left while that was on its way: paused again, and the turn stops.
+                if (this.goalLeaves !== leaves && this.goalLeft) {
+                    void this.leaveGoal().catch(() => {});
+                    void this.interruptTurn(id);
+                }
             }
         } catch (e) {
             this.starting = false;

@@ -242,7 +242,7 @@ test("switching away from Codex with its goal going on pauses it there, and comi
     const said = () => app.session.notices.map((n) => n.text);
     const asked: string[] = [];
     // The backend's side (thread/goal/set in Codex's app-server) is test/goal-native.test.ts's.
-    (app.agent as any).pauseNativeGoal = async (provider: string) => (asked.push(provider), { provider: "codex", condition: "the docs build", status: "paused", since: 1 });
+    (app.agent as any).pauseNativeGoal = async (provider: string) => (asked.push(provider), provider === "codex" ? { provider: "codex", condition: "the docs build", status: "paused", since: 1 } : undefined);
     (app as any).nativeGoalReported({ provider: "codex", condition: "the docs build", status: "active", since: 1 });
     expect(await app.setModel("claude-code:default", { quiet: true })).toBe(true);
     expect(asked).toEqual(["codex"]);
@@ -258,6 +258,30 @@ test("switching away from Codex with its goal going on pauses it there, and comi
     const before = said().length;
     expect(await app.setModel("codex:default", { quiet: true })).toBe(true);
     expect(said()).toHaveLength(before);
+});
+
+test("while /model pauses Codex's goal, the agent is on the new model already (#412)", async () => {
+    const { app } = testApp([], undefined, { provider: "codex", id: "default", name: "Codex" });
+    await listClis(app);
+    let release: (() => void) | undefined;
+    (app.agent as any).pauseNativeGoal = () => new Promise((r) => (release = () => r(undefined)));
+    const switching = app.setModel("claude-code:default", { quiet: true });
+    await until(() => release !== undefined);
+    expect(app.model?.provider).toBe("claude-code");
+    expect(app.agent!.model.provider).toBe("claude-code");
+    release!();
+    expect(await switching).toBe(true);
+});
+
+test("a goal left paused in another session's Codex isn't offered after /clear (#412)", async () => {
+    const { app } = testApp([], undefined, { provider: "codex", id: "default", name: "Codex" });
+    await listClis(app);
+    (app.agent as any).pauseNativeGoal = async (provider: string) => (provider === "codex" ? { provider: "codex", condition: "the docs build", status: "paused", since: 1 } : undefined);
+    expect(await app.setModel("claude-code:default", { quiet: true })).toBe(true);
+    app.newSession();
+    expect(await app.setModel("codex:default", { quiet: true })).toBe(true);
+    expect(app.nativeGoal).toBeUndefined();
+    expect(app.session.notices.map((n) => n.text).filter((t) => t.includes("/goal resume"))).toEqual([]);
 });
 
 test("a Codex goal that couldn't be paused as the session switched away is said (#412)", async () => {

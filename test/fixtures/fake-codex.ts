@@ -73,6 +73,7 @@
 // FAKE_WHOLE_TURN_AT=n  the nth turn/start's turn runs to its end before turn/start answers
 // FAKE_CHILD_REPORT   a bgagent sub-agent's last answer, said as it ends
 // FAKE_STARTED_FIRST=1  a turn's turn/started goes out before turn/start's answer
+// FAKE_STARTED_FIRST_AT=n:ms  the nth turn/start's turn/started goes out first, and its answer ms later
 // FAKE_STEER_WAKES=1  turn/steer is refused unless its expectedTurnId is the turn running now; in the "slow"
 //                     scenario a steer ends the first turn's wait, and its answer repeats what was steered
 // FAKE_MCP_CALLS      the "mcp" scenario's calls to servers from the thread's config: [{ server?, tool, args }]
@@ -342,6 +343,7 @@ let turnStarts = 0;
 let refusals = 0;
 let startFailures = 0;
 let wholeTurns = 0;
+let startedFirstSeen = 0;
 /** Turns whose turn/started went out before turn/start answered (FAKE_STARTED_FIRST). */
 const startedEarly = new Set<string>();
 /** A thread started or resumed with a policy: the goal's turns Codex starts itself run under it, until a turn/start gives another. */
@@ -891,9 +893,13 @@ async function handle(m: any) {
             const slowAt = process.env.FAKE_SLOW_TURN_START_AT?.split(":").map(Number);
             if (slowAt && ++turnStarts === slowAt[0]) await Bun.sleep(slowAt[1]!);
             // FAKE_STARTED_FIRST=1: the turn's turn/started goes out before turn/start's answer.
-            if (process.env.FAKE_STARTED_FIRST === "1") {
+            // FAKE_STARTED_FIRST_AT=n:ms: the nth turn/start's turn/started goes out first, and its answer that much later.
+            const firstAt = process.env.FAKE_STARTED_FIRST_AT?.split(":").map(Number);
+            const startedFirst = Boolean(firstAt && ++startedFirstSeen === firstAt[0]);
+            if (process.env.FAKE_STARTED_FIRST === "1" || startedFirst) {
                 startedEarly.add(turnId);
                 notify("turn/started", { threadId: p.threadId, turn: { id: turnId, status: "inProgress" } });
+                if (startedFirst) await Bun.sleep(firstAt![1]!);
             }
             // FAKE_WHOLE_TURN_AT=n: the nth turn/start's turn runs to its end before turn/start answers.
             if (process.env.FAKE_WHOLE_TURN_AT && ++wholeTurns === Number(process.env.FAKE_WHOLE_TURN_AT)) {

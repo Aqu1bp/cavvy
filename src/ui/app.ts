@@ -619,8 +619,9 @@ export class App {
         this.model = info;
         this.client = client;
         this.schedules.cancelLimitResume("model");
-        // A CLI's own goal stays with that CLI: another provider doesn't carry it on, and it pauses there (#412).
-        await this.switchNativeGoal(this.agent?.model.provider, info);
+        // A CLI's own goal stays with that CLI: another provider doesn't carry it on, and it pauses there (#412). The
+        // pause goes on while the agent takes the new model, never with the agent still on the CLI's (waited on below).
+        const leaving = this.switchNativeGoal(this.agent?.model.provider, info);
         this.dropLoopGoal();
         this.updateHelpers();
         if (!this.agent) this.makeAgent();
@@ -629,6 +630,7 @@ export class App {
             this.agent.options.nativeWebSearch = this.nativeSearch();
             if (prev) this.agent.noteModelChange(modelRef(prev), info);
         }
+        await leaving;
         if (opts.persist) {
             const { updateSettings } = await import("../config/settings");
             try {
@@ -949,8 +951,9 @@ export class App {
         if (this.goalSession === this.session) return;
         this.goal?.dispose();
         this.goalSession = this.session;
-        // A CLI's own goal was the last session's: this one's comes with its next turn.
+        // A CLI's own goal was the last session's: this one's comes with its next turn. So was one it left paused.
         this.nativeGoal = undefined;
+        this.goalLeft = undefined;
         const session = this.session;
         this.goal = new GoalController({
             session,
@@ -1023,6 +1026,14 @@ export class App {
     private async switchNativeGoal(from: string | undefined, to: ModelInfo) {
         const had = this.nativeGoal;
         if (had && had.provider !== to.provider) this.nativeGoal = undefined;
+        const left = this.goalLeft;
+        if (left && left.provider === to.provider) {
+            this.goalLeft = undefined;
+            this.nativeGoal = left;
+            const message = nativeGoalBack(left);
+            this.session.recordNotice("info", message);
+            this.notice(message);
+        }
         if (from && from !== to.provider && nativeGoals(from) && this.agent) {
             const name = getProvider(from)?.name ?? from;
             let paused: NativeGoal | undefined;
@@ -1039,18 +1050,11 @@ export class App {
                 this.session.recordNotice("info", message);
                 this.notice(message);
             }
-            const left = paused ?? (had?.provider === from && had.status === "paused" ? had : undefined);
-            if (left) this.goalLeft = left;
-        }
-        const left = this.goalLeft;
-        if (left && left.provider === to.provider) {
-            this.goalLeft = undefined;
-            this.nativeGoal = left;
-            const message = nativeGoalBack(left);
-            this.session.recordNotice("info", message);
-            this.notice(message);
+            const kept = paused ?? (had?.provider === from && had.status === "paused" ? had : undefined);
+            if (kept) this.goalLeft = kept;
         }
     }
+
     /** After the running turn has been stopped: the /goal command that stopped it (clear, pause), sent to the CLI then. */
     private afterStop?: string;
 
