@@ -303,8 +303,8 @@ export function endedAllCleared(rows: readonly WorkRow[], cleared: ReadonlySet<s
 }
 
 /** Who runs a row: its task's runner (an agent CLI, or a delegated model's provider), else its run's model's provider, else the session's. Harness's own commands: none. */
-export function rowProvider(r: WorkRow, own?: string): string | undefined {
+export function rowProvider(r: WorkRow, own?: string, agents: readonly AgentRun[] = []): string | undefined {
     const t = r.tasks.find((x) => x.provider !== "harness");
     if (t) return t.provider;
-    return r.agent ? agentProvider(r.agent, own) : undefined;
+    return r.agent ? agentProvider(r.agent, own, agents) : undefined;
 }

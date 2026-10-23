@@ -483,10 +483,10 @@ export function agentLine(a: AgentRun): string {
 /** "2 sub-agents · 1 working · 1 done", opening into a row per agent that opens its own view. */
 export function SubAgentsRow(p: { runs: AgentRun[] }) {
     const [open, setOpen] = createSignal(p.runs.some(agentLive));
-    // Who runs each: its model's provider, else the session's.
+    // Who runs each: its model's provider, else its parent's, else the session's.
     const folds = useCardFolds();
-    const own = () => handleFor(folds.sessionId)?.view.state.model?.provider;
-    const providerOf = (a: AgentRun) => agentProvider(a, own());
+    const view = () => handleFor(folds.sessionId)?.view;
+    const providerOf = (a: AgentRun) => agentProvider(a, view()?.state.model?.provider, view()?.agents);
     createEffect(on(findReveal, (r) => r && p.runs.some((a) => a.id === r.part) && setOpen(true)));
     const counts = () => {
         const n = (s: AgentRun["status"][]) => p.runs.filter((a) => s.includes(a.status)).length;

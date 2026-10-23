@@ -104,7 +104,7 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
     const items = createMemo(() => groupBlocks(!live(a()) && lastText() && result() === lastText()!.text.trim() ? a().blocks.filter((b) => b.id !== lastText()!.id) : a().blocks));
     const showWork = () => live(a()) || unfolded();
     const model = () => (a().model ? shortModelRef(a().model) : (st().model?.name ?? "Session model"));
-    const provider = () => agentProvider(a(), st().model?.provider);
+    const provider = () => agentProvider(a(), st().model?.provider, p.handle.view.agents);
     /** What it's doing, in a few words; the whole call in the tooltip. */
     const step = () => agentStep(a());
     /** What it's waiting on you for (its own sub-agents' requests too): answered here as in the session. */

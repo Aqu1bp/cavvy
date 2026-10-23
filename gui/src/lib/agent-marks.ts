@@ -7,10 +7,22 @@ import { splitTitle } from "./format";
 import { commandLabel } from "./command-row";
 import { RUNNING, commandDescription, isLive, runningVerb, toolLabel } from "./tool-words";
 
-/** The provider that runs a sub-agent: its model's, when it isn't the session's own (`own`); else the session's. */
-export function agentProvider(a: Pick<AgentRun, "model">, own?: string): string | undefined {
-    const model = a.model;
-    return model?.includes(":") ? model.slice(0, model.indexOf(":")) : own;
+/**
+ * The provider that runs a sub-agent: its model's, when it isn't the session's own (`own`). A model with no
+ * provider is its parent's (`agents`: the session's, to find it): a Claude Code agent's own "haiku" child runs
+ * on Claude Code, not the session's; at the top, the session's.
+ */
+export function agentProvider(a: Pick<AgentRun, "model" | "parentId">, own?: string, agents: readonly AgentRun[] = []): string | undefined {
+    const seen = new Set<string>();
+    for (let at: Pick<AgentRun, "model" | "parentId"> | undefined = a; at; ) {
+        const model = at.model;
+        if (model?.includes(":")) return model.slice(0, model.indexOf(":"));
+        const parent: string | undefined = at.parentId;
+        if (!parent || seen.has(parent)) break;
+        seen.add(parent);
+        at = agents.find((x) => x.id === parent);
+    }
+    return own;
 }
 
 /** The distinct providers of a group of agents, in the order they first appear: up to `max` to show, and how many more. `undefined`: not known. */

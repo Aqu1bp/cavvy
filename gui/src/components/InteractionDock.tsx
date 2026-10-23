@@ -139,7 +139,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
     const askerProvider = () => {
         const h = handleFor(p.sessionId);
         const a = p.it.agentId ? h?.view.agents.find((x) => x.id === p.it.agentId) : undefined;
-        return a && agentProvider(a, h?.view.state.model?.provider);
+        return a && agentProvider(a, h?.view.state.model?.provider, h?.view.agents);
     };
     const [busy, setBusy] = createSignal(false);
     const answer = async (choice: PermissionInteraction["options"][number]["id"]) => {

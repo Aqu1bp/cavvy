@@ -16,6 +16,19 @@ test("who runs a sub-agent: its model's provider when it isn't the session's own
     expect(agentProvider({})).toBeUndefined();
 });
 
+test("a sub-agent's own child with a bare model runs on its parent's provider, not the session's", () => {
+    const run = (id: string, model?: string, parentId?: string) => ({ id, model, parentId }) as any;
+    const agents = [run("a1", "claude-code:sonnet"), run("a2", "haiku", "a1"), run("a3", undefined, "a2")];
+    // A Codex session: the Claude Code agent's children are Claude Code's, however deep.
+    expect(agentProvider(agents[1], "codex", agents)).toBe("claude-code");
+    expect(agentProvider(agents[2], "codex", agents)).toBe("claude-code");
+    // A parent not listed (yet), or none: the session's.
+    expect(agentProvider(run("b", "haiku", "gone"), "codex", agents)).toBe("codex");
+    // A loop in parents doesn't hang.
+    const loop = [run("x", "haiku", "y"), run("y", "haiku", "x")];
+    expect(agentProvider(loop[0], "codex", loop)).toBe("codex");
+});
+
 test("a group's providers: distinct, in order, at most three and how many more", () => {
     expect(providerStack(["claude-code", "claude-code"])).toEqual({ shown: ["claude-code"], more: 0 });
     expect(providerStack(["codex", "claude-code", "codex", "openai"])).toEqual({ shown: ["codex", "claude-code", "openai"], more: 0 });

@@ -38,7 +38,7 @@ function Item(p: { handle: SessionHandle; at: Placed }) {
     const r = () => p.at.row;
     const live = () => rowLive(r());
     const target = () => stopTarget(r());
-    const provider = () => rowProvider(r(), p.handle.view.state.model?.provider);
+    const provider = () => rowProvider(r(), p.handle.view.state.model?.provider, p.handle.view.agents);
     const runner = () => (provider() ? runnerName({ provider: provider()! }, app.providers) : "Harness");
     const command = () => r().kind === "shell" || r().kind === "monitor";
     // Who runs it: the provider and model for a sub-agent; a command's (or another task's) kind and runner.
