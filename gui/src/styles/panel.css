@@ -8,7 +8,6 @@
     flex-direction: column;
     min-height: 0;
     font-size: 0.929rem;
-    container: insp / inline-size;
 }
 
 /* ---- Shared by the panel and the diff reader ---- */
@@ -41,10 +40,13 @@
     font-weight: 600;
 }
 
-/* The tabs share the panel's width, each as wide as its label and an even part of what's left;
-   with long counts in a narrow panel a label is cut rather than spilling out. A narrow panel has
-   less padding, and no count of files (what runs stays). */
+/* The tabs share the panel's width, each as wide as its label and an even part of what's left.
+   As the panel narrows (or the text grows) they give way in steps, never cut: the side panel
+   measures which fit holds every tab whole and sets it as data-fit (RightPanel useTabFit).
+   "tight": less padding. "lean": no count of files either (what runs stays). "icons": each
+   tab's icon and what runs, the label kept for screen readers and as the tooltip. */
 .insp-h .segmented button {
+    position: relative;
     flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
@@ -52,19 +54,37 @@
     gap: calc(5 * var(--sp));
 }
 
-@container insp (max-width: 320px) {
-    .insp-h {
-        gap: calc(4 * var(--sp));
-    }
+.insp-h .segmented .seg-i {
+    display: none;
+    width: calc(15 * var(--sp));
+    height: calc(15 * var(--sp));
+    flex: none;
+}
 
-    .insp-h .segmented button {
-        padding: 0 calc(3 * var(--sp));
-        gap: calc(3 * var(--sp));
-    }
+.insp-h:is([data-fit="tight"], [data-fit="lean"], [data-fit="icons"]) {
+    gap: calc(4 * var(--sp));
+}
 
-    .segmented .ct.files {
-        display: none;
-    }
+.insp-h:is([data-fit="tight"], [data-fit="lean"], [data-fit="icons"]) .segmented button {
+    padding: 0 calc(3 * var(--sp));
+    gap: calc(3 * var(--sp));
+}
+
+.insp-h:is([data-fit="lean"], [data-fit="icons"]) .segmented .ct.files {
+    display: none;
+}
+
+.insp-h[data-fit="icons"] .segmented .seg-i {
+    display: block;
+}
+
+.insp-h[data-fit="icons"] .segmented .seg-l {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
 }
 
 .segmented .ct-dot {

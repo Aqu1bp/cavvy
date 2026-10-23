@@ -6,7 +6,7 @@
 // secrets and MCP servers that failed or ask for approval. Empty sections aren't
 // drawn. The plan and its steps are in the conversation (Composer, Activity).
 
-import { createEffect, createMemo, createResource, createSignal, For, Match, on, Show, Switch } from "solid-js";
+import { createEffect, createMemo, createResource, createSignal, For, Match, on, onCleanup, Show, Switch } from "solid-js";
 import { Bot, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitCommitHorizontal, GitPullRequestArrow, KeyRound, Plug, SquarePen, Terminal, X } from "lucide-solid";
 import type { ChangesInfo, GitFileDiff } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
@@ -18,7 +18,7 @@ import { commitUnavailable, sessionReadReady, useGitChanges } from "../state/cha
 import { canReveal, copyText, openExternal, revealPath } from "../lib/platform";
 import { tildify } from "../lib/format";
 import { agentRows, backgroundOf, commandRows, rowLive, type WorkRow } from "../lib/background";
-import { CHANGE, dirOf, nameOf, type Change } from "../lib/inspector";
+import { CHANGE, dirOf, fitTabs, nameOf, tabName, type Change, type TabFit } from "../lib/inspector";
 import { Menu } from "./ui/Menu";
 import { Segmented, Spinner } from "./ui/bits";
 import { PublishDialog } from "./PublishDialog";
@@ -332,6 +332,33 @@ function PanelFoot(p: { handle: SessionHandle; changes: ReturnType<ReturnType<ty
     );
 }
 
+/** How the tabs fit the header (lib/inspector fitTabs), tried roomiest first whenever the panel's width, the text
+ *  size or what's in a tab changes; set on the header as data-fit, which panel.css lays out. */
+function useTabFit(): [() => TabFit, (head: HTMLElement) => void] {
+    const [fit, setFit] = createSignal<TabFit>("full");
+    const measure = (head: HTMLElement) => {
+        const tabs = [...head.querySelectorAll<HTMLElement>(".segmented button")];
+        const chosen = fitTabs((f) => {
+            head.dataset.fit = f;
+            return tabs.some((t) => t.scrollWidth > t.clientWidth);
+        });
+        head.dataset.fit = chosen;
+        setFit(chosen);
+    };
+    const ref = (head: HTMLElement) => {
+        const resized = new ResizeObserver(() => measure(head));
+        // A count that appears or grows; not attributes, which measuring sets.
+        const changed = new MutationObserver(() => measure(head));
+        resized.observe(head);
+        changed.observe(head, { subtree: true, childList: true, characterData: true });
+        onCleanup(() => {
+            resized.disconnect();
+            changed.disconnect();
+        });
+    };
+    return [fit, ref];
+}
+
 export function RightPanel(p: { handle: SessionHandle }) {
     const changes = useFolderChanges(() => p.handle);
     const st = () => p.handle.view.state;
@@ -340,9 +367,13 @@ export function RightPanel(p: { handle: SessionHandle }) {
     const commands = createMemo(() => uncleared(p.handle.id, commandRows(tasks())));
     const running = (rows: readonly WorkRow[]) => rows.filter(rowLive).length;
     const asks = () => agents().some((r) => r.status === "waiting");
+    const files = () => (changes()?.count ? `${changes()!.count.toLocaleString()}${changes()!.atLeast ? "+" : ""}` : undefined);
+    const [fit, fitRef] = useTabFit();
+    // Shown as icons, a tab's label is its tooltip; its name always says its count.
+    const tip = (label: string) => (fit() === "icons" ? label : undefined);
     return (
         <aside class="panel" aria-label="Session details">
-            <div class="insp-h">
+            <div class="insp-h" ref={fitRef}>
                 <Segmented
                     label="Side panel"
                     value={inspectorPane()}
@@ -350,24 +381,35 @@ export function RightPanel(p: { handle: SessionHandle }) {
                     options={[
                         {
                             value: "changes",
+                            get name() {
+                                return tabName("Changes", files() && `${files()} ${changes()!.count === 1 ? "file" : "files"}`);
+                            },
+                            get title() {
+                                return tip("Changes");
+                            },
                             label: (
                                 <>
-                                    Changes
-                                    <Show when={changes()?.count}>
-                                        <span class="ct files">
-                                            {changes()!.count.toLocaleString()}
-                                            {changes()!.atLeast ? "+" : ""}
-                                        </span>
+                                    <FileDiff class="seg-i" />
+                                    <span class="seg-l">Changes</span>
+                                    <Show when={files()}>
+                                        <span class="ct files">{files()}</span>
                                     </Show>
                                 </>
                             ),
                         },
                         {
                             value: "agents",
+                            get name() {
+                                return tabName("Agents", running(agents()) > 0 && `${running(agents())} running`, asks() && "a sub-agent needs you");
+                            },
+                            get title() {
+                                return tip("Agents");
+                            },
                             // A tab's count is what runs in it now, in the accent.
                             label: (
                                 <>
-                                    Agents
+                                    <Bot class="seg-i" />
+                                    <span class="seg-l">Agents</span>
                                     <Show when={running(agents())}>
                                         <span class="ct live">{running(agents())}</span>
                                     </Show>
@@ -379,9 +421,16 @@ export function RightPanel(p: { handle: SessionHandle }) {
                         },
                         {
                             value: "commands",
+                            get name() {
+                                return tabName("Commands", running(commands()) > 0 && `${running(commands())} running`);
+                            },
+                            get title() {
+                                return tip("Commands");
+                            },
                             label: (
                                 <>
-                                    Commands
+                                    <Terminal class="seg-i" />
+                                    <span class="seg-l">Commands</span>
                                     <Show when={running(commands())}>
                                         <span class="ct live">{running(commands())}</span>
                                     </Show>
