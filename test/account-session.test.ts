@@ -86,6 +86,8 @@ async function harness(provider: "claude-code" | "codex", live: boolean, log: st
     return { session, agent, run, starts, opened, homes, lastPrompt, notices };
 }
 
+const count = (s: string, sub: string) => s.split(sub).length - 1;
+
 /** A native session's transcript in Default's history (FAKE_TRANSCRIPTS). */
 function transcriptOf(provider: string, id: string): string {
     if (provider === "codex") return join(homedir(), ".codex", "sessions", `${id}.jsonl`);
@@ -109,11 +111,13 @@ for (const provider of ["claude-code", "codex"] as const) for (const live of [tr
     };
     const real = (folder: string | undefined) => (folder === undefined ? undefined : realpathSync(folder));
     async function withHarness(name: string, body: (h: Awaited<ReturnType<typeof harness>>) => Promise<void>) {
-        process.env.FAKE_TRANSCRIPTS = "1";
+        // Codex's threads with ids of their own, as Claude Code's sessions have: a round trip tells them apart.
+        process.env.FAKE_TRANSCRIPTS = process.env.FAKE_UNIQUE_THREADS = "1";
         const h = await harness(provider, live, join(root, `${tag}-${name}.jsonl`));
         try { await body(h); } finally {
             await h.agent.dispose();
             delete process.env.FAKE_TRANSCRIPTS;
+            delete process.env.FAKE_UNIQUE_THREADS;
         }
     }
 
@@ -191,6 +195,95 @@ for (const provider of ["claude-code", "codex"] as const) for (const live of [tr
             expect(h.session.backends.has(provider)).toBe(true);
         });
     }, 30_000);
+
+    // One native thread per history location (#413): a round trip through an account with its own history goes back
+    // to the thread the session had there, sent only what it missed, once, rather than a third thread with everything.
+    run("Default → an existing-folder account → Default → back: each goes on with its own native thread, sent only the turns it missed, once", async () => {
+        const custom = add("trip", join(iso.home, `${tag}-trip`));
+        await withHarness("round-trip", async (h) => {
+            expect(await h.run("alpha on Default")).toBe("done");
+            const d = h.session.backends.get(provider)!.id;
+            expect(h.session.setAccount(provider, custom.id)).toBe(true);
+            expect(await h.run("bravo on custom")).toBe("done");
+            const c = h.session.backends.get(provider)!.id;
+            expect(c).not.toBe(d);
+            expect(count(h.lastPrompt(), "alpha on Default")).toBe(1);
+            expect(h.session.setAccount(provider, "default")).toBe(true);
+            // Taken up again before any turn: the switch's note can say so.
+            expect(h.session.backends.get(provider)?.id).toBe(d);
+            expect(await h.run("charlie on Default")).toBe("done");
+            expect(h.opened()).toEqual(["new", "new", d]);
+            expect(h.homes().map(real)).toEqual([undefined, realpathSync(custom.folder), undefined]);
+            // What it missed (custom's turn), once; nothing it had.
+            expect(count(h.lastPrompt(), "bravo on custom")).toBe(1);
+            expect(h.lastPrompt()).not.toContain("alpha on Default");
+            expect(h.notices().join("\n")).not.toMatch(/Starting a new|account folder changed|Couldn't/);
+            expect(await h.run("delta on Default")).toBe("done");
+            expect(h.lastPrompt()).not.toContain("conversation-so-far");
+            // And custom's thread, the other way: Default's two turns since it last answered.
+            expect(h.session.setAccount(provider, custom.id)).toBe(true);
+            expect(h.session.backends.get(provider)?.id).toBe(c);
+            expect(await h.run("echo on custom")).toBe("done");
+            expect(h.opened().at(-1)).toBe(c);
+            expect(h.opened().filter((o) => o === "new")).toHaveLength(2);
+            expect(real(h.homes().at(-1))).toBe(realpathSync(custom.folder));
+            for (const missed of ["charlie on Default", "delta on Default"]) expect(count(h.lastPrompt(), missed)).toBe(1);
+            for (const had of ["alpha on Default", "bravo on custom"]) expect(h.lastPrompt()).not.toContain(had);
+            expect(h.session.parkedBackends(provider).map((p) => p.session.id)).toEqual([d]);
+        });
+    }, 30_000);
+
+    run("back on Default when its earlier thread can't be resumed: a new one, handed the whole conversation once", async () => {
+        const custom = add("gone", join(iso.home, `${tag}-gone`));
+        await withHarness("round-trip-gone", async (h) => {
+            expect(await h.run("alpha on Default")).toBe("done");
+            const d = h.session.backends.get(provider)!.id;
+            h.session.setAccount(provider, custom.id);
+            expect(await h.run("bravo on custom")).toBe("done");
+            const c = h.session.backends.get(provider)!.id;
+            // Gone from Default's history while the session was away.
+            rmSync(transcriptOf(provider, d));
+            h.session.setAccount(provider, "default");
+            expect(await h.run("charlie on Default")).toBe("done");
+            expect(h.opened().slice(-2)).toEqual([d, "new"]);
+            expect(h.homes().at(-1)).toBeUndefined();
+            expect(h.notices().join("\n")).toMatch(/Couldn't resume.*Starting a new one with this conversation as context/s);
+            for (const said of ["alpha on Default", "bravo on custom", "charlie on Default"]) expect(count(h.lastPrompt(), said)).toBe(1);
+            expect(h.session.backends.get(provider)?.id).not.toBe(d);
+            expect(await h.run("delta on Default")).toBe("done");
+            expect(h.lastPrompt()).not.toContain("conversation-so-far");
+            // Custom's own thread is still kept for it.
+            expect(h.session.parkedBackends(provider).map((p) => p.session.id)).toEqual([c]);
+        });
+    }, 30_000);
+
+    run("rewound past the existing-folder account's turns: its thread goes, and Default's is sent only the kept turns it missed", async () => {
+        const custom = add("rewind", join(iso.home, `${tag}-rewind`));
+        await withHarness("round-trip-rewind", async (h) => {
+            expect(await h.run("alpha on Default")).toBe("done");
+            const d = h.session.backends.get(provider)!.id;
+            h.session.setAccount(provider, custom.id);
+            expect(await h.run("bravo on custom")).toBe("done");
+            const kept = h.session.messages.length;
+            expect(await h.run("charlie on custom")).toBe("done");
+            // Custom's thread saw "charlie", which the rewind takes away; Default's saw only "alpha".
+            h.session.rewind(kept);
+            h.session.setAccount(provider, "default");
+            expect(h.session.backends.get(provider)?.id).toBe(d);
+            expect(await h.run("delta on Default")).toBe("done");
+            expect(h.opened().at(-1)).toBe(d);
+            expect(count(h.lastPrompt(), "bravo on custom")).toBe(1);
+            expect(h.lastPrompt()).not.toContain("charlie on custom");
+            expect(h.lastPrompt()).not.toContain("alpha on Default");
+            // Custom starts over: a new thread with the conversation as it is now.
+            h.session.setAccount(provider, custom.id);
+            expect(h.session.backends.has(provider)).toBe(false);
+            expect(await h.run("echo on custom")).toBe("done");
+            expect(h.opened().at(-1)).toBe("new");
+            for (const said of ["alpha on Default", "bravo on custom", "delta on Default"]) expect(count(h.lastPrompt(), said)).toBe(1);
+            expect(h.lastPrompt()).not.toContain("charlie on custom");
+        });
+    }, 30_000);
 });
 
 for (const provider of ["claude-code", "codex"] as const) describe(`${provider} account handoff`, () => {
@@ -207,6 +300,8 @@ for (const provider of ["claude-code", "codex"] as const) describe(`${provider} 
         process.env.FAKE_LOG = log;
         process.env.FAKE_SCENARIO = "silent";
         process.env.FAKE_CODEX_SCENARIO = "cmd";
+        // Codex threads with ids of their own: Default's and Personal's are two threads.
+        process.env.FAKE_UNIQUE_THREADS = "1";
         const session = Session.create(root, { persist: false });
         session.setModel(`${provider}:default`);
         const events: AgentEvent[] = [];
@@ -221,7 +316,8 @@ for (const provider of ["claude-code", "codex"] as const) describe(`${provider} 
         try {
             const run = (text: string) => agent.run([{ type: "text", text }], { signal: new AbortController().signal });
             await run("Earlier conversation");
-            expect(session.backends.has(provider)).toBe(true);
+            const defaultThread = session.backends.get(provider)?.id;
+            expect(defaultThread).toBeDefined();
             const before = structuredClone(session.messages);
             expect(session.setAccount(provider, selected.id)).toBe(true);
             expect(session.backends.has(provider)).toBe(false);
@@ -256,9 +352,13 @@ for (const provider of ["claude-code", "codex"] as const) describe(`${provider} 
             const after = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
             if (provider === "claude-code") expect(after.filter((l) => l.argv).at(-1).argv).not.toContain("--resume");
             else expect(after.some((l) => l.received?.method === "thread/resume")).toBe(false);
+            // Default's own thread from the first turn is kept for it (#413): back there, it's taken up again.
             expect(session.setAccount(provider, "default")).toBe(true);
-            expect(session.backends.has(provider)).toBe(false);
-        } finally { await agent.dispose(); }
+            expect(session.backends.get(provider)?.id).toBe(defaultThread);
+        } finally {
+            await agent.dispose();
+            delete process.env.FAKE_UNIQUE_THREADS;
+        }
     }, 30_000);
 });
 
@@ -303,6 +403,9 @@ run("terminal /account switches with the same handoff and refuses changes during
     expect(notices.at(-1)).toBe("Invalid account id");
     await runCommand(app, "/account default");
     expect(session.accountId("codex")).toBe("default");
+    // Default's earlier thread, kept for it (#413), is taken up again.
+    expect(session.backends.get("codex")?.id).toBe("default-thread");
+    expect(session.notices.at(-1)?.text).toMatch(/^Continuing on Codex · Default: the earlier Codex thread this account finds goes on/);
 });
 
 run("terminal add-account cancellation and invalid input never launch a login", async () => {

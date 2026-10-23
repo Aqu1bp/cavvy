@@ -565,7 +565,13 @@ test("a session's account switch says whether the CLI session goes on natively o
         await setAccount(own.id);
         expect(lastNotice()).toStartWith("Continuing on Codex · Own: starting a new Codex thread with this conversation as context (this account doesn't share the earlier Codex thread's history). Codex's model list");
         expect(rt.session.backends.has("codex")).toBe(false);
-        // No native thread to keep: the handoff, without the reason.
+        // Back where the earlier thread lives (#413): that thread goes on, sent what it missed.
+        await setAccount("default");
+        expect(lastNotice()).toStartWith("Continuing on Codex · Default: the earlier Codex thread this account finds goes on, resumed natively, with what happened since its last turn.");
+        expect(rt.session.backends.get("codex")?.id).toBe("thread-1");
+        // No native thread to keep or take up: the handoff, without the reason.
+        rt.session.forgetBackendSession("codex");
+        await setAccount(own.id);
         await setAccount("default");
         expect(lastNotice()).toBe("Continuing on Codex · Default: starting a new Codex thread with this conversation as context.");
     } finally {

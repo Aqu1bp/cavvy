@@ -73,7 +73,7 @@ describe("the fork's file", () => {
         } finally { reopened.release(); s.release(); }
     });
 
-    test.each(["claude-code", "codex"])("%s: an account switch or replacement folder cannot reuse a shared session", (provider) => {
+    test.each(["claude-code", "codex"])("%s: an account switch or replacement folder cannot reuse a shared session elsewhere; it's kept for its own home, still shared", (provider) => {
         const s = original();
         s.setAccount(provider, "work");
         s.setBackendSession(provider, "shared", 6, { folder: "/accounts/work" });
@@ -84,7 +84,9 @@ describe("the fork's file", () => {
             expect(f.backendSession(provider, { folder: "/accounts/other" })).toBeUndefined();
             f.release();
             const reopened = Session.load(f.path);
-            expect(reopened.backendSession(provider, { folder: "/accounts/work" })).toBeUndefined();
+            expect(reopened.backendSession(provider, { folder: "/accounts/other" })).toBeUndefined();
+            // Parked for its home (#413): back there, it's forked natively, never continued in place.
+            expect(reopened.backendSession(provider, { folder: "/accounts/work" })).toEqual({ id: "shared", synced: 6, fork: true });
             reopened.release();
             expect(s.backendSession(provider, { folder: "/accounts/work" })?.id).toBe("shared");
         }
