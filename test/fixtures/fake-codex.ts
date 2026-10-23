@@ -61,6 +61,8 @@
 // FAKE_THREAD_TIER     the service tier a resumed thread is already on (e.g. priority from an earlier turn);
 // FAKE_CONFIG_TIER     the tier Codex's own config gives a new thread
 // FAKE_CODEX_SKILL    a skill of Codex's own that skills/list reports; FAKE_NO_SKILLS=1: an older Codex, without skills/extraRoots/set
+// FAKE_TRANSCRIPTS=1  keeps each thread's rollout under its home's sessions/ (CODEX_HOME, or ~/.codex), as Codex does;
+//                     thread/resume finds only those
 // FAKE_SLOW_RESUME, FAKE_SLOW_TURN_START  milliseconds before answering thread/resume, turn/start
 // FAKE_TURN_MS        how long every turn works before it answers
 // FAKE_STEER_MS       turn/steer is answered that many ms late (refused with FAKE_STEER_FAIL)
@@ -102,7 +104,8 @@
 // thread/resume (with the earlier turn's id) and when a compaction starts.
 
 import { createHash } from "crypto";
-import { appendFileSync, existsSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
+import { homedir } from "os";
 import { join } from "path";
 import { callTool, connect, type McpServerRef } from "./mcp-call";
 
@@ -166,6 +169,18 @@ if (process.env.FAKE_CRASH_FILE) {
 /** initialize asked for experimentalApi (thread/backgroundTerminals/* need it). */
 let experimental = false;
 /** Commands still running after their turn (unified exec terminals), by processId. */
+/** FAKE_TRANSCRIPTS: whether the thread's rollout is in this home's sessions/ (made, when `make`). Without it, every thread is. */
+function rollout(id: string, make = false): boolean {
+    if (process.env.FAKE_TRANSCRIPTS !== "1") return true;
+    const dir = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions");
+    const file = join(dir, `${id}.jsonl`);
+    if (make) {
+        mkdirSync(dir, { recursive: true });
+        appendFileSync(file, JSON.stringify({ id, pid: process.pid }) + "\n");
+    }
+    if (!existsSync(file)) log({ rolloutMissing: file });
+    return existsSync(file);
+}
 const terminals = new Map<string, { threadId: string; turnId: string; item: any; timer?: ReturnType<typeof setTimeout> }>();
 let processSeq = 40000;
 function endTerminal(processId: string, status: string, exitCode: number, output: string) {
@@ -815,10 +830,12 @@ async function handle(m: any) {
             setTier("thr-new", "serviceTier" in p ? p.serviceTier : (process.env.FAKE_CONFIG_TIER ?? null));
             // A new thread starts with no usage.
             usageOf.delete("thr-new");
+            rollout("thr-new", true);
             return reply({ thread: { id: "thr-new" }, model: projectModel() ?? p.model ?? "gpt-test", serviceTier: tiers.get("thr-new") ?? "default" });
         case "thread/resume":
             if (process.env.FAKE_SLOW_RESUME) await Bun.sleep(Number(process.env.FAKE_SLOW_RESUME));
             if (String(p.threadId).startsWith("gone") || p.threadId === process.env.FAKE_GONE_ID) return fail(`thread not found: ${p.threadId}`);
+            if (!rollout(String(p.threadId))) return fail(`no rollout found for thread id ${p.threadId}`);
             threadPolicy(p);
             await startMcp(p.config);
             if (!tiers.has(p.threadId)) setTier(p.threadId, process.env.FAKE_THREAD_TIER ?? null);

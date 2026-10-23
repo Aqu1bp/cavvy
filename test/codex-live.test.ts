@@ -519,11 +519,12 @@ describe("the app-server goes away", () => {
 });
 
 describe("the account changes during background work", () => {
+    /** Existing-folder accounts: each keeps a history of its own, so neither can resume the other's threads. */
     function accounts(ids: string[]) {
         const list = ids.map((id) => {
             const folder = join(iso.home, "accounts", "codex", id);
             mkdirSync(folder, { recursive: true });
-            return { id, name: id, folder, managed: true };
+            return { id, name: id, folder, managed: false };
         });
         registry.saveAgentConfig("codex", { path: codexBin, accounts: list });
         return list;
@@ -547,6 +548,72 @@ describe("the account changes during background work", () => {
         const homes = logLines().flatMap((l) => (l.argv ? [l.codexHome] : []));
         expect(homes.map((h: string) => realpathSync(h))).toEqual([realpathSync(personal!.folder), realpathSync(work!.folder)]);
         expect(calls("thread/start")).toHaveLength(2);
+    });
+
+    test("another account sharing the history (Harness-made): the same thread, resumed on a new app-server signed in as it; the old one and its background work stop, and the user is told (#377)", async () => {
+        const { addAccount } = await import("../src/providers/accounts");
+        process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
+        process.env.FAKE_BG_MS = "never";
+        process.env.FAKE_TRANSCRIPTS = "1";
+        const work = addAccount("codex", { id: "shared-work", name: "Work" });
+        const a = await makeAgent();
+        expect(await a.run("start it")).toBe("done");
+        const [pid] = pids();
+        const thread = a.session.backends.get("codex")!.id;
+        process.env.FAKE_CODEX_SCENARIOS = "cmd";
+        a.session.setAccount("codex", work.id);
+        expect(a.session.backends.get("codex")?.id).toBe(thread);
+        expect(await a.run("now on work")).toBe("done");
+        // Never the app-server signed in as Default, though its background work would hold a restart back.
+        expect(alive(pid!)).toBe(false);
+        expect(a.task("exec-turn-1-1")?.status).toBe("stopped");
+        expect(a.notices()).toContain("Codex was restarted for the account change, so its background task stopped.");
+        const homes = logLines().flatMap((l) => (l.argv ? [l.codexHome] : []));
+        expect(homes.map((h: string) => realpathSync(h))).toEqual([realpathSync(process.env.CODEX_HOME!), realpathSync(work.folder)]);
+        expect(calls("thread/start")).toHaveLength(1);
+        expect(calls("thread/resume").map((p) => p.threadId)).toEqual([thread]);
+        expect(turnTexts().at(-1)).not.toContain("conversation-so-far");
+    });
+
+    test("a wake from the earlier account's app-server isn't taken over after a switch: refused before anything is bound, so a waiting message goes with the next turn (#377)", async () => {
+        const { addAccount } = await import("../src/providers/accounts");
+        process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
+        process.env.FAKE_BG_MS = "100";
+        const work = addAccount("codex", { id: "wake-work", name: "Work" });
+        const a = await makeAgent();
+        expect(await a.run("start it")).toBe("done");
+        a.session.setAccount("codex", work.id);
+        const w = await a.nextWake();
+        a.queue.push("also check the logs");
+        expect(await a.adopt(w)).toBe("error");
+        expect(a.queue).toEqual(["also check the logs"]);
+        expect(calls("turn/steer")).toHaveLength(0);
+        expect(await a.run("now on work")).toBe("done");
+        const homes = logLines().flatMap((l) => (l.argv ? [l.codexHome] : []));
+        expect(realpathSync(homes.at(-1))).toBe(realpathSync(work.folder));
+    });
+
+    test("a session to be forked, switched to an account sharing its history: the new account's app-server forks it, not the idle earlier one in place (#377)", async () => {
+        const { addAccount } = await import("../src/providers/accounts");
+        process.env.FAKE_CODEX_SCENARIOS = "cmd";
+        const work = addAccount("codex", { id: "fork-work-live", name: "Work" });
+        const a = await makeAgent();
+        expect(await a.run("before the fork")).toBe("done");
+        const [pid] = pids();
+        const thread = a.session.backends.get("codex")!.id;
+        a.session.markBackendForked("codex");
+        a.session.setAccount("codex", work.id);
+        expect(await a.run("on work")).toBe("done");
+        expect(alive(pid!)).toBe(false);
+        const homes = logLines().flatMap((l) => (l.argv ? [l.codexHome] : []));
+        expect(homes.map((h: string) => realpathSync(h))).toEqual([realpathSync(process.env.CODEX_HOME!), realpathSync(work.folder)]);
+        expect(calls("thread/fork").map((p) => p.threadId)).toEqual([thread]);
+        // Forked by the new app-server as it started (not by the earlier one, then resumed).
+        const lines = logLines();
+        const second = lines.findIndex((l, i) => l.argv && i > lines.findIndex((x) => x.argv));
+        expect(lines.findIndex((l) => l.received?.method === "thread/fork")).toBeGreaterThan(second);
+        expect(calls("thread/resume")).toHaveLength(0);
+        expect(a.session.backends.get("codex")?.id).not.toBe(thread);
     });
 
     test("another account added while it's idle restarts nothing: the next turn goes to the same app-server, its background work going on (#375)", async () => {

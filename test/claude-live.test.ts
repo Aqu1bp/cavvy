@@ -834,6 +834,96 @@ describe("the process: crashes, restarts, settings", () => {
         expect(agent.backgroundTasks().every((t) => t.status !== "running")).toBe(true);
     });
 
+    test("a switch to an account sharing the history (Harness-made) while background work runs: the same session, resumed by a new process signed in as it; the old one's work stops, and the user is told (#377)", async () => {
+        const { addAccount } = await import("../src/providers/accounts");
+        const work = addAccount("claude-code", { id: "shared-work", name: "Work" });
+        process.env.FAKE_SCENARIO = "two-shells";
+        process.env.FAKE_SHELL_MS = "60000";
+        process.env.FAKE_SECOND_SCENARIO = "silent";
+        process.env.FAKE_TRANSCRIPTS = "1";
+        const { run, events, agent, session } = await makeAgent();
+        expect(await run("start two")).toBe("done");
+        const id = session.backends.get("claude-code")!.id;
+        session.setAccount("claude-code", work.id);
+        expect(session.backends.get("claude-code")?.id).toBe(id);
+        process.env.FAKE_SCENARIO = "silent";
+        expect(await run("on work")).toBe("done");
+        // Not the process signed in as Default, though its background work would hold a restart back.
+        const s = starts();
+        expect(s.length).toBe(2);
+        expect(s[0].claudeConfigDir).toBe(process.env.CLAUDE_CONFIG_DIR);
+        expect(s[1].claudeConfigDir).toBe(realpathOf(work.folder));
+        expect(s[1].argv[s[1].argv.indexOf("--resume") + 1]).toBe(id);
+        expect(notices(events).join("\n")).toMatch(/restarted for the account change: 2 background tasks stopped/);
+        expect(notices(events).join("\n")).not.toMatch(/New Claude Code settings apply once/);
+        expect(agent.backgroundTasks().every((t) => t.status !== "running")).toBe(true);
+        expect(userTexts().join("\n")).not.toContain("conversation-so-far");
+    });
+
+    test("a switch to an account sharing the history after the process was reaped: a resume its CLI can't do starts over with the conversation (#377)", async () => {
+        const { addAccount } = await import("../src/providers/accounts");
+        const work = addAccount("claude-code", { id: "reaped-work", name: "Work" });
+        liveTiming.idleMs = 150;
+        process.env.FAKE_SCENARIO = "silent";
+        const { run, events, session, client } = await makeAgent();
+        expect(await run("earlier")).toBe("done");
+        await until(() => client.live.get(session.meta.id)!.state === "dead", 3000, "reaped");
+        const id = session.backends.get("claude-code")!.id;
+        session.setAccount("claude-code", work.id);
+        // The new account's CLI can't find it.
+        process.env.FAKE_GONE_ID = id;
+        expect(await run("on work")).toBe("done");
+        const s = starts();
+        expect(s.map((x) => (x.argv.includes("--resume") ? x.argv[x.argv.indexOf("--resume") + 1] : "new"))).toEqual(["new", id, "new"]);
+        expect(s[2].claudeConfigDir).toBe(realpathOf(work.folder));
+        expect(notices(events).join("\n")).toMatch(/Couldn't resume the Claude Code session.*Starting a new one with this conversation as context/s);
+        expect(userTexts().join("\n")).toContain("conversation-so-far");
+        expect(userTexts().join("\n")).toContain("User: earlier");
+    });
+
+    test("a wake from the earlier account's process isn't taken over after a switch: refused before anything is drained, so a waiting message goes with the next turn (#377)", async () => {
+        const { addAccount } = await import("../src/providers/accounts");
+        const work = addAccount("claude-code", { id: "wake-work", name: "Work" });
+        process.env.FAKE_SCENARIO = "agent-background";
+        process.env.FAKE_BACKGROUND_MS = "300";
+        process.env.FAKE_SECOND_SCENARIO = "silent";
+        const { run, adopt, wakes, session, queued } = await makeAgent();
+        expect(await run("map auth")).toBe("done");
+        const [first] = starts();
+        session.setAccount("claude-code", work.id);
+        await until(() => wakes.length > 0, 5000, "the wake");
+        // A message the user sent meanwhile, to be steered into whatever turn runs.
+        queued.push(["also check the logs"]);
+        expect(await adopt(wakes[0]!)).toBe("error");
+        expect(queued).toEqual([["also check the logs"]]);
+        expect(userTexts()).not.toContain("also check the logs");
+        // The next turn is the new account's own process.
+        expect(await run("on work")).toBe("done");
+        const s = starts();
+        expect(s).toHaveLength(2);
+        expect(s[0].pid).toBe(first.pid);
+        expect(s[1].claudeConfigDir).toBe(realpathOf(work.folder));
+    });
+
+    test("a session to be forked, switched to an account sharing its history: the new account's process forks it, not the earlier one's (#377)", async () => {
+        const { addAccount } = await import("../src/providers/accounts");
+        const work = addAccount("claude-code", { id: "fork-work-live", name: "Work" });
+        process.env.FAKE_SCENARIO = "silent";
+        const { run, session } = await makeAgent();
+        expect(await run("before the fork")).toBe("done");
+        const id = session.backends.get("claude-code")!.id;
+        session.markBackendForked("claude-code");
+        expect(session.backends.get("claude-code")?.fork).toBe(true);
+        session.setAccount("claude-code", work.id);
+        expect(await run("on work")).toBe("done");
+        const s = starts();
+        expect(s).toHaveLength(2);
+        expect(s[1].claudeConfigDir).toBe(realpathOf(work.folder));
+        expect(s[1].argv[s[1].argv.indexOf("--resume") + 1]).toBe(id);
+        expect(s[1].argv).toContain("--fork-session");
+        expect(session.backends.get("claude-code")?.id).not.toBe(id);
+    });
+
     test("idle with nothing in the background, the process is reaped; the next turn resumes", async () => {
         liveTiming.idleMs = 150;
         process.env.FAKE_SCENARIO = "silent";

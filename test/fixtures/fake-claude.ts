@@ -58,6 +58,8 @@
 // FAKE_MCP_CALLS     the "mcp" scenario's tool calls to servers from mcp_set_servers: [{ server?, tool, args }]
 // FAKE_MCP_REFUSE=1  answers mcp_set_servers with an error; hang leaves it unanswered, exit stops the CLI
 // FAKE_LOG_ENV=1     logs its whole environment at start
+// FAKE_TRANSCRIPTS=1 keeps each session as a transcript under its config folder's projects/ (CLAUDE_CONFIG_DIR, or
+//                    ~/.claude), as Claude Code does; --resume finds only those ("No conversation found" otherwise)
 // FAKE_RATE_LIMIT    a JSON file: the rate_limit_info of a rate_limit_event sent after system/init
 //                    (shapes from Claude Code 2.1.301, test/fixtures/limits); FAKE_RATE_LIMIT_LATE=1 sends it
 //                    after the "rate-limit" scenario's error instead; FAKE_RATE_LIMIT_REPEAT=n sends it n times (as
@@ -161,6 +163,13 @@ if (resume?.startsWith("gone") || (resume && resume === process.env.FAKE_GONE_ID
     out({ type: "result", subtype: "error_during_execution", is_error: true, errors: [`No conversation found with session ID: ${resume}`], usage: {}, session_id: resume });
     process.exit(1);
 }
+/** FAKE_TRANSCRIPTS: the folder this project's transcripts are in, as Claude Code names it. */
+const transcripts = process.env.FAKE_TRANSCRIPTS === "1" ? join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-")) : undefined;
+if (transcripts && resume && !existsSync(join(transcripts, `${resume}.jsonl`))) {
+    log({ transcriptMissing: join(transcripts, `${resume}.jsonl`) });
+    out({ type: "result", subtype: "error_during_execution", is_error: true, errors: [`No conversation found with session ID: ${resume}`], usage: {}, session_id: resume });
+    process.exit(1);
+}
 
 // ---- configuration, as the real CLI loads it
 let mode = flag("--permission-mode") ?? "default";
@@ -230,6 +239,10 @@ function selfApproved(tool: string, input: any): boolean {
 // --fork-session (with --resume): a copy of the session goes on, under a new id.
 const sessionId = resume && !argv.includes("--fork-session") ? resume : `${resume ? "fork" : "sess"}-${Math.random().toString(36).slice(2, 10)}`;
 sessionIdOf = () => sessionId;
+if (transcripts) {
+    mkdirSync(transcripts, { recursive: true });
+    appendFileSync(join(transcripts, `${sessionId}.jsonl`), JSON.stringify({ sessionId, pid: process.pid }) + "\n");
+}
 /** A turn is running, and the prompt it answers. */
 let busy = false;
 /** Prompts waiting behind the running turn, and those withdrawn (cancel_async_message) before they ran. */

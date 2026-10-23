@@ -564,10 +564,10 @@ async function pickAccount(app: App, providers: string[]) {
         label: a.name, value: `${provider}:${a.id}`, group: getProvider(provider)!.name,
         description: a.folder || "The CLI's normal configuration", detail: app.session.accountId(provider) === a.id ? "current" : undefined,
     })));
-    const choice = await app.showDialog(new SelectDialog<string>({ title: "Session account", items, searchable: true, footer: [theme.muted("A switch starts a new CLI thread with this conversation as context."), theme.muted("Add one: /login claude-code add or /login codex add")] })) as string | undefined;
+    const choice = await app.showDialog(new SelectDialog<string>({ title: "Session account", items, searchable: true, footer: [theme.muted("Harness-made accounts share history: a switch among them and Default resumes the CLI session."), theme.muted("Another account starts a new CLI thread with this conversation as context."), theme.muted("Add one: /login claude-code add or /login codex add")] })) as string | undefined;
     if (choice) {
         const [provider, id] = choice.split(":");
-        app.setAccount(provider!, id!);
+        await app.setAccount(provider!, id!);
     }
 }
 

@@ -55,6 +55,25 @@ export function account(provider: string, id = "default"): CliAccount {
     if (found.invalid) throw new RpcError("Invalid account folder: use a non-empty absolute path with no '..'", "invalid");
     return found;
 }
+/**
+ * Where a native CLI session lives: the account's home, and the folder its CLI finds the transcripts it resumes in
+ * (Claude Code's `projects/`, Codex's `sessions/`), both by real path. Homes with the same history folder (Default
+ * and the Harness-made accounts that link it, account-layout.ts) can resume each other's sessions.
+ */
+export interface AccountPlace {
+    folder: string;
+    history?: string;
+}
+/** The history folder of a CLI home (AccountPlace.history), by real path; undefined when it can't be resolved. */
+export function historyFolder(provider: string, folder: string): string | undefined {
+    try { return accountRealPath(join(folder, provider === "codex" ? "sessions" : "projects")); } catch { return undefined; }
+}
+/** The account's AccountPlace now. Throws as account() does. */
+export function accountPlace(provider: string, id = "default"): AccountPlace {
+    const folder = accountRealPath(account(provider, id).folder);
+    const history = historyFolder(provider, folder);
+    return history ? { folder, history } : { folder };
+}
 export function defaultAccount(provider: string): string {
     const id = readAgentConfig(provider)?.defaultAccount ?? "default";
     return listAccounts(provider).some((a) => a.id === id) ? id : "default";
@@ -68,6 +87,22 @@ export function catalogNote(provider: string, selected: CliAccount, cli: string)
     if (from === selected.id) return undefined;
     const source = listAccounts(provider).find((a) => a.id === from)?.name ?? from;
     return `${cli}'s model list, with each model's effort and speed options, comes from its starting account (${source}); ${selected.name} may not offer all of them.`;
+}
+/**
+ * What a session's switch to `selected` is told: how its conversation goes on with the CLI, and where the CLI's
+ * model list comes from (catalogNote). `native`: the native session was kept (the new account's CLI finds it: its
+ * home shares the history), and is resumed there. `handoff`: a new native thread will be handed the conversation;
+ * `dropped` when there was a native session the new account can't resume. Neither (no conversation yet): only the
+ * model list's note, if any.
+ */
+export function accountSwitchNote(provider: string, selected: CliAccount, cli: string, how: "native" | "handoff" | undefined, dropped = false): string | undefined {
+    const on = `Continuing on ${cli} · ${selected.name}:`;
+    const said = how === "native"
+        ? `${on} the same ${cli} session goes on, resumed natively (this account shares its history).`
+        : how === "handoff"
+          ? `${on} starting a new ${cli} thread with this conversation as context${dropped ? ` (this account doesn't share the earlier ${cli} thread's history)` : ""}.`
+          : undefined;
+    return [said, catalogNote(provider, selected, cli)].filter(Boolean).join(" ") || undefined;
 }
 const SELECTORS = { "claude-code": ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"], codex: ["CODEX_HOME"] } as const;
 /**

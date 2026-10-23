@@ -168,7 +168,7 @@ export class LiveCliSession {
     get pid(): number | undefined {
         return this.proc?.pid;
     }
-    /** The account the process signed in with: a turn for another runs on it while background work holds the restart back. */
+    /** The account the process signed in with: what it reports stays that account's after the session switches (the backends replace it for the next turn). */
     get account(): string | undefined {
         return this.processAccount;
     }

@@ -1380,6 +1380,8 @@ class ClaudeCliAdapter implements AgentCliAdapter {
     /** The turn under way, or the last one (set before each). */
     current?: LiveTurnConfig;
     conn?: ClaudeConnection;
+    /** The account (claudeAccountKey) the last process was started with, kept after it ends. */
+    accountKey?: string;
 
     constructor(
         private provider: ProviderDef,
@@ -1408,6 +1410,8 @@ class ClaudeCliAdapter implements AgentCliAdapter {
     }
 
     async connect(proc: JsonLinesProcess, events: CliEventSink, host: SessionHost, resume?: { resumeId?: string }): Promise<CliConnection> {
+        const t = this.current?.t;
+        if (t) this.accountKey = claudeAccountKey(this.def.id, t);
         const conn = new ClaudeConnection(proc, events, host, this.def, () => this.current!, this.spending, this.limitSeen, Boolean(resume?.resumeId));
         this.conn = conn;
         liveDebug("claude", "spawned", { pid: proc.pid });
@@ -1421,6 +1425,15 @@ class ClaudeCliAdapter implements AgentCliAdapter {
 
     listModels(signal?: AbortSignal) {
         return this.models(signal);
+    }
+}
+
+/** The account a turn runs on, as its home's environment: another needs another process. */
+function claudeAccountKey(provider: string, t: Pick<BackendTurn, "accountId" | "cwd">): string {
+    try {
+        return spawnFingerprint({ env: accountEnv(provider, t.accountId, t.cwd) });
+    } catch {
+        return `${t.accountId ?? "default"}?`;
     }
 }
 
@@ -1503,6 +1516,25 @@ export class ClaudeLive {
             if (tasks) t.sink.emit({ type: "notice", level: "warn", message: `Claude Code's earlier session was let go: ${plural(tasks, "background task")} stopped with it.` });
             live = this.pool.session(key, this.provider.id);
         }
+        // The same CLI session on another account (one sharing its history, #377): never on the process signed in as
+        // the one it was switched from, even with background work running (which a restart would otherwise wait for).
+        // Let go, not restarted: a fresh one resumes it, and says so if the new account's CLI can't (resumeFailed).
+        const was = this.adapter(key)?.accountKey;
+        const otherAccount = was !== undefined && was !== claudeAccountKey(this.provider.id, t);
+        // A turn the earlier account's process started by itself is never taken over under another account's session
+        // (the switch lets that process go: Runtime.setAccount). Refused before anything is bound or drained, so a
+        // message waiting to be steered into it goes with the next turn instead, on the new account.
+        if (t.adopt && otherAccount) {
+            liveDebug("claude", "wake from another account's process: not taken", { key, ref: t.adopt });
+            return { reason: "error", text: "", actions: [], error: "Claude Code's turn ran on the account this session switched from, so it isn't taken over." };
+        }
+        if (!t.adopt && otherAccount) {
+            const tasks = live.tasks.running().length;
+            liveDebug("claude", "account changed: releasing", { key, id: live.sessionId, tasks });
+            await this.release(key);
+            if (tasks) t.sink.emit({ type: "notice", level: "warn", message: `Claude Code was restarted for the account change: ${plural(tasks, "background task")} stopped.` });
+            live = this.pool.session(key, this.provider.id);
+        }
         // A copy of this session was forked off (/fork): its CLI session is to be forked, not continued in place (the
         // copy forks it later, and would see what's added here). With nothing in the background the process goes and
         // the next one forks it; with work running that would stop it, so the turn goes on in place.
@@ -1575,7 +1607,7 @@ export class ClaudeLive {
         live.onEvent((e: CliEvent) => {
             const host = this.hosts.get(key);
             if (!host) return;
-            // The process's own account: a turn on another can run on it while its background work holds a restart back.
+            // The process's own account: after a switch, what it still reports is that account's (the next turn replaces it).
             if (e.t === "task") host.emitSession?.({ type: "background_task", task: e.task, accountId: live.account });
             else if (e.t === "turn_event") host.emitSession?.({ type: "event", event: e.event });
             else if (e.t === "limits") host.limits?.(e.limits, e.partial);
