@@ -45,5 +45,5 @@ export function reviewWidthRange(shown: number, sheetWidth: number): { min: numb
     return { min: Math.min(REVIEW_MIN, shown), max: Math.max(shown, Math.min(REVIEW_MAX, sheetWidth - CONVERSATION_MIN)) };
 }
 
-/** The side panel's two panes (the mockup's Changes | Plan). */
-export type InspectorPane = "changes" | "plan";
+/** The side panel's tabs. */
+export type InspectorPane = "changes" | "agents" | "commands";

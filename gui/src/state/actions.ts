@@ -132,7 +132,7 @@ function clientCommand(id: string | undefined, text: string): boolean {
                 else void stopBackground(id, task && task !== "all" ? [task] : undefined);
                 return true;
             }
-            openBackground();
+            openBackground(id);
             return true;
         }
     }
@@ -176,7 +176,7 @@ export async function stopAgent(sessionId: string, agentId?: string) {
     }
 }
 
-/** Stop background tasks (the Background panel, /tasks stop): these, or every one running. */
+/** Stop background tasks (the side panel, /tasks stop): these, or every one running. */
 export async function stopBackground(sessionId: string, ids?: string[]) {
     try {
         const results = await stopTasks(rpc.call.bind(rpc) as never, sessionId, handleFor(sessionId)?.view.state, ids);
@@ -187,10 +187,10 @@ export async function stopBackground(sessionId: string, ids?: string[]) {
     }
 }
 
-/** The side panel, where the Background section lists what runs in the background. */
+/** The side panel, on the tab that lists what runs in the background. */
 export const openBackground = revealBackground;
 
-/** Clear the finished tasks from the Background panel. */
+/** Clear the finished tasks from the side panel. */
 export async function clearBackground(sessionId: string) {
     await rpc.call("session.clearBackground", { id: sessionId }).catch(reportError);
 }
