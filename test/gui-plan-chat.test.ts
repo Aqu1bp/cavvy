@@ -1,10 +1,16 @@
 // The plan in the conversation (lib/plan-chat.ts): the Steps strip over the
 // composer (what its line says, when it goes away) and the plan's card in its
-// turn (its title and preview, the state it's in, which card a link belongs to).
+// turn (its title and preview, the state it's in, which card a link belongs to),
+// and the strip itself showing and going (StepsTray.tsx, compiled with Solid).
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "fs";
+import { transformSync } from "../gui/node_modules/@babel/core/lib/index.js";
+import solidPreset from "../gui/node_modules/babel-preset-solid/index.js";
+import * as solid from "../gui/node_modules/solid-js/dist/solid.js";
 
-const { linkOwner, planBody, planCalls, planState, planTitle, stepsKey, stepsLine, stepsStale } = await import("../gui/src/lib/plan-chat");
+const lib = await import("../gui/src/lib/plan-chat");
+const { linkOwner, planBody, planCalls, planState, planTitle, stepsKey, stepsLine, stepsStale } = lib;
 
 type Status = "pending" | "in_progress" | "completed";
 const todo = (content: string, status: Status, activeForm?: string) => ({ content, status, activeForm });
@@ -157,4 +163,51 @@ test("a session's plans are its ExitPlanMode calls, in order", () => {
         { blocks: [{ t: "tool", id: "p2", name: "ExitPlanMode" }] },
     ];
     expect(planCalls(turns)).toEqual([{ id: "p1", at: 10 }, { id: "p2", at: undefined }]);
+});
+
+describe("the Steps strip (StepsTray.tsx, real Solid reactivity in an in-memory renderer)", () => {
+    /** Renders the strip for a session whose todos and requests can change; `drawn()` is whether its line is there. */
+    function mount() {
+        const resolve = (v: any): any => (typeof v === "function" ? resolve(v()) : v);
+        const renderer = {
+            ...solid,
+            effect: solid.createRenderEffect,
+            memo: solid.createMemo,
+            createElement: (tag: string) => ({ tag, props: {} as Record<string, unknown> }),
+            createTextNode: () => ({}),
+            insertNode() {},
+            setProp: (n: any, k: string, v: unknown) => { n.props[k] = v; return v; },
+            insert: (_n: any, v: any) => solid.createRenderEffect(() => resolve(v)),
+        };
+        const source = readFileSync(new URL("../gui/src/components/StepsTray.tsx", import.meta.url), "utf8").replace(/^import .*;\n/gm, "");
+        const compiled = transformSync(source, { filename: "StepsTray.tsx", parserOpts: { plugins: ["typescript", "jsx"] }, presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
+        const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled).replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;").replace("export function StepsTray", "function StepsTray");
+        const noop = () => undefined;
+        const deps = { ...solid, ...lib, renderer, Check: noop, ChevronUp: noop, X: noop, requestAnimationFrame: noop };
+        const StepsTray = new Function(...Object.keys(deps), `${js}; return StepsTray;`)(...Object.values(deps));
+        const [todos, setTodos] = solid.createSignal<any[]>([]);
+        const [asks, setAsks] = solid.createSignal<any[]>([]);
+        const view = { state: { get todos() { return todos(); }, get interactions() { return asks(); } }, turns: [{ blocks: [{ t: "tool", name: "TodoWrite" }] }] };
+        let out: unknown;
+        let dispose!: () => void;
+        solid.createRoot((d: () => void) => { dispose = d; out = StepsTray({ sessionId: "s", view }); });
+        // What the component's <Show> holds now: the slot, or nothing.
+        const drawn = () => resolve(out)?.props?.class === "steps-slot";
+        return { setTodos, setAsks, drawn, dispose };
+    }
+
+    test("drawn while there are todos and no request card; gone without them", () => {
+        const s = mount();
+        expect(s.drawn()).toBe(false);
+        s.setTodos([todo("Read", "completed"), todo("Write", "in_progress", "Writing")]);
+        expect(s.drawn()).toBe(true);
+        // A request card comes up: the strip goes, and comes back once it's answered.
+        s.setAsks([{ kind: "plan", id: "p" }]);
+        expect(s.drawn()).toBe(false);
+        s.setAsks([]);
+        expect(s.drawn()).toBe(true);
+        s.setTodos([]);
+        expect(s.drawn()).toBe(false);
+        s.dispose();
+    });
 });
