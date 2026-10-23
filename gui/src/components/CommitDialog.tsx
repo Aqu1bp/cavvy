@@ -151,11 +151,12 @@ export function CommitDialog() {
                                     <label class="commit-file">
                                         <input
                                             type="checkbox"
-                                            checked={paths().includes(f.path)}
+                                            checked={paths().includes(key(f))}
                                             disabled={committing()}
                                             onChange={(e) => {
                                                 revision++;
-                                                setPaths((old) => (e.currentTarget.checked ? [...old, f.path] : old.filter((p) => p !== f.path)));
+                                                // By its handle when its name was shown redacted, as the request and `chosen` go.
+                                                setPaths((old) => (e.currentTarget.checked ? [...old, key(f)] : old.filter((p) => p !== key(f))));
                                             }}
                                         />
                                         <span class="mono">{f.from ? `${f.from} → ${f.path}` : f.path}</span>

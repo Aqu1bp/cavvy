@@ -1,5 +1,5 @@
 // The inspector's controls rendered with real Solid reactivity in an in-memory DOM (run by gui-inspector.test.ts):
-// the diff reader's resize handle and layout switch, and the side panel's Changes pane.
+// the diff reader's resize handle and side-by-side toggle, and the side panel's Changes pane.
 import { expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
@@ -124,21 +124,22 @@ test("closing the reader in the middle of a drag ends it: no resizing class or l
     expect(frames.pending()).toBe(0);
 });
 
-test("Unified | Split sets the shared split signal the layout widens the inspector for", () => {
+test("the side-by-side toggle sets the shared split signal the layout widens the inspector for, and says so pressed", () => {
     const [reviewSplit, setReviewSplit] = solid.createSignal(false);
-    let seg: any;
-    const Layout = component(between(review, "function DiffLayout(", "/**\n * The reader's left edge"), "DiffLayout", {
+    const Toggle = component(between(review, "function SplitToggle(", "/**\n * The reader's left edge"), "SplitToggle", {
         reviewSplit, setReviewSplit,
-        Segmented: (p: any) => ((seg = p), node("segmented")),
+        Columns2: () => node("icon"),
     });
     const root = node("root");
-    const dispose = renderer.render(() => Layout(), root);
+    const dispose = renderer.render(() => Toggle(), root);
     try {
-        expect(seg.value).toBe("unified");
-        seg.onChange("split");
+        const button = () => all(root).find((n) => n.tag === "button")!;
+        expect(button().props["aria-pressed"]).toBe(false);
+        button().props.onClick();
         expect(reviewSplit()).toBe(true);
-        expect(seg.value).toBe("split");
-        seg.onChange("unified");
+        expect(button().props["aria-pressed"]).toBe(true);
+        expect(button().props.title).toBe("Unified");
+        button().props.onClick();
         expect(reviewSplit()).toBe(false);
     } finally {
         dispose();

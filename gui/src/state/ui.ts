@@ -25,7 +25,7 @@ export const [deleteRequest, setDeleteRequest] = createSignal<DeleteRequest | un
 export type ViewerImage = { name: string; full: string | { mediaType: string; data: string }; preview?: string; size?: { width: number; height: number } };
 /** The image shown full size over everything, the others it steps to (a prompt's, a reply's, the composer's), and what it was opened from. */
 export const [viewedImage, setViewedImage] = createSignal<{ images: ViewerImage[]; index: number; from?: Element } | undefined>();
-/** Files checked in the review pane when Commit was clicked. */
+/** The files the review pane listed when Commit was clicked; the Commit dialog picks from them. */
 export const [commitRequest, setCommitRequest] = createSignal<{ id: string; paths: string[] } | undefined>();
 /** The browser's folder picker; `then` gets undefined when it's cancelled. */
 export const [folderPickerOpen, setFolderPickerOpen] = createSignal<{ then: (path: string | undefined) => void; title?: string; action?: string; start?: string } | undefined>();

@@ -1,9 +1,10 @@
 /* ---- The diff reader (ReviewPane): the inspector widened ----
-   design/glass "Review": a head naming the file in view (back, name and folder,
-   +a −d, Unified | Split, open in editor), which changes and the files as pills,
-   the diff with its comment boxes, Commit and Push at the foot. The diff's own
-   look (.diff, .dl, .sl) is transcript.css's; the inspector's shared parts
-   (.insp-body, .insp-foot, .fs, pills) are panel.css's. */
+   One toolbar row (back, the view menu, "vs <base>" in Branch view, the files'
+   jump list, the total, side by side, refresh), then every file in one scroll,
+   each a card under a sticky header that folds it, the comment boxes under
+   their lines, Commit and Push at the foot. The diff's own look (.diff, .dl,
+   .sl) is transcript.css's; the inspector's shared parts (.insp-body,
+   .insp-foot, .fs, pills) are panel.css's. */
 
 /* A size container: the narrow rules below go by its width, the compact ones by its height. */
 .review {
@@ -16,213 +17,518 @@
     container: review / size;
 }
 
-/* ---- Head ---- */
+/* ---- The toolbar ---- */
 
 .rv-h {
     display: flex;
     align-items: center;
-    gap: calc(6 * var(--sp));
+    gap: calc(4 * var(--sp));
     height: calc(52 * var(--sp));
-    padding: calc(9 * var(--sp)) calc(8 * var(--sp)) calc(6 * var(--sp));
+    padding: calc(9 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp)) calc(8 * var(--sp));
     flex: none;
     min-width: 0;
 }
 
-/* The name and path hug their text: they're selectable, and the rest of the head moves the window. */
-.rv-h .nm {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
+.rv-h .grow {
     flex: 1;
+    min-width: calc(4 * var(--sp));
+}
+
+.rv-h .hb {
+    flex: none;
+}
+
+/* A toolbar dropdown: a label and a chevron, quiet until hovered or open. */
+.tb {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    height: calc(30 * var(--sp));
     min-width: 0;
-    line-height: 1.2;
-}
-
-.rv-h .nm > * {
-    max-width: 100%;
-}
-
-.rv-h .nm b {
-    font: 600 0.893rem/1.3 var(--font-mono);
+    padding: 0 calc(8 * var(--sp)) 0 calc(10 * var(--sp));
+    border-radius: var(--pill);
+    font-size: 0.929rem;
+    font-weight: 600;
     color: var(--fg);
     white-space: nowrap;
+    transition: background 140ms;
+}
+
+.tb:hover,
+.tb[aria-expanded="true"] {
+    background: var(--hover);
+}
+
+.tb .lbl {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
-.rv-h .nm span {
-    font-size: 0.786rem;
-    color: var(--fg-3);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.rv-h .segmented {
+.tb .chev {
     flex: none;
-}
-
-.rv-h .segmented.seg-sm button {
-    height: calc(24 * var(--sp));
-    padding: 0 calc(9 * var(--sp));
-}
-
-.rv-stat {
-    font: 600 0.857rem/1 var(--font-ui);
-    font-variant-numeric: tabular-nums;
-    margin: 0 calc(4 * var(--sp));
-}
-
-/* ---- Which changes ---- */
-
-.rv-bar {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: calc(6 * var(--sp));
-    padding: 0 calc(10 * var(--sp)) calc(8 * var(--sp));
-    flex: none;
-    min-width: 0;
-}
-
-.rv-bar .segmented {
-    min-width: 0;
-    max-width: 100%;
-    overflow-x: auto;
-    scrollbar-width: none;
-}
-
-.rv-bar .segmented button {
-    flex: none;
-}
-
-/* "Earlier turns" and Refresh: one piece, at the row's end, wrapping together. */
-.rv-tools {
-    display: inline-flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: calc(6 * var(--sp));
-    flex: 1 1 auto;
-    min-width: 0;
-    margin-left: auto;
-}
-
-/* With the turn picker: wrap by a modest width, not the picker's longest option, then fill the row. */
-.rv-tools:has(.review-turn) {
-    flex-basis: calc(180 * var(--sp));
-}
-
-.rv-tools .hb {
-    flex: none;
-}
-
-.rv-reason {
-    font-size: 0.857rem;
     color: var(--fg-3);
 }
 
-.review-turn {
-    flex: 1 1 calc(140 * var(--sp));
-    min-width: calc(110 * var(--sp));
-    max-width: calc(240 * var(--sp));
-    height: calc(26 * var(--sp));
-    padding: 0 calc(26 * var(--sp)) 0 calc(11 * var(--sp));
-    border: 0;
-    border-radius: var(--pill);
-    background-color: var(--sheet);
-    box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px var(--line);
-    color: var(--fg-2);
-    font-size: 0.857rem;
-    font-weight: 500;
-    text-overflow: ellipsis;
-}
-
-.review-turn:focus,
-.review-turn:focus-visible {
-    border: 0;
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
-}
-
-.review-branch {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
-    min-width: 0;
-    font-size: 0.857rem;
-    color: var(--fg-3);
-}
-
-.review-branch > svg,
-.review-branch .arrow {
-    flex: none;
-}
-
-.review-branch .mono {
-    font-size: 0.857rem;
-    color: var(--fg-2);
-}
-
-.review-branch .base-ctl {
+/* Another worktree than the session's: its branch, tinted, so the view isn't taken for the session's own. */
+.tb .wt {
     display: inline-flex;
     align-items: center;
     gap: calc(4 * var(--sp));
-    max-width: calc(200 * var(--sp));
-    height: calc(26 * var(--sp));
-    padding: 0 calc(10 * var(--sp));
-    border-radius: var(--pill);
-    background: var(--sheet);
-    box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px var(--line);
+    min-width: 0;
+    max-width: calc(150 * var(--sp));
+    padding: calc(2 * var(--sp)) calc(7 * var(--sp)) calc(2 * var(--sp)) calc(5 * var(--sp));
+    border-radius: calc(6 * var(--sp));
+    font: 500 0.821rem/1.3 var(--font-mono);
+    color: var(--accent-text);
+    background: color-mix(in srgb, var(--accent) 11%, transparent);
+}
+
+.tb .wt svg {
+    flex: none;
+}
+
+.tb .wt span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tb.files,
+.tb.base {
+    font-weight: 500;
+    color: var(--fg-2);
+}
+
+.tb.files:hover,
+.tb.files[aria-expanded="true"] {
     color: var(--fg);
+}
+
+.tb.base {
+    flex: 0 1 auto;
+    padding-left: calc(8 * var(--sp));
+}
+
+.tb.base .mono {
+    font-family: var(--font-mono);
     font-size: 0.857rem;
+    color: var(--fg);
 }
 
-.review-branch .base-ctl:hover,
-.review-branch .base-ctl[aria-expanded="true"] {
-    box-shadow: 0 0 0 0.5px var(--fg-4), 0 1px 2px var(--line);
+.rv-h .sep {
+    flex: none;
+    width: 1px;
+    height: calc(16 * var(--sp));
+    margin: 0 calc(4 * var(--sp));
+    background: var(--line-strong);
 }
 
-/* Which worktree: the session's own folder or another (ReviewWorktreePicker), in the base picker's pill. */
-.rv-wt-ctl {
+.rv-total {
+    flex: none;
+    margin: 0 calc(6 * var(--sp)) 0 calc(2 * var(--sp));
+    font: 600 0.857rem/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+}
+
+.rv-h .hb[aria-pressed="true"] {
+    background: var(--press);
+}
+
+/* ---- The view menu and the files' jump list ---- */
+
+/* The check in its own column on the left, so the labels line up whichever is picked. */
+.rv-vm-item.menu-item {
+    align-items: flex-start;
+    gap: calc(6 * var(--sp));
+}
+
+.rv-vm-check {
+    flex: none;
+    display: inline-grid;
+    place-items: center;
+    width: calc(16 * var(--sp));
+    height: calc(18 * var(--sp));
+}
+
+.rv-vm-item .rv-vm-check svg {
+    color: var(--accent);
+}
+
+.rv-vm .menu-label.truncate {
+    display: block;
+}
+
+.rv-fl-item.menu-item {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: calc(9 * var(--sp));
+    align-items: center;
+}
+
+.rv-fl-item .nm {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.rv-fl-item .nm b,
+.rv-fl-item .nm span {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.rv-fl-item .nm b {
+    font-weight: 500;
+}
+
+.rv-fl-item .nm span {
+    font-size: 0.821rem;
+    color: var(--fg-3);
+}
+
+.rv-fl-item .aside {
     display: inline-flex;
     align-items: center;
-    gap: calc(5 * var(--sp));
-    min-width: 0;
-    max-width: calc(260 * var(--sp));
-    height: calc(26 * var(--sp));
-    padding: 0 calc(10 * var(--sp));
-    border-radius: var(--pill);
-    background: var(--sheet);
-    box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px var(--line);
-    color: var(--fg);
-    font-size: 0.857rem;
+    gap: calc(8 * var(--sp));
 }
 
-.rv-wt-ctl svg {
+.rv-fl-item .stat {
+    font-family: var(--font-mono);
+    font-size: 0.821rem;
+}
+
+.rv-fl-item .cm,
+.rf-h .cm {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(3 * var(--sp));
+    flex: none;
+    font-size: 0.821rem;
+    font-weight: 600;
+    color: var(--accent-text);
+    font-variant-numeric: tabular-nums;
+}
+
+.rv-fl-item .cm svg {
+    color: var(--accent-text);
+}
+
+.rv-fl-foot {
+    display: flex;
+    gap: calc(6 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(6 * var(--sp)) calc(2 * var(--sp));
+}
+
+.rv-fl-foot .btn {
+    flex: 1;
+}
+
+/* ---- The files, stacked ---- */
+
+/* The cards' positions (offsetTop) are the scroll's own. A file drawn at last above the view keeps
+   the view where it was (ReviewPane's stack, as DiffView does inside a long diff): the browser's own
+   scroll anchoring would move it a second time. WebKit doesn't anchor. */
+.rv-body {
+    position: relative;
+    padding-top: 0;
+    overflow-anchor: none;
+    scrollbar-width: thin;
+}
+
+/* A notice above the files: another worktree, an incomplete snapshot, why there's no Git. */
+.rv-slim {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    min-height: calc(34 * var(--sp));
+    margin: 0 0 calc(8 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(8 * var(--sp)) calc(6 * var(--sp)) calc(10 * var(--sp));
+    border-radius: calc(10 * var(--sp));
+    font-size: 0.893rem;
+    line-height: 1.4;
+    color: var(--fg-2);
+    background: var(--sheet-2);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+}
+
+.rv-slim > svg {
     flex: none;
     color: var(--fg-3);
 }
 
-.rv-wt-ctl .chv {
-    opacity: 0.6;
+.rv-slim .grow {
+    flex: 1;
+    min-width: 0;
 }
 
-.rv-wt-ctl:hover,
-.rv-wt-ctl[aria-expanded="true"] {
-    box-shadow: 0 0 0 0.5px var(--fg-4), 0 1px 2px var(--line);
+.rv-slim b {
+    font-weight: 600;
+    color: var(--fg);
 }
 
-/* Another worktree than the session's: marked with the accent, so the view isn't taken for the session's own. */
-.rv-wt-ctl.away {
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent), 0 1px 2px var(--line);
+.rv-slim .link-btn {
+    flex: none;
+    font-size: 0.857rem;
 }
 
-.rv-wt-ctl.away svg:first-child {
+.rv-slim.away {
+    background: color-mix(in srgb, var(--accent) 8%, var(--sheet));
+    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.rv-slim.away > svg {
     color: var(--accent);
 }
 
-.rv-wt-ctl .mono {
-    font-size: 0.857rem;
+.rv-slim.warn {
+    background: var(--warn-bg);
+    box-shadow: none;
 }
+
+/* One file: a real border inside the card, so nothing is drawn outside it for the scroller's edge to clip.
+   No overflow clip of its own: the header sticks to the scroller. */
+.rf {
+    margin-bottom: calc(10 * var(--sp));
+    border: 1px solid var(--line);
+    border-radius: calc(10 * var(--sp));
+    background: linear-gradient(var(--sheet-2), var(--sheet-2)), var(--insp-bg);
+}
+
+.rf-h {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    height: calc(38 * var(--sp));
+    padding: 0 calc(6 * var(--sp));
+    border-radius: calc(9 * var(--sp)) calc(9 * var(--sp)) 0 0;
+    background: var(--insp-bg);
+    box-shadow: 0 1px 0 var(--line);
+    font-size: 0.893rem;
+    transition: border-radius 220ms var(--ease);
+    cursor: default;
+}
+
+/* Stuck to the top while its file scrolls under it: square, with a shadow under it. */
+.rf-h.stuck {
+    border-radius: 0;
+    box-shadow: 0 1px 0 var(--line), 0 calc(4 * var(--sp)) calc(10 * var(--sp)) calc(-6 * var(--sp)) rgba(15, 18, 30, 0.18);
+}
+
+.rf.closed .rf-h {
+    border-radius: calc(9 * var(--sp));
+    box-shadow: none;
+}
+
+.rf-h .tog {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: calc(22 * var(--sp));
+    height: calc(22 * var(--sp));
+    border-radius: calc(6 * var(--sp));
+    color: var(--fg-3);
+}
+
+.rf-h .tog:hover {
+    background: var(--hover);
+    color: var(--fg);
+}
+
+.rf-h .tog svg {
+    transform: rotate(90deg);
+    transition: transform 160ms var(--ease);
+}
+
+.rf.closed .rf-h .tog svg {
+    transform: none;
+}
+
+.rf-h .path {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: calc(7 * var(--sp));
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.rf-h .path b {
+    flex: none;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: 600;
+    color: var(--fg);
+}
+
+.rf-h .path span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 0.821rem;
+    color: var(--fg-3);
+}
+
+.rf-h .stat {
+    flex: none;
+    margin-right: calc(6 * var(--sp));
+    font: 600 0.821rem/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Open in editor (and Reveal): no room taken until the header is hovered, so the stat ends the row. */
+.rf-h .open {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 0;
+    height: calc(26 * var(--sp));
+    margin-left: calc(-8 * var(--sp));
+    overflow: hidden;
+    border-radius: var(--pill);
+    color: var(--fg-3);
+    opacity: 0;
+    transition: opacity 120ms, width 160ms var(--ease), margin 160ms var(--ease);
+}
+
+.rf-h:hover .open,
+.rf-h .open:focus-visible {
+    width: calc(26 * var(--sp));
+    margin-left: 0;
+    opacity: 1;
+}
+
+.rf-h .open:hover {
+    background: var(--hover);
+    color: var(--fg);
+}
+
+.rf.flash .rf-h {
+    animation: rf-flash 900ms var(--ease);
+}
+
+@keyframes rf-flash {
+    20% {
+        background: color-mix(in srgb, var(--accent) 14%, var(--insp-bg));
+    }
+}
+
+/* Folding: the body's grid row closes, as the side panel's folds do; instant for a very long diff. */
+.rf-b {
+    display: grid;
+    grid-template-rows: 1fr;
+    transition: grid-template-rows var(--dur-panel) var(--ease);
+}
+
+.rf.closed .rf-b {
+    grid-template-rows: 0fr;
+}
+
+.rf.instant .rf-b {
+    transition: none;
+}
+
+.rf-in {
+    min-height: 0;
+    overflow: hidden;
+    border-radius: 0 0 calc(9 * var(--sp)) calc(9 * var(--sp));
+}
+
+.rf.closed .rf-in {
+    visibility: hidden;
+    transition: visibility 0s linear var(--dur-panel);
+}
+
+/* A diff not drawn (yet, or put away far from the view): as tall as its rows, or as it was. */
+.rf-ph {
+    height: calc(var(--rows, 0) * 1.6em);
+    font-size: 0.82rem;
+}
+
+.rf-wait {
+    padding: calc(16 * var(--sp));
+}
+
+.rf .diff {
+    border-radius: 0;
+    box-shadow: none;
+}
+
+.review .diff-scroll {
+    max-height: none;
+}
+
+/* One side (a new or deleted file): one line-number column, not an empty one beside it. */
+.review .dl.one {
+    grid-template-columns: 3.4em minmax(0, 1fr);
+}
+
+.review .dl.one .ln {
+    border-right: 1px solid var(--line);
+}
+
+.rv-more {
+    padding: calc(4 * var(--sp)) calc(4 * var(--sp)) calc(8 * var(--sp));
+    font-size: 0.857rem;
+    color: var(--fg-3);
+    text-align: center;
+}
+
+.rv-empty {
+    padding: calc(36 * var(--sp)) calc(16 * var(--sp));
+    text-align: center;
+    color: var(--fg-3);
+    line-height: 1.55;
+}
+
+.rv-empty .link-btn {
+    font-size: inherit;
+}
+
+/* The branch's pull request, when it has one (PublishStatus): a slim row; "unavailable" stays quiet. */
+.rv-pr .review-note {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    min-height: calc(34 * var(--sp));
+    margin-bottom: calc(8 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(10 * var(--sp));
+    border-radius: calc(10 * var(--sp));
+    font-size: 0.893rem;
+    line-height: 1.4;
+    color: var(--fg-3);
+    background: var(--sheet-2);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+    overflow-wrap: anywhere;
+}
+
+.rv-pr .review-note .link-btn {
+    display: inline;
+    color: var(--fg);
+    font-size: inherit;
+    font-weight: 600;
+    text-align: left;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .rf-b,
+    .rf-h,
+    .rf-h .tog svg,
+    .rf-h .open {
+        transition: none;
+    }
+
+    .rf.flash .rf-h {
+        animation: none;
+    }
+}
+
+/* ---- The worktrees (ReviewWorktreePicker), and the base picker's list ---- */
 
 /* "This session": a quiet tag after the branch. */
 .rv-wt-self {
@@ -317,168 +623,6 @@
     max-height: calc(280 * var(--sp));
     overflow-y: auto;
     padding: calc(6 * var(--sp));
-}
-
-/* ---- The files, as pills ---- */
-
-.rv-files {
-    display: flex;
-    flex-wrap: wrap;
-    gap: calc(4 * var(--sp));
-    max-height: calc(94 * var(--sp));
-    padding: 0 calc(10 * var(--sp)) calc(8 * var(--sp));
-    overflow-y: auto;
-    scrollbar-width: none;
-    flex: none;
-}
-
-.rv-file {
-    display: inline-flex;
-    align-items: center;
-    min-width: 0;
-    max-width: 100%;
-    height: calc(26 * var(--sp));
-    border-radius: var(--pill);
-    color: var(--fg-3);
-    transition: background 140ms, color 140ms;
-}
-
-.rv-file:hover:not(.on) {
-    background: var(--hover);
-}
-
-.rv-file.on {
-    background: var(--sheet);
-    color: var(--fg);
-    box-shadow: 0 0 0 0.5px var(--line);
-}
-
-.rv-check {
-    display: inline-flex;
-    padding-left: calc(8 * var(--sp));
-    flex: none;
-}
-
-.rv-check input {
-    width: calc(13 * var(--sp));
-    height: calc(13 * var(--sp));
-    margin: 0;
-    accent-color: var(--accent);
-}
-
-.rv-file button {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
-    min-width: 0;
-    height: calc(26 * var(--sp));
-    padding: 0 calc(10 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.857rem;
-    font-weight: 500;
-    white-space: nowrap;
-}
-
-.rv-check + button {
-    padding-left: calc(6 * var(--sp));
-}
-
-.rv-file .fs {
-    width: auto;
-    height: auto;
-    padding: 1px calc(3 * var(--sp));
-    border-radius: calc(4 * var(--sp));
-    font-size: 0.679rem;
-}
-
-.rv-cmts {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(2 * var(--sp));
-    flex: none;
-    font-size: 0.75rem;
-    color: var(--accent-text);
-    font-variant-numeric: tabular-nums;
-}
-
-.rv-more {
-    display: inline-flex;
-    align-items: center;
-    height: calc(26 * var(--sp));
-    padding: 0 calc(6 * var(--sp));
-    font-size: 0.821rem;
-    color: var(--fg-3);
-}
-
-/* ---- The diff ---- */
-
-.rv-body {
-    padding-top: 0;
-    /* A long diff draws only the rows near the view and keeps the row in view in place itself (blocks/DiffView);
-       the browser's own scroll anchoring would move it a second time. WebKit doesn't anchor. */
-    overflow-anchor: none;
-}
-
-.review .diff {
-    border-radius: calc(10 * var(--sp));
-    margin-bottom: calc(10 * var(--sp));
-}
-
-.review .diff-scroll {
-    max-height: none;
-}
-
-.rv-empty {
-    padding: calc(36 * var(--sp)) calc(16 * var(--sp));
-    text-align: center;
-    color: var(--fg-3);
-    line-height: 1.55;
-}
-
-.rv-empty .link-btn {
-    font-size: inherit;
-}
-
-.rv-note {
-    margin: calc(2 * var(--sp)) calc(2 * var(--sp)) calc(8 * var(--sp));
-    color: var(--fg-3);
-    font-size: 0.857rem;
-    line-height: 1.5;
-}
-
-/* A turn's snapshot that's incomplete, and git's notes. */
-.rv-warn {
-    margin-bottom: calc(8 * var(--sp));
-    padding: calc(8 * var(--sp)) calc(12 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    background: var(--warn-bg);
-    color: var(--fg-2);
-    font-size: 0.857rem;
-    line-height: 1.45;
-}
-
-/* The branch's pull request, when it has one (PublishStatus); "unavailable" stays quiet. */
-.rv-pr .review-note {
-    margin-bottom: calc(8 * var(--sp));
-    padding: calc(8 * var(--sp)) calc(12 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    font-size: 0.857rem;
-    line-height: 1.45;
-    color: var(--fg-3);
-    background: color-mix(in srgb, var(--hover) 60%, transparent);
-    overflow-wrap: anywhere;
-}
-
-.rv-pr .review-note:has(.link-btn) {
-    background: color-mix(in srgb, var(--ok) 9%, transparent);
-}
-
-.rv-pr .review-note .link-btn {
-    display: inline;
-    color: var(--fg);
-    font-size: inherit;
-    font-weight: 600;
-    text-align: left;
 }
 
 /* ---- Comments on lines (blocks/DiffComments), as the mockup's boxes under the line ---- */
@@ -613,19 +757,16 @@
     color: var(--fg-3);
 }
 
-/* ---- Narrow (a floating reader, 1024px windows and down) ---- */
+/* ---- Narrow (a floating reader, 1024px windows and down): the total goes; the toolbar keeps one row ---- */
 
-@container review (width < 460px) {
-    .rv-stat {
+@container review (width < 470px) {
+    .rv-total,
+    .rv-h .sep {
         display: none;
     }
 
-    .rv-h {
-        gap: calc(4 * var(--sp));
-    }
-
-    .rv-h .segmented.seg-sm button {
-        padding: 0 calc(7 * var(--sp));
+    .tb .wt {
+        max-width: calc(90 * var(--sp));
     }
 
     .review .dc-slot {
@@ -638,63 +779,31 @@
 }
 
 @container review (width < 360px) {
-    .rv-h .nm span {
+    .rf-h .path span {
         display: none;
     }
 }
 
-/* ---- Short (a floating reader at 1024×700 and 720×480): the diff keeps most of the height ----
-   The PR line and the closing note go; the scope, "Earlier turns" and Refresh share one row that
-   scrolls sideways; the files stay one row of pills; the gaps tighten. Everything stays reachable. */
+/* ---- Short (a floating reader at 1024×700 and 720×480): the files keep most of the height ---- */
 
 @container review (height < 560px) {
     .rv-h {
         height: calc(44 * var(--sp));
-        padding: calc(4 * var(--sp)) calc(8 * var(--sp)) calc(2 * var(--sp));
+        padding-top: calc(4 * var(--sp));
+        padding-bottom: calc(2 * var(--sp));
     }
 
-    .rv-bar {
-        flex-wrap: nowrap;
-        overflow-x: auto;
-        scrollbar-width: none;
-        padding-bottom: calc(6 * var(--sp));
-    }
-
-    .rv-bar > *,
-    .rv-bar .segmented {
-        flex: none;
-        overflow: visible;
-    }
-
-    .rv-tools {
-        flex: none;
-    }
-
-    .review-turn {
-        flex: none;
-        width: calc(150 * var(--sp));
-    }
-
-    .rv-files {
-        flex-wrap: nowrap;
-        max-height: none;
-        overflow: auto hidden;
-        padding-bottom: calc(6 * var(--sp));
-    }
-
-    .rv-file {
-        flex: none;
-    }
-
-    .rv-pr,
-    .rv-note {
-        display: none;
-    }
-
-    .rv-warn {
+    .rv-slim,
+    .rv-pr .review-note {
+        min-height: calc(28 * var(--sp));
         margin-bottom: calc(6 * var(--sp));
-        padding: calc(5 * var(--sp)) calc(10 * var(--sp));
+        padding-block: calc(3 * var(--sp));
         white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .rv-slim .grow {
         overflow: hidden;
         text-overflow: ellipsis;
     }
