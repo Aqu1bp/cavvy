@@ -5,7 +5,7 @@
 // Esc stops only the answer. Nothing here runs the real CLI.
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -17,7 +17,7 @@ const { Session } = await import("../src/agent/session");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const { SessionBackground } = await import("../src/agent/background");
-const { liveTiming, CARRIER_COMMAND } = await import("../src/backends/claude-live");
+const { liveTiming, CARRIER_COMMAND, outputTail, claudePathSlug } = await import("../src/backends/claude-live");
 const { stopTiming } = await import("../src/backends/cli");
 const trust = await import("../src/config/trust");
 
@@ -51,6 +51,8 @@ beforeEach(() => {
     rmSync(LOG, { force: true });
     for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
     process.env.FAKE_LOG = LOG;
+    // Claude Code's temporary folder (background commands' output files go under it): one of the test's own.
+    process.env.CLAUDE_CODE_TMPDIR = tempDir("claude-code-tmp-");
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     forgetClient("claude-code");
 });
@@ -584,6 +586,192 @@ describe("background work across turns", () => {
         expect(notices(events).find((n) => n.includes("can't take it over now"))).toContain("sign-in strategies");
         const reminders: string[] = ((agent as any).pendingReminders as { text: string }[]).map((r) => r.text);
         expect(reminders.some((r) => r.includes("sign-in strategies") && r.includes("Claude Code"))).toBe(true);
+    });
+
+    /** Handed to another model (the session is on one now): the notice that shows it, and what the model is told. */
+    async function handedOver(a: Awaited<ReturnType<typeof makeAgent>>) {
+        a.agent.setModel({ provider: "openai", id: "gpt-x", name: "GPT X" } as any, {} as any);
+        expect(await a.adopt(a.wakes[0]!)).toBe("error");
+        const notice = notices(a.events).find((n) => n.includes("can't take it over now")) ?? "";
+        const reminders: string[] = ((a.agent as any).pendingReminders as { text: string }[]).map((r) => r.text);
+        return { notice, told: reminders.find((r) => r.startsWith("Claude Code, which this session ran on earlier")) ?? "" };
+    }
+
+    for (const file of ["said", "unsaid"] as const)
+        test(`#430: a background command's report handed to another model has the end of its output, as Codex's has (the notification ${file === "said" ? "names" : "doesn't name"} its file)`, async () => {
+            process.env.FAKE_SCENARIO = "shell-background";
+            process.env.FAKE_SHELL_OUTPUT = "compiling\nfinished-c13\n";
+            process.env.FAKE_SHELL_OUTPUT_FILE = file;
+            const a = await makeAgent();
+            expect(await a.run("start the checks")).toBe("done");
+            await until(() => a.wakes.length > 0, 5000, "the command's report");
+            expect(a.wakes[0]!.report).toBe("The background command `sleep 150; echo done` finished with exit code 0. The end of its output:\ncompiling\nfinished-c13");
+            const { notice, told } = await handedOver(a);
+            expect(notice).toContain("compiling\nfinished-c13");
+            expect(told).toContain("compiling\nfinished-c13");
+        });
+
+    test("#430: a long output's end is what's handed over, within what the session shows and tells of a report", async () => {
+        process.env.FAKE_SCENARIO = "shell-background";
+        process.env.FAKE_SHELL_OUTPUT = Array.from({ length: 2000 }, (_, i) => `line ${i + 1}`).join("\n");
+        const a = await makeAgent();
+        expect(await a.run("start the checks")).toBe("done");
+        await until(() => a.wakes.length > 0, 5000, "the command's report");
+        const report = a.wakes[0]!.report!;
+        expect(report).toContain("The end of its output:\n…");
+        expect(report.endsWith("line 2000")).toBe(true);
+        expect(report).not.toContain("line 1\n");
+        // Whole, with the notice's own words around it: the session cuts a longer one short (at its end).
+        expect(report.length).toBeLessThanOrEqual(4000);
+        const { notice, told } = await handedOver(a);
+        expect(notice.endsWith("line 2000")).toBe(true);
+        expect(told.endsWith("line 2000")).toBe(true);
+    });
+
+    // The command can rewrite its own output file before it ends: what the report reads is only Claude Code's output
+    // file for it, never another file it's pointed at. Then the summary stands.
+    describe("#430 review: only the command's own output file is read", () => {
+        const SUMMARY = 'Background command "Wait for checks" completed (exit code 0)';
+        const PRIVATE = "PRIVATE-KEY-MATERIAL-7f3a";
+
+        async function reportWith(env: Record<string, string>) {
+            process.env.FAKE_SCENARIO = "shell-background";
+            process.env.FAKE_SHELL_OUTPUT = "compiling\nfinished-c13\n";
+            Object.assign(process.env, env);
+            const a = await makeAgent();
+            expect(await a.run("start the checks")).toBe("done");
+            await until(() => a.wakes.length > 0, 5000, "the command's report");
+            return a.wakes[0]!.report;
+        }
+        const privateFile = () => {
+            const dir = tempDir("claude-private-");
+            writeFileSync(join(dir, "id_ed25519"), `${PRIVATE}\n`);
+            return join(dir, "id_ed25519");
+        };
+
+        test("its output file repointed by a symlink to a private file: not followed", async () => {
+            expect(await reportWith({ FAKE_SHELL_OUTPUT_LINK: privateFile() })).toBe(SUMMARY);
+        });
+
+        test("its output file a hard link to a private file: not read", async () => {
+            expect(await reportWith({ FAKE_SHELL_OUTPUT_HARDLINK: privateFile() })).toBe(SUMMARY);
+        });
+
+        test("its tasks folder a symlink to another folder: not read", async () => {
+            expect(await reportWith({ FAKE_SHELL_TASKS_LINK: join(tempDir("claude-elsewhere-"), "tasks") })).toBe(SUMMARY);
+        });
+
+        for (const file of ["said", "unsaid"] as const)
+            test(`a file outside Claude Code's task-output folder, named as the output file (the notification ${file === "said" ? "names" : "doesn't name"} it): not read`, async () => {
+                const elsewhere = join(tempDir("claude-elsewhere-"), "background-1.output");
+                expect(await reportWith({ FAKE_SHELL_OUTPUT_PATH: elsewhere, FAKE_SHELL_OUTPUT_FILE: file })).toBe(SUMMARY);
+            });
+
+        test("a long output read from part of the file: nothing from before the line break past the longest known secret (a secret cut where the read starts isn't recognised)", async () => {
+            const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+            const secret = `zz9-${"q7Lm".repeat(249)}`;
+            registerSecret(secret, "test key");
+            try {
+                // The read (the file's last 64 KiB) starts 100 characters into a secret; the rest of it is the same
+                // secret again and again, which redaction shrinks, so what's left of the first is within the tail kept.
+                const head = `${"x".repeat(1000)}\n${secret}\n`;
+                const rest = `${`${secret} `.repeat(64)}\n${"e".repeat(570)}`;
+                const fromStart = head.length - secret.length - 1 + 100;
+                const pad = 65536 - (head.length - fromStart) - rest.length;
+                const out = `${"x".repeat(1000 + pad)}\n${secret}\n${rest}`;
+                expect(Buffer.byteLength(out) - 65536).toBe(1000 + pad + 1 + 100);
+                const file = join(tempDir("claude-long-"), "out.txt");
+                writeFileSync(file, out);
+                const report = (await reportWith({ FAKE_SHELL_OUTPUT_FROM: file }))!;
+                expect(report).toContain("The end of its output:\n");
+                // Only what follows the line break past the longest known secret: the 64 that follow it are on that line.
+                expect(report).toBe(`The background command \`sleep 150; echo done\` finished with exit code 0. The end of its output:\n${"e".repeat(570)}`);
+                expect(report.endsWith("e".repeat(570))).toBe(true);
+                expect(report).not.toContain(secret.slice(-40));
+                expect(report).not.toContain("q7Lmq7Lm");
+            } finally {
+                unregisterSecret(secret);
+            }
+        });
+
+        test("a long output with no line break in what's read: the summary stands", async () => {
+            const file = join(tempDir("claude-long-"), "out.txt");
+            writeFileSync(file, "y".repeat(70_000));
+            expect(await reportWith({ FAKE_SHELL_OUTPUT_FROM: file })).toBe(SUMMARY);
+        });
+
+        test("a long command: redacted whole, then shortened (a secret across the cut leaves nothing of itself)", async () => {
+            const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+            const secret = "zz9-LONGCMD-SECRET-6tb2kq8wqe";
+            registerSecret(secret, "test key");
+            try {
+                const report = (await reportWith({ FAKE_COMMAND: `${"a".repeat(290)} ${secret} && echo done` }))!;
+                expect(report).toContain("The end of its output:\ncompiling\nfinished-c13");
+                expect(report).not.toContain("zz9-LON");
+            } finally {
+                unregisterSecret(secret);
+            }
+        });
+
+        // Round 2.
+        test("a multiline secret the read starts in, then the same secret again and again: none of its lines is kept", async () => {
+            const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+            const lines = Array.from({ length: 10 }, (_, i) => `ml${i}-${"Qx9z".repeat(24)}`);
+            const secret = lines.join("\n");
+            registerSecret(secret, "test key");
+            try {
+                // The read (the last 64 KiB) starts 250 characters into the first one, in its third line; what follows,
+                // redacted, is short enough that what's left of the first would be within the tail kept.
+                const rest = `\n${`${secret} `.repeat(64)}\n${"e".repeat(135)}`;
+                expect(Buffer.byteLength(secret.slice(250) + rest)).toBe(65536);
+                const file = join(tempDir("claude-long-"), "out.txt");
+                writeFileSync(file, `${"x".repeat(1000)}\n${secret}${rest}`);
+                const report = (await reportWith({ FAKE_SHELL_OUTPUT_FROM: file }))!;
+                expect(report).toContain("The end of its output:\n");
+                expect(report).toContain("[REDACTED test key]");
+                expect(report.endsWith("e".repeat(135))).toBe(true);
+                for (const l of lines) expect(report).not.toContain(l.slice(4));
+                expect(report).not.toContain("Qx9z");
+            } finally {
+                unregisterSecret(secret);
+            }
+        });
+
+        test("a FIFO put where the output file is: not waited on (the event loop goes on), and not read", async () => {
+            const dir = realpathSync(tempDir("claude-fifo-"));
+            const made = Bun.spawnSync(["mkfifo", join(dir, "t1.output")]);
+            expect(made.exitCode).toBe(0);
+            const started = Date.now();
+            expect(outputTail(dir, "t1")).toBeUndefined();
+            expect(Date.now() - started).toBeLessThan(1000);
+        });
+
+        test("opened through a folder that's a link (as when it's swapped for one while the file is opened): not read", async () => {
+            const real = realpathSync(tempDir("claude-real-"));
+            writeFileSync(join(real, "t1.output"), "secret-ish output\n");
+            const parent = realpathSync(tempDir("claude-parent-"));
+            symlinkSync(real, join(parent, "tasks"));
+            expect(outputTail(join(parent, "tasks"), "t1")).toBeUndefined();
+            // The same file, by its own folder: read.
+            expect(outputTail(real, "t1")).toEqual({ text: "secret-ish output\n", partial: false });
+        });
+
+        test("a folder whose path, sanitized, is past 200 characters: its name as Claude Code 2.1.304 makes it, and the output is read", async () => {
+            // Past 200 characters: the first 200, "-", and the path's Java String.hashCode in base 36.
+            const hashCode = (s: string) => [...s].reduce((h, c) => (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0);
+            expect(hashCode("hello")).toBe(99162322);
+            expect(claudePathSlug(`/${"a".repeat(250)}`)).toBe(`-${"a".repeat(199)}-${Math.abs(hashCode(`/${"a".repeat(250)}`)).toString(36)}`);
+            expect(claudePathSlug("/private/tmp/h429proj")).toBe("-private-tmp-h429proj");
+            // Its cwd in NFC first, as Claude Code takes it: a decomposed "é" (e + U+0301) is the composed one, one "-".
+            expect(claudePathSlug("/p/cafe\u0301")).toBe("-p-caf-");
+            const long = `/${"a".repeat(250)}cafe\u0301`;
+            expect(claudePathSlug(long)).toBe(claudePathSlug(long.normalize("NFC")));
+            const deep = join(realpathSync(tempDir("claude-deep-")), ...Array.from({ length: 6 }, (_, i) => `segment-${i}-${"d".repeat(30)}`));
+            mkdirSync(deep, { recursive: true });
+            expect(deep.replace(/[^a-zA-Z0-9]/g, "-").length).toBeGreaterThan(200);
+            cwd = deep;
+            expect(await reportWith({})).toBe("The background command `sleep 150; echo done` finished with exit code 0. The end of its output:\ncompiling\nfinished-c13");
+        });
     });
 
     test("#305 (final review, blocker 4): a monitor's wake carries no report; what its turn said shows, and the model is told", async () => {

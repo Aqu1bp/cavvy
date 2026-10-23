@@ -951,4 +951,20 @@ describe("#305: a wake the session can't take over (it's on another model)", () 
         const reminders: string[] = ((a.agent as any).pendingReminders as { text: string }[]).map((r) => r.text);
         expect(reminders.some((r) => r.includes("bg 1 done") && r.includes("Codex"))).toBe(true);
     });
+
+    // As Claude Code's is (#430, test/claude-live.test.ts): the command, how it ended, and the end of its output.
+    test("#430: a background command's report handed to another model has the command, its exit code and the end of its output", async () => {
+        process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
+        process.env.FAKE_BG_MS = "100";
+        process.env.FAKE_BG_OUTPUT = "compiling\nfinished-c13\n";
+        const a = await makeAgent();
+        expect(await a.run("start it")).toBe("done");
+        const w = await a.nextWake();
+        expect(w.report).toMatch(/^The background command `.+` you started earlier \(process \d+\) has finished with exit code 0\. The end of its output:\ncompiling\nfinished-c13\n$/);
+        a.agent.setModel({ provider: "openai", id: "gpt-x", name: "GPT X" } as any, {} as any);
+        expect(await a.adopt(w)).toBe("error");
+        expect(a.notices().find((n) => n.includes("can't take it over now"))).toContain("compiling\nfinished-c13");
+        const reminders: string[] = ((a.agent as any).pendingReminders as { text: string }[]).map((r) => r.text);
+        expect(reminders.some((r) => r.startsWith("Codex, which this session ran on earlier") && r.includes("compiling\nfinished-c13"))).toBe(true);
+    });
 });

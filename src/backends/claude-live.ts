@@ -22,8 +22,8 @@
 // one process per turn, as before.
 
 import { createHash, randomUUID } from "crypto";
-import { existsSync, mkdirSync, writeFileSync } from "fs";
-import { join } from "path";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readlinkSync, readSync, realpathSync, writeFileSync, type Stats } from "fs";
+import { basename, dirname, join } from "path";
 import type { HookConfig } from "../config/settings";
 import { harnessHome } from "../config/paths";
 import { backendMatcher, claudeCodeHookOutput, type HookEvent } from "../agent/hooks";
@@ -35,7 +35,7 @@ import type { ProviderDef } from "../providers/registry";
 import type { ModelInfo, Usage } from "../providers/types";
 import type { PlanLimits } from "../server/protocol";
 import type { ToolDisplay } from "../tools/types";
-import { redact } from "../util/redact";
+import { knownSecrets, redact, redactPrefix } from "../util/redact";
 import { cliCommandNames } from "../commands/custom";
 import { ClaudeGoalWatch, claudeTranscriptFile } from "./claude-goal";
 import { CLAUDE_CLI, cliMessage, requireCli, type JsonLinesProcess } from "./cli";
@@ -96,6 +96,89 @@ export const liveTiming = {
     /** A stopped background task: confirmed by Claude Code's notification within this, or the stop timed out. */
     stopConfirmMs: 5000,
 };
+
+/**
+ * The end of a background command's output its report has (#430): with the report's first line, within what the session
+ * shows and tells the model of a report it can't take over (WAKE_REPORT_CHARS, 4000), which cuts a longer one at its end.
+ */
+const REPORT_OUTPUT_CHARS = 3000;
+/** How much of the end of a command's output file is read for that (bytes): well past it, so redaction sees what it cuts. */
+const OUTPUT_READ_BYTES = 64 * 1024;
+
+/**
+ * A folder's name under Claude Code's temporary folder, as 2.1.304 makes it: its path, each other character a "-"; past
+ * 200 characters, cut there, with "-" and the path's hash (Java's String.hashCode, in base 36). The path in NFC
+ * first, as it takes its cwd: a folder named with a decomposed "é" is the composed one's.
+ */
+export function claudePathSlug(raw: string): string {
+    const path = raw.normalize("NFC");
+    const slug = path.replace(/[^a-zA-Z0-9]/g, "-");
+    if (slug.length <= 200) return slug;
+    let h = 0;
+    for (let i = 0; i < path.length; i++) h = ((h << 5) - h + path.charCodeAt(i)) | 0;
+    return `${slug.slice(0, 200)}-${Math.abs(h).toString(36)}`;
+}
+
+/**
+ * The folder Claude Code writes a session's background commands' output to, worked out as 2.1.304 does (not taken from
+ * a path it names): <CLAUDE_CODE_TMPDIR, else /tmp>/claude-<uid>/<the folder's real path, as claudePathSlug>/<session>/
+ * tasks. Undefined when it can't be, or its root isn't a folder of the user's own.
+ */
+function taskOutputDir(cwd: string, sessionId: string | undefined): string | undefined {
+    const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+    if (!sessionId || !/^[A-Za-z0-9-]+$/.test(sessionId) || uid === undefined) return undefined;
+    try {
+        const root = join(realpathSync(process.env.CLAUDE_CODE_TMPDIR || "/tmp"), `claude-${uid}`);
+        const st = lstatSync(root);
+        if (!st.isDirectory() || st.uid !== uid) return undefined;
+        return join(root, claudePathSlug(realpathSync(cwd)), sessionId, "tasks");
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * Where an open file is now, as the system says (not as the path it was opened by says): macOS answers the real path of
+ * /dev/fd/N (Bun's realpath asks F_GETPATH), Linux has /proc/self/fd/N. Undefined elsewhere, or when it can't be told.
+ */
+function openedPath(fd: number): string | undefined {
+    try {
+        if (process.platform === "darwin") return realpathSync(`/dev/fd/${fd}`);
+        if (process.platform === "linux") return readlinkSync(`/proc/self/fd/${fd}`);
+    } catch {}
+    return undefined;
+}
+
+/**
+ * The end of a background command's output file, from Claude Code's task-output folder only (#430 review): undefined
+ * (the summary stands) unless the file opened is a regular file of the user's with no other name, at that very path
+ * (not a symlink, a hard link to another file, or one reached through a folder that's a link: the command can repoint
+ * its own output file or folder before it ends, and Claude Code's own reads guard against that). Opened without waiting
+ * (O_NONBLOCK), so a FIFO put there can't hold up the event loop. `partial`: its last OUTPUT_READ_BYTES only.
+ */
+export function outputTail(dir: string, taskId: string): { text: string; partial: boolean } | undefined {
+    if (!/^[A-Za-z0-9_-]+$/.test(taskId)) return undefined;
+    const path = join(dir, `${taskId}.output`);
+    const uid = process.getuid?.();
+    const plain = (st: Stats) => st.isFile() && st.nlink === 1 && st.uid === uid;
+    let fd: number | undefined;
+    try {
+        fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        const st = fstatSync(fd);
+        if (!plain(st)) return undefined;
+        // The file opened is the one at the path (no folder on the way swapped for a link while it was opened).
+        const named = lstatSync(path);
+        if (!plain(named) || named.dev !== st.dev || named.ino !== st.ino || openedPath(fd) !== path) return undefined;
+        const n = Math.min(st.size, OUTPUT_READ_BYTES);
+        const buf = Buffer.alloc(n);
+        readSync(fd, buf, 0, n, st.size - n);
+        return { text: buf.toString("utf8"), partial: n < st.size };
+    } catch {
+        return undefined;
+    } finally {
+        if (fd !== undefined) closeSync(fd);
+    }
+}
 
 /** Wake refs, unique in the harness process: a session keeps an unadopted wake across a restart of its CLI process. */
 let wakeRefs = 0;
@@ -253,6 +336,8 @@ export class ClaudeConnection implements CliConnection {
     private tasks = new Map<string, BackgroundTaskInfo>();
     /** Task ids by the call that launched them. */
     private taskOf = new Map<string, string>();
+    /** Each background command (by task id) and the file Claude Code writes its output to, for its report (#430). */
+    private commands = new Map<string, { command?: string; file?: string }>();
     /** Tasks that left Claude Code's list without a word on how they ended. */
     private unlisted = new Map<string, ReturnType<typeof setTimeout>>();
     /**
@@ -1065,12 +1150,13 @@ export class ClaudeConnection implements CliConnection {
         const reports = Boolean(known && !this.cur && (status === "completed" || status === "failed") && m.owned_by_subagent !== true);
         if (taskId) this.taskEnded(taskId, ended);
         if (reports && known) {
-            // What it reported, for the wake (shown and told if the session can't take it over, #305).
-            const said = (typeof m.handback_report?.text === "string" ? m.handback_report.text : undefined) ?? (toolUseId ? this.lastWords.get(toolUseId) : undefined) ?? (summary || undefined);
+            // What it reported, for the wake (shown and told if the session can't take it over, #305): a command's output (#430).
+            const said = (typeof m.handback_report?.text === "string" ? m.handback_report.text : undefined) ?? (toolUseId ? this.lastWords.get(toolUseId) : undefined) ?? (known.kind === "shell" ? this.commandReport(taskId, m, summary) : undefined) ?? (summary || undefined);
             this.reportDue(known, dueLabel(known, ended), said?.trim() ? redact(said.trim()) : undefined);
             liveDebug("claude", "report due", { task: taskId, due: this.dues.length });
             this.events({ t: "task", task: this.tasks.get(taskId)!, wakeDue: true });
         } else if (taskId) this.dropDue(taskId);
+        if (taskId) this.commands.delete(taskId);
         if (!this.agentLabels.has(toolUseId)) {
             // One an earlier process left behind (stopped with it), said as the session is resumed. Not a command of this
             // process's that ended (a foreground one stopped by Esc, a sub-agent's that failed): its own row says so (#311).
@@ -1225,9 +1311,51 @@ export class ClaudeConnection implements CliConnection {
                 else if (report) this.report(b.tool_use_id, report, true);
                 content = this.reports.get(b.tool_use_id) || content;
             }
+            // A command now in the background: what it runs, and the file its output goes to (its result says, as 2.1.304's does).
+            const bg = blocks.length === 1 ? m.tool_use_result?.backgroundTaskId : undefined;
+            if (typeof bg === "string" && bg) {
+                this.commands.set(bg, { command: typeof p.input.command === "string" ? p.input.command : undefined, file: /Output is being written to: (\S+?\.output)\b/.exec(content)?.[1] });
+                if (this.commands.size > 64) this.commands.delete(this.commands.keys().next().value!);
+            }
             const structured = blocks.length === 1 && !b.is_error ? resultDisplay(p, m.tool_use_result, this.cfg.cwd) : undefined;
             this.endTool(b.tool_use_id, p, content, Boolean(b.is_error), structured);
         }
+    }
+
+    /**
+     * A background command's report, as Codex's says it (#430): the command, how it ended, and the end of its output,
+     * from the file Claude Code writes it to, in its task-output folder (outputTail). The file the notification (or the
+     * call that started it) names must be that one. Undefined when there's no such file to read: the summary stands.
+     */
+    private commandReport(id: string, m: Record<string, any>, summary: string): string | undefined {
+        const known = this.commands.get(id);
+        const dir = taskOutputDir(this.cfg.cwd, this.sessionId);
+        const named = (typeof m.output_file === "string" && m.output_file) || known?.file;
+        if (!dir || !named || basename(named) !== `${id}.output`) return undefined;
+        try {
+            if (realpathSync(dirname(named)) !== dir) return undefined;
+        } catch {
+            return undefined;
+        }
+        const out = outputTail(dir, id);
+        if (out === undefined) return undefined;
+        // Each redacted whole, then cut: a secret across the cut would leave a piece of itself unredacted.
+        let clean = redact(out.text);
+        if (out.partial) {
+            // Read from part way, a secret the read starts in isn't recognised: what's left of a known one (all its lines)
+            // is within the first of them as long as the longest, and of a known-format key (one line) within the first
+            // line. Kept: what the whole read redacts to after the line break past both (a secret across it left out whole).
+            const at = out.text.indexOf("\n", Math.max(0, ...knownSecrets().map((s) => s.length)));
+            if (at < 0) return undefined;
+            clean = clean.slice(redactPrefix(out.text, at + 1).length);
+        }
+        clean = clean.trimEnd();
+        const tail = clean.length > REPORT_OUTPUT_CHARS ? `…${clean.slice(-REPORT_OUTPUT_CHARS)}` : clean;
+        const command = known?.command ? redact(known.command).trim() : undefined;
+        const what = command ? `\`${command.length > 300 ? `${command.slice(0, 300)}…` : command}\`` : `"${this.tasks.get(id)?.label ?? "background command"}"`;
+        const code = /exit code (-?\d+)/.exec(summary)?.[1];
+        const ended = m.status === "failed" ? "failed" : "finished";
+        return `The background command ${what} ${ended}${code === undefined ? "" : ` with exit code ${code}`}.${tail.trim() ? ` The end of its output:\n${tail}` : " It printed nothing."}`;
     }
 
     private onSubToolResults(m: Record<string, any>) {

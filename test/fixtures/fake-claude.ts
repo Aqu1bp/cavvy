@@ -39,6 +39,12 @@
 // FAKE_COMMAND      the "bash" scenario's command (default: npm test)
 // FAKE_TIMEOUT      shell-background*: the background Bash call's timeout (ms; default none)
 // FAKE_SHELL_STATUS shell-background*: how its task_notification says it ended (default completed; after it left the list)
+// FAKE_SHELL_OUTPUT shell-background: what the command prints (FAKE_SHELL_OUTPUT_FROM: a file's contents), to the output file
+//                   2.1.304 writes it to (<CLAUDE_CODE_TMPDIR or /tmp>/claude-<uid>/<folder>/<session>/tasks; FAKE_SHELL_OUTPUT_PATH:
+//                   elsewhere), which its call's result names, and its notification too (FAKE_SHELL_OUTPUT_FILE=unsaid: not;
+//                   2.1.304 does both), with the exit code in its summary, as 2.1.304 says it. FAKE_SHELL_OUTPUT_LINK /
+//                   _HARDLINK=<file>: the command repoints its output file to that file before it ends; FAKE_SHELL_TASKS_LINK=<dir>:
+//                   its tasks folder is moved there and left as a symlink to it
 // FAKE_CARRIER_AGENT_ENDS=1  the background sub-agent ends while a hidden /effort carrier's turn runs
 // FAKE_STOP_TASK    hang: stop_task unanswered; reject: refused; complete-reject: the task completes, then the stop is refused;
 //                   fail-first: the task fails by itself, then the stop is answered success;
@@ -106,7 +112,7 @@
 // CLAUDE_CODE_REMOTE; FAKE_GOAL_HOLD=1 waits for an interrupt after the first check, FAKE_GOAL_IMPOSSIBLE=1 ends
 // it judged impossible
 
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { callTool, connect, type McpServerRef } from "./mcp-call";
@@ -921,6 +927,16 @@ async function turn(content: any[], uuid?: string) {
     if (scenario.startsWith("shell-background") || scenario.startsWith("monitor-background")) {
         const type = scenario.startsWith("monitor-background") ? "monitor_mcp" : "local_bash";
         const nested = scenario === "shell-background-nested";
+        // Where 2.1.304 writes it: <CLAUDE_CODE_TMPDIR or /tmp>/claude-<uid>/<the folder's real path, in NFC, sanitized>/<session>/tasks
+        // (a sanitized path past 200 characters cut there, with "-" and the path's hash: String.hashCode, base 36).
+        const slug = (raw: string) => {
+            const path = raw.normalize("NFC");
+            const s = path.replace(/[^a-zA-Z0-9]/g, "-");
+            let h = 0;
+            for (let i = 0; i < path.length; i++) h = ((h << 5) - h + path.charCodeAt(i)) | 0;
+            return s.length <= 200 ? s : `${s.slice(0, 200)}-${Math.abs(h).toString(36)}`;
+        };
+        const shellOutput = process.env.FAKE_SHELL_OUTPUT !== undefined && type === "local_bash" && !nested ? (process.env.FAKE_SHELL_OUTPUT_PATH ?? join(realpathSync(process.env.CLAUDE_CODE_TMPDIR || "/tmp"), `claude-${process.getuid?.() ?? 0}`, slug(realpathSync(cwd)), sessionId, "tasks", "background-1.output")) : undefined;
         if (nested) {
             agentCall(true);
             afterResult?.();
@@ -932,7 +948,12 @@ async function turn(content: any[], uuid?: string) {
             else toolUse("background-tool", "Bash", input);
             out({ type: "system", subtype: "task_started", task_id: "background-1", tool_use_id: "background-tool", is_backgrounded: true, session_id: sessionId });
             if (nested) sub("toolu_agent", "user", [{ type: "tool_result", tool_use_id: "background-tool", content: "Command running in background", is_error: false }]);
-            else toolResult("background-tool", "Command running in background", false);
+            else if (shellOutput) {
+                // FAKE_SHELL_OUTPUT: its output goes to a file, which the call's result names, as 2.1.304's does.
+                mkdirSync(dirname(shellOutput), { recursive: true });
+                writeFileSync(shellOutput, "");
+                toolResult("background-tool", `Command running in background with ID: background-1. Output is being written to: ${shellOutput}. You will be notified when it completes. To check interim output, use Read on that file path.`, false, { stdout: "", stderr: "", interrupted: false, isImage: false, noOutputExpected: false, backgroundTaskId: "background-1" });
+            } else toolResult("background-tool", "Command running in background", false);
         }
         if (scenario === "shell-background-mixed") {
             agentCall(true);
@@ -950,8 +971,26 @@ async function turn(content: any[], uuid?: string) {
             bgTasks.delete("background-1");
             backgroundChanged();
             await Bun.sleep(Number(process.env.FAKE_SHELL_NOTIFY_MS ?? 80));
+            const status = process.env.FAKE_SHELL_STATUS ?? "completed";
+            if (shellOutput && type === "local_bash" && !nested) {
+                writeFileSync(shellOutput, process.env.FAKE_SHELL_OUTPUT_FROM ? readFileSync(process.env.FAKE_SHELL_OUTPUT_FROM) : process.env.FAKE_SHELL_OUTPUT!);
+                // The command repoints its own output file before it ends: a symlink, or a hard link, to another file
+                // (FAKE_SHELL_OUTPUT_LINK / _HARDLINK); or its tasks folder a symlink to another one (FAKE_SHELL_TASKS_LINK).
+                if (process.env.FAKE_SHELL_OUTPUT_LINK) {
+                    unlinkSync(shellOutput);
+                    symlinkSync(process.env.FAKE_SHELL_OUTPUT_LINK, shellOutput);
+                } else if (process.env.FAKE_SHELL_OUTPUT_HARDLINK) {
+                    unlinkSync(shellOutput);
+                    linkSync(process.env.FAKE_SHELL_OUTPUT_HARDLINK, shellOutput);
+                } else if (process.env.FAKE_SHELL_TASKS_LINK) {
+                    renameSync(dirname(shellOutput), process.env.FAKE_SHELL_TASKS_LINK);
+                    symlinkSync(process.env.FAKE_SHELL_TASKS_LINK, dirname(shellOutput));
+                }
+                // As 2.1.304 says it: the file named (or not: FAKE_SHELL_OUTPUT_FILE=unsaid), the exit code in the summary.
+                out({ type: "system", subtype: "task_notification", task_id: "background-1", tool_use_id: "background-tool", status, output_file: process.env.FAKE_SHELL_OUTPUT_FILE === "unsaid" ? "" : shellOutput, summary: `Background command "Wait for checks" ${status === "failed" ? "failed" : "completed"} (exit code ${status === "failed" ? 1 : 0})`, session_id: sessionId });
+            }
             // Shell/Monitor notifications may have no tool_use_id.
-            out({ type: "system", subtype: "task_notification", task_id: "background-1", status: process.env.FAKE_SHELL_STATUS ?? "completed", summary: "Checks passed", session_id: sessionId });
+            else out({ type: "system", subtype: "task_notification", task_id: "background-1", status, summary: "Checks passed", session_id: sessionId });
             await Bun.sleep(80);
             queueWake("Background checks passed.");
         }, Number(process.env.FAKE_SHELL_MS ?? 150));
