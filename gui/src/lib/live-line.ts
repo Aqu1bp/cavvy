@@ -2,7 +2,7 @@
 // What it says is chosen here, from the turn's blocks and the session's state;
 // LiveLine.tsx draws it and rolls between states. Also here: which finished
 // turns stay open because a steer carried their work on (a chain), what a
-// folded turn says ("Worked for 2m 5s"), and the glide's arithmetic.
+// turn folds away and what it says then ("Worked for 2m 5s"), and the glide's arithmetic.
 
 import type { Block, Interaction, ThinkingBlock, ToolBlock, Turn } from "@shared/protocol";
 import { sleepSeconds, stripAnsi, tokens, turnDuration } from "./format";
@@ -188,6 +188,36 @@ export function workedLabel(startedAt?: number, endedAt?: number): string | unde
     if (startedAt === undefined || endedAt === undefined) return undefined;
     const ms = Math.max(0, endedAt - startedAt);
     return ms < 1000 ? "Worked briefly" : `Worked for ${turnDuration(ms)}`;
+}
+
+/** A turn's rows as TurnView lays them out: a run of steps (Activity's groupBlocks), or a block of its own. */
+type Row = { kind: "activity" } | { kind: "block"; block: { t: string; text?: string } };
+
+export type Seg<R> = { kind: "work"; items: R[] } | { kind: "item"; item: R; interim: boolean };
+
+/**
+ * Work (tool runs, thinking) vs what's said: the reply, notices. What the model said on its way (`interim`) folds
+ * away with the work once the turn is done. The reply is what it said after its last step; when it ended on a
+ * step (a background wait, a stop), it's the last thing it said, so that never folds away. Notices (errors) never do.
+ */
+export function workSegments<R extends Row>(items: R[]): Seg<R>[] {
+    const isWork = (it: Row) => it.kind === "activity" || it.block.t === "thinking";
+    const isText = (it: Row) => it.kind === "block" && it.block.t === "text";
+    // Something said: a blank block (a CLI's stray newlines) isn't a reply.
+    const said = (it: Row) => isText(it) && Boolean((it as { block: { text?: string } }).block.text?.trim());
+    const lastWork = items.findLastIndex(isWork);
+    const lastText = items.findLastIndex(said);
+    // Where the reply starts: after the last step, or at the last thing said when nothing was after it.
+    const reply = lastText > lastWork ? lastWork : lastText;
+    const out: Seg<R>[] = [];
+    items.forEach((it, i) => {
+        if (isWork(it)) {
+            const prev = out[out.length - 1];
+            if (prev?.kind === "work") prev.items.push(it);
+            else out.push({ kind: "work", items: [it] });
+        } else out.push({ kind: "item", item: it, interim: i < reply && isText(it) });
+    });
+    return out;
 }
 
 /** A glide never covers more than this: farther, the content starts this far off and slides the rest of the way in. */

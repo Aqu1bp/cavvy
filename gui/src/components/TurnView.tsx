@@ -3,7 +3,7 @@ import { createComputed, createEffect, createMemo, createResource, createSignal,
 import { AlertCircle, AlertTriangle, BellRing, Check, CircleCheck, CircleStop, CircleX, ChevronRight, Clock, CornerDownRight, FileDiff, FileText, GitFork, Goal, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
 import { firstChangedLine, plural, promptTime, shortPrompt, stripAnsi } from "../lib/format";
-import { liveLine, workedLabel } from "../lib/live-line";
+import { liveLine, workedLabel, workSegments } from "../lib/live-line";
 import { formatSize } from "../lib/attachments";
 import { linesLabel, linesPhrase, splitComments } from "../lib/review-comments";
 import { prefs } from "../state/prefs";
@@ -448,27 +448,6 @@ const END_TEXT: Partial<Record<Turn["status"], string>> = {
     blocked: "Blocked by a hook",
 };
 
-type Seg = { kind: "work"; items: Item[] } | { kind: "item"; item: Item; interim: boolean };
-
-/**
- * Work (tool runs, thinking) vs what's said: the reply, notices. What the
- * model said on its way (more work followed) is prose between the work, and
- * folds away with it once the turn is done.
- */
-function segments(items: Item[]): Seg[] {
-    const isWork = (it: Item) => it.kind === "activity" || (it.kind === "block" && it.block.t === "thinking");
-    const lastWork = items.findLastIndex(isWork);
-    const out: Seg[] = [];
-    items.forEach((it, i) => {
-        if (isWork(it)) {
-            const prev = out[out.length - 1];
-            if (prev?.kind === "work") prev.items.push(it);
-            else out.push({ kind: "work", items: [it] });
-        } else out.push({ kind: "item", item: it, interim: i < lastWork && it.kind === "block" && it.block.t === "text" });
-    });
-    return out;
-}
-
 type TurnViewProps = {
     turn: Turn;
     state: SessionState;
@@ -492,7 +471,7 @@ export function TurnView(p: TurnViewProps) {
 
 function TurnViewContent(p: TurnViewProps) {
     const items = createMemo(() => groupBlocks(p.turn.blocks));
-    const segs = createMemo(() => segments(items()));
+    const segs = createMemo(() => workSegments(items()));
     const running = () => p.turn.status === "running";
     const live = () => running() && p.last && p.state.busy;
     const writing = () => live() && p.state.activity?.label === "Writing";

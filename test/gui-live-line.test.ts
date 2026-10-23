@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { backgroundWait, glideFrom, GLIDE_MAX, heldTurns, lastLines, lineTone, liveLine, specialActivity, workedLabel, type LiveInput } from "../gui/src/lib/live-line";
+import { backgroundWait, glideFrom, GLIDE_MAX, heldTurns, lastLines, lineTone, liveLine, specialActivity, workedLabel, workSegments, type LiveInput } from "../gui/src/lib/live-line";
 
 // The running turn's live line (gui/src/lib/live-line.ts): what it says, which turns a steer keeps open, what a
 // folded turn says, and the glide's arithmetic. LiveLine.tsx, TurnView.tsx and Transcript.tsx draw from these.
@@ -85,6 +85,34 @@ test("a folded turn says how long it worked, never 0s", () => {
     expect(workedLabel(1000, 2000)).toBe("Worked for 1s");
     expect(workedLabel(0, 125_000)).toBe("Worked for 2m 5s");
     expect(workedLabel(undefined, 5)).toBeUndefined();
+});
+
+test("a done turn folds its steps and what was said between them; the reply, the last thing said, and notices stay (#347)", () => {
+    const steps = { kind: "activity" as const };
+    const said = (text: string) => ({ kind: "block" as const, block: { t: "text", text } });
+    const block = (t: string) => ({ kind: "block" as const, block: { t, text: t } });
+    /** What stays in sight once the turn folds: the reply and notices (work and interim text go into "Worked for"). */
+    const shown = (items: any[]) =>
+        workSegments(items)
+            .filter((s) => s.kind === "item" && !s.interim)
+            .map((s) => (s as { item: { block: { text: string } } }).item.block.text);
+    // A Claude Code turn: narration between its steps, then the conclusion.
+    expect(shown([said("Now the edits."), steps, said("Both pass."), steps, said("Confirmed."), steps, said("All merged.")])).toEqual(["All merged."]);
+    // No steps: nothing folds, all of it is the reply.
+    expect(shown([said("Hello."), said("More.")])).toEqual(["Hello.", "More."]);
+    expect(workSegments([said("Hello.")]).some((s) => s.kind === "work")).toBe(false);
+    // Ended on a step (a background wait, a stop): the last thing it said stays, a question too.
+    expect(shown([said("Looking."), steps, said("Should I merge it?"), steps])).toEqual(["Should I merge it?"]);
+    expect(shown([steps])).toEqual([]);
+    // A blank block after the last step (a CLI's stray newlines) isn't the reply: what was said before it is.
+    expect(shown([said("Please review these changes."), steps, said("\n\n")])).toEqual(["Please review these changes.", "\n\n"]);
+    expect(shown([said("Looking."), steps, said("Done."), steps, said("  ")])).toEqual(["Done.", "  "]);
+    // A notice (an error) between steps never folds away.
+    expect(shown([steps, block("notice"), steps, said("Done.")])).toEqual(["notice", "Done."]);
+    // Thinking is work: what was said before a last thought is on the way.
+    expect(shown([steps, said("Checking once more."), block("thinking"), said("Done.")])).toEqual(["Done."]);
+    // Consecutive steps are one run of work.
+    expect(workSegments([steps, block("thinking"), steps, said("Done.")]).map((s) => s.kind)).toEqual(["work", "item"]);
 });
 
 test("a glide starts where the content was drawn, continues a running one, and never covers more than 240px", () => {
