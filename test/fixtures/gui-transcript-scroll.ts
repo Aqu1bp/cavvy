@@ -482,6 +482,36 @@ try {
     assert.equal(top, bottom(), "the end of a turn lands at once");
     assert.equal(glides.length, glidesBefore, "a turn's end (its work folding away) doesn't glide");
     turnHeights.clear(); dispose();
+    // A short conversation, all of it in view, still running: a row opened makes it overflow (the end isn't
+    // followed while it's read); folded again, it all fits, and no scroll event can come to say the end is in
+    // view. It follows the end again, as a scroll there would, and later growth is followed.
+    viewportHeight = 2000;
+    const short = { id: "short", view: { state: {}, turns: turns(2).map((t, i) => ({ ...t, status: i === 1 ? "running" : "done" })) } };
+    dispose = mount(short);
+    assert.equal(top, 0, "a short conversation fits");
+    const fold = turn("turn-1").children[0];
+    fold.props["aria-expanded"] = false;
+    fold.closest = (selector: string) => (selector.includes("aria-expanded") ? fold : null);
+    const press = (height: number) => {
+        scroller().listeners.click?.({ type: "click", target: fold });
+        turnHeights.set("turn-1", height);
+        scroller().props.onClick?.({ type: "click", target: fold });
+        resize(); flush();
+    };
+    press(1800);
+    assert.ok(button("jump"), "opened past the view's end: not followed");
+    press(200);
+    assert.equal(button("jump"), undefined, "folded back with the end in view: followed again");
+    turnHeights.set("turn-1", 2400); resize(); flush();
+    assert.equal(top, height(scroller()) - viewportHeight, "later growth is followed");
+    // The same with no toggle of ours: the column shrinking (anything folding) until it all fits.
+    scroll(0);
+    scroller().props.onWheel({ deltaY: -3 });
+    assert.ok(button("jump"));
+    turnHeights.set("turn-1", 300); resize(); flush();
+    assert.equal(button("jump"), undefined, "with nothing left to scroll, the end is followed");
+    viewportHeight = 500;
+    turnHeights.clear(); dispose();
     const running = { id: "background", view: { state: {}, turns: turns(45).map((t) => ({ ...t, status: "running" })) } };
     dispose = mount(running); scroll(0); dispose();
     running.view.turns.forEach((t) => { t.status = "done"; });

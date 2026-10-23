@@ -246,7 +246,12 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             // Glides only while a turn is running: the end of a turn (its work folding away above, its footer,
             // the composer settling) lands at once.
             else if (stick()) turns().at(-1)?.status === "running" ? pin() : toBottom();
-            else restore();
+            else {
+                restore();
+                // Nothing left to scroll (something folded until it all fits): no scroll event will come to say the
+                // end is in view, so it's followed again here.
+                if (scroller!.scrollHeight <= scroller!.clientHeight + 1) setStick(true);
+            }
             measureEnd();
         });
         ro.observe(content);
@@ -317,7 +322,8 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         smoothScroll = false;
         const next = anchoredTop(scroller.scrollTop, t.el.getBoundingClientRect().top, t.top);
         if (Math.abs(next - scroller.scrollTop) > 0.5) scroller.scrollTop = next;
-        if (scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop > 1) setStick(false);
+        // Followed again if the end is in view after it (folded with all of it showing): as a scroll there would.
+        setStick(scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= 1);
         wrote();
         reading = capture();
     };
