@@ -67,6 +67,14 @@ export function redactMessage(m: Message): Message {
             changed = true;
             return { ...p, content: c };
         }
+        // Checked (and redacted) when it was attached: a value registered since, while it waited in the queue, too.
+        if (p.type === "file") {
+            const name = redact(p.name);
+            const text = p.kind === "text" ? redact(p.text) : undefined;
+            if (name === p.name && (text === undefined || text === (p as { text: string }).text)) return p;
+            changed = true;
+            return { ...p, name, ...(text !== undefined ? { text } : {}) };
+        }
         return p;
     });
     return changed ? { ...m, content } : m;

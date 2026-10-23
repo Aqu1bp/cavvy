@@ -80,7 +80,7 @@ for (const branch of ["main", undefined]) {
         find(tree, (n) => n.tag === "textarea")!.props.onInput({ currentTarget: { value: "feat: selected file" } });
         find(tree, (n) => n.tag === "button" && n.props.class === "btn primary")!.props.onClick();
         await Promise.resolve();
-        expect(d.calls).toEqual([[d.request.id, d.request.paths, "feat: selected file", branch ? { branch, detached: false } : { sha: d.sha, detached: true }]]);
+        expect(d.calls).toEqual([[d.request.id, d.request.paths, "feat: selected file", branch ? { branch, detached: false } : { sha: d.sha, detached: true }, []]]);
         expect(d.activeRequest).toBeUndefined();
     });
 }
@@ -101,5 +101,5 @@ test("⌘↵ in the message commits, as the button's key cap says; a plain Enter
     key({ metaKey: true });
     await Promise.resolve();
     expect(prevented).toBe(1);
-    expect(d.calls).toEqual([[d.request.id, d.request.paths, "fix: the thing", { branch: "feature", detached: false }]]);
+    expect(d.calls).toEqual([[d.request.id, d.request.paths, "fix: the thing", { branch: "feature", detached: false }, []]]);
 });

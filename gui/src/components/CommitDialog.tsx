@@ -1,5 +1,5 @@
 import { createEffect, createSignal, For, on, Show } from "solid-js";
-import type { GitChangesInfo } from "@shared/protocol";
+import type { GitChangesInfo, GitFileDiff } from "@shared/protocol";
 import { app, handleFor, rpc } from "../state/app";
 import { gitCommit, gitCommitMessage } from "../state/actions";
 import { commitUnavailable } from "../state/changes";
@@ -8,6 +8,9 @@ import { mod, os } from "../lib/platform";
 import { plural } from "../lib/format";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
+
+/** A file as the Review pane names it in a commit request: its handle when its name was shown redacted, else its name. */
+const key = (f: GitFileDiff) => f.pathToken ?? f.path;
 
 export function CommitDialog() {
     const [view, setView] = createSignal<GitChangesInfo>();
@@ -40,7 +43,7 @@ export function CommitDialog() {
                 const result = await rpc.call("session.gitChanges", { id: request.id, scope: "uncommitted" });
                 if (commitRequest() !== request) return;
                 setView(result);
-                setPaths(request.paths.filter((path) => result.files.some((f) => f.path === path && f.kind !== "folder" && f.kind !== "repo")));
+                setPaths(request.paths.filter((path) => result.files.some((f) => key(f) === path && f.kind !== "folder" && f.kind !== "repo")));
                 if (!result.repo) setError(result.reason ?? "This folder is not a Git repository.");
             } catch (e) {
                 if (commitRequest() === request) setError(errorText(e));
@@ -62,7 +65,12 @@ export function CommitDialog() {
     const blocked = () => commitUnavailable(handleFor(commitRequest()?.id));
     const ready = () => !loading() && view()?.repo && paths().length > 0 && !blocked();
     const files = () =>
-        view()?.files.filter((f) => commitRequest()?.paths.includes(f.path) && f.kind !== "folder" && f.kind !== "repo") ?? [];
+        view()?.files.filter((f) => commitRequest()?.paths.includes(key(f)) && f.kind !== "folder" && f.kind !== "repo") ?? [];
+    /** What's selected, as the server takes it: names, and handles for names shown redacted. */
+    const chosen = () => {
+        const picked = view()?.files.filter((f) => paths().includes(key(f))) ?? [];
+        return { paths: picked.filter((f) => !f.pathToken).map((f) => f.path), tokens: picked.flatMap((f) => (f.pathToken ? [f.pathToken] : [])) };
+    };
     const mainBranch = () =>
         view()?.defaultBase?.replace(/^origin\//, "") ??
         (["main", "master"].includes(view()?.head?.branch ?? "") ? view()?.head?.branch : undefined);
@@ -80,7 +88,8 @@ export function CommitDialog() {
         setGenerating(true);
         setError(undefined);
         try {
-            const result = await gitCommitMessage(request.id, paths());
+            const { paths: names, tokens } = chosen();
+            const result = await gitCommitMessage(request.id, names, tokens);
             if (commitRequest() !== request) return;
             if (revision !== version) {
                 setError("The message or selected files changed while generating. Click Generate message again to replace the draft.");
@@ -101,9 +110,12 @@ export function CommitDialog() {
         setError(undefined);
         try {
             const head = view()?.head;
-            await gitCommit(request.id, paths(), message(), head?.branch
-                ? { branch: head.branch, detached: false }
-                : { sha: head?.sha, detached: true });
+            const { paths: names, tokens } = chosen();
+            await gitCommit(request.id, names, message(), head?.branchToken
+                ? { branchToken: head.branchToken, detached: false }
+                : head?.branch
+                  ? { branch: head.branch, detached: false }
+                  : { sha: head?.sha, detached: true }, tokens);
             setCommitRequest(undefined);
         } catch (e) {
             setError(errorText(e));

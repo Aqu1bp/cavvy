@@ -456,3 +456,12 @@ describe("session titles", () => {
         expect(reviewGist("plain text")).toBe("plain text");
     });
 });
+
+test("a comment on a file shown under a redacted name keeps which file by its handle, never in what's sent", () => {
+    const lines: DiffLine[] = [{ t: "add", b: 3, text: "new line" }];
+    const c = buildComment({ id: "c1", path: "[REDACTED NAME_FAKE].txt", fileKey: "git:handle-of-one-file", lines, text: "check this" })!;
+    expect(c.fileKey).toBe("git:handle-of-one-file");
+    expect(formatComment(c)).not.toContain("git:handle-of-one-file");
+    expect(formatComment(c)).toContain("[REDACTED NAME_FAKE].txt");
+    expect(buildComment({ id: "c2", path: "plain.ts", lines, text: "x" })!.fileKey).toBeUndefined();
+});

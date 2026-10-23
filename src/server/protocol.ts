@@ -1084,6 +1084,8 @@ export interface GitFileDiff extends FileDiff {
     deferred?: boolean;
     /** Git runs this filter driver on the file; its diff, if any, is of the form stored in git. */
     filter?: string;
+    /** `path` hides a registered value: send this instead of it to act on the file. */
+    pathToken?: string;
 }
 
 /** What git says changed in a session's folder, whoever changed it. */
@@ -1099,13 +1101,17 @@ export interface GitChangesInfo extends ChangesInfo {
     snapshotAvailable?: boolean;
     incomplete?: boolean;
     notes?: string[];
-    head?: { branch?: string; sha?: string };
+    /** `branchToken`: the branch's name hides a registered value; send it (GitCommitHead) instead of the name. */
+    head?: { branch?: string; sha?: string; branchToken?: string };
     /** Branch scope: the base branch and the commit this branch left it at. */
-    base?: { ref: string; sha: string };
+    base?: { ref: string; sha: string; refToken?: string };
     /** Branches to compare with, most recently changed first (local and remote, capped). */
     bases: string[];
+    /** Beside `bases`, when a name there hides a registered value: its handle (send it as `baseToken`), else null. */
+    baseTokens?: (string | null)[];
     /** What Harness treats as the main branch. */
     defaultBase?: string;
+    defaultBaseToken?: string;
     /** Changed files not listed; `moreAtLeast` when even the count was cut short. */
     more: number;
     moreAtLeast?: boolean;
@@ -1159,6 +1165,8 @@ export interface GitPrInfo {
 
 export interface GitCommitHead {
     branch?: string;
+    /** Instead of `branch`, when its name was shown redacted (GitChangesInfo.head.branchToken). */
+    branchToken?: string;
     detached: boolean;
     /** Full commit SHA, required for a detached HEAD snapshot. */
     sha?: string;
@@ -1392,14 +1400,16 @@ export interface Methods {
      * `worktree`: another worktree of the session's repository to look at (a path `session.worktrees` lists);
      * any other folder is refused. Turn scopes are the session's own folder's only.
      */
-    "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; path?: string; turnId?: number; worktree?: string }; result: GitChangesInfo };
+    /** `pathToken` / `baseToken`: handles from an earlier listing (GitFileDiff.pathToken, baseTokens), instead of `path` / `base`. */
+    "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; baseToken?: string; path?: string; pathToken?: string; turnId?: number; worktree?: string }; result: GitChangesInfo };
     /** The worktrees of the repository the session's folder is in (none outside one), with their branch's lead on the main branch. */
     "session.worktrees": { params: { id: string }; result: SessionWorktreeInfo[] };
     "session.gitPublishInfo": { params: { id: string }; result: GitPublishInfo };
     "session.gitPublish": { params: { id: string } & GitPublishRequest; result: { pr?: GitPrInfo } };
     "session.gitPrState": { params: { id: string }; result: { pr?: GitPrInfo } };
-    "session.gitCommit": { params: { id: string; paths: string[]; message: string; expectedHead?: GitCommitHead }; result: GitCommitInfo };
-    "session.gitCommitMessage": { params: { id: string; paths: string[] }; result: GitCommitMessageInfo };
+    /** `pathTokens`: files whose names were shown redacted (GitFileDiff.pathToken), with `paths` for the rest. */
+    "session.gitCommit": { params: { id: string; paths: string[]; pathTokens?: string[]; message: string; expectedHead?: GitCommitHead }; result: GitCommitInfo };
+    "session.gitCommitMessage": { params: { id: string; paths: string[]; pathTokens?: string[] }; result: GitCommitMessageInfo };
     "session.pin": { params: { id: string; pinned: boolean }; result: null };
     /**
      * With `removeWorktree`, the managed worktree the session works in goes too (its branch stays), when nothing
@@ -1485,7 +1495,8 @@ export interface Methods {
      * server's machine. The path is resolved against the session's folder (or
      * `cwd`, a project open in Harness) and must be inside its workspace roots.
      */
-    "fs.open": { params: { sessionId?: string; cwd?: string; path: string; line?: number; col?: number; folder?: boolean }; result: { editor: string } };
+    /** `gitToken`: a file a Git listing showed redacted (GitFileDiff.pathToken), instead of `path`. */
+    "fs.open": { params: { sessionId?: string; cwd?: string; path?: string; gitToken?: string; line?: number; col?: number; folder?: boolean }; result: { editor: string } };
     /** Which of these paths (from agent text) are files inside the session's roots: each one's absolute path, or null. At most 200. */
     "fs.exists": { params: { sessionId?: string; cwd?: string; paths: string[] }; result: (string | null)[] };
     /** A PNG, JPEG, GIF or WebP file anywhere on this machine (judged by its bytes; a relative path is the session's), for showing an image the model's reply names. */

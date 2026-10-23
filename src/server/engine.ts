@@ -6,6 +6,8 @@
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
 import { ACCOUNT_PROVIDERS, account, accountProvider, addAccount, defaultAccount, holdLogin, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots } from "../providers/accounts";
 import { loginCommand } from "../backends/account-login";
+import { redactedError } from "./git-handles";
+import { sessionWorktree } from "./session-worktrees";
 import { planLimitKey, type AccountInfo, type BackgroundTaskInfo } from "./protocol";
 import { endedText } from "../agent/background";
 import { mergeLimits } from "../backends/limits";
@@ -1741,10 +1743,30 @@ export class Engine {
         const line = position(p.line, "line", MAX_LINE);
         const col = position(p.col, "col", MAX_COL);
         const folder = p.folder === true;
-        const { cwd, roots } = this.openScope(p);
-        const t = confinePath(str(p.path, "path"), cwd, roots);
-        if (folder && !t.dir) throw new RpcError(`${p.path} isn't a folder`, "invalid");
-        if (!folder && t.dir && def.style !== "reveal") throw new RpcError(`${p.path} is a folder`, "invalid");
+        let { cwd, roots } = this.openScope(p);
+        // A file a Git listing showed redacted: the server knows where it is; it's confined as any path is.
+        let target: string;
+        if (p.gitToken !== undefined) {
+            const rt = this.runtime(str(p.sessionId, "sessionId"));
+            const where = rt.gitHandles.where(p.gitToken);
+            target = where.path;
+            // Finder reveals a file of another worktree of the session's repository the Review pane listed, as the
+            // window does for names it can see; an editor opens files in the session's folders only.
+            if (def.style === "reveal" && where.root !== rt.ws.cwd) {
+                const w = await sessionWorktree(rt.ws.cwd, where.root).catch(() => undefined);
+                if (w && !w.current && w.real === where.root) ({ cwd, roots } = { cwd: w.real, roots: [w.real] });
+            }
+        } else target = str(p.path, "path");
+        const named = p.gitToken !== undefined ? "That file" : p.path;
+        let t: ReturnType<typeof confinePath>;
+        try {
+            t = confinePath(target, cwd, roots);
+        } catch (e) {
+            // Its messages name the path.
+            throw p.gitToken !== undefined ? redactedError(e) : e;
+        }
+        if (folder && !t.dir) throw new RpcError(`${named} isn't a folder`, "invalid");
+        if (!folder && t.dir && def.style !== "reveal") throw new RpcError(`${named} is a folder`, "invalid");
         // The real location, so a symlink in the path can't be swapped after the
         // check. (A file or folder replaced in the moment between the check and
         // the editor opening it isn't caught: that needs the editor to take an
@@ -2133,7 +2155,7 @@ export class Engine {
                 if (p.base !== undefined && (typeof p.base !== "string" || !p.base || p.base.length > 400)) throw new RpcError("base must be a branch name", "invalid");
                 if (p.path !== undefined && typeof p.path !== "string") throw new RpcError("path must be a string", "invalid");
                 if (p.worktree !== undefined && (typeof p.worktree !== "string" || !p.worktree || p.worktree.length > 4096 || p.worktree.includes("\0"))) throw new RpcError("worktree must be a folder path", "invalid");
-                return this.runtime(p.id).gitChanges({ scope: p.scope, base: p.base, path: p.path, turnId: p.turnId, worktree: p.worktree });
+                return this.runtime(p.id).gitChanges({ scope: p.scope, base: p.base, baseToken: optStr(p.baseToken), path: p.path, pathToken: optStr(p.pathToken), turnId: p.turnId, worktree: p.worktree });
             }
             case "session.worktrees": {
                 const list = await this.runtime(p.id).worktrees();
@@ -2155,10 +2177,13 @@ export class Engine {
             }
             case "session.gitCommit":
             case "session.gitCommitMessage": {
-                if (!Array.isArray(p.paths) || !p.paths.length || p.paths.length > 300 || p.paths.some((path: unknown) => typeof path !== "string" || !path || path.length > 4096 || path.includes("\0"))) {
+                // Files whose names were shown redacted come as handles (pathTokens), beside the rest.
+                const tokens: unknown = p.pathTokens ?? [];
+                if (!Array.isArray(tokens) || tokens.some((t) => typeof t !== "string" || !t || t.length > 200)) throw new RpcError("pathTokens must be a list of file handles", "invalid");
+                if (!Array.isArray(p.paths) || !(p.paths.length + tokens.length) || p.paths.length + tokens.length > 300 || p.paths.some((path: unknown) => typeof path !== "string" || !path || path.length > 4096 || path.includes("\0"))) {
                     throw new RpcError("paths must contain 1 to 300 file paths", "invalid");
                 }
-                if (method === "session.gitCommitMessage") return this.runtime(p.id).gitCommitMessage(p.paths);
+                if (method === "session.gitCommitMessage") return this.runtime(p.id).gitCommitMessage(p.paths, tokens as string[]);
                 if (typeof p.message !== "string" || !p.message.trim() || Buffer.byteLength(p.message) > 65_536 || p.message.includes("\0")) {
                     throw new RpcError("message must be nonempty, at most 64 KiB, and contain no NUL bytes", "invalid");
                 }
@@ -2167,13 +2192,15 @@ export class Engine {
                     if (
                         !head || typeof head !== "object" || typeof head.detached !== "boolean" ||
                         (head.detached
-                            ? head.branch !== undefined || typeof head.sha !== "string" || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(head.sha)
-                            : typeof head.branch !== "string" || !head.branch || head.branch.length > 400 || head.branch.includes("\0"))
+                            ? head.branch !== undefined || head.branchToken !== undefined || typeof head.sha !== "string" || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(head.sha)
+                            : head.branchToken !== undefined
+                              ? head.branch !== undefined || typeof head.branchToken !== "string" || !head.branchToken || head.branchToken.length > 200
+                              : typeof head.branch !== "string" || !head.branch || head.branch.length > 400 || head.branch.includes("\0"))
                     ) {
                         throw new RpcError("expectedHead must describe a branch or detached HEAD with its full SHA", "invalid");
                     }
                 }
-                return this.runtime(p.id).gitCommit(p.paths, p.message, p.expectedHead);
+                return this.runtime(p.id).gitCommit(p.paths, p.message, p.expectedHead, tokens as string[]);
             }
             case "session.toolOutput":
                 return { output: this.runtime(p.id).toolOutput(str(p.toolId, "toolId")) };

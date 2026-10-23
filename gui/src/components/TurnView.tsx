@@ -311,7 +311,8 @@ function Shell(p: { block: ShellBlock }) {
     );
 }
 
-type Changed = { path: string; status: Diff["status"]; added: number; removed: number; line?: number };
+/** `pathToken`: the name hides a registered value (GitFileDiff.pathToken): reviewed and opened by it. */
+type Changed = { path: string; status: Diff["status"]; added: number; removed: number; line?: number; pathToken?: string };
 
 /** What a finished turn changed, file by file (its edits' diffs, added up), with where the first edit landed. */
 function turnChanges(t: Turn): Changed[] {
@@ -352,7 +353,7 @@ const RECORDED_KEPT = 400;
 
 function summarize(view: GitView): Recorded {
     const { repo, turnId, error, snapshotAvailable, incomplete, notes, more } = view;
-    return { repo, turnId, error, snapshotAvailable, incomplete, notes, more, files: view.files.map((f) => ({ path: f.path, status: f.status, added: f.added, removed: f.removed, line: firstChangedLine(f) })) };
+    return { repo, turnId, error, snapshotAvailable, incomplete, notes, more, files: view.files.map((f) => ({ path: f.path, status: f.status, added: f.added, removed: f.removed, line: firstChangedLine(f), ...(f.pathToken ? { pathToken: f.pathToken } : {}) })) };
 }
 
 function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: boolean }) {
@@ -382,7 +383,7 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
     const captured = () => recorded()?.repo && recorded()?.turnId === p.turn.snapshotId && !recorded()?.error;
     const snapshotDiff = () => captured() && recorded()?.snapshotAvailable;
     const files = createMemo<Changed[]>(() => snapshotDiff() ? recorded()!.files : turnChanges(p.turn));
-    const reviewChanges = (path?: string) => openReview(path, snapshotDiff() ? "turn" : "uncommitted", snapshotDiff() ? p.turn.snapshotId : undefined);
+    const reviewChanges = (path?: string, token?: string) => openReview(path, snapshotDiff() ? "turn" : "uncommitted", snapshotDiff() ? p.turn.snapshotId : undefined, token);
     const total = () => files().reduce((a, f) => ({ added: a.added + f.added, removed: a.removed + f.removed }), { added: 0, removed: 0 });
     const [all, setAll] = createSignal(false);
     return (
@@ -401,7 +402,7 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                     </Show>
                     <span class="grow" />
                     {/* Keep recorded changes tied to this turn, even after later edits. */}
-                    <button class="tbtn" onClick={() => captured() ? openReview(undefined, "turn", p.turn.snapshotId) : reviewChanges(files()[0]?.path)}>
+                    <button class="tbtn" onClick={() => captured() ? openReview(undefined, "turn", p.turn.snapshotId) : reviewChanges(files()[0]?.path, files()[0]?.pathToken)}>
                         Review changes
                     </button>
                 </div>
@@ -410,7 +411,7 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                 <For each={all() ? files() : files().slice(0, FILES_SHOWN)}>
                     {(f) => (
                         <div class="frow-line">
-                            <button class="frow" onClick={() => reviewChanges(f.path)}>
+                            <button class="frow" onClick={() => reviewChanges(f.path, f.pathToken)}>
                                 <SplitPath path={f.path} cwd={p.cwd} />
                                 <Show when={f.status === "added"}>
                                     <span class="frow-tag">new</span>
@@ -421,7 +422,7 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                                 </span>
                             </button>
                             <Show when={f.status !== "deleted"}>
-                                <button class="icon-btn row-open" title="Open in editor" aria-label={`Open ${f.path} in editor`} onClick={() => void openInEditor(f.path, f.line, { sessionId: p.sessionId })}>
+                                <button class="icon-btn row-open" title="Open in editor" aria-label={`Open ${f.path} in editor`} onClick={() => void openInEditor(f.path, f.line, { sessionId: p.sessionId, gitToken: f.pathToken })}>
                                     <SquareArrowOutUpRight size={13} />
                                 </button>
                             </Show>
