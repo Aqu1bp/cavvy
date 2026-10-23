@@ -39,6 +39,9 @@
 // FAKE_COMMAND      the "bash" scenario's command (default: npm test)
 // FAKE_TIMEOUT      shell-background*: the background Bash call's timeout (ms; default none)
 // FAKE_SHELL_STATUS shell-background*: how its task_notification says it ended (default completed; after it left the list)
+// FAKE_SHELL_OUTPUT shell-background: what the command prints, to the output file Claude Code writes it to (beside FAKE_LOG,
+//                   or in FAKE_TASKS_DIR), which its call's result names, and its notification too (FAKE_SHELL_OUTPUT_FILE=unsaid:
+//                   not; 2.1.304 does both), with the exit code in its summary, as 2.1.304 says it
 // FAKE_CARRIER_AGENT_ENDS=1  the background sub-agent ends while a hidden /effort carrier's turn runs
 // FAKE_STOP_TASK    hang: stop_task unanswered; reject: refused; complete-reject: the task completes, then the stop is refused;
 //                   fail-first: the task fails by itself, then the stop is answered success;
@@ -921,6 +924,7 @@ async function turn(content: any[], uuid?: string) {
     if (scenario.startsWith("shell-background") || scenario.startsWith("monitor-background")) {
         const type = scenario.startsWith("monitor-background") ? "monitor_mcp" : "local_bash";
         const nested = scenario === "shell-background-nested";
+        const shellOutput = process.env.FAKE_SHELL_OUTPUT !== undefined && type === "local_bash" && !nested ? join(process.env.FAKE_TASKS_DIR ?? join(dirname(process.env.FAKE_LOG ?? join(homedir(), "fake-claude.log")), "fake-claude-tasks"), sessionId, "tasks", "background-1.output") : undefined;
         if (nested) {
             agentCall(true);
             afterResult?.();
@@ -932,7 +936,12 @@ async function turn(content: any[], uuid?: string) {
             else toolUse("background-tool", "Bash", input);
             out({ type: "system", subtype: "task_started", task_id: "background-1", tool_use_id: "background-tool", is_backgrounded: true, session_id: sessionId });
             if (nested) sub("toolu_agent", "user", [{ type: "tool_result", tool_use_id: "background-tool", content: "Command running in background", is_error: false }]);
-            else toolResult("background-tool", "Command running in background", false);
+            else if (shellOutput) {
+                // FAKE_SHELL_OUTPUT: its output goes to a file, which the call's result names, as 2.1.304's does.
+                mkdirSync(dirname(shellOutput), { recursive: true });
+                writeFileSync(shellOutput, "");
+                toolResult("background-tool", `Command running in background with ID: background-1. Output is being written to: ${shellOutput}. You will be notified when it completes. To check interim output, use Read on that file path.`, false, { stdout: "", stderr: "", interrupted: false, isImage: false, noOutputExpected: false, backgroundTaskId: "background-1" });
+            } else toolResult("background-tool", "Command running in background", false);
         }
         if (scenario === "shell-background-mixed") {
             agentCall(true);
@@ -950,8 +959,14 @@ async function turn(content: any[], uuid?: string) {
             bgTasks.delete("background-1");
             backgroundChanged();
             await Bun.sleep(Number(process.env.FAKE_SHELL_NOTIFY_MS ?? 80));
+            const status = process.env.FAKE_SHELL_STATUS ?? "completed";
+            if (shellOutput && type === "local_bash" && !nested) {
+                writeFileSync(shellOutput, process.env.FAKE_SHELL_OUTPUT!);
+                // As 2.1.304 says it: the file named (or not: FAKE_SHELL_OUTPUT_FILE=unsaid), the exit code in the summary.
+                out({ type: "system", subtype: "task_notification", task_id: "background-1", tool_use_id: "background-tool", status, output_file: process.env.FAKE_SHELL_OUTPUT_FILE === "unsaid" ? "" : shellOutput, summary: `Background command "Wait for checks" ${status === "failed" ? "failed" : "completed"} (exit code ${status === "failed" ? 1 : 0})`, session_id: sessionId });
+            }
             // Shell/Monitor notifications may have no tool_use_id.
-            out({ type: "system", subtype: "task_notification", task_id: "background-1", status: process.env.FAKE_SHELL_STATUS ?? "completed", summary: "Checks passed", session_id: sessionId });
+            else out({ type: "system", subtype: "task_notification", task_id: "background-1", status, summary: "Checks passed", session_id: sessionId });
             await Bun.sleep(80);
             queueWake("Background checks passed.");
         }, Number(process.env.FAKE_SHELL_MS ?? 150));

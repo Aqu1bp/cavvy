@@ -586,6 +586,46 @@ describe("background work across turns", () => {
         expect(reminders.some((r) => r.includes("sign-in strategies") && r.includes("Claude Code"))).toBe(true);
     });
 
+    /** Handed to another model (the session is on one now): the notice that shows it, and what the model is told. */
+    async function handedOver(a: Awaited<ReturnType<typeof makeAgent>>) {
+        a.agent.setModel({ provider: "openai", id: "gpt-x", name: "GPT X" } as any, {} as any);
+        expect(await a.adopt(a.wakes[0]!)).toBe("error");
+        const notice = notices(a.events).find((n) => n.includes("can't take it over now")) ?? "";
+        const reminders: string[] = ((a.agent as any).pendingReminders as { text: string }[]).map((r) => r.text);
+        return { notice, told: reminders.find((r) => r.startsWith("Claude Code, which this session ran on earlier")) ?? "" };
+    }
+
+    for (const file of ["said", "unsaid"] as const)
+        test(`#430: a background command's report handed to another model has the end of its output, as Codex's has (the notification ${file === "said" ? "names" : "doesn't name"} its file)`, async () => {
+            process.env.FAKE_SCENARIO = "shell-background";
+            process.env.FAKE_SHELL_OUTPUT = "compiling\nfinished-c13\n";
+            process.env.FAKE_SHELL_OUTPUT_FILE = file;
+            const a = await makeAgent();
+            expect(await a.run("start the checks")).toBe("done");
+            await until(() => a.wakes.length > 0, 5000, "the command's report");
+            expect(a.wakes[0]!.report).toBe("The background command `sleep 150; echo done` finished with exit code 0. The end of its output:\ncompiling\nfinished-c13");
+            const { notice, told } = await handedOver(a);
+            expect(notice).toContain("compiling\nfinished-c13");
+            expect(told).toContain("compiling\nfinished-c13");
+        });
+
+    test("#430: a long output's end is what's handed over, within what the session shows and tells of a report", async () => {
+        process.env.FAKE_SCENARIO = "shell-background";
+        process.env.FAKE_SHELL_OUTPUT = Array.from({ length: 2000 }, (_, i) => `line ${i + 1}`).join("\n");
+        const a = await makeAgent();
+        expect(await a.run("start the checks")).toBe("done");
+        await until(() => a.wakes.length > 0, 5000, "the command's report");
+        const report = a.wakes[0]!.report!;
+        expect(report).toContain("The end of its output:\n…");
+        expect(report.endsWith("line 2000")).toBe(true);
+        expect(report).not.toContain("line 1\n");
+        // Whole, with the notice's own words around it: the session cuts a longer one short (at its end).
+        expect(report.length).toBeLessThanOrEqual(4000);
+        const { notice, told } = await handedOver(a);
+        expect(notice.endsWith("line 2000")).toBe(true);
+        expect(told.endsWith("line 2000")).toBe(true);
+    });
+
     test("#305 (final review, blocker 4): a monitor's wake carries no report; what its turn said shows, and the model is told", async () => {
         process.env.FAKE_SCENARIO = "monitor-repeated-reports";
         const { run, wakes, adopt, agent, events } = await makeAgent();

@@ -22,8 +22,8 @@
 // one process per turn, as before.
 
 import { createHash, randomUUID } from "crypto";
-import { existsSync, mkdirSync, writeFileSync } from "fs";
-import { join } from "path";
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readSync, writeFileSync } from "fs";
+import { isAbsolute, join } from "path";
 import type { HookConfig } from "../config/settings";
 import { harnessHome } from "../config/paths";
 import { backendMatcher, claudeCodeHookOutput, type HookEvent } from "../agent/hooks";
@@ -96,6 +96,32 @@ export const liveTiming = {
     /** A stopped background task: confirmed by Claude Code's notification within this, or the stop timed out. */
     stopConfirmMs: 5000,
 };
+
+/**
+ * The end of a background command's output its report has (#430): with the report's first line, within what the session
+ * shows and tells the model of a report it can't take over (WAKE_REPORT_CHARS, 4000), which cuts a longer one at its end.
+ */
+const REPORT_OUTPUT_CHARS = 3000;
+/** How much of the end of a command's output file is read for that (bytes): well past it, so redaction sees what it cuts. */
+const OUTPUT_READ_BYTES = 64 * 1024;
+
+/** The end of a background command's output file, as Claude Code writes it (`….output`); undefined when it can't be read. */
+function outputTail(path: string): string | undefined {
+    if (!isAbsolute(path) || !path.endsWith(".output")) return undefined;
+    let fd: number | undefined;
+    try {
+        fd = openSync(path, "r");
+        const size = fstatSync(fd).size;
+        const n = Math.min(size, OUTPUT_READ_BYTES);
+        const buf = Buffer.alloc(n);
+        readSync(fd, buf, 0, n, size - n);
+        return buf.toString("utf8");
+    } catch {
+        return undefined;
+    } finally {
+        if (fd !== undefined) closeSync(fd);
+    }
+}
 
 /** Wake refs, unique in the harness process: a session keeps an unadopted wake across a restart of its CLI process. */
 let wakeRefs = 0;
@@ -253,6 +279,8 @@ export class ClaudeConnection implements CliConnection {
     private tasks = new Map<string, BackgroundTaskInfo>();
     /** Task ids by the call that launched them. */
     private taskOf = new Map<string, string>();
+    /** Each background command (by task id) and the file Claude Code writes its output to, for its report (#430). */
+    private commands = new Map<string, { command?: string; file?: string }>();
     /** Tasks that left Claude Code's list without a word on how they ended. */
     private unlisted = new Map<string, ReturnType<typeof setTimeout>>();
     /**
@@ -1065,12 +1093,13 @@ export class ClaudeConnection implements CliConnection {
         const reports = Boolean(known && !this.cur && (status === "completed" || status === "failed") && m.owned_by_subagent !== true);
         if (taskId) this.taskEnded(taskId, ended);
         if (reports && known) {
-            // What it reported, for the wake (shown and told if the session can't take it over, #305).
-            const said = (typeof m.handback_report?.text === "string" ? m.handback_report.text : undefined) ?? (toolUseId ? this.lastWords.get(toolUseId) : undefined) ?? (summary || undefined);
+            // What it reported, for the wake (shown and told if the session can't take it over, #305): a command's output (#430).
+            const said = (typeof m.handback_report?.text === "string" ? m.handback_report.text : undefined) ?? (toolUseId ? this.lastWords.get(toolUseId) : undefined) ?? (known.kind === "shell" ? this.commandReport(taskId, m, summary) : undefined) ?? (summary || undefined);
             this.reportDue(known, dueLabel(known, ended), said?.trim() ? redact(said.trim()) : undefined);
             liveDebug("claude", "report due", { task: taskId, due: this.dues.length });
             this.events({ t: "task", task: this.tasks.get(taskId)!, wakeDue: true });
         } else if (taskId) this.dropDue(taskId);
+        if (taskId) this.commands.delete(taskId);
         if (!this.agentLabels.has(toolUseId)) {
             // One an earlier process left behind (stopped with it), said as the session is resumed. Not a command of this
             // process's that ended (a foreground one stopped by Esc, a sub-agent's that failed): its own row says so (#311).
@@ -1225,9 +1254,35 @@ export class ClaudeConnection implements CliConnection {
                 else if (report) this.report(b.tool_use_id, report, true);
                 content = this.reports.get(b.tool_use_id) || content;
             }
+            // A command now in the background: what it runs, and the file its output goes to (its result says, as 2.1.304's does).
+            const bg = blocks.length === 1 ? m.tool_use_result?.backgroundTaskId : undefined;
+            if (typeof bg === "string" && bg) {
+                this.commands.set(bg, { command: typeof p.input.command === "string" ? p.input.command : undefined, file: /Output is being written to: (\S+?\.output)\b/.exec(content)?.[1] });
+                if (this.commands.size > 64) this.commands.delete(this.commands.keys().next().value!);
+            }
             const structured = blocks.length === 1 && !b.is_error ? resultDisplay(p, m.tool_use_result, this.cfg.cwd) : undefined;
             this.endTool(b.tool_use_id, p, content, Boolean(b.is_error), structured);
         }
+    }
+
+    /**
+     * A background command's report, as Codex's says it (#430): the command, how it ended, and the end of its output,
+     * from the file Claude Code writes it to (its notification names it, or the call that started it did). Undefined
+     * when there's no such file to read: the notification's summary stands.
+     */
+    private commandReport(id: string, m: Record<string, any>, summary: string): string | undefined {
+        const known = this.commands.get(id);
+        const file = (typeof m.output_file === "string" && m.output_file) || known?.file;
+        const out = file ? outputTail(file) : undefined;
+        if (out === undefined) return undefined;
+        // Redacted, then cut: a secret across the cut would leave a piece of itself unredacted.
+        const clean = redact(out).trimEnd();
+        const tail = clean.length > REPORT_OUTPUT_CHARS ? `…${clean.slice(-REPORT_OUTPUT_CHARS)}` : clean;
+        const command = known?.command?.trim();
+        const what = command ? `\`${command.length > 300 ? `${command.slice(0, 300)}…` : command}\`` : `"${this.tasks.get(id)?.label ?? "background command"}"`;
+        const code = /exit code (-?\d+)/.exec(summary)?.[1];
+        const ended = m.status === "failed" ? "failed" : "finished";
+        return `The background command ${what} ${ended}${code === undefined ? "" : ` with exit code ${code}`}.${tail.trim() ? ` The end of its output:\n${tail}` : " It printed nothing."}`;
     }
 
     private onSubToolResults(m: Record<string, any>) {
