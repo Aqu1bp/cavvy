@@ -25,6 +25,10 @@
 // FAKE_BACKGROUND_MS  how long a background sub-agent goes on after the turn's result (default 300)
 // FAKE_BACKGROUND_ASK=1  the background sub-agent asks to run a command (can_use_tool) before it ends
 // FAKE_STALE_TASK=1   resumed, it first reports a background sub-agent of the earlier run as stopped, in a turn of its own with no model call (what Claude Code does for one killed with its process)
+//                    =2: a background shell command of the earlier run too (its notification names the earlier process's call, as 2.1.304's does), in a turn of its own
+// FAKE_FG_TASK=1     hang: its foreground Bash is a task (task_started, not backgrounded), and Esc's interrupt says it stopped (task_notification), as 2.1.304 does
+// FAKE_SUB_COMMANDS=1  a background sub-agent runs two foreground commands before it ends, one failing and one stopped, as 2.1.304 says of them:
+//                    task_started owned_by_subagent, then a task_notification naming the sub-agent's call, without owned_by_subagent
 // FAKE_OLD_RESULTS=1  results don't say which prompt they answer (an older CLI)
 // FAKE_LIST_FIRST=ms  a background sub-agent leaves Claude Code's background list this long before its task_notification (1: 200 ms)
 // FAKE_LATE_TASK=ms   after a background sub-agent's notification, another background task is listed this long before the report turn
@@ -453,6 +457,16 @@ async function backgroundAgentEnds(id: string) {
         sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_sub_bash", content: r.behavior === "allow" ? "ok" : String(r.message), is_error: r.behavior !== "allow" }]);
         if (stoppedTasks.has("agent-1")) return;
     }
+    if (process.env.FAKE_SUB_COMMANDS === "1") {
+        // Its own foreground commands: one fails, one is stopped (as 2.1.304 says of them, frames from a live probe).
+        for (const [n, status, command] of [[1, "failed", "sh -c 'sleep 6; exit 3'"], [2, "stopped", "python3 -c 'import time; time.sleep(240)'"]] as const) {
+            const call = `toolu_sub_cmd${n}`;
+            sub(id, "assistant", [{ type: "tool_use", id: call, name: "Bash", input: { command } }]);
+            out({ type: "system", subtype: "task_started", task_id: `sub-cmd-${n}`, tool_use_id: call, description: command, is_backgrounded: false, owned_by_subagent: true, parent_task_id: "agent-1", task_type: "local_bash", session_id: sessionId });
+            out({ type: "system", subtype: "task_notification", task_id: `sub-cmd-${n}`, tool_use_id: call, status, output_file: "", summary: command, session_id: sessionId });
+            sub(id, "user", [{ type: "tool_result", tool_use_id: call, content: status === "failed" ? "Exit code 3" : "Command was stopped", is_error: true }]);
+        }
+    }
     sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_sub_glob", content: "src/auth/index.ts", is_error: false }]);
     sub(id, "assistant", [{ type: "text", text: REPORT }]);
     out({ type: "system", subtype: "task_updated", task_id: "agent-1", patch: { status: "completed" }, session_id: sessionId });
@@ -635,13 +649,16 @@ let staleReported = false;
 async function turn(content: any[], uuid?: string) {
     interrupted = false;
     if (++prompts === 2 && process.env.FAKE_CRASH_ON_SECOND === "1") process.exit(3);
-    if (resume && process.env.FAKE_STALE_TASK === "1" && !staleReported) {
+    if (resume && (process.env.FAKE_STALE_TASK === "1" || process.env.FAKE_STALE_TASK === "2") && !staleReported) {
         // The earlier run's background sub-agent, killed with it: a turn of its own, with no model call, before the prompt's.
         staleReported = true;
         out({ type: "system", subtype: "task_notification", task_id: "agent-0", status: "stopped", output_file: "", summary: 'Background agent "Map auth" didn\'t finish before the previous session ended', session_id: sessionId });
+        if (process.env.FAKE_STALE_TASK === "2") out({ type: "system", subtype: "task_notification", task_id: "shell-0", tool_use_id: "toolu_earlier_shell", status: "stopped", output_file: "", summary: "Background shell command didn't finish before the previous session ended", session_id: sessionId });
         answering = undefined;
-        out({ type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode });
-        result("success", { result: "", num_turns: 0, usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
+        for (let i = process.env.FAKE_STALE_TASK === "2" ? 2 : 1; i > 0; i--) {
+            out({ type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode });
+            result("success", { result: "", num_turns: 0, usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
+        }
         await Bun.sleep(50);
     }
     answering = uuid;
@@ -1006,7 +1023,10 @@ async function turn(content: any[], uuid?: string) {
         toolResult("toolu_p", JSON.stringify(r), r.behavior !== "allow");
     } else if (scenario === "hang") {
         toolUse("toolu_h", "Bash", { command: "sleep 1000" });
+        const fgTask = process.env.FAKE_FG_TASK === "1";
+        if (fgTask) out({ type: "system", subtype: "task_started", task_id: "fg-1", tool_use_id: "toolu_h", description: "Sleep for a while", is_backgrounded: false, task_type: "local_bash", session_id: sessionId });
         await new Promise<void>((r) => (wake = r));
+        if (interrupted && fgTask) out({ type: "system", subtype: "task_notification", task_id: "fg-1", tool_use_id: "toolu_h", status: "stopped", output_file: "", summary: "Sleep for a while", session_id: sessionId });
         if (interrupted) return result("error_during_execution", { errors: ["Request interrupted by user"] });
     } else if (scenario === "write-hang") {
         // Something done, then a command that runs until it's stopped.

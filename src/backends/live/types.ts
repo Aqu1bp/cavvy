@@ -109,8 +109,11 @@ export interface AgentCliAdapter {
     readonly def: AgentCliDef;
     /** How to start a process for this config. Called at every turn's start to compare fingerprints, so without side effects. */
     spawn(cfg: SpawnConfig): SpawnSpec;
-    /** Start talking to a process just started: read its output, reporting it to `events`. */
-    connect(proc: JsonLinesProcess, events: CliEventSink, host: SessionHost): Promise<CliConnection>;
+    /**
+     * Start talking to a process just started: read its output, reporting it to `events`. `resume`: the session it was
+     * started to resume or fork (what it says before its first turn can be about an earlier process's work).
+     */
+    connect(proc: JsonLinesProcess, events: CliEventSink, host: SessionHost, resume?: { resumeId?: string; fork?: boolean }): Promise<CliConnection>;
     status(accountId: string | undefined, signal?: AbortSignal): Promise<{ status: AgentCliStatus; limits?: PlanLimits }>;
     listModels(signal?: AbortSignal): Promise<ModelInfo[]>;
     /** A one-off request with no tools (stream() today). */

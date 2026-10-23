@@ -960,3 +960,64 @@ describe("the carrier command, on the real Claude Code", () => {
         expect(after[reportInit].user_message_uuids).toBeUndefined();
     });
 });
+
+describe("#311: a notice of a task only when an earlier process left it behind", () => {
+    /** The "Claude Code: <summary>." rows a task's end can give. */
+    const taskNotices = (events: AgentEvent[]) => notices(events).filter((n) => n.startsWith("info: Claude Code: "));
+
+    test("a background sub-agent's own foreground commands, one failing and one stopped, say nothing of their own; its report still wakes the session", async () => {
+        process.env.FAKE_SCENARIO = "agent-background";
+        process.env.FAKE_SUB_COMMANDS = "1";
+        process.env.FAKE_BACKGROUND_MS = "100";
+        const { run, events, wakes, adopt, agent } = await makeAgent();
+        expect(await run("map auth")).toBe("done");
+        await until(() => wakes.length > 0, 5000, "the sub-agent's report");
+        // Its commands ran (its steps show them).
+        expect(JSON.stringify(events)).toContain("toolu_sub_cmd2");
+        expect(wakes[0]!.report).toContain("sign-in strategies");
+        expect(await adopt(wakes[0]!)).toBe("done");
+        expect(texts(events)).toContain("The explorer reported back: sign-in strategies are registered in one list.");
+        expect(agent.backgroundTasks().find((t) => t.kind === "agent")?.status).toBe("done");
+        // Never shown as tasks of their own, nor as left behind.
+        expect(agent.backgroundTasks().map((t) => t.id)).toEqual(["agent-1"]);
+        expect(taskNotices(events)).toEqual([]);
+    });
+
+    test("Esc on a foreground command, in a process that resumed the session: its stop says nothing beyond its own row", async () => {
+        process.env.FAKE_SCENARIO = "silent";
+        const first = await makeAgent();
+        expect(await first.run("one")).toBe("done");
+        await first.client.shutdown();
+        forgetClient("claude-code");
+        process.env.FAKE_SCENARIO = "hang";
+        process.env.FAKE_FG_TASK = "1";
+        const { run, events } = await makeAgent({ session: first.session });
+        const { ac, done } = await startHanging(run, events);
+        ac.abort();
+        expect(await done).toBe("aborted");
+        expect(starts()[1].argv).toContain("--resume");
+        // The command's stop came (task_notification stopped), after the resumed process's first turn began.
+        await Bun.sleep(100);
+        expect(events.some((e) => e.type === "tool_end" && e.call.id === "toolu_h")).toBe(true);
+        expect(taskNotices(events)).toEqual([]);
+    });
+
+    test("what the earlier process left behind is said when the next one resumes the session", async () => {
+        process.env.FAKE_SCENARIO = "two-shells";
+        process.env.FAKE_SHELL_MS = "60000";
+        const first = await makeAgent();
+        expect(await first.run("start two")).toBe("done");
+        await first.client.shutdown();
+        forgetClient("claude-code");
+        process.env.FAKE_SCENARIO = "silent";
+        process.env.FAKE_STALE_TASK = "2";
+        const second = await makeAgent({ session: first.session });
+        expect(await second.run("again")).toBe("done");
+        expect(starts()[1].argv).toContain("--resume");
+        await until(() => taskNotices(second.events).length === 2, 3000, "the notices of what was left behind");
+        expect(taskNotices(second.events)).toEqual([
+            "info: Claude Code: Background agent \"Map auth\" didn't finish before the previous session ended.",
+            "info: Claude Code: Background shell command didn't finish before the previous session ended.",
+        ]);
+    }, 15000);
+});
