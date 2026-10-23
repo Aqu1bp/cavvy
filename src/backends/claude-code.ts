@@ -1424,8 +1424,11 @@ class ClaudeTurn {
                 const listed = this.background?.find((t) => t.id === m.task_id);
                 if (listed && !this.agentLabels.has(id)) this.background = this.background!.filter((t) => t.id !== m.task_id);
                 if (!this.agentLabels.has(id)) {
-                    // One an earlier run left behind (stopped with it, said when the session is resumed).
-                    if (summary && (m.status === "stopped" || m.status === "failed")) this.sink.emit({ type: "notice", level: "info", message: `Claude Code: ${summary}.` });
+                    // One an earlier run left behind (stopped with it): Claude Code says so as it resumes the session,
+                    // before the run's first turn. Not a command of this run's that ended (a foreground one stopped by Esc,
+                    // a sub-agent's that failed): its own row says so (#311).
+                    const leftBehind = Boolean(this.t.resumeId) && this.turnCount === 0 && m.owned_by_subagent !== true;
+                    if (leftBehind && summary && (m.status === "stopped" || m.status === "failed")) this.sink.emit({ type: "notice", level: "info", message: `Claude Code: ${summary}.` });
                     break;
                 }
                 const background = this.backgroundAgents.has(id);

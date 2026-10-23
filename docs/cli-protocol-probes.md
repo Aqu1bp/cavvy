@@ -137,6 +137,15 @@ Gotchas:
 - `background_tasks` on a foreground command answers `{backgrounded:false}` if asked before the command's `task_started` (`is_backgrounded:false`) frame, which arrives a few seconds after the `tool_use`. A "Move to background" button must only appear once that `task_started` is seen, and use the returned `backgrounded` boolean.
 - `set_model` and `apply_flag_settings` produce no frame other than their `control_response` between turns. Whether they change the next turn's behavior was not checked (unverified; the probe set the same model and effort the process already had).
 
+### #311: task notifications, a process's own and an earlier one's (2.1.304)
+
+Fixtures: `claude-311-*.jsonl` (probe `claude-task-notices.ts`, `claude-sonnet-5-5`, one run each).
+
+- A command run in the foreground becomes a task a few seconds after its call (about 3 s in A; see the gotcha above): `task_started` with `is_backgrounded:false` (a sub-agent's also has `owned_by_subagent:true` and its `parent_task_id`). Its end is a `task_notification` naming its call (`tool_use_id`), `stopped` after an interrupt (A), `failed` for a non-zero exit (B), with the command's description as the `summary`. That notification carries no `owned_by_subagent`.
+- A process started with `--resume` says, for each background task the earlier process was running when it was killed, a `task_notification` `stopped` with a summary like `Background agent "…" didn't finish before the previous session ended` (C2). They came before its answer to `initialize`, before any `system/init`, and each was followed by an empty turn of its own (`origin.kind:"task-notification"`). The sub-agent's had no `tool_use_id`; the shell command's named the earlier process's call.
+
+Design meaning: only what a resumed process says before its first turn is about an earlier process's work; any other notification for a task Harness doesn't list is one of this process's own commands.
+
 ## Codex
 
 ### Q5: two turns, one connection, thread stays loaded: YES
@@ -191,6 +200,9 @@ Design meaning: limits can be updated per turn from the notification, but showin
 | `claude-q2-f-reason.jsonl` | `PROBE_VARIANT=f-reason claude-interrupt-variants.ts` | Q2 follow-up |
 | `claude-q2-entry-desktop.jsonl` | `PROBE_VARIANT=entry-desktop claude-interrupt-variants.ts` | Q2 follow-up |
 | `claude-q2-entry-local-agent.jsonl` | `PROBE_VARIANT=entry-local-agent claude-interrupt-variants.ts` | Q2 follow-up |
+| `claude-311-a-esc-foreground.jsonl` | `claude-task-notices.ts A` | #311 |
+| `claude-311-b-subagent-commands.jsonl` | `claude-task-notices.ts B` | #311 |
+| `claude-311-c1-leave-behind.jsonl`, `claude-311-c2-resume.jsonl` | `claude-task-notices.ts C` | #311 |
 | `codex-two-turns-one-connection.jsonl` | `codex-live.ts` | Q5, Q7 |
 | `codex-background-terminal-experimental.jsonl` | `codex-background-terminal.ts` | Q6 |
 | `codex-background-terminal-no-capability.jsonl` | `codex-background-terminal.ts` | Q6 |

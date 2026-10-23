@@ -235,6 +235,11 @@ export class ClaudeConnection implements CliConnection {
     private taskOf = new Map<string, string>();
     /** Tasks that left Claude Code's list without a word on how they ended. */
     private unlisted = new Map<string, ReturnType<typeof setTimeout>>();
+    /**
+     * Started to resume a session, and no turn begun yet: a task Claude Code says ended now is one an earlier process
+     * left behind (it says so of each as it resumes, before any turn). Never one of this process's own (#311).
+     */
+    private resuming: boolean;
 
     constructor(
         private proc: JsonLinesProcess,
@@ -247,8 +252,11 @@ export class ClaudeConnection implements CliConnection {
         private spending: Map<string, number>,
         /** The plan-limit statuses each account was last told of (the backend's: a new process doesn't tell them again). */
         private limitSeen: Map<string, string>,
+        /** Started with --resume (a fork too): what an earlier process left behind is said first. */
+        resumed = false,
     ) {
         this.caps = { ...def.caps, live: { model: true, effort: true, mode: "control" } };
+        this.resuming = resumed;
         this.done = this.read();
     }
 
@@ -890,6 +898,8 @@ export class ClaudeConnection implements CliConnection {
         this.reportFastMode(m);
         switch (m.subtype) {
             case "init":
+                // A turn begins (each starts with one): from here on, what ends is this process's own.
+                this.resuming = false;
                 return this.onInit(m);
             case "background_tasks_changed": {
                 if (!Array.isArray(m.tasks)) return;
@@ -969,8 +979,9 @@ export class ClaudeConnection implements CliConnection {
             this.events({ t: "task", task: this.tasks.get(taskId)!, wakeDue: true });
         } else if (taskId) this.dropDue(taskId);
         if (!this.agentLabels.has(toolUseId)) {
-            // One an earlier process left behind (stopped with it, said when the session is resumed).
-            if (!known && summary && (status === "stopped" || status === "failed")) this.emit({ type: "notice", level: "info", message: `Claude Code: ${summary}.` });
+            // One an earlier process left behind (stopped with it), said as the session is resumed. Not a command of this
+            // process's that ended (a foreground one stopped by Esc, a sub-agent's that failed): its own row says so (#311).
+            if (this.resuming && !known && m.owned_by_subagent !== true && summary && (status === "stopped" || status === "failed")) this.emit({ type: "notice", level: "info", message: `Claude Code: ${summary}.` });
             return;
         }
         const background = this.backgroundAgents.has(toolUseId);
@@ -1396,8 +1407,8 @@ class ClaudeCliAdapter implements AgentCliAdapter {
         return { bin, args, cwd: cfg.cwd, env, fingerprint };
     }
 
-    async connect(proc: JsonLinesProcess, events: CliEventSink, host: SessionHost): Promise<CliConnection> {
-        const conn = new ClaudeConnection(proc, events, host, this.def, () => this.current!, this.spending, this.limitSeen);
+    async connect(proc: JsonLinesProcess, events: CliEventSink, host: SessionHost, resume?: { resumeId?: string }): Promise<CliConnection> {
+        const conn = new ClaudeConnection(proc, events, host, this.def, () => this.current!, this.spending, this.limitSeen, Boolean(resume?.resumeId));
         this.conn = conn;
         liveDebug("claude", "spawned", { pid: proc.pid });
         await conn.initialize();

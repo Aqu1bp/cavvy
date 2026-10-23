@@ -468,7 +468,7 @@ export class LiveCliSession {
             if (gen !== this.generation) throw this.closed ? new Stopped() : new StartError(`${this.adapter.def.name} was stopped while starting`);
         };
         try {
-            const conn = await untilAborted(Promise.race([this.adapter.connect(proc, (e) => gen === this.generation && this.route(e), this.hostProxy), exited]), signal);
+            const conn = await untilAborted(Promise.race([this.adapter.connect(proc, (e) => gen === this.generation && this.route(e), this.hostProxy, resume), exited]), signal);
             current();
             this.conn = conn;
             const { sessionId } = await untilAborted(Promise.race([conn.open({ ...resume, settings }), exited]), signal);

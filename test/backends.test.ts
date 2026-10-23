@@ -87,7 +87,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_IGNORE_INTERRUPT", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_MS", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS", "FAKE_SHELL_STATUS", "FAKE_STOP_ANSWER", "FAKE_STOP_MS", "FAKE_FOLLOWUP_MS", "FAKE_RESULT_DELAY_MS", "FAKE_EXIT_AFTER_MS", "FAKE_STOP_STATUS", "FAKE_STOP_TURN_AT", "FAKE_STOP_NOTIFY_AT", "FAKE_STOP_RESULT_AT", "FAKE_SHELL_NOTIFY_MS"]) delete process.env[k];
+    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_IGNORE_INTERRUPT", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_MS", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_FG_TASK", "FAKE_SUB_COMMANDS", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS", "FAKE_SHELL_STATUS", "FAKE_STOP_ANSWER", "FAKE_STOP_MS", "FAKE_FOLLOWUP_MS", "FAKE_RESULT_DELAY_MS", "FAKE_EXIT_AFTER_MS", "FAKE_STOP_STATUS", "FAKE_STOP_TURN_AT", "FAKE_STOP_NOTIFY_AT", "FAKE_STOP_RESULT_AT", "FAKE_SHELL_NOTIFY_MS"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -1113,6 +1113,49 @@ describe("Claude Code's background work (live test findings)", () => {
         expect(texts(later)).toBe("Working on it.All done.");
         expect(session.messages.at(-1)!.content.map((p) => (p as any).text).join("\n")).toContain("All done.");
         expect(notices(later).join("\n")).toMatch(/didn't finish before the previous session ended/);
+    });
+
+    test("#311: a resumed run says what the last run left behind, each task once (a sub-agent, a shell command)", async () => {
+        const { run, events } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
+        await run("first");
+        process.env.FAKE_STALE_TASK = "2";
+        const from = events.length;
+        expect(await run("second")).toBe("done");
+        expect(notices(events.slice(from)).filter((n) => n.startsWith("info: Claude Code: "))).toEqual([
+            "info: Claude Code: Background agent \"Map auth\" didn't finish before the previous session ended.",
+            "info: Claude Code: Background shell command didn't finish before the previous session ended.",
+        ]);
+    });
+
+    test("#311: a background sub-agent's own foreground commands that fail or are stopped aren't said as left behind (a resumed run); its report still comes", async () => {
+        const { run, events } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
+        await run("first");
+        process.env.FAKE_SCENARIO = "agent-background";
+        process.env.FAKE_SUB_COMMANDS = "1";
+        const from = events.length;
+        expect(await run("map the auth module")).toBe("done");
+        const later = events.slice(from);
+        expect(starts()[1]!.argv).toContain("--resume");
+        expect(JSON.stringify(later)).toContain("toolu_sub_cmd2");
+        expect(notices(later).filter((n) => n.startsWith("info: Claude Code: "))).toEqual([]);
+        expect(texts(later)).toContain("The explorer reported back");
+    });
+
+    test("#311: Esc on a foreground command in a resumed run: its stop isn't said as left behind", async () => {
+        const { run, events } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
+        await run("first");
+        process.env.FAKE_SCENARIO = "hang";
+        process.env.FAKE_FG_TASK = "1";
+        const from = events.length;
+        const ac = new AbortController();
+        const done = run("go", ac.signal);
+        while (!events.slice(from).some((e) => e.type === "tool_start")) await Bun.sleep(10);
+        ac.abort();
+        expect(await done).toBe("aborted");
+        const later = events.slice(from);
+        expect(starts()[1]!.argv).toContain("--resume");
+        expect(toolEnds(later)[0]!.result.content).toBe("Interrupted by user");
+        expect(notices(later).filter((n) => n.startsWith("info: Claude Code: "))).toEqual([]);
     });
 
     test("a reply with nothing in it says so", async () => {
