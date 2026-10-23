@@ -115,6 +115,11 @@ export interface Settings {
     webSearch?: "auto" | "anthropic" | "brave" | "tavily" | "duckduckgo" | "off";
     /** Bash tool default timeout in ms. */
     bashTimeout?: number;
+    /**
+     * Read what Bash and Monitor commands print at Harness's own pace, so a command that floods its
+     * output waits for it instead of stalling the server (#298; default true). False: ordinary pipes, as before.
+     */
+    pacedOutput?: boolean;
     /** Claude Code's grace after an answer for shells without a timeout of their own, and monitors; agents keep their own limit. */
     claudeCode?: { backgroundWaitSec?: number };
     /**

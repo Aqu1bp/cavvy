@@ -322,14 +322,17 @@ test("concurrent BashOutput reads consume each saved snapshot once", async () =>
 
 
 for (const backgroundMode of [false, true]) {
+    // stdout and stderr share one pipe, in the order written (#342): a secret split by a write to the other
+    // stream would show split, as a terminal shows it. Split across reads of one stream, it stays whole.
     test(`review: saved ${backgroundMode ? "background" : "foreground"} output cannot interleave secret fragments and strips ANSI`, async () => {
         const { ctx, dir } = setup();
-        const command = script(dir, `await write(('x'.repeat(999) + '\\n').repeat(40)); await write('key=' + token.slice(0, 8)); await pause(); await write('\\x1b[31mwarn\\x1b[0m\\n', process.stderr); await pause(); await write(token.slice(8) + '\\n');`);
+        const command = script(dir, `await write(('x'.repeat(999) + '\\n').repeat(40)); await write('\\x1b[31mwarn\\x1b[0m\\n', process.stderr); await pause(); await write('key=' + token.slice(0, 8)); await pause(); await write(token.slice(8) + '\\n');`);
         const out = backgroundMode ? await finished(ctx, await background(ctx, command)) : await BashTool.run({ command }, ctx);
         const path = /Full output: (.+)/.exec(out.content)![1]!;
         const saved = readFileSync(path, "utf8");
         noFragments(saved);
         expect(saved).not.toContain("\x1b");
+        expect(saved).toContain("warn\nkey=[REDACTED OUTPUT_TOKEN]\n");
         const read = await ReadTool.run({ file_path: path, offset: 41, limit: 3 }, ctx);
         expect(read.isError).toBeFalsy();
         noFragments(read.content);

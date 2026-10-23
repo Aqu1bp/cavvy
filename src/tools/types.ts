@@ -57,6 +57,8 @@ export interface BackgroundShell {
     sandboxed?: boolean;
     /** The message for the model when it failed in there (refused hosts, what the sandbox blocks). */
     sandboxHint?: () => string | undefined;
+    /** Take in what its command has printed so far now, not at the next poll of its output. */
+    drain?: () => void;
     /** SIGTERM, then SIGKILL after the grace period if anything in the group is still running. */
     kill: (graceMs?: number) => Promise<"gone" | "stopped" | "killed">;
     /** Started by Monitor: its stdout lines wake the agent. */

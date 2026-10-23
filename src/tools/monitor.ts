@@ -1,11 +1,10 @@
-import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import type { BackgroundShell, Tool, ToolContext, ToolState } from "./types";
 import type { ServerTool, ServerToolResult } from "../mcp/server";
 import type { WakeQueue } from "../agent/wakes";
 import { stripAnsi } from "../ui/ansi";
 import type { CommandProxy } from "../permissions/proxy";
-import { appendOutput, BashOutputTool, commandEnv, KILL_GRACE_MS, MAX_PARTIAL_LINE, overflowLine, readShellStream, sandboxOutputHint, shellArgv, stopGroup, validateHosts, withPwd, KillShellTool } from "./bash";
+import { appendOutput, BashOutputTool, commandEnv, KILL_GRACE_MS, MAX_PARTIAL_LINE, overflowLine, readShellStream, sandboxOutputHint, shellArgv, spawnPaced, stopGroup, validateHosts, withPwd, KillShellTool, type PacedChild } from "./bash";
 
 /** Lines that arrive this soon after the first one go out with it, as one notification. */
 export const BATCH_MS = 200;
@@ -107,7 +106,7 @@ async function runMonitor(input: MonitorInput, ctx: ToolContext, say: (text: str
     }
     const asked = input.timeout_ms ?? DEFAULT_TIMEOUT;
     const timeoutMs = Math.min(MAX_TIMEOUT, Math.max(MIN_TIMEOUT, asked));
-    const m = startMonitor({ command: input.command, description: input.description.trim().split("\n")[0]!.slice(0, 120), timeoutMs, ctx, env, proxy, say });
+    const m = startMonitor({ command: input.command, description: input.description.trim().split("\n")[0]!.slice(0, 120), timeoutMs, ctx, env, proxy, say, paced: ctx.settings.pacedOutput !== false });
     const capped = asked > MAX_TIMEOUT ? ` (${minutes(asked)} is over the limit)` : "";
     return {
         content: say(`Started monitor ${m.id}${m.pid !== undefined ? ` (pid ${m.pid})` : ""}${ctx.sandbox ? " in the auto-mode sandbox" : ""}. New stdout lines will arrive as notifications. It expires in ${minutes(timeoutMs)}${capped}; stop it earlier with KillShell shell_id "${m.id}", and read its stderr with BashOutput.`),
@@ -135,6 +134,8 @@ interface StartOpts {
     proxy?: CommandProxy;
     /** How its notifications name the tools to read and stop it with (BashOutput, KillShell), for the agent it reports to. */
     say?: (text: string) => string;
+    /** Read its output at our pace (spawnPaced; the pacedOutput setting). */
+    paced?: boolean;
 }
 
 /** Spawns the command and turns its stdout into wakes. Exported for tests. */
@@ -144,13 +145,16 @@ export function startMonitor(o: StartOpts): { id: string; pid?: number; shell: B
     const wakes = o.ctx.wakes as WakeQueue;
     const { state, sandbox } = o.ctx;
     const [file, ...args] = shellArgv(o.command, sandbox);
-    let child: ReturnType<typeof spawn>;
+    let spawned: PacedChild;
     try {
-        child = spawn(file!, args, { cwd: state.cwd, env: withPwd(o.env, state.cwd), detached: true, stdio: ["ignore", "pipe", "pipe"] });
+        spawned = spawnPaced(file!, args, { cwd: state.cwd, env: withPwd(o.env, state.cwd), detached: true }, { paced: o.paced });
     } catch (e) {
         o.proxy?.close();
         throw e;
     }
+    const { child, stdout, onClose, drain } = spawned;
+    // Its own stream (not combined): stdout lines are events, stderr's aren't.
+    const stderr = spawned.stderr!;
     const startedAt = Date.now();
     const info = { description: o.description, events: 0, expiresAt: startedAt + o.timeoutMs };
     /** Why it ended early, if it did: the user or agent stopped it (no notice), it expired, or it flooded. */
@@ -220,7 +224,7 @@ export function startMonitor(o: StartOpts): { id: string; pid?: number; shell: B
         clearTimeout(expiry);
         batchTimer = undefined;
         // What's still coming is no event: don't spend time reading it.
-        child.stdout?.destroy();
+        stdout.destroy();
         void stopGroup(child.pid, KILL_GRACE_MS).finally(() => o.proxy?.close());
     };
     const flood = () => {
@@ -251,6 +255,7 @@ export function startMonitor(o: StartOpts): { id: string; pid?: number; shell: B
         sandboxed: sandbox !== undefined,
         sandboxHint: sandbox ? () => sandboxOutputHint(sandbox, shell.output, o.proxy, shell.exitCode !== null && shell.exitCode !== 0) : undefined,
         monitor: info,
+        drain,
         kill: async (graceMs = KILL_GRACE_MS) => {
             if (!ending && !finished) ending = "stopped";
             clearTimeout(batchTimer);
@@ -281,25 +286,23 @@ export function startMonitor(o: StartOpts): { id: string; pid?: number; shell: B
      * event. Only the frame a newline settles on is ("50%\r100%\n", or "done\r\n").
      */
     let frame: string | undefined;
-    if (child.stdout)
-        readShellStream(child.stdout, (text) => {
-            appendOutput(shell, text);
-            if (text.endsWith("\r")) {
-                frame = text;
-                return;
-            }
-            const settled = frame !== undefined && text === "\n" ? frame : text;
-            frame = undefined;
-            onLine(settled);
-        }, MAX_PARTIAL_LINE, overflowLine);
-    if (child.stderr)
-        readShellStream(child.stderr, (text) => {
-            appendOutput(shell, text);
-            const line = eventLine(text);
-            if (line === undefined) return;
-            stderrTail.push(line);
-            if (stderrTail.length > STDERR_TAIL) stderrTail.shift();
-        }, MAX_PARTIAL_LINE, overflowLine);
+    readShellStream(stdout, (text) => {
+        appendOutput(shell, text);
+        if (text.endsWith("\r")) {
+            frame = text;
+            return;
+        }
+        const settled = frame !== undefined && text === "\n" ? frame : text;
+        frame = undefined;
+        onLine(settled);
+    }, MAX_PARTIAL_LINE, overflowLine);
+    readShellStream(stderr, (text) => {
+        appendOutput(shell, text);
+        const line = eventLine(text);
+        if (line === undefined) return;
+        stderrTail.push(line);
+        if (stderrTail.length > STDERR_TAIL) stderrTail.shift();
+    }, MAX_PARTIAL_LINE, overflowLine);
 
     const finish = (code: number, how = `exited with code ${code}`) => {
         if (finished) return;
@@ -330,7 +333,7 @@ export function startMonitor(o: StartOpts): { id: string; pid?: number; shell: B
     };
     // Killed by a signal: the shell's convention, 128 + its number (137 for SIGKILL), and its name.
     const ended = (code: number | null, signal: NodeJS.Signals | null) => (code === null && signal ? finish(128 + (constants.signals[signal] ?? 0), `was killed by ${signal}`) : finish(code ?? -1));
-    child.on("close", ended);
+    onClose(ended);
     // Its streams close when the last process holding them does: a child it left in the background keeps them
     // open. The command's exit ends the watch: once what it printed has been read, that child is stopped, which
     // closes them (with a last line that has no newline). Only if something still holds them are they cut.
@@ -341,8 +344,8 @@ export function startMonitor(o: StartOpts): { id: string; pid?: number; shell: B
         later(EXIT_DRAIN_MS, () => {
             void stopGroup(child.pid, KILL_GRACE_MS).then(() =>
                 later(EXIT_DRAIN_MS, () => {
-                    child.stdout?.destroy();
-                    child.stderr?.destroy();
+                    stdout.destroy();
+                    stderr.destroy();
                     ended(code, signal);
                 }),
             );
