@@ -803,9 +803,9 @@ export function SettingsPage() {
     return (
         <div ref={page} class={`settings-page ${prefs.sidebar ? "" : "rail-off"}`}>
             <div class="set-in">
-                {/* The header stays while the page scrolls; the window drags from it. */}
-                <div class="set-top" data-tauri-drag-region>
-                    <h2 data-tauri-drag-region>{label()}</h2>
+                {/* The header stays while the page scrolls (on the window's top strip, which moves the window). */}
+                <div class="set-top">
+                    <h2>{label()}</h2>
                     <button class="set-close" title={`${withShortcut("Close settings", "app:settings")}, or Esc`} aria-label="Close settings" onClick={() => setSettingsTab(undefined)}>
                         <X size={16} />
                     </button>

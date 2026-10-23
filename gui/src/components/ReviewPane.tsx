@@ -431,13 +431,13 @@ export function ReviewPane(p: { handle: SessionHandle }) {
             <Show when={shellLayout().inspector.mode === "dock"}>
                 <ReviewResizer />
             </Show>
-            <div class="rv-h" data-tauri-drag-region>
+            <div class="rv-h">
                 <button class="hb rv-back" title={prefs.panel ? "Back to the side panel (Esc)" : "Close (Esc)"} aria-label="Close review" onClick={() => setReview(undefined)}>
                     <Show when={prefs.panel} fallback={<X size={16} />}>
                         <ChevronLeft size={16} />
                     </Show>
                 </button>
-                <div class="nm" data-tauri-drag-region>
+                <div class="nm">
                     <Show when={headPath()} fallback={<b>Changes</b>}>
                         {(path) => (
                             <b class="selectable" title={path()}>
