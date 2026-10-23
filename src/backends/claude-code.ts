@@ -37,6 +37,7 @@ import type { ProviderDef } from "../providers/registry";
 import type { PlanLimits } from "../server/protocol";
 import { limitAccountLabel, limitNews, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
 import { accountEnv, defaultAccount } from "../providers/accounts";
+import { signInAdvice } from "./account-login";
 import { accountProtectionFolders, claudeAccountSandbox, watchAccountFolders } from "./account-permissions";
 import type { PermissionMode } from "../permissions/modes";
 import type { ToolDisplay } from "../tools/types";
@@ -597,7 +598,7 @@ class ClaudeTurn {
             };
             if (was && JSON.stringify(was) === JSON.stringify(task)) continue;
             this.reportedBackground.set(id, task);
-            emit({ type: "background_task", task });
+            emit({ type: "background_task", task, accountId: this.t.accountId ?? "default" });
         }
         for (const [id, t] of this.reportedBackground) {
             if (seen.has(id)) continue;
@@ -628,7 +629,7 @@ class ClaudeTurn {
             const how = status === "stopped" && this.aborted ? { byUser: true } : withProcess ? { withProcess: true } : {};
             const ended: BackgroundTaskInfo = { ...t, status, endedAt: Date.now(), ...how };
             this.endedBackground.set(id, ended);
-            emit({ type: "background_task", task: ended });
+            emit({ type: "background_task", task: ended, accountId: this.t.accountId ?? "default" });
         }
         // One said to have ended, then said to have ended otherwise (a sub-agent done, then failed after all): so it did.
         for (const [id, t] of this.endedBackground) {
@@ -639,7 +640,7 @@ class ClaudeTurn {
             if (!status || status === t.status) continue;
             const revised = { ...t, status };
             this.endedBackground.set(id, revised);
-            emit({ type: "background_task", task: revised });
+            emit({ type: "background_task", task: revised, accountId: this.t.accountId ?? "default" });
         }
     }
 
@@ -1532,7 +1533,7 @@ class ClaudeTurn {
     private onAssistantError(error: string) {
         if (error === "authentication_failed") {
             this.signedOut = true;
-            this.failure = `Claude Code isn't signed in, or its sign-in expired. In a terminal, run \`${CLAUDE_CLI.signIn}\`, then try again.`;
+            this.failure = `Claude Code isn't signed in, or its sign-in expired. ${signInAdvice(this.def.id, this.t.accountId)}`;
         } else if (error === "rate_limit") {
             this.limitHit = true;
             if (!this.limits?.reached) this.noteLimits({ provider: this.def.id, accountId: this.t.accountId ?? "default", windows: [], reached: true, at: Date.now() }, true);
@@ -1751,7 +1752,7 @@ class ClaudeTurn {
             this.reason = "error";
             const errs = Array.isArray(m.errors) ? m.errors.filter((x: unknown) => typeof x === "string") : [];
             this.failure ??= redact(errs.join("; ") || (typeof m.result === "string" && m.result) || `Claude Code ended the turn with ${m.subtype}`);
-            if (this.signedOut) this.failure = `Claude Code isn't signed in, or its sign-in expired. In a terminal, run \`${CLAUDE_CLI.signIn}\`, then try again.`;
+            if (this.signedOut) this.failure = `Claude Code isn't signed in, or its sign-in expired. ${signInAdvice(this.def.id, this.t.accountId)}`;
         } else this.reason = "done";
     }
 

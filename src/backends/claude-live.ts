@@ -30,6 +30,7 @@ import { backendMatcher, claudeCodeHookOutput, type HookEvent } from "../agent/h
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
 import { formatSkill } from "../agent/skills";
 import { accountEnv } from "../providers/accounts";
+import { signInAdvice } from "./account-login";
 import type { ProviderDef } from "../providers/registry";
 import type { ModelInfo, Usage } from "../providers/types";
 import type { PlanLimits } from "../server/protocol";
@@ -750,7 +751,7 @@ export class ClaudeConnection implements CliConnection {
         if (m.subtype === "success" && !m.is_error) return undefined;
         const errs = Array.isArray(m.errors) ? m.errors.filter((x: unknown) => typeof x === "string") : [];
         let failure = this.failure ?? redact(errs.join("; ") || (typeof m.result === "string" && m.result) || `${this.def.name} ended the turn with ${m.subtype}`);
-        if (this.signedOut) failure = `${this.def.name} isn't signed in, or its sign-in expired. In a terminal, run \`${CLAUDE_CLI.signIn}\`, then try again.`;
+        if (this.signedOut) failure = `${this.def.name} isn't signed in, or its sign-in expired. ${signInAdvice(this.def.id, this.cfg.accountId)}`;
         return failure && this.diagnostic && !failure.includes(this.diagnostic) ? `${failure} ${this.diagnostic}` : failure;
     }
 
@@ -1077,7 +1078,7 @@ export class ClaudeConnection implements CliConnection {
     private onAssistantError(error: string) {
         if (error === "authentication_failed") {
             this.signedOut = true;
-            this.failure = `Claude Code isn't signed in, or its sign-in expired. In a terminal, run \`${CLAUDE_CLI.signIn}\`, then try again.`;
+            this.failure = `Claude Code isn't signed in, or its sign-in expired. ${signInAdvice(this.def.id, this.cfg.accountId)}`;
         } else if (error === "rate_limit") {
             this.limitHit = true;
             if (!this.limits?.reached) this.noteLimits({ provider: this.def.id, accountId: this.cfg.accountId ?? "default", windows: [], reached: true, at: Date.now() }, true);
@@ -1567,7 +1568,8 @@ export class ClaudeLive {
         live.onEvent((e: CliEvent) => {
             const host = this.hosts.get(key);
             if (!host) return;
-            if (e.t === "task") host.emitSession?.({ type: "background_task", task: e.task });
+            // The process's own account: a turn on another can run on it while its background work holds a restart back.
+            if (e.t === "task") host.emitSession?.({ type: "background_task", task: e.task, accountId: live.account });
             else if (e.t === "turn_event") host.emitSession?.({ type: "event", event: e.event });
             else if (e.t === "limits") host.limits?.(e.limits, e.partial);
         });

@@ -4,7 +4,7 @@
 // decision, MCP servers and file index, shared by its sessions.
 
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
-import { ACCOUNT_PROVIDERS, account, accountProvider, addAccount, defaultAccount, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots } from "../providers/accounts";
+import { ACCOUNT_PROVIDERS, account, accountProvider, addAccount, defaultAccount, holdLogin, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots } from "../providers/accounts";
 import { loginCommand } from "../backends/account-login";
 import { planLimitKey, type AccountInfo, type BackgroundTaskInfo } from "./protocol";
 import { endedText } from "../agent/background";
@@ -1890,8 +1890,15 @@ export class Engine {
                     if (!p.login || typeof p.login !== "object") throw new RpcError("Invalid login selector", "invalid");
                     const provider = str(p.login.provider, "provider");
                     const accountId = str(p.login.accountId, "accountId");
-                    const command = loginCommand(provider, accountId);
-                    return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command, login: { provider, accountId, name: account(provider, accountId).name }, onExit: () => { void this.accountsList(provider, true).then(() => this.refreshListings(true)).then(() => this.broadcast({ type: "models.changed" })).catch(() => undefined); } });
+                    // Seen by removals in other Harness processes too, until the login process exits.
+                    const release = holdLogin(provider, accountId);
+                    try {
+                        const command = loginCommand(provider, accountId);
+                        return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command, login: { provider, accountId, name: account(provider, accountId).name }, onExit: () => { release(); void this.accountsList(provider, true).then(() => this.refreshListings(true)).then(() => this.broadcast({ type: "models.changed" })).catch(() => undefined); } });
+                    } catch (e) {
+                        release();
+                        throw e;
+                    }
                 }
                 return this.terminals.open(client, str(p.id, "id"), str(p.cwd, "cwd"), p.cols, p.rows);
             case "terminal.write":
@@ -2275,7 +2282,7 @@ export class Engine {
                 const provider = str(p.provider, "provider");
                 const idle = [...this.runtimes.values()].filter((rt) => rt.compactingWhileIdle);
                 if (idle.length) await Promise.all(idle.map((rt) => rt.yieldIdleCompaction()));
-                if ([...this.runtimes.values()].some((rt) => rt.busy || rt.agent?.hasCliChild())) throw new RpcError("Add accounts once running responses finish, so CLI protections can be refreshed", "busy");
+                if ([...this.runtimes.values()].some((rt) => rt.busy || rt.agent?.hasCliChild())) throw new RpcError("Add accounts once running responses and CLI background tasks finish, so CLI protections can be refreshed", "busy");
                 const added = addAccount(provider, { id: str(p.id, "id"), name: str(p.name, "name"), folder: p.folder === undefined ? undefined : str(p.folder, "folder") }, this.accountProjects());
                 forgetClient(provider);
                 await this.refreshListings(true);
@@ -2297,8 +2304,14 @@ export class Engine {
                 const idle = [...this.runtimes.values()].filter((rt) => rt.compactingWhileIdle && rt.session.accountId(provider) === id);
                 if (idle.length) await Promise.all(idle.map((rt) => rt.yieldIdleCompaction()));
                 for (const rt of this.runtimes.values()) {
-                    if ((rt.busy && rt.session.accountId(provider) === id) || rt.agent?.childUsesAccount(provider, id)) throw new RpcError("Stop the account's running turn before removing it", "busy");
+                    if ((rt.busy && rt.session.accountId(provider) === id) || rt.agent?.childUsesAccount(provider, id)) throw new RpcError("Stop the account's running turn and CLI background tasks before removing it", "busy");
                 }
+                // A login still running would sign in to a folder no longer registered, nor protected once it was the last.
+                // Checked with no await before the removal, so a login can't start in between.
+                if (this.terminals.signingIn(provider, id)) throw new RpcError("Close the account's sign-in terminal before removing it", "busy");
+                // Any removal changes every running CLI's protections, which restarts it: its turn fails and its background
+                // work stops. So, as adding does, it waits for them.
+                if ([...this.runtimes.values()].some((rt) => rt.busy || rt.agent?.hasCliChild())) throw new RpcError("Remove accounts once running responses and CLI background tasks finish, so running CLIs keep their protections", "busy");
                 removeAccount(provider, id, str(p.confirmedFolder, "confirmedFolder"), this.accountProjects());
                 this.accountStatus.delete(`${provider}:${id}`);
                 this.limits.delete(planLimitKey(provider, id));

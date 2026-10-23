@@ -32,6 +32,7 @@ import { registerTools, type Registration, type ServerTool } from "../mcp/server
 import { MONITOR_SERVER_TOOLS } from "../tools/monitor";
 import { codexInput, codexSkills, pastedPrompt, skillFolder, type CodexSkill } from "./native-skills";
 import { accountEnv, defaultAccount } from "../providers/accounts";
+import { signInAdvice } from "./account-login";
 import { accountPermissionConfig, accountPermissionProfile, watchAccountFolders } from "./account-permissions";
 import { askForm } from "../mcp/elicitation";
 import { backendModel, type AgentBackendClient, type BackgroundStop, type SessionHost, type TurnSink, type BackendPermission, type BackendQuestion, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer, type SteerMessage } from "./types";
@@ -827,7 +828,7 @@ export class CodexTurn {
             await withTimeout(handshake(this.rpc, Boolean(accountPermissions)), 30_000, "Codex didn't start (no answer to initialize)");
             const account = parseAccount(await this.rpc.request("account/read", {}));
             if (!account.type && account.requiresAuth) {
-                return { reason: "error", text: "", actions: [], error: `Codex isn't signed in. In a terminal, run \`${CODEX_CLI.signIn}\`, then try again.` };
+                return { reason: "error", text: "", actions: [], error: `Codex isn't signed in. ${signInAdvice(this.def.id, this.t.accountId)}` };
             }
             this.billedToPlan = account.type === "chatgpt";
             // Where the plan stands before the first update comes (they come only as it changes).

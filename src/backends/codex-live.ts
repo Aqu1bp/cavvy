@@ -21,6 +21,7 @@ import type { PermissionMode } from "../permissions/modes";
 import type { ProviderDef } from "../providers/registry";
 import type { PlanLimits } from "../server/protocol";
 import { accountEnv } from "../providers/accounts";
+import { signInAdvice } from "./account-login";
 import { APP_TITLE, APP_VERSION } from "../config/paths";
 import { redact } from "../util/redact";
 import { registerTools } from "../mcp/server";
@@ -352,7 +353,7 @@ export class CodexLiveConnection extends CodexTurn {
     /** How Codex is signed in now (it bills the plan or the API key), and the plan's limits. */
     private async readAccount(): Promise<void> {
         const account = parseAccount(await withTimeout(this.rpc.request("account/read", {}), 20_000, "Codex didn't answer account/read"));
-        if (!account.type && account.requiresAuth) throw new Error(`Codex isn't signed in. In a terminal, run \`${CODEX_CLI.signIn}\`, then try again.`);
+        if (!account.type && account.requiresAuth) throw new Error(`Codex isn't signed in. ${signInAdvice(this.def.id, this.t.accountId)}`);
         this.billedToPlan = account.type === "chatgpt";
         if (this.billedToPlan) void this.readLimits();
     }
@@ -1431,7 +1432,7 @@ export class CodexLive {
                     a.carried.push(`Your ${task.kind === "agent" ? `background sub-agent "${task.label}"` : `background command \`${task.label}\``} (${task.id}) stopped when Codex's app-server stopped. It is no longer running and won't report back; start it again only if it's still needed.`);
                     liveDebug("codex", "background task lost with the app-server", { session: s.key, id: task.id });
                 }
-                a.t?.session.emitSession?.({ type: "background_task", task });
+                a.t?.session.emitSession?.({ type: "background_task", task, accountId: s.account });
             }
         });
         const offWake = s.onWake((w) => void a.forwardWake(w));

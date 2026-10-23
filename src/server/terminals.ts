@@ -289,6 +289,11 @@ export class Terminals {
     /** Cwds of user shells, including disconnected windows, for account safety. */
     projectRoots(): string[] { return [...this.shells.values(), ...this.stoppingShells].map((shell) => shell.cwd); }
 
+    /** Is an account's sign-in still running: attached, in a window that went away, or closing until its process exits? */
+    signingIn(provider: string, accountId: string): boolean {
+        return [...this.shells.values(), ...this.stoppingShells].some((s) => s.login?.provider === provider && s.login.accountId === accountId && s.exitCode === undefined);
+    }
+
     private shells = new Map<string, Shell>();
     private stopping = new Set<Promise<void>>();
     private stoppingShells = new Set<Shell>();

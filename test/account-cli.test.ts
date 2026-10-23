@@ -17,12 +17,15 @@ const originalClaude = process.env.CLAUDE_CONFIG_DIR;
 const originalCodex = process.env.CODEX_HOME;
 const touched = ["FAKE_LOG", "FAKE_EMAIL", "FAKE_PLAN", "FAKE_ACCOUNT", "FAKE_LOGGED_IN", "FAKE_SCENARIO", "FAKE_REJECT_CONFIG", "CLAUDE_CODE_OAUTH_TOKEN", "CODEX_ACCESS_TOKEN", "ANTHROPIC_API_KEY"];
 const old = Object.fromEntries(touched.map((key) => [key, process.env[key]]));
-const folder = join(root, "personal");
+// Each CLI's account has its own folder, as addAccount requires (and every launch checks again).
+const folders: Record<string, string> = { "claude-code": join(root, "personal"), codex: join(root, "personal-codex") };
+const folder = folders["claude-code"]!;
+const codexFolder = folders.codex!;
 for (const [provider, fixture] of [["claude-code", "fake-claude.ts"], ["codex", "fake-codex.ts"]]) {
     const bin = join(root, provider!);
     writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" --no-env-file "${join(import.meta.dir, "fixtures", fixture!)}" "$@"\n`);
     chmodSync(bin, 0o700);
-    saveAgentConfig(provider!, { path: bin, accounts: [{ id: "personal", name: "Personal", folder, managed: false }] });
+    saveAgentConfig(provider!, { path: bin, accounts: [{ id: "personal", name: "Personal", folder: folders[provider!], managed: false }] });
 }
 const starts = () => readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((line) => line.argv);
 beforeEach(() => {
@@ -50,7 +53,7 @@ test("each status child receives only its chosen CLI selector and no overriding 
     await checkAgentCli("codex", undefined, "personal");
     expect(starts()).toEqual([
         expect.objectContaining({ claudeConfigDir: folder, sawApiKey: false, sawOauthToken: false }),
-        expect.objectContaining({ codexHome: folder, sawApiKey: false, sawOauthToken: false }),
+        expect.objectContaining({ codexHome: codexFolder, sawApiKey: false, sawOauthToken: false }),
     ]);
     expect(starts()[0].codexHome).toBeUndefined();
     expect(starts()[1].claudeConfigDir).toBeUndefined();
@@ -81,7 +84,7 @@ test("legacy accounts and changed default selectors cannot launch into Default's
     // version had accepted them. A later environment change must fail closed too.
     for (const [provider, key] of [["claude-code", "CLAUDE_CONFIG_DIR"], ["claude-code", "CLAUDE_SECURESTORAGE_CONFIG_DIR"], ["codex", "CODEX_HOME"]]) {
         const previous = process.env[key!];
-        process.env[key!] = folder;
+        process.env[key!] = folders[provider!];
         try {
             expect(() => accountEnv(provider!, "personal")).toThrow(/default CLI folder/);
             expect(() => loginCommand(provider!, "personal")).toThrow(/default CLI folder/);
@@ -123,7 +126,7 @@ test("model catalogs use the configured default account, including first use", a
         expect((await backend.listModels()).length).toBeGreaterThan(0);
     }
     expect(starts()[0]).toMatchObject({ claudeConfigDir: folder });
-    expect(starts()[1]).toMatchObject({ codexHome: folder });
+    expect(starts()[1]).toMatchObject({ codexHome: codexFolder });
 });
 
 test("unsigned accounts stay unsigned, while optional identity fields are bounded and redacted", async () => {
@@ -162,7 +165,7 @@ test("native CLI turns select their account and deny account folders in their ow
         expect((await backend.runTurn(fakeTurn(provider))).reason).toBe("done");
     }
     expect(starts()[0]).toMatchObject({ claudeConfigDir: folder });
-    expect(starts()[1]).toMatchObject({ codexHome: folder });
+    expect(starts()[1]).toMatchObject({ codexHome: codexFolder });
     expect(claudePermissions({ deny: [], ask: [], root }).deny).toContain(`Read(/${folder}/**)`);
     const claudeArgs = starts()[0].argv;
     const settings = JSON.parse(claudeArgs[claudeArgs.indexOf("--settings") + 1]);
@@ -177,7 +180,7 @@ test("native CLI turns select their account and deny account folders in their ow
     expect(received.find((message) => message.method === "initialize").params.capabilities).toEqual({ experimentalApi: true });
     expect(thread.sandbox).toBeUndefined();
     expect(thread.permissions).toBe("harness_accounts_write");
-    expect(thread.config["permissions.harness_accounts_write"].filesystem[folder]).toBe("deny");
+    for (const denied of [folder, codexFolder]) expect(thread.config["permissions.harness_accounts_write"].filesystem[denied]).toBe("deny");
     expect(thread.config["permissions.harness_accounts_write"].extends).toBe(":workspace");
     expect(turn.sandboxPolicy).toBeUndefined();
     expect(turn.permissions).toBe("harness_accounts_write");
@@ -229,7 +232,7 @@ test("invalid persisted named folders fail before login, status or model spawns"
                 await expect(checkAgentCli(provider, undefined, "personal")).rejects.toThrow(/Invalid account folder/);
                 await expect(createBackend(BUILTIN_PROVIDERS.find((p) => p.id === provider)!).listModels()).rejects.toThrow(/Invalid account folder/);
                 expect(existsSync(log)).toBe(false);
-            } finally { saveAgentConfig(provider, { accounts: [{ id: "personal", name: "Personal", folder, managed: false }], defaultAccount: "default" }); }
+            } finally { saveAgentConfig(provider, { accounts: [{ id: "personal", name: "Personal", folder: folders[provider], managed: false }], defaultAccount: "default" }); }
         }
     }
 });
@@ -237,10 +240,10 @@ test("invalid persisted named folders fail before login, status or model spawns"
 test("persisted aliases are checked against Default and launch with the canonical validated path", async () => {
     const { accountEnv } = await import("../src/providers/accounts");
     const alias = join(root, "alias");
-    mkdirSync(folder, { recursive: true });
+    for (const f of Object.values(folders)) mkdirSync(f, { recursive: true });
     for (const provider of ["claude-code", "codex"]) {
         const defaultFolder = provider === "codex" ? originalCodex! : originalClaude!;
-        for (const target of [defaultFolder, folder]) {
+        for (const target of [defaultFolder, folders[provider]!]) {
             symlinkSync(target, alias);
             saveAgentConfig(provider, { accounts: [{ id: "personal", name: "Personal", folder: alias, managed: false }] });
             try {
@@ -250,30 +253,35 @@ test("persisted aliases are checked against Default and launch with the canonica
                     expect(existsSync(log)).toBe(false);
                 } else {
                     const env = accountEnv(provider, "personal");
-                    expect(Object.values(env).every((v) => v === realpathSync(folder))).toBe(true);
+                    expect(Object.values(env).every((v) => v === realpathSync(folders[provider]!))).toBe(true);
                 }
-            } finally { rmSync(alias); saveAgentConfig(provider, { accounts: [{ id: "personal", name: "Personal", folder, managed: false }] }); }
+            } finally { rmSync(alias); saveAgentConfig(provider, { accounts: [{ id: "personal", name: "Personal", folder: folders[provider], managed: false }] }); }
         }
     }
 });
 
-for (const key of ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME"]) test(`Default rejects relative ${key} but preserves absolute, empty and unset values`, async () => {
+for (const [key, owner] of [["CLAUDE_CONFIG_DIR", "claude-code"], ["CLAUDE_SECURESTORAGE_CONFIG_DIR", "claude-code"], ["CODEX_HOME", "codex"]] as const) test(`Default ${owner} rejects relative ${key}, which doesn't stop the other CLI, and preserves absolute, empty and unset values`, async () => {
     const { accountEnv } = await import("../src/providers/accounts");
     const { loginCommand } = await import("../src/backends/account-login");
     const previous = process.env[key];
+    const other = owner === "codex" ? "claude-code" : "codex";
     try {
         for (const value of [undefined, "", `${root}//raw/./selector`]) {
             if (value === undefined) delete process.env[key]; else process.env[key] = value;
             for (const provider of ["claude-code", "codex"]) expect(accountEnv(provider)[key]).toBe(value);
         }
         process.env[key] = "relative/selector";
-        for (const provider of ["claude-code", "codex"]) {
-            expect(() => accountEnv(provider)).toThrow(new RegExp(`relative ${key}.*absolute path`));
-            expect(() => loginCommand(provider)).toThrow(/relative.*absolute path/);
-            await expect(checkAgentCli(provider)).rejects.toMatchObject({ code: "invalid" });
-            await expect(createBackend(BUILTIN_PROVIDERS.find((p) => p.id === provider)!).listModels()).rejects.toThrow(/relative.*absolute path/);
-        }
+        expect(() => accountEnv(owner)).toThrow(new RegExp(`relative ${key}.*absolute path`));
+        expect(() => loginCommand(owner)).toThrow(new RegExp(`relative ${key}.*absolute path`));
+        await expect(checkAgentCli(owner)).rejects.toMatchObject({ code: "invalid" });
+        await expect(createBackend(BUILTIN_PROVIDERS.find((p) => p.id === owner)!).listModels()).rejects.toThrow(new RegExp(`relative ${key}.*absolute path`));
         expect(existsSync(log)).toBe(false);
+        // The other CLI starts, without it: a child's own folder can't repoint it.
+        expect(accountEnv(other)).not.toHaveProperty(key);
+        expect(loginCommand(other).env).not.toHaveProperty(key);
+        expect(await checkAgentCli(other)).toMatchObject({ installed: true, signedIn: true });
+        expect(starts()).toHaveLength(1);
+        if (key !== "CLAUDE_SECURESTORAGE_CONFIG_DIR") expect(starts()[0][key === "CODEX_HOME" ? "codexHome" : "claudeConfigDir"]).toBeUndefined();
     } finally { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; }
 });
 
@@ -286,7 +294,7 @@ for (const [provider, files] of [["claude-code", [".claude.json", ".credentials.
         const identity = join(candidate, file);
         const target = join(root, "outside-identity");
         writeFileSync(target, "fixture only");
-        const saved = [{ id: "personal", name: "Personal", folder, managed: false }];
+        const saved = [{ id: "personal", name: "Personal", folder: folders[provider]!, managed: false }];
         try {
             const shared = join(candidate, "shared-identity");
             for (const kind of ["symlink", "dangling", "hardlink", "internal-link-to-hardlink"]) {

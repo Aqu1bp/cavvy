@@ -136,6 +136,8 @@ export class Screen {
             this.setFocusReporting(false);
             process.stdin.off("data", this.dataListener);
             process.stdin.setRawMode(false);
+            // A child that runs while the event loop does (a login) must get every keystroke.
+            process.stdin.pause();
             process.stdout.write(KEYS_OFF + cursor.show);
         }
         try {

@@ -69,7 +69,7 @@ import { rewindCommand } from "./rewind";
 import { GoalController, goalClearedNotice, goalSummary, parseGoalCommand } from "../agent/goal";
 import { checkAgentCli, vendorOf, type AgentCliStatus } from "../backends/index";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
-import { account, addAccount, listAccounts } from "../providers/accounts";
+import { account, addAccount, holdLogin, listAccounts } from "../providers/accounts";
 import { loginCommand as accountLoginCommand } from "../backends/account-login";
 import { clockTime, limitAccountLabel, limitLines } from "../backends/limits";
 import { describeJob, shortTime } from "../agent/schedule";
@@ -512,11 +512,20 @@ async function agentLogin(app: App, providerId: string) {
 
 /** Launch only the vendor's own flow; credentials never pass through a Harness input dialog. */
 async function signInCliAccount(app: App, provider: string, id: string) {
-    const selected = account(provider, id);
-    const command = accountLoginCommand(provider, selected.id);
-    await app.screen.suspend(() => {
-        spawnSync(command.argv, { cwd: app.cwd, env: command.env, stdio: ["inherit", "inherit", "inherit"] });
-    });
+    // Taken before the account is looked up: a removal in any Harness process then sees it and waits, or is seen
+    // here (this stops), or has saved its change already (the lookup fails).
+    const release = holdLogin(provider, id);
+    let selected: ReturnType<typeof account>;
+    try {
+        selected = account(provider, id);
+        const command = accountLoginCommand(provider, selected.id);
+        // Not spawnSync: running CLI children's account-folder watchers must keep checking while the user signs in.
+        await app.screen.suspend(async () => {
+            await Bun.spawn(command.argv, { cwd: app.cwd, env: command.env, stdio: ["inherit", "inherit", "inherit"] }).exited;
+        });
+    } finally {
+        release();
+    }
     const status = await withProgress(app, [theme.muted("Checking sign-in…")], (signal) => checkAgentCli(provider, signal, selected.id));
     if (status) app.notice(`${getProvider(provider)!.name} · ${selected.name}: ${status.signedIn ? status.description : "not signed in"}`);
     await app.refreshListings();
@@ -529,6 +538,10 @@ async function addCliAccount(app: App, provider: string) {
     if (name === undefined) return;
     const folder = await app.showDialog(new InputDialog({ title: "Account folder (optional)", header: [theme.muted("Leave empty for a private folder in Harness's accounts directory."), theme.muted("A new folder starts with separate CLI settings and history.")], placeholder: "/absolute/path" }));
     if (folder === undefined) return;
+    // As in the desktop app: CLI children keep the protections they started with, so wait for them.
+    // Checked after the dialogs, with no await before the account is added.
+    await app.yieldIdleCompaction();
+    if (app.busy || app.agent?.hasCliChild()) throw new Error("Add accounts once running responses and CLI background tasks finish, so CLI protections can be refreshed.");
     const selected = addAccount(provider, { id: id.trim(), name: name.trim(), ...(folder.trim() ? { folder: folder.trim() } : {}) }, [app.cwd]);
     app.notice(`Created ${selected.name}: ${selected.folder}`);
     if (provider === "claude-code") app.notice("Claude Console sign-ins without an API key are stored outside the config folder and are not isolated per account.", "warn");

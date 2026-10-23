@@ -789,9 +789,12 @@ async function handle(m: any) {
             const a = process.env.FAKE_ACCOUNT ?? "chatgpt";
             return reply(a === "none" ? { account: null, requiresOpenaiAuth: true } : a === "apikey" ? { account: { type: "apiKey" }, requiresOpenaiAuth: true } : { account: { type: "chatgpt", email: process.env.FAKE_EMAIL ?? "me@example.com", planType: process.env.FAKE_PLAN ?? "plus" }, requiresOpenaiAuth: true });
         }
-        case "model/list":
+        case "model/list": {
+            // A model only this account lists: CODEX_HOME's fake-model file names it.
+            const own = process.env.CODEX_HOME && existsSync(join(process.env.CODEX_HOME, "fake-model")) ? readFileSync(join(process.env.CODEX_HOME, "fake-model"), "utf8").trim() : undefined;
             return reply({
                 data: [
+                    ...(own ? [{ id: own, model: own, displayName: own, hidden: false, isDefault: false, supportedReasoningEfforts: [], inputModalities: ["text"] }] : []),
                     { id: "gpt-hidden", model: "gpt-hidden", displayName: "Hidden", hidden: true, isDefault: false, supportedReasoningEfforts: [], inputModalities: ["text"] },
                     { id: "gpt-other", model: "gpt-other", displayName: "Other", hidden: false, isDefault: false, supportedReasoningEfforts: [{ reasoningEffort: "low" }], inputModalities: ["text"] },
                     // As Codex 0.163 lists it: the tier is "priority", the legacy field still says "fast".
@@ -799,6 +802,7 @@ async function handle(m: any) {
                 ],
                 nextCursor: null,
             });
+        }
         case "thread/start":
             log({ threadMcp: p.config?.mcp_servers ?? null });
             // A one-off: an ephemeral thread answering one question (FAKE_ONEOFF_ANSWER).
