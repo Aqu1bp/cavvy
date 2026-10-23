@@ -48,26 +48,29 @@ function ran(l: any, at: number, s: State) {
 }
 // A transcript line is written before Harness records the reply it carries; allow for the two clocks' reads.
 const RAN_SLACK_MS = 5000;
+/** A Harness session's Ran, and whether its file was read to its end (only then is its account now known). */
+type Owner = { ran: Ran; whole: boolean };
 /**
- * The account a Harness session ran `thread` under at `at`: the one of the first usage it recorded for that CLI from
- * then on (an account switch comes between turns, so the turn that line ends is the one `at` is in). Later than all of
- * them (a turn still going), the account the session is on now. Undefined when no Harness session ran the thread, or
- * the account isn't one sharing the file's folder (removed since, say).
+ * The account a Harness session ran `thread` under at `at`: the one of the first run that ends then or later (an
+ * account switch comes between turns, so the turn that run ends is the one `at` is in). Failing that, the last run's
+ * if `at` is within the slack of its end. Later still (a turn still going), the account the session is on now, if its
+ * file was read to its end. `copy`: from before the session was made, so history a native fork copied (Claude Code's
+ * --fork-session keeps the original timestamps): it's the account of the thread forked, if that's known.
+ * Undefined when no Harness session ran the thread.
  */
-function ranUnder(owners: Map<string, Ran[]>, f: File, thread: string | undefined, at: number, depth = 0): string | undefined {
-    let best: [number, string] | undefined;
-    for (const r of thread && depth < 8 ? owners.get(`${f.source} ${thread}`) ?? [] : []) {
-        if (at + RAN_SLACK_MS < r.created) {
-            // From before the session was made: history a native fork copied from the thread it forked. It stays that
-            // thread's account's: a reply is counted once, under whichever copy is read first.
-            const from = r.forked[f.source], account = from && from !== thread ? ranUnder(owners, f, from, at, depth + 1) : undefined;
-            if (account) best ??= [Infinity, account];
+function ranUnder(owners: Map<string, Owner[]>, f: File, thread: string | undefined, at: number, depth = 0): { account?: string; copy: boolean } | undefined {
+    let best: [number, string] | undefined, copied: { account?: string } | undefined;
+    for (const { ran: r, whole } of thread && depth < 8 ? owners.get(`${f.source} ${thread}`) ?? [] : []) {
+        if (at < r.created) {
+            const from = r.forked[f.source];
+            copied ??= { account: from && from !== thread ? ranUnder(owners, f, from, at, depth + 1)?.account : undefined };
             continue;
         }
-        const run = r.runs[f.source]?.find(([end]) => end + RAN_SLACK_MS >= at) ?? [Infinity, r.accounts[f.source] ?? "default"];
-        if (!best || run[0] < best[0]) best = run;
+        const runs = r.runs[f.source] ?? [], last = runs.at(-1);
+        const run = runs.find(([end]) => end >= at) ?? (last && last[0] + RAN_SLACK_MS >= at ? last : whole ? [Infinity, r.accounts[f.source] ?? "default"] as [number, string] : undefined);
+        if (run && (!best || run[0] < best[0])) best = run;
     }
-    return best && f.accounts?.includes(best[1]) ? best[1] : undefined;
+    return best ? { account: best[1], copy: false } : copied ? { ...copied, copy: true } : undefined;
 }
 function parse(l: any, f: File, s: State): UsageRecord | undefined {
     if (!l || typeof l !== "object") return;
@@ -247,7 +250,11 @@ async function scan(since: number) {
     const files = [...discovery.files.values()].sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file));
     for (const [path, entry] of cache) if (entry.file.mtimeMs >= since && !discovery.files.has(path)) files.push(entry.file);
     if (files.length > usageBounds.maxFiles) truncated ??= `Only ${usageBounds.maxFiles} transcript files could be scanned; some sessions are left out.`;
-    for (let f of files.slice(0, Math.max(0, usageBounds.maxFiles))) {
+    // Files not known to be read to their end this refresh. Harness's session files go first: they say which account
+    // ran each CLI thread (attribute()), so a transcript isn't read ahead of the record of who ran it.
+    const unread = new Set(files.map(f => f.file));
+    const batch = files.slice(0, Math.max(0, usageBounds.maxFiles));
+    for (let f of [...batch.filter(f => f.source === "api"), ...batch.filter(f => f.source !== "api")]) {
         if (spent()) break;
         let entry = cache.get(f.file);
         if (entry) { cache.delete(f.file); cache.set(f.file, entry); }
@@ -314,6 +321,7 @@ async function scan(since: number) {
                 } finally { await fh.close(); }
             }
             cache.delete(f.file); cache.set(f.file, entry!);
+            if (entry!.file.size === f.size) unread.delete(f.file);
             while (cache.size > Math.max(0, usageBounds.maxFiles)) cache.delete(cache.keys().next().value!);
             discovery.files.delete(f.file);
         } catch (e: any) {
@@ -324,39 +332,48 @@ async function scan(since: number) {
     // Unprocessed cached entries remain useful even after either budget expires.
     while (discovery.files.size > Math.max(0, usageBounds.maxFiles)) discovery.files.delete(discovery.files.keys().next().value!);
     if (discovery.done && !discovery.files.size) discovery = undefined;
-    return { files: attribute(since), truncated, bytesRead: bytes };
+    return { files: attribute(since, unread), truncated, bytesRead: bytes };
 }
 /**
  * The cached files' records by account. `scope`: the account whose folder the file was read from, the same for every
- * account sharing it; a copy of a reply (a native fork's history) counts once there, whichever account it's under.
+ * account sharing it; a reply is counted once there, whichever account it's under. Copies a native fork made come
+ * after everything else, so the original's account is the one a reply is counted under, whichever is read first.
  *
  * A folder shared by several accounts (#428) can't say which one a transcript is: Harness's own session files, read
  * by this scan as the "api" source anyway, say which account ran each native thread when (Ran). A thread no Harness
  * session ran (a plain terminal `claude` or `codex` in the shared folder, or a session whose file wasn't read yet) is
  * the folder's first account's: Default's, for Harness-made accounts linking its history.
  */
-function attribute(since: number) {
-    const owners = new Map<string, Ran[]>();
-    for (const e of cache.values()) {
+function attribute(since: number, unread: Set<string>) {
+    const owners = new Map<string, Owner[]>(), parents = new Map<string, string>();
+    for (const [path, e] of cache) {
         const r = e.file.source === "api" ? e.state.ran : undefined;
-        if (r) for (const thread of Object.keys(r.threads)) { let list = owners.get(thread); if (!list) owners.set(thread, list = []); list.push(r); }
+        if (r) for (const thread of Object.keys(r.threads)) {
+            let list = owners.get(thread);
+            if (!list) owners.set(thread, list = []);
+            list.push({ ran: r, whole: !unread.has(path) });
+        }
+        if (e.file.source === "codex" && e.state.session && e.state.parent) parents.set(e.state.session, e.state.parent);
     }
-    const files: { source: Source; account: string; scope: string; records: UsageRecord[] }[] = [];
+    const files: { source: Source; account: string; scope: string; records: UsageRecord[] }[] = [], copies: typeof files = [];
     for (const e of cache.values()) {
         if (e.file.mtimeMs < since) continue;
         const f = e.file, scope = f.account;
         if (!f.accounts || f.source === "api") { files.push({ source: f.source, account: f.account, scope, records: e.records }); continue; }
-        const split = new Map<string, UsageRecord[]>();
+        const split = new Map<string, { account: string; copy: boolean; records: UsageRecord[] }>();
         for (const r of e.records) {
-            // A Codex sub-agent's or fork's thread Harness didn't record goes with the thread it came from.
-            const account = ranUnder(owners, f, r.session, r.at) ?? ranUnder(owners, f, e.state.parent, r.at) ?? f.account;
-            let list = split.get(account);
-            if (!list) split.set(account, list = []);
-            list.push(r);
+            // A Codex sub-agent's or fork's thread Harness didn't record goes with the nearest one it came from that it did.
+            let found: ReturnType<typeof ranUnder>;
+            for (let thread: string | undefined = r.session, i = 0; !found && thread && i < 8; thread = parents.get(thread) ?? (i ? undefined : e.state.parent), i++) found = ranUnder(owners, f, thread, r.at);
+            const account = found?.account && f.accounts.includes(found.account) ? found.account : f.account, copy = found?.copy === true;
+            const key = `${copy} ${account}`;
+            let group = split.get(key);
+            if (!group) split.set(key, group = { account, copy, records: [] });
+            group.records.push(r);
         }
-        for (const [account, records] of split) files.push({ source: f.source, account, scope, records });
+        for (const g of split.values()) (g.copy ? copies : files).push({ source: f.source, account: g.account, scope, records: g.records });
     }
-    return files;
+    return [...files, ...copies];
 }
 export function clearUsageCache() {
     cache.clear();

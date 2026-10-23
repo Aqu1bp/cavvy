@@ -215,6 +215,86 @@ test("a fork on another sharing account keeps the history its native fork copied
     } finally { saveAgentConfig("claude-code", { accounts: [] }); saveAgentConfig("codex", { accounts: [] }); }
 });
 
+const claudeReply = (at: string, session: string, id: string, input: number) =>
+    JSON.stringify({ type: "assistant", timestamp: at, sessionId: session, requestId: `req-${id}`, message: { id: `msg-${id}`, model: "claude-opus-5-5", usage: { input_tokens: input, output_tokens: 1 } } }) + "\n";
+const resetAccounts = () => { saveAgentConfig("claude-code", { accounts: [] }); saveAgentConfig("codex", { accounts: [] }); };
+
+test("a Harness session file read only in part never moves usage already counted (#428)", async () => {
+    sharedAccount("second");
+    try {
+        const session = await harnessSession([
+            ["2026-10-15T11:00:00Z", s => s.setBackendSession("claude-code", "claude-session", 1, accountPlace("claude-code"))],
+            ["2026-10-15T12:00:01Z", cliUsage("claude-code:claude-opus-5-5")],
+            ["2026-10-15T12:30:00Z", s => s.setAccount("claude-code", "second")],
+            ["2026-10-15T13:00:01Z", cliUsage("claude-code:claude-opus-5-5")],
+        ]);
+        const old = Date.now() / 1000 - 60;
+        utimesSync(session.path, old, old);
+        write(join(claude, "projects/p/a.jsonl"), fixture("claude-current.jsonl"));
+        usageBounds.maxBytes = 600;
+        let s: Awaited<ReturnType<typeof usageSummary>> | undefined;
+        for (let refresh = 0; refresh < 60 && (!s || s.truncated); refresh++) {
+            s = await usageSummary(1, now);
+            const counted = byAccount(s, "claude-code");
+            expect(counted.default ?? 0).toBeLessThanOrEqual(100);
+            expect(counted.second ?? 0).toBeLessThanOrEqual(50);
+        }
+        expect(s!.truncated).toBeUndefined();
+        expect(byAccount(s!, "claude-code")).toEqual({ default: 100, second: 50 });
+    } finally { resetAccounts(); }
+});
+
+test("nested native Codex agents go with the thread Harness ran (#428)", async () => {
+    sharedAccount("second");
+    const rollout = (id: string, parent: string, minute: number, input: number) => [
+        { timestamp: `2026-10-15T15:${minute}:00Z`, type: "session_meta", payload: { id, source: { subagent: { thread_spawn: { parent_thread_id: parent } } } } },
+        { timestamp: `2026-10-15T15:${minute}:01Z`, type: "turn_context", payload: { model: "gpt-6-astra" } },
+        { timestamp: `2026-10-15T15:${minute}:10Z`, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: { input_tokens: input, output_tokens: 1 } } } },
+    ].map(l => JSON.stringify(l)).join("\n") + "\n";
+    try {
+        await harnessSession([
+            ["2026-10-15T11:00:00Z", s => { s.setAccount("codex", "second"); s.setBackendSession("codex", "codex-root", 1); }],
+            ["2026-10-15T15:30:00Z", cliUsage("codex:gpt-6-astra")],
+        ]);
+        write(join(codex, "sessions/rollout-root.jsonl"), rollout("codex-root", "", 10, 300).replace(',"source":{"subagent":{"thread_spawn":{"parent_thread_id":""}}}', ""));
+        write(join(codex, "sessions/rollout-child.jsonl"), rollout("codex-child", "codex-root", 11, 200));
+        write(join(codex, "sessions/rollout-grandchild.jsonl"), rollout("codex-grandchild", "codex-child", 12, 100));
+        expect(byAccount(await usageSummary(1, now), "codex")).toEqual({ second: 600 });
+    } finally { resetAccounts(); }
+});
+
+test("a reply right after a switch is the new account's, though within the slack of the old one's last (#428)", async () => {
+    sharedAccount("second");
+    try {
+        await harnessSession([
+            ["2026-10-15T11:00:00Z", s => s.setBackendSession("claude-code", "claude-session", 1, accountPlace("claude-code"))],
+            ["2026-10-15T12:01:40Z", cliUsage("claude-code:claude-opus-5-5")],
+            ["2026-10-15T12:01:41Z", s => s.setAccount("claude-code", "second")],
+            ["2026-10-15T12:01:44Z", cliUsage("claude-code:claude-opus-5-5")],
+        ]);
+        write(join(claude, "projects/p/a.jsonl"), claudeReply("2026-10-15T12:01:39Z", "claude-session", "1", 100) + claudeReply("2026-10-15T12:01:43Z", "claude-session", "2", 200));
+        expect(byAccount(await usageSummary(1, now), "claude-code")).toEqual({ default: 100, second: 200 });
+    } finally { resetAccounts(); }
+});
+
+test.each([true, false])("a quick fork's copied history stays the original's, read first: %s (#428)", async (forkFirst) => {
+    sharedAccount("second");
+    try {
+        let fork: any;
+        await harnessSession([
+            ["2026-10-15T12:00:00Z", s => s.setBackendSession("claude-code", "claude-session", 1, accountPlace("claude-code"))],
+            ["2026-10-15T12:01:41Z", cliUsage("claude-code:claude-opus-5-5")],
+            ["2026-10-15T12:01:42Z", s => { fork = s.fork({ shareBackends: true }); fork.setAccount("claude-code", "second"); }],
+            ["2026-10-15T12:01:50Z", () => { fork.setBackendSession("claude-code", "fork-session", 2); cliUsage("claude-code:claude-opus-5-5")(fork); }],
+        ]);
+        const original = write(join(claude, "projects/p/a.jsonl"), claudeReply("2026-10-15T12:01:40Z", "claude-session", "1", 100));
+        const copy = write(join(claude, "projects/p/fork.jsonl"), claudeReply("2026-10-15T12:01:40Z", "fork-session", "1", 100) + claudeReply("2026-10-15T12:01:49Z", "fork-session", "2", 200));
+        const old = Date.now() / 1000 - 60;
+        utimesSync(forkFirst ? original : copy, old, old);
+        expect(byAccount(await usageSummary(1, now), "claude-code")).toEqual({ default: 100, second: 200 });
+    } finally { resetAccounts(); }
+});
+
 test("an invalid saved account folder is skipped, never resolved against the server's folder", async () => {
     const cwd = process.cwd();
     const work = join(iso.home, "server-cwd");
