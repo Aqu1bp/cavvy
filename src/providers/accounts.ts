@@ -74,6 +74,19 @@ export function accountPlace(provider: string, id = "default"): AccountPlace {
     const history = historyFolder(provider, folder);
     return history ? { folder, history } : { folder };
 }
+/**
+ * The account a session selected for `provider`'s CLI, when it was removed since (#410): its id. Undefined when it's
+ * still there, or `provider` isn't a CLI with accounts. Such a session sends nothing until the user picks another:
+ * no other account is ever used in its place.
+ */
+export function removedAccount(provider: string | undefined, id: string): string | undefined {
+    if (!provider || !(ACCOUNT_PROVIDERS as readonly string[]).includes(provider)) return undefined;
+    return listAccounts(provider).some((a) => a.id === id) ? undefined : id;
+}
+/** What a session whose CLI account was removed says when it holds a message back (removedAccount). */
+export function removedAccountNote(cli: string, id: string, held = true): string {
+    return `The ${cli} account this session used ("${id}") was removed. Pick an account for ${cli} ${held ? "to send your message" : "before you send"}.`;
+}
 export function defaultAccount(provider: string): string {
     const id = readAgentConfig(provider)?.defaultAccount ?? "default";
     return listAccounts(provider).some((a) => a.id === id) ? id : "default";

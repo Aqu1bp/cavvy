@@ -305,7 +305,13 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
             <Menu
                 label="Choose a model"
                 kind="dialog"
-                initialFocus={() => input}
+                initialFocus={() => {
+                    // The session's account was removed (#410): it opens on that CLI's accounts, to pick another.
+                    const provider = currentProvider();
+                    if (!provider || acctProvider() !== provider || !missingAccount(provider)) return input;
+                    openAccounts();
+                    return acctItems()[0] ?? input;
+                }}
                 onKeyDown={onKey}
                 onEscape={() => {
                     if (!acctOpen()) return false;

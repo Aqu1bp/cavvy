@@ -55,7 +55,7 @@ import { killAllShells, runShell, childEnv } from "../tools/bash";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
 import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveModelInfo, reviewTarget, smallModelFor, lookupModel, type ProviderListing } from "../providers/models";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
-import { account, accountSwitchNote } from "../providers/accounts";
+import { account, accountSwitchNote, removedAccount, removedAccountNote } from "../providers/accounts";
 import { RpcError } from "../server/rpc-error";
 import { assistantText, modelRef, parseModelRef, textOf, type ImagePart, type Message, type ModelInfo, type ProviderClient, type TextPart, type ToolCallPart, type UserContent } from "../providers/types";
 import { formatCost, formatTokens } from "../providers/pricing";
@@ -155,7 +155,8 @@ export class App {
     readonly idleCompact = new IdleCompactTimer({
         plan: (now) => this.agent?.idleCompactPlan(now) ?? null,
         // Not while anything waits on the user, or they're typing: they're back.
-        ready: () => !this.busy && !this.exiting && !this.switching && !this.dialogs.length && !this.dialogQueue.length && !this.queued.length && this.editor.isEmpty && !this.pendingSubmit && !this.goal?.pending(),
+        // Nor on a CLI account that was removed (#410): nothing runs there.
+        ready: () => !this.busy && !this.exiting && !this.switching && !this.dialogs.length && !this.dialogQueue.length && !this.queued.length && this.editor.isEmpty && !this.pendingSubmit && !this.goal?.pending() && !this.removedAccount(),
         run: () => void this.compactIdle(),
     });
     /** The task running is an idle compaction: a message sent meanwhile cancels it and runs. */
@@ -281,7 +282,8 @@ export class App {
     /** A scheduled prompt may start now: nothing running (an idle compaction gives way), waiting, or being set up. */
     private schedulable(): boolean {
         // A goal between its turns (checking, retrying, waiting on background work) goes first: scheduled prompts wait for it.
-        return (!this.busy || this.idleCompacting) && !this.dialogs.length && !this.dialogQueue.length && !this.switching && !this.pendingSubmit && !this.exiting && this.modelReady && Boolean(this.session) && !this.goal?.pending();
+        // Nor while the session's CLI account is gone (#410): they run once the user picks another.
+        return (!this.busy || this.idleCompacting) && !this.dialogs.length && !this.dialogQueue.length && !this.switching && !this.pendingSubmit && !this.exiting && this.modelReady && Boolean(this.session) && !this.goal?.pending() && !this.removedAccount();
     }
 
     private async runScheduled(prompt: string, label: string, resume = false): Promise<unknown> {
@@ -562,7 +564,8 @@ export class App {
         if (this.busy) throw new RpcError("Switch accounts once this response is done, or interrupt it first.", "busy");
         const selected = account(provider, id);
         const had = this.session.backends.has(provider);
-        if (!this.session.setAccount(provider, selected.id)) return;
+        // Already this one (added again under the same id, #410): what waited for an account goes now.
+        if (!this.session.setAccount(provider, selected.id)) return this.releaseForAccount(provider);
         this.schedules.cancelLimitResume("account");
         const name = getProvider(provider)?.name ?? provider;
         const native = had && this.session.backends.has(provider);
@@ -591,6 +594,62 @@ export class App {
             this.notice(message, "warn");
             this.renderLive();
         }
+        this.releaseForAccount(provider);
+    }
+
+    // ---- A removed CLI account (#410): nothing runs on an account the user didn't choose.
+
+    /** Messages held because the account this session used for a CLI (`provider`) was removed: sent once the user picks one. */
+    private heldForAccount?: { provider: string; drafts: QueuedDraft[] };
+
+    /** The session's model is a CLI, and the account this session selected for it was removed: the CLI and the account's id. */
+    private removedAccount(): { provider: string; id: string } | undefined {
+        const provider = this.model?.provider;
+        const id = provider && this.session ? removedAccount(provider, this.session.accountId(provider)) : undefined;
+        return provider && id ? { provider, id } : undefined;
+    }
+
+    /**
+     * The session's CLI account was removed: `draft` (a message about to go) and what's queued behind it are held, not
+     * stored or sent, until the user picks an account for the CLI (/account): releaseForAccount sends them then.
+     */
+    private holdForAccount(gone: { provider: string; id: string }, draft: Draft) {
+        const drafts = [...(this.heldForAccount?.drafts ?? []), { ...draft, mode: "queue" as const }, ...this.queued];
+        this.queued = [];
+        this.heldForAccount = { provider: gone.provider, drafts };
+        this.queueUpdated();
+        this.notice(`${removedAccountNote(getProvider(gone.provider)?.name ?? gone.provider, gone.id)} Use /account.`, "warn");
+    }
+
+    /** An account was picked for `provider`'s CLI (setAccount): the messages held for one go now, in order, each once. */
+    private releaseForAccount(provider: string) {
+        const held = this.heldForAccount;
+        if (this.model?.provider !== provider || this.removedAccount()) return;
+        if (held?.provider !== provider) {
+            // What waited for it meanwhile (a watch's events, a schedule) can go now.
+            this.toolState.wakes?.poke();
+            this.schedules.poke();
+            return;
+        }
+        this.heldForAccount = undefined;
+        this.queued.unshift(...held.drafts);
+        this.queueUpdated();
+        // Busy (a message sent while the switch let the CLI go): they run when its turn ends, as queued ones do.
+        if (this.busy) return;
+        const next = this.queued.shift()!;
+        this.queueUpdated();
+        // After the command that picked it (/account) has finished.
+        setTimeout(() => void this.submitText(next), 0);
+    }
+
+    /** Held messages go back to the prompt (another model, or leaving the session), as an interrupt hands queued ones back. */
+    private returnHeld(why: string) {
+        const held = this.heldForAccount;
+        if (!held) return;
+        this.heldForAccount = undefined;
+        this.queued.unshift(...held.drafts);
+        this.returnQueued();
+        this.notice(`${why} ${held.drafts.length === 1 ? "The message held for an account is" : "The messages held for an account are"} back in the prompt.`);
     }
 
     /** Switch the active model. Returns false if the provider isn't usable. */
@@ -641,6 +700,12 @@ export class App {
             }
         }
         if (!opts.quiet) this.screen.print(["", `${theme.success("✔")} Model set to ${bold(info.name ?? info.id)} ${theme.muted(`(${ref})`)}`]);
+        // A CLI whose account this session used was removed (#410): asked for now; what's held waits for it. Held for
+        // one, on a model that needs none: back to the prompt, to send there or not.
+        const gone = this.removedAccount();
+        if (gone && this.heldForAccount) this.heldForAccount.provider = gone.provider;
+        else this.returnHeld(`Using ${info.name ?? info.id}.`);
+        if (gone && !opts.quiet) this.notice(`${removedAccountNote(def.name, gone.id, false)} Use /account.`, "warn");
         this.renderLive();
         return true;
     }
@@ -819,6 +884,7 @@ export class App {
 
     newSession() {
         const prev = this.session;
+        this.returnHeld("New conversation.");
         this.leaveBackground();
         this.session = Session.create(this.cwd);
         prev.release();
@@ -838,6 +904,7 @@ export class App {
     /** Switch to a saved session (/resume), or to one just opened (a fork). */
     resume(from: string | Session) {
         const prev = this.session;
+        if (prev) this.returnHeld("Switched conversations.");
         try {
             this.session = typeof from === "string" ? Session.load(from) : from;
         } catch (e) {
@@ -2316,6 +2383,14 @@ export class App {
             this.notice("No model is selected. Pick one with /model (or add an API key with /login).", "error");
             return;
         }
+        // The session's CLI account was removed (#410): nothing is stored or sent. The user's message waits for an
+        // account (it's the prompt, or a command that built it); a watch's events go back in their queue.
+        const gone = opts.adopt ? undefined : this.removedAccount();
+        if (gone) {
+            if (opts.wakes) return void this.toolState.wakes?.requeue(opts.wakes);
+            if (!opts.goal && !this.scheduledTurn && opts.kind !== "wake") return this.holdForAccount(gone, opts.draft ?? { text: opts.kind === "command" ? (opts.display ?? text) : text, attachments: new Map() });
+            return this.notice(`${removedAccountNote(getProvider(gone.provider)?.name ?? gone.provider, gone.id, false)} Use /account.`, "warn");
+        }
         // The user's own turn overtakes a pending goal check, and a paused goal picks up after it. A scheduled prompt
         // leaves a paused goal paused; the resume after a usage limit is the exception, as in Claude Code.
         // A watch's events don't either: they aren't the user's.
@@ -2427,7 +2502,7 @@ export class App {
     private queueUpdated() {
         this.renderLive();
         if (!this.session?.persisted) return;
-        const mine = this.queued.map((d): StoredQueued => {
+        const mine = [...(this.heldForAccount?.drafts ?? []), ...this.queued].map((d): StoredQueued => {
             const images = imagesIn(d.text, d.attachments).map((im) => im.part);
             return { text: plainText(d.text), mode: d.mode, ...(images.length ? { attachments: images } : {}) };
         });
@@ -2525,6 +2600,8 @@ export class App {
         if (this.idleCompacting) return void this.yieldIdleCompaction().then(again);
         // Busy or with messages queued, the turn's end looks again.
         if (this.exiting || this.busy || this.queued.length) return;
+        // The session's CLI account was removed (#410): nothing runs until the user picks another (releaseForAccount looks again).
+        if (this.removedAccount()) return;
         // A model switch, a dialog open, no agent yet, a goal between its turns (it goes first, as with scheduled
         // prompts): look again in a moment.
         if (this.switching || !this.agent || this.dialogs.length || this.goalPending()) {
