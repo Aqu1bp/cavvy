@@ -2029,6 +2029,24 @@
     }
 }
 
+/* Its accounts scroll inside it (placeAccounts sets its max-height); the note and Add account… stay put. */
+.mp-acct-menu {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.mp-acct-menu > * {
+    flex: none;
+}
+
+.mp-acct-menu > .mp-acct-list {
+    flex: 0 1 auto;
+    min-height: calc(40 * var(--sp));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
 .mp-acct-menu .menu-item {
     min-height: 0;
     padding: calc(5 * var(--sp)) calc(8 * var(--sp));

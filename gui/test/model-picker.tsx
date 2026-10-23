@@ -155,6 +155,50 @@ export async function checkModelPicker(root: HTMLElement) {
         check(calls.some(([m, p]) => m === "accounts.setDefault" && p.provider === "claude-code" && p.id === "default"), "switching sets the account");
         check(items().length === 0 && panel(), "the picker stays open after switching");
 
+        // Many accounts (the server allows 20): the list stays inside the picker, which clips what overflows it.
+        // Every account can be scrolled to and clicked, Add account… is always in view, and the keys scroll.
+        const kept = accounts;
+        const inside = (el: Element, box: DOMRect) => {
+            const r = el.getBoundingClientRect();
+            return r.top >= box.top - 0.5 && r.bottom <= box.bottom + 0.5 && r.left >= box.left - 0.5 && r.right <= box.right + 0.5;
+        };
+        const hit = (el: Element) => {
+            const r = el.getBoundingClientRect();
+            return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.closest("[role^='menuitem']") === el;
+        };
+        for (const n of [8, 20]) {
+            accounts = Array.from({ length: n }, (_, i) => account(i ? `a${i}` : "default", `Account ${i + 1}`, { email: `person${i + 1}@example.test`, plan: "max" }));
+            preferred = `a${n - 1}`;
+            setApp("providers", providers());
+            await settle();
+            acct()!.click();
+            await until(() => items().length === n + 1, `${n} accounts and Add account`);
+            await settle(250);
+            const box = panel()!.getBoundingClientRect();
+            const menu = document.querySelector(".mp-acct-menu")!;
+            check(inside(menu, box), `the list of ${n} stays inside the picker (${JSON.stringify(menu.getBoundingClientRect())} in ${JSON.stringify(box)})`);
+            const add = item("Add account");
+            check(inside(add, box) && hit(add), `Add account… is in view and clickable with ${n} accounts`);
+            check(document.activeElement === item(`Account ${n}`) && inside(item(`Account ${n}`), box), `the list opens scrolled to the active account, the last of ${n}`);
+            for (const b of items()) {
+                b.scrollIntoView({ block: "nearest" });
+                check(inside(b, box) && hit(b), `${b.textContent} can be scrolled to and clicked (of ${n})`);
+            }
+            check(inside(add, box) && hit(add), `Add account… stays put while the list scrolls (${n})`);
+            // Keys: Home goes to the first account and brings it into view.
+            item(`Account ${n}`).focus();
+            key("Home");
+            check(document.activeElement === item("Account 1") && inside(item("Account 1"), menu.getBoundingClientRect()) && hit(item("Account 1")), `Home scrolls to the first of ${n}`);
+            key("End");
+            check(document.activeElement === add && hit(add), `End reaches Add account… (${n})`);
+            key("Escape");
+            await settle();
+        }
+        accounts = kept;
+        preferred = "work";
+        setApp("providers", providers());
+        await settle();
+
         // A removed account: said so, and the list asks for another.
         preferred = "gone";
         setApp("providers", providers());

@@ -3,7 +3,7 @@ import { Check, ChevronDown, CircleAlert, Layers, Plus, RefreshCw, Search, Setti
 import type { AccountInfo, EffortLevel, ModelSummary } from "@shared/protocol";
 import { app, handleFor, refreshModels, toast } from "../state/app";
 import { setEffort, setModel, setFastMode, setAccount } from "../state/actions";
-import { prefs, setPrefs } from "../state/prefs";
+import { prefs, setPrefs, sp } from "../state/prefs";
 import { comparePicks, setAddAccountFor, setComparePicks, setSettingsTab } from "../state/ui";
 import { isMod, mod } from "../lib/platform";
 import { menuIndex, menuTypeahead } from "../lib/menu";
@@ -144,10 +144,32 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     // The provider whose header shows an account switcher: a CLI provider, in its own list.
     const acctProvider = () => (!q() && rail() !== FAVORITES && accountInfo(rail()) ? rail() : undefined);
     const acctItems = () => [...(acctMenu?.querySelectorAll<HTMLButtonElement>('[role^="menuitem"]') ?? [])];
+    /** Focus an account (or Add account…) and scroll the list to it. */
+    const focusAccount = (el?: HTMLElement) => {
+        el?.focus({ preventScroll: true });
+        el?.scrollIntoView({ block: "nearest" });
+    };
+    /**
+     * The list fits inside the picker, which clips what overflows it: below the header if there's room,
+     * else moved up over the header as far as it needs. The accounts scroll; Add account… stays at the
+     * bottom. Measured from layout (the header, the list's scrollHeight), not the opening transform.
+     */
+    const placeAccounts = () => {
+        const menu = acctMenu;
+        const panel = menu?.closest<HTMLElement>(".popover")?.getBoundingClientRect();
+        const head = menu?.parentElement?.getBoundingClientRect();
+        if (!menu || !panel || !head) return;
+        const pad = sp(8);
+        const top = head.bottom + sp(2);
+        const shift = Math.max(0, Math.min(menu.scrollHeight - (panel.bottom - pad - top), top - panel.top - pad));
+        menu.style.marginTop = shift ? `${-shift}px` : "";
+        menu.style.maxHeight = `${panel.bottom - pad - (top - shift)}px`;
+    };
     const openAccounts = () => {
         setAcctOpen(true);
+        placeAccounts();
         const items = acctItems();
-        (items.find((el) => el.getAttribute("aria-checked") === "true") ?? items[0])?.focus();
+        focusAccount(items.find((el) => el.getAttribute("aria-checked") === "true") ?? items[0]);
     };
     const closeAccounts = (refocus = true) => {
         setAcctOpen(false);
@@ -211,7 +233,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
         if (acctOpen() && acctMenu?.contains(target) && ["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) {
             e.preventDefault();
             const items = acctItems();
-            items[menuIndex(items.length, items.indexOf(target as HTMLButtonElement), e.key)]?.focus();
+            focusAccount(items[menuIndex(items.length, items.indexOf(target as HTMLButtonElement), e.key)]);
             return;
         }
         if (target === acctBtn && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
@@ -427,6 +449,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                                             <span>This session's account was removed. Choose another.</span>
                                         </div>
                                     </Show>
+                                    <div class="mp-acct-list">
                                     <For each={accountChoices(provider())}>
                                         {(a) => (
                                             <button class="menu-item" role="menuitemradio" aria-checked={a.id === selectedAccount(provider())} onClick={() => pickAccount(provider(), a)}>
@@ -442,6 +465,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                                             </button>
                                         )}
                                     </For>
+                                    </div>
                                     <div class="menu-sep" role="separator" />
                                     <button class="menu-item" role="menuitem" onClick={() => addAccount(provider())}>
                                         <Plus size={14} />
