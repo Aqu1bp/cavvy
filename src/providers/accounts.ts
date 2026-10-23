@@ -9,6 +9,7 @@ import { paths } from "../config/paths";
 import { canonical } from "../util/files";
 import { readAgentConfig, readProvidersFileForUpdate, writeProvidersFile, type CliAccount, validAccountFolder } from "./registry";
 import { RpcError } from "../server/rpc-error";
+import { catalogSentence, type NoticeAccount } from "../server/protocol";
 import { ensureSharedLayout, isSharedLink, type SharedLayout } from "./account-layout";
 
 export const ACCOUNT_PROVIDERS = ["claude-code", "codex"] as const;
@@ -99,28 +100,21 @@ export function catalogNote(provider: string, selected: CliAccount, cli: string)
     const from = defaultAccount(provider);
     if (from === selected.id) return undefined;
     const source = listAccounts(provider).find((a) => a.id === from)?.name ?? from;
-    return `${cli}'s model list, with each model's effort and speed options, comes from its starting account (${source}); ${selected.name} may not offer all of them.`;
+    return catalogSentence(cli, source, selected.name);
 }
 /**
- * What a session's switch to `selected` is told: how its conversation goes on with the CLI, and where the CLI's
- * model list comes from (catalogNote). `native`: the native session was kept (the new account's CLI finds it: its
- * home shares the history), and is resumed there. `returned`: the native thread the session had where the new
- * account's CLI finds it (parked when it switched away, #413) goes on, sent what it missed. `handoff`: a new native
- * thread will be handed the conversation; `dropped` when there was a native session the new account can't resume.
- * Neither (no conversation yet): only the model list's note, if any.
+ * A session's switch to `selected`, as its notice draws it (#426): how its conversation goes on with the CLI.
+ * `native`: the native session was kept (the new account's CLI finds it: its home shares the history), and is
+ * resumed there. `returned`: the native thread the session had where the new account's CLI finds it (parked when it
+ * switched away, #413) goes on, sent what it missed. `handoff`: a new native thread will be handed the conversation;
+ * `dropped` when there was a native session the new account can't resume. Neither (no conversation yet): no notice.
+ * Where the CLI's model list comes from (catalogNote) is said in the model picker, not here.
  */
-export function accountSwitchNote(provider: string, selected: CliAccount, cli: string, how: "native" | "returned" | "handoff" | undefined, dropped = false): string | undefined {
-    const on = `Continuing on ${cli} · ${selected.name}:`;
-    const said = how === "native"
-        ? `${on} the same ${cli} session goes on, resumed natively (this account shares its history).`
-        : how === "returned"
-          ? `${on} the earlier ${cli} thread this account finds goes on, resumed natively, with what happened since its last turn.`
-          : how === "handoff"
-            ? `${on} starting a new ${cli} thread with this conversation as context${dropped ? ` (this account doesn't share the earlier ${cli} thread's history)` : ""}.`
-            : undefined;
-    return [said, catalogNote(provider, selected, cli)].filter(Boolean).join(" ") || undefined;
+export function accountSwitch(provider: string, selected: CliAccount, cli: string, how: "native" | "returned" | "handoff" | undefined, dropped = false): NoticeAccount | undefined {
+    if (!how) return undefined;
+    return { provider, cli, name: selected.name, how, ...(how === "handoff" && dropped ? { dropped: true as const } : {}) };
 }
-/** How a switch's conversation goes on (accountSwitchNote), from the native thread's id before it and after it. */
+/** How a switch's conversation goes on (accountSwitch), from the native thread's id before it and after it. */
 export function switchHow(before: string | undefined, after: string | undefined, conversation: boolean): "native" | "returned" | "handoff" | undefined {
     if (before !== undefined && after === before) return "native";
     if (after !== undefined) return "returned";

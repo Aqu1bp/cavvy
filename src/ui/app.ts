@@ -55,7 +55,7 @@ import { killAllShells, runShell, childEnv } from "../tools/bash";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
 import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveModelInfo, reviewTarget, smallModelFor, lookupModel, type ProviderListing } from "../providers/models";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
-import { account, accountSwitchNote, removedAccount, removedAccountNote, switchHow } from "../providers/accounts";
+import { account, accountSwitch, catalogNote, removedAccount, removedAccountNote, switchHow } from "../providers/accounts";
 import { RpcError } from "../server/rpc-error";
 import { assistantText, modelRef, parseModelRef, textOf, type ImagePart, type Message, type ModelInfo, type ProviderClient, type TextPart, type ToolCallPart, type UserContent } from "../providers/types";
 import { formatCost, formatTokens } from "../providers/pricing";
@@ -74,7 +74,7 @@ import { redact } from "../util/redact";
 import { SecretStore, secretValueError } from "../agent/secrets";
 import { planLimitKey } from "../server/protocol";
 import { mergeLimits } from "../backends/limits";
-import type { PlanLimits } from "../server/protocol";
+import type { PlanLimits, StoppedTask } from "../server/protocol";
 
 export interface AppInit {
     cwd: string;
@@ -571,28 +571,31 @@ export class App {
         if (this.agent?.accountChanged(provider)) this.idleCompact.disarm();
         const name = getProvider(provider)?.name ?? provider;
         const how = switchHow(had, this.session.backends.get(provider)?.id, this.session.messages.length > 0);
-        const note = accountSwitchNote(provider, selected, name, how, had !== undefined && how !== "native");
-        const text = how ? note! : [`Using ${name} · ${selected.name}.`, note].filter(Boolean).join(" ");
-        this.session.recordNotice("info", text);
-        this.notice(text);
+        // Kept as the desktop keeps it (one line, the latest of switches with no message between); the model list's
+        // caveat is only said here, in the terminal, which has no picker to say it.
+        const switched = accountSwitch(provider, selected, name, how, had !== undefined && how !== "native");
+        const line = switched ? this.session.recordSwitch(switched).notice : undefined;
+        if (line) this.notice(line.text);
+        else this.notice(`Using ${name} · ${selected.name}.`);
+        const catalog = catalogNote(provider, selected, name);
+        if (catalog) this.notice(catalog);
         this.renderLive();
         // As the desktop's (Runtime.setAccount): the process signed in as the earlier account goes now, with its work.
         // Turns it started that wait to be taken over, or that it starts while it's let go of, aren't (dropAdopt, #408).
         // Counted: a second switch meanwhile can finish first (nothing left to let go of), and this one's still going.
-        let stopped = 0;
+        let stopped: StoppedTask[] = [];
         this.releasing.set(provider, (this.releasing.get(provider) ?? 0) + 1);
         try {
             for (const w of this.adopts.filter((w) => w.provider === provider)) this.dropAdopt(w);
-            stopped = (await this.agent?.releaseAccountProcess(provider)) ?? 0;
+            stopped = (await this.agent?.releaseAccountProcess(provider)) ?? [];
         } finally {
             const left = (this.releasing.get(provider) ?? 1) - 1;
             if (left) this.releasing.set(provider, left);
             else this.releasing.delete(provider);
         }
-        if (stopped) {
-            const message = `${name} was restarted for the account change: ${stopped === 1 ? "1 background task" : `${stopped} background tasks`} stopped.`;
-            this.session.recordNotice("warn", message);
-            this.notice(message, "warn");
+        if (stopped.length) {
+            this.session.recordStopped(line, { provider, cli: name, tasks: stopped });
+            this.notice(`${name} was restarted for the account change, which stopped:\n${stopped.map((t) => `· ${t.label}`).join("\n")}`, "warn");
             this.renderLive();
         }
         this.releaseForAccount(provider);

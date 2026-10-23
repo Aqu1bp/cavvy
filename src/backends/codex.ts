@@ -18,7 +18,8 @@ import { ONE_OFF_TIMEOUT_MS, oneOffAnswer, oneOffPrompt, oneOffRefusal } from ".
 import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
 import type { PlanLimits } from "../server/protocol";
-import { codexReachedType, creditsNote, limitAccountLabel, limitStopReport, mergeLimits, parseCodexRateLimits, resetSentence } from "./limits";
+import { cliNotice } from "./notice-data";
+import { codexReachedType, creditsNote, limitAccountLabel, limitNotice, limitStopOf, limitStopReport, mergeLimits, parseCodexRateLimits, resetSentence } from "./limits";
 import type { PermissionMode } from "../permissions/modes";
 import { analyzeCommand } from "../permissions/bash-safety";
 import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
@@ -1109,7 +1110,7 @@ export class CodexTurn {
         const answer = answerOf(this.answer) || undefined;
         const notSent = this.promptDelivery === "unsent" || this.promptDelivery === "refused";
         if (this.aborted) return { reason: "aborted", text, answer, actions: this.actions, ...(notSent ? { refused: true } : {}) };
-        if (this.failure) return { reason: "error", text, answer, actions: this.actions, error: this.limitHit ? `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached. ${resetSentence(this.limits?.resetsAt, "Codex")} Choose another account with /account or the plan meter, then send again.` : this.failure, ...(this.limitHit ? { limit: { resetsAt: this.limits?.resetsAt } } : {}), ...(notSent ? { refused: true } : {}) };
+        if (this.failure) return { reason: "error", text, answer, actions: this.actions, error: this.limitHit ? `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached. ${resetSentence(this.limits?.resetsAt, "Codex")} Choose another account with /account or the plan meter, then send again.` : this.failure, ...(this.limitHit ? { limit: limitStopOf(this.limits, this.limits?.resetsAt) } : {}), ...(notSent ? { refused: true } : {}) };
         return { reason: "done", text, answer, actions: this.actions };
     }
 
@@ -1390,7 +1391,7 @@ export class CodexTurn {
             case "configWarning":
             case "deprecationNotice": {
                 const msg = String(p.message ?? p.summary ?? "").trim();
-                if (msg) this.sink.emit({ type: "notice", level: "info", message: `Codex: ${msg}` });
+                if (msg) this.sink.emit({ type: "notice", level: "info", message: `Codex: ${msg}`, data: cliNotice(this.def.id, "info", msg) });
                 break;
             }
             case "item/autoApprovalReview/completed": {
@@ -1447,7 +1448,8 @@ export class CodexTurn {
                 if (reached && !this.limitNoted) {
                     this.limitNoted = true;
                     // On credits it isn't a stop: the turn goes on, and it costs.
-                    this.sink.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached (${reached})${creditsNote(this.limits)}. ${resetSentence(this.limits?.resetsAt, "Codex")}` });
+                    const credits = creditsNote(this.limits);
+                    this.sink.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached (${reached})${credits}. ${resetSentence(this.limits?.resetsAt, "Codex")}`, data: { source: this.def.id, limit: limitNotice(this.def.id, this.t.accountId, this.limits, { credits: Boolean(credits) }) } });
                 }
                 break;
             }
@@ -1551,7 +1553,7 @@ export class CodexTurn {
             case "warning":
             case "configWarning": {
                 const msg = String(p.message ?? p.summary ?? "").trim();
-                if (msg) this.subEmit(sub, { type: "notice", level: "info", message: `Codex: ${msg}` });
+                if (msg) this.subEmit(sub, { type: "notice", level: "info", message: `Codex: ${msg}`, data: cliNotice(this.def.id, "info", msg) });
                 break;
             }
         }

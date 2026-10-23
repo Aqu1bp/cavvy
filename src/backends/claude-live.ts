@@ -41,7 +41,8 @@ import { ClaudeGoalWatch, claudeTranscriptFile } from "./claude-goal";
 import { CLAUDE_CLI, cliMessage, requireCli, type JsonLinesProcess } from "./cli";
 import { agentCli, type AgentCliDef, type CliCapabilities } from "./defs";
 import type { AgentCliStatus } from "./index";
-import { creditsNote, limitAccountLabel, limitNews, limitStopReport, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
+import { cliNotice } from "./notice-data";
+import { creditsNote, limitAccountLabel, limitNews, limitNotice, limitStopOf, limitStopReport, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
 import { liveDebug } from "./live/debug";
 import { LiveCliPool } from "./live/pool";
 import { EXIT_DRAIN_MS, PromptRefused, spawnFingerprint, type LiveCliSession, type LiveOptions, type LiveTurnResult } from "./live/session";
@@ -322,6 +323,8 @@ export class ClaudeConnection implements CliConnection {
     private tools = new Map<string, PendingTool>();
     private streamingTools = new Map<number, string>();
     private agentLabels = new Map<string, string>();
+    /** Bash calls' commands, by call: a background one's task says its description, and its command goes with it. */
+    private bashCommands = new Map<string, string>();
     private liveAgents = new Set<string>();
     private endedAgents = new Map<string, TurnEndReason>();
     private subTools = new Map<string, PendingTool & { parent: string }>();
@@ -900,11 +903,11 @@ export class ClaudeConnection implements CliConnection {
             liveDebug("claude", "turn: result, steering still to come", { ref, left });
             return;
         }
-        this.endTurn(ref, reason, reason === "error" ? failure : undefined, reason === "error" && this.limitHit ? { resetsAt: this.limits?.reached ? this.limits.resetsAt : undefined } : undefined);
+        this.endTurn(ref, reason, reason === "error" ? failure : undefined, reason === "error" && this.limitHit ? limitStopOf(this.limits, this.limits?.reached ? this.limits.resetsAt : undefined) : undefined);
     }
 
     /** The harness turn is over: once only. `refused`: its prompt never reached Claude Code's session (unstartedPrompt). */
-    private endTurn(ref: string, reason: TurnEndReason, error?: string, limit?: { resetsAt?: number }, refused = false) {
+    private endTurn(ref: string, reason: TurnEndReason, error?: string, limit?: { resetsAt?: number; window?: string }, refused = false) {
         this.stopOnStart.delete(ref);
         const answers = this.answeredBy.get(ref) ?? [ref];
         for (const id of this.outstanding.get(ref) ?? []) {
@@ -1008,12 +1011,14 @@ export class ClaudeConnection implements CliConnection {
         const running = was?.status === "running" ? was : undefined;
         const toolUseId = o.toolUseId ?? running?.toolUseId;
         const agent = Boolean(o.agent || (toolUseId && this.agentLabels.has(toolUseId)));
+        const command = toolUseId ? this.bashCommands.get(toolUseId) : undefined;
         const task: BackgroundTaskInfo = {
             id,
             provider: this.def.id,
             kind: running && !o.type && !agent ? running.kind : taskKind(o.type ?? "", agent),
             // Redacted whole, then cut: a secret across the cut would leave a piece of itself unredacted.
             label: redact(o.label || running?.label || (toolUseId ? this.agentLabels.get(toolUseId) : undefined) || "background task").slice(0, 300),
+            ...(command ? { command: redact(command).slice(0, 2000) } : {}),
             ...(toolUseId ? { toolUseId } : {}),
             startedAt: running?.startedAt ?? Date.now(),
             status: "running",
@@ -1133,7 +1138,10 @@ export class ClaudeConnection implements CliConnection {
                 this.emit({ type: "notice", level: "info", message: "Claude Code compacted its context." });
                 return;
             case "informational":
-                if (typeof m.content === "string" && m.content.trim()) this.emit({ type: "notice", level: m.level === "warning" ? "warn" : m.level === "error" ? "error" : "info", message: m.content });
+                if (typeof m.content === "string" && m.content.trim()) {
+                    const level = m.level === "warning" ? "warn" : m.level === "error" ? "error" : "info";
+                    this.emit({ type: "notice", level, message: m.content, data: cliNotice(this.def.id, level, m.content) });
+                }
                 return;
         }
     }
@@ -1264,6 +1272,10 @@ export class ClaudeConnection implements CliConnection {
                 const title = titleFor(name, input);
                 this.tools.set(b.id, { name, input, title, started: Date.now() });
                 if (b.name === "Agent" || b.name === "Task") this.agentLabels.set(b.id, String(input.description ?? input.subagent_type ?? "sub-agent"));
+                if (b.name === "Bash" && typeof b.input?.command === "string") {
+                    this.bashCommands.set(b.id, b.input.command);
+                    if (this.bashCommands.size > 100) this.bashCommands.delete(this.bashCommands.keys().next().value!);
+                }
                 this.emit({ type: "tool_start", call: { type: "tool_call", id: b.id, name, input }, title });
             }
         }
@@ -1459,8 +1471,9 @@ export class ClaudeConnection implements CliConnection {
             if (this.reachedNoted) return;
             this.reachedNoted = true;
             // On extra usage it isn't a stop: the turn goes on, and it costs.
-            this.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.cfg.accountId)}: ${which}usage limit reached${creditsNote(this.limits, "extra usage")}. ${resetSentence(this.limits?.resetsAt, "Claude Code")}` });
-        } else if (news) this.emit({ type: "notice", level: "info", message: `${limitAccountLabel(this.def.id, this.cfg.accountId)}: close to the ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}` });
+            const credits = creditsNote(this.limits, "extra usage");
+            this.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.cfg.accountId)}: ${which}usage limit reached${credits}. ${resetSentence(this.limits?.resetsAt, "Claude Code")}`, data: { source: this.def.id, limit: limitNotice(this.def.id, this.cfg.accountId, this.limits, { window: w?.label, credits: Boolean(credits) }) } });
+        } else if (news) this.emit({ type: "notice", level: "info", message: `${limitAccountLabel(this.def.id, this.cfg.accountId)}: close to the ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}`, data: { source: this.def.id } });
     }
 
     // ---- control

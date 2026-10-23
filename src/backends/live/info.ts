@@ -8,6 +8,8 @@ export interface BackgroundTaskInfo {
     provider: string;
     kind: "agent" | "shell" | "monitor" | "workflow" | "other";
     label: string;
+    /** A shell's whole command, where the label is a description of it or the command cut short (redacted). */
+    command?: string;
     /** The call that launched it: its row stays in the launching turn. */
     toolUseId?: string;
     /** The harness turn that launched it. */

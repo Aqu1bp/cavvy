@@ -88,7 +88,7 @@ test("with two switches overlapping, a turn that comes after the second ends but
     let calls = 0;
     app.agent!.releaseAccountProcess = async () => {
         if (calls++ === 0) await new Promise<void>((r) => (finishFirst = r));
-        return 0;
+        return [];
     };
     const first = app.setAccount("codex", codex.id);
     await app.setAccount("codex", "default");

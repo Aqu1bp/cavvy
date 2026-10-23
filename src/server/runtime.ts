@@ -17,7 +17,7 @@ import { beforeFork, forkCut, forkTargets } from "../agent/fork";
 import { fireHooks, type HookEvent } from "../agent/hooks";
 import { backgroundWork, canAnswerOneOff, GoalController, goalClearedNotice, limitedCodexGoal, loopGoalDropped, nativeGoalBack, nativeGoalEnd, nativeGoalLeft, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, queuedGoalSet, sessionTokens, type NativeGoal } from "../agent/goal";
 import { sessionHookServices, sessionStartHooks } from "../agent/session-hooks";
-import { Session } from "../agent/session";
+import { Session, type TurnNotice } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { INIT_PROMPT, reviewPrompt } from "../commands/index";
 import { expandCommand, pluginCommandFor, slashCommand } from "../commands/custom";
@@ -42,7 +42,7 @@ import { isAgentBackend, type BackendWake, type BackgroundStop } from "../backen
 import { SessionBackground } from "../agent/background";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { agentCli, type AttachmentKind } from "../backends/defs";
-import { account, accountSwitchNote, removedAccount, removedAccountNote, switchHow } from "../providers/accounts";
+import { account, accountSwitch, removedAccount, removedAccountNote, switchHow } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
 import { continuationGroups, modelRef, parseModelRef, textOf, toolCallsOf, assistantText, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
 import { expandMentions } from "../ui/mentions";
@@ -63,7 +63,7 @@ import { GitHandles, redactedError } from "./git-handles";
 import { sessionWorktree, sessionWorktrees } from "./session-worktrees";
 import { gitPublishInfo, gitPublish, gitPrState } from "./git-publish";
 import { COMMIT_MESSAGE_SYSTEM, gitCommit, gitCommitPrompt } from "./git-commit";
-import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, isPrompt, runsAgent, promptKey, promptText, readSegments, replay, resultPatch, shownStep, STEERING, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
+import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, isPrompt, runsAgent, promptKey, promptText, liveNotice, noticeBlock, readSegments, replay, resultPatch, shownStep, STEERING, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
 import { TurnSnapshots } from "../agent/turn-snapshots";
 import { IdleCompactTimer } from "../agent/idle-compact";
 import type {
@@ -96,6 +96,8 @@ import type {
     Turn,
     TurnStatus,
     WireFile,
+    NoticeData,
+    StoppedTask,
 } from "./protocol";
 import { applyOp, coalesce, findBlock, findTurn, type SessionView } from "./timeline";
 import { planTitle } from "./plans";
@@ -897,29 +899,33 @@ export class Runtime {
         this.setState({ accounts: { "claude-code": this.session.accountId("claude-code"), codex: this.session.accountId("codex") } });
         const name = getProvider(provider)?.name ?? provider;
         const how = switchHow(had, this.session.backends.get(provider)?.id, this.session.messages.length > 0);
-        const text = accountSwitchNote(provider, selected, name, how, had !== undefined && how !== "native");
-        if (text) {
-            this.session.recordNotice("info", text);
-            this.notice(text);
+        // One line between turns; where the CLI's model list comes from is the model picker's to say (#426).
+        const switched = accountSwitch(provider, selected, name, how, had !== undefined && how !== "native");
+        let line: TurnNotice | undefined;
+        if (switched) {
+            const r = this.session.recordSwitch(switched);
+            this.switchNotice(r.notice, r.merged);
+            line = r.notice;
         }
         // The CLI's process for this session is signed in as the earlier account: it goes now, with its background
         // work, so no turn it starts by itself (a report) can be taken over under the new account. Turns it started
         // that are waiting to be taken over, or that it starts while it's let go of, aren't (dropAdopt, #408).
         // Counted: a second switch meanwhile can finish first (nothing left to let go of), and this one's still going.
-        let stopped = 0;
+        let stopped: StoppedTask[] = [];
         this.releasing.set(provider, (this.releasing.get(provider) ?? 0) + 1);
         try {
             for (const w of this.adopts.filter((w) => w.provider === provider)) this.dropAdopt(w);
-            stopped = (await this.agent?.releaseAccountProcess(provider)) ?? 0;
+            stopped = (await this.agent?.releaseAccountProcess(provider)) ?? [];
         } finally {
             const left = (this.releasing.get(provider) ?? 1) - 1;
             if (left) this.releasing.set(provider, left);
             else this.releasing.delete(provider);
         }
-        if (stopped) {
-            const message = `${name} was restarted for the account change: ${stopped === 1 ? "1 background task" : `${stopped} background tasks`} stopped.`;
-            this.session.recordNotice("warn", message);
-            this.notice(message, "warn");
+        // Said under this switch's line while it's the latest; else (a prompt came meanwhile, or another switch's
+        // line is said since) a line of their own, which says no switch: never this one's again (Session.recordStopped).
+        if (stopped.length) {
+            const r = this.session.recordStopped(line, { provider, cli: name, tasks: stopped });
+            this.switchNotice(r.notice, r.merged);
         }
         this.releaseForAccount(provider);
     }
@@ -1489,10 +1495,41 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Timeline building
 
-    notice(text: string, level: "info" | "warn" | "error" = "info") {
+    notice(text: string, level: "info" | "warn" | "error" = "info", data?: NoticeData) {
         const turn = this.currentTurn();
         this.closeOpen();
-        this.op({ op: "block", turnId: turn.id, block: { t: "notice", id: this.newId(), level, text: redact(text) } });
+        this.op({ op: "block", turnId: turn.id, block: liveNotice(this.newId(), level, text, data) });
+    }
+
+    /**
+     * An account switch's notice (or the tasks one stopped), as the session kept it: when it took the place of the
+     * switch before it (`merged`), that switch's line says it, where it is. The session's rule decides, not what's
+     * shown since: a notice that isn't kept (a status line) doesn't split a run of switches live either, so a
+     * reopened session shows the same lines (#426).
+     */
+    private switchNotice(n: TurnNotice, merged: boolean) {
+        const provider = n.account?.provider;
+        const at = merged && provider ? this.lastSwitchBlock(provider) : undefined;
+        if (at) {
+            this.op({ op: "block.patch", turnId: at.turnId, blockId: at.blockId, patch: { text: n.text, account: n.account } });
+            return;
+        }
+        const turn = this.currentTurn();
+        this.closeOpen();
+        this.op({ op: "block", turnId: turn.id, block: noticeBlock(n, this.newId()) });
+    }
+
+    /** The line of the latest switch on `provider` the transcript shows: the one a merged switch says itself in. */
+    private lastSwitchBlock(provider: string): { turnId: string; blockId: string } | undefined {
+        for (let i = this.view.turns.length - 1; i >= 0; i--) {
+            const t = this.view.turns[i]!;
+            if (t.archived) return undefined;
+            for (let j = t.blocks.length - 1; j >= 0; j--) {
+                const b = t.blocks[j]!;
+                if (b.t === "notice" && b.account?.provider === provider) return { turnId: t.id, blockId: b.id };
+            }
+        }
+        return undefined;
     }
 
     /** The turn output goes to: the running one, or a new one without a prompt. */
@@ -1649,7 +1686,7 @@ export class Runtime {
                 this.toolEnded(e.call, e.result, e.durationMs, e.title);
                 break;
             case "notice":
-                this.notice(e.message, e.level);
+                this.notice(e.message, e.level, e.data);
                 break;
             case "retry": {
                 // The partial response is thrown away and asked for again.
@@ -1952,7 +1989,7 @@ export class Runtime {
             }
             case "notice":
                 this.agentText.delete(id);
-                this.op({ op: "agent.block", id, block: { t: "notice", id: this.newId(), level: e.level, text: redact(e.message) } });
+                this.op({ op: "agent.block", id, block: liveNotice(this.newId(), e.level, e.message, e.data) });
                 break;
             case "retry":
                 this.agentPatch(id, { activity: `Retrying: ${redact(e.reason)}` });

@@ -29,7 +29,7 @@ import { registerTools } from "../mcp/server";
 import { CODEX_CLI, extraArgs, requireCli, type JsonLinesProcess } from "./cli";
 import { CODEX_HOOK_EVENTS, CODEX_HOOK_SERVER, codexHookArgs } from "./codex-hooks";
 import { codexInput, pastedPrompt, type CodexSkill } from "./native-skills";
-import { limitAccountLabel, limitStopReport, resetSentence } from "./limits";
+import { limitAccountLabel, limitStopOf, limitStopReport, resetSentence } from "./limits";
 import { agentCli, type CliCapabilities } from "./defs";
 import { LiveCliPool } from "./live/pool";
 import { PromptRefused, spawnFingerprint, type LiveCliSession, type LiveTurnResult, type LiveWake } from "./live/session";
@@ -665,7 +665,7 @@ export class CodexLiveConnection extends CodexTurn {
         if (this.aborted || run.aborted) return { reason: "aborted", text, answer, actions };
         const failure = this.modeKilled ?? this.failure ?? (r.reason === "error" ? (r.error ?? "Codex stopped before the turn finished") : undefined);
         run.failure = failure;
-        if (failure) return { reason: "error", text, answer, actions, error: this.limitHit ? `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached. ${resetSentence(this.limits?.resetsAt, "Codex")} Choose another account with /account or the plan meter, then send again.` : failure, ...(this.limitHit ? { limit: { resetsAt: this.limits?.resetsAt } } : {}) };
+        if (failure) return { reason: "error", text, answer, actions, error: this.limitHit ? `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached. ${resetSentence(this.limits?.resetsAt, "Codex")} Choose another account with /account or the plan meter, then send again.` : failure, ...(this.limitHit ? { limit: limitStopOf(this.limits, this.limits?.resetsAt) } : {}) };
         return { reason: "done", text, answer, actions };
     }
 
@@ -1050,7 +1050,7 @@ export class CodexLiveConnection extends CodexTurn {
     }
 
     private reportTerminal(term: Terminal, status: BackgroundTaskInfo["status"]) {
-        this.events({ t: "task", task: { id: term.itemId, provider: this.def.id, kind: "shell", label: shown(term.command, 200) || `process ${term.processId}`, toolUseId: term.itemId, startedAt: term.startedAt, status, stoppable: this.terminalsApi } });
+        this.events({ t: "task", task: { id: term.itemId, provider: this.def.id, kind: "shell", label: shown(term.command, 200) || `process ${term.processId}`, ...(term.command.length > 200 ? { command: shown(term.command, 2000) } : {}), toolUseId: term.itemId, startedAt: term.startedAt, status, stoppable: this.terminalsApi } });
     }
 
     /** Terminals the list doesn't have (they ended with their turn, unannounced): gone, once their end hasn't come. */
