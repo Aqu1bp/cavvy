@@ -69,7 +69,7 @@ import { rewindCommand } from "./rewind";
 import { GoalController, goalClearedNotice, goalSummary, parseGoalCommand } from "../agent/goal";
 import { checkAgentCli, vendorOf, type AgentCliStatus } from "../backends/index";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
-import { account, addAccount, holdLogin, listAccounts } from "../providers/accounts";
+import { account, accountSharingWarning, addAccount, holdLogin, listAccounts } from "../providers/accounts";
 import { loginCommand as accountLoginCommand } from "../backends/account-login";
 import { clockTime, limitAccountLabel, limitLines } from "../backends/limits";
 import { describeJob, shortTime } from "../agent/schedule";
@@ -536,11 +536,13 @@ async function addCliAccount(app: App, provider: string) {
     if (id === undefined) return;
     const name = await app.showDialog(new InputDialog({ title: "Account name", placeholder: "Personal" }));
     if (name === undefined) return;
-    const folder = await app.showDialog(new InputDialog({ title: "Account folder (optional)", header: [theme.muted("Leave empty for a private folder in Harness's accounts directory."), theme.muted("A new folder starts with separate CLI settings and history.")], placeholder: "/absolute/path" }));
+    const folder = await app.showDialog(new InputDialog({ title: "Account folder (optional)", header: [theme.muted("Leave empty for a folder in Harness's accounts directory that shares Default's settings and history."), theme.muted("An existing folder is used as it is.")], placeholder: "/absolute/path" }));
     if (folder === undefined) return;
     // An account only selects a CLI's folder (#375): what's running goes on as it is.
     const selected = addAccount(provider, { id: id.trim(), name: name.trim(), ...(folder.trim() ? { folder: folder.trim() } : {}) }, [app.cwd]);
     app.notice(`Created ${selected.name}: ${selected.folder}`);
+    const sharing = accountSharingWarning(provider, selected.id);
+    if (sharing) app.notice(sharing, "warn");
     if (provider === "claude-code") app.notice("Claude Console sign-ins without an API key are stored outside the config folder and are not isolated per account.", "warn");
     await signInCliAccount(app, provider, selected.id);
 }
