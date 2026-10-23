@@ -5,6 +5,7 @@
 // sends it the prompt, shows what it does and answers its permission prompts.
 
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
+import type { NativeGoal } from "../agent/goal";
 import type { ImagePart, ModelInfo, PdfPart, ProviderClient, Usage } from "../providers/types";
 import type { PermissionMode } from "../permissions/modes";
 import type { Effort } from "../config/settings";
@@ -368,6 +369,13 @@ export interface AgentBackendClient extends ProviderClient {
     sendNow?(sessionKey: string, text: string): boolean;
     /** Restart a session's live CLI process (it didn't answer an interrupt): what runs under it stops. */
     restart?(sessionKey: string): Promise<void>;
+    /**
+     * The session switched to another model (#412): the CLI's own goal, if it's going on, is paused in the CLI kept
+     * for the session, so it starts no turns of its own for it, and one it started for it is stopped. Its background
+     * work goes on. Returns the goal as paused, or undefined when there was none going on (or no CLI running). Throws
+     * when the CLI didn't take the pause.
+     */
+    pauseGoal?(sessionKey: string): Promise<NativeGoal | undefined>;
     /**
      * A wake the session won't take over (it's on another model) that carries no report (a Claude Code monitor's
      * event: only the turn it starts sees its output): what that turn said, once it has ended (however long that

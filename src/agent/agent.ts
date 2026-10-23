@@ -1977,6 +1977,20 @@ export class Agent {
         return this.backgroundTasks().filter((t) => running.has(t.id) && t.status !== "running").length;
     }
 
+    /**
+     * The session switched away from an agent CLI (#412): its own goal, if it's going on, pauses in the process its
+     * backend keeps for the session (AgentBackendClient.pauseGoal), with that process's background work left running.
+     * Returns the goal as paused, or undefined with none going on. Throws when the CLI didn't take the pause.
+     */
+    async pauseNativeGoal(provider: string): Promise<NativeGoal | undefined> {
+        for (const b of this.backendsUsed) {
+            if ((b as { def?: { id?: string } }).def?.id !== provider || !b.pauseGoal) continue;
+            const g = await b.pauseGoal(this.session.meta.id);
+            if (g) return g;
+        }
+        return undefined;
+    }
+
     /** Whether a model can run a delegated task: its provider is set up, and the model exists there. */
     private async checkModel(ref: string): Promise<string | { effortLevels?: Effort[]; effort?: Effort }> {
         const p = parseModelRef(ref);

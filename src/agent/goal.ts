@@ -542,6 +542,18 @@ export function loopGoalDropped(condition: string, provider: string): string {
     return `Goal cleared: ${clip(condition, 200)}. ${by} keeps goals of its own: /goal <condition> sets one there.`;
 }
 
+/** A CLI's goal paused as the session switched to another model (#412), with how many of its background tasks go on. */
+export function nativeGoalLeft(g: NativeGoal, background: number): string {
+    const by = NATIVE_NAMES[g.provider];
+    const tasks = background === 1 ? " Its background task keeps running." : background > 1 ? ` Its ${background} background tasks keep running.` : "";
+    return `${by}'s goal is paused while this session is on another model: ${clip(g.condition, 200)}.${tasks} Switch back to ${by} and send /goal resume to go on with it.`;
+}
+
+/** Back on the CLI whose goal paused when the session left it: how to go on. */
+export function nativeGoalBack(g: NativeGoal): string {
+    return `${NATIVE_NAMES[g.provider]}'s goal is paused: ${clip(g.condition, 200)}. /goal resume goes on with it.`;
+}
+
 /** What's said when a CLI's goal ends (met, or judged impossible); undefined while it goes on. */
 export function nativeGoalEnd(g: NativeGoal): string | undefined {
     if (g.status === "complete") return `✓ Goal achieved: ${g.condition}${g.lastReason ? `\n${g.lastReason}` : ""}`;
