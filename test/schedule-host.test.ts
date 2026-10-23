@@ -58,7 +58,10 @@ function host(opts: { settings?: Settings; session?: Session; busy?: boolean } =
     const runs: { prompt: string; label: string }[] = [];
     const notices: string[] = [];
     let busy = opts.busy ?? false;
+    // Which account and model the session is on (what a resume is tied to).
+    let identity = "claude-code:a|acct-1";
     const h = new SessionSchedules({
+        identity: () => identity,
         session: () => session,
         settings: () => opts.settings ?? {},
         idle: () => !busy,
@@ -75,6 +78,9 @@ function host(opts: { settings?: Settings; session?: Session; busy?: boolean } =
         setBusy(b: boolean) {
             busy = b;
             if (!b) h.poke();
+        },
+        setIdentity(x: string) {
+            identity = x;
         },
         setSession(s: Session) {
             session = s;
@@ -241,6 +247,70 @@ describe("auto-resume after a usage limit", () => {
         clock.advance(HOUR + MIN);
         // The loop at 0, 30 and 60 minutes; the resume a minute after the reset.
         expect(runs.map((r) => r.prompt)).toEqual(["x", "x", "x", RESUME_PROMPT]);
+    });
+});
+
+describe("a switched account or model and the waiting resume (#411)", () => {
+    test("switching the account or the model cancels it, and says so; switching to the same one doesn't", () => {
+        const { h, clock, runs, notices, setIdentity } = host();
+        h.turnEnded("error", { resetsAt: clock.t + HOUR });
+        expect(h.scheduler.size).toBe(1);
+        // Nothing changed (the same account picked again, or the same model): it stays.
+        h.cancelLimitResume("account");
+        h.cancelLimitResume("model");
+        expect(h.scheduler.size).toBe(1);
+        setIdentity("claude-code:a|acct-2");
+        h.cancelLimitResume("account");
+        expect(h.scheduler.size).toBe(0);
+        expect(notices.at(-1)).toBe("The automatic resume is cancelled: you switched the account.");
+        // Again, then the model.
+        setIdentity("claude-code:a|acct-2");
+        h.turnEnded("error", { resetsAt: clock.t + HOUR });
+        expect(h.scheduler.size).toBe(1);
+        setIdentity("codex:b|acct-2");
+        h.cancelLimitResume("model");
+        expect(h.scheduler.size).toBe(0);
+        expect(notices.at(-1)).toBe("The automatic resume is cancelled: you switched the model.");
+        clock.advance(3 * HOUR);
+        expect(runs).toEqual([]);
+        // Nothing waiting: no notice.
+        const n = notices.length;
+        h.cancelLimitResume("model");
+        expect(notices.length).toBe(n);
+    });
+
+    test("other schedules stay when the resume is cancelled", () => {
+        const { h, clock, setIdentity } = host();
+        h.loop("30m x");
+        h.turnEnded("error", { resetsAt: clock.t + HOUR });
+        setIdentity("other");
+        h.cancelLimitResume("model");
+        expect(h.scheduler.list().map((j) => j.kind)).toEqual(["loop"]);
+    });
+
+    test("when it fires on another account or model than the one that hit the limit, it is skipped", () => {
+        const { h, clock, runs, notices, setIdentity } = host();
+        h.turnEnded("error", { resetsAt: clock.t + HOUR });
+        // Switched without anyone telling the host.
+        setIdentity("claude-code:a|acct-2");
+        clock.advance(HOUR + MIN);
+        expect(runs).toEqual([]);
+        expect(h.scheduler.size).toBe(0);
+        expect(notices.at(-1)).toMatch(/skipped: the account or model is not the one that reached the limit/);
+        // A skipped resume isn't counted against the retries.
+        setIdentity("claude-code:a|acct-1");
+        for (let i = 0; i < MAX_RESUMES; i++) {
+            h.turnEnded("error", { resetsAt: clock.t + HOUR });
+            clock.advance(HOUR + MIN);
+        }
+        expect(runs.length).toBe(MAX_RESUMES);
+    });
+
+    test("on the same account and model it fires as before", () => {
+        const { h, clock, runs } = host();
+        h.turnEnded("error", { resetsAt: clock.t + HOUR });
+        clock.advance(HOUR + MIN);
+        expect(runs.map((r) => r.prompt)).toEqual([RESUME_PROMPT]);
     });
 });
 

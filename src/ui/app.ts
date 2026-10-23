@@ -261,6 +261,7 @@ export class App {
             session: () => this.session,
             settings: () => this.settings,
             idle: () => this.schedulable(),
+            identity: () => (this.model ? `${modelRef(this.model)}|${this.session.accountId(this.model.provider)}` : ""),
             run: (prompt, job, label) => this.runScheduled(prompt, label, job.kind === "resume"),
             notice: (text, level) => this.notice(text, level),
             changed: () => this.renderLive(),
@@ -562,6 +563,7 @@ export class App {
         const selected = account(provider, id);
         const had = this.session.backends.has(provider);
         if (!this.session.setAccount(provider, selected.id)) return;
+        this.schedules.cancelLimitResume("account");
         const name = getProvider(provider)?.name ?? provider;
         const native = had && this.session.backends.has(provider);
         const how = native ? "native" : this.session.messages.length ? "handoff" : undefined;
@@ -616,6 +618,7 @@ export class App {
         const prev = this.model;
         this.model = info;
         this.client = client;
+        this.schedules.cancelLimitResume("model");
         // A CLI's own goal stays with that CLI: another provider doesn't carry it on.
         if (this.nativeGoal && this.nativeGoal.provider !== info.provider) this.nativeGoal = undefined;
         this.dropLoopGoal();

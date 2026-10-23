@@ -378,6 +378,7 @@ export class Runtime {
             session: () => this.session,
             settings: () => this.settings(),
             idle: () => this.schedulable(),
+            identity: () => this.limitIdentity(),
             run: (prompt, job, label) => this.runScheduled(prompt, job, label),
             notice: (text, level) => this.notice(text, level),
             changed: () => {
@@ -874,11 +875,17 @@ export class Runtime {
         })());
     }
 
+    /** The model and, for a CLI, its account: what a resume waiting for a usage limit belongs to. */
+    private limitIdentity(): string {
+        return this.model ? `${modelRef(this.model)}|${this.session.accountId(this.model.provider)}` : "";
+    }
+
     async setAccount(provider: string, id: string) {
         if (this.busy) throw new RpcError("Switch accounts once this response is done, or interrupt it first.", "busy");
         const selected = account(provider, id);
         const had = this.session.backends.has(provider);
         if (!this.session.setAccount(provider, selected.id)) return;
+        this.schedules.cancelLimitResume("account");
         this.setState({ accounts: { "claude-code": this.session.accountId("claude-code"), codex: this.session.accountId("codex") } });
         const name = getProvider(provider)?.name ?? provider;
         const native = had && this.session.backends.has(provider);
@@ -930,6 +937,7 @@ export class Runtime {
         const prev = this.conversationStarted ? this.model : undefined;
         this.model = info;
         this.client = client;
+        this.schedules.cancelLimitResume("model");
         // A CLI's own goal stays with that CLI: another provider doesn't carry it on.
         if (this.nativeGoal && this.nativeGoal.provider !== info.provider) this.nativeGoalReported(null);
         // Nor does the loop's go on with a CLI, which keeps goals of its own (and gets /goal and the tab's buttons).
