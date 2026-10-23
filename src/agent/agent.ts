@@ -2379,22 +2379,24 @@ export class Agent {
                 return "error";
             }
             this.recordBackendTurn(provider, name, result);
+            // Whether the CLI had this prompt: not one it refused, or that was stopped before it went (refused too).
+            const delivered = adoptedRound || !result.refused;
             if (result.reason === "aborted" || signal.aborted) {
                 if (this.hookStop && !signal.aborted) {
                     this.endNotice("warn", `Stopped by a hook: ${this.hookStop}`);
                     this.hookStop = undefined;
-                    this.syncBackend(provider);
-                    return this.endBackendTurn(provider, "blocked");
+                    return this.endBackendTurn(provider, "blocked", delivered);
                 }
-                const r = declined ? this.endBackendTurn(provider, "denied") : this.interrupted(false);
-                this.syncBackend(provider);
+                const r = declined ? this.endBackendTurn(provider, "denied", delivered) : this.interrupted(false);
+                // Only past a prompt the CLI had: one stopped before it went goes again with the next.
+                if (delivered) this.syncBackend(provider);
                 return r;
             }
-            if (declined) return this.endBackendTurn(provider, "denied");
+            if (declined) return this.endBackendTurn(provider, "denied", delivered);
             if (result.reason === "error") {
                 this.limitStop = result.limit;
                 this.endNotice("error", redact(result.error || `${name} stopped with an error.`));
-                return this.endBackendTurn(provider, "error", adoptedRound || !result.refused);
+                return this.endBackendTurn(provider, "error", delivered);
             }
             if (result.reason === "max_turns") {
                 this.endNotice("warn", `Stopped after ${this.o.maxTurns ?? "the maximum"} model turns (max turns).`);
@@ -2471,8 +2473,9 @@ export class Agent {
      * prompt carries what comes after it (missedPrompt), so it moves only past what reached the CLI:
      * - a turn's prompt, once the CLI has it: as the CLI says its session id (runBackendTurn's SessionHost), and at
      *   the turn's end (endBackendTurn), whether it then answered, errored or was stopped;
-     * - not a prompt the CLI refused before taking it (BackendResult.refused, #407: a process that didn't start, Codex
-     *   not signed in, a turn Codex wouldn't start): back where it was (refusedBackendTurn). A CLI that took the prompt
+     * - not a prompt the CLI refused before taking it, or that was stopped before it went (BackendResult.refused, #407:
+     *   a process that didn't start, Codex not signed in, a turn Codex answered no to, Esc while a process was still
+     *   starting): back where it was (refusedBackendTurn), whatever the turn's end (error, stop, hook). A CLI that took the prompt
      *   and then failed (Claude Code signed out or at its limit, Codex at its limit) has it in its transcript, and sends
      *   it again on resume: sending it again here would double it;
      * - never by the CLI's own compaction (compactBackend, #406): it was sent nothing of this session's;

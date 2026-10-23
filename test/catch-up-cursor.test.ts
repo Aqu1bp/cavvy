@@ -24,7 +24,7 @@ const mock = startMockLlm({ delayMs: 0 });
 writeFileSync(join(iso.home, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: mock.url, requiresKey: false }] }));
 writeFileSync(join(iso.home, "settings.json"), JSON.stringify({ model: "mock:mock-opus", smallModel: "mock:mock-haiku" }));
 const root = tempDir("catch-up-cursor-");
-const FAKE_KEYS = ["FAKE_LOG", "FAKE_SCENARIO", "FAKE_SECOND_SCENARIO", "FAKE_CODEX_SCENARIO", "FAKE_CODEX_SCENARIOS", "FAKE_ACCOUNT", "FAKE_EXIT_AT_START", "FAKE_FAIL_TURN_START_AT"];
+const FAKE_KEYS = ["FAKE_LOG", "FAKE_SCENARIO", "FAKE_SECOND_SCENARIO", "FAKE_CODEX_SCENARIO", "FAKE_CODEX_SCENARIOS", "FAKE_ACCOUNT", "FAKE_EXIT_AT_START", "FAKE_FAIL_TURN_START_AT", "FAKE_GOAL_ACTIVATE_FAIL", "FAKE_SLOW_TURN_START", "FAKE_CRASH_FILE", "FAKE_HANG_INIT", "FAKE_HANG_INITIALIZE"];
 const prior = Object.fromEntries(FAKE_KEYS.map((k) => [k, process.env[k]]));
 afterAll(() => {
     setEnv(prior);
@@ -223,9 +223,10 @@ async function harness(provider: "claude-code" | "codex", live: boolean, name: s
         tools: BUILTIN_TOOLS,
         mode: { get: () => "plan", set: () => {} },
         toolState: { cwd: root, projectRoot: root, fileState: new Map(), todos: [], shells: new Map() },
-        host: { emit: () => {}, ui: {}, askPermission: async () => ({ allow: false }) },
+        // A host that takes wakes: without one, Claude Code runs a process per turn whatever the setting (untilQuiet).
+        host: { emit: () => {}, ui: {}, askPermission: async () => ({ allow: false }), ...(live ? { wake: () => {} } : {}) },
     });
-    const run = (text: string) => agent.run([{ type: "text", text }], { signal: new AbortController().signal });
+    const run = (text: string, signal = new AbortController().signal) => agent.run([{ type: "text", text }], { signal });
     const lines = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
     /** Each prompt the CLI received (Claude Code's user messages, Codex's turn/start), as JSON. */
     const prompts = () => lines().filter((l) => l.received && (provider === "codex" ? l.received.method === "turn/start" : l.received.type === "user")).map((l) => JSON.stringify(l.received));
@@ -234,11 +235,12 @@ async function harness(provider: "claude-code" | "codex", live: boolean, name: s
         session.push({ role: "user", content: [{ type: "text", text: `hello ${TOKEN}` }], meta: { kind: "prompt", display: `hello ${TOKEN}` } });
         session.push({ role: "assistant", content: [{ type: "text", text: "Noted." }], provider: "mock", model: "mock-opus", stopReason: "end_turn" });
     };
-    return { session, agent, run, prompts, otherModel };
+    /** Each line the fake logged (what it was started with, what it received). */
+    return { session, agent, run, prompts, otherModel, lines };
 }
 
 const OK = { "claude-code": { FAKE_SCENARIO: "chat" }, codex: { FAKE_CODEX_SCENARIO: "cmd", FAKE_ACCOUNT: "chatgpt" } } as const;
-const CLEAR = { FAKE_SECOND_SCENARIO: undefined, FAKE_CODEX_SCENARIOS: undefined, FAKE_EXIT_AT_START: undefined, FAKE_FAIL_TURN_START_AT: undefined };
+const CLEAR = { FAKE_SECOND_SCENARIO: undefined, FAKE_CODEX_SCENARIOS: undefined, FAKE_EXIT_AT_START: undefined, FAKE_FAIL_TURN_START_AT: undefined, FAKE_GOAL_ACTIVATE_FAIL: undefined, FAKE_SLOW_TURN_START: undefined, FAKE_CRASH_FILE: undefined, FAKE_HANG_INIT: undefined, FAKE_HANG_INITIALIZE: undefined };
 
 for (const provider of ["claude-code", "codex"] as const)
     for (const live of [true, false])
@@ -307,3 +309,111 @@ for (const provider of ["claude-code", "codex"] as const)
                     }
                 }, 30_000);
         });
+
+// PR #417 review: a prompt counts as refused only when it's known not to have reached the CLI.
+describe("delivered or not, as known (#417 review)", () => {
+    /** The fake's processes started so far (not its `auth status` checks). */
+    const runs = (h: Awaited<ReturnType<typeof harness>>) => h.lines().filter((l) => l.pid && l.argv?.[0] !== "auth").length;
+
+    test("Codex live: turn/start answered, then making the /goal active fails: delivered, so it isn't sent again", async () => {
+        setEnv({ ...CLEAR, ...OK.codex, FAKE_GOAL_ACTIVATE_FAIL: "1" });
+        const h = await harness("codex", true, "cx-live-goal-activate-fails");
+        try {
+            expect(await h.run("first")).toBe("done");
+            h.otherModel();
+            const before = h.prompts().length;
+            expect(await h.run("/goal the tests pass")).toBe("error");
+            expect(count(h.prompts().slice(before).join("\n"), TOKEN)).toBe(1);
+            setEnv({ FAKE_GOAL_ACTIVATE_FAIL: undefined });
+            expect(await h.run("again?")).toBe("done");
+            expect(count(h.prompts().at(-1)!, TOKEN)).toBe(0);
+        } finally {
+            await h.agent.dispose();
+        }
+    }, 30_000);
+
+    // Unknowable: Codex may have started the turn (and recorded the prompt) before it went. Counted delivered, as only a
+    // known refusal resends: a possible loss of this catch-up, in this window only.
+    for (const live of [true, false])
+        test(`Codex ${live ? "live" : "per run"}: gone while turn/start waited for its answer: counted delivered`, async () => {
+            const crash = join(root, `crash-${live ? "live" : "run"}`);
+            setEnv({ ...CLEAR, ...OK.codex });
+            const h = await harness("codex", live, `cx-${live ? "live" : "run"}-gone-during-turn-start`);
+            try {
+                expect(await h.run("first")).toBe("done");
+                h.otherModel();
+                if (live) await h.agent.releaseBackends();
+                setEnv({ FAKE_SLOW_TURN_START: "5000", FAKE_CRASH_FILE: crash });
+                const before = h.prompts().length;
+                const turn = h.run("and now?");
+                await until(() => h.prompts().length > before);
+                writeFileSync(crash, "");
+                expect(await turn).toBe("error");
+                expect(count(h.prompts().slice(before).join("\n"), TOKEN)).toBe(1);
+                setEnv({ FAKE_SLOW_TURN_START: undefined, FAKE_CRASH_FILE: undefined });
+                expect(await h.run("again?")).toBe("done");
+                expect(count(h.prompts().at(-1)!, TOKEN)).toBe(0);
+            } finally {
+                await h.agent.dispose();
+            }
+        }, 30_000);
+
+    // #406 through a fork in place: the live thread is shared with a fork (/fork), so readying the compaction forks it,
+    // and the fork's id must reach the compaction's host, not the last turn's.
+    for (const provider of ["codex", "claude-code"] as const)
+        test(`${provider} live, shared with a fork, then compacted: the next prompt carries the missed turn, once`, async () => {
+            setEnv({ ...CLEAR, ...OK[provider] });
+            const h = await harness(provider, true, `${provider}-live-fork-compact`);
+            try {
+                expect(await h.run("first")).toBe("done");
+                h.otherModel();
+                // In memory (this session is never written): the entry is shared from now on.
+                h.session.markBackendForked(provider);
+                expect(h.session.backends.get(provider)?.fork).toBe(true);
+                const shared = h.session.backends.get(provider)!;
+                expect(await h.agent.compact({ auto: false, signal: new AbortController().signal })).toBe(true);
+                // A copy now: its own id, still where the shared one was.
+                expect(h.session.backends.get(provider)?.id).not.toBe(shared.id);
+                expect(h.session.backends.get(provider)?.synced).toBe(shared.synced);
+                expect(await h.run("and now?")).toBe("done");
+                expect(count(h.prompts().at(-1)!, TOKEN)).toBe(1);
+                expect(await h.run("again?")).toBe("done");
+                expect(count(h.prompts().at(-1)!, TOKEN)).toBe(0);
+            } finally {
+                await h.agent.dispose();
+            }
+        }, 30_000);
+
+    // Esc while the CLI was still starting (live: a new process; per run: before the handshake): nothing was sent.
+    const stuck: { provider: "claude-code" | "codex"; live: boolean; env: Record<string, string> }[] = [
+        { provider: "claude-code", live: true, env: { FAKE_HANG_INITIALIZE: "1" } },
+        { provider: "codex", live: true, env: { FAKE_HANG_INIT: "1" } },
+        { provider: "codex", live: false, env: { FAKE_HANG_INIT: "1" } },
+    ];
+    for (const c of stuck)
+        test(`${c.provider} ${c.live ? "live" : "per run"}: stopped while it was starting, before the prompt went: the next prompt carries the missed turn`, async () => {
+            setEnv({ ...CLEAR, ...OK[c.provider] });
+            const h = await harness(c.provider, c.live, `${c.provider}-${c.live ? "live" : "run"}-stopped-starting`);
+            try {
+                expect(await h.run("first")).toBe("done");
+                h.otherModel();
+                // Set first: a live session may start its next process as soon as the last one is let go.
+                setEnv(c.env);
+                const started = runs(h);
+                if (c.live) await h.agent.releaseBackends();
+                const ac = new AbortController();
+                const turn = h.run("and now?", ac.signal);
+                await until(() => runs(h) > started);
+                await Bun.sleep(300);
+                ac.abort();
+                expect(await turn).toBe("aborted");
+                setEnv(Object.fromEntries(Object.keys(c.env).map((k) => [k, undefined])));
+                expect(await h.run("again?")).toBe("done");
+                expect(count(h.prompts().at(-1)!, TOKEN)).toBe(1);
+                expect(await h.run("and after?")).toBe("done");
+                expect(count(h.prompts().at(-1)!, TOKEN)).toBe(0);
+            } finally {
+                await h.agent.dispose();
+            }
+        }, 40_000);
+});

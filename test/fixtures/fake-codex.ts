@@ -84,6 +84,7 @@
 // FAKE_RATE_LIMITS_RELEASE  hold the read's snapshot and turn until this file exists (cross-session races)
 // FAKE_CODEX_REROUTED_FIRST=1  FAKE_CODEX_REROUTED applies only to the first turn
 // FAKE_SCENARIO=usage-limit  the turn fails on the plan's limit (codexErrorInfo usageLimitExceeded)
+// FAKE_GOAL_ACTIVATE_FAIL=1  thread/goal/set making a goal active (status only) fails
 // FAKE_GOAL_TURNS     thread goals (thread/goal/get, set, clear): while one is active, each turn that ends (and
 //                     making it active while idle) starts another of Codex's own, until this many have run
 //                     (default 2) and it's complete;
@@ -993,6 +994,8 @@ async function handle(m: any) {
             return reply({ goal: goals.has(p.threadId) ? goalOut(goals.get(p.threadId)!) : null });
         case "thread/goal/set": {
             if (process.env.FAKE_NO_GOALS === "1") return fail(`unknown method ${m.method}`);
+            // FAKE_GOAL_ACTIVATE_FAIL=1: making a goal active (after its first turn started) fails.
+            if (process.env.FAKE_GOAL_ACTIVATE_FAIL === "1" && p.status === "active" && !p.objective) return fail("goal update failed");
             const was = goals.get(p.threadId);
             if (!was && !p.objective) return fail("no goal to update");
             const now = Math.floor(Date.now() / 1000);

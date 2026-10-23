@@ -1177,7 +1177,7 @@ class ClaudeTurn {
 
     async run(content: unknown[]): Promise<BackendResult> {
         const { signal } = this.t;
-        if (signal.aborted) return { reason: "aborted", text: "", actions: [] };
+        if (signal.aborted) return { reason: "aborted", text: "", actions: [], refused: true };
         let env: ReturnType<typeof accountEnv>;
         try {
             env = accountEnv(this.def.id, this.t.accountId, this.t.cwd);
@@ -1268,7 +1268,8 @@ class ClaudeTurn {
         for (const id of [...this.liveAgents]) this.endAgent(id, "aborted");
         for (const [id, p] of this.tools) this.endTool(id, p, this.aborted ? "Interrupted by user" : "Claude Code stopped before this finished.", true);
         const text = this.texts.join("\n\n");
-        if (this.aborted) return { reason: "aborted", text, actions: this.actions, backgroundStopped };
+        // Stopped before the prompt went: Claude Code never had it.
+        if (this.aborted) return { reason: "aborted", text, actions: this.actions, backgroundStopped, ...(this.prompted ? {} : { refused: true }) };
         const error = this.failure && this.diagnostic && !this.failure.includes(this.diagnostic) ? `${this.failure} ${this.diagnostic}` : this.failure;
         // A session it can't find ends with an error result (or exit) before init.
         const err = this.proc.stderr();

@@ -237,11 +237,11 @@ export class LiveCliSession {
             try {
                 deferred = await this.prepare(o.spawn, o.settings, signal);
             } catch (e) {
-                if (e instanceof Stopped || (e instanceof StartError && (this.closed || signal.aborted))) return { reason: "aborted" };
+                if (e instanceof Stopped || (e instanceof StartError && (this.closed || signal.aborted))) return { reason: "aborted", refused: true };
                 if (e instanceof StartError) return { reason: "error", error: e.message, refused: true };
                 throw e;
             }
-            if (signal.aborted) return { reason: "aborted" };
+            if (signal.aborted) return { reason: "aborted", refused: true };
             const r = await this.prompt(input, sink, signal);
             return deferred ? { ...r, deferred } : r;
         } finally {
@@ -543,7 +543,7 @@ export class LiveCliSession {
     private async prompt(input: TurnInput, sink: TurnSink, signal: AbortSignal): Promise<LiveTurnResult> {
         const conn = this.conn;
         // Stopped since it was readied.
-        if (!conn) return { reason: "aborted" };
+        if (!conn) return { reason: "aborted", refused: true };
         const gen = this.generation;
         const turn: Turn = { origin: "user", sink, held: [] };
         const done = new Promise<LiveTurnResult>((resolve) => (turn.resolve = resolve));
@@ -572,7 +572,7 @@ export class LiveCliSession {
                 (e) => {
                     known(undefined);
                     if (turn.abandonedAs !== undefined && this.abandoned.delete(turn.abandonedAs)) this.changed();
-                    this.finish(turn, { reason: "error", error: e instanceof Error ? e.message : String(e), refused: true });
+                    this.finish(turn, { reason: "error", error: e instanceof Error ? e.message : String(e), ...(e instanceof PromptRefused ? { refused: true } : {}) });
                     // Held while it was sent; not taken, so it had none of them: those that named no turn are no turn's.
                     if (gen === this.generation) for (const e of turn.held.splice(0)) e.t === "turn_event" && e.ref === undefined ? this.emitSession(e) : this.route(e);
                 },
@@ -712,6 +712,13 @@ export class LiveCliSession {
 
 /** A process that couldn't be started, or exited while starting: the turn ends with it as its error. */
 class StartError extends Error {}
+
+/**
+ * An adapter's prompt() never reached the CLI's session: nothing was written (the process had gone), or the CLI
+ * answered that it won't take it (Codex refusing turn/start). Only this rejection makes the turn's result refused
+ * (BackendResult.refused); any other may come after the CLI took the prompt, and counts as delivered.
+ */
+export class PromptRefused extends Error {}
 
 /** The turn was aborted, or the session closed, before its prompt was sent: the turn ends aborted. */
 class Stopped extends Error {}

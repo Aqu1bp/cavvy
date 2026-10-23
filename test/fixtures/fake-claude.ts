@@ -80,6 +80,7 @@
 // message_uuid} for a queued message stops only the running turn, and the message runs next. A command it
 // answers itself (/effort, /cost) is answered by a synthetic message, with no model call.
 // FAKE_EXIT_IDLE_MS  exits (a crash) this long after a result when nothing else comes
+// FAKE_HANG_INITIALIZE=1  never answers initialize
 // FAKE_SET_MODEL_FAIL=1  answers set_model and apply_flag_settings with an error
 // FAKE_SEND_NOW      "delivering" or "nothing_waiting": how it answers interrupt send_now (default: as 2.1.304)
 // FAKE_IGNORE_INTERRUPT=1  answers interrupt requests but doesn't stop the turn (an unanswered stop)
@@ -1075,6 +1076,8 @@ for await (const chunk of Bun.stdin.stream()) {
         log({ received: m });
         if (m.type === "control_request") {
             const sub = m.request?.subtype;
+            // FAKE_HANG_INITIALIZE=1: never answers initialize (a CLI stuck starting).
+            if (sub === "initialize" && process.env.FAKE_HANG_INITIALIZE === "1") continue;
             if (sub === "initialize") {
                 sdkHooks = m.request.hooks ?? {};
                 out({
