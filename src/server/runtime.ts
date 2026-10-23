@@ -68,6 +68,7 @@ import { TurnSnapshots } from "../agent/turn-snapshots";
 import { IdleCompactTimer } from "../agent/idle-compact";
 import type {
     AgentRun,
+    BackgroundTaskInfo,
     Block,
     ChangesInfo,
     GitChangesInfo,
@@ -1900,13 +1901,16 @@ export class Runtime {
     }
 
     /** A sub-agent's run, from its call: in a turn, or (a sub-agent's own) in its parent's activity, on its parent's model unless the call names one. */
-    private startAgent(id: string, parent?: string): AgentRun | undefined {
+    private startAgent(id: string, parent?: string, label?: string): AgentRun | undefined {
         const own = this.model && modelRef(this.model);
         if (parent === undefined) {
             const turnId = this.toolTurn.get(id);
             const call = turnId ? this.blockIn(turnId, id) : undefined;
             if (!turnId || call?.t !== "tool") return undefined;
-            this.op({ op: "agent", agent: { ...agentFromCall(call, turnId, own), startedAt: Date.now() } });
+            const run = agentFromCall(call, turnId, own);
+            // Claude Code's SendMessage resuming a sub-agent an earlier process started (#458): its run is that call's, named as the CLI names the agent, with what it was sent.
+            const resumed = call.name === "SendMessage" ? { description: label ? redact(label) : run.description, prompt: typeof call.input?.message === "string" ? call.input.message : run.prompt } : {};
+            this.op({ op: "agent", agent: { ...run, ...resumed, startedAt: Date.now() } });
         } else {
             const p = this.view.agents.find((x) => x.id === parent);
             const call = p?.blocks.find((b) => b.id === id);
@@ -1920,7 +1924,7 @@ export class Runtime {
     private trackAgent(id: string, label: string, e: AgentEvent, parent?: string) {
         let a = this.view.agents.find((x) => x.id === id);
         if (!a || a.replayed) {
-            a = this.startAgent(id, parent);
+            a = this.startAgent(id, parent, label);
             if (!a) return;
         }
         this.agentLabels.set(id, label);
@@ -3691,6 +3695,22 @@ export class Runtime {
         if (this.settings().agentCli?.liveSessions !== false) for (const t of news) this.engine.notifyBackground(this, { ...t, label: redact(t.label).slice(0, 300) });
         const tasks = bg.shown(src).map((t) => ({ ...t, label: redact(t.label).slice(0, 300) }));
         if (JSON.stringify(tasks) !== JSON.stringify(this.view.state.backgroundTasks ?? [])) this.setState({ backgroundTasks: tasks });
+        this.endAgentsGone(tasks);
+    }
+
+    /**
+     * A sub-agent whose background task went with its CLI's process (it exited, or was stopped or restarted) before
+     * the CLI said the agent ended: nothing of it runs any more, so its run is over too, stopped (#461 review).
+     * Its calls still open never got a result.
+     */
+    private endAgentsGone(tasks: readonly BackgroundTaskInfo[]) {
+        for (const t of tasks) {
+            if (t.kind !== "agent" || t.status !== "stopped" || !(t.withProcess || t.lost) || !t.toolUseId) continue;
+            const a = this.view.agents.find((x) => x.id === t.toolUseId && !x.replayed && (x.status === "running" || x.status === "waiting") && (t.endedAt === undefined || x.startedAt <= t.endedAt));
+            if (!a) continue;
+            for (const b of a.blocks) if (b.t === "tool" && (b.status === "running" || b.status === "streaming" || b.status === "queued" || b.status === "awaiting")) this.op({ op: "agent.block.patch", id: a.id, blockId: b.id, patch: { status: "error", summary: "Stopped with its process", progress: undefined } });
+            this.agentEnded(a.id, "aborted");
+        }
     }
 
     /** Restart the session's agent CLI process (/tasks restart): it didn't answer a stop, or new settings wait for its background work. */

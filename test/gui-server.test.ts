@@ -2506,6 +2506,107 @@ describe("sub-agents", () => {
             expect(call.durationMs).toBeGreaterThanOrEqual(250);
         }, 45_000);
 
+    for (const stranger of [false, true])
+        test(`a sub-agent Claude Code resumes with SendMessage (${stranger ? "one an earlier process started" : "after it finished"}) runs again as its run, which its row in the Agents tab opens (#458)`, async () => {
+            const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+            const { agentRows, workSection } = await import("../gui/src/lib/background");
+            const REPORT = "src/auth registers sign-in strategies in one list.";
+            const RESUMED = "Sessions last 60 minutes (src/auth/session.ts).";
+            saveAgentConfig("claude-code", { path: fakeClaude() });
+            if (stranger) process.env.FAKE_RESUME_STRANGER = "1";
+            else {
+                process.env.FAKE_SCENARIO = "agent-background";
+                process.env.FAKE_BACKGROUND_MS = "100";
+            }
+            process.env.FAKE_SECOND_SCENARIO = "agent-resume";
+            if (stranger) process.env.FAKE_SCENARIO = "agent-resume";
+            process.env.FAKE_RESUME_MS = "1500";
+            try {
+                const c = await client();
+                await c.call("models.list", { refresh: true });
+                const id = await c.open("session.create", { cwd: project() });
+                await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
+                if (!stranger) {
+                    await c.call("session.send", { id, text: "map the auth module" });
+                    await c.until(id, (v) => done(v) && v.agents[0]?.status === "done" && texts(lastTurn(v)).includes("The explorer reported back"), 30_000);
+                }
+                await c.call("session.send", { id, text: "ask it about sessions too" });
+                // While it works again: one run, running, and the task Claude Code lists is that run's, so its row opens it.
+                const runId = stranger ? "toolu_send1" : "toolu_agent";
+                await c.until(id, (v) => done(v) && (v.state.backgroundTasks ?? []).some((t) => t.kind === "agent" && t.status === "running"), 30_000);
+                let v = c.view(id);
+                expect(v.agents.map((a) => [a.id, a.description, a.status])).toEqual([[runId, "Map auth", "running"]]);
+                const task = v.state.backgroundTasks!.find((t) => t.status === "running")!;
+                expect([task.id, task.toolUseId]).toEqual([stranger ? "agent-9" : "agent-1", runId]);
+                const live = workSection(agentRows(v.state.backgroundTasks!, v.agents)).running;
+                expect(live.map((p) => [p.row.key, p.row.agent?.id, p.row.status])).toEqual([[runId, runId, "running"]]);
+                // Then it ends with its new report, its new steps after its earlier ones, and Claude Code's turn passes it on.
+                await c.until(id, (v) => done(v) && v.agents[0]?.status === "done" && texts(lastTurn(v)).includes("sessions last 60 minutes"), 30_000);
+                v = c.view(id);
+                expect(v.agents).toHaveLength(1);
+                const a = v.agents[0]!;
+                expect([a.id, a.status, a.report]).toEqual([runId, "done", RESUMED]);
+                const steps = a.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t));
+                expect(steps).toEqual(stranger ? ["Read:ok", RESUMED] : ["Read:ok", "Glob:ok", REPORT, "Read:ok", RESUMED]);
+                if (stranger) expect(a.prompt).toBe("Now check src/auth/session.ts too.");
+                const rows = agentRows(v.state.backgroundTasks!, v.agents);
+                expect(rows.map((r) => [r.key, r.agent?.id, r.status])).toEqual([[runId, runId, "done"]]);
+                // The Agent call keeps the report of the run it started.
+                if (!stranger) expect(tools(v.turns[0]!).find((b) => b.agent)!.output).toBe(REPORT);
+                c.close();
+            } finally {
+                for (const k of ["FAKE_SCENARIO", "FAKE_SECOND_SCENARIO", "FAKE_BACKGROUND_MS", "FAKE_RESUME_MS", "FAKE_RESUME_STRANGER"]) delete process.env[k];
+                removeAgentConfig("claude-code");
+            }
+        }, 60_000);
+
+    for (const [resumed, restart] of [[true, false], [true, true], [false, false]] as const)
+        test(`a ${resumed ? "resumed" : "background"} sub-agent whose Claude Code process ${restart ? "is restarted" : "exits"} before saying it ended is stopped with it, not left running (#461 review)`, async () => {
+            const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+            saveAgentConfig("claude-code", { path: fakeClaude() });
+            process.env.FAKE_SCENARIO = "agent-background";
+            if (resumed) {
+                process.env.FAKE_BACKGROUND_MS = "100";
+                process.env.FAKE_SECOND_SCENARIO = "agent-resume";
+                // Restarted (/tasks restart) while it works; or the process exits after its first step.
+                process.env.FAKE_RESUME_MS = restart ? "60000" : "300";
+                if (!restart) process.env.FAKE_RESUME_EXIT = "1";
+            } else {
+                // It works on long after the answer; the process goes away meanwhile.
+                process.env.FAKE_BACKGROUND_MS = "60000";
+                process.env.FAKE_EXIT_IDLE_MS = "400";
+            }
+            try {
+                const c = await client();
+                await c.call("models.list", { refresh: true });
+                const id = await c.open("session.create", { cwd: project() });
+                await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
+                await c.call("session.send", { id, text: "map the auth module" });
+                if (resumed) {
+                    await c.until(id, (v) => done(v) && v.agents[0]?.status === "done" && texts(lastTurn(v)).includes("The explorer reported back"), 30_000);
+                    await c.call("session.send", { id, text: "ask it about sessions too" });
+                    if (restart) {
+                        await c.until(id, (v) => done(v) && v.agents[0]?.status === "running", 30_000);
+                        await c.call("session.restartCli", { id });
+                    } else await c.until(id, (v) => v.agents[0]?.blocks.filter((b) => b.t === "tool").length === 3, 30_000);
+                }
+                // The process is gone: its task stopped with it, and so did the run.
+                await c.until(id, (v) => (v.state.backgroundTasks ?? []).some((t) => t.kind === "agent" && t.status === "stopped"), 30_000);
+                await c.until(id, (v) => v.agents.every((a) => a.status !== "running" && a.status !== "waiting"), 5_000).catch(() => {});
+                const v = c.view(id);
+                // (A resumed one's earlier run is listed too, done.)
+                expect(v.state.backgroundTasks!.filter((t) => t.kind === "agent").map((t) => [t.status, t.withProcess])).toEqual([...(resumed ? [["done", undefined]] : []), ["stopped", true]]);
+                expect(v.agents.map((a) => [a.id, a.status])).toEqual([["toolu_agent", "stopped"]]);
+                expect(v.agents[0]!.endedAt).toBeDefined();
+                // Its call that never got a result is closed with it.
+                expect(v.agents[0]!.blocks.filter((b) => b.t === "tool" && b.status === "running")).toEqual([]);
+                c.close();
+            } finally {
+                for (const k of ["FAKE_SCENARIO", "FAKE_SECOND_SCENARIO", "FAKE_BACKGROUND_MS", "FAKE_RESUME_MS", "FAKE_RESUME_EXIT", "FAKE_EXIT_IDLE_MS"]) delete process.env[k];
+                removeAgentConfig("claude-code");
+            }
+        }, 60_000);
+
     test("Claude Code's background sub-agent that never finishes: the turn ends at its answer, it's listed as running, and Stop stops it", async () => {
         const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
         saveAgentConfig("claude-code", { path: fakeClaude() });

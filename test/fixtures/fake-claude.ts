@@ -20,7 +20,8 @@
 //
 // FAKE_LOG          each line: what it was started with, and what it received
 // FAKE_LOGGED_IN=0  auth status says signed out
-// FAKE_SCENARIO     write (default) | shell-cap-late | write-config | read-secret | rm | bash | leak | ask | plan | hang | write-hang | mcp | silent | agent | agent-background | agent-background-late | agent-background-stuck | agent-quiet | agent-waits | agent-renotified | agent-fails-later | agent-fails-then-reports | agent-hands-back-late
+// FAKE_SCENARIO     write (default) | shell-cap-late | write-config | read-secret | rm | bash | leak | ask | plan | hang | write-hang | mcp | silent | agent | agent-background | agent-background-late | agent-background-stuck | agent-quiet | agent-waits | agent-renotified | agent-fails-later | agent-fails-then-reports | agent-hands-back-late | agent-resume
+//                   (agent-resume: SendMessage resumes the sub-agent an earlier turn ran, as 2.1.304 does; see agentResume)
 // FAKE_SECOND_SCENARIO  the scenario for its prompts after the first (default: the same)
 // FAKE_BACKGROUND_MS  how long a background sub-agent goes on after the turn's result (default 300)
 // FAKE_BACKGROUND_ASK=1  the background sub-agent asks to run a command (can_use_tool) before it ends
@@ -608,6 +609,51 @@ function agentRenotified(how: "replaced" | "failed" | "failed-reported" | "hande
     notify("completed", REPORT);
 }
 
+const RESUME_REPORT = "Sessions last 60 minutes (src/auth/session.ts).";
+
+/**
+ * SendMessage resuming a sub-agent that had finished (#458), as Claude Code 2.1.304 streams it (frames from a live
+ * probe): the call; the agent's task listed again; task_started with the task id it ran with (the agent's id) and the
+ * SendMessage call's id, in the background, with the message as its prompt; the call's result; the turn's answer.
+ * Then, FAKE_RESUME_MS later (default 300), the agent's messages, tagged with the Agent call that first started it
+ * (parent_tool_use_id) and its task id (agent_id); task_progress and task_notification naming the SendMessage call;
+ * it leaves the list; and Claude Code's turn with its report. FAKE_RESUME_STRANGER=1: an agent an earlier process
+ * started (agent-9, by toolu_earlier), which this one never saw. FAKE_RESUME_EXIT=1: the process exits after the
+ * agent's first step, with nothing said of its end.
+ */
+function agentResume() {
+    const stranger = process.env.FAKE_RESUME_STRANGER === "1";
+    const task = stranger ? "agent-9" : "agent-1";
+    const first = stranger ? "toolu_earlier" : "toolu_agent";
+    const description = process.env.FAKE_AGENT_DESC ?? "Map auth";
+    const id = `toolu_send${prompts}`;
+    const message = "Now check src/auth/session.ts too.";
+    toolUse(id, "SendMessage", { to: task, message, summary: "Check the session file" });
+    bgTasks.set(task, { task_id: task, task_type: "local_agent", description });
+    backgroundChanged();
+    out({ type: "system", subtype: "task_started", task_id: task, run_id: `run-${prompts}`, tool_use_id: id, description, subagent_type: "general-purpose", is_backgrounded: true, spawn_depth: 1, task_type: "local_agent", prompt: message, session_id: sessionId });
+    const said = { success: true, message: `Resuming agent ${task}`, resumedAgentId: task };
+    toolResult(id, JSON.stringify(said), false, { ...said, revivedAgentId: task });
+    const own = { agent_id: task, task_description: description };
+    const read = `toolu_sub_resume_read${prompts}`;
+    afterResult = () =>
+        setTimeout(() => {
+            if (stoppedTasks.has(task)) return;
+            sub(first, "assistant", [{ type: "tool_use", id: read, name: "Read", input: { file_path: join(cwd, "session.ts") } }], own);
+            sub(first, "user", [{ type: "tool_result", tool_use_id: read, content: "export const ttl = 60;", is_error: false }], own);
+            // FAKE_RESUME_EXIT=1: the process goes away (killed, crashed) while the resumed agent works, before any word of its end.
+            if (process.env.FAKE_RESUME_EXIT === "1") setTimeout(() => process.exit(3), 50);
+            if (process.env.FAKE_RESUME_EXIT === "1") return;
+            out({ type: "system", subtype: "task_progress", task_id: task, tool_use_id: id, description: "Reading session.ts", usage: { total_tokens: 1500, tool_uses: 1, duration_ms: 20 }, last_tool_name: "Read", session_id: sessionId });
+            sub(first, "assistant", [{ type: "text", text: RESUME_REPORT }], own);
+            out({ type: "system", subtype: "task_updated", task_id: task, patch: { status: "completed" }, session_id: sessionId });
+            out({ type: "system", subtype: "task_notification", task_id: task, run_id: `run-${prompts}`, tool_use_id: id, status: "completed", output_file: `/tmp/${task}.output`, summary: RESUME_REPORT, usage: { total_tokens: 1800, tool_uses: 1, duration_ms: 300 }, session_id: sessionId });
+            bgTasks.delete(task);
+            backgroundChanged();
+            queueWake("The explorer says sessions last 60 minutes.");
+        }, Number(process.env.FAKE_RESUME_MS ?? 300));
+}
+
 /** What running the call does (only what the scenarios need). */
 function execute(tool: string, input: any): { content: string; structured?: unknown } {
     if (tool === "Write") {
@@ -1081,6 +1127,7 @@ async function turn(content: any[], uuid?: string) {
     else if (scenario === "agent-fails-later") agentRenotified("failed");
     else if (scenario === "agent-fails-then-reports") agentRenotified("failed-reported");
     else if (scenario === "agent-hands-back-late") agentRenotified("handed-back");
+    else if (scenario === "agent-resume") agentResume();
     else if (scenario.startsWith("agent")) agentCall(scenario !== "agent", scenario === "agent-background-late", scenario === "agent-background-stuck");
     else if (scenario === "mcp") {
         const calls: { server?: string; tool: string; args: Record<string, unknown> }[] = JSON.parse(process.env.FAKE_MCP_CALLS ?? "[]");
