@@ -122,6 +122,12 @@ test("a done turn folds its steps and what was said between them; the reply, the
     expect(shown([steps, said("Checking once more."), block("thinking"), said("Done.")])).toEqual(["Done."]);
     // Consecutive steps are one run of work.
     expect(workSegments([steps, block("thinking"), steps, said("Done.")]).map((s) => s.kind)).toEqual(["work", "item"]);
+    // A plan's card isn't work: it stays in its turn, between the work before and after it.
+    const plan = { kind: "activity" as const, card: "plan" };
+    expect(workSegments([steps, plan, steps, said("Done.")]).map((s) => s.kind)).toEqual(["work", "item", "work", "item"]);
+    // Done, the card stays with the reply; what was said before it is on the way, as before a step.
+    const kept = (items: any[]) => workSegments(items).filter((s) => s.kind === "item" && !s.interim).map((s) => (s as { item: any }).item);
+    expect(kept([said("Looking."), steps, said("Here's the plan."), plan, steps, said("Started.")])).toEqual([plan, said("Started.")]);
 });
 
 test("a glide starts where the content was drawn, continues a running one, and never covers more than 240px", () => {

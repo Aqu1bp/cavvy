@@ -65,6 +65,9 @@ let holdSend: Promise<void> | undefined;
 const commentStore = createReviewCommentStore(() => undefined);
 const noop = () => undefined;
 const components = Object.fromEntries(["ArrowUp", "CornerDownRight", "QueueTab", "GoalTab", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "Sparkles", "SquareTerminal", "X", "ModelPicker", "EffortPicker", "AtSign", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring", "ReviewCommentChips", "BackgroundChip", "Maximize2", "Minimize2"].map((key) => [key, noop]));
+/** What the Steps strip was given: the session it's in and that session's view (StepsTray.tsx decides when it shows). */
+const stepsTrays: { sessionId: string; view: any }[] = [];
+const StepsTray = (p: { sessionId: string; view: any }) => void stepsTrays.push(p);
 const [working, setWorking] = solid.createSignal(false);
 const [goal, setGoal] = solid.createSignal<any>();
 const [asks, setAsks] = solid.createSignal<any[]>([]);
@@ -80,7 +83,7 @@ const calls: { method: string; params: any }[] = [];
 const appState = { conn: "open", homeCwd: "/workspace", settings: {} as { followUpBehavior?: string }, models: [] };
 /** The composer opening or closing its large size told the conversation to glide with it. */
 let dockGlides = 0;
-const deps = { ...solid, ...components, expandedDown, expandedHeight, grow, GROW_MS, motionMs: () => 0, glideDock: () => void dockGlides++, shellLayout: () => ({ column: { h: 800 } }), renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, firstSendable, followUpFor, otherFollowUp, canStop, now: () => Date.now(), turnDuration: (ms: number) => `${Math.round(ms / 1000)}s`, keymap, matchKey, withShortcut, shortcut, shortcutHint, eventStrokes,
+const deps = { ...solid, ...components, StepsTray, expandedDown, expandedHeight, grow, GROW_MS, motionMs: () => 0, glideDock: () => void dockGlides++, shellLayout: () => ({ column: { h: 800 } }), renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, firstSendable, followUpFor, otherFollowUp, canStop, now: () => Date.now(), turnDuration: (ms: number) => `${Math.round(ms / 1000)}s`, keymap, matchKey, withShortcut, shortcut, shortcutHint, eventStrokes,
     comparePicks, setComparePicks, startRun: runSheet.startRun,
     splitComments, takesComments, withComments, plural, setReview: noop,
     aroundOf, reviewComments: commentStore, newCommentId: () => crypto.randomUUID(),
@@ -107,6 +110,10 @@ const input = (text: string) => { ta.selectionStart = text.length; ta.selectionE
 const key = (key: string, extra = {}) => { const event = { key, isComposing: false, keyCode: 0, prevented: false, preventDefault() { this.prevented = true; }, stopPropagation() {}, ...extra }; ta.props.onKeyDown(event); return event; };
 tick();
 assert.equal(focused, ta);
+// The Steps strip goes in the composer's stack, with this session's view.
+assert.equal(stepsTrays.length, 1);
+assert.equal(stepsTrays[0]!.sessionId, "a");
+assert.equal(stepsTrays[0]!.view.state, sessionState);
 await Bun.sleep(0);
 input("/h");
 assert.equal(ta.props.role, "combobox");

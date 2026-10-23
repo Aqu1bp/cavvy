@@ -8,19 +8,9 @@ import { basename, isAbsolute, join, relative, resolve, sep } from "path";
 import { homedir } from "os";
 import { isInside } from "../util/files";
 import { RpcError } from "./rpc-error";
+import { planTitle } from "./plan-title";
 
-/** The plan's first heading (or first line), without "Plan:" and Markdown marks. */
-export function planTitle(plan: string): string {
-    const lines = plan.split("\n").map((l) => l.trim());
-    const line = lines.find((l) => /^#{1,6}\s+\S/.test(l)) ?? lines.find(Boolean) ?? "";
-    return line
-        .replace(/^#+\s*/, "")
-        .replace(/^(implementation\s+)?plan\s*[:\-–—]\s*/i, "")
-        .replace(/[*_`[\]]/g, "")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 120);
-}
+export { planTitle };
 
 /** Lowercase ASCII words joined by "-": safe as a branch name, a folder and a file name. */
 export function slugify(text: string, max = 48): string {

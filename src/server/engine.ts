@@ -1310,7 +1310,7 @@ export class Engine {
                 if (next.model?.supportsFastMode) next.setFastMode(rt.fastModeEnabled());
                 const title = rt.title ?? rt.firstPrompt()?.replace(/\s+/g, " ").slice(0, 80);
                 const named = base ?? currentBase(from) ?? made.commit?.slice(0, 12) ?? "HEAD";
-                const link = { title, folder: from, path: made.path, branch: made.branch, base: named, at: Date.now() };
+                const link = { title, folder: from, path: made.path, branch: made.branch, base: named, at: Date.now(), plan: plan.id };
                 next.addPlanLink({ role: "from", session: rt.id, ...link });
                 rt.addPlanLink({ role: "to", session: next.id, ...link });
                 this.watch(client, next.id);

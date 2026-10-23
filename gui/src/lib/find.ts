@@ -4,6 +4,7 @@
 
 import { foldCase, type Block, type Turn } from "@shared/protocol";
 import { cardOf } from "../components/blocks/Activity";
+import { planTitle } from "./plan-chat";
 import { toolLabel } from "./tool-words";
 import { commandLabel, commandMeta, outputLines } from "./command-row";
 import { stripAnsi } from "./format";
@@ -47,6 +48,8 @@ function blockText(b: Block): string | undefined {
             const l = toolLabel(b);
             // A sub-agent's row starts with its task, not the word "Agent", running or not.
             if (b.agent) return typeof b.input?.description === "string" && b.input.description.trim() ? b.input.description.trim() : l.arg;
+            // A plan's card: its title (the rest is a faded glimpse; the plan dialog has all of it).
+            if (cardOf(b) === "plan") return b.status === "streaming" || b.status === "queued" ? undefined : planTitle(String(b.input?.plan ?? "")) || "Plan";
             if (cardOf(b) === "command") {
                 // As its row reads folded: its label (what it's for, or the command shortened) and what it came to;
                 // opened, all of the command and its output.
