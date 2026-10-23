@@ -51,6 +51,8 @@ beforeEach(() => {
     rmSync(LOG, { force: true });
     for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
     process.env.FAKE_LOG = LOG;
+    // Claude Code's temporary folder (background commands' output files go under it): one of the test's own.
+    process.env.CLAUDE_CODE_TMPDIR = tempDir("claude-code-tmp-");
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     forgetClient("claude-code");
 });
@@ -624,6 +626,91 @@ describe("background work across turns", () => {
         const { notice, told } = await handedOver(a);
         expect(notice.endsWith("line 2000")).toBe(true);
         expect(told.endsWith("line 2000")).toBe(true);
+    });
+
+    // The command can rewrite its own output file before it ends: what the report reads is only Claude Code's output
+    // file for it, never another file it's pointed at. Then the summary stands.
+    describe("#430 review: only the command's own output file is read", () => {
+        const SUMMARY = 'Background command "Wait for checks" completed (exit code 0)';
+        const PRIVATE = "PRIVATE-KEY-MATERIAL-7f3a";
+
+        async function reportWith(env: Record<string, string>) {
+            process.env.FAKE_SCENARIO = "shell-background";
+            process.env.FAKE_SHELL_OUTPUT = "compiling\nfinished-c13\n";
+            Object.assign(process.env, env);
+            const a = await makeAgent();
+            expect(await a.run("start the checks")).toBe("done");
+            await until(() => a.wakes.length > 0, 5000, "the command's report");
+            return a.wakes[0]!.report;
+        }
+        const privateFile = () => {
+            const dir = tempDir("claude-private-");
+            writeFileSync(join(dir, "id_ed25519"), `${PRIVATE}\n`);
+            return join(dir, "id_ed25519");
+        };
+
+        test("its output file repointed by a symlink to a private file: not followed", async () => {
+            expect(await reportWith({ FAKE_SHELL_OUTPUT_LINK: privateFile() })).toBe(SUMMARY);
+        });
+
+        test("its output file a hard link to a private file: not read", async () => {
+            expect(await reportWith({ FAKE_SHELL_OUTPUT_HARDLINK: privateFile() })).toBe(SUMMARY);
+        });
+
+        test("its tasks folder a symlink to another folder: not read", async () => {
+            expect(await reportWith({ FAKE_SHELL_TASKS_LINK: join(tempDir("claude-elsewhere-"), "tasks") })).toBe(SUMMARY);
+        });
+
+        for (const file of ["said", "unsaid"] as const)
+            test(`a file outside Claude Code's task-output folder, named as the output file (the notification ${file === "said" ? "names" : "doesn't name"} it): not read`, async () => {
+                const elsewhere = join(tempDir("claude-elsewhere-"), "background-1.output");
+                expect(await reportWith({ FAKE_SHELL_OUTPUT_PATH: elsewhere, FAKE_SHELL_OUTPUT_FILE: file })).toBe(SUMMARY);
+            });
+
+        test("a long output read from part of the file: nothing from before the first line break in what's read (a secret cut there isn't recognised)", async () => {
+            const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+            const secret = `zz9-${"q7Lm".repeat(249)}`;
+            registerSecret(secret, "test key");
+            try {
+                // The read (the file's last 64 KiB) starts 100 characters into a secret; the rest of it is the same
+                // secret again and again, which redaction shrinks, so what's left of the first is within the tail kept.
+                const head = `${"x".repeat(1000)}\n${secret}\n`;
+                const rest = `${`${secret} `.repeat(64)}\n${"e".repeat(570)}`;
+                const fromStart = head.length - secret.length - 1 + 100;
+                const pad = 65536 - (head.length - fromStart) - rest.length;
+                const out = `${"x".repeat(1000 + pad)}\n${secret}\n${rest}`;
+                expect(Buffer.byteLength(out) - 65536).toBe(1000 + pad + 1 + 100);
+                const file = join(tempDir("claude-long-"), "out.txt");
+                writeFileSync(file, out);
+                const report = (await reportWith({ FAKE_SHELL_OUTPUT_FROM: file }))!;
+                expect(report).toContain("The end of its output:\n");
+                expect(report).toContain("[REDACTED test key]");
+                expect(report.endsWith("e".repeat(570))).toBe(true);
+                expect(report).not.toContain(secret.slice(-40));
+                expect(report).not.toContain("q7Lmq7Lm");
+            } finally {
+                unregisterSecret(secret);
+            }
+        });
+
+        test("a long output with no line break in what's read: the summary stands", async () => {
+            const file = join(tempDir("claude-long-"), "out.txt");
+            writeFileSync(file, "y".repeat(70_000));
+            expect(await reportWith({ FAKE_SHELL_OUTPUT_FROM: file })).toBe(SUMMARY);
+        });
+
+        test("a long command: redacted whole, then shortened (a secret across the cut leaves nothing of itself)", async () => {
+            const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+            const secret = "zz9-LONGCMD-SECRET-6tb2kq8wqe";
+            registerSecret(secret, "test key");
+            try {
+                const report = (await reportWith({ FAKE_COMMAND: `${"a".repeat(290)} ${secret} && echo done` }))!;
+                expect(report).toContain("The end of its output:\ncompiling\nfinished-c13");
+                expect(report).not.toContain("zz9-LON");
+            } finally {
+                unregisterSecret(secret);
+            }
+        });
     });
 
     test("#305 (final review, blocker 4): a monitor's wake carries no report; what its turn said shows, and the model is told", async () => {

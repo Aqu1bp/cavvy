@@ -22,8 +22,8 @@
 // one process per turn, as before.
 
 import { createHash, randomUUID } from "crypto";
-import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readSync, writeFileSync } from "fs";
-import { isAbsolute, join } from "path";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, writeFileSync, type Stats } from "fs";
+import { basename, dirname, join } from "path";
 import type { HookConfig } from "../config/settings";
 import { harnessHome } from "../config/paths";
 import { backendMatcher, claudeCodeHookOutput, type HookEvent } from "../agent/hooks";
@@ -105,17 +105,52 @@ const REPORT_OUTPUT_CHARS = 3000;
 /** How much of the end of a command's output file is read for that (bytes): well past it, so redaction sees what it cuts. */
 const OUTPUT_READ_BYTES = 64 * 1024;
 
-/** The end of a background command's output file, as Claude Code writes it (`….output`); undefined when it can't be read. */
-function outputTail(path: string): string | undefined {
-    if (!isAbsolute(path) || !path.endsWith(".output")) return undefined;
+/**
+ * The folder Claude Code writes a session's background commands' output to, worked out as 2.1.304 does (not taken from
+ * a path it names): <CLAUDE_CODE_TMPDIR, else /tmp>/claude-<uid>/<the folder's real path, each other character a "-">/
+ * <session>/tasks. Undefined when it can't be, or its root isn't a folder of the user's own.
+ */
+function taskOutputDir(cwd: string, sessionId: string | undefined): string | undefined {
+    const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+    if (!sessionId || !/^[A-Za-z0-9-]+$/.test(sessionId) || uid === undefined) return undefined;
+    try {
+        const root = join(realpathSync(process.env.CLAUDE_CODE_TMPDIR || "/tmp"), `claude-${uid}`);
+        const st = lstatSync(root);
+        if (!st.isDirectory() || st.uid !== uid) return undefined;
+        return join(root, realpathSync(cwd).replace(/[^a-zA-Z0-9]/g, "-"), sessionId, "tasks");
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * The end of a background command's output file, from Claude Code's task-output folder only (#430 review): undefined
+ * (the summary stands) unless every folder on the way is a real one, and the file is a regular file of the user's with
+ * no other name (not a symlink, nor a hard link to another file: the command can repoint its own output file before it
+ * ends, and Claude Code's own reads guard against that). Read from part way, it starts after the first line break: a
+ * secret cut where the read starts wouldn't be recognised by redaction.
+ */
+function outputTail(dir: string, taskId: string): string | undefined {
+    if (!/^[A-Za-z0-9_-]+$/.test(taskId)) return undefined;
+    const path = join(dir, `${taskId}.output`);
+    const uid = process.getuid?.();
     let fd: number | undefined;
     try {
-        fd = openSync(path, "r");
-        const size = fstatSync(fd).size;
-        const n = Math.min(size, OUTPUT_READ_BYTES);
+        if (realpathSync(dir) !== dir) return undefined;
+        const named = lstatSync(path);
+        const plain = (st: Stats) => st.isFile() && st.nlink === 1 && st.uid === uid;
+        if (!plain(named)) return undefined;
+        fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+        // The file opened is the one looked at, and still a plain one; its folder still Claude Code's.
+        const st = fstatSync(fd);
+        if (!plain(st) || st.dev !== named.dev || st.ino !== named.ino || realpathSync(dir) !== dir) return undefined;
+        const n = Math.min(st.size, OUTPUT_READ_BYTES);
         const buf = Buffer.alloc(n);
-        readSync(fd, buf, 0, n, size - n);
-        return buf.toString("utf8");
+        readSync(fd, buf, 0, n, st.size - n);
+        const text = buf.toString("utf8");
+        if (n === st.size) return text;
+        const line = text.indexOf("\n");
+        return line < 0 ? undefined : text.slice(line + 1);
     } catch {
         return undefined;
     } finally {
@@ -1267,18 +1302,25 @@ export class ClaudeConnection implements CliConnection {
 
     /**
      * A background command's report, as Codex's says it (#430): the command, how it ended, and the end of its output,
-     * from the file Claude Code writes it to (its notification names it, or the call that started it did). Undefined
-     * when there's no such file to read: the notification's summary stands.
+     * from the file Claude Code writes it to, in its task-output folder (outputTail). The file the notification (or the
+     * call that started it) names must be that one. Undefined when there's no such file to read: the summary stands.
      */
     private commandReport(id: string, m: Record<string, any>, summary: string): string | undefined {
         const known = this.commands.get(id);
-        const file = (typeof m.output_file === "string" && m.output_file) || known?.file;
-        const out = file ? outputTail(file) : undefined;
+        const dir = taskOutputDir(this.cfg.cwd, this.sessionId);
+        const named = (typeof m.output_file === "string" && m.output_file) || known?.file;
+        if (!dir || !named || basename(named) !== `${id}.output`) return undefined;
+        try {
+            if (realpathSync(dirname(named)) !== dir) return undefined;
+        } catch {
+            return undefined;
+        }
+        const out = outputTail(dir, id);
         if (out === undefined) return undefined;
-        // Redacted, then cut: a secret across the cut would leave a piece of itself unredacted.
+        // Each redacted whole, then cut: a secret across the cut would leave a piece of itself unredacted.
         const clean = redact(out).trimEnd();
         const tail = clean.length > REPORT_OUTPUT_CHARS ? `…${clean.slice(-REPORT_OUTPUT_CHARS)}` : clean;
-        const command = known?.command?.trim();
+        const command = known?.command ? redact(known.command).trim() : undefined;
         const what = command ? `\`${command.length > 300 ? `${command.slice(0, 300)}…` : command}\`` : `"${this.tasks.get(id)?.label ?? "background command"}"`;
         const code = /exit code (-?\d+)/.exec(summary)?.[1];
         const ended = m.status === "failed" ? "failed" : "finished";
