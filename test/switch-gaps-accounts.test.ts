@@ -207,8 +207,7 @@ describe("gap 7: an idle compaction while the account is switched", () => {
     // Claude Code on a subscription, with its one-hour cache: an idle compaction is planned after the turn. The new
     // account hasn't read the history (as a new model hasn't: Agent.setModel forgets the cache), so the compaction
     // planned on the earlier account's warm cache would read it all afresh, on an account the user just switched to.
-    // Fails on main: the switch keeps the plan, and /compact runs under the new account (#421).
-    test.skip("planned on the earlier account's cache: it doesn't run after the switch (#421)", async () => {
+    test("planned on the earlier account's cache: it doesn't run after the switch (#421)", async () => {
         const other = account("claude-code", "shared");
         await withApp(
             "claude-code",
@@ -224,6 +223,28 @@ describe("gap 7: an idle compaction while the account is switched", () => {
                 await until(() => h.rt.idle);
                 expect(h.prompts().filter((p) => p.startsWith("/compact"))).toEqual([]);
                 expect(h.rt.agent!.idleCompactPlan(due)).toBeNull();
+                // The new account's first turn warms its own cache, and plans its own compaction.
+                h.rt.idleCompact.clock = { ...h.rt.idleCompact.clock, now: () => Date.now() };
+                expect((await h.send("go on")).status).toBe("done");
+                await until(() => h.rt.idleCompact.due !== undefined);
+                expect(h.lastProc().home).toBe(real(other.folder));
+            },
+            { env: { FAKE_CACHE_1H: "250000" } },
+        );
+    }, 30_000);
+
+    test("a switch of another CLI's account (Codex's, on Claude Code) leaves the planned compaction as it was", async () => {
+        const codex = account("codex", "shared");
+        await withApp(
+            "claude-code",
+            true,
+            async (h) => {
+                expect((await h.send("first")).status).toBe("done");
+                await until(() => h.rt.idleCompact.due !== undefined);
+                const due = h.rt.idleCompact.due!;
+                await h.rt.setAccount("codex", codex.id);
+                expect(h.rt.idleCompact.due).toBe(due);
+                expect(h.rt.agent!.idleCompactPlan(due)).not.toBeNull();
             },
             { env: { FAKE_CACHE_1H: "250000" } },
         );
