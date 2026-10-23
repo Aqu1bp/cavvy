@@ -1,4 +1,6 @@
-// Account metadata and folder ownership. Never open files inside a CLI home.
+// Account metadata and folder ownership. Never open files inside a CLI home (except
+// what account-layout.ts says it opens: its own marker, and the names of Default's
+// Claude Code sign-in settings).
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { dirname, isAbsolute, join, resolve, sep } from "path";
 import { homedir } from "os";
@@ -7,6 +9,7 @@ import { paths } from "../config/paths";
 import { canonical } from "../util/files";
 import { readAgentConfig, readProvidersFileForUpdate, writeProvidersFile, type CliAccount, validAccountFolder } from "./registry";
 import { RpcError } from "../server/rpc-error";
+import { ensureSharedLayout, isSharedLink, type SharedLayout } from "./account-layout";
 
 export const ACCOUNT_PROVIDERS = ["claude-code", "codex"] as const;
 export function accountProvider(provider: string): asserts provider is typeof ACCOUNT_PROVIDERS[number] {
@@ -95,13 +98,42 @@ export function accountEnv(provider: string, id = "default", cwd = homedir()): R
     const folder = accountRealPath(resolve(a.folder));
     separateFromDefault(folder, [cwd]);
     separateFromAccounts(folder, { provider, id });
-    validateIdentityFiles(provider, folder);
+    // Before every login and launch: accounts made before sharing, and what Default gained since.
+    const shared = sharesDefault(provider, a, folder);
+    if (shared) shareDefault(provider, id, folder);
+    validateIdentityFiles(provider, folder, shared);
     if (provider === "claude-code") separateKeychain(folder, id);
     // Secure storage can independently override Claude's config directory, even
     // with an empty value (which selects the user's default keychain entry).
     return provider === "claude-code"
         ? { CLAUDE_CONFIG_DIR: folder, CLAUDE_SECURESTORAGE_CONFIG_DIR: folder }
         : { CODEX_HOME: folder };
+}
+/** Only folders Harness made, where they belong; an existing folder is used as the user set it up. */
+function sharesDefault(provider: string, a: CliAccount, real: string): boolean {
+    if (!a.managed || a.invalid) return false;
+    const expected = join(accountRealPath(paths.home()), "accounts", provider, a.id);
+    return a.folder === expected && real === expected;
+}
+/** What wasn't shared with Default, by account. */
+const sharingConflicts = new Map<string, SharedLayout>();
+function shareDefault(provider: string, id: string, folder: string): void {
+    const layout = ensureSharedLayout(provider, folder, defaultFolder(provider));
+    if (layout.conflicts.length || layout.withheld.length) sharingConflicts.set(`${provider}:${id}`, layout);
+    else sharingConflicts.delete(`${provider}:${id}`);
+}
+/** Said of a Harness-made account that doesn't share all of Default's entries. */
+export function accountSharingWarning(provider: string, id: string): string | undefined {
+    const layout = sharingConflicts.get(`${provider}:${id}`);
+    if (!layout) return undefined;
+    const said: string[] = [];
+    const { conflicts, withheld } = layout;
+    if (withheld.length) said.push(`Not shared with Default: ${withheld.join("; ")}.`);
+    if (conflicts.length) {
+        const names = conflicts.slice(0, 8).join(", ") + (conflicts.length > 8 ? ` and ${conflicts.length - 8} more` : "");
+        said.push(`Not shared with Default, because this account's folder has its own: ${names}. Move them out of the folder to share Default's.`);
+    }
+    return said.join(" ");
 }
 export function hasNamedAccounts(): boolean {
     return ACCOUNT_PROVIDERS.some((p) => readAgentConfig(p)?.accounts?.length);
@@ -191,11 +223,16 @@ function validateFolder(folder: unknown, roots: string[], exclude?: { provider: 
     if (existsSync(real) && !statSync(real).isDirectory()) throw new RpcError("Account folder is not a directory", "invalid");
     return real;
 }
-/** Only metadata is inspected; credential and configuration contents belong to the CLI. */
-function validateIdentityFiles(provider: string, folder: string): void {
+/**
+ * Only metadata is inspected; credential and configuration contents belong to the CLI.
+ * A Harness-made account shares Default's Codex config.toml through Harness's own link:
+ * it holds no sign-in (that's auth.json, or a keyring entry named for each home's path).
+ */
+function validateIdentityFiles(provider: string, folder: string, shared = false): void {
     const names = provider === "claude-code" ? [".claude.json", ".credentials.json"] : ["auth.json", "config.toml"];
     for (const name of names) {
         const file = join(folder, name);
+        if (shared && name === "config.toml" && isSharedLink(file, defaultFolder(provider), name)) continue;
         try {
             let stat = lstatSync(file);
             if (stat.isSymbolicLink()) {
@@ -251,6 +288,7 @@ export function addAccount(provider: string, input: { id: string; name: string; 
     try { mkdirSync(folder, { recursive: true, mode: 0o700 }); }
     catch { throw new RpcError("Cannot create account folder", "invalid"); }
     const a = { id: input.id, name: input.name, folder, managed };
+    if (managed) shareDefault(provider, a.id, folder);
     all.push(a);
     writeProvidersFile(pf);
     return a;
@@ -356,6 +394,7 @@ function forgetAccount(provider: string, id: string, a: CliAccount, projectRoots
         validateFolder(expected, projectRoots, { provider, id }, true);
         rmSync(expected, { recursive: true, force: true });
     }
+    sharingConflicts.delete(`${provider}:${id}`);
     const cfg = pf.agents![provider]!;
     cfg.accounts = cfg.accounts!.filter((v) => v.id !== id);
     if (cfg.defaultAccount === id) delete cfg.defaultAccount;

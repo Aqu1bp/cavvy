@@ -1,8 +1,29 @@
 // Account switches exercise the Agent loop against vendor-protocol fixtures.
+// Default has no selectors here, so it is ~/.claude and ~/.codex, which named accounts link into
+// (account-layout.ts). Bun caches homedir at startup, so the tests run in a child with a temporary HOME.
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, readFileSync, rmSync, writeFileSync } from "fs";
-import { join } from "path";
+import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { homedir, tmpdir } from "os";
+import { join, sep } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
+
+const child = process.env.HARNESS_TEST_SESSION_HOME;
+const run = child ? test : test.skip;
+if (!child) {
+    test("account handoff in an isolated home", () => {
+        const home = realpathSync(tempDir());
+        try {
+            const result = Bun.spawnSync([process.execPath, "--no-env-file", "test", import.meta.path], {
+                env: { ...process.env, HOME: home, HARNESS_TEST_SESSION_HOME: home },
+                timeout: 110_000,
+            });
+            expect({ code: result.exitCode, output: result.stderr.toString() }).toMatchObject({ code: 0 });
+        } finally { rmSync(home, { recursive: true, force: true }); }
+    }, 120_000);
+} else {
+    if (!child.startsWith(realpathSync(tmpdir()) + sep) || child !== realpathSync(homedir())) throw new Error("Expected an isolated temporary home");
+    for (const dir of [".claude", ".codex"]) mkdirSync(join(child, dir));
+}
 
 const iso = isolate();
 const root = tempDir("account-session-");
@@ -27,7 +48,7 @@ afterAll(() => {
 });
 
 for (const provider of ["claude-code", "codex"] as const) describe(`${provider} account handoff`, () => {
-    test("new home never receives the old resume id; conversation and controls survive", async () => {
+    run("new home never receives the old resume id; conversation and controls survive", async () => {
         const binary = join(root, provider);
         const fixture = join(import.meta.dir, "fixtures", provider === "codex" ? "fake-codex.ts" : "fake-claude.ts");
         writeFileSync(binary, `#!/bin/sh\nexec "${process.execPath}" --no-env-file "${fixture}" "$@"\n`);
@@ -95,7 +116,7 @@ for (const provider of ["claude-code", "codex"] as const) describe(`${provider} 
 });
 
 
-test("new sessions freeze each configured default and reopening does not replace it", () => {
+run("new sessions freeze each configured default and reopening does not replace it", () => {
     setDefaultAccount("codex", "personal");
     const fresh = Session.create(root);
     expect(fresh.accountId("codex")).toBe("personal");
@@ -109,7 +130,7 @@ test("new sessions freeze each configured default and reopening does not replace
     expect(Session.create(root, { persist: false }).accountId("codex")).toBe("default");
 });
 
-test("terminal /account switches with the same handoff and refuses changes during a turn", async () => {
+run("terminal /account switches with the same handoff and refuses changes during a turn", async () => {
     const { App } = await import("../src/ui/app");
     const { runCommand } = await import("../src/commands/index");
     const session = Session.create(root, { persist: false });
@@ -137,7 +158,7 @@ test("terminal /account switches with the same handoff and refuses changes durin
     expect(session.accountId("codex")).toBe("default");
 });
 
-test("terminal add-account cancellation and invalid input never launch a login", async () => {
+run("terminal add-account cancellation and invalid input never launch a login", async () => {
     const { runCommand } = await import("../src/commands/index");
     const notices: string[] = [];
     let launched = false;
@@ -155,7 +176,7 @@ test("terminal add-account cancellation and invalid input never launch a login",
     expect(notices.at(-1)).toBe("Invalid account id");
 });
 
-test("CLI imports stay on Default when new chats default to another account", async () => {
+run("CLI imports stay on Default when new chats default to another account", async () => {
     const { writeImportedSession } = await import("../src/server/cli-import");
     const { findSession } = await import("../src/agent/session");
     setDefaultAccount("codex", "personal");
