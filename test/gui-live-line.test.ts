@@ -104,6 +104,9 @@ test("a done turn folds its steps and what was said between them; the reply, the
     // Ended on a step (a background wait, a stop): the last thing it said stays, a question too.
     expect(shown([said("Looking."), steps, said("Should I merge it?"), steps])).toEqual(["Should I merge it?"]);
     expect(shown([steps])).toEqual([]);
+    // A blank block after the last step (a CLI's stray newlines) isn't the reply: what was said before it is.
+    expect(shown([said("Please review these changes."), steps, said("\n\n")])).toEqual(["Please review these changes.", "\n\n"]);
+    expect(shown([said("Looking."), steps, said("Done."), steps, said("  ")])).toEqual(["Done.", "  "]);
     // A notice (an error) between steps never folds away.
     expect(shown([steps, block("notice"), steps, said("Done.")])).toEqual(["notice", "Done."]);
     // Thinking is work: what was said before a last thought is on the way.

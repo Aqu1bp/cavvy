@@ -191,7 +191,7 @@ export function workedLabel(startedAt?: number, endedAt?: number): string | unde
 }
 
 /** A turn's rows as TurnView lays them out: a run of steps (Activity's groupBlocks), or a block of its own. */
-type Row = { kind: "activity" } | { kind: "block"; block: { t: string } };
+type Row = { kind: "activity" } | { kind: "block"; block: { t: string; text?: string } };
 
 export type Seg<R> = { kind: "work"; items: R[] } | { kind: "item"; item: R; interim: boolean };
 
@@ -203,8 +203,10 @@ export type Seg<R> = { kind: "work"; items: R[] } | { kind: "item"; item: R; int
 export function workSegments<R extends Row>(items: R[]): Seg<R>[] {
     const isWork = (it: Row) => it.kind === "activity" || it.block.t === "thinking";
     const isText = (it: Row) => it.kind === "block" && it.block.t === "text";
+    // Something said: a blank block (a CLI's stray newlines) isn't a reply.
+    const said = (it: Row) => isText(it) && Boolean((it as { block: { text?: string } }).block.text?.trim());
     const lastWork = items.findLastIndex(isWork);
-    const lastText = items.findLastIndex(isText);
+    const lastText = items.findLastIndex(said);
     // Where the reply starts: after the last step, or at the last thing said when nothing was after it.
     const reply = lastText > lastWork ? lastWork : lastText;
     const out: Seg<R>[] = [];
