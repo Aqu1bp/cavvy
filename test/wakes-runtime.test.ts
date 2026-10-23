@@ -5,13 +5,14 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
 const { Engine } = await import("../src/server/engine");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
+const { readSegments, replay, UiLog } = await import("../src/server/history");
 import type { ServerEvent, SessionSnapshot } from "../src/server/protocol";
 import { backendModel, type BackendTurn } from "../src/backends/types";
 
@@ -185,6 +186,48 @@ test("a CLI's own turn that arrives while the session can't start one (a model s
         expect(rt.toolState.wakes!.size).toBe(0);
         await until(() => turns.length === 1 && rt.idle, 5000);
         expect(turns[0]!.adopt).toBe("turn-9");
+    } finally {
+        await engine.stop();
+    }
+});
+
+test("an adopted wake's steps are logged, so it comes back with them, not as one block of text, when reopened (#347)", async () => {
+    const { engine, rt } = await session();
+    try {
+        await rt.ready;
+        const turns: BackendTurn[] = [];
+        const call = { type: "tool_call" as const, id: "toolu_wake_1", name: "Bash", input: { command: "bun test" } };
+        const backend = {
+            ...adoptingBackend(turns),
+            runTurn: async (t: BackendTurn) => {
+                turns.push(t);
+                t.sink.emit({ type: "text", text: "Now the edits." });
+                t.sink.emit({ type: "tool_start", call, title: "Bash(bun test)" });
+                t.sink.emit({ type: "tool_end", call, result: { content: "12 pass" }, durationMs: 5 });
+                t.sink.emit({ type: "request_start" });
+                t.sink.emit({ type: "text", text: "All tests pass." });
+                return { reason: "done" as const, text: "Now the edits.\n\nAll tests pass.", actions: ["Bash(bun test)"] };
+            },
+        };
+        rt.agent!.setModel(backendModel("claude-code", "x"), backend as never);
+        rt.model = backendModel("claude-code", "x");
+        rt.adoptWake({ provider: "claude-code", ref: "turn-8", label: "Background command finished: bun test" });
+        await until(() => turns.length === 1 && rt.idle);
+        const live = rt.snapshot().turns.find((t) => t.prompt?.wake)!;
+        expect(live.blocks.map((b) => b.t)).toEqual(["text", "tool", "text"]);
+        // Opened again: the transcript and the GUI's log, read from disk.
+        const index = rt.session.messages.findIndex((m) => m.meta?.kind === "wake");
+        const steps = readFileSync(join(dirname(rt.session.path), "ui", `${rt.session.meta.id}.jsonl`), "utf-8")
+            .split("\n")
+            .filter(Boolean)
+            .map((l) => JSON.parse(l))
+            .filter((r) => r.t === "step" && r.index === index);
+        expect(steps.map((r) => r.block.t)).toEqual(["text", "tool", "text"]);
+        const segments = readSegments(rt.session.path);
+        let n = 0;
+        const reopened = replay({ segments, current: segments.at(-1)!.messages, ui: new UiLog(rt.session.path, rt.session.meta.id), meta: () => ({}) as never, newId: () => `r${n++}` });
+        const turn = reopened.find((t) => t.prompt?.wake)!;
+        expect(turn.blocks.map((b) => (b.t === "text" ? b.text : b.t))).toEqual(["Now the edits.", "tool", "All tests pass."]);
     } finally {
         await engine.stop();
     }

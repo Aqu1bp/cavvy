@@ -663,10 +663,11 @@ export class Runtime {
         const known = this.stepsAt.get(turnId);
         if (known) return known;
         const seg = this.backendTurns.get(turnId);
-        const index = turn.prompt?.index;
-        // Its prompt, unless the history was compacted since (it's out of reach of rewind then, and has no index).
+        // Where its prompt went, a wake's too (it has no index: it isn't one to rewind to).
+        const index = turn.pos?.index;
+        // Its prompt, unless the history was compacted since (it's out of reach of rewind then).
         const prompt = seg === this.segment && index !== undefined ? this.session.messages[index] : undefined;
-        if (seg === undefined || index === undefined || prompt?.role !== "user") return undefined;
+        if (seg === undefined || index === undefined || prompt?.role !== "user" || !isPrompt(prompt)) return undefined;
         const at = { seg, index, prompt: promptKey(prompt) };
         this.stepsAt.set(turnId, at);
         return at;
