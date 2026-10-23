@@ -109,7 +109,8 @@ const SIZING = /^(width|height|min-width|min-height|max-width|max-height|padding
 const FRAME_RULES: Record<string, RegExp> = {
     "base.css": /^(html|::-webkit-scrollbar.*)$/,
     "header.css": /^(\.header|\.header::before|\.header\.rail-off|\.header\.traffic\.rail-off|\[data-rail="overlay"\] \.header(\.traffic)?|\.bar-rail.*|\.header \.hb(\.diffchip)?|\.cap( \.sep)?)$/,
-    "shell.css": /^(\[data-inspmode="float"\] \.insp|\.insp-resizer)$/,
+    // A floating or filling inspector is placed by lib/layout.ts's px (FLOAT_TOP, its gap, floatBottom).
+    "shell.css": /^(\[data-inspmode="(float|fill)"\] \.insp|\.insp-resizer)$/,
     "sidebar.css": /^(\.side-top( \.hb)?|\.resize-handle(\.left)?)$/,
     "terminal.css": /^(\.terminal-resize|\.app\.tauri\.os-macos(\.rail-off|\[data-rail="overlay"\]) \.terminal-panel\.max \.terminal-toolbar)$/,
     "overlays.css": /^\.find-bar\.glass$/,
