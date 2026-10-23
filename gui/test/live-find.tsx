@@ -3,7 +3,7 @@ import { render } from "solid-js/web";
 import { createStore } from "solid-js/store";
 import type { NoticeBlock, ToolBlock, Turn } from "@shared/protocol";
 import { ActivityGroup } from "../src/components/blocks/Activity";
-import { Notice } from "../src/components/TurnView";
+import { Notice } from "../src/components/blocks/Notices";
 import { findMatches, textRanges } from "../src/lib/find";
 import { setFindReveal } from "../src/state/ui";
 import { checkEditorFind } from "./editor-find";
@@ -228,7 +228,7 @@ async function checkNoticeDetails() {
         check(textRanges(notice(), "stop").length === 1, "notice: folded, only the heading is drawn (the names' preview isn't counted)");
         setFindReveal({ turnId: "notice", part: "stopped" });
         await frame();
-        check(notice().querySelector(".notice-h")?.getAttribute("aria-expanded") === "true", "notice: find opens the fold");
+        check(notice().querySelector(".nw-h")?.getAttribute("aria-expanded") === "true", "notice: find opens the fold");
         const drawn = textRanges(notice(), "stop");
         check(drawn.length === counted.length, `notice: drawn matches (${drawn.length}) equal counted (${counted.length})`);
         check(drawn.map((r) => r.toString()).join("|") === "Stop|Stop", `notice: each match is within one line (${drawn.map((r) => r.toString()).join("|")})`);
@@ -240,8 +240,27 @@ async function checkNoticeDetails() {
     }
 }
 
-run().then(() => checkNoticeDetails()).then(() => checkCommandFollow()).then(() => checkCommandColumns(root)).then(() => checkEditorFind(root)).then(() => checkPaletteDelete(root)).then(() => checkTranscriptScroll(root)).then(() => checkDiffComments(root)).then(() => checkModelPicker(root)).then(() => {
-    result.textContent = "PASS: live tool find; notice details; command output follows; command columns; deferred file links and ranges; editor actions and find keys; deleted palette hits; transcript scroll; diff comments; model picker";
+/** What a switch stopped, said after a message came (#426): a stopped line alone, no switch; find counts what's drawn. */
+async function checkStoppedLine() {
+    const box = root.appendChild(document.createElement("div"));
+    const block: NoticeBlock = { t: "notice", id: "alone", level: "info", text: "Stopped: sleep 30", stopped: { provider: "codex", cli: "Codex", tasks: [{ label: "sleep 30", command: "sleep 30 && echo done" }] } };
+    const dispose = render(() => <Notice block={block} />, box);
+    const notice = () => box.querySelector<HTMLElement>('[data-find="alone"]')!;
+    try {
+        await frame();
+        check(Boolean(notice().querySelector(".ev-sub")) && !notice().querySelector(".ev-h"), "stopped line: drawn alone, with no switch's line");
+        check(notice().querySelector(".ev-sub")!.getAttribute("title") === "Stopped by the switch's restart:\n$ sleep 30 && echo done", "stopped line: its tooltip has the whole command");
+        const counted = findMatches([{ id: "alone", blocks: [block], status: "done" }], "sleep");
+        const drawn = textRanges(notice(), "sleep");
+        check(counted.length === 1 && drawn.length === 1, `stopped line: counted ${counted.length}, drawn ${drawn.length} matches of "sleep"`);
+    } finally {
+        dispose();
+        box.remove();
+    }
+}
+
+run().then(() => checkNoticeDetails()).then(() => checkStoppedLine()).then(() => checkCommandFollow()).then(() => checkCommandColumns(root)).then(() => checkEditorFind(root)).then(() => checkPaletteDelete(root)).then(() => checkTranscriptScroll(root)).then(() => checkDiffComments(root)).then(() => checkModelPicker(root)).then(() => {
+    result.textContent = "PASS: live tool find; notice details; stopped line; command output follows; command columns; deferred file links and ranges; editor actions and find keys; deleted palette hits; transcript scroll; diff comments; model picker";
     result.dataset.status = "passed";
 }).catch((error) => {
     result.textContent = String(error.stack ?? error);

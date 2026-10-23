@@ -5,6 +5,7 @@ import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
 import * as format from "../../gui/src/lib/format";
 import * as live from "../../gui/src/lib/live-line";
+import * as notices from "../../gui/src/lib/notices";
 import { splitComments } from "../../gui/src/lib/review-comments";
 
 // Compile the actual turn, its live line and activity grouping; replace only leaf widgets and
@@ -20,10 +21,10 @@ const stub = () => node("widget");
 const prefs = { showThinking: true, expandActivity: false, motion: "instant" };
 const scope = {
     RenderBoundary: boundary(undefined, (e) => console.error(e)), splitComments,
-    ...format, ...live, now: clock, prefs, findReveal: () => undefined,
+    ...format, ...live, ...notices, now: clock, prefs, findReveal: () => undefined,
     // Each state here is a moment of its own, long after the last: the line moves on at once (its dwell is gui-fast-pacing's).
     dwellLeft: () => 0,
-    ActivityGroup: stub, Markdown: stub, CopyButton: stub, Spinner: stub, Thinking: stub,
+    ActivityGroup: stub, Markdown: stub, CopyButton: stub, Spinner: stub, Thinking: stub, Notice: stub,
     // A running command opens to its row's block (Activity.tsx), kept in the rows' folds.
     LiveCommandBody: (p: any) => { const n = node("cmd-body"); n.props.class = "cmd-body"; solid.createRenderEffect(() => (n.text = String(p.tool.progress ?? ""))); return n; },
     useCardFolds: () => folds,

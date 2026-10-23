@@ -1,6 +1,6 @@
 import { RenderBoundary } from "./ui/ErrorBoundary";
 import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, Show, Switch, untrack } from "solid-js";
-import { AlertCircle, AlertTriangle, BellRing, Check, CircleCheck, CircleStop, CircleX, ChevronRight, Clock, CornerDownRight, FileDiff, FileText, GitFork, Goal, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-solid";
+import { AlertCircle, AlertTriangle, BellRing, Check, CircleStop, ChevronRight, Clock, CornerDownRight, FileDiff, FileText, GitFork, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
 import { firstChangedLine, plural, promptTime, shortPrompt, stripAnsi } from "../lib/format";
 import { liveLine, workedLabel, workSegments } from "../lib/live-line";
@@ -14,6 +14,8 @@ import { imagesReady, promptImages, type PromptImage } from "../state/images";
 import { ActivityGroup, groupBlocks, Thinking, type Item } from "./blocks/Activity";
 import { Markdown } from "./blocks/Markdown";
 import { CopyButton, Spinner } from "./ui/bits";
+import { Notice } from "./blocks/Notices";
+import { hasErrorCard, leadingNotices, shownBlocks } from "../lib/notices";
 import { LiveLine, motionMs } from "./LiveLine";
 
 /** A prompt's images as thumbnails; the count alone when they can't be had (asked again after a reconnect). */
@@ -169,75 +171,6 @@ export function Narration(p: { block: TextBlock }) {
     );
 }
 
-/** A /goal verdict starts with its own mark (src/agent/goal.ts): shown as an icon instead. */
-const GOAL_MARK = /^([◎✓✗]) /;
-
-export function Notice(p: { block: NoticeBlock }) {
-    const mark = () => GOAL_MARK.exec(p.block.text)?.[1];
-    const text = () => (mark() ? p.block.text.slice(2) : p.block.text);
-    const icon = () => (
-        <Switch fallback={<Info size={14} />}>
-            <Match when={mark() === "◎"}>
-                <Goal size={14} />
-            </Match>
-            <Match when={mark() === "✓"}>
-                <CircleCheck size={14} />
-            </Match>
-            <Match when={mark() === "✗"}>
-                <CircleX size={14} />
-            </Match>
-            <Match when={p.block.level === "error"}>
-                <AlertCircle size={14} />
-            </Match>
-            <Match when={p.block.level === "warn"}>
-                <AlertTriangle size={14} />
-            </Match>
-        </Switch>
-    );
-    // What it's about (the background tasks it stopped): one line, the names folded under it.
-    const [open, setOpen] = createSignal(false);
-    createEffect(on(findReveal, (r) => r?.part === p.block.id && p.block.details?.length && setOpen(true)));
-    return (
-        <Show
-            when={p.block.details?.length}
-            fallback={
-                <div class={`notice ${p.block.level}${mark() === "✓" ? " goal-met" : ""}`} data-find={p.block.id}>
-                    {icon()}
-                    <span>{text()}</span>
-                </div>
-            }
-        >
-            <div class={`notice ${p.block.level} folds`} data-find={p.block.id}>
-                <button class="notice-h" aria-expanded={open()} onClick={() => setOpen(!open())}>
-                    {icon()}
-                    <span class="truncate">
-                        {text()}
-                        <Show when={!open()}>
-                            <span class="notice-peek" data-find-skip>
-                                {" · "}
-                                {p.block.details!.join(", ")}
-                            </span>
-                        </Show>
-                    </span>
-                    <ChevronRight size={14} class="chev" />
-                </button>
-                <Show when={open()}>
-                    <ul class="notice-details">
-                        <For each={p.block.details}>
-                            {(d) => (
-                                <li class="truncate" title={d}>
-                                    {/* A line break between them, as find reads them (find.ts): no match runs from one into the next. */}
-                                    <span class="sr-only">{"\n"}</span>
-                                    {d}
-                                </li>
-                            )}
-                        </For>
-                    </ul>
-                </Show>
-            </div>
-        </Show>
-    );
-}
 
 /** Heads a conversation brought in from Claude Code or Codex: shown, but it can't be rewound or edited. */
 function Imported(p: { block: ImportedBlock }) {
@@ -478,7 +411,8 @@ export function TurnView(p: TurnViewProps) {
 
 function TurnViewContent(p: TurnViewProps) {
     let article: HTMLElement | undefined;
-    const items = createMemo(() => groupBlocks(p.turn.blocks));
+    // A limit's card takes the place of the turn's earlier "limit reached" (lib/notices.ts).
+    const items = createMemo(() => groupBlocks(shownBlocks(p.turn.blocks)));
     const segs = createMemo(() => workSegments(items()));
     const running = () => p.turn.status === "running";
     const live = () => running() && p.last && p.state.busy;
@@ -545,7 +479,7 @@ function TurnViewContent(p: TurnViewProps) {
                             {(t) => <Markdown text={t().text} streaming={writing() && t().id === lastText()} sessionId={p.state.id} find={t().id} class={leaving?.() ? "leaving" : undefined} />}
                         </Match>
                         <Match when={b().t === "thinking" && (b() as ThinkingBlock)}>{(t) => <Show when={!liveThought(t())}><Thinking block={t()} live={false} /></Show>}</Match>
-                        <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} />}</Match>
+                        <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} state={p.state} />}</Match>
                         <Match when={b().t === "compact" && (b() as CompactBlock)}>{(c) => <Compacted block={c()} />}</Match>
                         <Match when={b().t === "imported" && (b() as ImportedBlock)}>{(c) => <Imported block={c()} />}</Match>
                         <Match when={b().t === "shell" && (b() as ShellBlock)}>{(s) => <Shell block={s()} />}</Match>
@@ -554,6 +488,25 @@ function TurnViewContent(p: TurnViewProps) {
             </Match>
         </Switch>
     );
+
+    const renderSeg = (seg: () => (typeof segs extends () => (infer S)[] ? S : never)) => (
+        <Show
+            when={seg().kind === "work"}
+            fallback={
+                <Show when={!(seg() as { interim: boolean }).interim || showWork()}>
+                    {renderItem(() => (seg() as { item: Item }).item, () => (seg() as { interim: boolean }).interim && folding())}
+                </Show>
+            }
+        >
+            <Show when={showWork()}>
+                <div class={`worklog ${folding() ? "leaving" : ""}`}>
+                    <Index each={(seg() as { items: Item[] }).items ?? []}>{(it) => renderItem(it)}</Index>
+                </div>
+            </Show>
+        </Show>
+    );
+    // How many of its first rows are notices from before its first step (lib/notices.ts).
+    const lead = createMemo(() => (hasWork() ? leadingNotices(segs()) : 0));
 
     return (
         <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""} ${p.held ? "chained" : ""} ${foldable() ? "done" : ""}`} data-turn={p.turn.id} aria-busy={running()} ref={(el) => (article = el, p.onElement?.(el, p.turn.id))}>
@@ -564,6 +517,8 @@ function TurnViewContent(p: TurnViewProps) {
             <Show when={hasOutput()}>
                 <div class="reply">
                     <h2 class="sr-only" data-find-skip>{running() ? "Harness is working" : "Harness replied"}</h2>
+                    {/* Notices from before its first step, where they happened: above "Worked for". */}
+                    <Index each={segs().slice(0, lead())}>{renderSeg}</Index>
                     <Show when={foldable() && hasWork() && !folding()}>
                         <button class="fold acts-h worked" aria-expanded={unfolded()} onClick={(event) => {
                             const toggle = () => unfold(!unfolded());
@@ -574,29 +529,13 @@ function TurnViewContent(p: TurnViewProps) {
                             <span class="num">{worked() ?? "Work log"}</span>
                         </button>
                     </Show>
-                    <Index each={segs()}>
-                        {(seg) => (
-                            <Show
-                                when={seg().kind === "work"}
-                                fallback={
-                                    <Show when={!(seg() as { interim: boolean }).interim || showWork()}>
-                                        {renderItem(() => (seg() as { item: Item }).item, () => (seg() as { interim: boolean }).interim && folding())}
-                                    </Show>
-                                }
-                            >
-                                <Show when={showWork()}>
-                                    <div class={`worklog ${folding() ? "leaving" : ""}`}>
-                                        <Index each={(seg() as { items: Item[] }).items ?? []}>{(it) => renderItem(it)}</Index>
-                                    </div>
-                                </Show>
-                            </Show>
-                        )}
-                    </Index>
+                    <Index each={segs().slice(lead())}>{renderSeg}</Index>
                     <Show when={foldable() && !p.turn.archived && !p.turn.imported}>
                         <ChangesCard turn={p.turn} cwd={p.state.cwd} sessionId={p.state.id} busy={p.state.busy} />
                     </Show>
                     <Show when={foldable() && p.turn.prompt}>
-                        <Show when={END_TEXT[p.turn.status]}>
+                        {/* An error's card says how the turn ended: no second line under it. */}
+                        <Show when={END_TEXT[p.turn.status] && !(p.turn.status === "error" && hasErrorCard(p.turn.blocks))}>
                             <div class={`notice end-note end-${p.turn.status}`} data-find-skip>
                                 {p.turn.status === "aborted" ? <CircleStop size={14} /> : p.turn.status === "error" || p.turn.status === "blocked" ? <AlertCircle size={14} /> : <AlertTriangle size={14} />}
                                 <span>{END_TEXT[p.turn.status]}</span>

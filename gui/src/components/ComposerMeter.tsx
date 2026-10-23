@@ -60,11 +60,12 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string }) {
     // report), the ring stays empty and neutral rather than implying a share.
     const urgency = () => Math.max(view().pct ?? 0, meter()?.reached ? 1 : (meter()?.top ?? 0) / 100);
     // Each source keeps its own thresholds: context nears compaction sooner,
-    // while a plan only turns red at 90% or once a limit is reached.
+    // while a plan only turns red at 90% or once a limit is reached. Past a reached limit on credits nothing is
+    // blocked, but it costs: amber, not red (#426).
     const tone = (): "danger" | "warning" | "normal" => {
-        const ctx = view().pct ?? 0, plan = meter()?.top ?? 0;
-        if (ctx >= 0.85 || meter()?.reached || plan >= 90) return "danger";
-        if (ctx >= 0.7 || plan >= 80) return "warning";
+        const ctx = view().pct ?? 0, plan = meter()?.top ?? 0, credits = Boolean(meter()?.usingCredits);
+        if (ctx >= 0.85 || (!credits && (meter()?.reached || plan >= 90))) return "danger";
+        if (credits || ctx >= 0.7 || plan >= 80) return "warning";
         return "normal";
     };
     const label = () => [
@@ -96,8 +97,8 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string }) {
     onCleanup(cancelClose);
     /** The ring's share as a number inside it; nothing while neither share is known. */
     const shownPct = () => (view().pct === undefined && !meter() ? undefined : Math.round(Math.min(1, urgency()) * 100));
-    const bar = (pct: number | undefined) => (
-        <div class="cc-bar" aria-hidden="true">
+    const bar = (pct: number | undefined, tone?: "danger" | "warning") => (
+        <div class={`cc-bar ${tone ?? ""}`} aria-hidden="true">
             <i style={{ width: `${Math.max(0, Math.min(100, pct ?? 0))}%` }} />
         </div>
     );
@@ -149,11 +150,11 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string }) {
                                 <span class="usage-account truncate">· {name()}</span>
                             </div>
                             <Show when={meter()?.asOf}><div class="plan-asof">{meter()!.asOf}</div></Show>
-                            <Show when={meter()?.reached}><div class="plan-reached">{meter()!.usingCredits ? "Limit reached · using credits" : "Limit reached"}</div></Show>
+                            <Show when={meter()?.reached}><div class={`plan-reached ${meter()!.usingCredits ? "credits" : ""}`}>{meter()!.usingCredits ? "Limit reached · using credits" : "Limit reached"}</div></Show>
                             <For each={meter()?.windows}>{(w) => (
                                 <div class="plan-window">
                                     <div class="cc-line"><span>{w.label}</span><b class="num">{w.pct !== undefined ? `${w.pct}%` : w.reached ? "reached" : "—"}</b></div>
-                                    {bar(w.reached && w.pct === undefined ? 100 : w.pct)}
+                                    {bar(w.reached && w.pct === undefined ? 100 : w.pct, w.reached ? (meter()!.usingCredits ? "warning" : "danger") : undefined)}
                                     <Show when={w.resets}><div class="cc-sub num">Resets {w.resets}</div></Show>
                                 </div>
                             )}</For>
