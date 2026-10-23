@@ -1,8 +1,20 @@
-// A command's row (Activity.tsx CommandCard): what it says folded (its exit, its tally), and its
+// A command's row (Activity.tsx CommandCard): what it says folded (its label, its exit, its tally), and its
 // command highlighted when it's opened. Find (find.ts) counts the same words the row shows.
 
 import type { BackgroundTaskInfo, ToolBlock } from "@shared/protocol";
 import { stripAnsi } from "./format";
+import { commandDescription } from "./tool-words";
+
+/**
+ * What a command's row says folded: what it's for (Claude Code's description), or, with none (Codex), the command
+ * itself, shortened: its first line, past a cd to where it runs ("cd '/repo' && bun test" says "bun test").
+ */
+export function commandLabel(t: ToolBlock): string | undefined {
+    const description = commandDescription(t);
+    if (description) return description;
+    const first = String(t.input?.command ?? "").trim().split("\n")[0]!;
+    return /^cd\s+(?:'[^']*'|"[^"]*"|[^\s;&|'"]+)\s*&&\s*(\S.*)$/.exec(first)?.[1] ?? (first || undefined);
+}
 
 /** A piece of a highlighted command: `cls` is its kind (f command, t flag, s string, k operator, c comment, hd heredoc body). */
 export type ShellToken = { text: string; cls?: "f" | "t" | "s" | "k" | "c" | "hd" };
@@ -52,6 +64,16 @@ export function highlightShell(src: string): ShellToken[] {
         else acc.push({ ...t });
         return acc;
     }, []);
+}
+
+/** Highlighted tokens split after the first line: that line's, then the rest's (from its newline on). */
+export function firstLine(tokens: ShellToken[]): [ShellToken[], ShellToken[]] {
+    const i = tokens.findIndex((t) => t.text.includes("\n"));
+    if (i < 0) return [tokens, []];
+    const t = tokens[i]!;
+    const at = t.text.indexOf("\n");
+    const head = at ? [...tokens.slice(0, i), { ...t, text: t.text.slice(0, at) }] : tokens.slice(0, i);
+    return [head, [{ ...t, text: t.text.slice(at) }, ...tokens.slice(i + 1)]];
 }
 
 /** The exit code a failed command's output reports ("Exit code: 1", Codex's "Exit code 1"), the last one said. */

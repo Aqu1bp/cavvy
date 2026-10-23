@@ -252,6 +252,10 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         ro.observe(content);
         ro.observe(scroller);
         onCleanup(() => ro.disconnect());
+        for (const type of ["click", "keydown"]) scroller.addEventListener(type, toggling, true);
+        onCleanup(() => {
+            for (const type of ["click", "keydown"]) scroller?.removeEventListener(type, toggling, true);
+        });
         if (typeof MutationObserver !== "undefined") {
             const mo = new MutationObserver(() => (mutatedAt = performance.now()));
             mo.observe(content, { childList: true, subtree: true, characterData: true });
@@ -287,6 +291,33 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         setStick(false);
         toggle();
         if (scroller) scroller.scrollTop = anchoredTop(scroller.scrollTop, el.getBoundingClientRect().top, top);
+        wrote();
+        reading = capture();
+    };
+
+    // A row the reader opens or folds (a command, a tool call, a thought) stays where it was clicked: what it adds
+    // goes below it, not glided or scrolled to the end. Where it is is taken as the click starts (the capture phase),
+    // and kept after the row's own handler has run (in the scroller's onClick, which the event reaches after the
+    // row's). Opened at the end, the end isn't followed any more: the reader is reading what they opened.
+    let toggled: { el: Element; top: number } | undefined;
+    const toggling = (e: Event) => {
+        toggled = undefined;
+        const target = e.target as Element | null;
+        // A button's Enter or Space comes as a click.
+        if (e.type === "keydown" && ((e as KeyboardEvent).key !== "Enter" && (e as KeyboardEvent).key !== " " || target?.tagName === "BUTTON")) return;
+        const el = target?.closest?.("[aria-expanded]:not([aria-haspopup])");
+        if (el) toggled = { el, top: el.getBoundingClientRect().top };
+    };
+    const toggledRow = () => {
+        const t = toggled;
+        toggled = undefined;
+        if (!t || !scroller || !t.el.isConnected) return;
+        // Where a running glide drew it is where the reader saw it: the glide stops, and the row stays there.
+        stopGlide();
+        smoothScroll = false;
+        const next = anchoredTop(scroller.scrollTop, t.el.getBoundingClientRect().top, t.top);
+        if (Math.abs(next - scroller.scrollTop) > 0.5) scroller.scrollTop = next;
+        if (scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop > 1) setStick(false);
         wrote();
         reading = capture();
     };
@@ -403,6 +434,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         }
     };
     const onKey = (e: KeyboardEvent) => {
+        toggledRow();
         if (["ArrowUp", "PageUp", "Home"].includes(e.key) || (e.key === " " && e.shiftKey)) scrollUp();
         else {
             interruptJump();
@@ -504,7 +536,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             <div class="transcript-fade" aria-hidden="true" />
             {/* Keeps one size while the panels slide (lib/layout.ts heldSizes): the conversation is laid out once, not every frame. */}
             <div class="transcript-hold" ref={box} classList={{ held: !!hold() }} style={hold()}>
-            <div class="transcript" ref={scroller} onScroll={onScroll} onWheel={onWheel} onTouchStart={press} onPointerDown={press} onKeyDown={onKey} aria-label="Conversation">
+            <div class="transcript" ref={scroller} onScroll={onScroll} onWheel={onWheel} onTouchStart={press} onPointerDown={press} onKeyDown={onKey} onClick={toggledRow} aria-label="Conversation">
                 {/* Clips the column's glide, so a translate never adds to what the conversation scrolls through. */}
                 <div class="transcript-glide">
                 <div class="transcript-col" ref={content}>

@@ -79,6 +79,10 @@ const decorate = (n: Node): any => Object.assign(n, {
     scrollTo: (options: any) => { scrollBehavior = options.behavior; scrollTarget = Math.max(0, Math.min(options.top, height(n) - viewportHeight)); if (!deferSmooth || options.behavior !== "smooth") (n as any).scrollTop = options.top; },
     classList: { add() {}, remove() {} },
     hasAttribute: (name: string) => n.props[name] !== undefined,
+    /** Its listeners (the capture phase's included), by type: listeners.click(event) dispatches one. */
+    listeners: {} as Record<string, (e: any) => void>,
+    addEventListener: (type: string, fn: (e: any) => void) => { (n as any).listeners[type] = fn; },
+    removeEventListener: (type: string) => { delete (n as any).listeners[type]; },
     removeAttribute: (name: string) => { delete n.props[name]; },
     toggleAttribute: (name: string, force: boolean) => { if (force) n.props[name] = ""; else delete n.props[name]; return force; },
 });
@@ -91,6 +95,7 @@ const create = (tag: string): any => {
         scrollHeight: { get: () => height(n) }, clientHeight: { get: () => viewportHeight },
         lastElementChild: { get: () => elements(n).at(-1) ?? null },
         parentElement: { get: () => n.parent ?? null },
+        isConnected: { get: () => { let x: Node = n; while (x.parent) x = x.parent; return x === root; } },
         previousElementSibling: { get: () => { const s = elements(n.parent); return s[s.indexOf(n) - 1] ?? null; } },
     });
     return n;
@@ -446,6 +451,29 @@ try {
     turnHeights.set("turn-44", 1300); resize(); flush();
     assert.equal(top, bottom(), "a box at its end passes the move on: following the end again");
     scroller().props.onScroll();
+    // The reader opening a row (a command's, a tool's) as it runs: it stays where it was clicked, nothing glides,
+    // and the end isn't followed (they're reading it). Growth below then leaves it where it is.
+    const toggle = turn("turn-44").children[0];
+    toggle.props["aria-expanded"] = false;
+    toggle.closest = (selector: string) => (selector.includes("aria-expanded") ? toggle : null);
+    const click = { type: "click", target: toggle };
+    const rowTop = toggle.getBoundingClientRect().top;
+    const glidesThen = glides.length;
+    scroller().listeners.click?.(click); // As the click starts (the capture phase).
+    turnHeights.set("turn-44", 1400); // The row's own handler opened it.
+    scroller().props.onClick?.(click); // And then it reaches the scroller.
+    assert.equal(toggle.getBoundingClientRect().top, rowTop, "a row opened while it runs stays where it was clicked");
+    assert.ok(button("jump"), "the end isn't followed while the reader reads what they opened");
+    resize(); flush();
+    assert.equal(glides.length, glidesThen, "opening a row doesn't glide");
+    assert.equal(toggle.getBoundingClientRect().top, rowTop, "nor move it the frame after");
+    turnHeights.set("turn-44", 1500); resize(); flush();
+    assert.equal(toggle.getBoundingClientRect().top, rowTop, "growth below leaves the opened row where it is");
+    // Enter on a button comes as a click: its keydown is let be. A row that's not a button (a command's) toggles on it.
+    scroller().listeners.keydown?.({ type: "keydown", key: "Enter", target: { ...toggle, tagName: "BUTTON", closest: toggle.closest } });
+    scroller().props.onKeyDown({ key: "Enter" });
+    assert.equal(toggle.getBoundingClientRect().top, rowTop);
+    scroll(bottom()); assert.equal(button("jump"), undefined);
     const glidesBefore = glides.length;
     reduced = true; turnHeights.set("turn-44", 1000); resize(); flush();
     assert.equal(top, bottom(), "reduced motion follows");

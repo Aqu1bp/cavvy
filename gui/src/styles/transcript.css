@@ -860,10 +860,22 @@
 
 /* ---- The work log ---------------------------------------------------- */
 
+/* A grid of one column for most of what's in it; command rows split it into theirs (.cmd-h). */
+.worklog,
+.cmd-row > .cmd-h {
+    /* The label keeps some room; short of room, the tags give way after it. */
+    --cmd-cols: minmax(min(6rem, 30%), 1fr) minmax(0, auto) auto auto auto;
+}
+
 .worklog {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
+    display: grid;
+    grid-template-columns: var(--cmd-cols);
+    row-gap: 2px;
+    min-width: 0;
+}
+
+.worklog > * {
+    grid-column: 1 / -1;
     min-width: 0;
 }
 
@@ -1499,10 +1511,13 @@
     animation: step-in 320ms var(--ease);
 }
 
+/* A row's columns: its label (icon, what it's for, Copy on hover), then its tags, its result ("14 pass", "Exit 1"),
+   its time and its chevron. In a work log the rows share them (subgrid), each as wide as its widest: the ends of
+   a run of rows line up, whatever their labels, and a column no row uses takes no room. */
 .cmd-row > .cmd-h {
-    display: flex;
+    display: grid;
+    grid-template-columns: var(--cmd-cols);
     align-items: center;
-    gap: 9px;
     /* One line, always the same height: a glyph from a fallback font (✓) doesn't make one row taller. */
     height: 30px;
     min-width: 0;
@@ -1514,6 +1529,27 @@
     cursor: default;
     outline: none;
     transition: background 140ms;
+}
+
+.worklog > .cmd-row {
+    display: grid;
+    grid-template-columns: subgrid;
+}
+
+.worklog > .cmd-row > * {
+    grid-column: 1 / -1;
+}
+
+.worklog > .cmd-row > .cmd-h {
+    grid-template-columns: subgrid;
+}
+
+.cmd-what {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-width: 0;
+    padding-right: 9px;
 }
 
 .cmd-row > .cmd-h:hover,
@@ -1538,52 +1574,61 @@
     color: var(--accent);
 }
 
-/* What it's for, in the model's words; then the command, faint. */
+/* What it's for, in the model's words; or the command, shortened. */
 .cmd-l {
-    flex: none;
-    max-width: 60%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    color: var(--fg);
-}
-
-.cmd-c {
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-    font: 0.857rem var(--font-mono);
-    color: var(--fg-3);
-}
-
-/* No description (Codex): the command is the label. */
-.cmd-c.solo {
-    font-size: 0.893rem;
     color: var(--fg);
 }
 
+/* No description (Codex): the command is the label. */
+.cmd-l.solo {
+    font: 0.893rem var(--font-mono);
+}
+
 /* More than one line: the first, and a hint there's more. */
-.cmd-c.more::after {
+.cmd-l.more::after {
     content: " …";
     color: var(--fg-4);
 }
 
-.cmd-h .meta {
-    margin-left: auto;
-    flex: none;
+/* The columns after the label: each part, when there is one, 8px from the one before. */
+.cmd-tags,
+.cmd-res,
+.cmd-time {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding-left: 8px;
     font-size: 0.857rem;
     font-variant-numeric: tabular-nums;
     color: var(--fg-3);
 }
 
-.cmd-h .meta > .tcard-dim {
+.cmd-tags:not(:empty),
+.cmd-res:not(:empty),
+.cmd-time:not(:empty) {
+    padding-left: 8px;
+}
+
+/* Numbers to the right, so "5 pass" and "306 pass", "2s" and "325ms" end together. */
+.cmd-res,
+.cmd-time {
+    justify-content: flex-end;
+}
+
+.cmd-tags {
+    min-width: 0;
+    overflow: hidden;
+}
+
+.cmd-tags > .tcard-dim {
     max-width: 14rem;
 }
 
-.cmd-h .sum {
+/* Not .sum: that's the Changes panel's (panel.css), padded, which made a row with a tally taller than the rest. */
+.cmd-sum {
     color: var(--fg-2);
 }
 
@@ -1613,11 +1658,12 @@
     font-weight: 600;
 }
 
-/* Copy (and Stop) come in on hover or focus; until then they take no room. */
+/* Copy (and Stop) come in on hover or focus, at the end of the label; until then they take no room. */
 .cmd-tools {
     display: none;
     align-items: center;
     gap: 2px;
+    margin-left: auto;
 }
 
 .cmd-h:hover .cmd-tools,
@@ -1654,6 +1700,10 @@
     flex: none;
     width: 18px;
     color: var(--fg-4);
+}
+
+.cmd-h > .chev-w {
+    margin-left: 9px;
 }
 
 .chev-w .chev {
