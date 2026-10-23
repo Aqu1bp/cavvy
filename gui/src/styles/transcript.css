@@ -769,10 +769,6 @@
     white-space: pre-line;
 }
 
-.notice.goal-met svg {
-    color: var(--ok);
-}
-
 .notice.warn,
 .end-note.end-max_turns,
 .end-note.end-denied {
@@ -786,59 +782,385 @@
     color: var(--danger);
 }
 
-/* A notice about several things (the background tasks Harness stopped): one line, their names folded under it. */
-.notice.folds {
-    flex-direction: column;
-    gap: calc(2 * var(--sp));
+/* ---- Notices (#426): drawn as what they are -----------------------------
+   The UI explains, not words: placement, icon, colour and state carry the meaning. Ported from the approved
+   mockup (harness-chat-mockup notices.css), at the app's 14px root: 13px = 0.929rem, 12.5px = 0.893rem,
+   12px = 0.857rem, 11.5px = 0.821rem, 13.5px = 0.964rem. */
+
+/* Info: one quiet line; the icon in a 22px gutter, the text where a step's verb starts. Cut short, it opens. */
+.nt {
+    align-self: stretch;
+    display: flex;
+    align-items: flex-start;
+    gap: calc(9 * var(--sp));
     min-width: 0;
-}
-
-.notice-h {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    max-width: calc(100% + 4 * var(--sp));
-    min-height: calc(24 * var(--sp));
-    margin-left: calc(-4 * var(--sp));
-    padding: 0 calc(8 * var(--sp)) 0 calc(4 * var(--sp));
-    border-radius: var(--pill);
+    margin: 0 0 calc(2 * var(--sp));
+    padding: calc(5 * var(--sp)) calc(8 * var(--sp)) calc(5 * var(--sp)) calc(2 * var(--sp));
+    border-radius: calc(8 * var(--sp));
+    font-size: 0.929rem;
+    line-height: calc(20 * var(--sp));
+    color: var(--fg-3);
     text-align: left;
-    transition: background 140ms;
 }
 
-.notice-h:hover {
+.nt .ic {
+    width: calc(22 * var(--sp));
+    height: calc(20 * var(--sp));
+    flex: none;
+    display: grid;
+    place-items: center;
+    color: var(--fg-3);
+}
+
+.nt.goal-met .ic {
+    color: var(--ok);
+}
+
+.nt .tx {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.nt.open .tx {
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+}
+
+.nt-detail {
+    display: block;
+    font-size: 0.857rem;
+}
+
+.nt .more {
+    height: calc(20 * var(--sp));
+    flex: none;
+    display: grid;
+    place-items: center;
+    color: var(--fg-3);
+    opacity: 0;
+    transition: opacity 140ms, transform 200ms var(--ease);
+}
+
+.nt.long {
+    cursor: default;
+}
+
+.nt.long:hover {
     background: var(--hover);
 }
 
-.notice .notice-h svg {
-    margin-top: 0;
+.nt.long:hover .more,
+.nt.long:focus-visible .more,
+.nt.open .more {
+    opacity: 1;
 }
 
-.notice-h .chev {
-    color: var(--fg-3);
-    transition: transform 220ms var(--ease);
-}
-
-.notice-h[aria-expanded="true"] .chev {
+.nt.open .more {
     transform: rotate(90deg);
 }
 
-.notice-peek {
+.nt code,
+.nw code,
+.ne code {
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    padding: 1px calc(4 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    background: var(--sheet-2);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+    color: var(--fg-2);
+}
+
+/* A warning: a compact amber pill that hugs its title; what the CLI said, and its link, fold under it. Open, it
+   widens to the column. */
+.nw {
+    align-self: flex-start;
+    max-width: 100%;
+    min-width: 0;
+    margin: 0 0 calc(6 * var(--sp));
+    border-radius: calc(12 * var(--sp));
+    background: var(--warn-bg);
+}
+
+.nw.open {
+    align-self: stretch;
+    background: var(--sheet-2);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+}
+
+.nw-h {
+    display: flex;
+    align-items: center;
+    gap: calc(7 * var(--sp));
+    max-width: 100%;
+    min-height: calc(30 * var(--sp));
+    padding: 0 calc(9 * var(--sp)) 0 calc(4 * var(--sp));
+    border-radius: calc(12 * var(--sp));
+    font-size: 0.929rem;
+    color: var(--fg);
+    text-align: left;
+}
+
+.nw-h .ic {
+    width: calc(22 * var(--sp));
+    height: calc(22 * var(--sp));
+    flex: none;
+    display: grid;
+    place-items: center;
+    color: var(--warn);
+}
+
+.nw-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+}
+
+/* A title-only pill cut short: opened, it wraps. */
+.nw.open .nw-title {
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.nw.open .nw-h {
+    padding-top: calc(4 * var(--sp));
+    padding-bottom: calc(4 * var(--sp));
+}
+
+.nw-src {
+    flex: none;
+    display: grid;
+    place-items: center;
     color: var(--fg-3);
 }
 
-.notice-details {
-    display: flex;
-    flex-direction: column;
-    max-width: 100%;
-    min-width: 0;
-    margin: 0 0 calc(4 * var(--sp)) calc(6 * var(--sp));
-    padding: 0 0 0 calc(16 * var(--sp));
-    border-left: 1px solid var(--line);
+.nw-src svg {
+    width: calc(13 * var(--sp));
+    height: calc(13 * var(--sp));
+}
+
+.nw-h .chev {
+    flex: none;
+    color: var(--fg-3);
+    transition: transform 200ms var(--ease);
+}
+
+.nw.open .nw-h .chev {
+    transform: rotate(90deg);
+}
+
+/* Drawn only while open (Notices.tsx). */
+.nw-body {
+    padding: 0 calc(14 * var(--sp)) calc(11 * var(--sp)) calc(33 * var(--sp));
+    font-size: 0.929rem;
+    line-height: 1.55;
+    color: var(--fg-2);
+    animation: rise 220ms var(--ease) both;
+}
+
+.nw-body p {
+    margin: 0 0 calc(6 * var(--sp));
+    text-wrap: pretty;
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+}
+
+.nw-details {
+    margin: 0 0 calc(6 * var(--sp));
+    padding: 0;
     list-style: none;
     font-size: 0.857rem;
     line-height: 1.6;
+}
+
+.nw-body .row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: calc(10 * var(--sp));
+    margin-top: calc(8 * var(--sp));
+}
+
+.nlink {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
+    font-size: 0.893rem;
+    font-weight: 500;
+    color: var(--accent);
+    text-decoration: none;
+}
+
+.nlink .host {
     color: var(--fg-3);
+    font-weight: 400;
+}
+
+/* An error: a card, never cut short: its sentence in red, then what to do. It ends the turn, so there's no
+   "Stopped with an error" line under it (TurnView). */
+.ne {
+    display: grid;
+    grid-template-columns: calc(22 * var(--sp)) minmax(0, 1fr);
+    column-gap: calc(7 * var(--sp));
+    margin: calc(2 * var(--sp)) 0 calc(10 * var(--sp));
+    padding: calc(9 * var(--sp)) calc(12 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp));
+    border-radius: calc(12 * var(--sp));
+    background: color-mix(in srgb, var(--danger) 8%, var(--sheet));
+    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--danger) 34%, transparent);
+}
+
+.ne .ic {
+    height: calc(20 * var(--sp));
+    display: grid;
+    place-items: center;
+    color: var(--danger);
+}
+
+.ne-title {
+    font-size: 0.964rem;
+    line-height: calc(20 * var(--sp));
+    font-weight: 600;
+    color: var(--danger);
+    overflow-wrap: anywhere;
+}
+
+.ne-body {
+    grid-column: 2;
+    margin-top: calc(2 * var(--sp));
+    font-size: 0.929rem;
+    line-height: 1.55;
+    color: var(--fg-2);
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+}
+
+.ne-body .mono {
+    font-family: var(--font-mono);
+    font-size: 0.857rem;
+}
+
+.ne-foot {
+    grid-column: 2;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: calc(6 * var(--sp));
+    margin-top: calc(9 * var(--sp));
+}
+
+.ne-foot .cbtn {
+    gap: calc(5 * var(--sp));
+}
+
+/* An account switch, between turns: neither yours (right) nor the reply (left), so one centred line across the
+   column, hairlines either side, like a date in a chat. What its restart stopped is a second line, amber-marked. */
+.ev {
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin: calc(2 * var(--sp)) 0 calc(4 * var(--sp));
+}
+
+.ev-line {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    width: 100%;
+    min-width: 0;
+}
+
+.ev-line::before,
+.ev-line::after {
+    content: "";
+    flex: 1 1 calc(24 * var(--sp));
+    min-width: calc(16 * var(--sp));
+    height: 0.5px;
+    background: var(--line-strong);
+}
+
+.ev-h {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(7 * var(--sp));
+    flex: 0 1 auto;
+    min-width: 0;
+    height: calc(26 * var(--sp));
+    padding: 0 calc(4 * var(--sp));
+    border-radius: calc(6 * var(--sp));
+    font-size: 0.893rem;
+    color: var(--fg-3);
+}
+
+.ev-h .prov {
+    width: calc(14 * var(--sp));
+    height: calc(14 * var(--sp));
+    flex: none;
+    display: grid;
+    place-items: center;
+}
+
+.ev-h .prov svg {
+    width: calc(14 * var(--sp));
+    height: calc(14 * var(--sp));
+}
+
+.ev-t {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ev-t b {
+    font-weight: 600;
+    color: var(--fg-2);
+}
+
+.ev-t .how {
+    margin-left: calc(3 * var(--sp));
+    color: var(--fg-3);
+}
+
+/* What the switch's restart stopped: one line, never wider than a short phrase. */
+.ev-sub {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: calc(5 * var(--sp));
+    max-width: min(calc(420 * var(--sp)), 100%);
+    min-width: 0;
+    margin-top: 1px;
+    border-radius: calc(6 * var(--sp));
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+.ev-sub svg {
+    flex: none;
+    color: var(--warn);
+}
+
+.ev-sub .n {
+    flex: none;
+}
+
+.ev-sub .what {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--fg-2);
+}
+
+.ev-sub .what.mono {
+    font-family: var(--font-mono);
+    font-size: 0.821rem;
 }
 
 /* ---- The work log ---------------------------------------------------- */

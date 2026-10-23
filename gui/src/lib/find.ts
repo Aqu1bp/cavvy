@@ -10,6 +10,7 @@ import { commandLabel, commandMeta, outputLines } from "./command-row";
 import { stripAnsi } from "./format";
 import { renderMarkdown } from "./markdown";
 import { splitComments } from "./review-comments";
+import { noticeReads } from "./notices";
 
 /** More than this and the count says "N+". */
 export const MAX_MATCHES = 5000;
@@ -71,8 +72,8 @@ function blockText(b: Block): string | undefined {
             return [cardOf(b) ? undefined : l.verb, l.arg, meta].filter(Boolean).join(" ");
         }
         case "notice":
-            // As it reads unfolded: the line, then each of its details.
-            return [b.text, ...(b.details ?? [])].join("\n");
+            // As it reads opened (lib/notices.ts): its title or line, then what folds under it.
+            return noticeReads(b, Date.now());
         case "compact":
             return plain(b.summary);
         case "shell":

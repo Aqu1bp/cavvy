@@ -7,6 +7,7 @@ import { boundary } from "../helpers/render-boundary";
 import * as format from "../../gui/src/lib/format";
 import * as toolWords from "../../gui/src/lib/tool-words";
 import * as liveLine from "../../gui/src/lib/live-line";
+import * as notices from "../../gui/src/lib/notices";
 import * as commandRow from "../../gui/src/lib/command-row";
 import { backgroundOf } from "../../gui/src/lib/background";
 import * as agentMarks from "../../gui/src/lib/agent-marks";
@@ -33,7 +34,7 @@ function setup(blocks: any[], expanded = true, agents: any[] = [], session?: str
     const stops: [string, string[]][] = [];
     const icon = () => { icons++; return node("icon"); };
     const scope = {
-        ...format, ...toolWords, ...liveLine, ...commandRow, ...agentMarks, backgroundOf, RenderBoundary: boundary(), AgentMark: icon, ProviderStack: icon,
+        ...format, ...toolWords, ...liveLine, ...notices, ...commandRow, ...agentMarks, backgroundOf, RenderBoundary: boundary(), AgentMark: icon, ProviderStack: icon, Notice: () => node("notice"),
         // The session the rows are in: its background tasks, and Stop on one (recorded).
         handleFor: () => ({ view }), stopBackground: (id: string, ids: string[]) => { stops.push([id, ids]); }, now: clock, motionMs: () => 0, prefs: { expandActivity: expanded, showThinking: true }, findReveal: reveal,
         CodeBlock: (p: any) => { const n = node("code"); solid.createRenderEffect(() => n.text = p.code); return n; },

@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show } from "solid-js";
 import { Check, ChevronDown, CircleAlert, Layers, Plus, RefreshCw, Search, Settings2, Star, UserRound, Zap } from "lucide-solid";
-import type { AccountInfo, EffortLevel, ModelSummary } from "@shared/protocol";
+import { catalogSentence, type AccountInfo, type EffortLevel, type ModelSummary } from "@shared/protocol";
 import { app, handleFor, refreshModels, toast } from "../state/app";
 import { setEffort, setModel, setFastMode, setAccount } from "../state/actions";
 import { prefs, setPrefs, sp } from "../state/prefs";
@@ -537,6 +537,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                                                     {/* The provider, in mixed lists, drops out of sight rather than show a few letters when there's no room. */}
                                                     <span class="mr-text">
                                                         <span class="mr-name truncate">{name}</span>
+                                                        <CatalogTag provider={r.m.provider} />
                                                         <Show when={r.sub}>
                                                             <span class="mr-sub truncate">{r.sub}</span>
                                                         </Show>
@@ -655,6 +656,35 @@ const FAST_TIP = "Faster service at higher usage/cost. Same model and reasoning 
 const FAST_BUSY = "Change speed after this response finishes";
 
 /**
+ * A CLI's models, with their effort and speed options, are listed by its starting account (#426): where the
+ * session is on another, they're marked "From <starting account>", the reason in the tooltip (catalogSentence).
+ */
+function catalogFrom(provider: string | undefined): { source: string; note: string } | undefined {
+    const cli = provider ? app.providers.find((x) => x.id === provider) : undefined;
+    const info = cli?.agentCli;
+    if (!cli || !info || !app.activeId) return undefined;
+    const selected = handleFor(app.activeId)?.view.state.accounts?.[cli.id] ?? "default";
+    const from = info.defaultAccount ?? "default";
+    if (selected === from) return undefined;
+    const name = (id: string) => info.accounts?.find((a) => a.id === id)?.name ?? (id === "default" ? "Default" : id);
+    return { source: name(from), note: catalogSentence(cli.name, name(from), name(selected)) };
+}
+
+function CatalogTag(p: { provider?: string }) {
+    const from = () => catalogFrom(p.provider);
+    return (
+        <Show when={from()}>
+            {(f) => (
+                <span class="from-tag" title={f().note}>
+                    From {f().source}
+                    <span class="sr-only">{`. ${f().note}`}</span>
+                </span>
+            )}
+        </Show>
+    );
+}
+
+/**
  * Reasoning effort (and fast mode, where the model has it) in one picker: the
  * level glyph, with a filled ⚡ before it while fast mode is on. Its popover
  * names the level, has the "⚡ Fast" pill, and the bars.
@@ -725,6 +755,7 @@ export function EffortPicker(p: ComposerMenu & { current?: ModelSummary; current
             >
                 <div class="ep-h">
                     <b class="ep-lv">{label()}</b>
+                    <CatalogTag provider={model()?.provider} />
                     <Show when={fastOk()}>
                         <button ref={fastBtn} class={`ep-fast ${fastOn() ? "on" : ""}`} aria-pressed={fastOn()} disabled={p.busy} title={p.busy ? FAST_BUSY : FAST_TIP} onClick={() => void setFastMode(!p.fast)}>
                             <Zap size={12} stroke-width={2.25} />
