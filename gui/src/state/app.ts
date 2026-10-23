@@ -10,7 +10,7 @@ import { applyOp, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
 import { credentials, focused, notify, isTauri, showWindow, windowKey } from "../lib/platform";
 import { prefs, setPrefs } from "./prefs";
-import { COALESCE_MS, combineEnded, noticeRoute } from "../lib/background";
+import { backgroundOf, COALESCE_MS, combineEnded, noticeRoute, tabOf, workTabFor } from "../lib/background";
 import { mayCreateFiles } from "../lib/pathcache";
 // filelinks imports rpc from here: used only once events arrive, so the cycle is harmless.
 import { paths } from "./filelinks";
@@ -19,7 +19,7 @@ export type { Toast } from "../lib/toasts";
 import { DelayedPending } from "../lib/delayed-pending";
 import { safeRenderText } from "../lib/render-error";
 import { afterFailedReopen } from "../lib/reopen";
-import { jumpTarget, setAgentFocus, setFindOpen, setJumpTarget, setSettingsTab } from "./ui";
+import { jumpTarget, setAgentFocus, setFindOpen, setInspectorPane, setJumpTarget, setSettingsTab } from "./ui";
 import { applyKeybindingsFile, keymap } from "./keybindings";
 import { orderSessions } from "../lib/session-order";
 import { composerStorage } from "../lib/drafts";
@@ -701,7 +701,7 @@ function backgroundEnded(ev: Extract<ServerEvent, { type: "notify" }>) {
     toldEnded.add(tag);
     const reveal = () => {
         void activate(ev.sessionId);
-        revealBackground();
+        revealBackground(ev.sessionId, ev.task?.id);
     };
     if (route === "toast") toast(ev.body, ev.task?.outcome === "failed" ? "warn" : ev.task?.outcome === "done" ? "success" : "info", { label: "Show", run: reveal });
     else desktopEnded(ev.sessionId, ev.title, ev.body, tag, reveal);
@@ -725,12 +725,15 @@ function desktopEnded(sessionId: string, title: string, body: string, tag: strin
     g.tags.push(tag);
 }
 
-/** The side panel, on its Background section. */
-export function revealBackground() {
+/** The side panel on a session's background work: on that task's tab, else Agents while a sub-agent runs, else Commands. */
+export function revealBackground(sessionId = app.activeId, taskId?: string) {
     setAgentFocus(undefined);
     setPrefs("panel", true);
-    // Once the panel is drawn.
-    requestAnimationFrame(() => document.getElementById("background-tasks")?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
+    const h = sessionId ? handleFor(sessionId) : undefined;
+    if (!h) return;
+    const tasks = backgroundOf(h.view.state);
+    const task = taskId ? tasks.find((t) => t.id === taskId) : undefined;
+    setInspectorPane(task ? tabOf(task) : workTabFor(tasks, h.view.agents));
 }
 
 /** How long the window waits for the first screen before it shows what there is (the splash, while the server starts). */
