@@ -59,7 +59,14 @@
 // FAKE_MCP_REFUSE=1  answers mcp_set_servers with an error; hang leaves it unanswered, exit stops the CLI
 // FAKE_LOG_ENV=1     logs its whole environment at start
 // FAKE_TRANSCRIPTS=1 keeps each session as a transcript under its config folder's projects/ (CLAUDE_CONFIG_DIR, or
-//                    ~/.claude), as Claude Code does; --resume finds only those ("No conversation found" otherwise)
+//                    ~/.claude), as Claude Code does; --resume finds only those ("No conversation found" otherwise).
+//                    --fork-session copies the resumed one's. Each prompt, and each message folded into a running
+//                    turn, is a line of it: {"type":"fake-sent", text, pid, home (CLAUDE_CONFIG_DIR), at}. One whose
+//                    turn then fails (auth-failed, rate-limit) is in it too, as Claude Code 2.1.304 keeps it (#417).
+// FAKE_INIT_DELAY_MS  a turn's system/init comes this long after it started (its "started" lifecycle went out, and
+//                    the prompt is in the transcript): a window in which the prompt is taken but its turn not yet seen
+// FAKE_CLAUDE_ENV_FILE  a JSON file of FAKE_* settings, read again with each prompt (as fake-codex's FAKE_ENV_FILE):
+//                    a test changes a live process's scenario between its turns
 // FAKE_RATE_LIMIT    a JSON file: the rate_limit_info of a rate_limit_event sent after system/init
 //                    (shapes from Claude Code 2.1.301, test/fixtures/limits); FAKE_RATE_LIMIT_LATE=1 sends it
 //                    after the "rate-limit" scenario's error instead; FAKE_RATE_LIMIT_REPEAT=n sends it n times (as
@@ -92,7 +99,7 @@
 // CLAUDE_CODE_REMOTE; FAKE_GOAL_HOLD=1 waits for an interrupt after the first check, FAKE_GOAL_IMPOSSIBLE=1 ends
 // it judged impossible
 
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { callTool, connect, type McpServerRef } from "./mcp-call";
@@ -159,7 +166,21 @@ const flag = (name: string) => {
     return i >= 0 ? argv[i + 1] : undefined;
 };
 const resume = flag("--resume");
-const firstScenario = process.env.FAKE_SCENARIO ?? "write";
+const startedAt = Date.now();
+/** FAKE_CLAUDE_ENV_FILE's settings, as the test has them now (one written before this process started: it has them already). */
+function syncEnv() {
+    const f = process.env.FAKE_CLAUDE_ENV_FILE;
+    if (!f || !existsSync(f) || statSync(f).mtimeMs < startedAt) return;
+    let env: Record<string, string>;
+    try {
+        env = JSON.parse(readFileSync(f, "utf-8"));
+    } catch {
+        return;
+    }
+    for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_") && !(k in env) && k !== "FAKE_CLAUDE_ENV_FILE" && k !== "FAKE_LOG") delete process.env[k];
+    Object.assign(process.env, env);
+}
+const firstScenario = () => process.env.FAKE_SCENARIO ?? "write";
 // FAKE_GONE_ID: a session id (a real-looking UUID) that no longer exists.
 if (resume?.startsWith("gone") || (resume && resume === process.env.FAKE_GONE_ID)) {
     out({ type: "result", subtype: "error_during_execution", is_error: true, errors: [`No conversation found with session ID: ${resume}`], usage: {}, session_id: resume });
@@ -243,7 +264,14 @@ const sessionId = resume && !argv.includes("--fork-session") ? resume : `${resum
 sessionIdOf = () => sessionId;
 if (transcripts) {
     mkdirSync(transcripts, { recursive: true });
+    // A fork starts with what the session it copies had.
+    if (resume && sessionId !== resume) writeFileSync(join(transcripts, `${sessionId}.jsonl`), readFileSync(join(transcripts, `${resume}.jsonl`)));
     appendFileSync(join(transcripts, `${sessionId}.jsonl`), JSON.stringify({ sessionId, pid: process.pid }) + "\n");
+}
+/** FAKE_TRANSCRIPTS: what the model was sent, as a line of the session's transcript (see the top). */
+function recordSent(text: string) {
+    if (!transcripts) return;
+    appendFileSync(join(transcripts, `${sessionId}.jsonl`), JSON.stringify({ type: "fake-sent", text, pid: process.pid, home: process.env.CLAUDE_CONFIG_DIR ?? null, at: Date.now() }) + "\n");
 }
 /** A turn is running, and the prompt it answers. */
 let busy = false;
@@ -677,7 +705,12 @@ async function turn(content: any[], uuid?: string) {
         await Bun.sleep(50);
     }
     answering = uuid;
-    const scenario = prompts > 1 && process.env.FAKE_SECOND_SCENARIO ? process.env.FAKE_SECOND_SCENARIO : firstScenario;
+    syncEnv();
+    const scenario = prompts > 1 && process.env.FAKE_SECOND_SCENARIO ? process.env.FAKE_SECOND_SCENARIO : firstScenario();
+    // Taken: in the transcript from here on.
+    recordSent(content.map((c) => c?.text ?? "").join(""));
+    // FAKE_INIT_DELAY_MS: the turn has started (its "started" lifecycle is out), its system/init comes this much later.
+    if (process.env.FAKE_INIT_DELAY_MS) await Bun.sleep(Number(process.env.FAKE_INIT_DELAY_MS));
     // slash_commands: its built-ins and skills, named as 2.1.301 names them (a plugin's skills as plugin:skill, as --plugin-dir's are).
     out({ ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: "on" } : {}), ...(uuid && process.env.FAKE_OLD_RESULTS !== "1" ? { user_message_uuids: [uuid] } : {}), capabilities: CAPABILITIES, type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode, slash_commands: [...(process.env.FAKE_SLASH_COMMANDS ? JSON.parse(process.env.FAKE_SLASH_COMMANDS) : ["code-review", "simplify", "compact", "context", "design:ux-copy"]), ...pluginSkills()] });
     // Commands it answers itself: a synthetic message, no model call, nothing spent.
@@ -1264,6 +1297,7 @@ for await (const chunk of Bun.stdin.stream()) {
                 const dropped = m.message.content.filter((b: any) => b?.type === "document").length;
                 if (dropped) log({ droppedMidTurnDocuments: dropped });
                 steering.push({ uuid: m.uuid, text: m.message.content.map((b: any) => b.text ?? "").join(""), images: m.message.content.filter((b: any) => b?.type === "image").length });
+                recordSent(steering.at(-1)!.text);
                 steeringWake?.();
             } else {
                 const uuid = typeof m.uuid === "string" ? m.uuid : undefined;

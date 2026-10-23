@@ -62,7 +62,9 @@
 // FAKE_CONFIG_TIER     the tier Codex's own config gives a new thread
 // FAKE_CODEX_SKILL    a skill of Codex's own that skills/list reports; FAKE_NO_SKILLS=1: an older Codex, without skills/extraRoots/set
 // FAKE_TRANSCRIPTS=1  keeps each thread's rollout under its home's sessions/ (CODEX_HOME, or ~/.codex), as Codex does;
-//                     thread/resume finds only those
+//                     thread/resume finds only those; thread/fork copies the forked one's. Each turn/start's input and
+//                     each turn/steer's is a line of it: {"type":"fake-sent", text, pid, home (CODEX_HOME), at}. A
+//                     turn that then fails (usage-limit) has it too: Codex 0.163 writes it at turn start (#417).
 // FAKE_UNIQUE_THREADS=1  each new thread has an id of its own (thr-new-…), as Codex's do; otherwise all are thr-new
 // FAKE_SLOW_RESUME, FAKE_SLOW_TURN_START  milliseconds before answering thread/resume, turn/start
 // FAKE_TURN_MS        how long every turn works before it answers
@@ -183,6 +185,13 @@ function rollout(id: string, make = false): boolean {
     }
     if (!existsSync(file)) log({ rolloutMissing: file });
     return existsSync(file);
+}
+/** FAKE_TRANSCRIPTS: what the thread's model was sent, as a line of its rollout (see the top). */
+function recordSent(threadId: string, input: any) {
+    if (process.env.FAKE_TRANSCRIPTS !== "1") return;
+    const file = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions", `${threadId}.jsonl`);
+    const text = (Array.isArray(input) ? input : []).map((i: any) => i?.text ?? "").join("");
+    if (existsSync(file)) appendFileSync(file, JSON.stringify({ type: "fake-sent", text, pid: process.pid, home: process.env.CODEX_HOME ?? null, at: Date.now() }) + "\n");
 }
 const terminals = new Map<string, { threadId: string; turnId: string; item: any; timer?: ReturnType<typeof setTimeout> }>();
 let processSeq = 40000;
@@ -857,6 +866,11 @@ async function handle(m: any) {
             await startMcp(p.config);
             const id = `thr-fork-${Math.random().toString(36).slice(2, 8)}`;
             // The copy has a rollout of its own, in this home (FAKE_TRANSCRIPTS): a later app-server can resume it.
+            // It starts with what the forked thread's had.
+            if (process.env.FAKE_TRANSCRIPTS === "1" && rollout(String(p.threadId))) {
+                const dir = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions");
+                writeFileSync(join(dir, `${id}.jsonl`), readFileSync(join(dir, `${p.threadId}.jsonl`)));
+            }
             rollout(id, true);
             const u = usageOf.get(p.threadId);
             if (u) {
@@ -893,6 +907,7 @@ async function handle(m: any) {
             // Like Codex's: a value (or null) changes the thread's tier from this turn on; leaving it out keeps it.
             if ("serviceTier" in p) setTier(p.threadId, p.serviceTier);
             const turnId = `turn-${++turnSeq}`;
+            recordSent(String(p.threadId), p.input);
             lastPolicy = p;
             if (process.env.FAKE_SLOW_TURN_START && turnSeq === 1) await Bun.sleep(Number(process.env.FAKE_SLOW_TURN_START));
             // FAKE_SLOW_TURN_START_AT=n:ms: the nth turn/start answers that late.
@@ -981,6 +996,7 @@ async function handle(m: any) {
                 (current.steered ??= []).push(p.input?.[0]?.text ?? "");
                 current.wake?.();
             }
+            recordSent(String(p.threadId), p.input);
             return reply({ turnId: p.expectedTurnId });
         case "thread/compact/start": {
             reply({});
