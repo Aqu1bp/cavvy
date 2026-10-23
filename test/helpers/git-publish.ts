@@ -38,6 +38,7 @@ export function publishFixtures(home: string) {
         process.env.FAKE_PUBLISH_STATE = `${cwd}-pr.json`;
         delete process.env.FAKE_PUBLISH_MODE;
         delete process.env.FAKE_PUBLISH_MOVE_HEAD;
+        delete process.env.FAKE_PUBLISH_PUSH_CONFIG;
         if (github) git(cwd, "remote", "set-url", "origin", "https://github.com/example/project.git");
         return { cwd, remote, state: process.env.FAKE_PUBLISH_STATE };
     };

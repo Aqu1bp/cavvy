@@ -339,8 +339,10 @@ test("numeric branches select the exact head in this repo, prefer open/draft, th
     expect(await gitPrState(cwd)).toMatchObject({ number: 7, state: "draft" });
     const preview = await gitPublishInfo(cwd);
     expect((await gitPublish(cwd, { fingerprint: preview.fingerprint, action: "pr", base: "main", title: "Existing numeric branch" })).pr?.number).toBe(7);
-    expect(calls(state).some((args) => args[1] === "create" || args[1] === "view")).toBe(false);
-    expect(calls(state).filter((args) => args[1] === "list").every((args) => args[args.indexOf("--head") + 1] === "123")).toBe(true);
+    expect(calls(state).some((args) => args[1] === "create")).toBe(false);
+    // Looked up by head owner and branch, then read by the number picked.
+    expect(calls(state).filter((args) => args[0] === "api").every((args) => args.includes("head=example:123"))).toBe(true);
+    expect(calls(state).filter((args) => args[1] === "view").every((args) => args[2] === "7")).toBe(true);
     writeFileSync(state, JSON.stringify([wrong, fork, otherRepo, record(6, "123", "CLOSED", "2026-01-01T00:00:00Z"), recent]));
     expect(await gitPrState(cwd)).toMatchObject({ number: 8, state: "merged" });
     writeFileSync(state, JSON.stringify([wrong, fork, otherRepo]));
@@ -359,4 +361,75 @@ test("each network call reaudits config added after a preceding network read", a
         expect(calls(state)).toHaveLength(1);
         expect(calls(state)[0]!.slice(0, 2)).toEqual(["auth", "status"]);
     }
+});
+
+test("other owners' PRs from a branch of the same name can't hide this repository's open PR (#107)", async () => {
+    const { cwd, state } = repo(true);
+    const record = (number: number, login: string, updatedAt: string) => ({ number, url: `https://github.com/example/project/pull/${number}`, headRefName: "feature", state: "OPEN", updatedAt, title: `PR ${number}`, isDraft: false, headRepository: { name: "project" }, headRepositoryOwner: { login } });
+    const forks = Array.from({ length: 100 }, (_, i) => record(100 + i, `fork-${i}`, "2026-10-20T00:00:00Z"));
+    writeFileSync(state, JSON.stringify([record(7, "example", "2026-10-01T00:00:00Z"), ...forks]));
+    expect(await gitPrState(cwd)).toMatchObject({ number: 7, state: "open" });
+    const preview = await gitPublishInfo(cwd);
+    expect((await gitPublish(cwd, { fingerprint: preview.fingerprint, action: "pr", base: "main", title: "Duplicate?" })).pr?.number).toBe(7);
+    expect(calls(state).some((args) => args[1] === "create")).toBe(false);
+});
+
+test("a remote URL changed after the last check doesn't move the push: it goes to the URL confirmed (#107)", async () => {
+    const { cwd, remote, state } = repo();
+    const other = `${cwd}-other`; mkdirSync(other); git(other, "init", "--bare", "-q", "-b", "main");
+    const preview = await gitPublishInfo(cwd);
+    process.env.FAKE_PUBLISH_PUSH_CONFIG = `remote.origin.url=${other}`;
+    await gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" });
+    expect(git(remote, "rev-parse", "feature")).toBe(git(cwd, "rev-parse", "HEAD"));
+    expect(() => git(other, "rev-parse", "--verify", "feature")).toThrow();
+    // The remote's tracking branch moves as a push to the remote would have moved it.
+    expect(git(cwd, "rev-parse", "origin/feature")).toBe(git(cwd, "rev-parse", "HEAD"));
+    expect(calls(state, ".git-calls").find((args) => args.includes("push"))).toContain(remote);
+});
+
+for (const rule of ["insteadOf", "pushInsteadOf"]) test(`a URL ${rule} rewrite added after the last check is refused before anything is pushed (#107)`, async () => {
+    const { trustFolder } = await import("../src/config/trust");
+    const { cwd, remote } = repo(); trustFolder(cwd);
+    const other = `${cwd}-other`; mkdirSync(other); git(other, "init", "--bare", "-q", "-b", "main");
+    const preview = await gitPublishInfo(cwd);
+    process.env.FAKE_PUBLISH_PUSH_CONFIG = `url.${other}.${rule}=${remote}`;
+    await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" })).rejects.toThrow("push destination changed");
+    expect(() => git(other, "rev-parse", "--verify", "feature")).toThrow();
+    expect(() => git(remote, "rev-parse", "--verify", "feature")).toThrow();
+});
+
+test("a helper the user's own settings name stays allowed unless it names a file in the repository (#107)", async () => {
+    const { gitNetworkSkipReason } = await import("../src/util/git");
+    const { trustFolder } = await import("../src/config/trust");
+    const { cwd, state } = repo();
+    writeFileSync(join(cwd, "payload.sh"), ": > ssh-ran\nexit 1\n");
+    const global = join(cwd, "user-global");
+    const saved = { ...process.env };
+    const restore = () => { for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]; Object.assign(process.env, saved); };
+    const cases: [string, () => void][] = [
+        ["command scope, bare file name", () => Object.assign(process.env, { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.sshCommand", GIT_CONFIG_VALUE_0: "sh payload.sh" })],
+        ["command scope, relative path", () => Object.assign(process.env, { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "credential.helper", GIT_CONFIG_VALUE_0: "!sh ./payload.sh" })],
+        ["global, an option's value", () => { git(cwd, "config", "--file", global, "core.sshCommand", "ssh -oProxyCommand=scripts/proxy"); process.env.GIT_CONFIG_GLOBAL = global; }],
+        ["GIT_SSH_COMMAND", () => { process.env.GIT_SSH_COMMAND = "sh ./payload.sh"; }],
+        ["GIT_SSH_COMMAND, bare file name", () => { process.env.GIT_SSH_COMMAND = "sh payload.sh"; }],
+    ];
+    try {
+        for (const [name, set] of cases) {
+            set();
+            expect([name, await gitNetworkSkipReason(cwd)]).toEqual([name, expect.stringContaining("names a file in this repository")]);
+            await expect(gitPublishInfo(cwd)).rejects.toMatchObject({ code: "needs_trust" });
+            restore();
+            rmSync(global, { force: true });
+        }
+        // Installed programs, absolute paths and home-relative ones are the user's own.
+        Object.assign(process.env, { GIT_SSH_COMMAND: "ssh -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_ed25519", GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "credential.helper", GIT_CONFIG_VALUE_0: "store --file ~/.git-credentials", GIT_CONFIG_KEY_1: "core.askPass", GIT_CONFIG_VALUE_1: "/usr/libexec/ssh-askpass" });
+        expect(await gitNetworkSkipReason(cwd)).toBeUndefined();
+        restore();
+        // Explicit trust allows a repository's helper.
+        process.env.GIT_SSH_COMMAND = "sh ./payload.sh";
+        trustFolder(cwd);
+        expect(await gitNetworkSkipReason(cwd)).toBeUndefined();
+    } finally { restore(); }
+    expect(existsSync(join(cwd, "ssh-ran"))).toBe(false);
+    expect(calls(state, ".git-calls")).toHaveLength(0);
 });

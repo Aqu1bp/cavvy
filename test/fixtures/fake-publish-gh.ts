@@ -11,11 +11,27 @@ if (args[0] === "auth") {
     }
     process.exit(mode === "unauthenticated" ? 1 : 0);
 }
-if (args[0] !== "pr") process.exit(2);
+if (args[0] !== "pr" && args[0] !== "api") process.exit(2);
 if (mode === "error") { console.error(`ghp_${"x".repeat(40)} ` + "e".repeat(6000)); process.exit(1); }
-if (args[1] === "list") {
-    const stored = existsSync(state) ? JSON.parse(readFileSync(state, "utf8")) : [];
-    console.log(JSON.stringify(Array.isArray(stored) ? stored : [stored]));
+const stored = (): any[] => {
+    const value = existsSync(state) ? JSON.parse(readFileSync(state, "utf8")) : [];
+    return Array.isArray(value) ? value : [value];
+};
+if (args[0] === "api") {
+    // GET repos/<owner>/<name>/pulls with head=<owner>:<branch>, as GitHub filters it: by the head repository's owner and branch.
+    const field = (name: string) => args.find((arg, i) => args[i - 1] === "-f" && arg.startsWith(`${name}=`))?.slice(name.length + 1);
+    const [owner, branch] = [field("head")!.slice(0, field("head")!.indexOf(":")), field("head")!.slice(field("head")!.indexOf(":") + 1)];
+    const pulls = stored().filter((pr) => pr.headRefName === branch && pr.headRepositoryOwner?.login.toLowerCase() === owner.toLowerCase())
+        .map((pr) => ({ number: pr.number, html_url: pr.url, state: pr.state === "OPEN" ? "open" : "closed", merged_at: pr.state === "MERGED" ? pr.updatedAt : null, updated_at: pr.updatedAt, head: { ref: pr.headRefName, repo: pr.headRepository ? { name: pr.headRepository.name, owner: pr.headRepositoryOwner } : null } }));
+    console.log(JSON.stringify(pulls.slice(0, Number(field("per_page") ?? 30))));
+} else if (args[1] === "view") {
+    const pr = stored().find((value) => String(value.number) === args[2]);
+    if (!pr) { console.error("no pull requests found"); process.exit(1); }
+    console.log(JSON.stringify(pr));
+} else if (args[1] === "list") {
+    // As gh does: newest first, cut at --limit before any filtering of ours.
+    const limit = Number(args[args.indexOf("--limit") + 1] || 30);
+    console.log(JSON.stringify(stored().filter((pr) => pr.headRefName === args[args.indexOf("--head") + 1]).sort((a, b) => b.number - a.number).slice(0, limit)));
 } else if (args[1] === "create") {
     const value = (name: string) => args[args.indexOf(name) + 1];
     if (mode === "create-error") { console.error("fixture refuses creation"); process.exit(1); }

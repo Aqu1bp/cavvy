@@ -1,6 +1,6 @@
 import { spawnSync } from "bun";
 import { lstatSync } from "fs";
-import { delimiter, isAbsolute } from "path";
+import { delimiter, isAbsolute, join } from "path";
 import { childEnv } from "./env";
 import { trustedByUser } from "../config/trust";
 
@@ -238,9 +238,62 @@ export async function gitNetworkSkipReason(cwd: string): Promise<string | undefi
             || /^(include|includeif)\./.test(key));
         // Subsections can contain URLs or credentials; never quote them here.
         if (key) return `repository ${key.split(".")[0]} transport configuration requires explicit user trust`;
+        return await inheritedHelperReason(cwd);
     } catch {
         return "folder trust or repository configuration could not be checked";
     }
+}
+
+/** Settings that name a program git runs for a push or fetch (its transport, credentials, signing). */
+const HELPER_CONFIG = "^(core\\.(sshcommand|gitproxy|askpass)|credential\\..*helper|gpg\\.(.*\\.)?program|gpg\\.ssh\\.defaultkeycommand|remote\\..*\\.(uploadpack|receivepack))$";
+/** Variables that do the same, inherited by publishing's git calls (git-publish run()). */
+const HELPER_VARS = ["GIT_SSH_COMMAND", "GIT_SSH", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_PROXY_COMMAND"];
+
+/**
+ * A helper the user's own settings name (global, system, command scope, the environment) may be an installed
+ * program, but not one that names a file by a relative path, or a file in cwd: run from the repository, that's
+ * the repository's (`sh ./payload.sh`, `sh payload.sh`). Such a helper needs explicit trust too (#107).
+ */
+async function inheritedHelperReason(cwd: string): Promise<string | undefined> {
+    const env = gitEnv();
+    const variable = HELPER_VARS.find((name) => env[name] && namesRepoFile(cwd, env[name]!));
+    if (variable) return `inherited ${variable} names a file in this repository and requires explicit user trust`;
+    const effective = await gitAsync(cwd, ["config", "--includes", "--show-scope", "-z", "--get-regexp", HELPER_CONFIG]);
+    if (effective === undefined) return "repository configuration could not be checked";
+    const fields = effective.split("\0");
+    for (let i = 0; i < fields.length - 1; i += 2) {
+        // The repository's own are refused whatever they say (gitNetworkSkipReason).
+        if (fields[i] === "local" || fields[i] === "worktree") continue;
+        // Git emits scope\0key\nvalue\0; values may themselves contain newlines.
+        const entry = fields[i + 1]!;
+        const newline = entry.indexOf("\n");
+        const name = newline === -1 ? entry : entry.slice(0, newline);
+        if (newline !== -1 && namesRepoFile(cwd, entry.slice(newline + 1))) {
+            // Only fixed section names enter the message; subsections may hold URLs.
+            return `inherited ${name.startsWith("core.") ? name : name.split(".")[0]} configuration names a file in this repository and requires explicit user trust`;
+        }
+    }
+    return undefined;
+}
+
+/**
+ * Whether a helper command names a file relative to cwd: a word (or a word's `=` value) that's a relative path,
+ * or past the program itself, a file that's there. The program is looked up on PATH, not in cwd. A shell
+ * command can't be read for sure, so this errs toward asking for trust.
+ */
+function namesRepoFile(cwd: string, command: string): boolean {
+    const words = command.replace(/^\s*!/, "").split(/\s+/).filter(Boolean);
+    return words.some((word, i) => word.replace(/["']/g, "").split("=").some((part, j) => {
+        if (!part || part.startsWith("/") || part.startsWith("~") || /^\$\{?HOME\}?(\/|$)/.test(part) || part.includes("://")) return false;
+        if (part.startsWith(".") || part.includes("/")) return true;
+        if (i === 0 && j === 0) return false;
+        try {
+            lstatSync(join(cwd, part));
+            return true;
+        } catch {
+            return false;
+        }
+    }));
 }
 
 async function statusSkipReason(cwd: string, signal?: AbortSignal): Promise<string | undefined> {
