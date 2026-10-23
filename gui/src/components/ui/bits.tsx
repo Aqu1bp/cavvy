@@ -69,13 +69,14 @@ export function Toggle(p: { checked: boolean; onChange: (v: boolean) => void; la
     );
 }
 
-/** A `disabled` option stays focusable and keeps its tooltip (which should say why), but can't be chosen. */
-export function Segmented<T extends string>(p: { value: T; options: { value: T; label: JSX.Element; title?: string; disabled?: boolean }[]; onChange: (v: T) => void; label?: string; size?: "sm" | "md" }) {
+/** A `disabled` option stays focusable and keeps its tooltip (which should say why), but can't be chosen.
+ *  `name`: the option's accessible name, when its label alone doesn't say it (an icon, a bare count). */
+export function Segmented<T extends string>(p: { value: T; options: { value: T; label: JSX.Element; name?: string; title?: string; disabled?: boolean }[]; onChange: (v: T) => void; label?: string; size?: "sm" | "md" }) {
     return (
         <div class={`segmented seg-${p.size ?? "md"}`} role="radiogroup" aria-label={p.label}>
             <For each={p.options}>
                 {(o) => (
-                    <button role="radio" aria-checked={p.value === o.value} aria-disabled={o.disabled || undefined} class={p.value === o.value ? "on" : ""} title={o.title} onClick={() => !o.disabled && p.onChange(o.value)}>
+                    <button role="radio" aria-checked={p.value === o.value} aria-disabled={o.disabled || undefined} aria-label={o.name} class={p.value === o.value ? "on" : ""} title={o.title} onClick={() => !o.disabled && p.onChange(o.value)}>
                         {o.label}
                     </button>
                 )}
