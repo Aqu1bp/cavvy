@@ -147,6 +147,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         void rpc.call("session.draft", { id, present }).catch(() => undefined);
         if (present) onCleanup(() => void rpc.call("session.draft", { id, present: false }).catch(() => undefined));
     }));
+    // A message is held because the session's CLI account was removed (#410): the model picker opens on its accounts.
+    createEffect(on(() => st()?.accountNeeded, (provider, was) => {
+        if (provider && provider !== was) setModelPickerOpen(true);
+    }, { defer: true }));
     // What the server hands back (interrupted queue, rewound prompt).
     createEffect(() => {
         const d = h()?.draft();

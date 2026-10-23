@@ -447,7 +447,8 @@ export type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus };
 
 /**
  * A queued message: "steer" joins the running turn at its next step, "queue" waits for it to end,
- * "turn" must wait (images, files, commands), "held" came back after a restart and waits for the user.
+ * "turn" must wait (images, files, commands), "held" waits for the user: it came back after a restart, or the
+ * session's CLI account was removed (queuedWhy says so; picking an account sends it).
  */
 export type QueuedMode = "steer" | "queue" | "turn" | "held";
 
@@ -497,6 +498,11 @@ export interface GoalState {
 
 export interface SessionState {
     accounts?: Record<string, string>;
+    /**
+     * The CLI (its provider id) whose account this session used was removed, and messages wait for the user to pick
+     * another (#410): the model picker opens on its accounts. Unset once one is picked, or nothing waits.
+     */
+    accountNeeded?: string;
     id: string;
     cwd: string;
     projectName: string;

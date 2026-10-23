@@ -55,7 +55,7 @@ import { killAllShells, runShell, childEnv } from "../tools/bash";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
 import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveModelInfo, reviewTarget, smallModelFor, lookupModel, type ProviderListing } from "../providers/models";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
-import { account, accountSwitchNote } from "../providers/accounts";
+import { account, accountSwitchNote, removedAccount, removedAccountNote } from "../providers/accounts";
 import { RpcError } from "../server/rpc-error";
 import { assistantText, modelRef, parseModelRef, textOf, type ImagePart, type Message, type ModelInfo, type ProviderClient, type TextPart, type ToolCallPart, type UserContent } from "../providers/types";
 import { formatCost, formatTokens } from "../providers/pricing";
@@ -155,7 +155,8 @@ export class App {
     readonly idleCompact = new IdleCompactTimer({
         plan: (now) => this.agent?.idleCompactPlan(now) ?? null,
         // Not while anything waits on the user, or they're typing: they're back.
-        ready: () => !this.busy && !this.exiting && !this.switching && !this.dialogs.length && !this.dialogQueue.length && !this.queued.length && this.editor.isEmpty && !this.pendingSubmit && !this.goal?.pending(),
+        // Nor on a CLI account that was removed (#410): nothing runs there.
+        ready: () => !this.busy && !this.exiting && !this.switching && !this.dialogs.length && !this.dialogQueue.length && !this.queued.length && this.editor.isEmpty && !this.pendingSubmit && !this.goal?.pending() && !this.needsAccount(),
         run: () => void this.compactIdle(),
     });
     /** The task running is an idle compaction: a message sent meanwhile cancels it and runs. */
@@ -281,7 +282,8 @@ export class App {
     /** A scheduled prompt may start now: nothing running (an idle compaction gives way), waiting, or being set up. */
     private schedulable(): boolean {
         // A goal between its turns (checking, retrying, waiting on background work) goes first: scheduled prompts wait for it.
-        return (!this.busy || this.idleCompacting) && !this.dialogs.length && !this.dialogQueue.length && !this.switching && !this.pendingSubmit && !this.exiting && this.modelReady && Boolean(this.session) && !this.goal?.pending();
+        // Nor while the session's CLI account is gone (#410): they run once the user picks another.
+        return (!this.busy || this.idleCompacting) && !this.dialogs.length && !this.dialogQueue.length && !this.switching && !this.pendingSubmit && !this.exiting && this.modelReady && Boolean(this.session) && !this.goal?.pending() && !this.needsAccount();
     }
 
     private async runScheduled(prompt: string, label: string, resume = false): Promise<unknown> {
@@ -562,7 +564,8 @@ export class App {
         if (this.busy) throw new RpcError("Switch accounts once this response is done, or interrupt it first.", "busy");
         const selected = account(provider, id);
         const had = this.session.backends.has(provider);
-        if (!this.session.setAccount(provider, selected.id)) return;
+        // Already this one (added again under the same id, #410): what waited for an account goes now.
+        if (!this.session.setAccount(provider, selected.id)) return this.releaseForAccount(provider);
         this.schedules.cancelLimitResume("account");
         const name = getProvider(provider)?.name ?? provider;
         const native = had && this.session.backends.has(provider);
@@ -591,6 +594,112 @@ export class App {
             this.notice(message, "warn");
             this.renderLive();
         }
+        this.releaseForAccount(provider);
+    }
+
+    // ---- A removed CLI account (#410): nothing runs on an account the user didn't choose.
+
+    /** Messages held because the account this session used for a CLI (`provider`) was removed: sent once the user picks one. */
+    private heldForAccount?: { provider: string; drafts: QueuedDraft[] };
+
+    /** The session's model is a CLI, and the account this session selected for it was removed: the CLI and the account's id. */
+    private removedAccount(): { provider: string; id: string } | undefined {
+        const provider = this.model?.provider;
+        const id = provider && this.session ? removedAccount(provider, this.session.accountId(provider)) : undefined;
+        return provider && id ? { provider, id } : undefined;
+    }
+
+    /**
+     * Nothing may run until the user picks an account for the session's CLI: its account was removed, or messages are
+     * held for one (even if it's back, added again under its id: picking it sends them first).
+     */
+    private needsAccount(): { provider: string; id: string } | undefined {
+        const gone = this.removedAccount();
+        if (gone) return gone;
+        const provider = this.model?.provider;
+        return provider && this.heldForAccount?.provider === provider ? { provider, id: this.session.accountId(provider) } : undefined;
+    }
+
+    /**
+     * The session's CLI account was removed: `draft` (a message about to go) and what's queued behind it are held, not
+     * stored or sent, until the user picks an account for the CLI (/account): releaseForAccount sends them then.
+     */
+    private holdForAccount(gone: { provider: string; id: string }, draft: Draft) {
+        const drafts = [...(this.heldForAccount?.drafts ?? []), { ...draft, mode: "queue" as const }, ...this.queued];
+        this.queued = [];
+        this.heldForAccount = { provider: gone.provider, drafts };
+        this.queueUpdated();
+        this.notice(`${removedAccountNote(getProvider(gone.provider)?.name ?? gone.provider, gone.id)} Use /account.`, "warn");
+    }
+
+    /** An account was picked for `provider`'s CLI (setAccount): the messages held for one go now, in order, each once. */
+    private releaseForAccount(provider: string) {
+        const held = this.heldForAccount;
+        if (this.model?.provider !== provider || this.removedAccount()) return;
+        if (held?.provider !== provider) {
+            // What waited for it meanwhile (a watch's events, a schedule) can go now.
+            this.toolState.wakes?.poke();
+            this.schedules.poke();
+            return;
+        }
+        this.releaseHeld();
+    }
+
+    /**
+     * What was held for an account goes, in order, each once: ahead of anything sent meanwhile. Busy (a message sent
+     * while the switch let the CLI go), they run when its turn ends, as queued ones do. Otherwise the first goes once
+     * the command that picked the account (/account) is done; until its turn starts, what's sent waits behind them
+     * (draining), and leaving the session meanwhile hands them back to the prompt (leaveHeld).
+     */
+    private releaseHeld() {
+        const held = this.heldForAccount;
+        if (!held) return;
+        this.heldForAccount = undefined;
+        this.queued.unshift(...held.drafts);
+        this.queueUpdated();
+        if (this.busy) return;
+        const token = {};
+        const session = this.session;
+        this.draining = token;
+        setTimeout(() => {
+            if (this.draining !== token) return;
+            if (this.session !== session) {
+                this.draining = undefined;
+                return;
+            }
+            const next = this.queued.shift();
+            this.queueUpdated();
+            if (!next) {
+                this.draining = undefined;
+                return;
+            }
+            // Its turn takes over the reservation (startTurn ends it); a command that starts none ends it here.
+            void this.submitText(next, undefined, true).finally(() => {
+                if (this.draining === token) this.draining = undefined;
+            });
+        }, 0);
+    }
+
+    /** Released messages waiting for their turn to start (releaseHeld): what's sent meanwhile queues behind them. */
+    private draining?: object;
+
+    /**
+     * Leaving the session (another, or a new one). What's held for its account stays saved with it, held, for when
+     * it's opened again; one not saved yet comes back to the prompt. Released ones whose turn hasn't started yet
+     * come back to the prompt rather than run in the next session.
+     */
+    private leaveHeld() {
+        if (this.draining) {
+            this.draining = undefined;
+            this.returnQueued();
+        }
+        const held = this.heldForAccount;
+        if (!held) return;
+        this.heldForAccount = undefined;
+        if (this.session.persisted) return;
+        this.queued.unshift(...held.drafts);
+        this.returnQueued();
+        this.notice(`${held.drafts.length === 1 ? "The message held for an account is" : "The messages held for an account are"} back in the prompt.`);
     }
 
     /** Switch the active model. Returns false if the provider isn't usable. */
@@ -641,6 +750,19 @@ export class App {
             }
         }
         if (!opts.quiet) this.screen.print(["", `${theme.success("✔")} Model set to ${bold(info.name ?? info.id)} ${theme.muted(`(${ref})`)}`]);
+        // A CLI whose account this session used was removed (#410): asked for now; what's held waits for it.
+        const gone = this.removedAccount();
+        const held = this.heldForAccount;
+        if (gone) {
+            if (held) held.provider = gone.provider;
+            if (!opts.quiet) this.notice(`${removedAccountNote(def.name, gone.id, false)} Use /account.`, "warn");
+        } else if (held && !opts.quiet) {
+            // The user picked a model that runs without that account: where they chose to run, so what was held for
+            // an account goes there now, once each, in order (as on the desktop). Not on a model set without being
+            // picked (quiet): they stay held.
+            this.notice(`Sending ${held.drafts.length === 1 ? "the message" : `the ${held.drafts.length} messages`} held for an account to ${info.name ?? info.id}.`);
+            this.releaseHeld();
+        }
         this.renderLive();
         return true;
     }
@@ -819,6 +941,7 @@ export class App {
 
     newSession() {
         const prev = this.session;
+        this.leaveHeld();
         this.leaveBackground();
         this.session = Session.create(this.cwd);
         prev.release();
@@ -838,14 +961,17 @@ export class App {
     /** Switch to a saved session (/resume), or to one just opened (a fork). */
     resume(from: string | Session) {
         const prev = this.session;
+        let next: Session;
         try {
-            this.session = typeof from === "string" ? Session.load(from) : from;
+            next = typeof from === "string" ? Session.load(from) : from;
         } catch (e) {
             this.notice(`Could not resume: ${(e as Error).message}`, "error");
             // Stay in the current conversation; at startup there's none yet.
             if (!prev) this.session = Session.create(this.cwd);
             return;
         }
+        if (prev) this.leaveHeld();
+        this.session = next;
         if (prev) this.leaveBackground(prev);
         prev?.release();
         this.bindBackground();
@@ -2285,7 +2411,8 @@ export class App {
     }
 
     /** A prompt, or a draft with images, as typed: a command, queued while busy, or a turn. `followUp`: what it does if a turn is running (default: the setting). */
-    async submitText(input: string | Draft, followUp?: FollowUp) {
+    /** `drained`: one of the messages released for an account (releaseHeld), whose reservation this is. */
+    async submitText(input: string | Draft, followUp?: FollowUp, drained = false) {
         const draft: Draft = typeof input === "string" ? { text: input, attachments: new Map() } : input;
         const text = plainText(draft.text);
         this.toolState.wakes?.resume();
@@ -2294,8 +2421,10 @@ export class App {
             const handled = await runCommand(this, text, draft);
             if (handled) return;
         }
-        if (this.busy) {
-            const q: QueuedDraft = { ...draft, mode: followUp ?? this.followUp() };
+        // Messages released for an account go first (releaseHeld): this waits behind them.
+        if (this.busy || (this.draining && !drained)) {
+            // No turn runs yet (only released ones wait to start): it waits its turn rather than steer theirs.
+            const q: QueuedDraft = { ...draft, mode: this.busy ? (followUp ?? this.followUp()) : "queue" };
             this.queued.push(q);
             this.queueUpdated();
             if (q.mode === "steer" && steers(q)) this.agent?.queueChanged?.();
@@ -2316,6 +2445,14 @@ export class App {
             this.notice("No model is selected. Pick one with /model (or add an API key with /login).", "error");
             return;
         }
+        // The session's CLI account was removed (#410): nothing is stored or sent. The user's message waits for an
+        // account (it's the prompt, or a command that built it); a watch's events go back in their queue.
+        const gone = opts.adopt ? undefined : this.needsAccount();
+        if (gone) {
+            if (opts.wakes) return void this.toolState.wakes?.requeue(opts.wakes);
+            if (!opts.goal && !this.scheduledTurn && opts.kind !== "wake") return this.holdForAccount(gone, opts.draft ?? { text: opts.kind === "command" ? (opts.display ?? text) : text, attachments: new Map() });
+            return this.notice(`${removedAccountNote(getProvider(gone.provider)?.name ?? gone.provider, gone.id, false)} Use /account.`, "warn");
+        }
         // The user's own turn overtakes a pending goal check, and a paused goal picks up after it. A scheduled prompt
         // leaves a paused goal paused; the resume after a usage limit is the exception, as in Claude Code.
         // A watch's events don't either: they aren't the user's.
@@ -2325,6 +2462,8 @@ export class App {
         // Busy from here on, so prompts typed while MCP servers finish connecting queue up.
         const agent = this.agent;
         this.busy = true;
+        // Busy now: what's sent waits behind this turn, and the rest released for an account follows it.
+        this.draining = undefined;
         this.idleCompact.disarm();
         // The user's own turn: a resume waiting for the usage limit isn't needed.
         if (!this.scheduledTurn) this.schedules.userSent();
@@ -2427,10 +2566,13 @@ export class App {
     private queueUpdated() {
         this.renderLive();
         if (!this.session?.persisted) return;
-        const mine = this.queued.map((d): StoredQueued => {
+        const store = (d: QueuedDraft, account?: string): StoredQueued => {
             const images = imagesIn(d.text, d.attachments).map((im) => im.part);
-            return { text: plainText(d.text), mode: d.mode, ...(images.length ? { attachments: images } : {}) };
-        });
+            return { text: plainText(d.text), mode: d.mode, ...(images.length ? { attachments: images } : {}), ...(account ? { account } : {}) };
+        };
+        // Held for an account, saved as held (#410): reopened, they still wait for one.
+        const held = this.heldForAccount;
+        const mine = [...(held?.drafts.map((d) => store(d, held.provider)) ?? []), ...this.queued.map((d) => store(d))];
         const kept = this.keptQueue?.id === this.session.meta.id ? this.keptQueue.items : [];
         saveQueue(this.session.path, this.session.meta.id, [...mine, ...kept]);
     }
@@ -2446,9 +2588,18 @@ export class App {
         if (!this.session.persisted) return;
         const all = loadQueue(this.session.path, this.session.meta.id);
         // The terminal attaches images only: one with a file (a PDF) stays saved for the app, rather than lose it.
-        const saved = all.filter((q) => !q.attachments?.some((a) => a.type !== "image"));
-        const kept = all.filter((q) => !saved.includes(q));
+        const fits = all.filter((q) => !q.attachments?.some((a) => a.type !== "image"));
+        const kept = all.filter((q) => !fits.includes(q));
         this.keptQueue = { id: this.session.meta.id, items: kept };
+        // Held for an account (#410): they stay held, each a message of its own, until one is picked (/account).
+        const holding = fits.filter((q) => q.account);
+        const saved = fits.filter((q) => !q.account);
+        if (holding.length) {
+            const provider = holding[0]!.account!;
+            this.heldForAccount = { provider, drafts: holding.map((q) => this.draftOf(q)) };
+            const cli = getProvider(provider)?.name ?? provider;
+            this.notice(`${holding.length === 1 ? "A message waits" : `${holding.length} messages wait`} for an account: the ${cli} account this session used was removed. Pick one with /account to send ${holding.length === 1 ? "it" : "them"}.`, "warn");
+        }
         if (!saved.length) {
             if (kept.length) this.notice(kept.length === 1 ? "A message with a file that was waiting when Harness closed is still saved: open this session in the app to send it." : `${kept.length} messages with files that were waiting when Harness closed are still saved: open this session in the app to send them.`);
             return;
@@ -2458,26 +2609,44 @@ export class App {
         e.set("");
         saved.forEach((q, i) => {
             if (i) e.insert("\n");
-            const images = (q.attachments ?? []).filter((a): a is ImagePart => a.type === "image");
-            let n = 0;
-            // Each [Image #k] label gets its image again, in order (the editor numbers them afresh).
-            const attach = (image: ImagePart) => e.attachImage({ name: `image ${++n}`, bytes: Math.floor((image.data.length * 3) / 4), part: image });
-            for (const piece of q.text.split(/(\[Image #\d+\])/)) {
-                const image = /^\[Image #\d+\]$/.test(piece) ? images[n] : undefined;
-                if (image) attach(image);
-                else if (piece) e.insert(piece);
-            }
-            // The app keeps a message's images beside its text, with no labels in it: they go after the text.
-            for (const image of images.slice(n)) {
-                if (e.text && !/\s$/.test(e.text)) e.insert(" ");
-                attach(image);
-            }
+            this.fillEditor(q);
         });
         if (typed) e.restore([typed]);
-        saveQueue(this.session.path, this.session.meta.id, kept);
+        this.queueUpdated();
         const back = saved.length === 1 ? "A message that was waiting when Harness closed is back in the prompt." : `${saved.length} messages that were waiting when Harness closed are back in the prompt.`;
         this.notice(kept.length ? `${back} ${kept.length === 1 ? "One with a file is" : `${kept.length} with files are`} still saved: open this session in the app to send ${kept.length === 1 ? "it" : "them"}.` : back);
         this.renderLive();
+    }
+
+    /** A saved message as a draft of its own (its images attached), made in the editor, which is left as it was. */
+    private draftOf(q: StoredQueued): QueuedDraft {
+        const e = this.editor;
+        const typed = e.text ? e.capture() : undefined;
+        e.set("");
+        this.fillEditor(q);
+        const draft = e.capture();
+        e.set("");
+        if (typed) e.restore([typed]);
+        return { ...draft, mode: q.mode };
+    }
+
+    /** A saved message into the editor at the cursor: its text, with each image where its label was. */
+    private fillEditor(q: StoredQueued) {
+        const e = this.editor;
+        const images = (q.attachments ?? []).filter((a): a is ImagePart => a.type === "image");
+        let n = 0;
+        // Each [Image #k] label gets its image again, in order (the editor numbers them afresh).
+        const attach = (image: ImagePart) => e.attachImage({ name: `image ${++n}`, bytes: Math.floor((image.data.length * 3) / 4), part: image });
+        for (const piece of q.text.split(/(\[Image #\d+\])/)) {
+            const image = /^\[Image #\d+\]$/.test(piece) ? images[n] : undefined;
+            if (image) attach(image);
+            else if (piece) e.insert(piece);
+        }
+        // The app keeps a message's images beside its text, with no labels in it: they go after the text.
+        for (const image of images.slice(n)) {
+            if (e.text && !/\s$/.test(e.text)) e.insert(" ");
+            attach(image);
+        }
     }
 
     // ---- /queue: what's waiting, with send now, reorder and remove
@@ -2525,6 +2694,8 @@ export class App {
         if (this.idleCompacting) return void this.yieldIdleCompaction().then(again);
         // Busy or with messages queued, the turn's end looks again.
         if (this.exiting || this.busy || this.queued.length) return;
+        // The session's CLI account was removed (#410): nothing runs until the user picks another (releaseForAccount looks again).
+        if (this.needsAccount()) return;
         // A model switch, a dialog open, no agent yet, a goal between its turns (it goes first, as with scheduled
         // prompts): look again in a moment.
         if (this.switching || !this.agent || this.dialogs.length || this.goalPending()) {

@@ -12,6 +12,7 @@ import { Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { withShortcut } from "../state/keybindings";
 import { effortAt, effortKey, effortLevels, effortOf, takesEffort, type Effort } from "../lib/effort";
+import { sendsAccountPick } from "../lib/account-pick";
 
 function fuzzy(q: string, s: string): boolean {
     q = q.toLowerCase();
@@ -177,7 +178,8 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     };
     const pickAccount = (provider: string, a: { id: string }) => {
         closeAccounts();
-        if (a.id !== selectedAccount(provider) || missingAccount(provider)) void setAccount(provider, a.id);
+        const needed = Boolean(app.activeId && handleFor(app.activeId)?.view.state.accountNeeded === provider);
+        if (sendsAccountPick(a.id, selectedAccount(provider), { missing: missingAccount(provider), needed })) void setAccount(provider, a.id);
     };
     const addAccount = (provider: string) => {
         setAcctOpen(false);
@@ -305,7 +307,13 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
             <Menu
                 label="Choose a model"
                 kind="dialog"
-                initialFocus={() => input}
+                initialFocus={() => {
+                    // The session's account was removed (#410): it opens on that CLI's accounts, to pick another.
+                    const provider = currentProvider();
+                    if (!provider || acctProvider() !== provider || !missingAccount(provider)) return input;
+                    openAccounts();
+                    return acctItems()[0] ?? input;
+                }}
                 onKeyDown={onKey}
                 onEscape={() => {
                     if (!acctOpen()) return false;

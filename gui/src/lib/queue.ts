@@ -46,7 +46,8 @@ export function queueRow(mode: QueuedMode | undefined, busy: boolean, why?: stri
         case "held":
             return {
                 hint: "Held",
-                detail: "Not sent before Harness restarted. It waits for you: send it, edit it or remove it",
+                // Held for an account (the session's was removed, #410): the server says so.
+                detail: why || "Not sent before Harness restarted. It waits for you: send it, edit it or remove it",
                 action: busy ? { label: "Steer", title: "Add to the current turn at its next step (a command runs right after the turn)" } : { label: "Send now", title: "Send now: run it as a new turn" },
             };
     }
