@@ -43,8 +43,9 @@ function setup(blocks: any[], expanded = true, agents: any[] = [], session?: str
         ...Object.fromEntries(["AlertTriangle", "Bot", "Check", "ChevronDown", "ChevronRight", "ClipboardList", "FileDiff", "FilePen", "FilePlus2", "FileText", "FolderTree", "Globe", "Hand", "ListChecks", "MessageCircleQuestion", "Plug", "Radar", "Search", "ShieldCheck", "SquareArrowOutUpRight", "SquareTerminal", "Wrench", "X", "Brain"].map((name) => [name, icon])),
     };
     // One copy of the module, as the app has: its components share its state (the command cards' folds).
-    const { ActivityGroup, CardFoldsProvider, groupBlocks, Thinking } = component(`${activity}\nconst moduleExports = { ActivityGroup, CardFoldsProvider, groupBlocks, Thinking };`, "moduleExports", scope);
-    const { LiveLine, motionMs } = component(`${source("LiveLine")}\nconst both = { LiveLine, motionMs };`, "both", scope);
+    // The live line opens a running command into the rows' block and folds (a historical source may have neither).
+    const { ActivityGroup, CardFoldsProvider, groupBlocks, Thinking, LiveCommandBody, useCardFolds } = component(`${activity}\nconst moduleExports = { ActivityGroup, CardFoldsProvider, groupBlocks, Thinking, LiveCommandBody: typeof LiveCommandBody === "undefined" ? undefined : LiveCommandBody, useCardFolds: typeof useCardFolds === "undefined" ? undefined : useCardFolds };`, "moduleExports", scope);
+    const { LiveLine, motionMs } = component(`${source("LiveLine")}\nconst both = { LiveLine, motionMs };`, "both", { ...scope, LiveCommandBody, useCardFolds });
     const TurnView = component(source("TurnView"), "TurnView", { ...scope, ActivityGroup, Thinking, LiveLine, motionMs, groupBlocks: (b: any) => { groups++; return groupBlocks(b); } });
     /** Draws the turn again, as a session's transcript does when it's opened (in `session`'s folds, when given). */
     const mount = (session?: string) => {
@@ -274,18 +275,52 @@ test("a group's sub-agents card follows its rows", () => {
     } finally { h.dispose(); }
 });
 
-test("commands and edits are cards of their own, kept through output, completion and the next call", () => {
+test("commands and edits are cards of their own, kept through output, completion and the next call", async () => {
     const h = setup([tool("read", "ok"), command("cmd")], false);
     try {
-        // Running, it's the live line's: "Running", the command, and its last three lines under it.
+        // Running, it's the live line's: "Running" and the command, and no box under it until it's opened (#388).
         expect(row(h.root, "cmd")).toBeUndefined();
         for (let i = 0; i < 40; i++) h.op({ op: "append", blockId: "cmd", field: "progress", text: `line ${i}\n` });
-        const line = liveLineOf(h.root)!;
-        expect(text(line)).toContain("Running");
-        expect(text(line)).toContain("echo cmd");
-        expect(all(line).find((n) => has(n, "live-out"))!.children.map(text)).toEqual(["line 37", "line 38", "line 39"]);
+        const line = () => liveLineOf(h.root)!;
+        const stack = () => all(line()).find((n) => has(n, "live-stack"))!;
+        const opened = () => all(line()).find((n) => has(n, "cmd-body"));
+        expect(text(line())).toContain("Running");
+        expect(text(line())).toContain("echo cmd");
+        expect(all(line()).some((n) => has(n, "live-out"))).toBe(false);
+        expect(opened()).toBeUndefined();
+        // The line is a button: it opens to the block its row opens to, the command over its output as it comes.
+        expect(stack().props.role).toBe("button");
+        expect(stack().props.tabindex).toBe(0);
+        expect(stack().props["aria-expanded"]).toBe(false);
+        stack().props.onClick();
+        expect(stack().props["aria-expanded"]).toBe(true);
+        expect(text(all(opened()!).find((n) => has(n, "cmd-in"))!)).toContain("echo cmd");
+        expect(text(opened()!)).toContain("line 39");
+        expect(text(all(opened()!).find((n) => has(n, "cmd-foot"))!)).toContain("Running");
+        // Enter or Space folds it again, and opens it.
+        const key = (k: string) => stack().props.onKeyDown({ key: k, target: stack(), currentTarget: stack(), preventDefault() {} });
+        key("Enter");
+        expect(opened()).toBeUndefined();
+        key(" ");
+        expect(opened()).toBeDefined();
+        // A roll to another state takes it away; back on the command, it's open as it was, and follows the output.
+        h.setView("state", "activity", { label: "Retrying in 5s · Stop to cancel", since: 1000 });
+        expect(text(line())).toContain("Retrying");
+        expect(opened()).toBeUndefined();
+        expect(stack().props.role).toBeUndefined();
+        h.setView("state", "activity", undefined);
+        // (The retry shows at once; the line moves on from it once it's been read: DWELL_MS.)
+        await Bun.sleep(liveLine.DWELL_MS + 50);
+        expect(text(line())).toContain("echo cmd");
+        expect(stack().props["aria-expanded"]).toBe(true);
+        h.op({ op: "append", blockId: "cmd", field: "progress", text: "line 40\n" });
+        expect(text(opened()!)).toContain("line 40");
+        // Done, it commits as its row, open as the reader left it; the line has no block of it any more.
         h.op({ op: "block.patch", blockId: "cmd", patch: { status: "ok", durationMs: 2000, output: "ok\n 14 pass\n 0 fail\n" } });
         const card = row(h.root, "cmd");
+        expect(head(card).props["aria-expanded"]).toBe(true);
+        expect(text(body(card)!)).toContain("14 pass");
+        expect(!liveLineOf(h.root) || !opened()).toBe(true);
         expect(has(card, "tcard")).toBe(true);
         expect(has(card, "cmd-card")).toBe(true);
         // Its group is the command alone: the call before it keeps its own group.

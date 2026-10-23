@@ -22,6 +22,7 @@
 //   "emptyreply"     a response with no text and no tool calls
 //   "untitled"       the request for the session's title is refused (HTTP 400)
 //   "stubborn"       runs a command that ignores being told to stop (SIGTERM)
+//   "livecmd"        runs a command that prints a line every half second for 6s (the live line opens to it)
 //   "cmdrows"        commands as rows: a passing test run, one without a description, a heredoc, a failure, one in the background
 //   "waitcheck"      starts a background command, then waits and checks it in one response
 //   "use the x skill" loads skill x (Skill tool), then quotes the start of its instructions
@@ -352,6 +353,7 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         ];
         return steps[toolRounds];
     }
+    if (/\blivecmd\b/.test(p)) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: 'for i in $(seq 1 12); do echo "✓ check $i of 12"; sleep 0.5; done', description: "Run the checks" } }] } : { text: "All 12 checks pass." };
     if (/\bstubborn\b/.test(p)) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: "trap '' TERM; sleep 3", description: "Wait, ignoring SIGTERM" } }] } : { text: "Done." };
     // A fast model's turn: quick steps in three rounds, then a long reply, all at one rate.
     const fast = /\bfastdemo (\d+|burst)\b/.exec(p);

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { backgroundWait, dwellLeft, DWELL_MS, glideFrom, GLIDE_MAX, heldTurns, lastLines, lineTone, liveLine, specialActivity, urgent, workedLabel, workSegments, type LiveInput } from "../gui/src/lib/live-line";
+import { backgroundWait, dwellLeft, DWELL_MS, glideFrom, GLIDE_MAX, heldTurns, lineTone, liveLine, specialActivity, urgent, workedLabel, workSegments, type LiveInput } from "../gui/src/lib/live-line";
 
 // The running turn's live line (gui/src/lib/live-line.ts): what it says, which turns a steer keeps open, what a
 // folded turn says, and the glide's arithmetic. LiveLine.tsx, TurnView.tsx and Transcript.tsx draw from these.
@@ -33,15 +33,21 @@ test("special states (a retry, a compaction, a wait on background work) say them
 test("the step under way: its verb and target, a command by its description, an approval first", () => {
     expect(line({ blocks: [tool({})] })).toMatchObject({ kind: "tool", label: "Reading", detail: "src/a.ts", mono: true, since: 5, toolId: "t1" });
     const cmd = tool({ id: "c", name: "Bash", title: "Bash", input: { command: "bun test ./test/a.test.ts\necho done", description: "Run the transcript tests" }, progress: "a\nb\n" });
-    expect(line({ blocks: [cmd] })).toMatchObject({ label: "Run the transcript tests", detail: "bun test ./test/a.test.ts", output: "a\nb\n" });
+    expect(line({ blocks: [cmd] })).toMatchObject({ label: "Run the transcript tests", detail: "bun test ./test/a.test.ts" });
+    // A running command opens (on a click) to the block its row opens to: the line carries its call for that (#388).
+    expect(line({ blocks: [cmd] })?.opens).toBe(cmd);
     // No native tooltip dumps the whole command, running or waiting for approval (#389).
     expect(line({ blocks: [cmd] })?.title).toBeUndefined();
     expect(line({ blocks: [{ ...cmd, status: "awaiting" }] })?.title).toBeUndefined();
     // Codex sends no description: "Running" and the command.
     expect(line({ blocks: [{ ...cmd, input: { command: "rg -n x" } }] })).toMatchObject({ label: "Running", detail: "rg -n x" });
-    // Only a running command has an output window; one still arriving says how much of it has.
+    // Only a running command opens; one still arriving says how much of it has, and one waiting for approval has its card.
     expect(line({ blocks: [{ ...cmd, status: "streaming", receiving: 1200 }] })).toMatchObject({ label: "Preparing run", meta: "1.2k chars" });
-    expect(line({ blocks: [{ ...cmd, status: "streaming", receiving: 1200 }] })?.output).toBeUndefined();
+    expect(line({ blocks: [{ ...cmd, status: "streaming", receiving: 1200 }] })?.opens).toBeUndefined();
+    expect(line({ blocks: [{ ...cmd, status: "awaiting" }] })?.opens).toBeUndefined();
+    expect(line({ blocks: [{ ...cmd, status: "queued" }] })?.opens).toBeUndefined();
+    // Nor does any other call under way.
+    expect(line({ blocks: [tool({})] })?.opens).toBeUndefined();
     expect(line({ blocks: [{ ...cmd, input: { command: "sleep 240" } }] })).toMatchObject({ label: "Waiting", meta: "of 4m 0s" });
     // An approval among several calls under way wins; otherwise the latest running one.
     const a = tool({ id: "a" }), b = tool({ id: "b", name: "Grep", title: "Grep(x)" }), c = tool({ id: "c", status: "queued" });
@@ -128,10 +134,7 @@ test("a glide starts where the content was drawn, continues a running one, and n
     expect(glideFrom(10, -10)).toBeUndefined();
 });
 
-test("a command's output window: its last lines, cleaned; failures red, passes green", () => {
-    expect(lastLines("a\nb\nc\nd\n\n", 3)).toEqual(["b", "c", "d"]);
-    expect(lastLines("\x1b[32mok\x1b[0m\r\nnext", 3)).toEqual(["ok", "next"]);
-    expect(lastLines(undefined, 3)).toEqual([]);
+test("a command's output lines: failures red, passes green", () => {
     expect(lineTone("error TS2322: Type 'string'")).toBe("er");
     expect(lineTone("✓ user bubble hugs short text [3ms]")).toBe("ok");
     expect(lineTone(" 14 pass   0 fail")).toBe("ok");

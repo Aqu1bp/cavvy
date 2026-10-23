@@ -575,7 +575,8 @@
    states share one grid cell and roll (the old one up and out, the new one up
    from below, clipped to the row), so the row never changes height. Label,
    what it's about (a file, a command, the thought being written), and its own
-   timer at the right. */
+   timer at the right. A running command's line is a button, like its row: it
+   opens to the block its row opens to (.cmd-body), under it. */
 
 .live-line {
     display: flex;
@@ -588,6 +589,40 @@
     display: grid;
     height: calc(30 * var(--sp));
     overflow: hidden;
+}
+
+/* Hover shows it's a button, as on a command row, and the chevron after the command. */
+.live-stack[role="button"] {
+    border-radius: calc(8 * var(--sp));
+    cursor: default;
+    outline: none;
+    transition: background 140ms;
+}
+
+.live-stack[role="button"]:hover,
+.live-stack[role="button"]:focus-visible {
+    background: var(--hover);
+}
+
+.live-stack[role="button"]:focus-visible {
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.layer .chev {
+    flex: none;
+    color: var(--fg-3);
+    opacity: 0;
+    transition: opacity 120ms, transform var(--dur-panel) var(--ease);
+}
+
+.live-stack:hover .chev,
+.live-stack:focus-visible .chev,
+.layer .chev.open {
+    opacity: 1;
+}
+
+.layer .chev.open {
+    transform: rotate(90deg);
 }
 
 .live-line .layer {
@@ -660,59 +695,6 @@
         transform: scale(0.55);
         opacity: 0.45;
     }
-}
-
-/* A running command's output: always three lines tall, the newest at the bottom; a click opens it to more. */
-.live-out {
-    height: calc(0.857rem * 1.6 * 3 + 14 * var(--sp));
-    margin: calc(2 * var(--sp)) 0 calc(4 * var(--sp)) calc(33 * var(--sp));
-    padding: calc(7 * var(--sp)) calc(12 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    background: var(--sheet-2);
-    font: 0.857rem/1.6 var(--font-mono);
-    color: var(--fg-2);
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-end;
-    -webkit-mask-image: linear-gradient(transparent, #000 40%);
-    mask-image: linear-gradient(transparent, #000 40%);
-    cursor: pointer;
-}
-
-.live-out.open {
-    height: auto;
-    min-height: calc(0.857rem * 1.6 * 3 + 14 * var(--sp));
-    max-height: calc(240 * var(--sp));
-    overflow-y: auto;
-    justify-content: flex-start;
-    -webkit-mask-image: none;
-    mask-image: none;
-    cursor: auto;
-}
-
-.live-out:focus-visible {
-    outline-offset: 2px;
-}
-
-.live-out > div {
-    flex: none;
-    white-space: pre;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.live-out.open > div {
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-}
-
-.live-out .ok {
-    color: var(--ok);
-}
-
-.live-out .er {
-    color: var(--danger);
 }
 
 /* A sub-agent's view (Agents.tsx): its own one-line status under its log. */
@@ -1685,14 +1667,16 @@
     }
 }
 
-.cmd-row .icon-btn {
+.cmd-row .icon-btn,
+.live-line .icon-btn {
     width: calc(26 * var(--sp));
     height: calc(26 * var(--sp));
     border-radius: calc(7 * var(--sp));
     color: var(--fg-3);
 }
 
-.cmd-row .icon-btn:hover:not(:disabled) {
+.cmd-row .icon-btn:hover:not(:disabled),
+.live-line .icon-btn:hover:not(:disabled) {
     background: var(--press);
     color: var(--fg);
 }
@@ -1850,7 +1834,8 @@
         animation: none;
     }
 
-    .chev-w .chev {
+    .chev-w .chev,
+    .layer .chev {
         transition: none;
     }
 }

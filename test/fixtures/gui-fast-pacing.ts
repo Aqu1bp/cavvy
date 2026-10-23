@@ -77,6 +77,8 @@ test("a block that starts while the reply streams comes out from its start, at o
 function liveLineView() {
     const LiveLine = component(source("LiveLine"), "LiveLine", {
         ...liveLine, ...format, now: () => Date.now(), prefs: { motion: "quick" }, Spinner: () => node("spinner"), Clock: () => node("icon"), Hand: () => node("icon"),
+        // No command here: nothing opens.
+        ChevronRight: () => node("icon"), LiveCommandBody: () => node("cmd-body"), useCardFolds: () => ({ get: () => undefined, set: () => {} }),
     });
     const [state, setState] = solid.createSignal<liveLine.LiveLineState | undefined>({ key: "think", kind: "think", label: "Thinking" });
     const root = node("root");

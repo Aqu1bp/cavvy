@@ -3,23 +3,23 @@
 // one leaves upward, clipped to the row, so the row never changes height. Each
 // state stays long enough to be read (DWELL_MS): a fast agent's states that
 // come and go sooner are skipped, the line going straight to the latest. A
-// running command has a fixed three-line window of its output under it, which
-// opens (on a click) to more of it. What it says, and DWELL_MS, are in
-// lib/live-line.ts.
+// running command's line is just its row, and a button: it opens (a click,
+// Enter or Space) to the block its row opens to, the command over its output
+// as it comes (Activity.tsx's CommandBody). That's kept in the command rows'
+// folds, by call: a roll doesn't close it, and the row the command commits as
+// is open too. What it says, and DWELL_MS, are in lib/live-line.ts.
 
 import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, Show, Switch, untrack } from "solid-js";
-import { Clock, Hand } from "lucide-solid";
+import { ChevronRight, Clock, Hand } from "lucide-solid";
 import { now } from "../lib/clock";
 import { turnDuration } from "../lib/format";
-import { dwellLeft, lastLines, lineTone, urgent, type LiveLineState } from "../lib/live-line";
+import { dwellLeft, urgent, type LiveLineState } from "../lib/live-line";
 import { prefs } from "../state/prefs";
 import { Spinner } from "./ui/bits";
+import { LiveCommandBody, useCardFolds } from "./blocks/Activity";
 
 /** How long the roll between two states takes, before Settings → Motion scales it. */
 const ROLL_MS = 260;
-/** Lines in the output window: folded, and opened. */
-const OUT_LINES = 3;
-const OUT_OPEN_LINES = 40;
 
 /** A motion's duration as Settings → Motion and the system's reduced-motion setting have it: 0 for none. */
 export function motionMs(base: number): number {
@@ -89,28 +89,60 @@ export function LiveLine(p: { state: LiveLineState | undefined; hint?: string })
     const current = createMemo(() => layers().findLast((l) => !l.leaving()));
     /** What the line shows: the state on show, which may be behind the latest for a moment (DWELL_MS). */
     const showing = () => current()?.state();
-    /** The output window belongs to the command it shows: another command's starts folded and empty. */
-    const out = createMemo(() => {
-        const s = showing();
-        return s?.output !== undefined && s.toolId ? s.toolId : undefined;
+    const folds = useCardFolds();
+    /** Whether a command is open: as the reader left it, else as Settings has rows start (activity open), as its row does. */
+    const isOpen = (id: string) => folds.get(id) ?? prefs.expandActivity;
+    /** The running command the line shows: the line opens to it. Not once it's done (its row has it then), dwelling or not. */
+    const command = () => {
+        const t = showing()?.opens;
+        return t?.status === "running" ? t : undefined;
+    };
+    const opened = createMemo(() => {
+        const t = command();
+        return t && isOpen(t.id) ? t.id : undefined;
     });
+    const toggle = () => {
+        const t = command();
+        if (t) folds.set(t.id, !isOpen(t.id));
+    };
     return (
         <Show when={layers().length}>
             <div class="live-line" data-find-skip>
-                {/* What the line says, for a screen reader: only the current state, not the one rolling away. */}
-                <span class="sr-only">{showing()?.label}</span>
-                <div class="live-stack">
-                    <For each={layers()}>{(l) => <LayerRow layer={l} hint={p.hint} onGone={() => drop(l.id)} />}</For>
+                <div
+                    class="live-stack"
+                    role={command() ? "button" : undefined}
+                    tabindex={command() ? 0 : undefined}
+                    aria-expanded={command() ? Boolean(opened()) : undefined}
+                    onClick={toggle}
+                    onKeyDown={(e) => {
+                        if (!command() || e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
+                        e.preventDefault();
+                        toggle();
+                    }}
+                >
+                    {/* What the line says, for a screen reader: only the current state, not the one rolling away. A command's
+                        line is a button, named by it: what it's for and the command. */}
+                    <span class="sr-only">{command() ? [showing()?.label, showing()?.detail].filter(Boolean).join(": ") : showing()?.label}</span>
+                    <For each={layers()}>{(l) => <LayerRow layer={l} hint={p.hint} isOpen={isOpen} onGone={() => drop(l.id)} />}</For>
                 </div>
-                <Show when={out()} keyed>
-                    {(id) => <LiveOutput output={() => (showing()?.toolId === id ? showing()?.output : undefined)} />}
+                <Show when={opened()} keyed>
+                    {(id) => {
+                        // Its call as the line has it now; the last one while the line moves on from it.
+                        let last = command()!;
+                        const tool = () => {
+                            const t = command();
+                            if (t?.id === id) last = t;
+                            return last;
+                        };
+                        return <LiveCommandBody tool={tool()} />;
+                    }}
                 </Show>
             </div>
         </Show>
     );
 }
 
-function LayerRow(p: { layer: Layer; hint?: string; onGone: () => void }) {
+function LayerRow(p: { layer: Layer; hint?: string; isOpen: (id: string) => boolean; onGone: () => void }) {
     const s = () => p.layer.state();
     let el: HTMLDivElement | undefined;
     const time = () => turnDuration(Math.max(0, now() - p.layer.since));
@@ -155,53 +187,14 @@ function LayerRow(p: { layer: Layer; hint?: string; onGone: () => void }) {
                     {s().detail}
                 </span>
             </Show>
+            {/* A running command opens, like its row: the chevron after the command, on hover and while it's open. */}
+            <Show when={s().opens?.status === "running" && s().opens}>{(t) => <ChevronRight size={14} class={`chev ${p.isOpen(t().id) ? "open" : ""}`} />}</Show>
             <span class="lend">
                 <Show when={started()}>{(t) => <span>{t()}</span>}</Show>
                 <Show when={s().meta}>{(m) => <span>{m()}</span>}</Show>
                 <Show when={p.hint}>{(h) => <span class="hint">{h()}</span>}</Show>
                 <span class="tm num">{time()}</span>
             </span>
-        </div>
-    );
-}
-
-/** A running command's last lines, in a box of fixed height; a click opens it to more of the output (and folds it again). */
-function LiveOutput(p: { output: () => string | undefined }) {
-    const [open, setOpen] = createSignal(false);
-    const lines = createMemo(() => lastLines(p.output(), open() ? OUT_OPEN_LINES : OUT_LINES));
-    let box: HTMLDivElement | undefined;
-    let atEnd = true;
-    // Opened, it follows the output unless the reader has scrolled up in it (taken as they scroll).
-    createEffect(
-        on(lines, () => {
-            if (box && open() && atEnd) box.scrollTop = box.scrollHeight;
-        }),
-    );
-    const toggle = () => {
-        atEnd = true;
-        setOpen(!open());
-    };
-    return (
-        <div
-            ref={box}
-            class={`live-out ${open() ? "open" : ""}`}
-            role="button"
-            tabindex="0"
-            aria-expanded={open()}
-            aria-label={open() ? "Show less of the output" : "Show more of the output"}
-            title={open() ? "Show less" : "Show more of the output"}
-            onClick={toggle}
-            onScroll={() => {
-                if (box) atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
-            }}
-            onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    toggle();
-                }
-            }}
-        >
-            <For each={lines()}>{(l) => <div class={lineTone(l) ?? ""}>{l || " "}</div>}</For>
         </div>
     );
 }
