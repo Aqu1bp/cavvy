@@ -98,6 +98,8 @@ const [jump, setJump] = solid.createSignal<any>();
 const [findShown, setFindShown] = solid.createSignal(false);
 const [panelHold, setPanelHold] = solid.createSignal<any>();
 let findProps: any;
+/** Each turn's work-log toggle (TurnView's onToggleWork), by turn id. */
+const workToggles = new Map<string, (el: any, toggle: () => void) => void>();
 const scope = {
     renderer: { ...solid, ...renderer, createElement: create },
     anchoredTop, atBottom, FAR, firstBelow, restoredShown, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, glideFrom, heldTurns, liveLine, specialActivity,
@@ -134,6 +136,7 @@ const scope = {
     setTimeout() {},
     TurnView: (p: any) => {
         restoredOpen ||= p.workOpen;
+        workToggles.set(p.turn.id, p.onToggleWork);
         const n = create("article"); n.props["data-turn"] = p.turn.id;
         p.onElement?.(n, p.turn.id);
         if (omitPromptPart && p.turn.id === "turn-5") return n;
@@ -323,7 +326,7 @@ try {
     scroll(bottom()); resize(); flush(); scroller().props.onScroll();
     turnHeights.set("turn-44", 1800); resize(); flush();
     shiftNow = 60;
-    scroller().props.onWheel({ deltaY: -3 });
+    scroller().props.onWheel({ deltaY: -3, deltaX: 0 });
     scroll(bottom() - 300);
     const gliding = turn("turn-44").getBoundingClientRect().top;
     shiftNow = 0; glides.forEach((g) => g.anim.cancel());
@@ -331,11 +334,14 @@ try {
     assert.equal(turn("turn-44").getBoundingClientRect().top, gliding - 60, "a turn read mid-glide stays where it is once the glide ends");
     scroll(bottom()); scroller().props.onScroll();
     // The reader scrolling up, however little, unpins it at once; growth below then leaves them where they are.
-    scroller().props.onWheel({ deltaY: -3 });
-    assert.ok(button("jump"), "a scroll up, however small, unpins it");
+    scroller().props.onWheel({ deltaY: -3, deltaX: 0 });
+    assert.equal(button("jump"), undefined, "all the way down still (its scroll is yet to come), there's no Latest to jump to");
     const away = top;
     turnHeights.set("turn-44", 1600); resize(); flush();
     assert.equal(top, away, "growth doesn't pull an unpinned reader down");
+    turnHeights.set("turn-44", 2000); resize(); flush();
+    assert.equal(top, away);
+    assert.ok(button("jump"), "a scroll up, however small, unpinned it: the end grew out of view, and Latest shows");
     // A scroll up by the scrollbar or keys (no wheel): unpinned too, even within the 64px of the end.
     scroll(bottom()); assert.equal(button("jump"), undefined, "back at the end, it follows again");
     scroll(bottom() - 20);
@@ -395,6 +401,30 @@ try {
     assert.ok(button("jump"), "a scroll up with a pointer down unpins it, growing or not");
     pointerUp();
     scroll(bottom()); assert.equal(button("jump"), undefined);
+    // Latest goes by what's in view (#348): all the way down there's nothing to jump to, whatever stopped the following.
+    // A sideways swipe (a wide code block) with a hair of upward deltaY isn't a scroll up: it keeps following.
+    scroller().props.onWheel({ deltaY: -0.5, deltaX: 30 });
+    turnHeights.set("turn-44", 940); resize(); flush();
+    assert.equal(top, bottom(), "a sideways swipe doesn't stop following the end");
+    scroller().props.onScroll();
+    // Stopped following with nothing scrolled (a key the page didn't scroll for): still all the way down, no Latest.
+    scroller().props.onKeyDown({ key: "ArrowUp" });
+    assert.equal(button("jump"), undefined, "no Latest while scrolled all the way down");
+    // The reader pushing on down at the end, where nothing scrolls and no scroll event comes: it follows the end again.
+    scroller().props.onWheel({ deltaY: 4, deltaX: 0 });
+    turnHeights.set("turn-44", 980); resize(); flush();
+    assert.equal(top, bottom(), "a wheel down at the end follows the end again");
+    scroller().props.onScroll();
+    // A work log opened and shut at the end (it stops following, so the open log isn't scrolled away): no Latest.
+    workToggles.get("turn-44")!(turn("turn-44"), () => {});
+    assert.equal(button("jump"), undefined, "a work log toggled at the end leaves no Latest there");
+    // Then the end grows out of view below the reader (streaming, the dock growing, a resize): Latest shows.
+    turnHeights.set("turn-44", 1100); resize(); flush();
+    assert.ok(button("jump"), "the end out of view shows Latest");
+    viewportHeight = 380; resize(scroller());
+    assert.ok(button("jump"), "and still after a resize that leaves it out of view");
+    scroll(bottom()); assert.equal(button("jump"), undefined);
+    viewportHeight = 500; resize(scroller()); flush(); scroller().props.onScroll();
     const glidesBefore = glides.length;
     reduced = true; turnHeights.set("turn-44", 1000); resize(); flush();
     assert.equal(top, bottom(), "reduced motion follows");
@@ -495,6 +525,17 @@ try {
     assert.equal(articles().length, 40, "reopened after being left at the end, it shows its last page");
     dispose();
 
+    // A conversation that fits (nothing to scroll): a wheel up there scrolls nothing, so it stops nothing, and the
+    // reply growing past the view is followed.
+    turnHeights.set("turn-0", 0);
+    dispose = mount({ id: "fits", view: { state: {}, turns: [{ id: "turn-0", prompt: { text: "hi" }, status: "running" }] } });
+    assert.equal(top, 0);
+    scroller().props.onWheel({ deltaY: -3, deltaX: 0 });
+    turnHeights.set("turn-0", 900); resize(); flush();
+    assert.equal(top, height(scroller()) - viewportHeight, "a wheel up where nothing scrolls doesn't stop following");
+    assert.equal(button("jump"), undefined);
+    turnHeights.clear(); dispose();
+
     // The composer dock's height (SessionView's dock prop) is set on the two boxes that keep room for it, and find
     // keeps a match above it: --dock-h isn't inherited, and WebKit keeps an inherited one stale.
     dispose();
@@ -542,7 +583,7 @@ try {
     assert.deepEqual(hold().props.style, { width: "1092px", height: "864px", top: "-260px" });
     assert.equal(slides.at(-1)!.from, "translate(0px, 260px)");
     // Scrolled up before the slide ends: the box goes back to the column's top, 260px down, and what's read stays put.
-    scroller().props.onWheel({ deltaY: -100 }); scroll(5000); scroll(4900);
+    scroller().props.onWheel({ deltaY: -100, deltaX: 0 }); scroll(5000); scroll(4900);
     assert.ok(button("jump"), "not following the end any more");
     setPanelHold(undefined);
     assert.equal(top, 4900 + 260, "scrolled by as much as the box moved");
