@@ -618,7 +618,8 @@ const RESUME_REPORT = "Sessions last 60 minutes (src/auth/session.ts).";
  * Then, FAKE_RESUME_MS later (default 300), the agent's messages, tagged with the Agent call that first started it
  * (parent_tool_use_id) and its task id (agent_id); task_progress and task_notification naming the SendMessage call;
  * it leaves the list; and Claude Code's turn with its report. FAKE_RESUME_STRANGER=1: an agent an earlier process
- * started (agent-9, by toolu_earlier), which this one never saw.
+ * started (agent-9, by toolu_earlier), which this one never saw. FAKE_RESUME_EXIT=1: the process exits after the
+ * agent's first step, with nothing said of its end.
  */
 function agentResume() {
     const stranger = process.env.FAKE_RESUME_STRANGER === "1";
@@ -640,6 +641,9 @@ function agentResume() {
             if (stoppedTasks.has(task)) return;
             sub(first, "assistant", [{ type: "tool_use", id: read, name: "Read", input: { file_path: join(cwd, "session.ts") } }], own);
             sub(first, "user", [{ type: "tool_result", tool_use_id: read, content: "export const ttl = 60;", is_error: false }], own);
+            // FAKE_RESUME_EXIT=1: the process goes away (killed, crashed) while the resumed agent works, before any word of its end.
+            if (process.env.FAKE_RESUME_EXIT === "1") setTimeout(() => process.exit(3), 50);
+            if (process.env.FAKE_RESUME_EXIT === "1") return;
             out({ type: "system", subtype: "task_progress", task_id: task, tool_use_id: id, description: "Reading session.ts", usage: { total_tokens: 1500, tool_uses: 1, duration_ms: 20 }, last_tool_name: "Read", session_id: sessionId });
             sub(first, "assistant", [{ type: "text", text: RESUME_REPORT }], own);
             out({ type: "system", subtype: "task_updated", task_id: task, patch: { status: "completed" }, session_id: sessionId });

@@ -68,6 +68,7 @@ import { TurnSnapshots } from "../agent/turn-snapshots";
 import { IdleCompactTimer } from "../agent/idle-compact";
 import type {
     AgentRun,
+    BackgroundTaskInfo,
     Block,
     ChangesInfo,
     GitChangesInfo,
@@ -3694,6 +3695,22 @@ export class Runtime {
         if (this.settings().agentCli?.liveSessions !== false) for (const t of news) this.engine.notifyBackground(this, { ...t, label: redact(t.label).slice(0, 300) });
         const tasks = bg.shown(src).map((t) => ({ ...t, label: redact(t.label).slice(0, 300) }));
         if (JSON.stringify(tasks) !== JSON.stringify(this.view.state.backgroundTasks ?? [])) this.setState({ backgroundTasks: tasks });
+        this.endAgentsGone(tasks);
+    }
+
+    /**
+     * A sub-agent whose background task went with its CLI's process (it exited, or was stopped or restarted) before
+     * the CLI said the agent ended: nothing of it runs any more, so its run is over too, stopped (#461 review).
+     * Its calls still open never got a result.
+     */
+    private endAgentsGone(tasks: readonly BackgroundTaskInfo[]) {
+        for (const t of tasks) {
+            if (t.kind !== "agent" || t.status !== "stopped" || !(t.withProcess || t.lost) || !t.toolUseId) continue;
+            const a = this.view.agents.find((x) => x.id === t.toolUseId && !x.replayed && (x.status === "running" || x.status === "waiting") && (t.endedAt === undefined || x.startedAt <= t.endedAt));
+            if (!a) continue;
+            for (const b of a.blocks) if (b.t === "tool" && (b.status === "running" || b.status === "streaming" || b.status === "queued" || b.status === "awaiting")) this.op({ op: "agent.block.patch", id: a.id, blockId: b.id, patch: { status: "error", summary: "Stopped with its process", progress: undefined } });
+            this.agentEnded(a.id, "aborted");
+        }
     }
 
     /** Restart the session's agent CLI process (/tasks restart): it didn't answer a stop, or new settings wait for its background work. */
