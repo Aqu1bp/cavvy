@@ -890,13 +890,16 @@ export class Runtime {
         // The CLI's process for this session is signed in as the earlier account: it goes now, with its background
         // work, so no turn it starts by itself (a report) can be taken over under the new account. Turns it started
         // that are waiting to be taken over, or that it starts while it's let go of, aren't (dropAdopt, #408).
+        // Counted: a second switch meanwhile can finish first (nothing left to let go of), and this one's still going.
         let stopped = 0;
-        this.releasing.add(provider);
+        this.releasing.set(provider, (this.releasing.get(provider) ?? 0) + 1);
         try {
             for (const w of this.adopts.filter((w) => w.provider === provider)) this.dropAdopt(w);
             stopped = (await this.agent?.releaseAccountProcess(provider)) ?? 0;
         } finally {
-            this.releasing.delete(provider);
+            const left = (this.releasing.get(provider) ?? 1) - 1;
+            if (left) this.releasing.set(provider, left);
+            else this.releasing.delete(provider);
         }
         if (stopped) {
             const message = `${name} was restarted for the account change: ${stopped === 1 ? "1 background task" : `${stopped} background tasks`} stopped.`;
@@ -2840,8 +2843,8 @@ export class Runtime {
     /** Turns agent CLIs started by themselves, waiting for the session to be free to adopt them (wake). */
     private adopts: BackendWake[] = [];
 
-    /** Agent CLIs whose process for this session an account change is letting go of (setAccount). */
-    private releasing = new Set<string>();
+    /** Agent CLIs whose process for this session an account change is letting go of (setAccount), with how many such releases are under way. */
+    private releasing = new Map<string, number>();
 
     /** An agent CLI started a turn by itself: it becomes a wake turn of this session's, when it's free. */
     adoptWake(w: BackendWake) {

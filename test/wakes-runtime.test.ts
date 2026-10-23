@@ -268,6 +268,36 @@ describe("an account switch with CLI-started turns waiting to be taken over (#40
         }
     });
 
+    test("with two switches overlapping, a turn that comes after the second ends but before the first's release does is still not taken over", async () => {
+        const codex = addAccount("codex", { id: "work-408-cx", name: "Work" });
+        const { engine, c, id, rt } = await session();
+        try {
+            await rt.ready;
+            const agent = rt.agent!;
+            let finishFirst!: () => void;
+            let calls = 0;
+            // The first release waits for its process to stop; the second finds nothing left to let go of.
+            agent.releaseAccountProcess = async () => {
+                if (calls++ === 0) await new Promise<void>((r) => (finishFirst = r));
+                return 0;
+            };
+            const first = rt.setAccount("codex", codex.id);
+            await rt.setAccount("codex", "default");
+            // A wake the earlier process forwards in the gap (Codex's forwardWake, its report awaited first).
+            rt.adoptWake({ provider: "codex", ref: "turn-g", label: "Background command finished: bun test", report: "GAP-REPORT-408" });
+            finishFirst();
+            await first;
+            await Bun.sleep(1300);
+            expect(rt.snapshot().turns.some((t) => t.prompt?.wake)).toBe(false);
+            expect(rt.session.notices.some((n) => n.text.includes("Codex started a turn of its own") && n.text.includes("GAP-REPORT-408"))).toBe(true);
+            await engine.handle(c, "session.send", { id, text: "and now?" });
+            await until(() => rt.idle && rt.session.messages.some((m) => m.role === "assistant"));
+            expect(lastTurnRequest()).toContain("GAP-REPORT-408");
+        } finally {
+            await engine.stop();
+        }
+    });
+
     test("another CLI's turn waiting to be taken over stays, and is taken over", async () => {
         const { engine, rt } = await session();
         try {

@@ -572,13 +572,16 @@ export class App {
         this.renderLive();
         // As the desktop's (Runtime.setAccount): the process signed in as the earlier account goes now, with its work.
         // Turns it started that wait to be taken over, or that it starts while it's let go of, aren't (dropAdopt, #408).
+        // Counted: a second switch meanwhile can finish first (nothing left to let go of), and this one's still going.
         let stopped = 0;
-        this.releasing.add(provider);
+        this.releasing.set(provider, (this.releasing.get(provider) ?? 0) + 1);
         try {
             for (const w of this.adopts.filter((w) => w.provider === provider)) this.dropAdopt(w);
             stopped = (await this.agent?.releaseAccountProcess(provider)) ?? 0;
         } finally {
-            this.releasing.delete(provider);
+            const left = (this.releasing.get(provider) ?? 1) - 1;
+            if (left) this.releasing.set(provider, left);
+            else this.releasing.delete(provider);
         }
         if (stopped) {
             const message = `${name} was restarted for the account change: ${stopped === 1 ? "1 background task" : `${stopped} background tasks`} stopped.`;
@@ -915,8 +918,8 @@ export class App {
         this.wake();
     }
 
-    /** Agent CLIs whose process for this session an account change is letting go of (setAccount). */
-    private releasing = new Set<string>();
+    /** Agent CLIs whose process for this session an account change is letting go of (setAccount), with how many such releases are under way. */
+    private releasing = new Map<string, number>();
 
     /**
      * As the desktop's (Runtime.dropAdopt): a turn a CLI started by itself in the process an account change lets go

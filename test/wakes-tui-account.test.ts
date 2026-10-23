@@ -81,6 +81,28 @@ test("the user's message one of them answers goes back to the prompt once, and i
     expect(sent()).not.toContain("fix the flaky test 408");
 });
 
+test("with two switches overlapping, a turn that comes after the second ends but before the first's release does is still not taken over", async () => {
+    const codex = addAccount("codex", { id: "work-408-cx", name: "Work" });
+    const { app, a, sent } = testApp();
+    let finishFirst!: () => void;
+    let calls = 0;
+    app.agent!.releaseAccountProcess = async () => {
+        if (calls++ === 0) await new Promise<void>((r) => (finishFirst = r));
+        return 0;
+    };
+    const first = app.setAccount("codex", codex.id);
+    await app.setAccount("codex", "default");
+    a.adoptWake({ provider: "codex", ref: "turn-g", label: "Background command finished: bun test", report: "GAP-REPORT-408" });
+    finishFirst();
+    await first;
+    await Bun.sleep(1300);
+    expect(app.session.messages.some((m) => m.meta?.kind === "wake")).toBe(false);
+    expect(app.session.notices.some((n) => n.text.includes("Codex started a turn of its own") && n.text.includes("GAP-REPORT-408"))).toBe(true);
+    await app.startTurn("and now?");
+    await until(() => !app.busy);
+    expect(sent()).toContain("GAP-REPORT-408");
+});
+
 test("turns the earlier process starts while it's being let go of get the same: none is taken over", async () => {
     const { app, a, sent } = testApp();
     const agent = app.agent!;
