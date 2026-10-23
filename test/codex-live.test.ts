@@ -1129,6 +1129,21 @@ describe("#438: a steer Codex accepted but hadn't taken when Esc came", () => {
             expect(inRollout(TOKEN)).toBe(1);
         }, 30_000);
 
+        // As live Codex 0.163 did: it took the steer a moment after answering, the command still running.
+        test(`${how}: accepted and taken while a command runs, then Esc: Codex's thread has it, so the next prompt doesn't carry it`, async () => {
+            const word = `cherimoya-${live ? "live" : "run"}`;
+            const { a, stop, running } = await steered(live, word, { FAKE_STEER_TAKE_MS: "5" });
+            await until(() => logLines().some((l) => l.steerTaken), "Codex to take it");
+            stop.abort();
+            expect(await running).toBe("aborted");
+            expect(logLines().some((l) => l.steerDropped)).toBe(false);
+            delete process.env.FAKE_STEER_TAKE_MS;
+            const { next, last } = await after(a);
+            expect(count(next, word)).toBe(0);
+            expect(count(last, word)).toBe(0);
+            expect(inRollout(word)).toBe(1);
+        }, 30_000);
+
         test(`${how}: dropped, then a new thread (another account's, say): its catch-up has the message once, not again in the note`, async () => {
             const word = `loquat-${live ? "live" : "run"}`;
             const { a, stop, running } = await steered(live, word);

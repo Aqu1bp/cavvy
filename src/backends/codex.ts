@@ -2254,11 +2254,12 @@ export class CodexTurn {
     }
 
     /**
-     * Steer the main thread's turn (turn/steer). Codex answers at once, but holds steered input until the turn's next
-     * model step, and drops it if the turn is interrupted (or ends) first, without a word (seen with 0.163, #438). So it's
-     * delivered only once Codex takes it into the turn: its userMessage item, whose clientId is the clientUserMessageId it
-     * went with (`taken`). Refused, or its turn over before that, it wasn't (`dropped`, in the steering chain, so a turn's
-     * end waits for it). One or the other, once. Returns whether Codex accepted it.
+     * Steer the main thread's turn (turn/steer). Codex answers before it takes the input into the turn, and an interrupt
+     * in between drops it without a word (seen with 0.163: an Esc sent with the steer, #438; unhindered, it took one 2 ms
+     * after answering, a command still running). So it's delivered only once Codex takes it: its userMessage item, whose
+     * clientId is the clientUserMessageId it went with (`taken`). Refused, or its turn over before that, it wasn't
+     * (`dropped`, in the steering chain, so a turn's end waits for it). One or the other, once. Returns whether Codex
+     * accepted it.
      */
     protected async steerTurn(turnId: string, input: unknown[], text: string, on: { taken?: () => Promise<void>; dropped: () => Promise<void> | void }): Promise<boolean> {
         const id = `${CODEX_CLIENT_NAME}-steer-${randomUUID()}`;

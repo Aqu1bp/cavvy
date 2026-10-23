@@ -71,10 +71,12 @@
 // FAKE_STEER_MS       turn/steer is answered that many ms late (refused with FAKE_STEER_FAIL)
 // FAKE_STEER_DELAY_MS  milliseconds before answering turn/steer (refused then, with FAKE_STEER_FAIL)
 // Input a turn takes (turn/start's, a turn/steer's) comes as a userMessage item, with the clientUserMessageId it was sent
-//                     with as its clientId, as Codex 0.163 sends it: a steer's at once, or with FAKE_STEER_PENDING=1 (as Codex
-//                     does) at the turn's next model step (a steer's wake in "slow"/"edit", or the step it ends with),
-//                     until when it's pending, and an interrupt drops it without a word (#438; logged: steerPending,
-//                     steerTaken, steerDropped). Its rollout line (FAKE_TRANSCRIPTS) is written when it's taken.
+//                     with as its clientId, as Codex 0.163 sends it: a steer's at once by default. FAKE_STEER_PENDING=1: as
+//                     Codex does, an accepted steer is pending until the turn takes it, and an interrupt meanwhile drops it
+//                     without a word (#438; logged: steerPending, steerTaken, steerDropped). It's taken at the turn's next
+//                     step (a steer's wake in "slow"/"edit", or the step it ends with), or FAKE_STEER_TAKE_MS after it was
+//                     accepted (live, 0.163 took one 2 ms after answering, a command still running; an Esc sent with the
+//                     steer beat it). Its rollout line (FAKE_TRANSCRIPTS) is written when it's taken.
 // FAKE_FAIL_TURN_START_AT=n  the nth turn/start fails (no turn starts)
 // FAKE_TERMINATE_LATE  1: a terminated command had finished by itself (terminated: false); fail: failed by itself;
 //                     after: not terminated, gone from the list, and its own end (a failure) comes after the answer
@@ -1049,6 +1051,8 @@ async function handle(m: any) {
                     log({ steerPending: { turnId: t.turnId, text: textOf(p.input) } });
                     reply({ turnId: p.expectedTurnId });
                     if (process.env.FAKE_STEER_WAKES === "1") t.wake?.();
+                    // FAKE_STEER_TAKE_MS=n: taken n ms after it was accepted, whatever the turn is doing.
+                    if (process.env.FAKE_STEER_TAKE_MS) setTimeout(() => !t.done && !t.interrupted && takePending(t), Number(process.env.FAKE_STEER_TAKE_MS));
                     return;
                 }
                 recordSent(String(p.threadId), p.input);
