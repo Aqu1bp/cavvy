@@ -4,7 +4,7 @@
 // an account removed or re-added. The turns themselves, against the fake CLIs: account-session.test.ts.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -282,6 +282,68 @@ for (const provider of ["claude-code", "codex"] as const) describe(`${provider}:
             expect(back.parkedBackends(provider)).toEqual([]);
             back.release();
         });
+
+        /** On Default, thread D at 2; then a switch away torn after its parked line (no forget line, no account line). */
+        function tornFile() {
+            const s = Session.create(project());
+            s.push(user("a"));
+            s.push(reply("A"));
+            s.setBackendSession(provider, "D", 2, accountPlace(provider));
+            s.release();
+            const place = accountPlace(provider);
+            appendFileSync(s.path, JSON.stringify({ t: "parked", provider, id: "D", synced: 2, folder: place.folder, ...(place.history ? { history: place.history } : {}) }) + "\n");
+            return s;
+        }
+        function tornPark() {
+            const s = tornFile();
+            const back = Session.load(s.path);
+            expect(back.backends.get(provider)).toEqual({ id: "D", synced: 2 });
+            expect(back.parkedBackends(provider)).toEqual([]);
+            return { s, back };
+        }
+
+        // PR #422 review: the stale parked line stays in the file, under what the session goes on to do with D.
+        test("a torn switch away, then D goes on and is rewound past: no stale copy of D comes back", () => {
+            const custom = own("torn-rewind");
+            const { s, back } = tornPark();
+            back.push(user("b"));
+            back.push(reply("B"));
+            back.setBackendSession(provider, "D", 4);
+            // D saw "b": a rewind to 2 drops it.
+            back.rewind(2);
+            expect(back.backends.has(provider)).toBe(false);
+            back.release();
+            const again = Session.load(s.path);
+            expect(again.backends.has(provider)).toBe(false);
+            expect(again.parkedBackends(provider)).toEqual([]);
+            again.setAccount(provider, custom.id);
+            again.setAccount(provider, "default");
+            expect(again.backends.has(provider)).toBe(false);
+            again.release();
+        });
+
+        test("a torn switch away, then D forgotten (resumeFailed): no stale copy of D comes back", () => {
+            const { s, back } = tornPark();
+            back.forgetBackendSession(provider);
+            back.release();
+            const again = Session.load(s.path);
+            expect(again.parkedBackends(provider)).toEqual([]);
+            expect(again.backendSession(provider, accountPlace(provider))).toBeUndefined();
+            again.release();
+        });
+
+        test("a read-only load of a torn switch writes nothing; the next writable one repairs it", () => {
+            const s = tornFile();
+            const before = readFileSync(s.path, "utf8");
+            const readOnly = Session.load(s.path, { persist: false });
+            expect(readOnly.parkedBackends(provider)).toEqual([]);
+            readOnly.release();
+            expect(readFileSync(s.path, "utf8")).toBe(before);
+            const writable = Session.load(s.path);
+            writable.forgetBackendSession(provider);
+            writable.release();
+            expect(Session.load(s.path, { persist: false }).parkedBackends(provider)).toEqual([]);
+        });
     });
 });
 
@@ -317,7 +379,9 @@ describe("randomized account switches against a model of each history's thread",
         return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
 
-    for (let seed = 1; seed <= 20; seed++)
+    // 122, 204 and 249 tear a switch away right after its parked line, then end the thread (a rewind, a lost one):
+    // they found the stale parked line of PR #422's review.
+    for (const seed of [...Array.from({ length: 40 }, (_, i) => i + 1), 122, 204, 249])
         test(`seed ${seed}`, async () => {
             const rnd = random(seed);
             const pick = <T>(xs: readonly T[]) => xs[Math.floor(rnd() * xs.length)]!;
@@ -392,8 +456,22 @@ describe("randomized account switches against a model of each history's thread",
                         session.push({ ...reply(`o${marker}`), provider: "mock", model: "mock-opus" });
                     } else if (r < 0.8) {
                         const to = pick(accounts);
-                        steps.push(`switch to ${to}`);
+                        const saved = () => (existsSync(session.path) ? readFileSync(session.path, "utf8").split("\n").filter(Boolean) : []);
+                        const before = saved().length;
                         session.setAccount(provider, to);
+                        const all = saved();
+                        const added = all.length - before;
+                        if (added > 1 && rnd() < 0.3) {
+                            // Torn (Harness died part way through the switch's lines): what made it to the file is
+                            // reopened. The account line is the last, so the switch didn't happen; the model is as it was.
+                            const kept = 1 + Math.floor(rnd() * (added - 1));
+                            steps.push(`switch to ${to}, torn after ${kept} of its ${added} lines`);
+                            await agent.dispose();
+                            session.release();
+                            writeFileSync(session.path, all.slice(0, before + kept).join("\n") + "\n");
+                            session = Session.load(session.path);
+                            agent = make(session);
+                        } else steps.push(`switch to ${to}`);
                     } else if (r < 0.87) {
                         const count = Math.floor(rnd() * (session.messages.length + 1));
                         steps.push(`rewind to ${count}`);

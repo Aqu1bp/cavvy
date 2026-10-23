@@ -300,6 +300,8 @@ for (const provider of ["claude-code", "codex"] as const) describe(`${provider} 
         process.env.FAKE_LOG = log;
         process.env.FAKE_SCENARIO = "silent";
         process.env.FAKE_CODEX_SCENARIO = "cmd";
+        // Codex threads with ids of their own: Default's and Personal's are two threads.
+        process.env.FAKE_UNIQUE_THREADS = "1";
         const session = Session.create(root, { persist: false });
         session.setModel(`${provider}:default`);
         const events: AgentEvent[] = [];
@@ -353,7 +355,10 @@ for (const provider of ["claude-code", "codex"] as const) describe(`${provider} 
             // Default's own thread from the first turn is kept for it (#413): back there, it's taken up again.
             expect(session.setAccount(provider, "default")).toBe(true);
             expect(session.backends.get(provider)?.id).toBe(defaultThread);
-        } finally { await agent.dispose(); }
+        } finally {
+            await agent.dispose();
+            delete process.env.FAKE_UNIQUE_THREADS;
+        }
     }, 30_000);
 });
 

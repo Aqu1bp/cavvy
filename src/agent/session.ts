@@ -615,6 +615,8 @@ export class Session {
         this.backends.set(provider, { id, synced, ...fork, ...carried });
         if (place) this.backendPlaces.set(provider, place);
         this.write({ t: "backend", provider, id, synced, ...fork, ...carried, ...placeFields(this.backendPlaces.get(provider)) });
+        // As a load reads that line: the session's thread isn't also parked.
+        this.parked = this.parked.filter((p) => p.provider !== provider || p.session.id !== id);
     }
 
     /** What the backend session wasn't sent of the conversation before its place (BackendSession.unsent); none: nothing. */
@@ -783,6 +785,8 @@ export class Session {
                 else s.backends.delete(l.provider);
                 if (l.id && typeof l.folder === "string") s.backendPlaces.set(l.provider, { folder: l.folder, ...(typeof l.history === "string" && l.history ? { history: l.history } : {}) });
                 else s.backendPlaces.delete(l.provider);
+                // The thread is the session's again (taken up, or going on after a torn switch away): not parked.
+                if (typeof l.id === "string" && l.id) s.parked = s.parked.filter((p) => p.provider !== l.provider || p.session.id !== l.id);
             }
             else if (l.t === "parked") {
                 if (typeof l.provider !== "string" || typeof l.folder !== "string" || !l.folder) continue;
@@ -825,8 +829,10 @@ export class Session {
                 s.savedSchedules = JSON.stringify(s.schedules);
             }
         }
-        // A switch torn between taking a thread up and dropping its parked line (unpark): it's the session's, once.
-        s.parked = s.parked.filter((p) => s.backends.get(p.provider)?.id !== p.session.id);
+        // A switch away torn between parking the thread and letting it go (parkBackend): it's the session's, once. Its
+        // parked line is dropped in the file too (not when read only), or a forget or a rewind that ends the session's
+        // copy, with nothing written about the thread in between, would leave that line to bring the thread back.
+        for (const p of s.parked.filter((p) => s.backends.get(p.provider)?.id === p.session.id)) s.dropParked(p);
         repairTail(s);
         return s;
     }
