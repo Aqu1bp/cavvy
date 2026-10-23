@@ -300,6 +300,8 @@
     transition: opacity var(--dur-fast);
 }
 
+/* Never under the pointer: faded out (opacity < 1) it paints, and is hit-tested, above the buttons that share its cell.
+   Its detail is in the kind icon's tooltip and the screen-reader text. */
 .uq-hint {
     display: inline-flex;
     align-items: center;
@@ -307,6 +309,7 @@
     padding-right: calc(6 * var(--sp));
     font-size: 0.857rem;
     color: var(--fg-3);
+    pointer-events: none;
 }
 
 /* On its way: the first steer, waiting for the turn's next step. */
@@ -327,7 +330,10 @@
     }
 }
 
+/* Over the hint, which shares its cell. */
 .uq-acts {
+    position: relative;
+    z-index: 1;
     display: flex;
     align-items: center;
     gap: calc(2 * var(--sp));

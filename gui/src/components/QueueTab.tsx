@@ -296,7 +296,7 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
                                     )}
                                 </Show>
                                 <span class="uq-end">
-                                    <span class="uq-hint" classList={{ joining: joining() === i() }} title={info().detail}>
+                                    <span class="uq-hint" classList={{ joining: joining() === i() }}>
                                         {info().hint}
                                         <span class="sr-only">: {info().detail}</span>
                                     </span>
