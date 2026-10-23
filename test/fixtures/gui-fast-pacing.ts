@@ -122,6 +122,27 @@ test("the live line shows each state long enough to read it: one that comes too 
     } finally { v.dispose(); }
 });
 
+test("a state the user must act on, or a retry or a stop, shows at once, however soon it comes", async () => {
+    performance.now = realNow;
+    const v = liveLineView();
+    try {
+        await Bun.sleep(20);
+        v.setState({ key: "wait:p1", kind: "wait", label: "Waiting for approval", detail: "rm -rf build", mono: true });
+        expect(v.says()).toBe("Waiting for approval");
+        // A question the same way, straight after.
+        v.setState({ key: "wait:q1", kind: "wait", label: "Waiting for your answer" });
+        expect(v.says()).toBe("Waiting for your answer");
+        // A step under way right after still waits for that to be read.
+        v.setState(tool("a", "Reading"));
+        expect(v.says()).toBe("Waiting for your answer");
+        // A retry or a stop doesn't.
+        v.setState({ key: "special:Interrupting", kind: "special", label: "Interrupting" });
+        expect(v.says()).toBe("Interrupting");
+        v.setState({ key: "special:Retrying", kind: "special", label: "Retrying in 5s" });
+        expect(v.says()).toBe("Retrying in 5s");
+    } finally { v.dispose(); }
+});
+
 test("rows that land together come in one after another, never long after they landed, and only in a running turn", () => {
     const at = 5_000_000;
     expect([0, 1, 2, 3, 4, 5].map(() => liveLine.staggerDelay(at))).toEqual([0, 50, 100, 150, 200, 200]);

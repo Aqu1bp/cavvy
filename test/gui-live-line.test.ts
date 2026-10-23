@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { backgroundWait, dwellLeft, DWELL_MS, glideFrom, GLIDE_MAX, heldTurns, lastLines, lineTone, liveLine, specialActivity, workedLabel, workSegments, type LiveInput } from "../gui/src/lib/live-line";
+import { backgroundWait, dwellLeft, DWELL_MS, glideFrom, GLIDE_MAX, heldTurns, lastLines, lineTone, liveLine, specialActivity, urgent, workedLabel, workSegments, type LiveInput } from "../gui/src/lib/live-line";
 
 // The running turn's live line (gui/src/lib/live-line.ts): what it says, which turns a steer keeps open, what a
 // folded turn says, and the glide's arithmetic. LiveLine.tsx, TurnView.tsx and Transcript.tsx draw from these.
@@ -145,6 +145,14 @@ test("a live line state dwells long enough to read before the line moves on", ()
     expect(dwellLeft(1000, 1000 + DWELL_MS + 1)).toBe(0);
     expect(DWELL_MS).toBeGreaterThanOrEqual(250);
     expect(DWELL_MS).toBeLessThanOrEqual(400);
+    // What needs the user, and a retry or a stop, doesn't wait; progress does.
+    expect(urgent(line({ interactions: [{ kind: "permission", id: "a", title: "Bash", command: "rm x" } as any] }))).toBe(true);
+    expect(urgent(line({ blocks: [tool({ status: "awaiting" })] }))).toBe(true);
+    expect(urgent(line({ activity: { label: "Interrupting", since: 1 } }))).toBe(true);
+    expect(urgent(line({ activity: { label: "Retrying in 5s · Stop to cancel", since: 1 } }))).toBe(true);
+    expect(urgent(line({ blocks: [tool({})] }))).toBe(false);
+    expect(urgent(line({ activity: { label: "Thinking", since: 1 } }))).toBe(false);
+    expect(urgent(undefined)).toBe(false);
 });
 
 test("a fold's glide may cover more than growth's, up to what it's given", () => {

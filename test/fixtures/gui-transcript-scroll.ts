@@ -82,6 +82,7 @@ const decorate = (n: Node): any => Object.assign(n, {
     querySelector: (selector: string) => (selector.startsWith("[data-turn") && turnSearches++, all(n).slice(1).find((child) => matches(child, selector))),
     scrollTo: (options: any) => { scrollBehavior = options.behavior; scrollTarget = Math.max(0, Math.min(options.top, height(n) - viewportHeight)); if (!deferSmooth || options.behavior !== "smooth") (n as any).scrollTop = options.top; },
     classList: { add() {}, remove() {}, contains: (cls: string) => has(n, cls) },
+    contains: (other: Node) => { for (let x: Node | undefined = other; x; x = x.parent) if (x === n) return true; return false; },
     hasAttribute: (name: string) => n.props[name] !== undefined,
     /** Its listeners (the capture phase's included), by type: listeners.click(event) dispatches one. */
     listeners: {} as Record<string, (e: any) => void>,
@@ -116,7 +117,8 @@ const scope = {
     renderer: { ...solid, ...renderer, createElement: create },
     anchoredTop, atBottom, FAR, firstBelow, restoredShown, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow,
     LiveLine: () => node("live-line"), Spinner: () => node("spinner"),
-    getComputedStyle: (el?: any) => ({ transform: `matrix(1, 0, 0, 1, 0, ${shiftNow})`, overflowY: el?.overflowY ?? "visible" }),
+    // A running move draws what it's on shiftNow down; anything else isn't moved.
+    getComputedStyle: (el?: any) => ({ transform: `matrix(1, 0, 0, 1, 0, ${glides.some((g) => g.el === el && g.anim.playState === "running") ? shiftNow : 0})`, overflowY: el?.overflowY ?? "visible" }),
     DOMMatrixReadOnly: class { m42: number; constructor(m: string) { this.m42 = Number(/, (-?[\d.]+)\)$/.exec(m)?.[1] ?? 0); } },
     motionMs: (ms: number) => (reduced || prefs.motion === "instant" ? 0 : ms),
     requestAnimationFrame: raf, cancelAnimationFrame: (id: number) => frames.delete(id),
@@ -508,6 +510,16 @@ try {
     assert.deepEqual(foldMoves.map((g) => g.el), [turn("turn-43"), turn("turn-42"), turn("turn-41"), folded.children[0]], "the turns above in reach and the prompt; not the turn (its answer) or the end's room");
     assert.ok(foldMoves.every((g) => g.from === -400 && g.duration === 240), "each drawn 400px up, where it was, and gliding down");
     assert.equal(folded.children[0].getBoundingClientRect().top - 400, promptWas, "the prompt drawn where it was");
+    // The reader scrolls up while the fold runs (halfway: drawn 200px up), and it ends: what's read stays put.
+    shiftNow = -200;
+    scroller().props.onWheel({ deltaY: -100 });
+    scroll(top - 300);
+    const readMidFold = top;
+    shiftNow = 0; glides.forEach((g) => g.anim.cancel());
+    resize(); flush();
+    assert.equal(top, readMidFold, "a reading taken mid-fold doesn't move when the fold ends");
+    scroll(bottom()); scroller().props.onScroll();
+    assert.equal(button("jump"), undefined, "following the end again");
     glides.forEach((g) => g.anim.cancel());
     // A fold bigger than the screen moves a screen; with reduced motion it just folds.
     turnHeights.set("turn-44", 3400); resize(); flush(); glides.forEach((g) => g.anim.cancel()); scroller().props.onScroll();
@@ -557,6 +569,11 @@ try {
     };
     press(1800);
     assert.ok(button("jump"), "opened past the view's end: not followed");
+    // The turn's end folding its work meanwhile (TurnView keeps it open for the reader, keepWorkOpen): nothing of
+    // what's read moves, no fold glide.
+    const readOpen = top, movesBefore = glides.length;
+    onFolds.get("turn-1")!(turn("turn-1"), () => {});
+    assert.deepEqual([top, glides.length], [readOpen, movesBefore], "a row the reader opened isn't moved by the fold");
     press(200);
     assert.equal(button("jump"), undefined, "folded back with the end in view: followed again");
     turnHeights.set("turn-1", 2400); resize(); flush();

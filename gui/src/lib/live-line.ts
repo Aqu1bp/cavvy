@@ -224,6 +224,11 @@ export function workSegments<R extends Row>(items: R[]): Seg<R>[] {
 /** How long a state shows on the live line, at least, before the line moves on to another: long enough to read it. */
 export const DWELL_MS = 400;
 
+/** A state the line shows at once, without waiting for the one before to be read: the user must act on it, or it's a retry or a stop. */
+export function urgent(s: LiveLineState | undefined): boolean {
+    return s?.kind === "wait" || s?.kind === "special";
+}
+
 /** How long until the live line may move on from a state it began showing at `shownAt`: 0 for now. */
 export function dwellLeft(shownAt: number | undefined, now: number): number {
     return shownAt === undefined ? 0 : Math.max(0, shownAt + DWELL_MS - now);

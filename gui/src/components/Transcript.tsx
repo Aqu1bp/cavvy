@@ -113,10 +113,13 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     let pinFrame = 0;
     /** The running glide: the same translate on each of the column's rows in sight. */
     let glides: { el: HTMLElement; anim: Animation }[] = [];
+    /** A fold's moves (fold()): what's above an answer, coming down. */
+    let folds: { el: HTMLElement; anim: Animation }[] = [];
+    const translate = (el: Element) => new DOMMatrixReadOnly(getComputedStyle(el).transform).m42;
     /** How far a running glide has the rows in sight drawn from their place (px). */
     const shift = () => {
         const g = glides[0];
-        return g?.anim.playState === "running" ? new DOMMatrixReadOnly(getComputedStyle(g.el).transform).m42 : 0;
+        return g?.anim.playState === "running" ? translate(g.el) : 0;
     };
     const cancelGlide = () => {
         for (const g of glides) g.anim.cancel();
@@ -126,6 +129,8 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         cancelAnimationFrame(pinFrame);
         pinFrame = 0;
         cancelGlide();
+        for (const f of folds) f.anim.cancel();
+        folds = [];
     };
     /** The column's rows in the view, or within `px` of it, from the end up (where a pin leaves it, a few). */
     const inSight = (px: number) => {
@@ -189,17 +194,25 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             ...parts.filter((el) => el !== reply),
             ...([...(reply?.children ?? [])] as HTMLElement[]).filter((el) => el.classList.contains("worked")),
         ];
+        folds = folds.filter((f) => f.anim.playState === "running");
         for (const el of els) {
             // A row still gliding up goes on from where that glide has it.
             const glide = glides.find((g) => g.el === el);
             glide?.anim.cancel();
             const from = glideFrom(moved, glide ? running : 0, max);
-            if (from !== undefined) el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GLIDE_EASE });
+            if (from !== undefined) folds.push({ el, anim: el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GLIDE_EASE }) });
         }
     };
 
-    /** How far a running glide draws this row of the column from its place: rows out of its reach don't move. */
-    const shiftOf = (row: Element) => (glides.some((g) => g.el === row) ? shift() : 0);
+    /**
+     * How far running glides and folds draw this element from its place (the moves on it and on what it's in):
+     * what's out of their reach doesn't move.
+     */
+    const shiftOf = (el: Element) => {
+        let by = 0;
+        for (const m of [...glides, ...folds]) if (m.anim.playState === "running" && (m.el === el || m.el.contains(el))) by += translate(m.el);
+        return by;
+    };
     const capture = (): ScrollAnchor | undefined => {
         if (!scroller || !content) return;
         // Where things are, not where a running glide draws them (the reader may have scrolled away from it).
@@ -208,13 +221,12 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         const els = visible().flatMap((t) => turnEls.get(t.id) ?? []);
         const turn = els[firstBelow(els.length, (i) => els[i]!.getBoundingClientRect().bottom - shiftOf(els[i]!), top)];
         if (!turn) return;
-        const moved = shiftOf(turn);
         // A block anchor also survives replacing the live head with a work-log toggle.
-        const part = [...turn.querySelectorAll<HTMLElement>("[data-find], .worklog")].find((el) => el.getBoundingClientRect().bottom - moved > top);
+        const part = [...turn.querySelectorAll<HTMLElement>("[data-find], .worklog")].find((el) => el.getBoundingClientRect().bottom - shiftOf(el) > top);
         return {
-            turnId: turn.dataset.turn!, offset: turn.getBoundingClientRect().top - moved - top,
+            turnId: turn.dataset.turn!, offset: turn.getBoundingClientRect().top - shiftOf(turn) - top,
             part: part?.dataset.find ?? (part ? `worklog:${[...turn.querySelectorAll(".worklog")].indexOf(part)}` : undefined),
-            partOffset: part ? part.getBoundingClientRect().top - moved - top : undefined,
+            partOffset: part ? part.getBoundingClientRect().top - shiftOf(part) - top : undefined,
         };
     };
     const restore = () => {
@@ -230,7 +242,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         // A remounted prompt may be clamped again. If the saved reading point
         // no longer fits, show this anchor's top instead of skipping past it.
         const offset = savedOffset <= -box.height ? 0 : savedOffset;
-        const next = anchoredTop(scroller.scrollTop, box.top - shiftOf(turn) - scroller.getBoundingClientRect().top, offset);
+        const next = anchoredTop(scroller.scrollTop, box.top - shiftOf(el) - scroller.getBoundingClientRect().top, offset);
         // A no-op write would cancel an in-flight smooth Jump to latest.
         if (Math.abs(next - scroller.scrollTop) > 0.5) scroller.scrollTop = next;
         wrote();

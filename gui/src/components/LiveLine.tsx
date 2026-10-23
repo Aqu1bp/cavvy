@@ -11,7 +11,7 @@ import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, Show
 import { Clock, Hand } from "lucide-solid";
 import { now } from "../lib/clock";
 import { turnDuration } from "../lib/format";
-import { dwellLeft, lastLines, lineTone, type LiveLineState } from "../lib/live-line";
+import { dwellLeft, lastLines, lineTone, urgent, type LiveLineState } from "../lib/live-line";
 import { prefs } from "../state/prefs";
 import { Spinner } from "./ui/bits";
 
@@ -77,9 +77,10 @@ export function LiveLine(p: { state: LiveLineState | undefined; hint?: string })
                 // Back to the state on show (it came and went while it dwelt): nothing to do.
                 if (shown && shown.key === key) return;
                 // A state that came too soon after the one on show waits for it to be read; whichever is latest
-                // then is shown, and those in between never are. Stepping aside for the answer is at once: its
-                // text takes the line's place (the line lingering under it would leave a gap as it went).
-                const left = shown && key !== undefined ? dwellLeft(shownAt, performance.now()) : 0;
+                // then is shown, and those in between never are. Some come at once: one the user must act on
+                // (an approval, a question) or a special state (a retry, a stop), and stepping aside for the
+                // answer, whose text takes the line's place (the line lingering under it would leave a gap as it went).
+                const left = shown && key !== undefined && !urgent(p.state) ? dwellLeft(shownAt, performance.now()) : 0;
                 if (left > 0) wait = setTimeout(() => (wait = undefined, show(untrack(() => p.state?.key))), left);
                 else show(key);
             }),
