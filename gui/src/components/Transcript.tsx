@@ -45,6 +45,8 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     const saved = transcriptPositions.get(id);
     const openWork = new Set(saved?.openWork);
     const [stick, setStick] = createSignal(saved?.bottom ?? true);
+    /** Scrolled all the way down: "Latest" has nothing to jump to, following the end or not. */
+    const [scrolledDown, setScrolledDown] = createSignal(true);
     const [shown, setShown] = createSignal(restoredShown(p.handle.view.turns.map((t) => t.id), saved));
     let reading = saved?.anchor;
     let ready = false;
@@ -64,11 +66,15 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     /** When the column's content last changed, and when onScroll last put the engine's scroll back. */
     let mutatedAt = -Infinity;
     let repinned: number[] = [];
+    const gapOf = (el: HTMLElement) => el.scrollHeight - el.clientHeight - el.scrollTop;
+    /** Measured after every scroll and size change: the button goes by what's in view, not only by following. */
+    const measureEnd = () => scroller && setScrolledDown(gapOf(scroller) <= 1);
     const wrote = () => {
         if (!scroller) return;
         lastTop = scroller.scrollTop;
-        lastGap = scroller.scrollHeight - scroller.clientHeight - lastTop;
+        lastGap = gapOf(scroller);
         lastSize = sizeOf(scroller);
+        measureEnd();
     };
     const afterLayout = (fn: () => void) => {
         cancelAnimationFrame(frame);
@@ -241,6 +247,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             // the composer settling) lands at once.
             else if (stick()) turns().at(-1)?.status === "running" ? pin() : toBottom();
             else restore();
+            measureEnd();
         });
         ro.observe(content);
         ro.observe(scroller);
@@ -334,6 +341,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         else if (atBottom(top, scroller.scrollHeight, scroller.clientHeight) && (gap <= 1 || top > lastTop + 0.5)) setStick(true);
         lastTop = top;
         lastGap = gap;
+        measureEnd();
         // Following the end, nothing is anchored (every way out of it takes its own reading).
         if (!stick()) reading = capture();
     };
@@ -353,7 +361,8 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     };
     /** The reader scrolling up (wheel, touch, keys): it stops following at once, however near the end. */
     const scrollUp = () => {
-        if (!stick() && !smoothScroll) return;
+        // Following an end it can't scroll up from (the whole conversation fits), there's nothing to stop.
+        if (!smoothScroll && (!stick() || !scroller || scroller.scrollTop <= 0)) return;
         smoothScroll = false;
         setStick(false);
         reading = capture();
@@ -369,13 +378,36 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         };
         for (const t of ["pointerup", "pointercancel", "touchend", "touchcancel"]) addEventListener(t, lift, true);
     };
+    /** The reader moving down where it can't go further: at the end, it follows the end again (no scroll event comes to say so). */
+    const downAtEnd = (target: EventTarget | null) => {
+        if (scroller && !smoothScroll && gapOf(scroller) <= 1 && !innerTakes(target)) setStick(true);
+    };
+    /**
+     * A box inside the conversation (a command's output) that takes the move down itself, or a field the keys type
+     * into: the conversation doesn't move, so it doesn't follow the end again (the output read there would move).
+     */
+    const innerTakes = (target: EventTarget | null) => {
+        for (let el = target as HTMLElement | null; el && el !== scroller; el = el.parentElement) {
+            if (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName)) return true;
+            const scrolls = el.scrollHeight > el.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(el).overflowY);
+            if (scrolls && el.scrollTop + el.clientHeight < el.scrollHeight - 1) return true;
+        }
+        return false;
+    };
     const onWheel = (e: WheelEvent) => {
-        if (e.deltaY < 0) scrollUp();
-        else interruptJump();
+        // A mostly sideways swipe (a wide code block, a table) isn't a scroll up, whatever its hair of deltaY.
+        if (e.deltaY < 0 && -e.deltaY > Math.abs(e.deltaX)) scrollUp();
+        else {
+            interruptJump();
+            if (e.deltaY > 0) downAtEnd(e.target);
+        }
     };
     const onKey = (e: KeyboardEvent) => {
         if (["ArrowUp", "PageUp", "Home"].includes(e.key) || (e.key === " " && e.shiftKey)) scrollUp();
-        else interruptJump();
+        else {
+            interruptJump();
+            if (["ArrowDown", "PageDown", "End", " "].includes(e.key)) downAtEnd(e.target);
+        }
     };
 
     /** Finished turns a steer carried on, while the chain still runs: they stay open until it ends. */
@@ -511,7 +543,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             <Show when={findOpen()}>
                 <FindBar turns={turns} scroller={() => scroller} dock={() => p.dock ?? 0} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={navigated} />
             </Show>
-            <Show when={!stick()}>
+            <Show when={!stick() && !scrolledDown()}>
                 <button class="jump glass" style={{ "--dock-h": dock() }} classList={{ "is-live": running() }} title="Jump to latest" aria-label={running() ? "Jump to latest: still working" : "Jump to latest"} onClick={() => { setStick(true); toBottom(true); }}>
                     {/* Still working down there: a spinner, where the arrow is. */}
                     <Show when={running()} fallback={<ArrowDown size={14} />}>
