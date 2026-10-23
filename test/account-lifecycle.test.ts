@@ -176,9 +176,9 @@ async function tuiApp() {
     const notices: string[] = [];
     a.notice = (text: string) => void notices.push(text);
     app.session = Session.create(root, { persist: false });
-    // Something can start while the questions are being answered: a delegated CLI child, or a turn.
-    const state = { child: false, starts: undefined as (() => void) | undefined };
-    a.agent = { hasCliChild: () => state.child };
+    // Something can start while the questions are being answered: a turn, say.
+    const state = { starts: undefined as (() => void) | undefined };
+    a.agent = {};
     let answers: string[] = [];
     a.showDialog = async () => {
         const answer = answers.shift();
@@ -199,16 +199,13 @@ async function tuiApp() {
     return { app, state, add, ended, started, signIn };
 }
 
-test("the terminal app's /login <cli> add doesn't wait for delegated CLI children or running responses (#375)", async () => {
+test("the terminal app's /login <cli> add doesn't wait for running responses (#375)", async () => {
     const { app, state, add } = await tuiApp();
     try {
-        state.starts = () => { state.child = true; };
-        expect(await add("while-child")).not.toContain("Add accounts once");
-        state.child = false;
         state.starts = () => { app.busy = true; };
         expect(await add("while-busy")).not.toContain("Add accounts once");
         state.starts = undefined;
-        expect(listAccounts("codex").map((x) => x.id)).toEqual(["default", "while-child", "while-busy"]);
+        expect(listAccounts("codex").map((x) => x.id)).toEqual(["default", "while-busy"]);
     } finally {
         app.busy = false;
     }
