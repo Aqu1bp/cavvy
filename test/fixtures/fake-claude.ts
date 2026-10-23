@@ -927,9 +927,10 @@ async function turn(content: any[], uuid?: string) {
     if (scenario.startsWith("shell-background") || scenario.startsWith("monitor-background")) {
         const type = scenario.startsWith("monitor-background") ? "monitor_mcp" : "local_bash";
         const nested = scenario === "shell-background-nested";
-        // Where 2.1.304 writes it: <CLAUDE_CODE_TMPDIR or /tmp>/claude-<uid>/<the folder's real path, sanitized>/<session>/tasks
+        // Where 2.1.304 writes it: <CLAUDE_CODE_TMPDIR or /tmp>/claude-<uid>/<the folder's real path, in NFC, sanitized>/<session>/tasks
         // (a sanitized path past 200 characters cut there, with "-" and the path's hash: String.hashCode, base 36).
-        const slug = (path: string) => {
+        const slug = (raw: string) => {
+            const path = raw.normalize("NFC");
             const s = path.replace(/[^a-zA-Z0-9]/g, "-");
             let h = 0;
             for (let i = 0; i < path.length; i++) h = ((h << 5) - h + path.charCodeAt(i)) | 0;

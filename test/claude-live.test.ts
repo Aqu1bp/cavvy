@@ -762,6 +762,10 @@ describe("background work across turns", () => {
             expect(hashCode("hello")).toBe(99162322);
             expect(claudePathSlug(`/${"a".repeat(250)}`)).toBe(`-${"a".repeat(199)}-${Math.abs(hashCode(`/${"a".repeat(250)}`)).toString(36)}`);
             expect(claudePathSlug("/private/tmp/h429proj")).toBe("-private-tmp-h429proj");
+            // Its cwd in NFC first, as Claude Code takes it: a decomposed "é" (e + U+0301) is the composed one, one "-".
+            expect(claudePathSlug("/p/cafe\u0301")).toBe("-p-caf-");
+            const long = `/${"a".repeat(250)}cafe\u0301`;
+            expect(claudePathSlug(long)).toBe(claudePathSlug(long.normalize("NFC")));
             const deep = join(realpathSync(tempDir("claude-deep-")), ...Array.from({ length: 6 }, (_, i) => `segment-${i}-${"d".repeat(30)}`));
             mkdirSync(deep, { recursive: true });
             expect(deep.replace(/[^a-zA-Z0-9]/g, "-").length).toBeGreaterThan(200);

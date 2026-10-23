@@ -107,9 +107,11 @@ const OUTPUT_READ_BYTES = 64 * 1024;
 
 /**
  * A folder's name under Claude Code's temporary folder, as 2.1.304 makes it: its path, each other character a "-"; past
- * 200 characters, cut there, with "-" and the path's hash (Java's String.hashCode, in base 36).
+ * 200 characters, cut there, with "-" and the path's hash (Java's String.hashCode, in base 36). The path in NFC
+ * first, as it takes its cwd: a folder named with a decomposed "é" is the composed one's.
  */
-export function claudePathSlug(path: string): string {
+export function claudePathSlug(raw: string): string {
+    const path = raw.normalize("NFC");
     const slug = path.replace(/[^a-zA-Z0-9]/g, "-");
     if (slug.length <= 200) return slug;
     let h = 0;
