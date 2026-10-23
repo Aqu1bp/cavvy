@@ -35,7 +35,7 @@ import {
 import type { AgentRun, Block, ThinkingBlock, TodoEntry, ToolBlock } from "@shared/protocol";
 import { duration, firstChangedLine, plural, sleepSeconds, stripAnsi, tokens } from "../../lib/format";
 import { commandDescription, isLive, runningVerb, shortModelRef, toolLabel } from "../../lib/tool-words";
-import { commandCut, commandMeta, exitCode, highlightShell, outputLines, passTally, taskOf } from "../../lib/command-row";
+import { commandCut, commandLabel, commandMeta, exitCode, firstLine, highlightShell, outputLines, passTally, taskOf, type ShellToken } from "../../lib/command-row";
 import { lineTone } from "../../lib/live-line";
 import { backgroundOf } from "../../lib/background";
 import { now } from "../../lib/clock";
@@ -867,10 +867,11 @@ function lastLine(text: string | undefined): string | undefined {
 }
 
 /**
- * A command, as a quiet row: what it's for (Claude Code's description) then the command, faint; or the command
- * alone (Codex). On the right, what it came to: a test run's tally, or a red "Exit 1" with its last line under
- * the row; and its time. One run in the background says so, with Stop on hover. Opened (a click, Enter or Space),
- * the whole command, highlighted, over its output, each with Copy, and a footer with the exit and the time.
+ * A command, as a quiet row: what it's for (Claude Code's description), or the command itself, shortened, when it
+ * has none (Codex). On the right, in columns shared with the rows around it, what it came to: a test run's tally,
+ * or a red "Exit 1" with its last line under the row; and its time. One run in the background says so, with Stop
+ * on hover. Opened (a click, Enter or Space), the whole command, highlighted, over its output, each with Copy, and
+ * a footer with the exit and the time.
  */
 export function CommandCard(p: { tool: ToolBlock }) {
     return <RenderBoundary raw={() => p.tool}><CommandCardContent {...p} /></RenderBoundary>;
@@ -883,6 +884,7 @@ function CommandCardContent(p: { tool: ToolBlock }) {
     const live = () => isLive(t());
     const command = () => String(t().input?.command ?? "").trim();
     const description = () => commandDescription(t());
+    const rowLabel = createMemo(() => commandLabel(t()));
     const meta = () => commandMeta(t());
     // The task it started in the background (Claude Code's run_in_background, Codex's terminals, Harness's shells).
     const task = createMemo(() => {
@@ -943,26 +945,36 @@ function CommandCardContent(p: { tool: ToolBlock }) {
                     toggle();
                 }}
             >
-                <span class="ic">
-                    <Show when={live() || background()} fallback={<SquareTerminal size={14} />}>
-                        <Spinner size={12} />
+                {/* Its columns (the label, then tags, result, time, chevron) line up with the rows around it (transcript.css). */}
+                <span class="cmd-what">
+                    <span class="ic">
+                        <Show when={live() || background()} fallback={<SquareTerminal size={14} />}>
+                            <Spinner size={12} />
+                        </Show>
+                    </span>
+                    <span class="sr-only" data-find-skip>{label().verb}{" "}</span>
+                    {/* Folded, only what it's for: the command is in the row opened. Under way, find counts the command
+                        (as on the live line, whose label the description is), so not this. */}
+                    <Show when={rowLabel() && t().status !== "streaming"}>
+                        <span class={`cmd-l ${description() ? "" : "solo"} ${!description() && command().includes("\n") ? "more" : ""}`} data-find-skip={live() || undefined}>{rowLabel()}</span>{" "}
                     </Show>
+                    <Show when={t().status === "streaming" && t().receiving}>
+                        <span class="cmd-dim" data-find-skip>{tokens(t().receiving!)} chars</span>
+                    </Show>
+                    <span class="cmd-tools" data-find-skip>
+                        <Show when={background() && task()!.stoppable && folds.sessionId}>
+                            <button class="icon-btn stop" title="Stop this task" aria-label={`Stop the background command: ${task()!.label}`} disabled={stopping()} onClick={(e) => void stop(e)}>
+                                <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                                    <rect x="1" y="1" width="8" height="8" rx="2" fill="currentColor" />
+                                </svg>
+                            </button>
+                        </Show>
+                        <Show when={command() && !commandCut(command())}>
+                            <CopyButton text={command} label="Copy command" class="cp" />
+                        </Show>
+                    </span>
                 </span>
-                <span class="sr-only" data-find-skip>{label().verb}{" "}</span>
-                {/* Under way, find counts only the command (as on the live line, whose label the description is). */}
-                <Show when={description() && t().status !== "streaming"}>
-                    <span class="cmd-l" data-find-skip={live() || undefined}>{description()}</span>{" "}
-                </Show>
-                <Show when={label().arg && t().status !== "streaming"}>
-                    <span class={`cmd-c ${description() ? "" : "solo"} ${command().includes("\n") ? "more" : ""}`}>{label().arg}</span>{" "}
-                </Show>
-                <Show when={t().status === "streaming" && t().receiving}>
-                    <span class="cmd-dim" data-find-skip>{tokens(t().receiving!)} chars</span>
-                </Show>
-                <span class="meta">
-                    <Show when={meta()}>
-                        <span class={`cmd-dim ${t().status === "denied" ? "exit" : ""}`} data-find-skip={live() || undefined}>{meta()}</span>
-                    </Show>
+                <span class="cmd-tags">
                     <Show when={t().sandboxed}>
                         <span class="cmd-tag" title="Ran in the sandbox" data-find-skip>
                             <ShieldCheck size={12} /> sandbox
@@ -982,24 +994,18 @@ function CommandCardContent(p: { tool: ToolBlock }) {
                             <Hand size={12} /> {runningVerb(t())}
                         </span>
                     </Show>
+                </span>
+                {/* What it came to: its summary ("(no output)", "Timed out", "Declined"), its exit, a test run's tally. */}
+                <span class="cmd-res">
+                    <Show when={meta()}>
+                        <span class={`cmd-dim ${t().status === "denied" ? "exit" : ""}`} data-find-skip={live() || undefined}>{meta()}</span>
+                    </Show>
                     <Show when={failed()}>
                         <span class="exit" data-find-skip>{exitText()}</span>
                     </Show>
-                    <Show when={t().status === "ok" && !task() && passTally(t())}>{(sum) => <span class="sum" data-find-skip>{sum()}</span>}</Show>
-                    <Show when={time()}>{(tm) => <span class="num" data-find-skip>{tm()}</span>}</Show>
+                    <Show when={t().status === "ok" && !task() && passTally(t())}>{(sum) => <span class="cmd-sum" data-find-skip>{sum()}</span>}</Show>
                 </span>
-                <span class="cmd-tools" data-find-skip>
-                    <Show when={background() && task()!.stoppable && folds.sessionId}>
-                        <button class="icon-btn stop" title="Stop this task" aria-label={`Stop the background command: ${task()!.label}`} disabled={stopping()} onClick={(e) => void stop(e)}>
-                            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-                                <rect x="1" y="1" width="8" height="8" rx="2" fill="currentColor" />
-                            </svg>
-                        </button>
-                    </Show>
-                    <Show when={command() && !commandCut(command())}>
-                        <CopyButton text={command} label="Copy command" class="cp" />
-                    </Show>
-                </span>
+                <span class="cmd-time num" data-find-skip>{time()}</span>
                 <span class="chev-w" aria-hidden="true">
                     <Show when={hasBody()}>
                         <ChevronRight size={14} class="chev" />
@@ -1022,7 +1028,8 @@ function CommandCardContent(p: { tool: ToolBlock }) {
 /** An opened command: the whole of it after "$", highlighted, over its output; then how it ended. Built when first opened. */
 function CommandBody(p: { tool: ToolBlock; live: boolean; running: boolean; code: number | undefined; task: string | undefined; time: string | undefined }) {
     const command = () => String(p.tool.input?.command ?? "").trim();
-    const tokens = createMemo(() => highlightShell(command()));
+    const tokens = createMemo(() => firstLine(highlightShell(command())));
+    const token = (tk: ShellToken) => (tk.cls ? <span class={tk.cls}>{tk.text}</span> : tk.text);
     const [full, setFull] = createSignal<string>();
     const [loading, setLoading] = createSignal(false);
     const lines = createMemo(() => outputLines(full() ?? p.tool.output, p.tool.status === "error"));
@@ -1046,11 +1053,15 @@ function CommandBody(p: { tool: ToolBlock; live: boolean; running: boolean; code
     }));
     const failed = () => p.tool.status === "error";
     return (
-        <div class="cmd-body" data-find-skip={p.live || undefined}>
+        <div class="cmd-body">
             <div class="cmd-in">
                 <span class="ps" aria-hidden="true" data-find-skip>$</span>
+                {/* Under way, find counts its first line, as the live line shows it (find.ts). */}
                 <pre>
-                    <For each={tokens()}>{(tk) => (tk.cls ? <span class={tk.cls}>{tk.text}</span> : tk.text)}</For>
+                    <For each={tokens()[0]}>{token}</For>
+                    <span data-find-skip={p.live || undefined}>
+                        <For each={tokens()[1]}>{token}</For>
+                    </span>
                 </pre>
                 <Show when={!commandCut(command())}>
                     <span data-find-skip>
@@ -1059,7 +1070,8 @@ function CommandBody(p: { tool: ToolBlock; live: boolean; running: boolean; code
                 </Show>
             </div>
             {"\n"}
-            <div class="cmd-out">
+            {/* Under way, find counts only the command (find.ts): its output keeps changing. */}
+            <div class="cmd-out" data-find-skip={p.live || undefined}>
                 <Show
                     when={p.live}
                     fallback={

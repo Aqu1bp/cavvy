@@ -8,6 +8,7 @@ import { findMatches, textRanges } from "../src/lib/find";
 import { setFindReveal } from "../src/state/ui";
 import { checkEditorFind } from "./editor-find";
 import { checkTranscriptScroll } from "./transcript-scroll";
+import { checkCommandColumns } from "./command-columns";
 import { checkPaletteDelete } from "./palette-delete";
 import { checkDiffComments } from "./diff-comments";
 import "../src/styles/tokens.css";
@@ -238,8 +239,8 @@ async function checkNoticeDetails() {
     }
 }
 
-run().then(() => checkNoticeDetails()).then(() => checkCommandFollow()).then(() => checkEditorFind(root)).then(() => checkPaletteDelete(root)).then(() => checkTranscriptScroll(root)).then(() => checkDiffComments(root)).then(() => {
-    result.textContent = "PASS: live tool find; notice details; command output follows; deferred file links and ranges; editor actions and find keys; deleted palette hits; transcript scroll; diff comments";
+run().then(() => checkNoticeDetails()).then(() => checkCommandFollow()).then(() => checkCommandColumns(root)).then(() => checkEditorFind(root)).then(() => checkPaletteDelete(root)).then(() => checkTranscriptScroll(root)).then(() => checkDiffComments(root)).then(() => {
+    result.textContent = "PASS: live tool find; notice details; command output follows; command columns; deferred file links and ranges; editor actions and find keys; deleted palette hits; transcript scroll; diff comments";
     result.dataset.status = "passed";
 }).catch((error) => {
     result.textContent = String(error.stack ?? error);

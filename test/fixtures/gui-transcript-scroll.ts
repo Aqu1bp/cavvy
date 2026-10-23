@@ -79,6 +79,10 @@ const decorate = (n: Node): any => Object.assign(n, {
     scrollTo: (options: any) => { scrollBehavior = options.behavior; scrollTarget = Math.max(0, Math.min(options.top, height(n) - viewportHeight)); if (!deferSmooth || options.behavior !== "smooth") (n as any).scrollTop = options.top; },
     classList: { add() {}, remove() {} },
     hasAttribute: (name: string) => n.props[name] !== undefined,
+    /** Its listeners (the capture phase's included), by type: listeners.click(event) dispatches one. */
+    listeners: {} as Record<string, (e: any) => void>,
+    addEventListener: (type: string, fn: (e: any) => void) => { (n as any).listeners[type] = fn; },
+    removeEventListener: (type: string) => { delete (n as any).listeners[type]; },
     removeAttribute: (name: string) => { delete n.props[name]; },
     toggleAttribute: (name: string, force: boolean) => { if (force) n.props[name] = ""; else delete n.props[name]; return force; },
 });
@@ -91,6 +95,7 @@ const create = (tag: string): any => {
         scrollHeight: { get: () => height(n) }, clientHeight: { get: () => viewportHeight },
         lastElementChild: { get: () => elements(n).at(-1) ?? null },
         parentElement: { get: () => n.parent ?? null },
+        isConnected: { get: () => { let x: Node = n; while (x.parent) x = x.parent; return x === root; } },
         previousElementSibling: { get: () => { const s = elements(n.parent); return s[s.indexOf(n) - 1] ?? null; } },
     });
     return n;
@@ -446,6 +451,29 @@ try {
     turnHeights.set("turn-44", 1300); resize(); flush();
     assert.equal(top, bottom(), "a box at its end passes the move on: following the end again");
     scroller().props.onScroll();
+    // The reader opening a row (a command's, a tool's) as it runs: it stays where it was clicked, nothing glides,
+    // and the end isn't followed (they're reading it). Growth below then leaves it where it is.
+    const toggle = turn("turn-44").children[0];
+    toggle.props["aria-expanded"] = false;
+    toggle.closest = (selector: string) => (selector.includes("aria-expanded") ? toggle : null);
+    const click = { type: "click", target: toggle };
+    const rowTop = toggle.getBoundingClientRect().top;
+    const glidesThen = glides.length;
+    scroller().listeners.click?.(click); // As the click starts (the capture phase).
+    turnHeights.set("turn-44", 1400); // The row's own handler opened it.
+    scroller().props.onClick?.(click); // And then it reaches the scroller.
+    assert.equal(toggle.getBoundingClientRect().top, rowTop, "a row opened while it runs stays where it was clicked");
+    assert.ok(button("jump"), "the end isn't followed while the reader reads what they opened");
+    resize(); flush();
+    assert.equal(glides.length, glidesThen, "opening a row doesn't glide");
+    assert.equal(toggle.getBoundingClientRect().top, rowTop, "nor move it the frame after");
+    turnHeights.set("turn-44", 1500); resize(); flush();
+    assert.equal(toggle.getBoundingClientRect().top, rowTop, "growth below leaves the opened row where it is");
+    // Enter on a button comes as a click: its keydown is let be. A row that's not a button (a command's) toggles on it.
+    scroller().listeners.keydown?.({ type: "keydown", key: "Enter", target: { ...toggle, tagName: "BUTTON", closest: toggle.closest } });
+    scroller().props.onKeyDown({ key: "Enter" });
+    assert.equal(toggle.getBoundingClientRect().top, rowTop);
+    scroll(bottom()); assert.equal(button("jump"), undefined);
     const glidesBefore = glides.length;
     reduced = true; turnHeights.set("turn-44", 1000); resize(); flush();
     assert.equal(top, bottom(), "reduced motion follows");
@@ -453,6 +481,36 @@ try {
     reduced = false; live.view.turns[44]!.status = "done"; turnHeights.set("turn-44", 1100); resize();
     assert.equal(top, bottom(), "the end of a turn lands at once");
     assert.equal(glides.length, glidesBefore, "a turn's end (its work folding away) doesn't glide");
+    turnHeights.clear(); dispose();
+    // A short conversation, all of it in view, still running: a row opened makes it overflow (the end isn't
+    // followed while it's read); folded again, it all fits, and no scroll event can come to say the end is in
+    // view. It follows the end again, as a scroll there would, and later growth is followed.
+    viewportHeight = 2000;
+    const short = { id: "short", view: { state: {}, turns: turns(2).map((t, i) => ({ ...t, status: i === 1 ? "running" : "done" })) } };
+    dispose = mount(short);
+    assert.equal(top, 0, "a short conversation fits");
+    const fold = turn("turn-1").children[0];
+    fold.props["aria-expanded"] = false;
+    fold.closest = (selector: string) => (selector.includes("aria-expanded") ? fold : null);
+    const press = (height: number) => {
+        scroller().listeners.click?.({ type: "click", target: fold });
+        turnHeights.set("turn-1", height);
+        scroller().props.onClick?.({ type: "click", target: fold });
+        resize(); flush();
+    };
+    press(1800);
+    assert.ok(button("jump"), "opened past the view's end: not followed");
+    press(200);
+    assert.equal(button("jump"), undefined, "folded back with the end in view: followed again");
+    turnHeights.set("turn-1", 2400); resize(); flush();
+    assert.equal(top, height(scroller()) - viewportHeight, "later growth is followed");
+    // The same with no toggle of ours: the column shrinking (anything folding) until it all fits.
+    scroll(0);
+    scroller().props.onWheel({ deltaY: -3 });
+    assert.ok(button("jump"));
+    turnHeights.set("turn-1", 300); resize(); flush();
+    assert.equal(button("jump"), undefined, "with nothing left to scroll, the end is followed");
+    viewportHeight = 500;
     turnHeights.clear(); dispose();
     const running = { id: "background", view: { state: {}, turns: turns(45).map((t) => ({ ...t, status: "running" })) } };
     dispose = mount(running); scroll(0); dispose();

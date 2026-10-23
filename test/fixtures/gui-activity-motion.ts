@@ -358,7 +358,7 @@ test("a command is one quiet row by default: no card, no Done pill", () => {
         const multi = row(h.root, "multi");
         expect(text(multi)).toContain("cd app");
         expect(text(multi)).not.toContain("make all");
-        expect(all(multi).some((n) => has(n, "cmd-c") && has(n, "more"))).toBe(true);
+        expect(all(multi).some((n) => has(n, "cmd-l") && has(n, "solo") && has(n, "more"))).toBe(true);
         head(multi).props.onClick();
         expect(text(body(multi)!)).toContain("cd app\nmake all");
         // Even with nothing printed, it opens: the whole command, "No output", and how it ended.
@@ -375,17 +375,49 @@ test("a command is one quiet row by default: no card, no Done pill", () => {
     } finally { h.dispose(); }
 });
 
-test("a command's description is its label, the command faint beside it; without one (Codex) the command is the label", () => {
-    const h = setup([{ ...finished("desc"), input: { command: "bun test ./test/a.test.ts", description: "Run the transcript tests" } }, finished("codex")], false);
+test("folded, a command's row says only its description; without one (Codex) the command is the label, shortened", () => {
+    const h = setup([
+        { ...finished("desc"), input: { command: "bun test ./test/a.test.ts", description: "Run the transcript tests" } },
+        { ...finished("codex"), input: { command: "cd '/Users/me/my repo' && bun run typecheck\nbun test" } },
+    ], false);
     try {
         const desc = row(h.root, "desc");
         expect(text(all(desc).find((n) => has(n, "cmd-l"))!)).toBe("Run the transcript tests");
-        const faint = all(desc).find((n) => has(n, "cmd-c"))!;
-        expect(text(faint)).toBe("bun test ./test/a.test.ts");
-        expect(has(faint, "solo")).toBe(false);
+        // Not the command, faint, beside it: that's in the row opened.
+        expect(text(head(desc))).not.toContain("bun test");
+        head(desc).props.onClick();
+        expect(text(body(desc)!)).toContain("bun test ./test/a.test.ts");
         const codex = row(h.root, "codex");
-        expect(all(codex).some((n) => has(n, "cmd-l"))).toBe(false);
-        expect(has(all(codex).find((n) => has(n, "cmd-c"))!, "solo")).toBe(true);
+        const label = all(codex).find((n) => has(n, "cmd-l"))!;
+        expect(text(label)).toBe("bun run typecheck");
+        expect(has(label, "solo")).toBe(true);
+        expect(has(label, "more")).toBe(true);
+        // The whole of it is the row's tooltip, and in the row opened.
+        expect(head(codex).props.title).toBe("cd '/Users/me/my repo' && bun run typecheck\nbun test");
+    } finally { h.dispose(); }
+});
+
+test("every command row has the same columns, in order, whatever it shows: so a run of them lines up (transcript.css)", () => {
+    const h = setup([
+        { ...finished("tally"), sandboxed: true },
+        { ...finished("quiet", "ok", ""), summary: "(no output)" },
+        { ...finished("failed", "error", "error: kiwi\nExit code: 1") },
+        { ...command("denied", "denied"), summary: "Declined" },
+        { ...finished("bg"), input: { command: "make serve", run_in_background: true }, summary: "Running in background as bash_1" },
+    ], false, [], undefined, false);
+    try {
+        const cells = (id: string) => head(row(h.root, id)).children.filter((n) => n.tag !== "#text").map((n) => n.props.class?.split(" ")[0]);
+        for (const id of ["tally", "quiet", "failed", "denied", "bg"]) expect(cells(id)).toEqual(["cmd-what", "cmd-tags", "cmd-res", "cmd-time", "chev-w"]);
+        const cell = (id: string, cls: string) => text(all(head(row(h.root, id))).find((n) => has(n, cls))!);
+        expect(cell("tally", "cmd-tags")).toContain("sandbox");
+        expect(cell("tally", "cmd-res")).toBe("14 pass");
+        expect(cell("tally", "cmd-time")).toBe("2s");
+        // What it came to is one column: a summary, an exit, a tally.
+        expect(cell("quiet", "cmd-res")).toBe("(no output)");
+        expect(cell("quiet", "cmd-tags")).toBe("");
+        expect(cell("failed", "cmd-res")).toBe("Exit 1");
+        expect(cell("denied", "cmd-res")).toBe("Declined");
+        expect(cell("bg", "cmd-tags")).toBe("Started in the background");
     } finally { h.dispose(); }
 });
 
