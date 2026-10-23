@@ -63,6 +63,7 @@ export const ACTIONS: readonly ActionDef[] = [
     { id: "chat:cancel", context: "Chat", description: "Interrupt · press twice to clear the input or rewind", defaults: { tui: ["escape"] } },
     { id: "chat:cycleMode", context: "Chat", description: "Cycle permission mode", defaults: { tui: ["shift+tab"], gui: ["shift+tab"] } },
     { id: "chat:externalEditor", context: "Chat", description: "Edit the prompt in $EDITOR", defaults: { tui: ["ctrl+g"] } },
+    { id: "chat:expand", context: "Chat", description: "Make the input box large, or back to its size", defaults: { gui: ["mod+shift+e"] } },
     { id: "chat:imagePaste", context: "Chat", description: "Paste an image from the clipboard", defaults: { tui: ["ctrl+v"] } },
     { id: "chat:undo", context: "Chat", description: "Undo the last edit", defaults: { tui: ["ctrl+_", "ctrl+-"] } },
     { id: "history:previous", context: "Chat", description: "Previous prompt", defaults: { tui: ["up", "ctrl+p"], gui: ["up"] } },

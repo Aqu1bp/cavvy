@@ -37,8 +37,10 @@ const turnHeights = new Map<string, number>();
 /** A far turn (data-far) keeps the size it was skipped at, if one is set here, whatever it would be drawn at now. */
 const skippedAt = new Map<string, number>();
 let omitPromptPart = false;
+/** The composer told the conversation its next change of the dock's height is it opening or closing its large size. */
+let dockGlide = false;
 const has = (n: Node, cls: string) => n.props.class?.split(" ").includes(cls);
-const height = (n: Node): number => n.props["data-turn"] ? (n.props["data-far"] !== undefined ? skippedAt.get(n.props["data-turn"]) : undefined) ?? turnHeights.get(n.props["data-turn"]) ?? 200 : has(n, "earlier") ? 50 : has(n, "transcript-end") ? 500 : n.children.reduce((sum, child) => sum + height(child), 0);
+const height = (n: Node): number => n.props["data-turn"] ? (n.props["data-far"] !== undefined ? skippedAt.get(n.props["data-turn"]) : undefined) ?? turnHeights.get(n.props["data-turn"]) ?? 200 : has(n, "earlier") ? 50 : has(n, "transcript-end") ? (n.props.style?.["--dock-h"] ? parseFloat(n.props.style["--dock-h"]) + 28 : 500) : n.children.reduce((sum, child) => sum + height(child), 0);
 /** Where a running glide draws a row of the column (and what's in it): shiftNow down, if it's one the glide moves. */
 const drawn = (n: Node): number => {
     for (let x: Node | undefined = n; x && !has(x, "transcript-col"); x = x.parent) if (glides.some((g) => g.el === x && g.anim.playState === "running")) return shiftNow;
@@ -136,6 +138,7 @@ const scope = {
     },
     matchMedia: () => ({ matches: reduced }), CSS: { escape: (s: string) => s },
     jumpTarget: jump, setJumpTarget: setJump, findOpen: findShown, panelHold,
+    takeDockGlide: () => { const glides = dockGlide; dockGlide = false; return glides; }, GROW_MS: 240, GROW_EASE: "cubic-bezier(0.2, 0.8, 0.2, 1)",
     openFind() {}, setFindQuery() {}, toast() { throw new Error("unexpected toast"); },
     turnAt: (turns: any[], _seg: number, index: number) => turns[index], BAR_ROOM: 48,
     rewindTarget: { set() {} }, setRewindOpen() {}, ArrowDown: () => node("icon"), FindBar: (p: any) => { findProps = p; return node("find"); }, CardFoldsProvider: (p: any) => p.children,
@@ -633,6 +636,43 @@ try {
     setDockH(undefined);
     assert.equal(dockOf(box("transcript-end")), undefined, "unmeasured, the end has --dock-h's initial value");
     setFindShown(false);
+
+    // The composer opening or closing its large size (Composer.tsx glideDock): following the end, the end stays just
+    // above it, the rows in sight drawn from where they were and gliding with the composer's edge, in its time. Any
+    // other change of the dock's height lands as before, without a glide.
+    dispose();
+    {
+    const [dockG, setDockG] = solid.createSignal<number | undefined>(200);
+    const short = { id: "dock-glide", view: { state: {}, turns: turns(3) } };
+    top = 0; root = node("root");
+    dispose = renderer.render(() => Transcript({ handle: short, get dock() { return dockG(); } }), root); flush();
+    const end = () => (scroller() as any).scrollHeight - viewportHeight;
+    assert.equal(top, end(), "following the end");
+    let before = glides.length;
+    dockGlide = true; setDockG(500);
+    assert.equal(top, end(), "opened: still at the end, at once");
+    let moved = glides.slice(before);
+    assert.ok(moved.length > 0, "the rows in sight glide");
+    assert.ok(moved.every((g) => g.from === 300 && g.duration === 240), "up from where they were, as far as the composer grew, in its time");
+    assert.ok(!moved.some((g) => has(g.el, "transcript-col")), "not the whole column");
+    moved.forEach((g) => g.anim.cancel());
+    before = glides.length;
+    dockGlide = true; setDockG(200);
+    assert.equal(top, end(), "closed: still at the end");
+    moved = glides.slice(before);
+    assert.ok(moved.length > 0 && moved.every((g) => g.from === -300), "down from where they were");
+    moved.forEach((g) => g.anim.cancel());
+    before = glides.length;
+    setDockG(222);
+    resize();
+    assert.equal(glides.length, before, "a line wrapping in the composer doesn't glide");
+    assert.equal(top, end(), "it lands at the end at once");
+    scroll(0);
+    before = glides.length;
+    dockGlide = true; setDockG(500);
+    assert.equal(glides.length, before, "scrolled up, nothing moves");
+    assert.equal(top, 0);
+    }
 
     // While the panels slide open or shut (App.tsx), the conversation keeps one size, placed where it ends up and
     // drawn from where it was by a translate in step with the slide: laid out as the slide starts and as it ends,
