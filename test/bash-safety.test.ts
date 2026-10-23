@@ -730,5 +730,69 @@ describe("here-documents (#448)", () => {
             expect(isReadOnlyCommand("cat <<'EOF'\nrm -rf /\nit's here\nEOF")).toBe(true);
             expect(isReadOnlyCommand("grep -c x <<EOF\nnpm publish\nEOF")).toBe(true);
         });
+
+        test("data written where it runs later isn't blanked", () => {
+            for (const cmd of ["tee -a ~/.bashrc <<'EOF'\nrm -rf ~\nEOF", "tee .git/hooks/pre-commit <<'EOF' >/dev/null\nrm -rf ~\nEOF", "cat <<'EOF' > .git/hooks/pre-push\nrm -rf ~\nEOF", "cat <<'EOF' >> ~/.ZPROFILE\nrm -rf ~\nEOF"]) {
+                expect(withoutHeredocData(cmd)).toBeUndefined();
+                expect(dangerousReason(cmd)).toBeDefined();
+            }
+            expect(dangerousReason("tee -a notes.txt <<'EOF'\nrm -rf ~\nEOF")).toBeUndefined();
+        });
+    });
+
+    // Review of #453: each checked in bash, zsh and sh, where every one runs `touch marker`.
+    describe("a here-string isn't a here-document", () => {
+        test.each([
+            "cat <<<EOF\ntouch marker\nEOF\ncat <<A\nA",
+            "cat <<< EOF <<A\nA\ntouch marker",
+            "cat <<<x <<EOF\ny\nEOF\ntouch marker",
+            "cat 0<<<EOF\ntouch marker\nEOF\ncat <<A\nA",
+        ])("%p runs touch: not read-only, not approved by Bash(cat:*)", (cmd) => {
+            expect(programs(cmd)).toContain("touch");
+            expect(isReadOnlyCommand(cmd)).toBe(false);
+            expect(bashRuleMatches("cat:*", cmd, "allow")).toBe(false);
+            expect(suggestBashRules(cmd)).toContain("Bash(touch:*)");
+        });
+
+        test("what follows a here-string is judged, not blanked", () => {
+            const cmd = "cat <<<EOF\nrm -rf ~\nEOF\ncat <<A\nA";
+            expect(withoutHeredocData(cmd) ?? cmd).toContain("rm -rf ~");
+            expect(dangerousReason(cmd)).toBeDefined();
+        });
+    });
+
+    describe("a version or help flag that runs stdin isn't read-only", () => {
+        test.each([
+            "bash -h <<EOF\ntouch marker\nEOF",
+            "sh -h <<EOF\ntouch marker\nEOF",
+            "zsh -h <<EOF\ntouch marker\nEOF",
+            "zsh -V <<EOF\ntouch marker\nEOF",
+            "npx -V <<EOF\ntouch marker\nEOF",
+            "python3 -v <<'EOF'\nimport os; os.system(\"touch marker\")\nEOF",
+            "python -v <<'EOF'\nimport os\nEOF",
+            "echo 'touch marker' | bash -h",
+            "echo 'touch marker' | zsh -V",
+        ])("%p", (cmd) => {
+            expect(isReadOnlyCommand(cmd)).toBe(false);
+        });
+
+        test.each(["bash --version", "bash --help", "sh --version", "zsh --version", "zsh --help", "bash -V", "npx --version", "npx -h", "python3 -V", "python3 --version", "python3 -h", "node -v", "ruby -v", "curl -h", "ssh -V", "git --version"])("%p still is", (cmd) => {
+            expect(isReadOnlyCommand(cmd)).toBe(true);
+        });
+    });
+
+    describe("a delimiter whose end can't be known: deny rules see what runs after it", () => {
+        test.each([
+            "cat <<$'EOF'\n'\nEOF\ntouch marker #'",
+            "cat <<E$'O'F\n'\nEOF\ntouch marker #'",
+            'cat <<$"EOF"\n\'\nEOF\ntouch marker #\'',
+            "cat <<$(x)\n'\n$(x)\ntouch marker #'",
+            "cat <<\"E F\"\n'\nE F\ntouch marker #'",
+        ])("%p", (cmd) => {
+            expect(bashRuleMatches("touch:*", cmd, "deny")).toBe(true);
+            expect(bashRuleMatches("cat:*", cmd, "allow")).toBe(false);
+            expect(isReadOnlyCommand(cmd)).toBe(false);
+            expect(suggestBashRules(cmd)).toEqual([]);
+        });
     });
 });

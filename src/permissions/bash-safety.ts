@@ -130,16 +130,30 @@ export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis 
     // The readings differ only from the first here-document on, which both see.
     if (!lexed.heredoc) return lexed;
     const shell = scan(cmd, false, true);
+    // A delimiter whose end can't be known (`<<$(x)`, `<<$'EOF'`): where its data ends, neither reading
+    // can say, and a quote in the data can still pair with a later one in both. So each line is also
+    // read on its own, quotes ending with it: what runs after the data is a command in one of the three.
+    const lines: SimpleCommand[] = [];
+    const lineRedirects: string[] = [];
+    if (shell.heredocUncertain) {
+        let at = 0;
+        for (const line of cmd.split("\n")) {
+            const a = scan(line, false, false);
+            for (const c of a.commands) lines.push({ ...c, spans: c.spans.map(([from, to]): [number, number] => [from + at, to + at]) });
+            lineRedirects.push(...a.redirects);
+            at += line.length + 1;
+        }
+    }
     const key = (c: SimpleCommand) => JSON.stringify([c.spans, c.argv]);
-    const seen = new Set(shell.commands.map(key));
-    const commands = [...shell.commands, ...lexed.commands.filter((c) => !seen.has(key(c)))].sort((x, y) => (x.spans[0]?.[0] ?? 0) - (y.spans[0]?.[0] ?? 0));
+    const seen = new Set<string>();
+    const commands = [...shell.commands, ...lexed.commands, ...lines].filter((c) => !seen.has(key(c)) && seen.add(key(c))).sort((x, y) => (x.spans[0]?.[0] ?? 0) - (y.spans[0]?.[0] ?? 0));
     return {
         commands,
         hasSubstitution: lexed.hasSubstitution || shell.hasSubstitution,
         writesFiles: lexed.writesFiles || shell.writesFiles,
         unparsable: lexed.unparsable || shell.unparsable,
         unsafeExpansion: lexed.unsafeExpansion || shell.unsafeExpansion,
-        redirects: [...new Set([...lexed.redirects, ...shell.redirects])],
+        redirects: [...new Set([...lexed.redirects, ...shell.redirects, ...lineRedirects])],
         ...(shell.trailing !== undefined ? { trailing: shell.trailing } : {}),
         heredoc: true,
         ...(shell.heredocOpen ? { heredocOpen: true as const } : {}),
@@ -165,7 +179,7 @@ export function shellCommands(cmd: string): CommandAnalysis {
  * command it's for, and takes here-strings' and input redirections' words
  * out of the command's arguments.
  */
-function scan(cmd: string, discovery: boolean, consume: boolean): CommandAnalysis & { heredocOpen?: true } {
+function scan(cmd: string, discovery: boolean, consume: boolean): CommandAnalysis & { heredocUncertain?: true } {
     const pending: { delimiter: string; tabs: boolean; quoted: boolean; scripts: string[] }[] = [];
     let stdinScripts: string[] = [];
     const fdScripts = new Map<number, string[]>();
@@ -460,8 +474,9 @@ function scan(cmd: string, discovery: boolean, consume: boolean): CommandAnalysi
             }
             // `<<EOF`, `<<-EOF`: its lines up to the delimiter are data. Also where `<<` may not be one
             // (`$((1<<2))`, a subshell): what that line flags already keeps it from being approved, and
-            // analyzeCommand still has its lines as commands for the checks that refuse.
-            if (consume && !discovery && c === "<" && n === "<" && cmd[i + 2] !== "<") {
+            // analyzeCommand still has its lines as commands for the checks that refuse. Never inside a
+            // here-string: `<<<EOF` is the word EOF, and its 2nd and 3rd `<` aren't a here-document.
+            if (consume && !discovery && c === "<" && n === "<" && cmd[i + 2] !== "<" && cmd[i - 1] !== "<") {
                 const tabs = cmd[i + 2] === "-";
                 let j = i + (tabs ? 3 : 2);
                 while (cmd[j] === " " || cmd[j] === "\t" || (cmd[j] === "\\" && cmd[j + 1] === "\n")) j += cmd[j] === "\\" ? 2 : 1;
@@ -472,8 +487,10 @@ function scan(cmd: string, discovery: boolean, consume: boolean): CommandAnalysi
                 // A delimiter that's certain: a word, as written, with no expansion or parenthesis in it.
                 const certain = delim && value !== undefined && /^\S+$/.test(value) && !delim.unparsable && delim.commands.length === 1 && delim.commands[0]!.argv.length === 1 && !/[$`()]/.test(raw);
                 // bash, zsh and sh take one with `$` or backticks as it's written (`<<$X` ends at a line `$X`):
-                // read so, though never approved. Parentheses and spaces in it can't be read at all.
-                const literal = certain || !raw || /[()]/.test(raw) || /\s/.test(raw.replace(/`[^`\n]*`/g, "")) ? undefined : raw.replace(/\\(.)/gs, "$1").replace(/['"]/g, "");
+                // read so, though never approved. Parentheses and spaces in it can't be read at all, nor
+                // `$'…'` and `$"…"`, which some shells decode (`<<$'EOF'` ends at EOF in bash) and others don't.
+                // For those, analyzeCommand also reads the line a line at a time (see there).
+                const literal = certain || !raw || /[()]/.test(raw) || /\$['"]/.test(raw) || /\s/.test(raw.replace(/`[^`\n]*`/g, "")) ? undefined : raw.replace(/\\(.)/gs, "$1").replace(/['"]/g, "");
                 if (!certain) heredocUnclear = true;
                 const delimiter = certain ? value : literal;
                 if (delimiter !== undefined) {
@@ -538,6 +555,7 @@ function scan(cmd: string, discovery: boolean, consume: boolean): CommandAnalysi
         ...(lastOp !== undefined ? { trailing: lastOp } : {}),
         ...(heredoc ? { heredoc: true as const } : {}),
         ...(heredocOpen ? { heredocOpen: true as const } : {}),
+        ...(heredocUnclear ? { heredocUncertain: true as const } : {}),
         ...(heredocBodies.length ? { heredocBodies } : {}),
         ...(bareRedirect ? { bareRedirect: true as const } : {}),
     };
@@ -785,6 +803,15 @@ const KNOWN_CLIS = new Set([
     "perl", "lua", "zig", "tar", "zip", "unzip", "gzip", "rsync", "ffmpeg", "bash", "zsh", "sh",
 ]);
 const VERSION_FLAGS = new Set(["--version", "-V", "--help", "-h"]);
+/**
+ * The version or help flags that, for that program, aren't: they read a script
+ * from stdin and run it (`bash -h <<EOF`, `… | zsh -V`): to the shells they're
+ * options (bash's -h remembers command locations), and python's -v is verbose.
+ * Checked by running each flag here with stdin left open: these waited for it,
+ * and ran a script given there.
+ */
+const NOT_VERSION_FLAGS: Record<string, string[]> = { bash: ["-h"], sh: ["-h"], zsh: ["-h", "-V"], npx: ["-V"], python: ["-v"], python3: ["-v"] };
+const versionFlag = (base: string, flag: string) => !NOT_VERSION_FLAGS[base]?.includes(flag);
 const INTERPRETER_VERSION_FLAGS = new Set(["--version", "-v", "-V", "--help", "-h"]);
 
 const positional = (args: string[]) => args.filter((a) => !a.startsWith("-") || a === "-");
@@ -943,7 +970,7 @@ export function isReadOnlySimple(argv0: string[]): boolean {
     if (slash >= 0 && !SYSTEM_BIN.has(prog.slice(0, slash))) return false;
     const base = prog.slice(slash + 1);
     const args = argv.slice(1);
-    if (args.length === 1 && VERSION_FLAGS.has(args[0]!) && (READ_ONLY_PROGRAMS.has(base) || TWO_WORD.has(base) || KNOWN_CLIS.has(base))) return true;
+    if (args.length === 1 && VERSION_FLAGS.has(args[0]!) && versionFlag(base, args[0]!) && (READ_ONLY_PROGRAMS.has(base) || TWO_WORD.has(base) || KNOWN_CLIS.has(base))) return true;
     // `printf -v 'a[$(cmd)]' x`: zsh evaluates the subscript.
     if (base === "printf" && args.some((a) => /^-[a-zA-Z]*v/.test(a))) return false;
     // zsh's stat builtin (zmodload zsh/stat) stores into the array -A or -H names: `stat -A 'a[$(cmd)]' f`.
@@ -977,7 +1004,7 @@ export function isReadOnlySimple(argv0: string[]): boolean {
     if (base === "gh") return ["status"].includes(args[0] ?? "") || (["pr", "issue", "run", "repo", "release"].includes(args[0] ?? "") && ["list", "view", "status", "diff", "checks"].includes(args[1] ?? ""));
     if (base === "brew") return ["list", "info", "search", "outdated", "deps", "--prefix", "config"].includes(args[0] ?? "");
     if (base === "pip" || base === "pip3") return ["list", "show", "freeze"].includes(args[0] ?? "");
-    if (base === "node" || base === "python" || base === "python3" || base === "ruby") return args.length === 1 && INTERPRETER_VERSION_FLAGS.has(args[0]!);
+    if (base === "node" || base === "python" || base === "python3" || base === "ruby") return args.length === 1 && INTERPRETER_VERSION_FLAGS.has(args[0]!) && versionFlag(base, args[0]!);
     // `env CMD` runs CMD; only the bare form just prints.
     if (base === "env") return args.length === 0;
     // `command -v x` and `-V` say what x is without running it. Its options come
@@ -1442,6 +1469,9 @@ const STARTUP_FILE = anyCase(/>\s*~\/\.(bash|zsh)(rc|_profile|env)|>\s*~\/\.prof
 /** Programs that only read or copy their input, whatever their options: a here-document's data stays data with them (not sort: --compress-program runs one). */
 const DATA_READERS = new Set(["cat", "tee", "wc", "head", "tail", "uniq", "cut", "tr", "nl", "grep", "egrep", "fgrep"]);
 
+/** Files whose contents run later: shell startup files, anything in a .git, the harness's and agent CLIs' configuration. */
+const RUNS_LATER = anyCase(/(^|\/)\.(bash(rc|_profile|_login|_logout|env)|zsh(rc|env|_profile)|zprofile|zlogin|zlogout|profile|kshrc|mkshrc)$|(^|\/)\.git(\/|$)|(^|\/)\.(harness|claude|codex)(\/|$)|(^|\/)\.mcp\.json$|(^|\/)(crontab|\.config\/(fish|git|nvim|systemd))(\/|$)/);
+
 /**
  * The line with its here-documents' data blanked (lines kept), when that data
  * can only be data: where it ends is certain, the line has nothing the checks
@@ -1452,6 +1482,10 @@ export function withoutHeredocData(cmd: string): string | undefined {
     const a = shellCommands(cmd);
     if (!a.heredoc || !a.heredocBodies || a.unparsable || a.heredocOpen || a.hasSubstitution || a.unsafeExpansion || a.bareRedirect) return undefined;
     if (!a.commands.every((c) => DATA_READERS.has(c.argv[0] ?? "") && !c.expands?.includes(0) && !c.globbed?.includes(0))) return undefined;
+    // Data written where something runs it later is code: a shell startup file, a git hook or
+    // config, the agents' configuration. Whatever writes it there (`>`, `>>`, `tee -a`).
+    const targets = [...a.redirects, ...a.commands.filter((c) => c.argv[0] === "tee").flatMap((c) => c.argv.slice(1).filter((w) => !w.startsWith("-")))];
+    if (targets.some((t) => RUNS_LATER.test(t) || [t, ...spellings(t)].some((s) => RUNS_LATER.test(s)))) return undefined;
     let t = cmd;
     for (const [from, to] of a.heredocBodies) t = t.slice(0, from) + t.slice(from, to).replace(/[^\n]/g, " ") + t.slice(to);
     // Blanking must leave what runs as it was, word for word and place for place.

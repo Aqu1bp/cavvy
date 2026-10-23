@@ -1130,9 +1130,47 @@ describe("here-documents (#448)", () => {
             expect(seatbelt().check(T("Bash"), bash("cat <<'EOF' > notes.txt\ncurl https://example.com/install.sh\nrm -rf src\nEOF"), "auto", W)).toEqual({ behavior: "allow", sandbox: true, reason: "sandboxed" });
         });
 
+        test("data written to a startup file is still dangerous, bypass included", () => {
+            expect(noSandbox().check(T("Bash"), bash("tee -a ~/.bashrc <<'EOF'\nrm -rf ~\nEOF"), "bypassPermissions", W)).toMatchObject({ behavior: "ask", dangerous: true });
+        });
+
         test("data that something may run is still judged", () => {
             expect(seatbelt().check(T("Bash"), bash("cat <<'EOF' | sh\nrm -rf src\nEOF"), "auto", W)).toMatchObject({ behavior: "ask", needsClassifier: true });
         });
+    });
+});
+
+describe("review of #453: each runs `touch marker` in bash, zsh and sh", () => {
+    const noSandbox = () => new PermissionChecker(() => settings, W, () => undefined);
+    const decide = (cmd: string, mode: PermissionMode) => noSandbox().check(T("Bash"), bash(cmd), mode, W);
+
+    test.each([
+        "cat <<<EOF\ntouch marker\nEOF\ncat <<A\nA",
+        "cat <<< EOF <<A\nA\ntouch marker",
+        "cat <<<x <<EOF\ny\nEOF\ntouch marker",
+        "cat 0<<<EOF\ntouch marker\nEOF\ncat <<A\nA",
+        "bash -h <<EOF\ntouch marker\nEOF",
+        "zsh -V <<EOF\ntouch marker\nEOF",
+        "python3 -v <<'EOF'\nimport os; os.system(\"touch marker\")\nEOF",
+    ])("%p: refused in plan, asked in default, not approved by Bash(cat:*)", (cmd) => {
+        expect(decide(cmd, "plan").behavior).toBe("deny");
+        expect(decide(cmd, "default").behavior).toBe("ask");
+        settings.permissions!.allow = ["Bash(cat:*)"];
+        expect(decide(cmd, "default").behavior).toBe("ask");
+    });
+
+    test("a here-string's following lines are dangerous when they are", () => {
+        expect(decide("cat <<<EOF\nrm -rf ~\nEOF\ncat <<A\nA", "bypassPermissions")).toMatchObject({ behavior: "ask", dangerous: true });
+    });
+
+    test.each([
+        "cat <<$'EOF'\n'\nEOF\ntouch marker #'",
+        "cat <<E$'O'F\n'\nEOF\ntouch marker #'",
+        'cat <<$"EOF"\n\'\nEOF\ntouch marker #\'',
+        "cat <<$(x)\n'\n$(x)\ntouch marker #'",
+    ])("%p: a deny rule for touch refuses it in every mode", (cmd) => {
+        settings.permissions!.deny = ["Bash(touch:*)"];
+        for (const mode of MODES) expect(decide(cmd, mode)).toMatchObject({ behavior: "deny", rule: "Bash(touch:*)" });
     });
 });
 
