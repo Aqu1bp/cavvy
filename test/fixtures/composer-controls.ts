@@ -237,6 +237,30 @@ assert.equal(ta.props.value, "");
     assert.equal(ta.props.value, "a long draft");
     input("");
     tick();
+    // A send that completes late doesn't close a newer draft opened large meanwhile.
+    const gate = Promise.withResolvers<void>();
+    holdSend = gate.promise;
+    Object.assign(ta, { scrollHeight: 400, clientHeight: 154 });
+    input("sent slowly");
+    key("Enter");
+    await Bun.sleep(0);
+    input("the next long draft");
+    tick();
+    key("E", { ...MOD, shiftKey: true, code: "KeyE" });
+    assert.ok(cls().includes("expanded"));
+    // The keys let go (mod+shift held flips the send button's way).
+    ta.props.onKeyUp({ key: "Shift", isComposing: false, keyCode: 0 });
+    gate.resolve();
+    holdSend = undefined;
+    await Bun.sleep(0);
+    tick();
+    assert.equal(ta.props.value, "the next long draft", "the newer draft stays");
+    assert.ok(cls().includes("expanded"), "and stays open large");
+    nodes.findLast((n) => n.props.class === "cb c-expand").props.onClick();
+    Object.assign(ta, { scrollHeight: 30, clientHeight: 44 });
+    input("");
+    tick();
+    assert.ok(!cls().includes("expanded"));
 }
 // While a turn runs: Enter does what the setting says (steer by default), mod+shift+enter the other; idle, neither is sent.
 assert.equal(sent.at(-1)!.followUp, undefined);

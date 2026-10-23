@@ -346,8 +346,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         const message = withComments(t, sentComments);
         // A toast retry may finish after Home has unmounted too.
         const resizeAfterSend = whileMounted(() => requestAnimationFrame(resize));
+        // Sent, the box closes: not if a newer draft is in it by then (typed, maybe opened large, while this went).
+        const collapseSent = () => { if (draft.holds(submitted)) setExpanded(false); };
         const sent = () => {
-            setExpanded(false);
+            collapseSent();
             draft.clearSent(submitted);
             resizeAfterSend();
         };
@@ -368,7 +370,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 composerStorage.remember(submitted.key, t);
                 setComparePicks(undefined);
             }
-            setExpanded(false);
+            collapseSent();
             draft.clearSent(submitted, ok === "command");
             if (ok === "command" && t.trim() && !atts.length) {
                 if (!wasDeleted(submitted.key)) composerStorage.remember(submitted.key, t);
