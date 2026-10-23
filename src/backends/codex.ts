@@ -40,13 +40,13 @@ import type { AgentEvent, TurnEndReason } from "../agent/agent";
 import { parseGoalCommand, type GoalCommand, type NativeGoal } from "../agent/goal";
 import type { CodexLive } from "./codex-live";
 
-/** A JSON-RPC peer over a JsonLinesProcess: our requests, its notifications and requests. */
 /**
  * Codex answered a request with an error: it got the request and declined it (a turn/start it refused started no
  * turn). Not a request that failed because Codex went away before answering: what it did with that isn't known.
  */
 export class CodexAnswerError extends ProviderError {}
 
+/** A JSON-RPC peer over a JsonLinesProcess: our requests, its notifications and requests. */
 export class Rpc {
     private seq = 0;
     private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
