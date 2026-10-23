@@ -50,7 +50,8 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string }) {
         try {
             await rpc.call("session.setAccount", { id: p.sessionId, provider: selectedProvider, accountId: id });
             close();
-            toast("Account switched. Send your message again to continue.", "info");
+            // On credits the turn didn't stop: there's nothing to send again.
+            toast(meter()?.usingCredits ? "Account switched. Your next message uses it." : "Account switched. Send your message again to continue.", "info");
         } catch (error) { reportError(error); }
         finally { setSwitching(false); }
     }
@@ -68,7 +69,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string }) {
     };
     const label = () => [
         view().pct === undefined ? "Context window: size not known yet" : `Context: ${Math.round(view().pct! * 100)}% used`,
-        meter() ? `${name()} usage: ${meter()!.windows.map(windowLine).join("; ") || "limit reached"}` : undefined,
+        meter() ? `${name()} usage: ${meter()!.windows.map(windowLine).join("; ") || "limit reached"}${meter()!.usingCredits ? " · using credits" : ""}` : undefined,
     ].filter(Boolean).join(". ");
     const cancelClose = () => clearTimeout(closeTimer);
     const show = () => { cancelClose(); setOpen(true); };
@@ -148,7 +149,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string }) {
                                 <span class="usage-account truncate">· {name()}</span>
                             </div>
                             <Show when={meter()?.asOf}><div class="plan-asof">{meter()!.asOf}</div></Show>
-                            <Show when={meter()?.reached}><div class="plan-reached">Limit reached</div></Show>
+                            <Show when={meter()?.reached}><div class="plan-reached">{meter()!.usingCredits ? "Limit reached · using credits" : "Limit reached"}</div></Show>
                             <For each={meter()?.windows}>{(w) => (
                                 <div class="plan-window">
                                     <div class="cc-line"><span>{w.label}</span><b class="num">{w.pct !== undefined ? `${w.pct}%` : w.reached ? "reached" : "—"}</b></div>

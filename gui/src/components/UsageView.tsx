@@ -37,7 +37,7 @@ function PlanLimitsGroup() {
                         </h3>
                         <div class={`set-group usage-plan ${m!.reached ? "reached" : ""}`}>
                             <Show when={m!.reached}>
-                                <div class="plan-reached">Limit reached{m!.resets ? `. Resets ${m!.resets}.` : "."}</div>
+                                <div class="plan-reached">{m!.usingCredits ? "Limit reached · using credits" : "Limit reached"}{m!.resets ? `. Resets ${m!.resets}.` : "."}</div>
                             </Show>
                             <For each={m!.windows}>
                                 {(w) => (

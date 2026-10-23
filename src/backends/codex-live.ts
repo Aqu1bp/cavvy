@@ -29,7 +29,7 @@ import { registerTools } from "../mcp/server";
 import { CODEX_CLI, extraArgs, requireCli, type JsonLinesProcess } from "./cli";
 import { CODEX_HOOK_EVENTS, CODEX_HOOK_SERVER, codexHookArgs } from "./codex-hooks";
 import { codexInput, pastedPrompt, type CodexSkill } from "./native-skills";
-import { limitAccountLabel, resetSentence } from "./limits";
+import { limitAccountLabel, limitStopReport, resetSentence } from "./limits";
 import { agentCli, type CliCapabilities } from "./defs";
 import { LiveCliPool } from "./live/pool";
 import { PromptRefused, spawnFingerprint, type LiveCliSession, type LiveTurnResult, type LiveWake } from "./live/session";
@@ -293,7 +293,8 @@ export class CodexLiveConnection extends CodexTurn {
         this.outFor(id).failure = redact(String(error?.message ?? fallback));
         if (error?.codexErrorInfo === "usageLimitExceeded") {
             this.limitUpdates.revision++;
-            if (!this.limits?.reached) this.noteLimits({ provider: this.def.id, accountId: this.t.accountId ?? "default", windows: [], reached: true, at: Date.now() }, true);
+            const stop = limitStopReport(this.limits, this.def.id, this.t.accountId ?? "default");
+            if (stop) this.noteLimits(stop, true);
         }
     }
 

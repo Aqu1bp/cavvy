@@ -108,7 +108,7 @@ export function railFoot(o: {
         // When it was reported, and when a reached limit lifts, as briefly as can be: "2:02 PM", "Mon".
         const reported = resetLabel(limits.at, o.now);
         const lifts = meter.resets?.replace(/, in .*$/, "").replace(/^(.+?) \d{1,2}[:.]\d{2}.*$/, "$1");
-        const brief = meter.reached ? `Reached${lifts ? `, resets ${lifts}` : ""}`
+        const brief = meter.reached ? `Reached${meter.usingCredits ? " · using credits" : ""}${lifts ? `, resets ${lifts}` : ""}`
             : top ? `${top.pct}% of the ${top.label.toLowerCase()} limit`
             : `Reset since ${reported}`;
         const line = !meter.reached && top && meter.asOf ? `${top.label} ${top.pct}% as of ${reported}` : brief;

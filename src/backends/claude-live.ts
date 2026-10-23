@@ -41,7 +41,7 @@ import { ClaudeGoalWatch, claudeTranscriptFile } from "./claude-goal";
 import { CLAUDE_CLI, cliMessage, requireCli, type JsonLinesProcess } from "./cli";
 import { agentCli, type AgentCliDef, type CliCapabilities } from "./defs";
 import type { AgentCliStatus } from "./index";
-import { limitAccountLabel, limitNews, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
+import { creditsNote, limitAccountLabel, limitNews, limitStopReport, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
 import { liveDebug } from "./live/debug";
 import { LiveCliPool } from "./live/pool";
 import { EXIT_DRAIN_MS, PromptRefused, spawnFingerprint, type LiveCliSession, type LiveOptions, type LiveTurnResult } from "./live/session";
@@ -1096,7 +1096,8 @@ export class ClaudeConnection implements CliConnection {
             this.failure = `Claude Code isn't signed in, or its sign-in expired. ${signInAdvice(this.def.id, this.cfg.accountId)}`;
         } else if (error === "rate_limit") {
             this.limitHit = true;
-            if (!this.limits?.reached) this.noteLimits({ provider: this.def.id, accountId: this.cfg.accountId ?? "default", windows: [], reached: true, at: Date.now() }, true);
+            const stop = limitStopReport(this.limits, this.def.id, this.cfg.accountId ?? "default");
+            if (stop) this.noteLimits(stop, true);
             this.failure = this.limitFailure();
         } else if (error === "billing_error") this.failure = "Claude Code reported a billing problem with the account it's signed in to.";
         else this.failure = `Claude Code reported an error: ${error}`;
@@ -1237,7 +1238,8 @@ export class ClaudeConnection implements CliConnection {
             if (this.limitHit) this.failure = this.limitFailure();
             if (this.reachedNoted) return;
             this.reachedNoted = true;
-            this.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.cfg.accountId)}: ${which}usage limit reached. ${resetSentence(this.limits?.resetsAt, "Claude Code")}` });
+            // On extra usage it isn't a stop: the turn goes on, and it costs.
+            this.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.cfg.accountId)}: ${which}usage limit reached${creditsNote(this.limits, "extra usage")}. ${resetSentence(this.limits?.resetsAt, "Claude Code")}` });
         } else if (news) this.emit({ type: "notice", level: "info", message: `${limitAccountLabel(this.def.id, this.cfg.accountId)}: close to the ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}` });
     }
 

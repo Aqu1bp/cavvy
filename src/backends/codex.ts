@@ -18,7 +18,7 @@ import { ONE_OFF_TIMEOUT_MS, oneOffAnswer, oneOffPrompt, oneOffRefusal } from ".
 import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
 import type { PlanLimits } from "../server/protocol";
-import { codexReachedType, limitAccountLabel, mergeLimits, parseCodexRateLimits, resetSentence } from "./limits";
+import { codexReachedType, creditsNote, limitAccountLabel, limitStopReport, mergeLimits, parseCodexRateLimits, resetSentence } from "./limits";
 import type { PermissionMode } from "../permissions/modes";
 import { analyzeCommand } from "../permissions/bash-safety";
 import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
@@ -1243,7 +1243,8 @@ export class CodexTurn {
         if (error?.codexErrorInfo !== "usageLimitExceeded" || this.limitHit) return;
         this.limitHit = true;
         this.limitUpdates.revision++;
-        if (!this.limits?.reached) this.noteLimits({ provider: this.def.id, accountId: this.t.accountId ?? "default", windows: [], reached: true, at: Date.now() }, true);
+        const stop = limitStopReport(this.limits, this.def.id, this.t.accountId ?? "default");
+        if (stop) this.noteLimits(stop, true);
     }
 
     /**
@@ -1446,7 +1447,8 @@ export class CodexTurn {
                 const reached = codexReachedType(p.rateLimits);
                 if (reached && !this.limitNoted) {
                     this.limitNoted = true;
-                    this.sink.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached (${reached}). ${resetSentence(this.limits?.resetsAt, "Codex")}` });
+                    // On credits it isn't a stop: the turn goes on, and it costs.
+                    this.sink.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached (${reached})${creditsNote(this.limits)}. ${resetSentence(this.limits?.resetsAt, "Codex")}` });
                 }
                 break;
             }

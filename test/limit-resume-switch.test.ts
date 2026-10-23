@@ -12,6 +12,7 @@ const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 const { addAccount } = await import("../src/providers/accounts");
 import { backendModel, type BackendTurn } from "../src/backends/types";
+import { planLimitKey } from "../src/server/protocol";
 
 const mock = startMockLlm({ delayMs: 0 });
 writeFileSync(join(iso.home, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: mock.url, requiresKey: false }] }));
@@ -98,6 +99,33 @@ test("switching the model cancels the waiting resume and says so", async () => {
         rt.schedules.poke();
         await Bun.sleep(100);
         expect(ran).toEqual([]);
+    } finally {
+        await engine.stop();
+    }
+});
+
+test("past the limit on credits (#434): the turn goes on, no resume waits, and nothing says it stopped", async () => {
+    const engine = new Engine({ listModels: async () => [] });
+    try {
+        const cwd = createDemoProject(tempDir("harness-limit-proj-"), { git: false });
+        const rt = await engine.createSession(cwd, { mode: "bypassPermissions" });
+        await rt.ready;
+        const turns: BackendTurn[] = [];
+        const backend = {
+            ...limitedBackend(turns),
+            runTurn: async (t: BackendTurn) => {
+                turns.push(t);
+                t.session.limits?.({ provider: "claude-code", accountId: "default", windows: [{ id: "five_hour", label: "5-hour", usedPercent: 100, resetsAt: Date.now() + 3_600_000, reached: true }], reached: true, resetsAt: Date.now() + 3_600_000, credits: true, at: Date.now() }, false);
+                return { reason: "done" as const, text: "Done.", actions: [] };
+            },
+        };
+        rt.agent!.setModel(backendModel("claude-code", "x"), backend as never);
+        rt.model = backendModel("claude-code", "x");
+        await rt.send("work on it");
+        await until(() => rt.idle && turns.length === 1);
+        expect(rt.schedules.scheduler.size).toBe(0);
+        expect(shown(rt).filter((n) => /continue by itself|resume|Choose another account/.test(n))).toEqual([]);
+        expect((engine as any).limits.get(planLimitKey("claude-code", "default"))).toMatchObject({ reached: true, credits: true });
     } finally {
         await engine.stop();
     }

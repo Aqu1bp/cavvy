@@ -967,6 +967,12 @@ export interface LimitWindow {
     /** When it resets (ms since the epoch), when known. */
     resetsAt?: number;
     reached?: boolean;
+    /**
+     * Only on a window of another metered limit than the plan's own (a Codex model's): whether
+     * that limit's credits carry turns past it (PlanLimits.credits is the plan's own). False
+     * stops there, whatever the plan's credits.
+     */
+    credits?: boolean;
 }
 
 /** Where the user's plan stands with an agent CLI (Claude Code, Codex): per account, not per session. */
@@ -979,8 +985,23 @@ export interface PlanLimits {
     reached?: boolean;
     /** When the reached limit resets (ms), when known. */
     resetsAt?: number;
+    /**
+     * Past a reached limit, turns go on, billed to credits: Codex's credits, Claude Code's extra
+     * usage. False when the CLI said they won't (none, or a turn stopped on the limit anyway);
+     * absent when it didn't say. A flag only: no balance or amount is ever kept.
+     */
+    credits?: boolean;
     /** When it was reported (ms). */
     at: number;
+}
+
+/**
+ * A reached limit that turns go on past, using credits: the plan's credits
+ * carry them, and no reached window (`reachedNow`, by index: the meter's own
+ * view of which still are) is another limit's that has none.
+ */
+export function usingCredits(l: PlanLimits, reached: boolean, reachedNow: (i: number) => boolean = (i) => Boolean(l.windows[i]?.reached)): boolean {
+    return reached && l.credits === true && !l.windows.some((w, i) => w.credits === false && reachedNow(i));
 }
 
 /** The ranges the Usage view offers, in days. */
