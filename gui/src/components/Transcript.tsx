@@ -379,22 +379,34 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         for (const t of ["pointerup", "pointercancel", "touchend", "touchcancel"]) addEventListener(t, lift, true);
     };
     /** The reader moving down where it can't go further: at the end, it follows the end again (no scroll event comes to say so). */
-    const downAtEnd = () => {
-        if (scroller && !smoothScroll && gapOf(scroller) <= 1) setStick(true);
+    const downAtEnd = (target: EventTarget | null) => {
+        if (scroller && !smoothScroll && gapOf(scroller) <= 1 && !innerTakes(target)) setStick(true);
+    };
+    /**
+     * A box inside the conversation (a command's output) that takes the move down itself, or a field the keys type
+     * into: the conversation doesn't move, so it doesn't follow the end again (the output read there would move).
+     */
+    const innerTakes = (target: EventTarget | null) => {
+        for (let el = target as HTMLElement | null; el && el !== scroller; el = el.parentElement) {
+            if (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName)) return true;
+            const scrolls = el.scrollHeight > el.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(el).overflowY);
+            if (scrolls && el.scrollTop + el.clientHeight < el.scrollHeight - 1) return true;
+        }
+        return false;
     };
     const onWheel = (e: WheelEvent) => {
         // A mostly sideways swipe (a wide code block, a table) isn't a scroll up, whatever its hair of deltaY.
         if (e.deltaY < 0 && -e.deltaY > Math.abs(e.deltaX)) scrollUp();
         else {
             interruptJump();
-            if (e.deltaY > 0) downAtEnd();
+            if (e.deltaY > 0) downAtEnd(e.target);
         }
     };
     const onKey = (e: KeyboardEvent) => {
         if (["ArrowUp", "PageUp", "Home"].includes(e.key) || (e.key === " " && e.shiftKey)) scrollUp();
         else {
             interruptJump();
-            if (["ArrowDown", "PageDown", "End", " "].includes(e.key)) downAtEnd();
+            if (["ArrowDown", "PageDown", "End", " "].includes(e.key)) downAtEnd(e.target);
         }
     };
 

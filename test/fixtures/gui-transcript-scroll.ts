@@ -90,6 +90,7 @@ const create = (tag: string): any => {
         scrollTop: { get: () => top, set: (value) => { scrollWrites++; top = Math.max(0, Math.min(value, height(n) - viewportHeight)); } },
         scrollHeight: { get: () => height(n) }, clientHeight: { get: () => viewportHeight },
         lastElementChild: { get: () => elements(n).at(-1) ?? null },
+        parentElement: { get: () => n.parent ?? null },
         previousElementSibling: { get: () => { const s = elements(n.parent); return s[s.indexOf(n) - 1] ?? null; } },
     });
     return n;
@@ -104,7 +105,7 @@ const scope = {
     renderer: { ...solid, ...renderer, createElement: create },
     anchoredTop, atBottom, FAR, firstBelow, restoredShown, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, glideFrom, heldTurns, liveLine, specialActivity,
     LiveLine: () => node("live-line"), Spinner: () => node("spinner"),
-    getComputedStyle: () => ({ transform: `matrix(1, 0, 0, 1, 0, ${shiftNow})` }),
+    getComputedStyle: (el?: any) => ({ transform: `matrix(1, 0, 0, 1, 0, ${shiftNow})`, overflowY: el?.overflowY ?? "visible" }),
     DOMMatrixReadOnly: class { m42: number; constructor(m: string) { this.m42 = Number(/, (-?[\d.]+)\)$/.exec(m)?.[1] ?? 0); } },
     motionMs: (ms: number) => (reduced || prefs.motion === "instant" ? 0 : ms),
     requestAnimationFrame: raf, cancelAnimationFrame: (id: number) => frames.delete(id),
@@ -425,6 +426,26 @@ try {
     assert.ok(button("jump"), "and still after a resize that leaves it out of view");
     scroll(bottom()); assert.equal(button("jump"), undefined);
     viewportHeight = 500; resize(scroller()); flush(); scroller().props.onScroll();
+    // A move down inside a box in the conversation (a command's long output, read after following stopped) is the
+    // box's while it can still go down: the conversation doesn't follow the end again, so what's read there stays put.
+    scroller().props.onKeyDown({ key: "ArrowUp" });
+    const output = { tagName: "PRE", overflowY: "auto", scrollHeight: 600, clientHeight: 200, scrollTop: 0, parentElement: turn("turn-44") };
+    scroller().props.onWheel({ deltaY: 4, deltaX: 0, target: output });
+    const reading44 = top;
+    turnHeights.set("turn-44", 1200); resize(); flush();
+    assert.equal(top, reading44, "a wheel down taken by a box inside doesn't follow the end again");
+    scroll(bottom()); scroller().props.onKeyDown({ key: "ArrowUp" });
+    // Keys typed into a field in the conversation aren't the conversation's either.
+    scroller().props.onKeyDown({ key: "ArrowDown", target: { tagName: "TEXTAREA", parentElement: turn("turn-44") } });
+    turnHeights.set("turn-44", 1250); resize(); flush();
+    assert.ok(top < bottom(), "an arrow key in a field doesn't follow the end again");
+    // At the box's own end the move goes on to the conversation, which is at its end: it follows again.
+    scroll(bottom()); scroller().props.onKeyDown({ key: "ArrowUp" });
+    output.scrollTop = 400;
+    scroller().props.onWheel({ deltaY: 4, deltaX: 0, target: output });
+    turnHeights.set("turn-44", 1300); resize(); flush();
+    assert.equal(top, bottom(), "a box at its end passes the move on: following the end again");
+    scroller().props.onScroll();
     const glidesBefore = glides.length;
     reduced = true; turnHeights.set("turn-44", 1000); resize(); flush();
     assert.equal(top, bottom(), "reduced motion follows");
