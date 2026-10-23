@@ -2302,7 +2302,7 @@ export class Engine {
                 return this.modelsList();
             case "session.setAccount":
                 await this.runtime(p.id).yieldIdleCompaction();
-                this.runtime(p.id).setAccount(str(p.provider, "provider"), str(p.accountId, "accountId"));
+                await this.runtime(p.id).setAccount(str(p.provider, "provider"), str(p.accountId, "accountId"));
                 return null;
             case "accounts.list":
                 return this.accountsList(str(p.provider, "provider"), p.refresh === true);

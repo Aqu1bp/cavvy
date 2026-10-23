@@ -1432,6 +1432,14 @@ export class CodexLive {
     async runTurn(t: BackendTurn): Promise<BackendResult> {
         const refused = this.busy(t);
         if (refused) return refused;
+        // A turn the earlier account's app-server started by itself is never taken over under another account's session
+        // (the switch lets it go: Runtime.setAccount). Refused before anything is bound, so a message waiting to be
+        // steered into it goes with the next turn instead, on the new account.
+        const held = t.adopt ? this.pool.get(t.sessionKey, this.providerDef.id) : undefined;
+        if (held && held.state !== "dead" && (held.adapter as CodexLiveAdapter).needsRestart(t)) {
+            liveDebug("codex", "wake from another account's app-server: not taken", { session: t.sessionKey, ref: t.adopt });
+            return { reason: "error", text: "", actions: [], error: "Codex's turn ran on the account this session switched from, so it isn't taken over." };
+        }
         const { s, a } = await this.ready(t);
         const run = new LiveRun(t);
         return this.runOn(s, a, run);
@@ -1470,6 +1478,15 @@ export class CodexLive {
                 s = this.session(t.sessionKey);
                 a = s.adapter as CodexLiveAdapter;
                 if (running) t.sink.emit({ type: "notice", level: "warn", message: `Codex starts a new thread for this session, so ${running === 1 ? "its background task" : `its ${running} background tasks`} stopped.` });
+            } else if (t.forkSession && t.resumeId && s.state !== "dead" && a.needsRestart(t)) {
+                // To be forked, on another account (one sharing its history, #377): never on the app-server signed in
+                // as the earlier one. A new one, on the new account, forks the saved thread as it starts.
+                liveDebug("codex", "account changed before a fork: releasing the old app-server", { session: t.sessionKey, tasks: running });
+                a.t = t;
+                await this.drop(t.sessionKey);
+                s = this.session(t.sessionKey);
+                a = s.adapter as CodexLiveAdapter;
+                if (running) t.sink.emit({ type: "notice", level: "warn", message: `Codex was restarted for the account change, so ${running === 1 ? "its background task" : `its ${running} background tasks`} stopped.` });
             } else if (t.forkSession && t.resumeId && s.sessionId === t.resumeId) {
                 // Shared with a forked session: a copy of it goes on, never the thread itself. On this app-server
                 // (its background work goes on); with none running, the next one forks it as it starts.

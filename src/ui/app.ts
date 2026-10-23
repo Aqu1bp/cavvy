@@ -557,7 +557,7 @@ export class App {
     }
 
     /** Keep account changes between turns, like model changes. */
-    setAccount(provider: string, id: string) {
+    async setAccount(provider: string, id: string) {
         if (this.busy) throw new RpcError("Switch accounts once this response is done, or interrupt it first.", "busy");
         const selected = account(provider, id);
         const had = this.session.backends.has(provider);
@@ -570,6 +570,17 @@ export class App {
         this.session.recordNotice("info", text);
         this.notice(text);
         this.renderLive();
+        // As the desktop's (Runtime.setAccount): the process signed in as the earlier account goes now, with its work
+        // and the turns it started that wait to be taken.
+        this.adopts = this.adopts.filter((w) => w.provider !== provider);
+        const stopped = (await this.agent?.releaseAccountProcess(provider)) ?? 0;
+        this.adopts = this.adopts.filter((w) => w.provider !== provider);
+        if (stopped) {
+            const message = `${name} was restarted for the account change: ${stopped === 1 ? "1 background task" : `${stopped} background tasks`} stopped.`;
+            this.session.recordNotice("warn", message);
+            this.notice(message, "warn");
+            this.renderLive();
+        }
     }
 
     /** Switch the active model. Returns false if the provider isn't usable. */

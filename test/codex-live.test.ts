@@ -575,6 +575,47 @@ describe("the account changes during background work", () => {
         expect(turnTexts().at(-1)).not.toContain("conversation-so-far");
     });
 
+    test("a wake from the earlier account's app-server isn't taken over after a switch: refused before anything is bound, so a waiting message goes with the next turn (#377)", async () => {
+        const { addAccount } = await import("../src/providers/accounts");
+        process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
+        process.env.FAKE_BG_MS = "100";
+        const work = addAccount("codex", { id: "wake-work", name: "Work" });
+        const a = await makeAgent();
+        expect(await a.run("start it")).toBe("done");
+        a.session.setAccount("codex", work.id);
+        const w = await a.nextWake();
+        a.queue.push("also check the logs");
+        expect(await a.adopt(w)).toBe("error");
+        expect(a.queue).toEqual(["also check the logs"]);
+        expect(calls("turn/steer")).toHaveLength(0);
+        expect(await a.run("now on work")).toBe("done");
+        const homes = logLines().flatMap((l) => (l.argv ? [l.codexHome] : []));
+        expect(realpathSync(homes.at(-1))).toBe(realpathSync(work.folder));
+    });
+
+    test("a session to be forked, switched to an account sharing its history: the new account's app-server forks it, not the idle earlier one in place (#377)", async () => {
+        const { addAccount } = await import("../src/providers/accounts");
+        process.env.FAKE_CODEX_SCENARIOS = "cmd";
+        const work = addAccount("codex", { id: "fork-work-live", name: "Work" });
+        const a = await makeAgent();
+        expect(await a.run("before the fork")).toBe("done");
+        const [pid] = pids();
+        const thread = a.session.backends.get("codex")!.id;
+        a.session.markBackendForked("codex");
+        a.session.setAccount("codex", work.id);
+        expect(await a.run("on work")).toBe("done");
+        expect(alive(pid!)).toBe(false);
+        const homes = logLines().flatMap((l) => (l.argv ? [l.codexHome] : []));
+        expect(homes.map((h: string) => realpathSync(h))).toEqual([realpathSync(process.env.CODEX_HOME!), realpathSync(work.folder)]);
+        expect(calls("thread/fork").map((p) => p.threadId)).toEqual([thread]);
+        // Forked by the new app-server as it started (not by the earlier one, then resumed).
+        const lines = logLines();
+        const second = lines.findIndex((l, i) => l.argv && i > lines.findIndex((x) => x.argv));
+        expect(lines.findIndex((l) => l.received?.method === "thread/fork")).toBeGreaterThan(second);
+        expect(calls("thread/resume")).toHaveLength(0);
+        expect(a.session.backends.get("codex")?.id).not.toBe(thread);
+    });
+
     test("another account added while it's idle restarts nothing: the next turn goes to the same app-server, its background work going on (#375)", async () => {
         process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
         process.env.FAKE_BG_MS = "never";

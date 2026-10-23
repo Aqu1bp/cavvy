@@ -1520,7 +1520,15 @@ export class ClaudeLive {
         // the one it was switched from, even with background work running (which a restart would otherwise wait for).
         // Let go, not restarted: a fresh one resumes it, and says so if the new account's CLI can't (resumeFailed).
         const was = this.adapter(key)?.accountKey;
-        if (!t.adopt && was !== undefined && was !== claudeAccountKey(this.provider.id, t)) {
+        const otherAccount = was !== undefined && was !== claudeAccountKey(this.provider.id, t);
+        // A turn the earlier account's process started by itself is never taken over under another account's session
+        // (the switch lets that process go: Runtime.setAccount). Refused before anything is bound or drained, so a
+        // message waiting to be steered into it goes with the next turn instead, on the new account.
+        if (t.adopt && otherAccount) {
+            liveDebug("claude", "wake from another account's process: not taken", { key, ref: t.adopt });
+            return { reason: "error", text: "", actions: [], error: "Claude Code's turn ran on the account this session switched from, so it isn't taken over." };
+        }
+        if (!t.adopt && otherAccount) {
             const tasks = live.tasks.running().length;
             liveDebug("claude", "account changed: releasing", { key, id: live.sessionId, tasks });
             await this.release(key);

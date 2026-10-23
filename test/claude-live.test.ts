@@ -881,6 +881,49 @@ describe("the process: crashes, restarts, settings", () => {
         expect(userTexts().join("\n")).toContain("User: earlier");
     });
 
+    test("a wake from the earlier account's process isn't taken over after a switch: refused before anything is drained, so a waiting message goes with the next turn (#377)", async () => {
+        const { addAccount } = await import("../src/providers/accounts");
+        const work = addAccount("claude-code", { id: "wake-work", name: "Work" });
+        process.env.FAKE_SCENARIO = "agent-background";
+        process.env.FAKE_BACKGROUND_MS = "300";
+        process.env.FAKE_SECOND_SCENARIO = "silent";
+        const { run, adopt, wakes, session, queued } = await makeAgent();
+        expect(await run("map auth")).toBe("done");
+        const [first] = starts();
+        session.setAccount("claude-code", work.id);
+        await until(() => wakes.length > 0, 5000, "the wake");
+        // A message the user sent meanwhile, to be steered into whatever turn runs.
+        queued.push(["also check the logs"]);
+        expect(await adopt(wakes[0]!)).toBe("error");
+        expect(queued).toEqual([["also check the logs"]]);
+        expect(userTexts()).not.toContain("also check the logs");
+        // The next turn is the new account's own process.
+        expect(await run("on work")).toBe("done");
+        const s = starts();
+        expect(s).toHaveLength(2);
+        expect(s[0].pid).toBe(first.pid);
+        expect(s[1].claudeConfigDir).toBe(realpathOf(work.folder));
+    });
+
+    test("a session to be forked, switched to an account sharing its history: the new account's process forks it, not the earlier one's (#377)", async () => {
+        const { addAccount } = await import("../src/providers/accounts");
+        const work = addAccount("claude-code", { id: "fork-work-live", name: "Work" });
+        process.env.FAKE_SCENARIO = "silent";
+        const { run, session } = await makeAgent();
+        expect(await run("before the fork")).toBe("done");
+        const id = session.backends.get("claude-code")!.id;
+        session.markBackendForked("claude-code");
+        expect(session.backends.get("claude-code")?.fork).toBe(true);
+        session.setAccount("claude-code", work.id);
+        expect(await run("on work")).toBe("done");
+        const s = starts();
+        expect(s).toHaveLength(2);
+        expect(s[1].claudeConfigDir).toBe(realpathOf(work.folder));
+        expect(s[1].argv[s[1].argv.indexOf("--resume") + 1]).toBe(id);
+        expect(s[1].argv).toContain("--fork-session");
+        expect(session.backends.get("claude-code")?.id).not.toBe(id);
+    });
+
     test("idle with nothing in the background, the process is reaped; the next turn resumes", async () => {
         liveTiming.idleMs = 150;
         process.env.FAKE_SCENARIO = "silent";

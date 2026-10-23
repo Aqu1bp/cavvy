@@ -1943,6 +1943,21 @@ export class Agent {
         await Promise.all(used.map((b) => b.release?.(this.session.meta.id).catch(() => undefined)));
     }
 
+    /**
+     * The session's account for an agent CLI changed (#377): let go of the process its backend keeps for the session,
+     * signed in as the earlier account, at once, with what runs in it. Nothing it does after (a background task
+     * ending, a turn it starts to report one) can then run on the earlier account under this session's new one. The
+     * next turn starts one on the new account (resuming the native session where it shares its history). Returns how
+     * many of its background tasks were running and stopped with it.
+     */
+    async releaseAccountProcess(provider: string): Promise<number> {
+        const used = [...this.backendsUsed].filter((b) => (b as { def?: { id?: string } }).def?.id === provider);
+        if (!used.length) return 0;
+        const running = new Set(this.backgroundTasks().filter((t) => t.provider === provider && t.status === "running").map((t) => t.id));
+        await Promise.all(used.map((b) => b.release?.(this.session.meta.id).catch(() => undefined)));
+        return this.backgroundTasks().filter((t) => running.has(t.id) && t.status !== "running").length;
+    }
+
     /** Whether a model can run a delegated task: its provider is set up, and the model exists there. */
     private async checkModel(ref: string): Promise<string | { effortLevels?: Effort[]; effort?: Effort }> {
         const p = parseModelRef(ref);
