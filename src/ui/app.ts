@@ -29,7 +29,7 @@ import type { BackendWake } from "../backends/types";
 import { IdleCompactTimer } from "../agent/idle-compact";
 import { DELEGATE_TOOL } from "../agent/delegation";
 import { fireHooks, type HookEvent } from "../agent/hooks";
-import { backgroundWork, canAnswerOneOff, GoalController, limitedCodexGoal, loopGoalDropped, nativeGoalBack, nativeGoalEnd, nativeGoalLeft, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, queuedGoalSet, sessionTokens, type NativeGoal } from "../agent/goal";
+import { backgroundWork, canAnswerOneOff, GoalController, limitedCodexGoal, loopGoalDropped, nativeGoalBack, nativeGoalEnd, nativeGoalLeft, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, queuedGoalSet, sentence, sessionTokens, type NativeGoal } from "../agent/goal";
 import { sessionHookServices, sessionStartHooks } from "../agent/session-hooks";
 import { Notifier } from "./notify";
 import { Session } from "../agent/session";
@@ -1100,7 +1100,7 @@ export class App {
         });
         if (session.goal) {
             this.goal.restore(session.goal);
-            if (!this.dropLoopGoal()) this.notice(`◎ Goal restored: ${truncate(session.goal.condition.replace(/\s+/g, " "), 200)}. It continues after your next message, or /goal resume.`);
+            if (!this.dropLoopGoal()) this.notice(`◎ Goal restored: ${sentence(truncate(session.goal.condition.replace(/\s+/g, " "), 200))} It continues after your next message, or /goal resume.`);
         }
     }
 

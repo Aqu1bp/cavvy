@@ -694,6 +694,32 @@ describe("in the app's server", () => {
         }
     }
 
+    test("Codex: the goal shows active while a goal turn Codex started runs, not paused as between turns (#431)", async () => {
+        process.env.FAKE_GOAL_TURNS = "4";
+        process.env.FAKE_TURN_MS = "300";
+        const { engine, rt } = await session("codex");
+        try {
+            await rt.send("/goal the docs build.");
+            // Sampled all through: a turn running with the goal active in Codex never shows it as waiting for the user.
+            const wrong: string[] = [];
+            const goalTurnsRun = new Set<number>();
+            while (!shown(rt).some((n: string) => n.startsWith("✓ Goal achieved"))) {
+                const g = rt.snapshot().state.goal;
+                const f = goalFile();
+                if (rt.busy && f?.status === "active" && f.turns >= 1) {
+                    goalTurnsRun.add(rt.snapshot().turns.length);
+                    if (g?.state !== "active") wrong.push(`turn ${rt.snapshot().turns.length}: ${g?.state}, ${g?.note}`);
+                }
+                await Bun.sleep(5);
+            }
+            // The turns after the first are Codex's own, adopted as wakes: they were sampled running.
+            expect([...goalTurnsRun].some((n) => n >= 2)).toBe(true);
+            expect(wrong).toEqual([]);
+        } finally {
+            await engine.stop();
+        }
+    }, 30_000);
+
     test("Claude Code: /goal runs as a turn of its own, the tab follows its reports, and the loop here stays out of it", async () => {
         process.env.FAKE_GOAL_HOLD = "1";
         const { engine, rt } = await session("claude-code");

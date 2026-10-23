@@ -2709,6 +2709,9 @@ export class Runtime {
         this.checkCommitting();
         const agent = this.agent;
         this.busy = true;
+        // A CLI's goal shows as waiting for the user while no turn runs: a turn starting (the goal's next, Codex's
+        // own, adopted here) makes it active again (#431). The goal's own events may not come until the turn ends.
+        if (this.nativeGoal) this.goalChanged();
         this.idleCompact.disarm();
         const scheduled = this.scheduledLabel;
         this.scheduledLabel = undefined;
