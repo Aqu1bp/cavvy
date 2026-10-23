@@ -42,7 +42,7 @@ import { isAgentBackend, type BackendWake, type BackgroundStop } from "../backen
 import { SessionBackground } from "../agent/background";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { agentCli, type AttachmentKind } from "../backends/defs";
-import { account, catalogNote } from "../providers/accounts";
+import { account, accountSwitchNote } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
 import { continuationGroups, modelRef, parseModelRef, textOf, toolCallsOf, assistantText, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
 import { expandMentions } from "../ui/mentions";
@@ -877,11 +877,12 @@ export class Runtime {
     setAccount(provider: string, id: string) {
         if (this.busy) throw new RpcError("Switch accounts once this response is done, or interrupt it first.", "busy");
         const selected = account(provider, id);
+        const had = this.session.backends.has(provider);
         if (!this.session.setAccount(provider, selected.id)) return;
         this.setState({ accounts: { "claude-code": this.session.accountId("claude-code"), codex: this.session.accountId("codex") } });
         const name = getProvider(provider)?.name ?? provider;
-        const handoff = this.session.messages.length ? `Continuing on ${name} · ${selected.name}: starting a new ${name} thread with this conversation as context.` : undefined;
-        const text = [handoff, catalogNote(provider, selected, name)].filter(Boolean).join(" ");
+        const native = had && this.session.backends.has(provider);
+        const text = accountSwitchNote(provider, selected, name, native ? "native" : this.session.messages.length ? "handoff" : undefined, had && !native);
         if (text) {
             this.session.recordNotice("info", text);
             this.notice(text);

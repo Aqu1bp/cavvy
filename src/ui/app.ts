@@ -55,7 +55,7 @@ import { killAllShells, runShell, childEnv } from "../tools/bash";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
 import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveModelInfo, reviewTarget, smallModelFor, lookupModel, type ProviderListing } from "../providers/models";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
-import { account, catalogNote } from "../providers/accounts";
+import { account, accountSwitchNote } from "../providers/accounts";
 import { RpcError } from "../server/rpc-error";
 import { assistantText, modelRef, parseModelRef, textOf, type ImagePart, type Message, type ModelInfo, type ProviderClient, type TextPart, type ToolCallPart, type UserContent } from "../providers/types";
 import { formatCost, formatTokens } from "../providers/pricing";
@@ -560,12 +560,13 @@ export class App {
     setAccount(provider: string, id: string) {
         if (this.busy) throw new RpcError("Switch accounts once this response is done, or interrupt it first.", "busy");
         const selected = account(provider, id);
+        const had = this.session.backends.has(provider);
         if (!this.session.setAccount(provider, selected.id)) return;
         const name = getProvider(provider)?.name ?? provider;
-        const catalog = catalogNote(provider, selected, name);
-        const text = (this.session.messages.length
-            ? `Continuing on ${name} · ${selected.name}: starting a new ${name} thread with this conversation as context.`
-            : `Using ${name} · ${selected.name}.`) + (catalog ? ` ${catalog}` : "");
+        const native = had && this.session.backends.has(provider);
+        const how = native ? "native" : this.session.messages.length ? "handoff" : undefined;
+        const note = accountSwitchNote(provider, selected, name, how, had && !native);
+        const text = how ? note! : [`Using ${name} · ${selected.name}.`, note].filter(Boolean).join(" ");
         this.session.recordNotice("info", text);
         this.notice(text);
         this.renderLive();

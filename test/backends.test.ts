@@ -2234,10 +2234,12 @@ describe("fast mode backend wiring", () => {
 // session: whichever goes on with a shared one first forks it (natively), and
 // one that saw past the fork point isn't shared at all.
 describe("forked sessions", () => {
-    for (const provider of ["claude-code", "codex"] as const) for (const change of ["none", "selection", "folder"] as const) test(`${provider}: named-account fork with ${change} change respects the source folder`, async () => {
-        const { addAccount, removeAccount } = await import("../src/providers/accounts");
+    for (const provider of ["claude-code", "codex"] as const) for (const change of ["none", "shared", "selection", "folder"] as const) test(`${provider}: named-account fork with ${change} change respects the source folder`, async () => {
+        const { accountPlace, addAccount, removeAccount } = await import("../src/providers/accounts");
         const selected = addAccount(provider, { id: "fork-work", name: "Fork work" });
-        const other = addAccount(provider, { id: "fork-other", name: "Fork other" });
+        // An existing folder keeps a history of its own; a Harness-made account shares Default's, as fork-work does (#377).
+        const other = addAccount(provider, { id: "fork-other", name: "Fork other", folder: join(bin, `${provider}-other`) });
+        const sharing = addAccount(provider, { id: "fork-sharing", name: "Fork sharing" });
         const source = Session.create(cwd);
         source.setAccount(provider, selected.id);
         const settings = { delegation: false, permissions: { allow: ["Bash(touch:*)"] } };
@@ -2254,25 +2256,28 @@ describe("forked sessions", () => {
             }
             const session = forkSession(source, { cut: source.messages.length });
             expect(session.accountId(provider)).toBe(selected.id);
-            expect(session.backendSession(provider, selected.folder)).toMatchObject({ id: shared, fork: true });
+            expect(session.backendSession(provider, { folder: selected.folder })).toMatchObject({ id: shared, fork: true });
             if (change === "selection") session.setAccount(provider, other.id);
+            if (change === "shared") session.setAccount(provider, sharing.id);
             session.release();
             fork = await makeAgent({ provider, session: Session.load(session.path), settings, ask: () => ({ allow: true }) });
             rmSync(LOG, { force: true });
             expect(await fork.run("in the fork")).toBe("done");
-            const folder = change === "selection" ? other.folder : replacement.folder;
+            const folder = change === "selection" ? other.folder : change === "shared" ? sharing.folder : replacement.folder;
+            // The fork's own copy of the thread, natively, wherever its CLI finds the thread.
+            const native = change === "none" || change === "shared";
             expect(starts()[0][provider === "codex" ? "codexHome" : "claudeConfigDir"]).toBe(folder);
             if (provider === "claude-code") {
-                expect(resumes()).toEqual([change === "none" ? `${shared} (fork)` : "new"]);
-                if (change !== "none") expect(userTexts().at(-1)).toContain("User: first on work");
+                expect(resumes()).toEqual([native ? `${shared} (fork)` : "new"]);
+                if (!native) expect(userTexts().at(-1)).toContain("User: first on work");
             } else {
                 const threads = received().filter((m) => m.method?.startsWith("thread/") && !m.method.startsWith("thread/goal/"));
-                expect(threads.map((m) => m.method)).toEqual([change === "none" ? "thread/fork" : "thread/start"]);
-                if (change === "none") expect(threads[0].params.threadId).toBe(shared);
+                expect(threads.map((m) => m.method)).toEqual([native ? "thread/fork" : "thread/start"]);
+                if (native) expect(threads[0].params.threadId).toBe(shared);
                 else expect(JSON.stringify(received().find((m) => m.method === "turn/start")?.params.input)).toContain("User: first on work");
             }
-            expect(fork.session.backendSession(provider, folder)?.fork).toBeUndefined();
-            expect(source.backendSession(provider, selected.folder)).toMatchObject({ id: shared, fork: true });
+            expect(fork.session.backendSession(provider, accountPlace(provider, fork.session.accountId(provider)))?.fork).toBeUndefined();
+            expect(source.backendSession(provider, { folder: selected.folder })).toMatchObject({ id: shared, fork: true });
         } finally {
             await fork?.agent.dispose();
             fork?.session.release();
@@ -2280,6 +2285,7 @@ describe("forked sessions", () => {
             source.release();
             removeAccount(provider, replacement.id, replacement.folder);
             removeAccount(provider, other.id, other.folder);
+            removeAccount(provider, sharing.id, sharing.folder);
         }
     });
 

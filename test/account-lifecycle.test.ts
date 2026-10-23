@@ -539,6 +539,42 @@ test("model lists come from the starting account, and a session switched to anot
     }
 });
 
+test("a session's account switch says whether the CLI session goes on natively or is handed over, and is refused during a response (#377)", async () => {
+    const { accountPlace } = await import("../src/providers/accounts");
+    const shared = addAccount("codex", { id: "note-shared", name: "Shared" });
+    const own = addAccount("codex", { id: "note-own", name: "Own", folder: join(root, "note-own-home") });
+    const engine = new Engine({ startCwd: root });
+    const client = { subs: new Set<string>(), send() {} };
+    const setAccount = (id: string) => engine.handle(client, "session.setAccount", { id: rt.session.meta.id, provider: "codex", accountId: id });
+    const rt = await engine.createSession(root);
+    const lastNotice = () => rt.session.notices.at(-1)?.text ?? "";
+    try {
+        rt.session.push({ role: "user", content: [{ type: "text", text: "Earlier" }], meta: { kind: "prompt" } });
+        rt.session.setBackendSession("codex", "thread-1", 1, accountPlace("codex"));
+        // Shares Default's sessions/: the same thread goes on there.
+        await setAccount(shared.id);
+        expect(lastNotice()).toStartWith("Continuing on Codex · Shared: the same Codex session goes on, resumed natively (this account shares its history). Codex's model list");
+        expect(rt.session.backends.get("codex")?.id).toBe("thread-1");
+        // Busy: refused, nothing changes.
+        rt.busy = true;
+        await expect(setAccount(own.id)).rejects.toMatchObject({ code: "busy" });
+        expect(rt.session.accountId("codex")).toBe(shared.id);
+        expect(rt.session.backends.get("codex")?.id).toBe("thread-1");
+        rt.busy = false;
+        // Its own history: a new thread, handed the conversation.
+        await setAccount(own.id);
+        expect(lastNotice()).toStartWith("Continuing on Codex · Own: starting a new Codex thread with this conversation as context (this account doesn't share the earlier Codex thread's history). Codex's model list");
+        expect(rt.session.backends.has("codex")).toBe(false);
+        // No native thread to keep: the handoff, without the reason.
+        await setAccount("default");
+        expect(lastNotice()).toBe("Continuing on Codex · Default: starting a new Codex thread with this conversation as context.");
+    } finally {
+        await engine.stop();
+        removeAccount("codex", shared.id, shared.folder);
+        removeAccount("codex", own.id, own.folder);
+    }
+});
+
 for (const provider of ["claude-code", "codex"] as const) test(`${provider}: a signed-out named account is pointed to its own sign-in, live and per run; Default keeps the CLI's`, async () => {
     const named = addAccount(provider, { id: "work", name: "Work" });
     if (provider === "codex") process.env.FAKE_ACCOUNT = "none";

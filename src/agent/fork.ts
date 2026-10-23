@@ -16,7 +16,7 @@ import { randomBytes } from "crypto";
 import { APP_VERSION } from "../config/paths";
 import { textOf, type Message } from "../providers/types";
 import { redact } from "../util/redact";
-import { hold, letGo, newSessionId, redactedJson, Session, type ForkOrigin, type Line, type SessionMeta } from "./session";
+import { hold, letGo, newSessionId, placeFields, redactedJson, Session, type ForkOrigin, type Line, type SessionMeta } from "./session";
 
 /**
  * Which of the original's records the fork copies, up to where it's cut. The
@@ -228,7 +228,7 @@ export function forkSession(original: Session, o: ForkOptions): Session {
         ...(model ? [{ t: "model" as const, model }] : []),
         ...(original.fastMode !== undefined ? [{ t: "fastMode" as const, enabled: original.fastMode }] : []),
         ...Object.entries(original.accounts).map(([provider, id]) => ({ t: "account" as const, provider, id })),
-        ...shared.map(([provider, b]) => ({ t: "backend" as const, provider, id: b.id, synced: b.synced, fork: true, ...(b.unsent ? { unsent: b.unsent } : {}), folder: original.backendFolder(provider) })),
+        ...shared.map(([provider, b]) => ({ t: "backend" as const, provider, id: b.id, synced: b.synced, fork: true, ...(b.unsent ? { unsent: b.unsent } : {}), ...placeFields(original.backendPlace(provider)) })),
     ];
 
     // Claimed before it exists, so no other process opens it half way.

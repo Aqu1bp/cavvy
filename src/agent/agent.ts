@@ -59,7 +59,7 @@ import type { Skill } from "./skills";
 import { claudeAgents } from "../backends/claude-agents";
 import { isAgentBackend, type AgentBackendClient, type BackendPermission, type BackgroundStop, type BackendWake, type SessionEvent, type SessionHost, type TurnSink, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer, type SteerMessage } from "../backends/types";
 import { getProvider, imageTypesOf } from "../providers/registry";
-import { ACCOUNT_PROVIDERS, account, accountRealPath } from "../providers/accounts";
+import { ACCOUNT_PROVIDERS, accountPlace, type AccountPlace } from "../providers/accounts";
 import { forBackend, pastedTexts, readsPdf } from "../providers/files";
 import { fitContent, fitToolImages, hasImages, imagesFor } from "../providers/images";
 import { cachedListings, type ProviderListing } from "../providers/models";
@@ -2074,7 +2074,7 @@ export class Agent {
         this.idleTried = false;
         const provider = this.model.provider;
         const name = getProvider(provider)?.name ?? provider;
-        const folder = this.backendFolder(provider);
+        const place = this.backendPlace(provider);
         let promptIndex = this.session.messages.length - 1;
         const { text, images, documents } = forBackend(parts, readsPdf(this.model));
         let declined = false;
@@ -2124,7 +2124,7 @@ export class Agent {
             usage: (u, o) => this.recordBackendUsage(u, o),
             context: (tokens) => this.recordBackendContext(tokens),
             // An adopted turn's move of its place carries what it wasn't sent, in the same line (adoptedUnsent).
-            sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length, folder, this.adoptedUnsent?.provider === provider ? this.adoptedUnsent.text : undefined),
+            sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length, place, this.adoptedUnsent?.provider === provider ? this.adoptedUnsent.text : undefined),
             limits: (limits, partial) => this.emitFromBackend({ type: "limits", limits, partial }),
             emitSession: (e) => this.sessionEvent(e, hostAccount),
             // Not once disposed: a wake its backend reports late (its label was still being read) isn't the session's
@@ -2277,7 +2277,7 @@ export class Agent {
         let promptImages = images;
         let promptDocuments = documents;
         while (true) {
-            const resume = this.backendResume(provider, folder);
+            const resume = this.backendResume(provider, place);
             this.emit({ type: "request_start" });
             let result: BackendResult;
             try {
@@ -2393,15 +2393,15 @@ export class Agent {
     /** The last backend turn as its report, when this agent is a sub-agent on a backend. */
     private backendReport?: string;
 
-    /** The account folder a CLI backend's sessions live in; other backends have none. */
-    private backendFolder(provider: string): string | undefined {
+    /** Where a CLI backend's sessions live (its account's home and history); other backends have none. */
+    private backendPlace(provider: string): AccountPlace | undefined {
         if (!(ACCOUNT_PROVIDERS as readonly string[]).includes(provider)) return undefined;
-        return accountRealPath(account(provider, this.session.accountId(provider)).folder);
+        return accountPlace(provider, this.session.accountId(provider));
     }
 
-    private backendResume(provider: string, folder: string | undefined) {
+    private backendResume(provider: string, place: AccountPlace | undefined) {
         const hadSession = this.session.backends.has(provider);
-        const resume = this.session.backendSession(provider, folder);
+        const resume = this.session.backendSession(provider, place);
         if (hadSession && !resume) {
             const name = getProvider(provider)?.name ?? provider;
             const message = `${name}'s account folder changed. Starting a new ${name} thread with this conversation as context.`;
@@ -2433,8 +2433,8 @@ export class Agent {
 
     private async compactBackend(backend: AgentBackendClient, opts: { auto: boolean; signal: AbortSignal; instructions?: string; idle?: boolean }): Promise<boolean> {
         const provider = this.model.provider;
-        const folder = this.backendFolder(provider);
-        const resume = this.backendResume(provider, folder);
+        const place = this.backendPlace(provider);
+        const resume = this.backendResume(provider, place);
         if (!resume) return false;
         // Claude Code runs PreCompact and PostCompact hooks itself (they're registered with it); Codex can't.
         const ownHooks = provider === "codex";
@@ -2449,7 +2449,7 @@ export class Agent {
             approvePlan: async () => ({ approved: false }),
             setMode: () => {},
             usage: (u, o) => this.recordBackendUsage(u, o),
-            sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length, folder),
+            sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length, place),
             limits: (limits, partial) => this.emit({ type: "limits", limits, partial }),
             emitSession: (e) => this.sessionEvent(e, hostAccount),
         };
