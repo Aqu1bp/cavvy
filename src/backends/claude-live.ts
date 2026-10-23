@@ -44,7 +44,7 @@ import type { AgentCliStatus } from "./index";
 import { limitAccountLabel, limitNews, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
 import { liveDebug } from "./live/debug";
 import { LiveCliPool } from "./live/pool";
-import { EXIT_DRAIN_MS, spawnFingerprint, type LiveCliSession, type LiveOptions, type LiveTurnResult } from "./live/session";
+import { EXIT_DRAIN_MS, PromptRefused, spawnFingerprint, type LiveCliSession, type LiveOptions, type LiveTurnResult } from "./live/session";
 import type { AgentCliAdapter, CliConnection, CliEvent, CliEventSink, LiveSettings, SpawnConfig, SpawnSpec, TurnInput } from "./live/types";
 import type { BackgroundTaskInfo } from "./live/info";
 import { CLAUDE_PREFIX, claudeNames, claudePrompt, forClaudeCode, skillFolder } from "./native-skills";
@@ -285,8 +285,13 @@ export class ClaudeConnection implements CliConnection {
     }
 
     async prompt(input: TurnInput): Promise<{ ref: string }> {
-        await this.attach();
-        if (this.ended) throw new Error(`${this.def.name} has exited`);
+        // Nothing is written until sendUser: a failure up to there never reached Claude Code.
+        try {
+            await this.attach();
+        } catch (e) {
+            throw new PromptRefused(e instanceof Error ? e.message : String(e));
+        }
+        if (this.ended) throw new PromptRefused(`${this.def.name} has exited`);
         const uuid = randomUUID();
         const context = this.turn().context;
         // The text goes last: Claude Code reads a /command only from the last block (what's before it goes along with it).
@@ -1590,9 +1595,9 @@ export class ClaudeLive {
         const out = rec.take();
         const error = r.error;
         const resumeFailed = Boolean(t.resumeId && !t.adopt && r.reason === "error" && !live.sessionId && /no conversation found|session.{0,40}(not found|doesn't exist|does not exist)/i.test(error ?? ""));
-        if (r.reason === "error") return { ...out, reason: "error", error: resumeFailed ? `Couldn't resume the Claude Code session: ${error}` : (error ?? "Claude Code stopped with an error."), resumeFailed, ...(r.limit ? { limit: r.limit } : {}) };
+        if (r.reason === "error") return { ...out, reason: "error", error: resumeFailed ? `Couldn't resume the Claude Code session: ${error}` : (error ?? "Claude Code stopped with an error."), resumeFailed, ...(r.limit ? { limit: r.limit } : {}), ...(r.refused && !t.adopt ? { refused: true } : {}) };
         if (r.reason === "done" && !rec.any && !t.adopt && !t.prompt.trimStart().startsWith("/")) t.sink.emit({ type: "notice", level: "warn", message: "Claude Code ended the turn without a reply." });
-        return { ...out, reason: r.reason };
+        return { ...out, reason: r.reason, ...(r.refused && !t.adopt ? { refused: true } : {}) };
     }
 
     /** Each live session's wakes and session-level events, to the host its last turn bound. */

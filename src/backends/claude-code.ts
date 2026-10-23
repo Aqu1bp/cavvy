@@ -1177,7 +1177,7 @@ class ClaudeTurn {
 
     async run(content: unknown[]): Promise<BackendResult> {
         const { signal } = this.t;
-        if (signal.aborted) return { reason: "aborted", text: "", actions: [] };
+        if (signal.aborted) return { reason: "aborted", text: "", actions: [], refused: true };
         let env: ReturnType<typeof accountEnv>;
         try {
             env = accountEnv(this.def.id, this.t.accountId, this.t.cwd);
@@ -1268,7 +1268,8 @@ class ClaudeTurn {
         for (const id of [...this.liveAgents]) this.endAgent(id, "aborted");
         for (const [id, p] of this.tools) this.endTool(id, p, this.aborted ? "Interrupted by user" : "Claude Code stopped before this finished.", true);
         const text = this.texts.join("\n\n");
-        if (this.aborted) return { reason: "aborted", text, actions: this.actions, backgroundStopped };
+        // Stopped before the prompt went: Claude Code never had it.
+        if (this.aborted) return { reason: "aborted", text, actions: this.actions, backgroundStopped, ...(this.prompted ? {} : { refused: true }) };
         const error = this.failure && this.diagnostic && !this.failure.includes(this.diagnostic) ? `${this.failure} ${this.diagnostic}` : this.failure;
         // A session it can't find ends with an error result (or exit) before init.
         const err = this.proc.stderr();
@@ -1276,7 +1277,10 @@ class ClaudeTurn {
         if (!this.answered || this.unanswered.size || resumeFailed) {
             const code = await this.proc.exited;
             const why = [error, cliMessage(err)].filter(Boolean).join(": ") || `claude exited with code ${code}`;
-            return { reason: "error", text, actions: this.actions, backgroundStopped, error: resumeFailed ? `Couldn't resume the Claude Code session: ${why}` : `Claude Code stopped: ${why}`, resumeFailed, ...this.limitStop() };
+            // No turn started (no init): it exited before taking the prompt, which isn't in its session. Once a turn has
+            // started, it keeps the prompt in its transcript, even when the request then fails (signed out, the limit).
+            const refused = this.turnCount === 0 && !resumeFailed;
+            return { reason: "error", text, actions: this.actions, backgroundStopped, error: resumeFailed ? `Couldn't resume the Claude Code session: ${why}` : `Claude Code stopped: ${why}`, resumeFailed, ...this.limitStop(), ...(refused ? { refused } : {}) };
         }
         const reason = this.reason ?? "done";
         // An answer with nothing in it (not a command of Claude Code's own, like /compact): said, so the turn isn't just blank.

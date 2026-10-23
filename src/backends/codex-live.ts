@@ -32,7 +32,7 @@ import { codexInput, pastedPrompt, type CodexSkill } from "./native-skills";
 import { limitAccountLabel, resetSentence } from "./limits";
 import { agentCli, type CliCapabilities } from "./defs";
 import { LiveCliPool } from "./live/pool";
-import { spawnFingerprint, type LiveCliSession, type LiveTurnResult, type LiveWake } from "./live/session";
+import { PromptRefused, spawnFingerprint, type LiveCliSession, type LiveTurnResult, type LiveWake } from "./live/session";
 import type { AgentCliAdapter, CliConnection, CliEvent, CliEventSink, LiveSettings, SpawnConfig, SpawnSpec } from "./live/types";
 import type { BackgroundTaskInfo } from "./live/info";
 import { liveDebug, liveDebugOn } from "./live/debug";
@@ -40,6 +40,7 @@ import type { BackendPermission, BackendResult, BackendTurn, BackgroundStop, Ses
 import type { AgentCliStatus } from "./index";
 import {
     CODEX_CLIENT_NAME,
+    CodexAnswerError,
     CodexTurn,
     FAST_TIERS,
     LISTENER_NOTE,
@@ -464,10 +465,16 @@ export class CodexLiveConnection extends CodexTurn {
         let settle!: () => void;
         const p = new Promise<void>((resolve) => (settle = resolve));
         this.flights.add(p);
+        const seg = run.next;
         try {
-            const r = await this.startSegment(run, run.next, flight);
-            liveDebug("codex", "prompt sent", { thread: this.threadId, ref: r.ref, why: run.next.why });
+            const r = await this.startSegment(run, seg, flight);
+            liveDebug("codex", "prompt sent", { thread: this.threadId, ref: r.ref, why: seg.why });
             return r;
+        } catch (e) {
+            // Failed before turn/start went (reading the sign-in, a /goal of Codex's): Codex never had it. After that,
+            // only Codex's own no proves it (startSegment); a failure once the turn started (thread/goal/set) doesn't.
+            if (!seg.started && !(e instanceof PromptRefused)) throw new PromptRefused(e instanceof Error ? e.message : String(e));
+            throw e;
         } finally {
             if (this.promptFlight === flight) this.promptFlight = undefined;
             this.flights.delete(p);
@@ -835,6 +842,9 @@ export class CodexLiveConnection extends CodexTurn {
                 // The messages this turn was for aren't lost with it: saved for the next turn, and the notes for the next prompt.
                 if (seg.queued) this.unsteered.push(...seg.queued);
                 this.putBackNotes(taken);
+                // Codex answered no (no turn of its own took it either): it doesn't have the prompt. Gone before it
+                // answered, it may: that counts as delivered (prompt()).
+                if (e instanceof CodexAnswerError) throw new PromptRefused(e.message);
                 throw e;
             }
         }
@@ -1501,12 +1511,16 @@ export class CodexLive {
         if (refused) return refused;
         const s0 = this.pool.get(t.sessionKey, this.providerDef.id);
         const before = s0 ? (s0.adapter as CodexLiveAdapter).t : undefined;
-        const { s, a } = await this.ready(t);
+        let ready: { s: LiveCliSession; a: CodexLiveAdapter } | undefined;
         try {
-            return await this.runOn(s, a, new LiveRun(t, true));
+            ready = await this.ready(t);
+            return await this.runOn(ready.s, ready.a, new LiveRun(t, true));
         } finally {
-            // Between turns, the session's host stays the last turn's (a compaction's refuses permissions and takes no wakes).
-            if (before && a.t === t) {
+            // Between turns, the session's host stays the last turn's (a compaction's refuses permissions and takes no
+            // wakes), also when readying failed after it bound the compaction's (a fork in place).
+            const s = ready?.s ?? s0;
+            const a = s?.adapter as CodexLiveAdapter | undefined;
+            if (before && s && a && (a.t === t || !ready)) {
                 a.t = before;
                 s.bind(before.session);
             }
@@ -1540,7 +1554,13 @@ export class CodexLive {
                 // Shared with a forked session: a copy of it goes on, never the thread itself. On this app-server
                 // (its background work goes on); with none running, the next one forks it as it starts.
                 let forked = false;
-                if (s.state === "idle" && a.conn) forked = await a.conn.forkThread().then(() => true, () => false);
+                // The fork's id goes to this turn's host (a compaction's keeps the catch-up cursor where it is, #406),
+                // not to the last turn's, which would take it as that turn's place and move the cursor past what
+                // this one never sent. A compaction puts the last turn's back after (compact).
+                if (s.state === "idle" && a.conn) {
+                    s.bind(t.session);
+                    forked = await a.conn.forkThread().then(() => true, () => false);
+                }
                 if (!forked) {
                     a.t = t;
                     await this.drop(t.sessionKey);
@@ -1575,6 +1595,8 @@ export class CodexLive {
         const error = (message: string, extra: Partial<BackendResult> = {}): BackendResult => ({ reason: "error", text: run.out.texts.join("\n\n"), actions: run.out.actions, error: message, ...extra });
         let r: LiveTurnResult;
         let first = true;
+        /** The run's prompt never reached Codex (its app-server didn't start, turn/start was refused): BackendResult.refused. */
+        let refused = false;
         for (;;) {
             if (first && t.adopt) {
                 const conn = a.conn;
@@ -1591,6 +1613,7 @@ export class CodexLive {
                 r = await s.runTurn({ text: run.next.text, images: run.next.images }, t.sink, t.signal, { spawn: t, settings, host: t.session });
                 // Never sent (stopped first): the messages it carried go to the next turn.
                 if (!run.next.started && run.next.queued) run.conn?.keepUnsent(run.next.queued);
+                if (first && r.refused) refused = true;
             }
             first = false;
             if (r.deferred && !run.saidDeferred) {
@@ -1608,11 +1631,14 @@ export class CodexLive {
             const conn = run.conn;
             // It never got as far as a turn (it couldn't start, or the turn was stopped before).
             if (!conn) {
-                if (r.reason === "aborted" || t.signal.aborted) return { reason: "aborted", text: "", actions: [] };
-                return error(r.error ?? "Codex didn't start");
+                if (r.reason === "aborted" || t.signal.aborted) return { reason: "aborted", text: "", actions: [], ...(refused ? { refused } : {}) };
+                return error(r.error ?? "Codex didn't start", refused ? { refused } : {});
             }
             const next = await conn.nextSegment(run, r);
-            if (!next) return conn.result(run, r);
+            if (!next) {
+                const out = await conn.result(run, r);
+                return refused && out.reason !== "done" ? { ...out, refused } : out;
+            }
             run.next = next;
         }
     }

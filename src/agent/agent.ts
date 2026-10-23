@@ -2324,6 +2324,8 @@ export class Agent {
             goalCommand && prompt === text ? { prompt, goalContext: this.backendPrompt("", promptIndex, r).trim() || undefined } : { prompt: this.backendPrompt(prompt, promptIndex, r) };
         let promptImages = images;
         let promptDocuments = documents;
+        /** This round's turn is one the CLI started by itself (adopted): it had it, whatever it said. */
+        let adoptedRound = false;
         while (true) {
             const resume = this.backendResume(provider, place);
             this.emit({ type: "request_start" });
@@ -2338,7 +2340,10 @@ export class Agent {
                 // (sessionId), they go with the next prompt.
                 const unsent = adopting ? this.backendPrompt("", promptIndex, resume).trim() : "";
                 const placed = this.session.backends.get(provider);
+                /** Where its place was before this call: back there if the CLI refuses the prompt (refusedBackendTurn). */
+                let syncedBefore = placed?.synced;
                 let returned: BackendResult | undefined;
+                adoptedRound = adopting;
                 if (adopting) this.adoptedUnsent = { provider, text: unsent };
                 this.modelTookPrompt = false;
                 try {
@@ -2363,8 +2368,10 @@ export class Agent {
                     this.session.forgetBackendSession(provider);
                     this.emit({ type: "notice", level: "warn", message: `${redact(result.error ?? `Couldn't continue the earlier ${name} session`)}. Starting a new one with this conversation as context.` });
                     const fresh = toSend();
+                    syncedBefore = undefined;
                     result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...fresh, ...this.preamble(fresh.prompt, prompt), synthetic: woken, ...(prompt === text ? asked : {}), images: promptImages, documents: promptDocuments, resumeId: undefined });
                 }
+                if (result.refused && !adopting) this.refusedBackendTurn(provider, syncedBefore);
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);
                 this.endNotice("error", redact((e as Error).message || String(e)));
@@ -2372,22 +2379,24 @@ export class Agent {
                 return "error";
             }
             this.recordBackendTurn(provider, name, result);
+            // Whether the CLI had this prompt: not one it refused, or that was stopped before it went (refused too).
+            const delivered = adoptedRound || !result.refused;
             if (result.reason === "aborted" || signal.aborted) {
                 if (this.hookStop && !signal.aborted) {
                     this.endNotice("warn", `Stopped by a hook: ${this.hookStop}`);
                     this.hookStop = undefined;
-                    this.syncBackend(provider);
-                    return this.endBackendTurn(provider, "blocked");
+                    return this.endBackendTurn(provider, "blocked", delivered);
                 }
-                const r = declined ? this.endBackendTurn(provider, "denied") : this.interrupted(false);
-                this.syncBackend(provider);
+                const r = declined ? this.endBackendTurn(provider, "denied", delivered) : this.interrupted(false);
+                // Only past a prompt the CLI had: one stopped before it went goes again with the next.
+                if (delivered) this.syncBackend(provider);
                 return r;
             }
-            if (declined) return this.endBackendTurn(provider, "denied");
+            if (declined) return this.endBackendTurn(provider, "denied", delivered);
             if (result.reason === "error") {
                 this.limitStop = result.limit;
                 this.endNotice("error", redact(result.error || `${name} stopped with an error.`));
-                return this.endBackendTurn(provider, "error");
+                return this.endBackendTurn(provider, "error", delivered);
             }
             if (result.reason === "max_turns") {
                 this.endNotice("warn", `Stopped after ${this.o.maxTurns ?? "the maximum"} model turns (max turns).`);
@@ -2459,6 +2468,20 @@ export class Agent {
         return resume;
     }
 
+    /*
+     * The catch-up cursor: how much of this session a CLI's native session has (BackendSession.synced). The next
+     * prompt carries what comes after it (missedPrompt), so it moves only past what reached the CLI:
+     * - a turn's prompt, once the CLI has it: as the CLI says its session id (runBackendTurn's SessionHost), and at
+     *   the turn's end (endBackendTurn), whether it then answered, errored or was stopped;
+     * - not a prompt the CLI refused before taking it, or that was stopped before it went (BackendResult.refused, #407:
+     *   a process that didn't start, Codex not signed in, a turn Codex answered no to, Esc while a process was still
+     *   starting): back where it was (refusedBackendTurn), whatever the turn's end (error, stop, hook). A CLI that took the prompt
+     *   and then failed (Claude Code signed out or at its limit, Codex at its limit) has it in its transcript, and sends
+     *   it again on resume: sending it again here would double it;
+     * - never by the CLI's own compaction (compactBackend, #406): it was sent nothing of this session's;
+     * - an adopted turn's (one the CLI started by itself) moves past what it was never sent, kept apart (unsent).
+     */
+
     /** The backend session has now seen everything up to here (minus `pending` messages it hasn't been sent yet). */
     private syncBackend(provider: string, pending = 0) {
         const b = this.session.backends.get(provider);
@@ -2466,8 +2489,19 @@ export class Agent {
         if (b && !b.fork) this.session.setBackendSession(provider, b.id, this.session.messages.length - pending);
     }
 
-    private endBackendTurn(provider: string, reason: TurnEndReason): TurnEndReason {
-        this.syncBackend(provider);
+    /**
+     * The CLI refused the prompt before taking it (BackendResult.refused): nothing of it is in its session. Its place
+     * goes back to where it was before the call (`before`; none: a session that never had any of it), keeping the id
+     * it said (a thread it made or forked for the turn), so the next prompt carries everything this one did.
+     */
+    private refusedBackendTurn(provider: string, before: number | undefined) {
+        const now = this.session.backends.get(provider);
+        if (now && now.synced !== (before ?? 0)) this.session.setBackendSession(provider, now.id, before ?? 0);
+    }
+
+    /** `delivered`: the CLI had the turn's prompt, so its place moves past it (not one it refused: refusedBackendTurn). */
+    private endBackendTurn(provider: string, reason: TurnEndReason, delivered = true): TurnEndReason {
+        if (delivered) this.syncBackend(provider);
         this.deliverTasks();
         const running = this.delegations?.running().length ?? 0;
         if (running) {
@@ -2497,7 +2531,11 @@ export class Agent {
             approvePlan: async () => ({ approved: false }),
             setMode: () => {},
             usage: (u, o) => this.recordBackendUsage(u, o),
-            sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length, place),
+            // Its compaction moves its id (the same, a new one, a fork's), never its place (#406): it was sent nothing
+            // of this session's, so what it missed (other models' turns, Harness's notes) goes with its next ordinary
+            // prompt, once and whole. Not into the compaction: Codex's (thread/compact/start) takes no input, and
+            // Claude Code's /compact only instructions for its summary, which would keep a summary of them at best.
+            sessionId: (id) => this.session.setBackendSession(provider, id, this.session.backends.get(provider)?.synced ?? resume.synced, place),
             limits: (limits, partial) => this.emit({ type: "limits", limits, partial }),
             emitSession: (e) => this.sessionEvent(e, hostAccount),
         };

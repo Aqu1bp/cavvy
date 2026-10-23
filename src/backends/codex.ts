@@ -40,6 +40,12 @@ import type { AgentEvent, TurnEndReason } from "../agent/agent";
 import { parseGoalCommand, type GoalCommand, type NativeGoal } from "../agent/goal";
 import type { CodexLive } from "./codex-live";
 
+/**
+ * Codex answered a request with an error: it got the request and declined it (a turn/start it refused started no
+ * turn). Not a request that failed because Codex went away before answering: what it did with that isn't known.
+ */
+export class CodexAnswerError extends ProviderError {}
+
 /** A JSON-RPC peer over a JsonLinesProcess: our requests, its notifications and requests. */
 export class Rpc {
     private seq = 0;
@@ -72,7 +78,7 @@ export class Rpc {
                     const p = this.pending.get(m.id);
                     if (!p) continue;
                     this.pending.delete(m.id);
-                    if (m.error) p.reject(new ProviderError(`Codex: ${cliMessage(String(m.error.message ?? "request failed"))}`));
+                    if (m.error) p.reject(new CodexAnswerError(`Codex: ${cliMessage(String(m.error.message ?? "request failed"))}`));
                     else p.resolve(m.result);
                 }
             }
@@ -602,6 +608,12 @@ export class CodexTurn {
     protected unclaimed = new Map<string, [string, any][]>();
     /** Turns (of any thread) that started while connected: their usage is new spend. */
     protected turnsSeen = new Set<string>();
+    /**
+     * Where the run's prompt is: not sent yet; turn/start sent and not answered; refused (Codex answered turn/start with
+     * an error, and no turn of its own took it); taken (turn/start answered, or a turn of Codex's own took it). A failure
+     * while still "sending" (Codex gone before it answered) can't tell whether Codex has it: counted as delivered.
+     */
+    private promptDelivery: "unsent" | "sending" | "refused" | "taken" = "unsent";
     /** Each thread's token totals as Codex last reported them. */
     protected totals = new Map<string, Tokens>();
     protected threadModels = new Map<string, string>();
@@ -800,7 +812,7 @@ export class CodexTurn {
 
     async run(opts: { compact?: boolean } = {}): Promise<BackendResult> {
         const t = this.t;
-        if (t.signal.aborted) return { reason: "aborted", text: "", actions: [] };
+        if (t.signal.aborted) return { reason: "aborted", text: "", actions: [], refused: true };
         // PreToolUse and sub-agent hooks go to Codex as its own, calling back to the harness, which runs them.
         this.nativeEvents = CODEX_HOOK_EVENTS.filter((e) => this.hooked(e));
         if (this.nativeEvents.length) this.hookServer = registerTools(this.nativeEvents.map((e) => this.hookTool(e)));
@@ -830,7 +842,7 @@ export class CodexTurn {
             await withTimeout(handshake(this.rpc), 30_000, "Codex didn't start (no answer to initialize)");
             const account = parseAccount(await this.rpc.request("account/read", {}));
             if (!account.type && account.requiresAuth) {
-                return { reason: "error", text: "", actions: [], error: `Codex isn't signed in. ${signInAdvice(this.def.id, this.t.accountId)}` };
+                return { reason: "error", text: "", actions: [], error: `Codex isn't signed in. ${signInAdvice(this.def.id, this.t.accountId)}`, refused: true };
             }
             this.billedToPlan = account.type === "chatgpt";
             // Where the plan stands before the first update comes (they come only as it changes).
@@ -841,7 +853,7 @@ export class CodexTurn {
             const model = t.model.id === "default" ? undefined : t.model.id;
             let o = t.orchestrator;
             const overrides = await this.mcpOverrides(t.cwd, Boolean(t.readOnly), [o?.name, this.nativeHooks ? CODEX_HOOK_SERVER : undefined].filter((n): n is string => Boolean(n)));
-            if (typeof overrides === "string") return { reason: "error", text: "", actions: [], error: overrides };
+            if (typeof overrides === "string") return { reason: "error", text: "", actions: [], error: overrides, refused: true };
             const off = overrides.config;
             if (overrides.collisions.includes(CODEX_HOOK_SERVER)) {
                 this.sink.emit({ type: "notice", level: "warn", message: `Codex already has a server named ${CODEX_HOOK_SERVER}; it is disabled, and ${APP_TITLE} runs your hooks the older way this turn${this.nativeEvents.includes("PreToolUse") ? ", asking about every command so your PreToolUse hooks see them" : ""}.` });
@@ -943,6 +955,7 @@ export class CodexTurn {
                     if (model) this.threadModels.set(this.threadId!, model);
                     await this.waitFor(async () => {
                         if (adopt) {
+                            this.promptDelivery = "taken";
                             // Codex's own turn runs under the thread's policy: a mode changed since restarts it (waitFor checks).
                             this.turnMode = this.running.get(adopt) ?? this.threadMode;
                             this.adopted = true;
@@ -957,6 +970,7 @@ export class CodexTurn {
                             this.starting = true;
                             this.startingThreadMode = this.threadMode;
                             this.startingMode = mode;
+                            if (this.promptDelivery !== "taken") this.promptDelivery = "sending";
                             try {
                                 r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" }).finally(() => (this.starting = false));
                                 break;
@@ -970,15 +984,18 @@ export class CodexTurn {
                                 if (!id) {
                                     // The messages this turn was for aren't lost with it: saved for the next turn.
                                     if (queued) this.unsteered.push(...queued);
+                                    if (this.promptDelivery !== "taken" && e instanceof CodexAnswerError) this.promptDelivery = "refused";
                                     throw e;
                                 }
                                 // Under the thread's policy, as any turn Codex starts itself, not this one's mode.
                                 this.turnMode = this.running.get(id) ?? this.threadMode;
                                 this.adopted = true;
+                                this.promptDelivery = "taken";
                                 return this.adoptTurn(id, [{ text, images, documents: [] }]);
                             }
                         }
                         this.turnId = r?.turn?.id;
+                        this.promptDelivery = "taken";
                         this.threadMode = mode;
                         // Which turn that started meanwhile was this one: the others were Codex's own.
                         this.settleStarted(this.turnId, mode);
@@ -1090,8 +1107,9 @@ export class CodexTurn {
         for (const sub of new Set(this.subs.values())) if (sub.turnId) this.endSubTurn(sub, "aborted");
         const text = this.texts.join("\n\n");
         const answer = answerOf(this.answer) || undefined;
-        if (this.aborted) return { reason: "aborted", text, answer, actions: this.actions };
-        if (this.failure) return { reason: "error", text, answer, actions: this.actions, error: this.limitHit ? `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached. ${resetSentence(this.limits?.resetsAt, "Codex")} Choose another account with /account or the plan meter, then send again.` : this.failure, ...(this.limitHit ? { limit: { resetsAt: this.limits?.resetsAt } } : {}) };
+        const notSent = this.promptDelivery === "unsent" || this.promptDelivery === "refused";
+        if (this.aborted) return { reason: "aborted", text, answer, actions: this.actions, ...(notSent ? { refused: true } : {}) };
+        if (this.failure) return { reason: "error", text, answer, actions: this.actions, error: this.limitHit ? `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached. ${resetSentence(this.limits?.resetsAt, "Codex")} Choose another account with /account or the plan meter, then send again.` : this.failure, ...(this.limitHit ? { limit: { resetsAt: this.limits?.resetsAt } } : {}), ...(notSent ? { refused: true } : {}) };
         return { reason: "done", text, answer, actions: this.actions };
     }
 
