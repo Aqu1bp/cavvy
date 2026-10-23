@@ -1998,6 +1998,17 @@
     margin-left: calc(-6 * var(--sp));
 }
 
+/* How many more providers than the stack shows (ui/AgentMark.tsx ProviderStack). */
+.stack .av.more {
+    width: auto;
+    min-width: calc(24 * var(--sp));
+    padding: 0 calc(5 * var(--sp));
+    border-radius: calc(12 * var(--sp));
+    font-size: 0.714rem;
+    font-weight: 600;
+    color: var(--fg-2);
+}
+
 .av .nd {
     right: calc(-3 * var(--sp));
     bottom: calc(-3 * var(--sp));

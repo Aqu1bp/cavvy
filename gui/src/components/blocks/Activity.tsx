@@ -38,12 +38,14 @@ import { commandDescription, isLive, runningVerb, shortModelRef, toolLabel } fro
 import { commandCut, commandLabel, commandMeta, exitCode, firstLine, highlightShell, outputLines, passTally, taskOf, type ShellToken } from "../../lib/command-row";
 import { enterRow, lineTone, STAGGER_MS } from "../../lib/live-line";
 import { backgroundOf } from "../../lib/background";
+import { agentProvider, agentStep } from "../../lib/agent-marks";
 import { now } from "../../lib/clock";
 import { app, handleFor, reportError, rpc } from "../../state/app";
 import { prefs } from "../../state/prefs";
 import { openAgents, openInEditor, openReview, stopBackground } from "../../state/actions";
 import { findReveal } from "../../state/ui";
 import { CopyButton, Spinner } from "../ui/bits";
+import { AgentMark, ProviderStack } from "../ui/AgentMark";
 import { CodeBlock } from "./CodeBlock";
 import { DiffView } from "./DiffView";
 import { Markdown } from "./Markdown";
@@ -465,10 +467,10 @@ export function agentElapsed(a: AgentRun): string {
     return duration(Math.max(0, (a.endedAt ?? (agentLive(a) ? now() : a.startedAt)) - a.startedAt)).replace(/^(\d+)ms$/, "0s");
 }
 
-/** One line of what a sub-agent is up to, or what it found. */
+/** One line of what a sub-agent is up to (its step in a few words: agentStep), or what it found. */
 export function agentLine(a: AgentRun): string {
     if (a.status === "waiting") return AGENT_STATUS.waiting;
-    if (agentLive(a)) return a.activity ?? "Working";
+    if (agentLive(a)) return agentStep(a)?.text ?? "Working";
     const report = a.report
         ?.replace(/```[\s\S]*?```/g, " ")
         .replace(/[*_`>#]/g, "")
@@ -481,6 +483,10 @@ export function agentLine(a: AgentRun): string {
 /** "2 sub-agents · 1 working · 1 done", opening into a row per agent that opens its own view. */
 export function SubAgentsRow(p: { runs: AgentRun[] }) {
     const [open, setOpen] = createSignal(p.runs.some(agentLive));
+    // Who runs each: its model's provider, else the session's.
+    const folds = useCardFolds();
+    const own = () => handleFor(folds.sessionId)?.view.state.model?.provider;
+    const providerOf = (a: AgentRun) => agentProvider(a, own());
     createEffect(on(findReveal, (r) => r && p.runs.some((a) => a.id === r.part) && setOpen(true)));
     const counts = () => {
         const n = (s: AgentRun["status"][]) => p.runs.filter((a) => s.includes(a.status)).length;
@@ -501,15 +507,7 @@ export function SubAgentsRow(p: { runs: AgentRun[] }) {
     return (
         <div class="subagents">
             <button class="ag-head" aria-expanded={open()} onClick={() => setOpen(!open())}>
-                <span class="stack">
-                    <For each={p.runs.slice(0, 3)}>
-                        {() => (
-                            <span class="av">
-                                <Bot size={14} />
-                            </span>
-                        )}
-                    </For>
-                </span>
+                <ProviderStack providers={p.runs.map(providerOf)} />
                 <span class="ag-text">
                     <span class="ag-title">{plural(p.runs.length, "sub-agent")}</span>
                     <span class={`ag-sub tone-${tone()}`}>{counts().join(" · ")}</span>
@@ -521,24 +519,28 @@ export function SubAgentsRow(p: { runs: AgentRun[] }) {
             <Show when={open()}>
                 <div class="agl">
                     <For each={p.runs}>
-                        {(a) => (
-                            <button class={`agr ${findReveal()?.part === a.id ? "found" : ""}`} data-find={a.id} onClick={() => openAgents(a.id)} title={a.model ? `${a.description}\n${shortModelRef(a.model)}` : a.description}>
-                                <span class="av">
-                                    <Bot size={14} />
-                                    <span class={`nd st-${a.status}`} />
-                                </span>
-                                <span class="agr-text">
-                                    <span class="agr-name truncate">{a.description.trim() || "Sub-agent"}</span>{" "}
-                                    <span class={`agr-sub truncate ${a.status === "failed" ? "tone-err" : ""}`}>
-                                        {a.model ? `${shortModelRef(a.model)} · ` : ""}
-                                        {a.effort ? `${a.effort} effort · ` : ""}
-                                        {agentLine(a)}
+                        {(a) => {
+                            const meta = () => `${a.model ? `${shortModelRef(a.model)} · ` : ""}${a.effort ? `${a.effort} effort · ` : ""}`;
+                            // The whole call it's making, for the tooltip and a screen reader: the line says it in a few words.
+                            const full = () => (a.status === "running" ? agentStep(a)?.full : undefined);
+                            return (
+                                <button class={`agr ${findReveal()?.part === a.id ? "found" : ""}`} data-find={a.id} onClick={() => openAgents(a.id)} title={a.model ? `${a.description}\n${shortModelRef(a.model)}` : a.description}>
+                                    <span class="av">
+                                        <AgentMark provider={providerOf(a)} />
+                                        <span class={`nd st-${a.status}`} />
                                     </span>
-                                </span>
-                                <span class="ag-time num">{agentElapsed(a)}</span>
-                                <ChevronRight size={14} class="chev" />
-                            </button>
-                        )}
+                                    <span class="agr-text">
+                                        <span class="agr-name truncate">{a.description.trim() || "Sub-agent"}</span>{" "}
+                                        <span class={`agr-sub truncate ${a.status === "failed" ? "tone-err" : ""}`} title={full()} aria-label={full() && `${meta()}${full()}`}>
+                                            {meta()}
+                                            {agentLine(a)}
+                                        </span>
+                                    </span>
+                                    <span class="ag-time num">{agentElapsed(a)}</span>
+                                    <ChevronRight size={14} class="chev" />
+                                </button>
+                            );
+                        }}
                     </For>
                 </div>
             </Show>

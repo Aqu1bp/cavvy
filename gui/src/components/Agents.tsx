@@ -19,6 +19,8 @@ import { Monogram } from "./Sidebar";
 import { Narration, Notice } from "./TurnView";
 import { InteractionTab } from "./InteractionDock";
 import { ProviderIcon } from "./ui/ProviderIcon";
+import { AgentMark } from "./ui/AgentMark";
+import { agentProvider, agentStep } from "../lib/agent-marks";
 
 const live = (a: AgentRun) => a.status === "running" || a.status === "waiting";
 
@@ -102,7 +104,9 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
     const items = createMemo(() => groupBlocks(!live(a()) && lastText() && result() === lastText()!.text.trim() ? a().blocks.filter((b) => b.id !== lastText()!.id) : a().blocks));
     const showWork = () => live(a()) || unfolded();
     const model = () => (a().model ? shortModelRef(a().model) : (st().model?.name ?? "Session model"));
-    const provider = () => (a().model ?? st().model?.ref)?.split(":")[0];
+    const provider = () => agentProvider(a(), st().model?.provider);
+    /** What it's doing, in a few words; the whole call in the tooltip. */
+    const step = () => agentStep(a());
     /** What it's waiting on you for (its own sub-agents' requests too): answered here as in the session. */
     const asks = () => st().interactions.filter((i) => i.kind === "permission" && i.agentId !== undefined && within(p.handle.view.agents, i.agentId, a().id));
     // The transcript keeps room at its end for the dock, which grows while it asks. (--dock-h goes on
@@ -178,7 +182,7 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                                     }
                                 >
                                     <div class="live-head">
-                                        <Show when={a().status === "waiting"} fallback={<span class="shimmer num live-label">{a().activity && a().activity !== "Working" ? a().activity : `Working for ${elapsed(a())}`}</span>}>
+                                        <Show when={a().status === "waiting"} fallback={<span class="shimmer num live-label" title={step()?.full}>{step() && step()!.text !== "Working" ? step()!.text : `Working for ${elapsed(a())}`}</span>}>
                                             <span class="tone-warn live-label">{asks().length ? "Waiting for you" : "Waiting for you. Answer in the parent session."}</span>
                                         </Show>
                                     </div>
@@ -214,7 +218,7 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                         </Show>
                         <div class="agent-bar glass" role="status">
                             <span class="av">
-                                <Bot size={14} />
+                                <AgentMark provider={provider()} />
                                 <span class={`nd st-${a().status}`} />
                             </span>
                             <span class="agent-bar-text">

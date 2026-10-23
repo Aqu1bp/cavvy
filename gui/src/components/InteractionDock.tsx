@@ -6,10 +6,12 @@
 // anything; the number keys and Esc work when you're not typing.
 
 import { createEffect, createResource, createUniqueId, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
-import { AlertTriangle, Bot, ClipboardList, Eye, EyeOff, FilePen, FolderGit2, Globe, KeyRound, MessageCircleQuestion, Plug, Radar, Save, ShieldAlert, SquareTerminal, GitCommitHorizontal, ArrowUpFromLine, GitPullRequestArrow } from "lucide-solid";
+import { AlertTriangle, ClipboardList, Eye, EyeOff, FilePen, FolderGit2, Globe, KeyRound, MessageCircleQuestion, Plug, Radar, Save, ShieldAlert, SquareTerminal, GitCommitHorizontal, ArrowUpFromLine, GitPullRequestArrow } from "lucide-solid";
 import type { Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction, SecretInteraction } from "@shared/protocol";
 import { openAgents, respond } from "../state/actions";
-import { rpc } from "../state/app";
+import { handleFor, rpc } from "../state/app";
+import { agentProvider } from "../lib/agent-marks";
+import { AgentMark } from "./ui/AgentMark";
 import { columnHeight, setPlanDialog, settingsTab } from "../state/ui";
 import { DiffView } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
@@ -133,6 +135,12 @@ function PermIcon(p: { it: PermissionInteraction }) {
 
 function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
     const [feedback, setFeedback] = createSignal<string | undefined>();
+    /** Who runs the sub-agent asking, as its row in the sub-agent card says; not known without its run. */
+    const askerProvider = () => {
+        const h = handleFor(p.sessionId);
+        const a = p.it.agentId ? h?.view.agents.find((x) => x.id === p.it.agentId) : undefined;
+        return a && agentProvider(a, h?.view.state.model?.provider);
+    };
     const [busy, setBusy] = createSignal(false);
     const answer = async (choice: PermissionInteraction["options"][number]["id"]) => {
         if (busy()) return;
@@ -168,7 +176,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                 sub={
                     p.it.agentLabel ? (
                         <>
-                            <Bot size={12} /> Requested by sub-agent ·{" "}
+                            <AgentMark provider={askerProvider()} size={12} /> Requested by sub-agent ·{" "}
                             <Show when={p.it.agentId} fallback={p.it.agentLabel}>
                                 <button class="link-btn" tabIndex={-1} title="See what it has done so far" onClick={() => openAgents(p.it.agentId)}>
                                     {p.it.agentLabel}

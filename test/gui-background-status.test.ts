@@ -6,6 +6,7 @@ import type { AgentRun, BackgroundTaskInfo } from "../src/server/protocol";
 import { componentCode, elements } from "./gui-component-harness";
 import { liveLine } from "../gui/src/lib/live-line";
 import { plural } from "../gui/src/lib/format";
+import { agentStep } from "../gui/src/lib/agent-marks";
 
 const text = (tree: any): string => Array.isArray(tree) ? tree.map(text).join("") : tree == null ? "" : String(tree);
 
@@ -137,8 +138,8 @@ function renderList(tasks: BackgroundTaskInfo[], agents: AgentRun[] = [], tab: W
         Show: (p: { when: unknown; children: unknown; fallback?: unknown }) => (p.when ? (typeof p.children === "function" ? p.children(() => p.when) : p.children) : p.fallback),
         ConfirmDialog: (p: Record<string, any>) => ({ tag: "ConfirmDialog", props: p, children: [p.children] }),
         Bot: "Bot", ChevronRight: "ChevronRight", Layers: "Layers", Radar: "Radar", Terminal: "Terminal", Workflow: "Workflow",
-        ProviderIcon: (p: { id: string }) => ({ tag: "ProviderIcon", props: p, children: [] }),
-        hasProviderIcon: (id: string) => id === "claude-code",
+        AgentMark: (p: { provider?: string }) => ({ tag: "AgentMark", props: p, children: [] }),
+        agentStep,
         app: { providers: [{ id: "claude-code", name: "Claude Code" }] },
         handleFor: () => undefined,
         openAgents() {},

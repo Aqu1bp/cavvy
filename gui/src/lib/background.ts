@@ -9,6 +9,7 @@
 // or a desktop notification.
 
 import type { AgentRun, BackgroundStopResult, BackgroundTaskInfo, SessionState } from "@shared/protocol";
+import { agentProvider } from "./agent-marks";
 
 type Shell = SessionState["shells"][number];
 
@@ -305,7 +306,5 @@ export function endedAllCleared(rows: readonly WorkRow[], cleared: ReadonlySet<s
 export function rowProvider(r: WorkRow, own?: string): string | undefined {
     const t = r.tasks.find((x) => x.provider !== "harness");
     if (t) return t.provider;
-    if (!r.agent) return undefined;
-    const model = r.agent.model;
-    return model?.includes(":") ? model.slice(0, model.indexOf(":")) : own;
+    return r.agent ? agentProvider(r.agent, own) : undefined;
 }
