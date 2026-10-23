@@ -40,6 +40,7 @@ import type { HookEvent } from "../agent/hooks";
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
 import { parseGoalCommand, type GoalCommand, type NativeGoal } from "../agent/goal";
 import type { CodexLive } from "./codex-live";
+import { liveDebug } from "./live/debug";
 
 /**
  * Codex answered a request with an error: it got the request and declined it (a turn/start it refused started no
@@ -681,6 +682,10 @@ export class CodexTurn {
     protected modeKilled?: string;
     /** The goal was paused in Codex for a mode change, so Codex starts no turns of its own under the old policy: made active again under the new one. */
     protected goalPausedForMode = false;
+    /** Turns (of any thread) Codex said started or ended, by thread/turn: the last 128. */
+    private turnStates = new Map<string, "active" | "ended">();
+    /** Interrupts Codex refused because their turn wasn't active yet, with how many more tries each has (sendInterrupt). */
+    private interruptRetries = new Map<string, number>();
 
     constructor(
         protected def: ProviderDef,
@@ -779,7 +784,7 @@ export class CodexTurn {
      * nothing goes on under the old policy.
      */
     protected interruptForMode(turnId: string) {
-        void this.rpc.request("turn/interrupt", { threadId: this.threadId, turnId }).catch(() => {});
+        if (this.threadId) void this.sendInterrupt(this.threadId, turnId);
         const timer = setTimeout(() => {
             this.modeKills.delete(timer);
             if (this.aborted || this.completedTurns.has(turnId)) return;
@@ -1279,7 +1284,39 @@ export class CodexTurn {
     /** Stop the running turn: the main thread's, or one sub-agent's. */
     protected interrupt(sub?: { thread: string; turnId?: string }) {
         const [threadId, turnId] = sub ? [sub.thread, sub.turnId] : [this.threadId, this.turnId];
-        if (threadId && turnId) void this.rpc.request("turn/interrupt", { threadId, turnId }).catch(() => {});
+        if (threadId && turnId) void this.sendInterrupt(threadId, turnId);
+    }
+
+    /**
+     * turn/interrupt for a turn. Codex answers turn/start a few ms before the turn is active, and says "no active turn
+     * to interrupt" in between (seen with 0.163, #439): that turn's interrupt goes again as its turn/started comes (at
+     * once if it came meanwhile), at most INTERRUPT_RETRIES times, and never for one that has ended. Never fails.
+     */
+    protected async sendInterrupt(threadId: string, turnId: string): Promise<void> {
+        const key = `${threadId}/${turnId}`;
+        try {
+            await this.rpc.request("turn/interrupt", { threadId, turnId });
+            this.interruptRetries.delete(key);
+        } catch (e) {
+            if (!NO_ACTIVE_TURN.test((e as Error)?.message ?? "") || this.turnStates.get(key) === "ended" || this.rpc.closed) return void this.interruptRetries.delete(key);
+            const left = this.interruptRetries.get(key) ?? INTERRUPT_RETRIES;
+            if (left <= 0) return void this.interruptRetries.delete(key);
+            this.interruptRetries.set(key, left - 1);
+            liveDebug("codex", "interrupt before the turn was active: again once it is", { thread: threadId, turn: turnId, started: this.turnStates.get(key) === "active" });
+            // Started meanwhile (its turn/started overtook the answer): again now.
+            if (this.turnStates.get(key) === "active") await this.sendInterrupt(threadId, turnId);
+        }
+    }
+
+    /** Codex said a turn started or ended (any thread's): an interrupt it refused before the turn was active goes again now. */
+    protected turnState(threadId: string | undefined, turnId: unknown, state: "active" | "ended") {
+        if (!threadId || typeof turnId !== "string") return;
+        const key = `${threadId}/${turnId}`;
+        this.turnStates.delete(key);
+        this.turnStates.set(key, state);
+        if (this.turnStates.size > 128) this.turnStates.delete(this.turnStates.keys().next().value!);
+        if (state === "ended") return void this.interruptRetries.delete(key);
+        if (this.interruptRetries.has(key)) void this.sendInterrupt(threadId, turnId);
     }
 
     /** Start something that ends with turn/completed (or thread/compacted), and wait for that. */
@@ -1312,6 +1349,7 @@ export class CodexTurn {
             const turn = typeof p.turnId === "string" ? p.turnId : this.turnId;
             if (turn) this.turnModels.set(`${modelThread}/${turn}`, p.toModel);
         }
+        if (method === "turn/started" || method === "turn/completed") this.turnState(thread ?? this.threadId, p?.turn?.id, method === "turn/started" ? "active" : "ended");
         if (method === "turn/started" && typeof p.turn?.id === "string") {
             this.turnsSeen.add(p.turn.id);
             const model = modelThread && this.threadModels.get(modelThread);
@@ -2536,6 +2574,11 @@ export function applyHunks(text: string, diff: string): string | undefined {
     out.push(...src.slice(pos));
     return out.join("\n");
 }
+
+/** Codex's answer to turn/interrupt for a turn that isn't active (not yet, or not any more). */
+const NO_ACTIVE_TURN = /no active turn/i;
+/** How many times an interrupt refused before its turn was active goes again (sendInterrupt). */
+const INTERRUPT_RETRIES = 2;
 
 /** How long a run waits for Codex to start the goal's next turn itself before it gives up on it. */
 const GOAL_TURN_WAIT_MS = 60_000;

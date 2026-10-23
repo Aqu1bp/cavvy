@@ -77,6 +77,8 @@
 // FAKE_CHILD_REPORT   a bgagent sub-agent's last answer, said as it ends
 // FAKE_STARTED_FIRST=1  a turn's turn/started goes out before turn/start's answer
 // FAKE_STARTED_FIRST_AT=n:ms  the nth turn/start's turn/started goes out first, and its answer ms later
+// FAKE_STARTED_LATE_MS=n  as Codex 0.163 does: turn/start is answered n ms before the turn is active (turn/started, then
+//                     its work); a turn/interrupt for it meanwhile fails with "no active turn to interrupt" (#439)
 // FAKE_STEER_WAKES=1  turn/steer is refused unless its expectedTurnId is the turn running now; in the "slow"
 //                     scenario a steer ends the first turn's wait, and its answer repeats what was steered
 // FAKE_MCP_CALLS      the "mcp" scenario's calls to servers from the thread's config: [{ server?, tool, args }]
@@ -357,6 +359,8 @@ let wholeTurns = 0;
 let startedFirstSeen = 0;
 /** Turns whose turn/started went out before turn/start answered (FAKE_STARTED_FIRST). */
 const startedEarly = new Set<string>();
+/** A turn turn/start answered for that isn't active yet (FAKE_STARTED_LATE_MS). */
+let startingTurn: string | undefined;
 /** A thread started or resumed with a policy: the goal's turns Codex starts itself run under it, until a turn/start gives another. */
 function threadPolicy(p: any) {
     const sandbox: Record<string, string> = { "danger-full-access": "dangerFullAccess", "workspace-write": "workspaceWrite", "read-only": "readOnly" };
@@ -928,6 +932,16 @@ async function handle(m: any) {
                 return reply({ turn: { id: turnId, status: "inProgress" } });
             }
             reply({ turn: { id: turnId, status: "inProgress" } });
+            // FAKE_STARTED_LATE_MS=n: as Codex 0.163 does, the turn is active only n ms after turn/start answered (#439).
+            const late = Number(process.env.FAKE_STARTED_LATE_MS ?? 0);
+            if (late > 0 && !startedEarly.has(turnId)) {
+                startingTurn = turnId;
+                setTimeout(() => {
+                    if (startingTurn === turnId) startingTurn = undefined;
+                    void runTurn(p.threadId, turnId, p);
+                }, late);
+                return;
+            }
             void runTurn(p.threadId, turnId, p);
             return;
         }
@@ -969,6 +983,11 @@ async function handle(m: any) {
         case "turn/interrupt":
             // FAKE_IGNORE_INTERRUPT=1: answers, and the turn goes on.
             if (process.env.FAKE_IGNORE_INTERRUPT === "1") return reply({});
+            // Answered, but not active yet (FAKE_STARTED_LATE_MS): Codex says no, and the turn runs on (#439).
+            if (startingTurn !== undefined && p.turnId === startingTurn) {
+                log({ interruptRefused: { threadId: p.threadId, turnId: p.turnId } });
+                return fail("no active turn to interrupt");
+            }
             log({ interrupt: { threadId: p.threadId, turnId: p.turnId } });
             // A sub-agent's turn (bgagent): only that one stops.
             if (childTurns.get(p.threadId)?.turnId === p.turnId) {

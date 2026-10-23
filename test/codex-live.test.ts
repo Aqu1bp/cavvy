@@ -968,3 +968,103 @@ describe("#305: a wake the session can't take over (it's on another model)", () 
         expect(reminders.some((r) => r.startsWith("Codex, which this session ran on earlier") && r.includes("compiling\nfinished-c13"))).toBe(true);
     });
 });
+
+// #439: Codex 0.163 answers turn/start a few ms before the turn is active, and refuses an interrupt in between ("no active
+// turn to interrupt"). An Esc there must still stop the turn: the interrupt goes again as the turn starts.
+describe("#439: Esc after turn/start is answered, before the turn is active", () => {
+    for (const live of [true, false])
+        test(`${live ? "live" : "per run"}: the interrupt goes again once the turn starts, and stops it`, async () => {
+            process.env.FAKE_SCENARIO = "hang";
+            process.env.FAKE_HANG_MS = "20000";
+            process.env.FAKE_STARTED_LATE_MS = "400";
+            const a = await makeAgent(live ? {} : { settings: { agentCli: { liveSessions: false } } });
+            const stop = new AbortController();
+            const running = a.run("go", stop.signal);
+            await until(() => calls("turn/start").length === 1, "turn/start");
+            // Answered at once; active 400 ms later.
+            await Bun.sleep(100);
+            const esc = Date.now();
+            stop.abort();
+            expect(await running).toBe("aborted");
+            // Stopped by Codex, not by the stop's deadline (8 s) or the process's end.
+            expect(Date.now() - esc).toBeLessThan(3000);
+            expect(logLines().filter((l) => l.interruptRefused)).toHaveLength(1);
+            expect(calls("turn/interrupt")).toEqual([
+                { threadId: "thr-new", turnId: "turn-1" },
+                { threadId: "thr-new", turnId: "turn-1" },
+            ]);
+            expect(logLines().find((l) => l.hangEnded)?.hangEnded).toEqual({ turnId: "turn-1", interrupted: true });
+        }, 15_000);
+
+    /** A CodexTurn whose Codex answers turn/interrupt with `answer` (a refusal when it throws). */
+    async function interrupter(answer: (n: number) => void) {
+        const { CodexTurn } = await import("../src/backends/codex");
+        const sent: { threadId: string; turnId: string }[] = [];
+        const turn = new CodexTurn(registry.getProvider("codex")!, {} as never) as any;
+        turn.rpc = {
+            closed: false,
+            request: async (method: string, params: any) => {
+                if (method !== "turn/interrupt") return {};
+                sent.push(params);
+                answer(sent.length);
+                return {};
+            },
+        };
+        return { turn, sent, settle: () => Bun.sleep(5) };
+    }
+    const refuse = () => {
+        throw new Error("Codex: no active turn to interrupt");
+    };
+
+    test("only that turn's start sends it again, once; another turn's doesn't", async () => {
+        const { turn, sent, settle } = await interrupter((n) => n === 1 && refuse());
+        await turn.sendInterrupt("thr", "turn-1");
+        expect(sent).toHaveLength(1);
+        turn.turnState("thr", "turn-2", "active");
+        turn.turnState("other-thread", "turn-1", "active");
+        await settle();
+        expect(sent).toHaveLength(1);
+        turn.turnState("thr", "turn-1", "active");
+        await settle();
+        expect(sent).toEqual([
+            { threadId: "thr", turnId: "turn-1" },
+            { threadId: "thr", turnId: "turn-1" },
+        ]);
+        // Taken: nothing more.
+        turn.turnState("thr", "turn-1", "active");
+        await settle();
+        expect(sent).toHaveLength(2);
+    });
+
+    test("refused after the turn started (its turn/started overtook the answer): again at once", async () => {
+        const { turn, sent } = await interrupter((n) => n === 1 && refuse());
+        turn.turnState("thr", "turn-1", "active");
+        await turn.sendInterrupt("thr", "turn-1");
+        expect(sent).toHaveLength(2);
+    });
+
+    test("not again for a turn that has ended, nor for another refusal", async () => {
+        const ended = await interrupter(refuse);
+        ended.turn.turnState("thr", "turn-1", "active");
+        ended.turn.turnState("thr", "turn-1", "ended");
+        await ended.turn.sendInterrupt("thr", "turn-1");
+        expect(ended.sent).toHaveLength(1);
+        const other = await interrupter(() => {
+            throw new Error("Codex: thread not found");
+        });
+        await other.turn.sendInterrupt("thr", "turn-1");
+        other.turn.turnState("thr", "turn-1", "active");
+        await other.settle();
+        expect(other.sent).toHaveLength(1);
+    });
+
+    test("not forever: refused every time, it gives up after two more tries", async () => {
+        const { turn, sent, settle } = await interrupter(refuse);
+        await turn.sendInterrupt("thr", "turn-1");
+        turn.turnState("thr", "turn-1", "active");
+        await settle();
+        turn.turnState("thr", "turn-1", "active");
+        await settle();
+        expect(sent).toHaveLength(3);
+    });
+});
