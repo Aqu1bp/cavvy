@@ -259,7 +259,7 @@ export class Runtime {
     readonly idleCompact = new IdleCompactTimer({
         plan: (now) => this.agent?.idleCompactPlan(now) ?? null,
         // Not on a CLI account that was removed (#410): nothing runs there.
-        ready: () => this.idle && !this.closed && !this.drafting.size && !this.queued.length && !this.removedAccount(),
+        ready: () => this.idle && !this.closed && !this.drafting.size && !this.queued.length && !this.needsAccount(),
         run: () => void this.compact(undefined, { idle: true }).catch((e) => this.engine.log(`session ${this.id}: idle compaction: ${(e as Error).message}`)),
     });
     /** The compaction running is an idle one: a message sent meanwhile cancels it and runs. */
@@ -405,7 +405,8 @@ export class Runtime {
         if (opts.resumed && cutOffPrompt(this.ui, this.segment, session.messages, session.notices) !== undefined) session.push({ role: "user", content: [{ type: "text", text: INTERRUPTED }], meta: { kind: "interrupt" } });
         const turns = opts.resumed ? replay({ segments, current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() }) : [];
         this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model, this.ui.agents) };
-        // Messages that were waiting when the server stopped: back in the queue, held until the user sends them.
+        // Messages that were waiting when the server stopped: back in the queue, held until the user sends them (those
+        // held for an account, until one is picked: #410).
         if (opts.resumed) {
             this.queued = loadQueue(session.path, session.meta.id).map((q) => ({ ...q, id: ++this.queueSeq, held: true }));
             if (this.queued.length) Object.assign(this.view.state, this.queueState());
@@ -545,7 +546,7 @@ export class Runtime {
     private schedulable(): boolean {
         // A goal between its turns (checking, retrying, waiting on background work) goes first: scheduled prompts wait for it.
         // Nor while the session's CLI account is gone (#410): they run once the user picks another.
-        return !this.closed && (!this.busy || this.idleCompacting) && !this.pending.size && !this.switching && !this.committing && !this.queued.length && !this.goal.pending() && Boolean(this.agent) && !this.removedAccount();
+        return !this.closed && (!this.busy || this.idleCompacting) && !this.pending.size && !this.switching && !this.committing && !this.queued.length && !this.goal.pending() && Boolean(this.agent) && !this.needsAccount();
     }
 
     private runScheduled(prompt: string, job: ScheduledJob, label: string): Promise<unknown> {
@@ -931,6 +932,17 @@ export class Runtime {
         return provider && id ? { provider, id } : undefined;
     }
 
+    /**
+     * Nothing may run until the user picks an account for the session's CLI: its account was removed, or messages are
+     * held for one (even if it's back, added again under its id: picking it sends them first).
+     */
+    private needsAccount(): { provider: string; id: string } | undefined {
+        const gone = this.removedAccount();
+        if (gone) return gone;
+        const provider = this.model?.provider;
+        return provider && this.queued.some((q) => q.account === provider) ? { provider, id: this.session.accountId(provider) } : undefined;
+    }
+
     /** What the server runs itself, with no model (a `!command`, /loop, /schedules, /trust): it needs no account. */
     private runsHere(q: { text: string; literal?: boolean; attachments?: AttachedPart[] }): boolean {
         if (q.literal) return false;
@@ -961,6 +973,14 @@ export class Runtime {
             this.schedules.poke();
             return;
         }
+        this.releaseHeld(held);
+    }
+
+    /**
+     * Messages held for an account go, in order, each once: the first now (the session is busy at once, so what's
+     * sent next waits behind them), the rest as queued ones do.
+     */
+    private releaseHeld(held: Queued[]) {
         for (const q of held) {
             q.held = undefined;
             q.account = undefined;
@@ -1035,9 +1055,17 @@ export class Runtime {
         // A CLI whose account this session used was removed (#410): asked for now, and what's held waits for it.
         const gone = this.removedAccount();
         const held = this.queued.filter((q) => q.account);
-        if (gone) for (const q of held) q.account = gone.provider;
-        if (held.length) this.queueUpdated();
-        if (gone && !opts.quiet) this.notice(removedAccountNote(def.name, gone.id, false), "warn");
+        if (gone) {
+            for (const q of held) q.account = gone.provider;
+            if (held.length) this.queueUpdated();
+            if (!opts.quiet) this.notice(removedAccountNote(def.name, gone.id, false), "warn");
+        } else if (held.length && !opts.quiet) {
+            // The user picked a model that runs without that account: where they chose to run, so what was held for
+            // an account goes there now, once each, in order. Not as the session opens (quiet), on whatever model
+            // it could open with: that isn't the user's choice, and they stay held.
+            this.notice(`Sending ${held.length === 1 ? "the message" : `the ${held.length} messages`} held for an account to ${info.name ?? info.id}.`);
+            this.releaseHeld(held);
+        }
         return true;
     }
 
@@ -2541,7 +2569,7 @@ export class Runtime {
             return { queued: true };
         }
         const message = { text, attachments, literal: literal || undefined };
-        const gone = this.runsHere(message) ? undefined : this.removedAccount();
+        const gone = this.runsHere(message) ? undefined : this.needsAccount();
         if (gone) {
             this.holdForAccount(gone, message);
             return { queued: true };
@@ -2670,7 +2698,7 @@ export class Runtime {
         }
         // The session's CLI account was removed (#410): nothing is stored or sent. A message of the user's that gets
         // here (a command's prompt) waits for an account as one sent does; a watch's events go back in their queue.
-        const gone = opts.adopt ? undefined : this.removedAccount();
+        const gone = opts.adopt ? undefined : this.needsAccount();
         if (gone) {
             if (opts.wakes) return void this.toolState.wakes?.requeue(opts.wakes);
             if (!opts.goal && !this.scheduledLabel && opts.kind !== "wake") return this.holdForAccount(gone, { text: opts.display ?? text, attachments: opts.attachments });
@@ -2854,7 +2882,7 @@ export class Runtime {
             return this.toolState.wakes?.poke();
         }
         // The session's CLI account was removed meanwhile (#410): it waits for one, with what's behind it.
-        const gone = this.runsHere(next) ? undefined : this.removedAccount();
+        const gone = this.runsHere(next) ? undefined : this.needsAccount();
         if (gone) {
             this.holdForAccount(gone);
             return this.settleGoal(false);
@@ -2888,14 +2916,15 @@ export class Runtime {
             queuedModes: this.queued.map((q): QueuedMode => (q.held ? "held" : this.waits(q) ? "turn" : q.mode)),
             queuedWhy: this.queued.map((q) => (q.account ? this.heldWhy(q) : (this.waits(q) ?? ""))),
             // Messages wait for an account for the session's CLI (#410): the GUI asks for one.
-            accountNeeded: this.queued.some((q) => q.account) ? this.removedAccount()?.provider : undefined,
+            // Until one is picked: the account may be back (added again under its id), and picking it sends them.
+            accountNeeded: this.queued.find((q) => q.account && q.account === this.model?.provider)?.account,
         };
     }
 
     /** Shown, and saved beside the transcript so a restart doesn't lose it. */
     private queueUpdated() {
         this.setState(this.queueState());
-        if (this.session.persisted) saveQueue(this.session.path, this.id, this.queued.map(({ text, mode, attachments, literal }) => ({ text, mode, attachments, literal })));
+        if (this.session.persisted) saveQueue(this.session.path, this.id, this.queued.map(({ text, mode, attachments, literal, account }) => ({ text, mode, attachments, literal, ...(account ? { account } : {}) })));
     }
 
     /**
@@ -2914,7 +2943,7 @@ export class Runtime {
             if (this.closed) throw new Error("This session was closed.");
             this.checkPdfs(q.attachments);
             // The session's CLI account was removed (#410): it stays, held for one, and the user is told why.
-            const gone = this.runsHere(q) ? undefined : this.removedAccount();
+            const gone = this.runsHere(q) ? undefined : this.needsAccount();
             if (gone) {
                 // One held since a restart too: the user sent it, so it goes once they pick an account.
                 Object.assign(q, { held: true, account: gone.provider });
@@ -2972,7 +3001,7 @@ export class Runtime {
         // a restart) don't hold up a CLI's own turn: it's running already, whatever the user sends next.
         if (this.closed || this.busy || (this.adopts.length ? this.nextQueued() : this.queued.length)) return;
         // The session's CLI account was removed (#410): nothing runs until the user picks another (releaseForAccount looks again).
-        if (this.removedAccount()) return;
+        if (this.needsAccount()) return;
         // A model switch, a commit, the agent still starting, a goal between its turns (it goes first, as with
         // scheduled prompts): look again in a moment.
         if (this.switching || this.commitDone || !this.agent || this.goal.pending()) {

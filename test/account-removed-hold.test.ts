@@ -180,14 +180,14 @@ for (const provider of ["claude-code", "codex"] as const) for (const live of [tr
 });
 
 /** A terminal app on the fake CLI, with the screen kept as text. */
-async function terminal(provider: string, cwd: string, live = true) {
+async function terminal(provider: string, cwd: string, live = true, persist = false) {
     const app = new App({ cwd, trusted: true, mode: "bypassPermissions", allowBypass: true, startupNotes: [] });
     const printed: string[] = [];
     const print = (l: string | string[] | ((cols: number) => string[])) => (printed.push(...(typeof l === "function" ? l(200) : Array.isArray(l) ? l : [l])), {});
     (app as any).screen = { print, replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, suspend() {}, resume() {} };
     (app as any).renderLive = () => {};
     if (!live) (app as any).settings = { ...(app as any).settings, agentCli: { liveSessions: false } };
-    app.session = Session.create(cwd, { persist: false });
+    app.session = Session.create(cwd, { persist });
     app.model = backendModel(provider, "default");
     app.client = await clientFor(provider);
     app.makeAgent();
@@ -303,6 +303,214 @@ test("terminal: a session loaded from disk whose account was removed holds its m
         expect(app.session.backendPlace(provider)?.folder).toBe(defaultFolder(provider));
     } finally {
         await app.agent?.dispose();
+        rmSync(cwd, { recursive: true, force: true });
+    }
+}, 60_000);
+
+// ---- Review of #419: a restart, the order of what's released, another model, and the same account added again.
+
+const { loadQueue } = await import("../src/agent/queue-store");
+const { sendsAccountPick } = await import("../gui/src/lib/account-pick");
+/** The session's user messages that carry one of `tags`, by tag, in order. */
+const order = (session: { messages: { role: string; content: unknown }[] }, tags: string[]) =>
+    session.messages.filter((m) => m.role === "user").map((m) => tags.find((t) => JSON.stringify(m.content).includes(t))).filter(Boolean);
+
+test("desktop: the hold survives a restart; reopened, picking an account sends each held message once, in order", async () => {
+    const provider = "codex";
+    const cwd = realpathSync(tempDir("account-removed-restart-"));
+    const work = addAccount(provider, { id: "rs-work", name: "Work" });
+    const client = { subs: new Set<string>(), send() {} };
+    const first = new Engine({ startCwd: cwd, listModels: async () => [] });
+    const made = await first.createSession(cwd, { model: `${provider}:default`, mode: "bypassPermissions" });
+    const id = made.id;
+    await first.handle(client, "session.setAccount", { id, provider, accountId: work.id });
+    await first.handle(client, "session.send", { id, text: "FIRST-410" });
+    await until(() => !made.busy && stored(made.session, "FIRST-410") === 1, "the first turn");
+    await first.handle(client, "accounts.remove", { provider, id: work.id, confirmedFolder: work.folder });
+    await first.handle(client, "session.send", { id, text: "RS-A-410" });
+    await first.handle(client, "session.send", { id, text: "RS-B-410" });
+    expect(made.snapshot().state.queuedModes).toEqual(["held", "held"]);
+    await first.stop();
+
+    const engine = new Engine({ startCwd: cwd, listModels: async () => [] });
+    try {
+        await engine.handle(client, "session.open", { id });
+        const rt = engine.runtimes.get(id)!;
+        await rt.ready;
+        await engine.handle(client, "session.setMode", { id, mode: "bypassPermissions" });
+        const state = rt.snapshot().state;
+        expect(state.queued).toEqual(["RS-A-410", "RS-B-410"]);
+        expect(state.queuedWhy).toEqual([held(provider, work.id), held(provider, work.id)]);
+        expect(state.accountNeeded).toBe(provider);
+        await engine.handle(client, "session.setAccount", { id, provider, accountId: "default" });
+        await until(() => !rt.busy && stored(rt.session, "RS-B-410") === 1 && !rt.snapshot().state.queued.length, "the held messages");
+        expect(order(rt.session, ["RS-A-410", "RS-B-410"])).toEqual(["RS-A-410", "RS-B-410"]);
+        expect([sent("RS-A-410"), sent("RS-B-410")]).toEqual([1, 1]);
+        expect(rt.session.backendPlace(provider)?.folder).toBe(defaultFolder(provider));
+    } finally {
+        await engine.stop();
+        rmSync(cwd, { recursive: true, force: true });
+    }
+}, 60_000);
+
+test("terminal: the hold survives a restart, each message on its own (not merged into the prompt), until an account is picked", async () => {
+    const provider = "codex";
+    const cwd = realpathSync(tempDir("account-removed-trestart-"));
+    const work = addAccount(provider, { id: "trs-work", name: "Work" });
+    const one = await terminal(provider, cwd, true, true);
+    let path = "";
+    let id = "";
+    try {
+        await one.app.setAccount(provider, work.id);
+        await one.app.submitText("FIRST-410");
+        path = one.app.session.path;
+        id = one.app.session.meta.id;
+        removeAccount(provider, work.id, work.folder, [cwd]);
+        await one.app.submitText("TRS-A-410");
+        await one.app.submitText("TRS-B-410");
+        expect(one.a.heldForAccount.drafts).toHaveLength(2);
+    } finally {
+        await one.app.agent?.dispose();
+    }
+    // Opened again: held as they were, and still saved held (another restart keeps them).
+    const two = await terminal(provider, cwd);
+    try {
+        two.app.resume(path);
+        expect(two.a.heldForAccount.drafts.map((d: { text: string }) => d.text)).toEqual(["TRS-A-410", "TRS-B-410"]);
+        expect(two.a.editor.text).toBe("");
+        expect(loadQueue(path, id)).toEqual([{ text: "TRS-A-410", mode: "queue", account: provider }, { text: "TRS-B-410", mode: "queue", account: provider }]);
+        expect(two.text()).toContain("Pick one with /account");
+        await two.app.setAccount(provider, "default");
+        await until(() => !two.app.busy && stored(two.app.session, "TRS-B-410") === 1, "the held messages");
+        expect(order(two.app.session, ["TRS-A-410", "TRS-B-410"])).toEqual(["TRS-A-410", "TRS-B-410"]);
+        expect([sent("TRS-A-410"), sent("TRS-B-410")]).toEqual([1, 1]);
+        expect(loadQueue(path, id)).toEqual([]);
+    } finally {
+        await two.app.agent?.dispose();
+        rmSync(cwd, { recursive: true, force: true });
+    }
+}, 60_000);
+
+test("terminal: released messages go first, in order; one sent before the first starts waits behind them", async () => {
+    const provider = "codex";
+    const cwd = realpathSync(tempDir("account-removed-order-"));
+    const work = addAccount(provider, { id: "ord-work", name: "Work" });
+    const { app } = await terminal(provider, cwd);
+    try {
+        await app.setAccount(provider, work.id);
+        removeAccount(provider, work.id, work.folder, [cwd]);
+        await app.submitText("ORD-A-410");
+        await app.submitText("ORD-B-410");
+        await app.setAccount(provider, "default");
+        // Before the first released one has started.
+        void app.submitText("ORD-C-410");
+        await until(() => !app.busy && stored(app.session, "ORD-A-410") + stored(app.session, "ORD-B-410") + stored(app.session, "ORD-C-410") === 3, "all three");
+        expect(order(app.session, ["ORD-A-410", "ORD-B-410", "ORD-C-410"])).toEqual(["ORD-A-410", "ORD-B-410", "ORD-C-410"]);
+        expect([sent("ORD-A-410"), sent("ORD-B-410"), sent("ORD-C-410")]).toEqual([1, 1, 1]);
+    } finally {
+        await app.agent?.dispose();
+        rmSync(cwd, { recursive: true, force: true });
+    }
+}, 60_000);
+
+test("terminal: leaving the session before a released message starts hands it back to the prompt; it doesn't run in the next one", async () => {
+    const provider = "codex";
+    const cwd = realpathSync(tempDir("account-removed-leave-"));
+    const work = addAccount(provider, { id: "lv-work", name: "Work" });
+    const { app, a } = await terminal(provider, cwd);
+    try {
+        await app.setAccount(provider, work.id);
+        removeAccount(provider, work.id, work.folder, [cwd]);
+        await app.submitText("LEAVE-410");
+        await app.setAccount(provider, "default");
+        app.newSession();
+        await Bun.sleep(300);
+        expect(app.busy).toBe(false);
+        expect(stored(app.session, "LEAVE-410")).toBe(0);
+        expect(sent("LEAVE-410")).toBe(0);
+        expect(a.editor.text).toBe("LEAVE-410");
+    } finally {
+        await app.agent?.dispose();
+        rmSync(cwd, { recursive: true, force: true });
+    }
+}, 60_000);
+
+test("desktop: switching the model to another provider sends what was held there, once each, in order", async () => {
+    const cwd = realpathSync(tempDir("account-removed-model-"));
+    const work = addAccount("claude-code", { id: "md-work", name: "Work" });
+    const engine = new Engine({ startCwd: cwd, listModels: async () => [] });
+    const client = { subs: new Set<string>(), send() {} };
+    const rt = await engine.createSession(cwd, { model: "claude-code:default", mode: "bypassPermissions" });
+    try {
+        await engine.handle(client, "session.setAccount", { id: rt.id, provider: "claude-code", accountId: work.id });
+        await engine.handle(client, "accounts.remove", { provider: "claude-code", id: work.id, confirmedFolder: work.folder });
+        await engine.handle(client, "session.send", { id: rt.id, text: "MD-A-410" });
+        await engine.handle(client, "session.send", { id: rt.id, text: "MD-B-410" });
+        expect(rt.snapshot().state.queuedModes).toEqual(["held", "held"]);
+        await engine.handle(client, "session.setModel", { id: rt.id, ref: "codex:default", persist: false });
+        await until(() => !rt.busy && stored(rt.session, "MD-B-410") === 1 && !rt.snapshot().state.queued.length, "the held messages");
+        expect(order(rt.session, ["MD-A-410", "MD-B-410"])).toEqual(["MD-A-410", "MD-B-410"]);
+        expect([sent("MD-A-410"), sent("MD-B-410")]).toEqual([1, 1]);
+        expect(rt.session.backends.has("codex")).toBe(true);
+        expect(rt.session.backends.has("claude-code")).toBe(false);
+        expect(rt.snapshot().state.accountNeeded).toBeUndefined();
+        expect(notices(rt).some((n) => n.startsWith("Sending the 2 messages held for an account to "))).toBe(true);
+    } finally {
+        await engine.stop();
+        rmSync(cwd, { recursive: true, force: true });
+    }
+}, 60_000);
+
+test("terminal: switching the model to another provider sends what was held there, once each, in order", async () => {
+    const cwd = realpathSync(tempDir("account-removed-tmodel-"));
+    const work = addAccount("claude-code", { id: "tmd-work", name: "Work" });
+    const { app, a } = await terminal("claude-code", cwd);
+    try {
+        await app.setAccount("claude-code", work.id);
+        removeAccount("claude-code", work.id, work.folder, [cwd]);
+        await app.submitText("TMD-A-410");
+        await app.submitText("TMD-B-410");
+        expect(await app.setModel("codex:default")).toBe(true);
+        await until(() => !app.busy && stored(app.session, "TMD-B-410") === 1, "the held messages");
+        expect(order(app.session, ["TMD-A-410", "TMD-B-410"])).toEqual(["TMD-A-410", "TMD-B-410"]);
+        expect([sent("TMD-A-410"), sent("TMD-B-410")]).toEqual([1, 1]);
+        expect(app.session.backends.has("codex")).toBe(true);
+        expect(a.heldForAccount).toBeUndefined();
+    } finally {
+        await app.agent?.dispose();
+        rmSync(cwd, { recursive: true, force: true });
+    }
+}, 60_000);
+
+test("desktop: the account added again under its id still waits for the pick (what's sent meanwhile is held too); picking it sends them in order", async () => {
+    const provider = "codex";
+    const cwd = realpathSync(tempDir("account-removed-readd-"));
+    const work = addAccount(provider, { id: "ra-work", name: "Work" });
+    const engine = new Engine({ startCwd: cwd, listModels: async () => [] });
+    const client = { subs: new Set<string>(), send() {} };
+    const rt = await engine.createSession(cwd, { model: `${provider}:default`, mode: "bypassPermissions" });
+    try {
+        await engine.handle(client, "session.setAccount", { id: rt.id, provider, accountId: work.id });
+        await engine.handle(client, "accounts.remove", { provider, id: work.id, confirmedFolder: work.folder });
+        await engine.handle(client, "session.send", { id: rt.id, text: "RA-A-410" });
+        const again = addAccount(provider, { id: work.id, name: "Work again" });
+        expect(await engine.handle(client, "session.send", { id: rt.id, text: "RA-B-410" })).toEqual({ queued: true });
+        await Bun.sleep(300);
+        expect(sent("RA-A-410") + sent("RA-B-410")).toBe(0);
+        const state = rt.snapshot().state;
+        expect(state.queued).toEqual(["RA-A-410", "RA-B-410"]);
+        expect(state.accountNeeded).toBe(provider);
+        // The GUI forwards a pick of the same account while messages wait for one.
+        expect(sendsAccountPick(work.id, work.id, { missing: false, needed: state.accountNeeded === provider })).toBe(true);
+        expect(sendsAccountPick(work.id, work.id, { missing: false, needed: false })).toBe(false);
+        await engine.handle(client, "session.setAccount", { id: rt.id, provider, accountId: work.id });
+        await until(() => !rt.busy && stored(rt.session, "RA-B-410") === 1 && !rt.snapshot().state.queued.length, "the held messages");
+        expect(order(rt.session, ["RA-A-410", "RA-B-410"])).toEqual(["RA-A-410", "RA-B-410"]);
+        expect([sent("RA-A-410"), sent("RA-B-410")]).toEqual([1, 1]);
+        expect(rt.session.backendPlace(provider)?.folder).toBe(realpathSync(again.folder));
+        removeAccount(provider, again.id, again.folder, [cwd]);
+    } finally {
+        await engine.stop();
         rmSync(cwd, { recursive: true, force: true });
     }
 }, 60_000);
