@@ -814,7 +814,7 @@ function EditCardContent(p: { tool: ToolBlock }) {
 const LIVE_LINES = 40;
 
 /** Which command rows the reader opened (or folded again), by call id; and the session they're in. */
-type CardFolds = { get(id: string): boolean | undefined; set(id: string, open: boolean): void; sessionId?: string };
+export type CardFolds = { get(id: string): boolean | undefined; set(id: string, open: boolean): void; sessionId?: string };
 
 function cardFolds(): CardFolds {
     const open = new Map<string, Signal<boolean | undefined>>();
@@ -850,6 +850,11 @@ export function CardFoldsProvider(p: { sessionId: string; children: JSX.Element 
         },
     };
     return <CardFoldsContext.Provider value={folds}>{p.children}</CardFoldsContext.Provider>;
+}
+
+/** The folds the command rows here keep: the live line opens a running command in them, so its row commits as it was left. */
+export function useCardFolds(): CardFolds {
+    return useContext(CardFoldsContext);
 }
 
 /**
@@ -1021,6 +1026,11 @@ function CommandCardContent(p: { tool: ToolBlock }) {
             </Show>
         </div>
     );
+}
+
+/** A command under way, opened on the turn's live line (LiveLine.tsx): the block its row opens to. */
+export function LiveCommandBody(p: { tool: ToolBlock }) {
+    return <CommandBody tool={p.tool} live running={p.tool.status === "running"} code={undefined} task={undefined} time={liveTime(p.tool)} />;
 }
 
 /** An opened command: the whole of it after "$", highlighted, over its output; then how it ended. Built when first opened. */

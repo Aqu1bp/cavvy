@@ -14,6 +14,8 @@ const source = read("components/TurnView.tsx");
 const activity = read("components/blocks/Activity.tsx");
 const grouping = activity.slice(activity.indexOf("export function groupBlocks"), activity.indexOf("// ---------------------------------------------------------------------------"));
 const [clock, setClock] = solid.createSignal(61_000);
+const [opened, setOpened] = solid.createSignal<Record<string, boolean>>({});
+const folds = { get: (id: string) => opened()[id], set: (id: string, open: boolean) => setOpened({ ...opened(), [id]: open }) };
 const stub = () => node("widget");
 const prefs = { showThinking: true, expandActivity: false, motion: "instant" };
 const scope = {
@@ -22,6 +24,9 @@ const scope = {
     // Each state here is a moment of its own, long after the last: the line moves on at once (its dwell is gui-fast-pacing's).
     dwellLeft: () => 0,
     ActivityGroup: stub, Markdown: stub, CopyButton: stub, Spinner: stub, Thinking: stub,
+    // A running command opens to its row's block (Activity.tsx), kept in the rows' folds.
+    LiveCommandBody: (p: any) => { const n = node("cmd-body"); n.props.class = "cmd-body"; solid.createRenderEffect(() => (n.text = String(p.tool.progress ?? ""))); return n; },
+    useCardFolds: () => folds,
     ...Object.fromEntries(["Brain", "ChevronRight", "SquareTerminal", "Info", "AlertCircle", "AlertTriangle", "CircleStop", "GitFork", "Hand", "Clock", "CornerDownRight", "RotateCcw", "BellRing", "MessageSquareText", "FileText"].map((n) => [n, stub])),
 };
 const { LiveLine, motionMs } = component(`${read("components/LiveLine.tsx")}\nconst both = { LiveLine, motionMs };`, "both", scope);
@@ -81,11 +86,20 @@ try {
     assert.ok(text(layers()[0]!).includes("src/a.ts"));
     blocks([done, { t: "tool", id: "cmd", name: "Bash", title: "Bash", input: { command: "bun test", description: "Run the tests" }, status: "running", progress: "a\nb\nc\nd\n", startedAt: 60_000 }]);
     assertLine("Run the tests");
-    const out = all(root).find((n) => hasClass(n, "live-out"))!;
-    assert.deepEqual(out.children.map(text), ["b", "c", "d"], "a running command's last three lines, under the line");
+    // No box under a running command until it's opened (#388); opened, its row's block, with its output.
+    const body = () => all(root).filter((n) => hasClass(n, "cmd-body") || hasClass(n, "live-out"));
+    assert.equal(body().length, 0, "a running command shows no output box until it's opened");
+    const stack = () => all(lines()[0]!).find((n) => hasClass(n, "live-stack"))!;
+    assert.equal(stack().props.role, "button", "a running command's line is a button");
+    assert.equal(stack().props["aria-expanded"], false);
+    stack().props.onClick();
+    assert.equal(stack().props["aria-expanded"], true);
+    assert.equal(body().length, 1, "opened, the line shows the command's block");
+    assert.equal(body()[0]!.text, "a\nb\nc\nd\n");
     blocks([done, { t: "tool", id: "cmd", name: "Bash", title: "Bash", input: { command: "bun test" }, status: "awaiting", startedAt: 60_000 }]);
     assertLine("Waiting for approval");
-    assert.equal(all(root).filter((n) => hasClass(n, "live-out")).length, 0, "the output window goes with its command");
+    assert.equal(body().length, 0, "the block goes with its running command");
+    assert.equal(stack().props.role, undefined, "waiting for approval, the line isn't a button (the approval card is)");
     blocks([{ t: "shell", id: "shell", command: "sleep", running: true }]);
     assert.equal(lines().length, 0, "a command the user ran shows itself");
     blocks([done, { t: "notice", id: "notice", level: "info", text: "notice" }]);

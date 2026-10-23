@@ -6,7 +6,7 @@
 // pace at which rows that land together come in.
 
 import type { Block, Interaction, ThinkingBlock, ToolBlock, Turn } from "@shared/protocol";
-import { sleepSeconds, stripAnsi, tokens, turnDuration } from "./format";
+import { sleepSeconds, tokens, turnDuration } from "./format";
 import { commandDescription, isLive, runningVerb, toolLabel } from "./tool-words";
 
 export type LiveKind = "think" | "tool" | "wait" | "bg" | "special" | "work";
@@ -26,8 +26,8 @@ export interface LiveLineState {
     jobSince?: number;
     /** When this state began (ms), when it's known; else the line counts from when it first showed it. */
     since?: number;
-    /** A running command's output so far: the line shows its last lines under it. */
-    output?: string;
+    /** A running command's call: the line opens to it on a click, the block its row opens to (LiveLine.tsx). */
+    opens?: ToolBlock;
     /** The call it's about, for find. */
     toolId?: string;
     /** The whole of it, on hover. Never a command: a long one made a wall of a tooltip; its row opens to it, with Copy. */
@@ -106,7 +106,7 @@ function toolState(t: ToolBlock): LiveLineState {
     if (t.name === "Bash") {
         // Its description is the label when it has one ("Run the transcript tests"), the command beside it.
         const label = t.status === "queued" ? runningVerb(t) : wait ? "Waiting" : (description ?? "Running");
-        return { ...base, label, detail: first || undefined, mono: true, meta: wait ? `of ${turnDuration(wait * 1000)}` : undefined, output: t.status === "running" ? (t.progress ?? "") : undefined };
+        return { ...base, label, detail: first || undefined, mono: true, meta: wait ? `of ${turnDuration(wait * 1000)}` : undefined, opens: t.status === "running" ? t : undefined };
     }
     return { ...base, label: runningVerb(t), detail: arg, mono: !t.agent && t.name !== "AskUserQuestion", title: arg };
 }
@@ -148,15 +148,6 @@ export function liveLine(o: LiveInput): LiveLineState | undefined {
     if (a.label === "Writing") return undefined;
     if (a.label === "Thinking") return { key: "think", kind: "think", label: "Thinking", since: a.since };
     return { key: `work:${a.label}`, kind: "work", label: a.label, detail: a.detail, since: a.since, title: a.detail };
-}
-
-/** A running command's last `n` lines of output (or fewer), cleaned of terminal codes. */
-export function lastLines(output: string | undefined, n: number): string[] {
-    if (!output) return [];
-    // Only the end is wanted: don't clean a long output to read a few lines of it.
-    const lines = stripAnsi(output.slice(-8192)).split(/\r\n|\r|\n/);
-    while (lines.length && !lines.at(-1)!.trim()) lines.pop();
-    return lines.slice(-n);
 }
 
 /** How an output line reads: a failure, a pass, or plain. */
