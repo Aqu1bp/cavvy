@@ -70,6 +70,7 @@
 // FAKE_TURN_MS        how long every turn works before it answers
 // FAKE_STEER_MS       turn/steer is answered that many ms late (refused with FAKE_STEER_FAIL)
 // FAKE_STEER_DELAY_MS  milliseconds before answering turn/steer (refused then, with FAKE_STEER_FAIL)
+// FAKE_STEP_MS        in the "cmd" scenario, how long the step after the command takes (an interrupt meanwhile ends the turn)
 // Input a turn takes (turn/start's, a turn/steer's) comes as a userMessage item, with the clientUserMessageId it was sent
 //                     with as its clientId, as Codex 0.163 sends it: a steer's at once by default. FAKE_STEER_PENDING=1: as
 //                     Codex does, an accepted steer is pending until the turn takes it, and an interrupt meanwhile drops it
@@ -792,6 +793,8 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         log({ ran: decision === "accept", command: shown });
         if (decision === "accept") notify("item/completed", { threadId, turnId, item: { ...cmd, status: "completed", exitCode: 0, aggregatedOutput: "ok\n" } });
         else notify("item/completed", { threadId, turnId, item: { ...cmd, status: "declined" } });
+        // FAKE_STEP_MS: the model's next step, after the command, takes this long (what was steered meanwhile waits for it).
+        if (process.env.FAKE_STEP_MS) await Promise.race([Bun.sleep(Number(process.env.FAKE_STEP_MS)), new Promise<void>((r) => (t.wake = r))]);
         if (process.env.FAKE_REVIEW_TIMING === "after") approve();
     }
     spend(threadId, turnId, tokens(120, 20, 30, 5));

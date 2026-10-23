@@ -689,6 +689,8 @@ export class CodexTurn {
     private interruptRetries = new Map<string, number>();
     /** Steers sent that Codex hasn't taken into their turn yet, by the clientUserMessageId each went with (steerTurn). */
     private pendingSteers = new Map<string, { turnId: string; text: string; taken?: () => Promise<void>; dropped: () => Promise<void> | void }>();
+    /** userMessage items that took a steer of ours (the last 64): its other event doesn't take another. */
+    private takenItems = new Set<string>();
 
     constructor(
         protected def: ProviderDef,
@@ -2275,6 +2277,9 @@ export class CodexTurn {
 
     /** Codex took input into a turn of the main thread (a userMessage item): the steer of ours it was is delivered. */
     protected steerTaken(item: any) {
+        // Its item/started and item/completed: one item takes one steer, however many wait with the same words.
+        const itemId = typeof item?.id === "string" ? item.id : undefined;
+        if (itemId !== undefined && this.takenItems.has(itemId)) return;
         let id: string | undefined = typeof item?.clientId === "string" && this.pendingSteers.has(item.clientId) ? item.clientId : undefined;
         if (!id && item?.clientId == null) {
             // A Codex that doesn't say whose it is: the first waiting with the same words.
@@ -2284,6 +2289,10 @@ export class CodexTurn {
         const s = id !== undefined ? this.pendingSteers.get(id) : undefined;
         if (!s) return;
         this.pendingSteers.delete(id!);
+        if (itemId !== undefined) {
+            this.takenItems.add(itemId);
+            if (this.takenItems.size > 64) this.takenItems.delete(this.takenItems.keys().next().value!);
+        }
         void s.taken?.().catch(() => {});
     }
 
@@ -2330,7 +2339,8 @@ export class CodexTurn {
 
     /**
      * Add text to the running turn (turn/steer). The user's words start the
-     * next turn if that fails; the harness's own notes (followUp false) don't.
+     * next turn if Codex refuses them or drops them (its turn ended or was
+     * stopped before it took them, #438); the harness's own notes (followUp false) don't.
      * A sub-agent's turn is steered the same way (checked with 0.163), but
      * nothing starts another of its turns.
      */
@@ -2344,14 +2354,14 @@ export class CodexTurn {
             if (followUp) this.addFollowUp(text);
             return;
         }
-        // In the steering chain, so a turn that ends meanwhile waits to see whether Codex took it.
-        const sent = this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: this.turnId, input: this.input(text, []) }).then(
-            () => {},
-            () => {
-                if (followUp) this.addFollowUp(text);
+        // In the steering chain, so a turn that ends meanwhile waits to see whether Codex took it. Not taken, the
+        // user's words are kept as an unsent message: with the next turn, or the next prompt after a stop.
+        const sent = this.steerTurn(this.turnId, this.input(text, []), text, {
+            dropped: () => {
+                if (followUp) this.unsteered.push({ text, images: [], documents: [] });
             },
-        );
-        this.steering = this.steering.then(() => sent);
+        });
+        this.steering = this.steering.then(() => sent).then(() => {});
     }
 }
 

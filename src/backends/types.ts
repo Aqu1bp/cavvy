@@ -204,7 +204,8 @@ export interface TurnSink {
     /**
      * Drained messages the backend never received (its turn ended before it took
      * them). They're in the transcript already; the host saves them for the next
-     * turn, so they reach it even after a restart. Never one with attachments: that
+     * turn, so they reach it even after a restart, with their images (a prompt's,
+     * kept by the backend: #438). Never a queued message with attachments: that
      * stays queued until it goes (SteerMessage.settle).
      */
     undelivered?(messages: SteerMessage[]): void;
