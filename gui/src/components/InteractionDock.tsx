@@ -298,7 +298,7 @@ function QuestionCard(p: { sessionId: string; it: QuestionInteraction }) {
     });
     return (
         <>
-            <Head icon={<MessageCircleQuestion size={16} />} title={p.it.question} aside={!p.it.options.length ? "Type your answer" : p.it.multi ? "Pick any that apply" : "Pick one, or type your own answer"} />
+            <Head icon={<MessageCircleQuestion size={16} />} title={p.it.question} sub={!p.it.options.length ? "Type your answer" : p.it.multi ? "Pick any that apply" : "Pick one, or type your own answer"} />
             <div class="itab-body">
                 <div class="q-options">
                     <For each={p.it.options}>
@@ -388,7 +388,7 @@ function SecretCard(p: { sessionId: string; it: SecretInteraction }) {
     });
     return (
         <>
-            <Head icon={<KeyRound size={16} />} title={`The agent asks for a secret: ${p.it.name}`} aside="Only its shell commands see the value" />
+            <Head icon={<KeyRound size={16} />} title={`The agent asks for a secret: ${p.it.name}`} sub="Only its shell commands see the value" />
             <div class="itab-body">
                 <p class="secret-purpose selectable" id={descriptionId}>{p.it.purpose}<span class="sr-only"> At least {MIN_SECRET} characters.</span></p>
                 <div class="secret-field">
@@ -460,7 +460,7 @@ function PlanCard(p: { sessionId: string; it: PlanInteraction }) {
     });
     return (
         <>
-            <Head icon={<ClipboardList size={16} />} title="Plan ready for review" aside="Nothing has been changed yet" />
+            <Head icon={<ClipboardList size={16} />} title="Plan ready for review" sub="Nothing has been changed yet" />
             <div class="itab-body">
                 <div class="plan-body" ref={body}>
                     <Markdown text={p.it.plan} />
