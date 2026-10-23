@@ -23,17 +23,17 @@ function find(tree: unknown, match: (node: Node) => boolean): Node | undefined {
     }
 }
 
-async function mountDialog(branch: string | undefined) {
+async function mountDialog(branch: string | undefined, o: { paths?: string[]; files?: { path: string; pathToken?: string }[] } = {}) {
     const effects: (() => unknown)[] = [];
     const calls: unknown[][] = [];
     const sha = "1234567890abcdef1234567890abcdef12345678";
-    const request = { id: "session", paths: ["selected.txt"] };
+    const request = { id: "session", paths: o.paths ?? ["selected.txt"] };
     let activeRequest: typeof request | undefined = request;
     const dependencies = {
         createSignal: (initial: unknown) => {
             let value = initial;
             return [() => value, (next: unknown) => {
-                value = next;
+                value = typeof next === "function" ? next(value) : next;
             }];
         },
         createEffect: (effect: () => unknown) => effects.push(effect),
@@ -42,7 +42,7 @@ async function mountDialog(branch: string | undefined) {
         Show: "Show",
         app: { activeId: request.id },
         handleFor: () => ({}),
-        rpc: { call: async () => ({ repo: true, head: { branch, sha }, files: [{ path: "selected.txt" }] }) },
+        rpc: { call: async () => ({ repo: true, head: { branch, sha }, files: o.files ?? [{ path: "selected.txt" }] }) },
         gitCommit: async (...args: unknown[]) => {
             calls.push(args);
         },
@@ -102,4 +102,20 @@ test("⌘↵ in the message commits, as the button's key cap says; a plain Enter
     await Promise.resolve();
     expect(prevented).toBe(1);
     expect(d.calls).toEqual([[d.request.id, d.request.paths, "fix: the thing", { branch: "feature", detached: false }, []]]);
+});
+
+test("a file shown redacted is checked, and left out, by its handle, as the Review pane asks for it", async () => {
+    const redacted = { path: "[REDACTED X].txt", pathToken: "git:one" };
+    const d = await mountDialog("feature", { paths: ["selected.txt", "git:one"], files: [{ path: "selected.txt" }, redacted] });
+    const tree = d.tree();
+    const row = find(tree, (n) => n.tag === "For")!.children.flat(Infinity)[0] as (f: unknown) => Node;
+    const box = () => find(row(redacted), (n) => n.tag === "input")!;
+    expect(box().props.checked).toBe(true);
+    box().props.onChange({ currentTarget: { checked: false } });
+    expect(box().props.checked).toBe(false);
+    find(tree, (n) => n.tag === "textarea")!.props.onInput({ currentTarget: { value: "fix: plain only" } });
+    find(tree, (n) => n.tag === "button" && n.props.class === "btn primary")!.props.onClick();
+    await Promise.resolve();
+    // Unchecked, its handle no longer goes with the commit.
+    expect(d.calls).toEqual([[d.request.id, ["selected.txt"], "fix: plain only", { branch: "feature", detached: false }, []]]);
 });

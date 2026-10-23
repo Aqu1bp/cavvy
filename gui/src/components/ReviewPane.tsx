@@ -453,28 +453,6 @@ const selectionIn = (el: Element) => {
     return Boolean(s && !s.isCollapsed && ((s.anchorNode && el.contains(s.anchorNode)) || (s.focusNode && el.contains(s.focusNode))));
 };
 
-/** A file's hunks the list's reply left out: asked for by themselves; a spinner, or why they can't be had. */
-function Deferred(p: { file: Row; full: (f: Row) => Promise<{ file?: Row; error?: string }>; onLoad: (f: Row) => void }) {
-    const [full, { refetch }] = createResource(
-        () => p.file,
-        async (f) => {
-            const r = await p.full(f);
-            if (r.file) p.onLoad(r.file);
-            return r;
-        },
-    );
-    return (
-        <div class="rv-empty rf-wait selectable">
-            <Show when={!full.loading && full()?.error} fallback={<Spinner size={16} />}>
-                {full()!.error}{" "}
-                <button class="link-btn" onClick={() => void refetch()}>
-                    Try again
-                </button>
-            </Show>
-        </div>
-    );
-}
-
 /**
  * One file in the stack: a sticky header (fold, git's letter, name and folder, comments, +a −d, open) over
  * its diff. The diff is drawn once the file nears the view, and put away when it's far and nothing's under
@@ -542,14 +520,21 @@ function FileCard(p: {
         ),
     );
 
-    // Its hunks, when the list's reply left them out (Deferred): kept while the diff is put away, and only
-    // for the file they were asked for (the card stays as a refresh changes the file under it).
-    const fullKey = (f: Row) => JSON.stringify([f.path, f.pathToken ?? null, f.added, f.removed]);
-    const [got, setGot] = createSignal<{ key: string; file: Row }>();
-    const shown = (): Row => {
-        const g = got();
-        return p.file.deferred && g?.key === fullKey(p.file) ? g.file : p.file;
-    };
+    // Its hunks, when the list's reply left them out: asked for once the diff is drawn, and again for each new
+    // listing (a refresh: the file may have changed even if its counts didn't), not when it's only drawn again.
+    // The last ones stay on screen while new ones load, so a comment being written stays with them.
+    type Full = { of: Row; file?: Row; error?: string };
+    let last: Full | undefined;
+    const [full, { refetch }] = createResource<Full, Row>(
+        () => drawn() && p.file.deferred && p.file,
+        async (f, { refetching }) => (last = !refetching && last?.of === f ? last : { of: f, ...(await p.full(f)) }),
+    );
+    const [got, setGot] = createSignal<Row>();
+    createEffect(() => {
+        const r = full();
+        if (r?.file) setGot(r.file);
+    });
+    const shown = (): Row => (p.file.deferred ? (got() ?? p.file) : p.file);
     const one = createMemo(() => oneSided(shown()));
     const rows = () => stackRows(shown());
     const ch = () => changeOf(p.file);
@@ -607,7 +592,19 @@ function FileCard(p: {
             <div class="rf-b">
                 <div class="rf-in" ref={body}>
                     <Show when={drawn()} fallback={<Show when={!p.closed}>{<div class="rf-ph" style={held() ? { height: `${held()}px` } : { "--rows": rows() }} />}</Show>}>
-                        <Show when={!shown().deferred} fallback={<Deferred file={p.file} full={p.full} onLoad={(file) => setGot({ key: fullKey(p.file), file })} />}>
+                        <Show
+                            when={!shown().deferred}
+                            fallback={
+                                <div class="rv-empty rf-wait selectable">
+                                    <Show when={!full.loading && full()?.error} fallback={<Spinner size={16} />}>
+                                        {full()!.error}{" "}
+                                        <button class="link-btn" onClick={() => void refetch()}>
+                                            Try again
+                                        </button>
+                                    </Show>
+                                </div>
+                            }
+                        >
                             <DiffView diff={shown()} split={p.split && !one()} oneSide={one()} windowed comments={p.comments} />
                         </Show>
                     </Show>
@@ -886,7 +883,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
         return out;
     });
     // Cards made so far: the first screen's and a few more at once, then a part a frame, so a 300-file
-    // view opens like a one-file one. Another view starts over.
+    // view opens like a one-file one. Another view starts over (keeping the cards it still lists).
     const [made, setMade] = createSignal(0);
     const first = () => untrack(eager).size + FIRST_CARDS;
     createEffect(on(() => [shownScope(), base(), turnId(), worktree()], () => setMade(0), { defer: true }));
@@ -897,7 +894,16 @@ export function ReviewPane(p: { handle: SessionHandle }) {
         const f = requestAnimationFrame(() => setMade(m + MORE_CARDS));
         onCleanup(() => cancelAnimationFrame(f));
     });
-    const madeKeys = createMemo(() => keys().slice(0, made()), [], { equals: sameKeys });
+    // A card still listed in another view (another base, say) stays as it is, a comment being written with it;
+    // the rest are made a part at a time again.
+    const madeKeys = createMemo<readonly string[]>(
+        (was) => {
+            const kept = new Set(was);
+            return keys().filter((k, i) => i < made() || kept.has(k));
+        },
+        [],
+        { equals: sameKeys },
+    );
     const setFold = (ks: readonly string[], fold: boolean) =>
         setClosed((old) => {
             const next = new Set(old);
@@ -923,8 +929,9 @@ export function ReviewPane(p: { handle: SessionHandle }) {
         });
     };
     // A file asked for: scrolled to once its card is there (listed, or fetched by itself above the rest).
+    // Not against the last view's answer, still shown while the new one loads: its cards are about to go.
     createEffect(() => {
-        if (!jump()) return;
+        if (!jump() || loading()) return;
         const f = listedPick();
         const there = f ? cardKey(f) : asked()?.file ? ASKED : undefined;
         if (!there) return;
@@ -1047,8 +1054,13 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                     </div>
                 </Show>
                 <div ref={listEl} class="rf-list">
-                    <Show when={asked()?.file} keyed>
-                        {(f) => card(ASKED, () => asked()?.file ?? f, own() ? commentsFor(f) : undefined)}
+                    {/* By the pick, not the file's object: fetched again, the same file updates in place. */}
+                    <Show when={asked()?.file && JSON.stringify([own() ? null : shownRoot(), pickKey(picked()!)])} keyed>
+                        {(k) => {
+                            let last = asked()!.file!;
+                            const f = () => (last = asked()?.file ?? last);
+                            return card(ASKED, f, JSON.parse(k)[0] === null ? commentsFor(f()) : undefined);
+                        }}
                     </Show>
                     <For each={madeKeys()}>
                         {(k) => {
