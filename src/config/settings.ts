@@ -1,4 +1,4 @@
-import { closeSync, existsSync, fchmodSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { accessSync, closeSync, constants, existsSync, fchmodSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { randomBytes } from "crypto";
 import { dirname, isAbsolute, join, basename, resolve } from "path";
 import { ensureDir, paths } from "./paths";
@@ -365,6 +365,8 @@ export function writeJson(file: string, data: unknown, mode = 0o644) {
     } catch {
         // new file: it gets `mode`, filtered by the umask like any new file
     }
+    // Rename only needs the directory to be writable, so check the file itself: a read-only settings file fails here as an in-place write would.
+    if (existed) accessSync(target, constants.W_OK);
     const tmp = join(dirname(target), `.${basename(target)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
     const text = JSON.stringify(data, null, 2) + "\n";
     let fd: number | undefined;

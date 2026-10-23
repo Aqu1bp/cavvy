@@ -54,6 +54,17 @@ describe("writeJson is atomic", () => {
         expect(mode(f)).toBe(0o600);
     });
 
+    test("a read-only existing file is not replaced", () => {
+        const d = dir();
+        const f = join(d, "gui.json");
+        writeJson(f, { old: true });
+        chmodSync(f, 0o400);
+        expect(() => writeJson(f, { old: false })).toThrow();
+        expect(JSON.parse(readFileSync(f, "utf-8"))).toEqual({ old: true });
+        expect(mode(f)).toBe(0o400);
+        expect(readdirSync(d)).toEqual(["gui.json"]);
+    });
+
     test("a failed rename leaves the old content and no temp file", () => {
         const d = dir();
         const f = join(d, "settings.json");
