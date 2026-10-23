@@ -9,7 +9,7 @@
 //   FUZZ_SEED=n        replay one seed            FUZZ_RUNS=n   how many seeds (default 3: 1..3)
 //   FUZZ_STEPS=n       operations per run (12)     FUZZ_BASE=n   the first seed (1)
 //   FUZZ_OPS=file      replay exactly this operation list (JSON, as a failure saves it)
-//   FUZZ_UNGATE=424,…|all   run what a gate below skips
+//   FUZZ_UNGATE=n,…|all     run what a gate below skips (by issue number)
 //   FUZZ_SHRINK=1      on a failure, drop operations one at a time while it still fails the same way
 //   FUZZ_VERBOSE=1     print each run's operations
 //   FUZZ_CONTINUE=1    go on after a failing seed; all failures are reported at the end
@@ -38,13 +38,9 @@ const { forgetClient } = await import("../src/providers/models");
 
 const ungated = new Set((process.env.FUZZ_UNGATE ?? "").split(",").map((s) => s.trim()).filter(Boolean));
 const gate = (issue: number) => !ungated.has("all") && !ungated.has(String(issue));
-// The gates this test started with (#406, #407 and #410–#413) went with their fixes (#416–#419, #422).
-const GATES = {
-    // #424: Esc after Claude Code started a live session's first prompt, before its system/init: the next prompt's
-    // catch-up carries the stopped message again into the same thread. The generator makes no `init` interrupts
-    // (FUZZ_OPS replays still run them).
-    KNOWN_424: gate(424),
-};
+// The gates this test started with (#406, #407 and #410–#413) went with their fixes (#416–#419, #422), and #424's
+// (Esc between Claude Code's `started` and its system/init) with its own. A new one: `KNOWN_n: gate(n)`.
+const GATES: Record<string, boolean> = {};
 
 const RUNS = Number(process.env.FUZZ_RUNS ?? 3);
 const STEPS = Number(process.env.FUZZ_STEPS ?? 12);
@@ -337,7 +333,7 @@ function candidates(w: World, r: ReturnType<typeof prng>): [number, Op | Op[]][]
         if (hows.length) out.push([3, { k: "fail", s, how: r.pick(hows) }]);
     }
     // Esc once the CLI has the prompt, or `at` ms after sending it (while it may be on its way).
-    out.push([2, { k: "interrupt", s, ...(r.next() < 0.5 ? { at: r.int(60) } : {}), ...(cli === "claude-code" && r.next() < 0.3 && !GATES.KNOWN_424 ? { init: 300 } : {}) }]);
+    out.push([2, { k: "interrupt", s, ...(r.next() < 0.5 ? { at: r.int(60) } : {}), ...(cli === "claude-code" && r.next() < 0.3 ? { init: 300 } : {}) }]);
     out.push([2, { k: "steer", s }]);
     if (cli && w.live) out.push([3, { k: "wake", s }]);
     if (cli === "codex" && w.live) out.push([1, { k: "goal", s }]);

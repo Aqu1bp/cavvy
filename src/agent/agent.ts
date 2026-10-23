@@ -2482,12 +2482,14 @@ export class Agent {
      * The catch-up cursor: how much of this session a CLI's native session has (BackendSession.synced). The next
      * prompt carries what comes after it (missedPrompt), so it moves only past what reached the CLI:
      * - a turn's prompt, once the CLI has it: as the CLI says its session id (runBackendTurn's SessionHost), and at
-     *   the turn's end (endBackendTurn), whether it then answered, errored or was stopped;
+     *   the turn's end (endBackendTurn), whether it then answered, errored or was stopped (a live Claude Code turn Esc
+     *   stopped after Claude Code took its prompt ends only once its session id is said, #424);
      * - not a prompt the CLI refused before taking it, or that was stopped before it went (BackendResult.refused, #407:
      *   a process that didn't start, Codex not signed in, a turn Codex answered no to, Esc while a process was still
-     *   starting): back where it was (refusedBackendTurn), whatever the turn's end (error, stop, hook). A CLI that took the prompt
-     *   and then failed (Claude Code signed out or at its limit, Codex at its limit) has it in its transcript, and sends
-     *   it again on resume: sending it again here would double it;
+     *   starting, Esc on a live prompt Claude Code then dropped from its queue, #424): back where it was
+     *   (refusedBackendTurn), whatever the turn's end (error, stop, hook). A CLI that took the prompt and then failed
+     *   (Claude Code signed out or at its limit, Codex at its limit) has it in its transcript, and sends it again on
+     *   resume: sending it again here would double it;
      * - never by the CLI's own compaction (compactBackend, #406): it was sent nothing of this session's;
      * - an adopted turn's (one the CLI started by itself) moves past what it was never sent, kept apart (unsent).
      */

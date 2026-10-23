@@ -638,7 +638,7 @@ export class LiveCliSession {
             return;
         }
         if (e.t === "turn_event") return void (turn.sink ? turn.sink.emit(e.event) : turn.held.push(e));
-        this.finish(turn, { ref: turn.ref, reason: e.reason, error: e.error, usage: e.usage, limit: e.limit, answers: e.answers });
+        this.finish(turn, { ref: turn.ref, reason: e.reason, error: e.error, usage: e.usage, limit: e.limit, answers: e.answers, refused: e.refused });
     }
 
     /** A turn the CLI started by itself, or an event that names one known here (or one ended here unanswered). */

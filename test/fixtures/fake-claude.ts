@@ -65,6 +65,8 @@
 //                    turn then fails (auth-failed, rate-limit) is in it too, as Claude Code 2.1.304 keeps it (#417).
 // FAKE_INIT_DELAY_MS  a turn's system/init comes this long after it started (its "started" lifecycle went out, and
 //                    the prompt is in the transcript): a window in which the prompt is taken but its turn not yet seen
+// FAKE_START_DELAY_MS  a prompt waits in the queue this long (after its "queued" lifecycle) before it starts: a window in
+//                    which cancel_async_message withdraws it (cancelled: true), and it never reaches the transcript
 // FAKE_CLAUDE_ENV_FILE  a JSON file of FAKE_* settings, read again with each prompt (as fake-codex's FAKE_ENV_FILE):
 //                    a test changes a live process's scenario between its turns
 // FAKE_RATE_LIMIT    a JSON file: the rate_limit_info of a rate_limit_event sent after system/init
@@ -1307,6 +1309,9 @@ for await (const chunk of Bun.stdin.stream()) {
                     lifecycle(uuid, "queued");
                 }
                 turnTail = turnTail.then(async () => {
+                    // FAKE_START_DELAY_MS: the prompt waits in the queue this long before it starts (it can be withdrawn meanwhile).
+                    syncEnv();
+                    if (process.env.FAKE_START_DELAY_MS) await Bun.sleep(Number(process.env.FAKE_START_DELAY_MS));
                     if (uuid && withdrawn.has(uuid)) return lifecycle(uuid, "cancelled");
                     if (uuid) waiting.delete(uuid);
                     busy = true;

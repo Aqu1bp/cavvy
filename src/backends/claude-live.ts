@@ -184,6 +184,11 @@ export class ClaudeConnection implements CliConnection {
     private stopping = new Set<string>();
     /** Prompts Esc withdrew before Claude Code started them: stopped if it starts one anyway. */
     private withdrawn = new Set<string>();
+    /**
+     * Harness turns Esc stopped after Claude Code took their prompt, before its system/init (#424): stopped as that
+     * comes (startTurn), with the message to send in its place (sendNow), if any.
+     */
+    private stopOnStart = new Map<string, string | undefined>();
     private cur?: CliTurn;
     /** The prompt command_lifecycle said started, before its system/init. */
     private startedUuid?: string;
@@ -304,15 +309,15 @@ export class ClaudeConnection implements CliConnection {
         return { ref: uuid };
     }
 
-    /**
-     * Esc on a turn (a prompt's, or an adopted wake's). Never sent when the turn isn't the one Claude Code runs:
-     * a prompt it hasn't started is withdrawn instead; one already answered is left alone.
-     */
     /** The turn Claude Code runs is being stopped (an interrupt is under way). */
     stoppingNow(): boolean {
         return this.cur !== undefined && this.stopping.has(this.cur.ref);
     }
 
+    /**
+     * Esc on a turn (a prompt's, or an adopted wake's). Never sent when the turn isn't the one Claude Code runs:
+     * a prompt it hasn't started is withdrawn instead (unstartedPrompt); one already answered is left alone.
+     */
     async interrupt(ref: string): Promise<void> {
         this.stopping.add(ref);
         const followUp = this.followUp;
@@ -321,7 +326,10 @@ export class ClaudeConnection implements CliConnection {
             const waiting = [...this.prompts.entries()].filter(([, p]) => p.ref === ref && (p.state === "sent" || p.state === "queued"));
             liveDebug("claude", "interrupt: not running", { ref, waiting: waiting.length });
             if (!waiting.length) return;
-            // Not started yet (Claude Code is on another turn, or about to start it): withdrawn, and the turn ends here.
+            const own = waiting.find(([uuid, p]) => uuid === ref && p.kind === "prompt");
+            if (own) return this.unstartedPrompt(ref, own[1], followUp);
+            // Steering messages still to come as a turn of their own (the turn they were for has ended): withdrawn, and
+            // the turn ends here. Its prompt reached Claude Code before them.
             for (const [uuid, p] of waiting) {
                 p.state = "cancelled";
                 this.withdrawn.add(uuid);
@@ -348,6 +356,39 @@ export class ClaudeConnection implements CliConnection {
         }
         liveDebug("claude", "interrupt", { ref, agents: left.length });
         void this.control({ subtype: "interrupt" });
+    }
+
+    /**
+     * Esc on a turn whose prompt Claude Code hasn't begun a turn for (no system/init yet). Whether its session has the
+     * prompt decides how the turn ends (#424):
+     * - taken (command_lifecycle said it started, or it's too late to withdraw it: cancel_async_message answered
+     *   `cancelled: false`): it's in Claude Code's transcript, and the system/init naming its session is on its way.
+     *   The turn is stopped as that comes (startTurn) and ends with its result, as one stopped after its start does,
+     *   so its session is known and the prompt counts as delivered. Ended here instead, it would leave the prompt
+     *   in a session Harness doesn't know of, and the next prompt would bring it again as context;
+     * - dropped (`cancelled: true`, or its lifecycle said cancelled): never in its transcript, so the turn ends
+     *   refused (LiveTurnResult.refused), and the prompt goes again with the next;
+     * - not known (no answer, an older Claude Code): withdrawn as before, stopped unseen if it starts after all,
+     *   and counted as delivered.
+     */
+    private async unstartedPrompt(ref: string, p: PromptInfo, followUp: string | undefined): Promise<void> {
+        this.stopOnStart.set(ref, followUp);
+        if (this.startedUuid === ref) {
+            liveDebug("claude", "interrupt: taken, stopping it as it starts", { ref });
+            return;
+        }
+        const r = await this.control({ subtype: "cancel_async_message", message_uuid: ref });
+        const cancelled: unknown = r?.subtype === "success" ? r.response?.cancelled : undefined;
+        liveDebug("claude", "interrupt: withdraw", { ref, cancelled, state: p.state });
+        // Its turn started meanwhile (and is being stopped), or ended (Claude Code exited).
+        if (!this.stopOnStart.has(ref) || this.cur?.ref === ref || p.state === "started" || p.state === "done") return;
+        const dropped = cancelled === true || p.state === "cancelled";
+        if (!dropped && cancelled === false) return;
+        this.stopOnStart.delete(ref);
+        p.state = "cancelled";
+        if (!dropped) this.withdrawn.add(ref);
+        this.endTurn(ref, "aborted", undefined, undefined, dropped);
+        if (followUp) this.sendCarrier(followUp);
     }
 
     /** Send a message in place of the running turn, and ask for it at once: how Claude Code answered. */
@@ -609,6 +650,13 @@ export class ClaudeConnection implements CliConnection {
                 this.events({ t: "turn_started", ref, origin: "user", answers: uuids });
                 this.stillDue();
             }
+            // Esc came after Claude Code took the prompt, before this (unstartedPrompt): stopped now, as on a running turn.
+            if (this.stopOnStart.has(ref)) {
+                this.followUp = this.stopOnStart.get(ref);
+                this.stopOnStart.delete(ref);
+                liveDebug("claude", "turn: started after Esc; stopping it", { ref });
+                void this.interrupt(ref);
+            }
             return;
         }
         this.startWake(`wake-${++wakeRefs}`, { label: this.dues[0]?.label, ...(this.dues[0]?.report ? { report: this.dues[0].report } : {}) });
@@ -730,8 +778,9 @@ export class ClaudeConnection implements CliConnection {
         this.endTurn(ref, reason, reason === "error" ? failure : undefined, reason === "error" && this.limitHit ? { resetsAt: this.limits?.reached ? this.limits.resetsAt : undefined } : undefined);
     }
 
-    /** The harness turn is over: once only. */
-    private endTurn(ref: string, reason: TurnEndReason, error?: string, limit?: { resetsAt?: number }) {
+    /** The harness turn is over: once only. `refused`: its prompt never reached Claude Code's session (unstartedPrompt). */
+    private endTurn(ref: string, reason: TurnEndReason, error?: string, limit?: { resetsAt?: number }, refused = false) {
+        this.stopOnStart.delete(ref);
         const answers = this.answeredBy.get(ref) ?? [ref];
         for (const id of this.outstanding.get(ref) ?? []) {
             const p = this.prompts.get(id);
@@ -743,7 +792,7 @@ export class ClaudeConnection implements CliConnection {
         this.stopping.delete(ref);
         for (const [id, p] of this.prompts) if (p.ref === ref && (p.state === "done" || p.state === "cancelled" || p.state === "started")) this.prompts.delete(id);
         liveDebug("claude", "turn: ended", { ref, reason, ...(error === undefined ? {} : { error: redact(error) }) });
-        this.events({ t: "turn_ended", ref, answers: answers.length ? answers : [ref], reason, ...(error ? { error } : {}), ...(limit ? { limit } : {}) });
+        this.events({ t: "turn_ended", ref, answers: answers.length ? answers : [ref], reason, ...(error ? { error } : {}), ...(limit ? { limit } : {}), ...(refused ? { refused } : {}) });
         this.stillDue();
     }
 
