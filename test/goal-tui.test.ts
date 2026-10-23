@@ -229,6 +229,48 @@ test("a CLI's goal ending is said once, as it ends, not when a later run reports
     expect(app.nativeGoal).toBeUndefined();
 });
 
+/** Claude Code and Codex turned on and listed, so the app switches between them (no turn runs: nothing is started). */
+async function listClis(app: any) {
+    const registry = await import("../src/providers/registry");
+    for (const id of ["claude-code", "codex"]) registry.saveAgentConfig(id, { path: "/usr/bin/false" });
+    app.listings = ["claude-code", "codex"].map((id) => ({ provider: { id }, models: [{ provider: id, id: "default", name: id === "codex" ? "Codex" : "Claude Code", contextWindow: 200_000 }] }));
+}
+
+test("switching away from Codex with its goal going on pauses it there, and coming back says how to resume (#412)", async () => {
+    const { app } = testApp([], undefined, { provider: "codex", id: "default", name: "Codex" });
+    await listClis(app);
+    const said = () => app.session.notices.map((n) => n.text);
+    const asked: string[] = [];
+    // The backend's side (thread/goal/set in Codex's app-server) is test/goal-native.test.ts's.
+    (app.agent as any).pauseNativeGoal = async (provider: string) => (asked.push(provider), { provider: "codex", condition: "the docs build", status: "paused", since: 1 });
+    (app as any).nativeGoalReported({ provider: "codex", condition: "the docs build", status: "active", since: 1 });
+    expect(await app.setModel("claude-code:default", { quiet: true })).toBe(true);
+    expect(asked).toEqual(["codex"]);
+    expect(app.nativeGoal).toBeUndefined();
+    expect(said()).toContain("Codex's goal is paused while this session is on another model: the docs build. Switch back to Codex and send /goal resume to go on with it.");
+    // A goal Codex reports now isn't this session's (it's on Claude Code).
+    (app as any).onAgentEvent({ type: "goal", goal: { provider: "codex", condition: "the docs build", status: "paused", since: 1 } });
+    expect(app.nativeGoal).toBeUndefined();
+    expect(await app.setModel("codex:default", { quiet: true })).toBe(true);
+    expect(app.nativeGoal).toMatchObject({ provider: "codex", condition: "the docs build", status: "paused" });
+    expect(said()).toContain("Codex's goal is paused: the docs build. /goal resume goes on with it.");
+    // Said once: switching again to Codex says nothing more.
+    const before = said().length;
+    expect(await app.setModel("codex:default", { quiet: true })).toBe(true);
+    expect(said()).toHaveLength(before);
+});
+
+test("a Codex goal that couldn't be paused as the session switched away is said (#412)", async () => {
+    const { app } = testApp([], undefined, { provider: "codex", id: "default", name: "Codex" });
+    await listClis(app);
+    const said = () => app.session.notices.map((n) => n.text);
+    (app.agent as any).pauseNativeGoal = async () => {
+        throw new Error("Codex didn't answer in time");
+    };
+    expect(await app.setModel("claude-code:default", { quiet: true })).toBe(true);
+    expect(said()).toContain("Couldn't pause Codex's goal (Codex didn't answer in time). Codex may go on with it by itself; its turns aren't taken up while this session is on another model.");
+});
+
 test("a CLI's goal doesn't follow /clear or /resume into another session", async () => {
     const { app } = testApp([]);
     const first = app.session;

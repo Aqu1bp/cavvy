@@ -17,6 +17,7 @@
 // - Plan limits come with turns; between them status reads go to the live
 //   app-server (account/rateLimits/read).
 
+import type { NativeGoal } from "../agent/goal";
 import type { PermissionMode } from "../permissions/modes";
 import type { ProviderDef } from "../providers/registry";
 import type { PlanLimits } from "../server/protocol";
@@ -196,6 +197,8 @@ export class CodexLiveConnection extends CodexTurn {
     private hostReports = new Map<string, string>();
     private hostStarting = false;
     private hostFailures = 0;
+    /** The session switched to another model with the goal going on (leaveGoal): a turn Codex starts for it is stopped, until a run is back here. */
+    private goalLeft = false;
     private terminals = new Map<string, Terminal>();
     /** Sub-agent threads still working after their turn ended. */
     private bgSubs = new Map<string, { stopping?: boolean }>();
@@ -563,6 +566,8 @@ export class CodexLiveConnection extends CodexTurn {
         this.steerWaiting = false;
         this.restartFor = undefined;
         this.goalOnRestart = false;
+        // Back on Codex: the goal stays paused until the user resumes it, and turns Codex starts are the session's again.
+        this.goalLeft = false;
         this.adopted = false;
         this.modeKilled = undefined;
         this.compacting = run.compact;
@@ -685,6 +690,31 @@ export class CodexLiveConnection extends CodexTurn {
         this.restartFor = undefined;
         this.compacting = false;
         this.flushNotesSoon();
+    }
+
+    /**
+     * The session switched to another model (#412): Codex's goal pauses in the thread, as T3 Code pauses it when it lets
+     * a thread go, so Codex starts no turns of its own for it under a session that no longer runs on it. A turn it
+     * started for it that's running now is stopped, and so is one it starts before the pause is in (announce). Its
+     * background terminals and sub-agents go on, and what they report reaches the session's model (Agent.cannotAdopt).
+     * Going on with it is the user's, back on Codex: /goal resume. Returns the goal as paused, or undefined with none
+     * going on.
+     */
+    async leaveGoal(): Promise<NativeGoal | undefined> {
+        if (this.rpc.closed || !this.threadId || this.liveRun) return undefined;
+        // Paused for a mode change, a turn of the host's would make it active again (hostTurn): no longer.
+        const going = this.goal?.status === "active" || this.goalPausedForMode;
+        this.goalPausedForMode = false;
+        if (!going) return undefined;
+        this.goalLeft = true;
+        liveDebug("codex", "goal paused: the session switched to another model", { thread: this.threadId });
+        try {
+            const r = await withTimeout(this.rpc.request("thread/goal/set", { threadId: this.threadId, status: "paused" }), 2000, "Codex didn't answer in time");
+            this.setGoal(r?.goal);
+        } finally {
+            for (const id of this.running.keys()) if (!this.ownTurns.has(id) && !this.hostTurns.has(id)) void this.interruptTurn(id);
+        }
+        return this.goal ?? undefined;
     }
 
     /** A mode change (setMode): Codex's turns under another policy stop, and an idle goal goes on under the mode. */
@@ -939,6 +969,8 @@ export class CodexLiveConnection extends CodexTurn {
         const origin = this.liveRun?.turns.has(id) ? "user" : this.hostTurns.has(id) ? "wake" : "goal";
         liveDebug("codex", "turn started", { thread: this.threadId, turn: id, origin, starting: this.starting });
         this.events({ t: "turn_started", ref: id, origin });
+        // Started for the goal before its pause was in, the session being on another model now: it stops at once.
+        if (origin === "goal" && this.goalLeft) void this.interruptTurn(id);
     }
 
     /** The turn/start is answered (or failed, or its turn claimed): the turns that started meanwhile are told as whose they are. */
@@ -1601,6 +1633,14 @@ export class CodexLive {
         liveDebug("codex", "live sessions off: releasing the app-server", { session: t.sessionKey, tasks: running });
         await this.drop(t.sessionKey);
         if (running) t.sink.emit({ type: "notice", level: "warn", message: `Live sessions are off (agentCli.liveSessions), so Codex's app-server for this session was stopped, and ${running === 1 ? "its background task" : `its ${running} background tasks`} with it.` });
+    }
+
+    /** The session switched to another model: its thread goal pauses (CodexLiveConnection.leaveGoal). */
+    async pauseGoal(key: string): Promise<NativeGoal | undefined> {
+        const s = this.pool.get(key, this.providerDef.id);
+        const conn = (s?.adapter as CodexLiveAdapter | undefined)?.conn;
+        if (!s || s.state === "dead" || !conn) return undefined;
+        return conn.leaveGoal();
     }
 
     /** The user changed the mode: every live connection checks its turns against it. */

@@ -29,7 +29,7 @@ import type { BackendWake } from "../backends/types";
 import { IdleCompactTimer } from "../agent/idle-compact";
 import { DELEGATE_TOOL } from "../agent/delegation";
 import { fireHooks, type HookEvent } from "../agent/hooks";
-import { backgroundWork, canAnswerOneOff, GoalController, limitedCodexGoal, loopGoalDropped, nativeGoalEnd, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, queuedGoalSet, sessionTokens, type NativeGoal } from "../agent/goal";
+import { backgroundWork, canAnswerOneOff, GoalController, limitedCodexGoal, loopGoalDropped, nativeGoalBack, nativeGoalEnd, nativeGoalLeft, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, queuedGoalSet, sessionTokens, type NativeGoal } from "../agent/goal";
 import { sessionHookServices, sessionStartHooks } from "../agent/session-hooks";
 import { Notifier } from "./notify";
 import { Session } from "../agent/session";
@@ -619,8 +619,8 @@ export class App {
         this.model = info;
         this.client = client;
         this.schedules.cancelLimitResume("model");
-        // A CLI's own goal stays with that CLI: another provider doesn't carry it on.
-        if (this.nativeGoal && this.nativeGoal.provider !== info.provider) this.nativeGoal = undefined;
+        // A CLI's own goal stays with that CLI: another provider doesn't carry it on, and it pauses there (#412).
+        await this.switchNativeGoal(this.agent?.model.provider, info);
         this.dropLoopGoal();
         this.updateHelpers();
         if (!this.agent) this.makeAgent();
@@ -1011,6 +1011,46 @@ export class App {
 
     /** Claude Code's or Codex's own goal, as it last reported it (src/agent/goal.ts NativeGoal). */
     nativeGoal?: NativeGoal;
+    /** A CLI's goal paused as the session switched away from that CLI (#412): shown again, with how to go on, back on it. */
+    private goalLeft?: NativeGoal;
+
+    /**
+     * The model switched from provider `from` to `to`. A CLI's own goal stays with that CLI: another provider doesn't
+     * carry it on, and one going on pauses there, so the CLI starts no turns of its own for it while the session is on
+     * another model (its background work goes on). Back on that CLI, a goal left paused shows again, and how to go on is
+     * said. As the app's server does (Runtime.switchNativeGoal).
+     */
+    private async switchNativeGoal(from: string | undefined, to: ModelInfo) {
+        const had = this.nativeGoal;
+        if (had && had.provider !== to.provider) this.nativeGoal = undefined;
+        if (from && from !== to.provider && nativeGoals(from) && this.agent) {
+            const name = getProvider(from)?.name ?? from;
+            let paused: NativeGoal | undefined;
+            try {
+                paused = await this.agent.pauseNativeGoal(from);
+            } catch (e) {
+                const message = `Couldn't pause ${name}'s goal (${redact((e as Error).message)}). ${name} may go on with it by itself; its turns aren't taken up while this session is on another model.`;
+                this.session.recordNotice("warn", message);
+                this.notice(message, "warn");
+            }
+            if (paused) {
+                const background = this.agent.backgroundTasks().filter((t) => t.provider === from && t.status === "running").length;
+                const message = nativeGoalLeft(paused, background);
+                this.session.recordNotice("info", message);
+                this.notice(message);
+            }
+            const left = paused ?? (had?.provider === from && had.status === "paused" ? had : undefined);
+            if (left) this.goalLeft = left;
+        }
+        const left = this.goalLeft;
+        if (left && left.provider === to.provider) {
+            this.goalLeft = undefined;
+            this.nativeGoal = left;
+            const message = nativeGoalBack(left);
+            this.session.recordNotice("info", message);
+            this.notice(message);
+        }
+    }
     /** After the running turn has been stopped: the /goal command that stopped it (clear, pause), sent to the CLI then. */
     private afterStop?: string;
 
@@ -1370,6 +1410,8 @@ export class App {
                 this.status = `${e.reason.slice(0, 80)} · retrying in ${Math.ceil(e.delayMs / 1000)}s (attempt ${e.attempt})`;
                 break;
             case "goal":
+                // Not from a CLI the session has switched away from (its goal paused there as the switch went through).
+                if (e.goal && e.goal.provider !== this.model?.provider) break;
                 this.nativeGoalReported(e.goal);
                 break;
             case "cli_commands":

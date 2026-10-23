@@ -678,8 +678,8 @@ describe("Codex", () => {
 });
 
 describe("in the app's server", () => {
-    async function session(provider: "claude-code" | "codex") {
-        writeFileSync(join(iso.home, "settings.json"), JSON.stringify({ model: `${provider}:default`, permissions: { allowBypass: true } }));
+    async function session(provider: "claude-code" | "codex", o: { live?: boolean } = {}) {
+        writeFileSync(join(iso.home, "settings.json"), JSON.stringify({ model: `${provider}:default`, permissions: { allowBypass: true }, ...(o.live === false ? { agentCli: { liveSessions: false } } : {}) }));
         const engine = new Engine({ listModels: async () => [] });
         const rt = await engine.createSession(cwd, { mode: "bypassPermissions" });
         await rt.ready;
@@ -767,6 +767,107 @@ describe("in the app's server", () => {
             await engine.stop();
         }
     }, 20_000);
+
+    const goalFile = () => (existsSync(LOG + ".goals.json") ? JSON.parse(readFileSync(LOG + ".goals.json", "utf-8"))["thr-new"] : undefined);
+
+    test("Codex: switching to another model between its goal's turns pauses the goal there; its background work goes on, and coming back says how to resume (#412)", async () => {
+        process.env.FAKE_GOAL_TURNS = "50";
+        // The goal's first turn leaves a command running; Codex starts each next turn of the goal a while after the last.
+        process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
+        process.env.FAKE_BG_MS = "never";
+        process.env.FAKE_TURN_MS = "100";
+        process.env.FAKE_GOAL_CONTINUE_MS = "400";
+        const { engine, rt } = await session("codex");
+        const running = () => (rt as any).agent.backgroundTasks().filter((t: any) => t.provider === "codex" && t.status === "running");
+        try {
+            await rt.send("/goal the docs build");
+            // Idle between the goal's turns: the first is over, and Codex hasn't started the next yet.
+            await until(() => !rt.busy && received().some((m) => m.method === "thread/goal/set" && m.params.status === "active") && running().length === 1);
+            expect(goalFile()).toMatchObject({ status: "active", turns: 1 });
+            expect(await rt.switchModel("claude-code:default")).toBe(true);
+            // Paused in Codex, and said so.
+            const sets = received().filter((m) => m.method === "thread/goal/set").map((m) => m.params);
+            expect(sets.at(-1)).toEqual({ threadId: "thr-new", status: "paused" });
+            expect(goalFile().status).toBe("paused");
+            expect(shown(rt).at(-1)).toBe("Codex's goal is paused while this session is on another model: the docs build. Its background task keeps running. Switch back to Codex and send /goal resume to go on with it.");
+            expect(rt.snapshot().state.goal).toBeUndefined();
+            // Codex starts no more turns for it: none comes as a wake, and the goal's count stays.
+            await Bun.sleep(1000);
+            expect(goalFile()).toMatchObject({ status: "paused", turns: 1 });
+            expect(shown(rt).filter((n: string) => /started a turn of its own|went on with the goal/.test(n))).toEqual([]);
+            expect(rt.snapshot().turns.map((t: any) => t.prompt?.text)).toEqual(["/goal the docs build"]);
+            expect(rt.snapshot().state.goal).toBeUndefined();
+            // Its background command goes on.
+            expect(running()).toHaveLength(1);
+            expect(received().some((m) => m.method === "thread/backgroundTerminals/terminate")).toBe(false);
+            // Back on Codex: the goal shows paused, and how to go on is said.
+            expect(await rt.switchModel("codex:default")).toBe(true);
+            expect(shown(rt).at(-1)).toBe("Codex's goal is paused: the docs build. /goal resume goes on with it.");
+            expect(rt.snapshot().state.goal).toMatchObject({ condition: "the docs build", state: "paused", by: "Codex" });
+            // And it does.
+            process.env.FAKE_GOAL_TURNS = "2";
+            fakeEnv.write();
+            await rt.send("/goal resume");
+            await until(() => !rt.busy && shown(rt).some((n: string) => n.startsWith("✓ Goal achieved")));
+            expect(received().filter((m) => m.method === "thread/goal/set").at(-1)!.params.status).toBe("active");
+            expect(running()).toHaveLength(1);
+        } finally {
+            await engine.stop();
+        }
+    }, 30_000);
+
+    test("Codex: a goal turn Codex had already started when the session switched away is stopped (#412)", async () => {
+        process.env.FAKE_GOAL_TURNS = "50";
+        process.env.FAKE_TURN_MS = "300";
+        process.env.FAKE_GOAL_CONTINUE_MS = "300";
+        const { engine, rt } = await session("codex");
+        try {
+            // Its next turns aren't taken up here (as while the switch is under way): one is running when the switch comes.
+            const adopt = (rt as any).adoptWake.bind(rt);
+            let woke = 0;
+            (rt as any).adoptWake = (w: any) => {
+                if (woke++) return;
+                adopt(w);
+            };
+            await rt.send("/goal the docs build");
+            await until(() => woke >= 2 && !rt.busy);
+            expect(await rt.switchModel("claude-code:default")).toBe(true);
+            await until(() => received().some((m) => m.method === "turn/interrupt"));
+            const rpc = received().filter((m) => m.method);
+            expect(rpc.findIndex((m) => m.method === "thread/goal/set" && m.params.status === "paused")).toBeLessThan(rpc.findIndex((m) => m.method === "turn/interrupt"));
+            const turns = goalFile().turns;
+            await Bun.sleep(900);
+            expect(goalFile()).toMatchObject({ status: "paused", turns });
+        } finally {
+            await engine.stop();
+        }
+    }, 30_000);
+
+    test("Codex per run: its app-server is gone between runs, so switching away sends it nothing; coming back says how to resume (#412)", async () => {
+        process.env.FAKE_GOAL_TURNS = "50";
+        process.env.FAKE_TURN_MS = "200";
+        const { engine, rt } = await session("codex", { live: false });
+        try {
+            // A run goes on through the goal's turns: it's over, with the goal still set, once it's stopped (which pauses it).
+            await rt.send("/goal the docs build");
+            await until(() => goalFile()?.status === "active");
+            rt.interrupt();
+            await until(() => !rt.busy && goalFile()?.status === "paused");
+            // Codex's (JSON-RPC, with a method), not the fake Claude Code's beside it.
+            const codexRpc = () => received().filter((m) => m.method);
+            const before = codexRpc().length;
+            const appServers = () => readFileSync(LOG, "utf-8").trim().split("\n").filter((l) => JSON.parse(l).argv?.[0] === "app-server").length;
+            const processes = appServers();
+            expect(await rt.switchModel("claude-code:default")).toBe(true);
+            expect(codexRpc().slice(before)).toEqual([]);
+            expect(appServers()).toBe(processes);
+            expect(rt.snapshot().state.goal).toBeUndefined();
+            expect(await rt.switchModel("codex:default")).toBe(true);
+            expect(shown(rt).at(-1)).toBe("Codex's goal is paused: the docs build. /goal resume goes on with it.");
+        } finally {
+            await engine.stop();
+        }
+    }, 30_000);
 
     test("a goal of the loop here doesn't go on with Claude Code or Codex: switching to one clears it, and says so", async () => {
         const { engine, rt } = await session("codex");

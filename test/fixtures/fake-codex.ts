@@ -369,8 +369,8 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         }
         notify("turn/completed", { threadId, turn: { id: turnId, status, error: null } });
         if (process.env.FAKE_IDLE_LIMIT_MS && process.env.FAKE_LIMIT_UPDATE) setTimeout(() => notify("account/rateLimits/updated", JSON.parse(readFileSync(process.env.FAKE_LIMIT_UPDATE!, "utf-8"))), Number(process.env.FAKE_IDLE_LIMIT_MS));
-        // Still active: Codex goes on with it by itself, unless a turn has started since.
-        const goOn = () => void ((!current || current.done) && runTurn(threadId, `turn-${++turnSeq}`, lastPolicy));
+        // Still active: Codex goes on with it by itself, unless a turn has started since or it was paused meanwhile.
+        const goOn = () => void ((!current || current.done) && goals.get(threadId)?.status === "active" && runTurn(threadId, `turn-${++turnSeq}`, lastPolicy));
         // FAKE_GOAL_CONTINUE_MS: how soon (default 5; 0: at once, before anything else is read).
         if (going && g.status === "active") process.env.FAKE_GOAL_CONTINUE_MS === "0" ? goOn() : setTimeout(goOn, Number(process.env.FAKE_GOAL_CONTINUE_MS ?? 5));
     };

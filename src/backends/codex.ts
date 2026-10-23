@@ -471,6 +471,14 @@ export class CodexBackend implements AgentBackendClient {
         return (await this.liveSessions()).stopBackground(sessionKey, ids);
     }
 
+    /**
+     * The session switched to another model: the thread goal pauses in its live app-server, if one is kept (a run of
+     * its own, with live sessions off, stops its app-server as it ends, so nothing goes on between runs).
+     */
+    async pauseGoal(sessionKey: string): Promise<NativeGoal | undefined> {
+        return this.live?.pauseGoal(sessionKey);
+    }
+
     /** The session is done: its app-server goes, with what runs in it. */
     async release(sessionKey: string): Promise<void> {
         await this.live?.release(sessionKey);
