@@ -33,7 +33,6 @@ import { MONITOR_SERVER_TOOLS } from "../tools/monitor";
 import { codexInput, codexSkills, pastedPrompt, skillFolder, type CodexSkill } from "./native-skills";
 import { accountEnv, defaultAccount } from "../providers/accounts";
 import { signInAdvice } from "./account-login";
-import { accountPermissionConfig, accountPermissionProfile, watchAccountFolders } from "./account-permissions";
 import { askForm } from "../mcp/elicitation";
 import { backendModel, type AgentBackendClient, type BackgroundStop, type SessionHost, type TurnSink, type BackendPermission, type BackendQuestion, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer, type SteerMessage } from "./types";
 import type { HookEvent } from "../agent/hooks";
@@ -134,8 +133,8 @@ function spawnRpc(providerId: string, cwd: string, onNotification: (method: stri
     return new Rpc(new JsonLinesProcess(bin, args, { cwd, env: accountEnv(providerId, opts.accountId, cwd) }), onNotification, onRequest);
 }
 
-async function handshake(rpc: Rpc, accountPermissions = false) {
-    await rpc.request("initialize", { clientInfo: { name: CODEX_CLIENT_NAME, title: APP_TITLE, version: APP_VERSION }, capabilities: accountPermissions ? { experimentalApi: true } : null });
+async function handshake(rpc: Rpc) {
+    await rpc.request("initialize", { clientInfo: { name: CODEX_CLIENT_NAME, title: APP_TITLE, version: APP_VERSION }, capabilities: null });
     rpc.notify("initialized");
 }
 
@@ -794,15 +793,10 @@ export class CodexTurn {
     async run(opts: { compact?: boolean } = {}): Promise<BackendResult> {
         const t = this.t;
         if (t.signal.aborted) return { reason: "aborted", text: "", actions: [] };
-        const accountPermissions = accountPermissionConfig(t.additionalDirectories);
         // PreToolUse and sub-agent hooks go to Codex as its own, calling back to the harness, which runs them.
         this.nativeEvents = CODEX_HOOK_EVENTS.filter((e) => this.hooked(e));
         if (this.nativeEvents.length) this.hookServer = registerTools(this.nativeEvents.map((e) => this.hookTool(e)));
         this.rpc = spawnRpc(this.def.id, t.cwd, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p), { trusted: t.trusted, accountId: t.accountId, hooks: this.nativeEvents });
-        const stopAccountWatch = watchAccountFolders(() => {
-            this.failure = "Account folders changed while Codex was running. Send again to apply their updated protections.";
-            void this.rpc.proc.kill();
-        });
         let abortTimer: ReturnType<typeof setTimeout> | undefined;
         /** Stopped by the user with the goal active: its pause, which goes in before Codex is stopped. */
         let pausing: Promise<void> | undefined;
@@ -825,7 +819,7 @@ export class CodexTurn {
         // A message to steer with goes into the running turn as it's sent (turn/steer), not at its end.
         const stopSteering = opts.compact ? undefined : this.sink.onQueued?.(() => this.steerQueued());
         try {
-            await withTimeout(handshake(this.rpc, Boolean(accountPermissions)), 30_000, "Codex didn't start (no answer to initialize)");
+            await withTimeout(handshake(this.rpc), 30_000, "Codex didn't start (no answer to initialize)");
             const account = parseAccount(await this.rpc.request("account/read", {}));
             if (!account.type && account.requiresAuth) {
                 return { reason: "error", text: "", actions: [], error: `Codex isn't signed in. ${signInAdvice(this.def.id, this.t.accountId)}` };
@@ -854,7 +848,6 @@ export class CodexTurn {
             const developerInstructions = [baseInstructions, o?.instructions].filter(Boolean).join("\n\n") || undefined;
             let config: Record<string, unknown> | undefined = o && !t.readOnly ? { ...off, mcp_servers: { ...off?.mcp_servers, ...(orchestratorConfig(o).mcp_servers as Record<string, unknown>) } } : off;
             if (this.nativeHooks && this.hookServer) config = { ...config, mcp_servers: { ...(config?.mcp_servers as Record<string, unknown> | undefined), ...hookServerConfig(this.hookServer) } };
-            if (accountPermissions) config = { ...config, ...accountPermissions };
             // Fast is the catalog's tier for it. Standard sends nothing (a Codex from before "default" was a
             // tier name refuses it), except null to take a thread on a fast tier (an earlier fast turn, or
             // Codex's own config) back off it: 0.163 puts it on "default". Other tiers set in Codex (flex) are left alone.
@@ -863,14 +856,13 @@ export class CodexTurn {
             /** The thread's tier as last reported or set. */
             let tierNow: string | null | undefined;
             this.threadMode = startMode;
-            const threadParams = { cwd: t.cwd, model, ...(fastTier ? { serviceTier: fastTier } : {}), approvalPolicy: policy.approvalPolicy, ...(accountPermissions ? { permissions: accountPermissionProfile(startMode, t.readOnly) } : { sandbox: policy.sandbox }), approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
+            const threadParams = { cwd: t.cwd, model, ...(fastTier ? { serviceTier: fastTier } : {}), approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox, approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
             // A Codex that won't take the delegation server's config still gets its thread, without it.
             const thread = async (method: string, params: Record<string, unknown>) => {
                 try {
                     return await this.rpc.request(method, params);
                 } catch (e) {
-                    // Never fall back by dropping account denies: fail closed instead.
-                    if (this.aborted || !o || accountPermissions) throw e;
+                    if (this.aborted || !o) throw e;
                     const kept = this.nativeHooks && this.hookServer ? { ...off, mcp_servers: { ...off?.mcp_servers, ...hookServerConfig(this.hookServer) } } : off;
                     const r = await this.rpc.request(method, { ...params, config: kept, developerInstructions: baseInstructions });
                     this.sink.emit({ type: "notice", level: "warn", message: `Codex didn't accept ${APP_TITLE}'s delegation tools (${redact((e as Error).message).replace(/^Codex:\s*/, "")}); this turn runs without them, preserving MCP restrictions.` });
@@ -958,7 +950,7 @@ export class CodexTurn {
                             this.startingThreadMode = this.threadMode;
                             this.startingMode = mode;
                             try {
-                                r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, ...(accountPermissions ? { permissions: accountPermissionProfile(mode, t.readOnly) } : { sandboxPolicy: policy.sandboxPolicy }), approvalsReviewer: policy.approvalsReviewer, summary: "auto" }).finally(() => (this.starting = false));
+                                r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" }).finally(() => (this.starting = false));
                                 break;
                             } catch (e) {
                                 // Any turn that started meanwhile was Codex's own.
@@ -1073,7 +1065,6 @@ export class CodexTurn {
                 this.sink.emit({ type: "goal", goal: this.goal ?? null });
             }
             if (this.threadId && this.goal?.status === "active") await withTimeout(this.rpc.request("thread/goal/set", { threadId: this.threadId, status: "paused" }), 2000, "").catch(() => {});
-            stopAccountWatch();
             stopSteering?.();
             t.signal.removeEventListener("abort", onAbort);
             if (abortTimer) clearTimeout(abortTimer);

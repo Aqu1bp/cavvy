@@ -549,7 +549,7 @@ describe("the account changes during background work", () => {
         expect(calls("thread/start")).toHaveLength(2);
     });
 
-    test("the account protections change while it's idle: the app-server restarts before the next turn, which resumes the thread and tells Codex", async () => {
+    test("another account added while it's idle restarts nothing: the next turn goes to the same app-server, its background work going on (#375)", async () => {
         process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
         process.env.FAKE_BG_MS = "never";
         accounts(["personal"]);
@@ -558,16 +558,14 @@ describe("the account changes during background work", () => {
         expect(await a.run("start it")).toBe("done");
         const [pid] = pids();
         process.env.FAKE_CODEX_SCENARIOS = "cmd";
-        // Another account's folder is protected now: the running app-server's sandbox doesn't deny it.
         accounts(["personal", "work"]);
         await Bun.sleep(600);
         expect(await a.run("next")).toBe("done");
-        expect(alive(pid!)).toBe(false);
-        expect(pids()).toHaveLength(2);
-        expect(a.notices()).toContain("Codex was restarted for the account's protections, so its background task stopped.");
-        expect(a.task("exec-turn-1-1")?.status).toBe("stopped");
-        expect(calls("thread/resume").map((p) => p.threadId)).toEqual(["thr-new"]);
-        expect(turnTexts()[1]).toContain("(exec-turn-1-1) stopped when Codex's app-server stopped");
+        expect(alive(pid!)).toBe(true);
+        expect(pids()).toHaveLength(1);
+        expect(a.notices().join("\n")).not.toContain("restarted");
+        expect(a.task("exec-turn-1-1")?.status).toBe("running");
+        expect(calls("thread/resume")).toHaveLength(0);
     });
 });
 

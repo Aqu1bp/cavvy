@@ -1905,14 +1905,6 @@ export class Agent {
             || [...this.children].some((child) => child.session.accountId(provider) === id || child.childUsesAccount(provider, id));
     }
 
-    /**
-     * Adding accounts refreshes the protection snapshot of every running CLI child, and restarts
-     * a session's CLI process (stopping its background work) when the snapshot changes.
-     */
-    hasCliChild(): boolean {
-        return this.runningCliTasks().length > 0 || [...this.children].some((child) => isAgentBackend(child.client) || child.hasCliChild());
-    }
-
     /** Stop one delegated task, or all of them; how many were running. */
     stopDelegated(id?: string): number {
         if (!this.delegations) return 0;

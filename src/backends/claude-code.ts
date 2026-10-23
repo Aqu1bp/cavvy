@@ -38,7 +38,7 @@ import type { PlanLimits } from "../server/protocol";
 import { limitAccountLabel, limitNews, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
 import { accountEnv, defaultAccount } from "../providers/accounts";
 import { signInAdvice } from "./account-login";
-import { accountProtectionFolders, claudeAccountSandbox, watchAccountFolders } from "./account-permissions";
+import { accountProtectionFolders } from "./account-permissions";
 import type { PermissionMode } from "../permissions/modes";
 import type { ToolDisplay } from "../tools/types";
 import { diffLines, diffStats } from "../util/diff";
@@ -1188,11 +1188,6 @@ class ClaudeTurn {
         }
         // Its /goal, as it goes: read from its transcript (src/backends/claude-goal.ts).
         this.goals = new ClaudeGoalWatch(() => (this.sessionId ? claudeTranscriptFile(env.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR, this.t.cwd, this.sessionId) : undefined), Date.now(), (goal) => this.sink.emit({ type: "goal", goal }));
-        const stopAccountWatch = watchAccountFolders(() => {
-            this.failure = "Account folders changed while Claude Code was running. Send again to apply their updated protections.";
-            this.reason = "error";
-            void this.proc.kill();
-        });
         let killTimer: ReturnType<typeof setTimeout> | undefined;
         const onAbort = () => {
             this.aborted = true;
@@ -1238,7 +1233,6 @@ class ClaudeTurn {
         } finally {
             clearInterval(goalTimer);
             this.goals?.poll();
-            stopAccountWatch();
             signal.removeEventListener("abort", onAbort);
             this.stopWaiting();
             clearTimeout(this.settleTimer);
@@ -1870,9 +1864,10 @@ export type ClaudeSpawnSettings = Pick<BackendTurn, "mode" | "model" | "effort" 
  * `claude -p`'s arguments for a turn's settings: the stream-json protocol, the mode, model and effort, the
  * session to resume, and what keeps it within the harness's rules (--settings: permissions, the sandbox,
  * MCP policy, prompt hooks). `append`: the parts of --append-system-prompt (empty ones left out).
- * `mcpWarning`: what the MCP policy says the user should know.
+ * `mcpWarning`: what the MCP policy says the user should know. `accountDenies: false` leaves out the deny
+ * rules for CLI account folders (a live process's fingerprint: accounts added or removed restart nothing).
  */
-export function claudeArgs(defId: string, t: ClaudeSpawnSettings, o: { pluginDir?: string; agentsPath?: string; append: (string | undefined)[] }): { args: string[]; mcpWarning?: string } {
+export function claudeArgs(defId: string, t: ClaudeSpawnSettings, o: { pluginDir?: string; agentsPath?: string; append: (string | undefined)[]; accountDenies?: boolean }): { args: string[]; mcpWarning?: string } {
     const a = [...extraArgs(defId), ...STREAM_ARGS, "--include-partial-messages", "--permission-prompt-tool=stdio", "--permission-mode", MODES[t.mode]];
     if (t.model.id !== "default") a.push("--model", t.model.id);
     if (t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort))) a.push("--effort", t.effort);
@@ -1889,10 +1884,8 @@ export function claudeArgs(defId: string, t: ClaudeSpawnSettings, o: { pluginDir
     // The harness's agents, for its own Agent tool.
     if (o.agentsPath && t.agents && Object.keys(t.agents).length && !t.readOnly) a.push("--agents", o.agentsPath);
     // The harness's deny and ask rules also cover what Claude Code would do without asking.
-    const permissions = claudePermissions(t.rules);
-    const sandbox = claudeAccountSandbox();
-    // Also check excluded commands, which the CLI may run outside its sandbox.
-    if (sandbox && !permissions.ask.includes("Bash")) permissions.ask.push("Bash");
+    // Named accounts add only deny rules for their folders (#375): nothing that changes how Claude Code asks or sandboxes.
+    const permissions = claudePermissions(t.rules, o.accountDenies !== false);
     // Its own schedules would fire only while its process runs (it's stopped at a turn's end, or when idle): Harness's schedule tools keep them instead.
     if (t.orchestrator?.tools.includes("schedule_create")) permissions.deny.push(...CLAUDE_SCHEDULE_TOOLS);
     // Always override external preferences: an unsupported model must not silently switch to Opus.
@@ -1900,12 +1893,12 @@ export function claudeArgs(defId: string, t: ClaudeSpawnSettings, o: { pluginDir
     const mcp = t.trusted && !t.readOnly ? claudeMcpPolicy(t.cwd, t.approvedMcpServers) : { strict: true };
     if (mcp.strict) a.push("--strict-mcp-config");
     if (!t.readOnly) {
-        a.push("--settings", JSON.stringify({ permissions, fastMode, ...(sandbox ? { sandbox } : {}), ...mcp.settings, ...claudePromptHooks(t.hooks) }));
+        a.push("--settings", JSON.stringify({ permissions, fastMode, ...mcp.settings, ...claudePromptHooks(t.hooks) }));
         return { args: a, mcpWarning: mcp.warning };
     }
     // A read-only sub-agent: no edit tools, no MCP servers of its own, and every command asks (the harness lets read-only ones run).
     a.push("--disallowedTools", READ_ONLY_DENY.join(","));
-    const settings = { fastMode, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { ...sandbox, autoAllowBashIfSandboxed: false }, ...claudePromptHooks(t.hooks) };
+    const settings = { fastMode, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { autoAllowBashIfSandboxed: false }, ...claudePromptHooks(t.hooks) };
     a.push("--settings", JSON.stringify(settings));
     return { args: a, mcpWarning: mcp.warning };
 }
@@ -1975,12 +1968,15 @@ export function claudeRule(raw: string, root: string): string[] {
     return [];
 }
 
-/** The harness's deny and ask rules for Claude Code, with its credential store denied outright. */
-export function claudePermissions(r: { deny: string[]; ask: string[]; root: string }): { deny: string[]; ask: string[] } {
+/**
+ * The harness's deny and ask rules for Claude Code, with its credential store denied outright, and with
+ * `accounts`, CLI account folders and sign-in files too.
+ */
+export function claudePermissions(r: { deny: string[]; ask: string[]; root: string }, accounts = true): { deny: string[]; ask: string[] } {
     const store = [paths.credentialsFile(), paths.mcpOAuth(), paths.providers()].flatMap((f) => [`Read(/${f})`, `Edit(/${f})`]);
-    const accounts = accountProtectionFolders().flatMap((folder) => [`Read(/${folder})`, `Read(/${folder}/**)`, `Edit(/${folder})`, `Edit(/${folder}/**)`]);
+    const folders = (accounts ? accountProtectionFolders() : []).flatMap((folder) => [`Read(/${folder})`, `Read(/${folder}/**)`, `Edit(/${folder})`, `Edit(/${folder}/**)`]);
     const map = (rules: string[]) => [...new Set(rules.flatMap((x) => claudeRule(x, r.root)))];
-    return { deny: [...map(r.deny), ...store, ...accounts], ask: map(r.ask) };
+    return { deny: [...map(r.deny), ...store, ...folders], ask: map(r.ask) };
 }
 
 /** Claude Code's tool name and input as the harness's own tool sees them (for rules, titles, previews). */

@@ -1347,31 +1347,21 @@ export function dangerousReason(cmd: string, depth = 0): string | undefined {
 /** What sensitiveTarget() calls a project's .env file. */
 export const ENV_FILE = "a .env file";
 
-function recursiveGrep(args: string[]): boolean {
-    return args.some((a, i) => /^-[^-]*[rR]/.test(a) || /^--(recursive|dereference-recursive|directories=recurse)$/.test(a) || ((a === "-d" || a === "--directories") && args[i + 1] === "recurse"));
-}
-
 /** Search operands and file-valued options, keeping patterns and formatting values out of path checks. */
 function accountSearchArgs(program: string, args: string[]) {
-    if (program === "find") {
-        const first = args.find((a) => !["-H", "-L", "-P"].includes(a));
-        return { paths: args, files: [], cwd: first === undefined || /^[-!(]/.test(first), flags: args };
-    }
+    if (program === "find") return { paths: args, files: [], flags: args };
     const listing = program === "ls" || program === "tree";
     const grep = /^(grep|egrep|fgrep)$/.test(program);
     const valued = program === "rg" ? RG_VALUE_SHORT : grep ? SEARCH_OPTIONS.grep!.valued + "dD" : program === "ls" ? "ITw" : program === "tree" ? "LPIo" : program === "fd" ? "eEtdj" : "";
     const longValued = program === "rg" ? RG_VALUE_LONG : grep ? SEARCH_OPTIONS.grep!.longValued : new Set(["glob", "iglob", "include", "exclude", "ignore", "hide", "type", "extension", "max-depth", "threads"]);
-    const knownFlags = program === "rg" ? SEARCH_OPTIONS.rg!.flags : grep ? SEARCH_OPTIONS.grep!.flags : program === "ls" ? "ABCFGHLOPRSTUW@abcdefghiklmnopqrstuwx1" : program === "tree" ? "adfFlpqrstuxACDSQNhv" : "";
     const operands: string[] = [];
     const files: string[] = [];
     const flags: string[] = [];
     let pattern = listing;
     let end = false;
-    let uncertain = false;
     const value = (name: string, v: string | undefined) => {
         if (/^(rg|grep|egrep|fgrep|ag|ack)$/.test(program) && ["e", "f", "regexp", "file"].includes(name)) pattern = true;
         if (v !== undefined && ["f", "file", "exclude-from", "ignore-file", "pre"].includes(name)) files.push(v);
-        if ((name === "d" || name === "directories") && v === "recurse") flags.push("--recursive");
     };
     for (let i = 0; i < args.length; i++) {
         const a = args[i]!;
@@ -1386,9 +1376,7 @@ function accountSearchArgs(program: string, args: string[]) {
                 // grep's optional long values only follow '='.
                 const v = eq >= 0 ? a.slice(eq + 1) : grep && ["color", "colour", "context"].includes(name) ? undefined : args[++i];
                 value(name, v);
-            } else if (program !== "rg" && !grep) uncertain = true;
-            // rg/grep's unknown long flags do not turn explicit paths into a cwd search.
-            // Other tools retain the conservative fallback for options we cannot parse.
+            }
             continue;
         }
         for (let k = 1; k < a.length; k++) {
@@ -1398,13 +1386,9 @@ function accountSearchArgs(program: string, args: string[]) {
                 value(ch, k + 1 < a.length ? a.slice(k + 1) : args[++i]);
                 break;
             }
-            if (!knownFlags.includes(ch) && !/\d/.test(ch)) uncertain = true;
         }
     }
-    const paths = operands.slice(pattern ? 0 : 1);
-    // Plain grep without files reads stdin; recursive grep defaults to cwd.
-    const cwd = (!grep || recursiveGrep(flags)) && (uncertain || paths.length === 0);
-    return { paths, files, cwd, flags };
+    return { paths: operands.slice(pattern ? 0 : 1), files, flags };
 }
 
 /** Copying or archiving a directory reads its descendants even without naming them. */
@@ -1569,13 +1553,13 @@ function namesAccount(cmd: string, cwd: string): boolean {
         const executes = program === "find" ? args.some((a) => /^-(exec|execdir|ok|okdir|delete)$/.test(a))
             : program === "fd" ? flags.some((a) => /^-[xX]$|^--exec(?:-batch)?$/.test(a))
             : program === "rg" && flags.includes("--pre");
-        const namesOnly = !executes && (/^(ls|tree|find|fd)$/.test(program) || (program === "rg" && flags.includes("--files")));
-        const contents = executes || (namesOnly && accountListingConsumer(analysis.commands, index)) || recursive
-            || (/^(rg|ag|ack)$/.test(program) && !namesOnly) || (/^(grep|egrep|fgrep)$/.test(program) && recursiveGrep(flags));
+        // A listing a later stage reads or runs (`ls dir/* | xargs cat`) reads what its patterns match.
+        const namesOnly = !executes && !accountListingConsumer(analysis.commands, index) && (/^(ls|tree|find|fd)$/.test(program) || (program === "rg" && flags.includes("--files")));
         if (dirs.some((d) => touches(d, d))) return true;
-        if (parsed?.cwd && dirs.some((d) => touches(d, d, true, contents, namesOnly))) return true;
+        // Copies and archives take everything under a folder. A search or listing of a folder that merely holds an
+        // account decides as with no accounts (#375): what it names, or a pattern in it can match, counts.
         for (const word of operands) {
-            if (dirs.some((d) => touches(word, d, search || contents, contents, namesOnly))) return true;
+            if (dirs.some((d) => touches(word, d, recursive, recursive, namesOnly))) return true;
         }
         for (const word of direct) {
             if (dirs.some((d) => touches(word, d))) return true;

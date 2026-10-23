@@ -37,7 +37,6 @@ import type { PlanLimits } from "../server/protocol";
 import type { ToolDisplay } from "../tools/types";
 import { redact } from "../util/redact";
 import { cliCommandNames } from "../commands/custom";
-import { watchAccountFolders } from "./account-permissions";
 import { ClaudeGoalWatch, claudeTranscriptFile } from "./claude-goal";
 import { CLAUDE_CLI, cliMessage, requireCli, type JsonLinesProcess } from "./cli";
 import { agentCli, type AgentCliDef, type CliCapabilities } from "./defs";
@@ -1402,7 +1401,8 @@ class ClaudeCliAdapter implements AgentCliAdapter {
         const o = { pluginDir, agentsPath, append: [cfg.appendSystemPrompt] };
         const { args } = claudeArgs(this.def.id, cfg, o);
         // Without what changes on a running process (the model, effort, mode and fast mode) and the session it resumes.
-        const fixed = claudeArgs(this.def.id, { ...cfg, model: { ...cfg.model, id: "default", effortLevels: undefined, supportsFastMode: false }, effort: undefined, mode: "default", fastMode: false, resumeId: undefined, forkSession: false }, o).args;
+        // Nor the account folders' deny rules: adding or removing an account restarts nothing (#375); a new process has them.
+        const fixed = claudeArgs(this.def.id, { ...cfg, model: { ...cfg.model, id: "default", effortLevels: undefined, supportsFastMode: false }, effort: undefined, mode: "default", fastMode: false, resumeId: undefined, forkSession: false }, { ...o, accountDenies: false }).args;
         const fingerprint = spawnFingerprint({ bin, args: fixed, cwd: cfg.cwd, env, hooks: cfg.hooks ?? null });
         return { bin, args, cwd: cfg.cwd, env, fingerprint };
     }
@@ -1471,8 +1471,6 @@ export class ClaudeLive {
     /** The host each session's last turn bound: wakes and session events go to it. */
     private hosts = new Map<string, SessionHost>();
     private bound = new Set<LiveCliSession>();
-    private accountWatches = new Map<string, () => void>();
-    private accountChanged = new Set<string>();
 
     constructor(
         private provider: ProviderDef,
@@ -1546,7 +1544,6 @@ export class ClaudeLive {
                 ];
             },
         };
-        this.watchAccount(key, live);
         let r: LiveTurnResult;
         if (t.adopt) {
             live.bind(t.session);
@@ -1556,7 +1553,6 @@ export class ClaudeLive {
         }
         if (adapter.current?.t === t) adapter.current = { t };
         liveDebug("claude", "turn result", { key, ref: r.ref, reason: r.reason, unanswered: r.unanswered, deferred: r.deferred });
-        if (this.accountChanged.delete(key) && r.reason !== "done") r = { ...r, reason: "error", error: "Account folders changed while Claude Code was running. Send again to apply their updated protections." };
         if (r.unanswered) t.sink.emit({ type: "notice", level: "warn", message: "Claude Code didn't answer the stop in time. The turn ended here; its process is kept, with what it runs in the background. If it stays busy, restart it with /tasks restart (that stops its background work)." });
         if (r.deferred) t.sink.emit({ type: "notice", level: "info", message: `New Claude Code settings apply once its background work ends (${plural(r.deferred.tasks, "task")} running). /tasks restart applies them now, stopping it.` });
         const out = rec.take();
@@ -1584,23 +1580,6 @@ export class ClaudeLive {
             else if (e.t === "turn_event") host.emitSession?.({ type: "event", event: e.event });
             else if (e.t === "limits") host.limits?.(e.limits, e.partial);
         });
-    }
-
-    /** Account folders changed: the process goes (its protections are spawn arguments), mid-turn too. */
-    private watchAccount(key: string, live: LiveCliSession) {
-        if (this.accountWatches.has(key)) return;
-        this.accountWatches.set(
-            key,
-            watchAccountFolders(() => {
-                this.accountWatches.delete(key);
-                if (live.state === "dead") return;
-                if (live.state === "busy") this.accountChanged.add(key);
-                const tasks = live.tasks.running().length;
-                liveDebug("claude", "account folders changed: restarting", { key, tasks });
-                if (tasks) this.hosts.get(key)?.emitSession?.({ type: "notice", level: "warn", message: `Account folders changed: Claude Code was restarted to apply their protections, and ${plural(tasks, "background task")} stopped with it.` });
-                void live.restart();
-            }),
-        );
     }
 
     async stopBackground(key: string, ids?: string[]): Promise<Record<string, BackgroundStop>> {
@@ -1642,8 +1621,6 @@ export class ClaudeLive {
 
     async release(key: string): Promise<void> {
         liveDebug("claude", "release", { key, tasks: this.get(key)?.tasks.running().length ?? 0 });
-        this.accountWatches.get(key)?.();
-        this.accountWatches.delete(key);
         const live = this.get(key);
         // Its host still hears what stops with it (its background tasks, stopped with the process).
         await this.pool.release(key, this.provider.id);
@@ -1652,8 +1629,6 @@ export class ClaudeLive {
     }
 
     async shutdown(): Promise<void> {
-        for (const stop of this.accountWatches.values()) stop();
-        this.accountWatches.clear();
         await this.pool.shutdownAll();
     }
 }

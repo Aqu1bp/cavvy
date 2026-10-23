@@ -547,8 +547,9 @@ export class PermissionChecker {
         const resolved = c !== abs ? { ...t, path: c } : undefined;
         const hit = (rule: string) => Boolean(findMatch([rule], t, this.root, "deny") || (resolved && findMatch([rule], resolved, this.root, "deny")));
         if ((s.permissions?.deny ?? []).some(hit)) return "deny";
-        // Keep private folders hidden, but name-only searches may traverse Default homes.
-        if (this.isProtected(abs, "Grep", toolName === "Grep")) return "protected";
+        // What's in a private folder, or a sign-in file. A folder that merely holds one isn't (a search root, a
+        // listed folder): so a search of it is never "protected" itself, and can't make its secrets fair game.
+        if (this.isProtected(abs, "Grep", false, true)) return "protected";
         // Credential files only need hiding where contents are shown; Glob lists names.
         if (toolName === "Grep" && this.isSensitive(abs)) return "sensitive";
         // All matching ask rules, so approving `src` doesn't also lift a narrower rule inside it.
@@ -604,13 +605,11 @@ export class PermissionChecker {
      * Is this a secret file or inside a secret folder (accounts/, registered or not)? For the
      * read tools the user settings count too: they can hold env values and MCP auth headers.
      * The rest of the harness home doesn't. A search root that merely holds some (`root`)
-     * isn't refused: its secrets are hidden file by file (hiddenFromSearch).
+     * isn't refused, wherever it is (a home folder holding an account, #375): its secrets are
+     * hidden file by file (hiddenFromSearch).
      */
     private isProtected(p: string, toolName: string, contents = toolName === "Grep", root = false): boolean {
         const forms = pathForms(p);
-        // Only a root in the harness home is lenient; an account folder elsewhere keeps its parents refused.
-        const home = pathForms(harnessHome());
-        root = root && forms.some((f) => home.some((h) => isInside(f, h)));
         const accounts = accountFolders().flatMap(pathForms);
         const credentials = accountCredentialFiles().flatMap(pathForms);
         if (forms.some((f) => credentials.some((a) => f === a || (contents && !root && isInside(a, f))))) return true;
