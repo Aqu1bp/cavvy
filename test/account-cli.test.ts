@@ -186,6 +186,65 @@ test("native CLI turns select their account and deny account folders in their ow
     expect(turn.permissions).toBe("harness_accounts_write");
 });
 
+test("Codex's initialize, thread and turn parameters are the same with and without named accounts (#375)", async () => {
+    process.env.FAKE_SCENARIO = "silent";
+    const codex = BUILTIN_PROVIDERS.find((p) => p.id === "codex")!;
+    let n = 0;
+    const params = async (accountId: string, live: boolean, mode: import("../src/permissions/modes").PermissionMode) => {
+        rmSync(log, { force: true });
+        const backend = createBackend(codex);
+        const turn = fakeTurn("codex");
+        const key = `parity-${n++}`;
+        Object.assign(turn, { accountId, sessionKey: key, mode, ...(live ? {} : { liveSessions: false }) });
+        turn.session.mode = () => mode;
+        expect((await backend.runTurn(turn)).reason).toBe("done");
+        await backend.release?.(key);
+        const received = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line).received).filter(Boolean);
+        const pick = (method: string) => received.find((message) => message.method === method)?.params;
+        return { initialize: pick("initialize"), thread: pick("thread/start"), turn: pick("turn/start") };
+    };
+    const saved = readAgentConfig("codex")?.accounts;
+    try {
+        for (const live of [false, true]) {
+            for (const mode of ["default", "auto", "bypassPermissions"] as const) {
+                saveAgentConfig("codex", { accounts: [] });
+                saveAgentConfig("claude-code", { accounts: [] });
+                const without = await params("default", live, mode);
+                expect(without.thread.sandbox).toBeDefined();
+                saveAgentConfig("codex", { accounts: saved });
+                saveAgentConfig("claude-code", { accounts: [{ id: "personal", name: "Personal", folder, managed: false }] });
+                expect({ live, mode, ...(await params("default", live, mode)) }).toEqual({ live, mode, ...without });
+                // A named account only changes CODEX_HOME.
+                expect({ live, mode, ...(await params("personal", live, mode)) }).toEqual({ live, mode, ...without });
+            }
+        }
+    } finally {
+        saveAgentConfig("codex", { accounts: saved });
+        saveAgentConfig("claude-code", { accounts: [{ id: "personal", name: "Personal", folder, managed: false }] });
+    }
+});
+
+test("Claude Code's spawned settings have no account sandbox or forced Bash ask, in any mode (#375)", async () => {
+    process.env.FAKE_SCENARIO = "silent";
+    const backend = createBackend(BUILTIN_PROVIDERS.find((p) => p.id === "claude-code")!);
+    for (const mode of ["auto", "bypassPermissions"] as const) {
+        for (const accountId of ["default", "personal"]) {
+            const turn = fakeTurn("claude-code");
+            Object.assign(turn, { mode, accountId, sessionKey: `claude-${mode}-${accountId}` });
+            turn.session.mode = () => mode;
+            expect((await backend.runTurn(turn)).reason).toBe("done");
+            await backend.release?.(turn.sessionKey);
+        }
+    }
+    expect(starts()).toHaveLength(4);
+    for (const start of starts()) {
+        const settings = JSON.parse(start.argv[start.argv.indexOf("--settings") + 1]);
+        expect(settings.sandbox).toBeUndefined();
+        expect(settings.permissions.ask).not.toContain("Bash");
+        expect(settings.permissions.deny).toContain(`Read(/${folder}/**)`);
+    }
+});
+
 test("Claude account sandbox stays on for read-only delegates and Bypass", async () => {
     process.env.FAKE_SCENARIO = "silent";
     const backend = createBackend(BUILTIN_PROVIDERS.find((p) => p.id === "claude-code")!);
