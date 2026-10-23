@@ -9,6 +9,7 @@ const { usageSummary, usageDays, usageBounds, clearUsageCache } = await import("
 const { scanUsage } = await import("../src/server/usage-reader");
 const { UsageJson } = await import("../src/server/usage-json");
 const { saveAgentConfig } = await import("../src/providers/registry");
+const { accountPlace } = await import("../src/providers/accounts");
 const { costOf, usageCostParts } = await import("../src/providers/pricing");
 const bounds = { ...usageBounds };
 const now = Date.parse("2026-10-15T16:30:00Z");
@@ -110,6 +111,108 @@ test("default selectors and named account folders contribute separate account/ti
     expect(s.accounts.map(a => `${a.source}/${a.accountId}`).sort()).toEqual(["claude-code/default", "claude-code/team", "codex/team"]);
     expect(s.buckets.some(b => b.source === "codex" && b.accountId === "team")).toBe(true);
     expect(usageDays(90)).toBe(90);
+});
+
+// A Harness-made account that shares Default's history (account-layout.ts): its history folders link Default's.
+function sharedAccount(id: string) {
+    const folders = { claude: join(iso.home, "accounts/claude", id), codex: join(iso.home, "accounts/codex", id) };
+    for (const [folder, from, subs] of [[folders.claude, claude, ["projects"]], [folders.codex, codex, ["sessions", "archived_sessions"]]] as const) {
+        for (const sub of subs) { mkdirSync(join(from, sub), { recursive: true }); mkdirSync(folder, { recursive: true }); symlinkSync(join(from, sub), join(folder, sub)); }
+    }
+    saveAgentConfig("claude-code", { accounts: [{ id, name: id, folder: folders.claude, managed: true }] });
+    saveAgentConfig("codex", { accounts: [{ id, name: id, folder: folders.codex, managed: true }] });
+}
+// The Harness session that ran native threads, through Session's own API; `steps` run with the clock at `at`.
+async function harnessSession(steps: [at: string, step: (s: any) => void][]) {
+    const { Session } = await import("../src/agent/session");
+    const clock = spyOn(Date, "now");
+    try {
+        clock.mockReturnValue(Date.parse(steps[0]![0]));
+        const session = Session.create(join(iso.home, "work"));
+        // Nothing is written before the first message.
+        session.push({ role: "user", content: [{ type: "text", text: "hello" }] });
+        for (const [at, step] of steps) { clock.mockReturnValue(Date.parse(at)); step(session); }
+        return session;
+    } finally { clock.mockRestore(); }
+}
+const cliUsage = (model: string) => (s: any) => s.recordUsage(model, { inputTokens: 1, outputTokens: 1 }, 0);
+// Input tokens by account (its rows are by model too).
+function byAccount(s: Awaited<ReturnType<typeof usageSummary>>, source: string) {
+    const out: Record<string, number> = {};
+    for (const a of s.accounts) if (a.source === source) out[a.accountId] = (out[a.accountId] ?? 0) + a.inputTokens;
+    return out;
+}
+
+test("a Harness-made account sharing Default's history gets its own usage rows (#428)", async () => {
+    sharedAccount("second");
+    try {
+        await harnessSession([
+            ["2026-10-15T11:00:00Z", s => { s.setAccount("claude-code", "second"); s.setAccount("codex", "second"); }],
+            ["2026-10-15T11:00:01Z", s => { s.setBackendSession("claude-code", "claude-session", 1); s.setBackendSession("codex", "codex-session", 1); }],
+            ["2026-10-15T13:00:02Z", cliUsage("claude-code:claude-opus-5-5")],
+            ["2026-10-15T14:01:02Z", cliUsage("codex:gpt-6-astra")],
+        ]);
+        write(join(claude, "projects/p/a.jsonl"), fixture("claude-current.jsonl"));
+        write(join(codex, "sessions/rollout-a.jsonl"), fixture("codex-current.jsonl"));
+        // A Codex sub-agent or fork of the thread Harness ran goes with it.
+        write(join(codex, "sessions/rollout-child.jsonl"), fixture("codex-fork.jsonl"));
+        // A plain terminal `claude` in the shared folder: no Harness session ran it, so it stays Default's.
+        write(join(claude, "projects/p/terminal.jsonl"), fixture("claude-current.jsonl").replaceAll("claude-session", "terminal-session").replaceAll("msg-1", "msg-9"));
+        const s = await usageSummary(1, now);
+        expect(byAccount(s, "claude-code")).toEqual({ second: 150, default: 150 });
+        expect(byAccount(s, "codex")).toEqual({ second: 1950 });
+        // Each transcript is still read and counted once.
+        expect(s.sources.find(s => s.source === "claude-code")).toMatchObject({ sessions: 2, inputTokens: 300 });
+        expect(s.sources.find(s => s.source === "codex")).toMatchObject({ sessions: 2, inputTokens: 1950 });
+    } finally { saveAgentConfig("claude-code", { accounts: [] }); saveAgentConfig("codex", { accounts: [] }); }
+});
+
+test("a native thread moved to a sharing account (#399) splits its usage at the switch (#428)", async () => {
+    sharedAccount("second");
+    try {
+        const session = await harnessSession([
+            ["2026-10-15T11:00:00Z", s => { for (const p of ["claude-code", "codex"]) s.setBackendSession(p, p === "codex" ? "codex-session" : "claude-session", 1, accountPlace(p)); }],
+            ["2026-10-15T12:00:01Z", cliUsage("claude-code:claude-opus-5-5")],
+            ["2026-10-15T12:01:01Z", cliUsage("codex:gpt-6-astra")],
+            ["2026-10-15T12:30:00Z", s => { s.setAccount("claude-code", "second"); s.setAccount("codex", "second"); }],
+            ["2026-10-15T13:00:01Z", cliUsage("claude-code:claude-opus-5-5")],
+            ["2026-10-15T13:00:02Z", cliUsage("codex:gpt-6-astra")],
+        ]);
+        // The switch kept the thread: both accounts' CLIs find it.
+        expect(session.backends.get("claude-code")?.id).toBe("claude-session");
+        expect(session.backends.get("codex")?.id).toBe("codex-session");
+        write(join(claude, "projects/p/a.jsonl"), fixture("claude-current.jsonl"));
+        write(join(codex, "sessions/rollout-a.jsonl"), fixture("codex-current.jsonl"));
+        const s = await usageSummary(1, now);
+        expect(byAccount(s, "claude-code")).toEqual({ default: 100, second: 50 });
+        // A turn after the last one Harness recorded (still running, say) is the account's the session is on now.
+        expect(byAccount(s, "codex")).toEqual({ default: 800, second: 1000 });
+        expect(s.sources.find(s => s.source === "claude-code")).toMatchObject({ sessions: 1, inputTokens: 150 });
+        expect(s.sources.find(s => s.source === "codex")).toMatchObject({ sessions: 1, inputTokens: 1800 });
+    } finally { saveAgentConfig("claude-code", { accounts: [] }); saveAgentConfig("codex", { accounts: [] }); }
+});
+
+test("a fork on another sharing account keeps the history its native fork copied under the original's account (#428)", async () => {
+    sharedAccount("second");
+    try {
+        let fork: any;
+        await harnessSession([
+            ["2026-10-15T11:00:00Z", s => s.setBackendSession("claude-code", "claude-session", 1, accountPlace("claude-code"))],
+            ["2026-10-15T13:00:01Z", cliUsage("claude-code:claude-opus-5-5")],
+            ["2026-10-15T14:00:00Z", s => { fork = s.fork({ shareBackends: true }); fork.setAccount("claude-code", "second"); }],
+            // Its first turn forked the thread natively (--fork-session): a new one, with the history copied.
+            ["2026-10-15T15:00:01Z", () => { fork.setBackendSession("claude-code", "fork-session", 2); cliUsage("claude-code:claude-opus-5-5")(fork); }],
+        ]);
+        const original = write(join(claude, "projects/p/a.jsonl"), fixture("claude-current.jsonl"));
+        const old = Date.now() / 1000 - 60;
+        utimesSync(original, old, old);
+        // Read first (newest): its copies of the original's replies are the ones counted.
+        write(join(claude, "projects/p/fork.jsonl"), fixture("claude-current.jsonl").replaceAll("claude-session", "fork-session")
+            + JSON.stringify({ type: "assistant", timestamp: "2026-10-15T15:00:00Z", sessionId: "fork-session", requestId: "req-3", message: { id: "msg-3", model: "claude-opus-5-5", usage: { input_tokens: 7, output_tokens: 1 } } }) + "\n");
+        const s = await usageSummary(1, now);
+        expect(byAccount(s, "claude-code")).toEqual({ default: 150, second: 7 });
+        expect(s.sources.find(s => s.source === "claude-code")).toMatchObject({ inputTokens: 157 });
+    } finally { saveAgentConfig("claude-code", { accounts: [] }); saveAgentConfig("codex", { accounts: [] }); }
 });
 
 test("an invalid saved account folder is skipped, never resolved against the server's folder", async () => {
