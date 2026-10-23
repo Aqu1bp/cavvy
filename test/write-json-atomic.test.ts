@@ -107,6 +107,38 @@ describe("writeJson is atomic", () => {
         expect(JSON.parse(readFileSync(newTarget, "utf-8"))).toEqual({ v: 4 });
     });
 
+    test("a relative link is resolved from its real directory, not through a symlinked parent", () => {
+        const d = dir();
+        // d/home/config -> d/mnt/private/subdir ; subdir/settings.json -> ../providers.json
+        const sub = join(d, "mnt", "private", "subdir");
+        mkdirSync(sub, { recursive: true });
+        const real = join(d, "mnt", "private", "providers.json");
+        writeJson(real, { v: 1 });
+        symlinkSync("../providers.json", join(sub, "settings.json"));
+        mkdirSync(join(d, "home"));
+        symlinkSync(sub, join(d, "home", "config"));
+        writeJson(join(d, "home", "config", "settings.json"), { v: 2 });
+        expect(JSON.parse(readFileSync(real, "utf-8"))).toEqual({ v: 2 });
+        expect(lstatSync(join(sub, "settings.json")).isSymbolicLink()).toBe(true);
+        expect(existsSync(join(d, "home", "providers.json"))).toBe(false);
+        expect(readdirSync(join(d, "home"))).toEqual(["config"]);
+    });
+
+    test("a new file honors the umask; an existing file keeps its mode regardless", () => {
+        const d = dir();
+        const old = process.umask(0o077);
+        try {
+            const f = join(d, "settings.local.json");
+            writeJson(f, { a: 1 }); // asks for 0644
+            expect(mode(f)).toBe(0o600);
+            chmodSync(f, 0o640);
+            writeJson(f, { a: 2 });
+            expect(mode(f)).toBe(0o640);
+        } finally {
+            process.umask(old);
+        }
+    });
+
     test("a reader in another process never sees an empty or partial file", async () => {
         const d = dir();
         const f = join(d, "providers.json");

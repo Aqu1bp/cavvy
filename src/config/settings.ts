@@ -1,4 +1,4 @@
-import { closeSync, existsSync, fchmodSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
+import { closeSync, existsSync, fchmodSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { randomBytes } from "crypto";
 import { dirname, isAbsolute, join, basename, resolve } from "path";
 import { ensureDir, paths } from "./paths";
@@ -336,6 +336,8 @@ function writeTarget(file: string): string {
     for (let i = 0; i < 40; i++) {
         let link: string;
         try {
+            // A relative link is relative to its directory as the filesystem sees it, which may itself be reached through a symlink.
+            cur = join(realpathSync(dirname(cur)), basename(cur));
             if (!lstatSync(cur).isSymbolicLink()) return cur;
             link = readlinkSync(cur);
         } catch {
@@ -356,18 +358,20 @@ export function writeJson(file: string, data: unknown, mode = 0o644) {
     const target = writeTarget(file);
     ensureDir(dirname(target));
     let keep = mode;
+    let existed = false;
     try {
         keep = statSync(target).mode & 0o7777;
+        existed = true;
     } catch {
-        // new file
+        // new file: it gets `mode`, filtered by the umask like any new file
     }
     const tmp = join(dirname(target), `.${basename(target)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
     const text = JSON.stringify(data, null, 2) + "\n";
     let fd: number | undefined;
     try {
         fd = openSync(tmp, "wx", keep);
-        fchmodSync(fd, keep);
-        writeSync(fd, text);
+        if (existed) fchmodSync(fd, keep); // not for a new file: that honors the umask
+        writeFileSync(fd, text); // loops until everything is written
         fsyncSync(fd);
         closeSync(fd);
         fd = undefined;
