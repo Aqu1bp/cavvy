@@ -10,7 +10,7 @@ import { cost, tokens } from "../../gui/src/lib/format";
 const source = (path: string) => readFileSync(new URL(`../../gui/src/${path}`, import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "");
 const accounts: AccountInfo[] = ["default", "work"].map((id) => ({ id, name: id === "default" ? "Default" : "Work", folder: `/fake/${id}`, managed: id !== "default", signedIn: true }));
 const timestamp = Date.now();
-function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; home?: boolean; current?: string; singleAccount?: boolean; autoCompact?: boolean } = {}) {
+function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; home?: boolean; current?: string; singleAccount?: boolean; autoCompact?: boolean; credits?: boolean } = {}) {
     const root = node("root");
     const calls: any[] = [];
     const errors: unknown[] = [];
@@ -20,7 +20,7 @@ function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; h
     const [catalog, setCatalog] = solid.createSignal(options.singleAccount ? accounts.filter(a => a.id === options.current) : accounts);
     const [state, setState] = solid.createSignal<any>({ model: { provider: "cli", providerName: "CLI", contextWindow: options.unknown ? undefined : 200_000 }, contextTokens: 50_000, tokensIn: 1000, tokensOut: 200, cost: 1.25, busy: false, accounts: { cli: options.current ?? "default" } });
     const [limits, setLimits] = solid.createSignal<any>(options.plan === undefined && !options.reached ? {} : {
-        [planLimitKey("cli", options.current ?? "default")]: { provider: "cli", accountId: options.current ?? "default", at: timestamp, reached: options.reached, windows: options.plan === undefined ? [] : [{ label: "5-hour", usedPercent: options.plan, resetsAt: timestamp + 3600000 }, { label: "Weekly", usedPercent: 15, resetsAt: timestamp + 86400000 }] },
+        [planLimitKey("cli", options.current ?? "default")]: { provider: "cli", accountId: options.current ?? "default", at: timestamp, reached: options.reached, credits: options.credits, windows: options.plan === undefined ? [] : [{ label: "5-hour", usedPercent: options.plan, resetsAt: timestamp + 3600000 }, { label: "Weekly", usedPercent: 15, resetsAt: timestamp + 86400000 }] },
     });
     const listeners = new Map<string, Function>();
     const doc: any = { activeElement: undefined, addEventListener: (key: string, fn: Function) => listeners.set(key, fn), removeEventListener: (key: string) => listeners.delete(key) };
@@ -150,6 +150,27 @@ for (const current of ["default", "work"]) test(`${current}: refresh only altern
         m.show(); m.setCatalog(accounts.filter(a => a.id === current));
         expect(text(m.root)).not.toContain("Switch to");
     } finally { m.dispose(); }
+});
+
+test("reached on credits (#434): says so, and switching away doesn't claim the turn stopped", async () => {
+    const m = mount({ reached: true, credits: true });
+    try {
+        expect(m.trigger().props["aria-label"]).toContain("Pro · Default usage: limit reached · using credits");
+        m.show();
+        expect(text(m.root)).toContain("Limit reached · using credits");
+        m.pending.resolve(accounts);
+        await Bun.sleep(0);
+        // Another account is still offered: it stops the spending.
+        m.button("Switch to Work").props.onClick();
+        await Bun.sleep(0);
+        expect(m.notices).toEqual(["Account switched. Your next message uses it."]);
+    } finally { m.dispose(); }
+    const hard = mount({ reached: true, credits: false });
+    try {
+        hard.show();
+        expect(text(hard.root)).toContain("Limit reached");
+        expect(text(hard.root)).not.toContain("using credits");
+    } finally { hard.dispose(); }
 });
 
 test("Home uses default account; session uses its own account", () => {
