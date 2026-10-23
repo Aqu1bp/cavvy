@@ -2190,7 +2190,7 @@ export class Runtime {
             plainLabel: req.summary ? "AI summary" : undefined,
             agentLabel: req.agentLabel,
         };
-        if (decision.grant) it.options.push({ id: "session", label: `Allow ${redact(decision.grant.label)} for the session` });
+        if (decision.grant) it.options.push({ id: "session", label: `Allow \`${redact(decision.grant.label)}\` for the session` });
         if (req.preview?.summary) it.summary = redact(req.preview.summary);
         if (isShellTool(tool.name)) {
             it.heading = tool.name === "Monitor" ? "Watch a command's output" : req.secrets?.length ? "Run a shell command with secrets" : "Run a shell command";

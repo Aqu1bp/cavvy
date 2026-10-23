@@ -79,9 +79,18 @@ export function InteractionTab(p: { sessionId: string; items: Interaction[] }) {
     );
 }
 
-/** An option's label, with `code` in mono. */
-function Label(p: { text: string }) {
-    return <For each={p.text.split(/(`[^`]+`)/)}>{(part) => (part.startsWith("`") && part.endsWith("`") && part.length > 2 ? <span class="mono">{part.slice(1, -1)}</span> : part)}</For>;
+/** An option's label, with `code` in mono, on one line. Short of room, the code (a rule list,
+ * a path) gives way first, cut with an ellipsis, so the sentence around it
+ * stays whole: "Always allow `cat, wc…` in project", not "… in proj".
+ */
+function FitLabel(p: { text: string }) {
+    return (
+        <span class="plabel">
+            <For each={p.text.split(/(`[^`]+`)/).filter(Boolean)}>
+                {(part) => (part.startsWith("`") && part.endsWith("`") && part.length > 2 ? <span class="mono plabel-c">{part.slice(1, -1)}</span> : <span class="plabel-t">{part}</span>)}
+            </For>
+        </span>
+    );
 }
 
 /** A card's title, then its lines under it: `sub` (a hint, or who asked) and `note` (why it's asking), each whole. */
@@ -267,7 +276,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                                     else void answer(o.id);
                                 }}
                             >
-                                <span class="truncate">{o.id === "no" && feedback() !== undefined ? "Deny" : <Label text={o.label} />}</span>
+                                <FitLabel text={o.id === "no" && feedback() !== undefined ? "Deny" : o.label} />
                                 <kbd>{o.id === "no" ? "Esc" : key}</kbd>
                             </button>
                             <Show when={o.id === "no"}>

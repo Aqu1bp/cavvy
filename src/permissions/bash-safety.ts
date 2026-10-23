@@ -54,8 +54,16 @@ export interface CommandAnalysis {
     redirects: string[];
     /** The operator after the last command, if the line ends with one (`cmd &`). */
     trailing?: string;
-    /** A here-document (`<<EOF`): its lines aren't commands, though they're split as if they were. */
+    /**
+     * A here-document (`<<EOF`). analyzeCommand's commands are those of both
+     * readings: its lines taken as data up to the delimiter, as the shell does,
+     * and split as if they were commands (shellCommands has the first alone).
+     */
     heredoc?: true;
+    /** A here-document whose delimiter never comes: the rest of the line is its data. */
+    heredocOpen?: true;
+    /** Where the here-documents' data lines are, without their delimiter lines: [start, end) (shell reading only). */
+    heredocBodies?: [number, number][];
     /** A command of redirections alone, which isn't in `commands`. */
     bareRedirect?: true;
 }
@@ -103,16 +111,76 @@ function plainBraceParam(cmd: string, i: number): boolean {
     return /^(#?[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[#?@*!$-])$/.test(cmd.slice(i + 2, close));
 }
 
-/** Tokenise and split on control operators, respecting quotes and escapes. */
+/**
+ * Tokenise and split on control operators, respecting quotes and escapes.
+ *
+ * With a here-document the line has two readings, and the commands are those
+ * of both: its data taken as data up to the delimiter, as the shell does, and
+ * split as if it were commands. The first is what runs; the second keeps what
+ * deny rules and the other protective checks always saw. Neither alone is
+ * enough for them: a quote in the data (`cat '`) would pair with a later one
+ * and hide the real command after the delimiter from the second, and a
+ * delimiter misread would hide data that runs (`bash <<EOF`) from the first.
+ * What approves a command (allow rules, the read-only check, the rules a
+ * popup offers) reads it as the shell does: shellCommands.
+ */
 export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis {
+    if (discovery) return scan(cmd, true, true);
+    const lexed = scan(cmd, false, false);
+    // The readings differ only from the first here-document on, which both see.
+    if (!lexed.heredoc) return lexed;
+    const shell = scan(cmd, false, true);
+    const key = (c: SimpleCommand) => JSON.stringify([c.spans, c.argv]);
+    const seen = new Set(shell.commands.map(key));
+    const commands = [...shell.commands, ...lexed.commands.filter((c) => !seen.has(key(c)))].sort((x, y) => (x.spans[0]?.[0] ?? 0) - (y.spans[0]?.[0] ?? 0));
+    return {
+        commands,
+        hasSubstitution: lexed.hasSubstitution || shell.hasSubstitution,
+        writesFiles: lexed.writesFiles || shell.writesFiles,
+        unparsable: lexed.unparsable || shell.unparsable,
+        unsafeExpansion: lexed.unsafeExpansion || shell.unsafeExpansion,
+        redirects: [...new Set([...lexed.redirects, ...shell.redirects])],
+        ...(shell.trailing !== undefined ? { trailing: shell.trailing } : {}),
+        heredoc: true,
+        ...(shell.heredocOpen ? { heredocOpen: true as const } : {}),
+        ...(lexed.bareRedirect || shell.bareRedirect ? { bareRedirect: true as const } : {}),
+    };
+}
+
+/**
+ * The command as the shell reads it: a here-document's lines are data up to
+ * its delimiter, not commands. A delimiter it can't read for certain (empty,
+ * or with `$` or a backtick) makes it unparsable, so nothing approves it.
+ * Only for what approves a command; checks that refuse or flag one use
+ * analyzeCommand, which sees both readings.
+ */
+export function shellCommands(cmd: string): CommandAnalysis {
+    const lexed = scan(cmd, false, false);
+    return lexed.heredoc ? scan(cmd, false, true) : lexed;
+}
+
+/**
+ * `consume`: take each here-document's lines as data up to its delimiter.
+ * `discovery` (which consumes too) also keeps that data as the stdin of the
+ * command it's for, and takes here-strings' and input redirections' words
+ * out of the command's arguments.
+ */
+function scan(cmd: string, discovery: boolean, consume: boolean): CommandAnalysis & { heredocOpen?: true } {
     const pending: { delimiter: string; tabs: boolean; quoted: boolean; scripts: string[] }[] = [];
     let stdinScripts: string[] = [];
     const fdScripts = new Map<number, string[]>();
+    let heredocOpen = false;
+    let heredocUnclear = false;
+    const heredocBodies: [number, number][] = [];
     const consumeHeredocs = (start: number): number => {
         let pos = start;
         for (const doc of pending) {
             let data = "";
+            let ended = false;
+            const from = pos;
+            let dataEnd = pos;
             while (pos < cmd.length) {
+                dataEnd = pos;
                 let value = "";
                 let newline = false;
                 // Unquoted heredocs join escaped newlines before checking their
@@ -128,8 +196,21 @@ export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis 
                     break;
                 }
                 if (doc.tabs) value = value.replace(/^\t+/, "");
-                if (value === doc.delimiter) break;
+                if (value === doc.delimiter) { ended = true; break; }
                 data += value + (newline ? "\n" : "");
+            }
+            if (!ended) {
+                heredocOpen = true;
+                dataEnd = pos;
+            }
+            const raw = cmd.slice(from, dataEnd);
+            heredocBodies.push([from, dataEnd]);
+            // The shell expands an unquoted document's data: `$(…)` and backticks in it run.
+            if (!doc.quoted) {
+                if (/`|\$\(/.test(raw)) hasSubstitution = true;
+                for (let k = raw.indexOf("$"); k >= 0; k = raw.indexOf("$", k + 1)) {
+                    if (raw[k + 1] === "[" || (raw[k + 1] === "{" && !plainBraceParam(raw, k))) unsafeExpansion = true;
+                }
             }
             doc.scripts.push(data);
         }
@@ -302,7 +383,7 @@ export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis 
             // comment to end of line
             while (i < cmd.length && cmd[i] !== "\n") i++;
             endCommand(i < cmd.length ? "\n" : undefined);
-            if (discovery && pending.length) i = consumeHeredocs(i + 1);
+            if (consume && pending.length) i = consumeHeredocs(i + 1);
             continue;
         }
         if (c === ";" || c === "\n" || c === "|" || c === "&") {
@@ -318,7 +399,7 @@ export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis 
             let op = doubled ? c + c : c;
             if (c === ";" && cmd[i + 1] === "&") { op += "&"; i++; }
             endCommand(op);
-            if (discovery && c === "\n" && pending.length) i = consumeHeredocs(i + 1);
+            if (consume && c === "\n" && pending.length) i = consumeHeredocs(i + 1);
             continue;
         }
         if (c === ">" || c === "<") {
@@ -377,6 +458,31 @@ export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis 
                 i = j + raw.length - 1;
                 continue;
             }
+            // `<<EOF`, `<<-EOF`: its lines up to the delimiter are data. Also where `<<` may not be one
+            // (`$((1<<2))`, a subshell): what that line flags already keeps it from being approved, and
+            // analyzeCommand still has its lines as commands for the checks that refuse.
+            if (consume && !discovery && c === "<" && n === "<" && cmd[i + 2] !== "<") {
+                const tabs = cmd[i + 2] === "-";
+                let j = i + (tabs ? 3 : 2);
+                while (cmd[j] === " " || cmd[j] === "\t" || (cmd[j] === "\\" && cmd[j + 1] === "\n")) j += cmd[j] === "\\" ? 2 : 1;
+                const raw = cmd.slice(j).match(/^(?:"[^"\\]*(?:\\[\s\S][^"\\]*)*"|'[^']*'|`[^`\n]*`|\\[\s\S]|[^ \t\n;|&<>"'`\\])+/)?.[0] ?? "";
+                const delim = raw ? scan(raw, false, false) : undefined;
+                const value = delim?.commands[0]?.argv[0];
+                const quoted = /['"\\]/.test(raw.replace(/\\\n/g, ""));
+                // A delimiter that's certain: a word, as written, with no expansion or parenthesis in it.
+                const certain = delim && value !== undefined && /^\S+$/.test(value) && !delim.unparsable && delim.commands.length === 1 && delim.commands[0]!.argv.length === 1 && !/[$`()]/.test(raw);
+                // bash, zsh and sh take one with `$` or backticks as it's written (`<<$X` ends at a line `$X`):
+                // read so, though never approved. Parentheses and spaces in it can't be read at all.
+                const literal = certain || !raw || /[()]/.test(raw) || /\s/.test(raw.replace(/`[^`\n]*`/g, "")) ? undefined : raw.replace(/\\(.)/gs, "$1").replace(/['"]/g, "");
+                if (!certain) heredocUnclear = true;
+                const delimiter = certain ? value : literal;
+                if (delimiter !== undefined) {
+                    pending.push({ delimiter, tabs, quoted, scripts: [] });
+                    text += cmd.slice(i, j + raw.length);
+                    i = j + raw.length - 1;
+                    continue;
+                }
+            }
             // Where the redirection ends when nothing after the operator is an argument (`>&2`, `>/dev/null`).
             let end = i;
             if (c === ">") {
@@ -423,9 +529,18 @@ export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis 
         mark(i, i + 1);
         text += c;
     }
-    const unparsable = quote !== null;
+    const unparsable = quote !== null || heredocUnclear;
     endCommand();
-    return { commands, hasSubstitution, writesFiles, unparsable, unsafeExpansion, redirects, ...(lastOp !== undefined ? { trailing: lastOp } : {}), ...(heredoc ? { heredoc: true as const } : {}), ...(bareRedirect ? { bareRedirect: true as const } : {}) };
+    // A here-document on the last line, with no line after it for data: its delimiter never comes.
+    if (consume && pending.length) heredocOpen = true;
+    return {
+        commands, hasSubstitution, writesFiles, unparsable, unsafeExpansion, redirects,
+        ...(lastOp !== undefined ? { trailing: lastOp } : {}),
+        ...(heredoc ? { heredoc: true as const } : {}),
+        ...(heredocOpen ? { heredocOpen: true as const } : {}),
+        ...(heredocBodies.length ? { heredocBodies } : {}),
+        ...(bareRedirect ? { bareRedirect: true as const } : {}),
+    };
 }
 
 /**
@@ -886,9 +1001,9 @@ export function isReadOnlyCommand(cmd: string): boolean {
  * read-only agent, so it can drop or replace just that), or undefined.
  */
 export function notReadOnly(cmd: string): string | undefined {
-    const a = analyzeCommand(cmd);
+    const a = shellCommands(cmd);
     const clip = (s: string) => (s.length > 120 ? s.slice(0, 117) + "…" : s).replace(/\s+/g, " ");
-    if (a.unparsable) return "its quotes aren't closed";
+    if (a.unparsable) return a.heredoc ? "its quotes aren't closed, or its here-document's delimiter can't be read for certain" : "its quotes aren't closed";
     if (a.hasSubstitution) return /\$\(\(/.test(cmd) && !/`|\$\((?!\()|<\(/.test(cmd) ? "it has $((…)) arithmetic, which the checks don't follow (it can run commands)" : "it runs a command inside $(…), backticks or <(…)";
     if (a.writesFiles) return `it writes to ${clip(a.redirects[0] || "a file")} with a > redirect`;
     if (a.unsafeExpansion) return "it has an expansion that can run code or change its words: unquoted parentheses (a subshell or glob qualifier), braces, $'…' or ${…} with an operator";
@@ -1324,8 +1439,36 @@ function anyCase(re: RegExp): RegExp {
 const CREDENTIAL_STORE = anyCase(/\.harness\/(credentials|providers)\.json/);
 const STARTUP_FILE = anyCase(/>\s*~\/\.(bash|zsh)(rc|_profile|env)|>\s*~\/\.profile/);
 
-/** Returns a reason if the command matches a known-catastrophic pattern. */
-export function dangerousReason(cmd: string, depth = 0): string | undefined {
+/** Programs that only read or copy their input, whatever their options: a here-document's data stays data with them (not sort: --compress-program runs one). */
+const DATA_READERS = new Set(["cat", "tee", "wc", "head", "tail", "uniq", "cut", "tr", "nl", "grep", "egrep", "fgrep"]);
+
+/**
+ * The line with its here-documents' data blanked (lines kept), when that data
+ * can only be data: where it ends is certain, the line has nothing the checks
+ * don't follow, and each program on it is one of DATA_READERS, by name and
+ * run directly (`cat <<EOF | sh` or `bash <<EOF` runs it). Otherwise undefined.
+ */
+export function withoutHeredocData(cmd: string): string | undefined {
+    const a = shellCommands(cmd);
+    if (!a.heredoc || !a.heredocBodies || a.unparsable || a.heredocOpen || a.hasSubstitution || a.unsafeExpansion || a.bareRedirect) return undefined;
+    if (!a.commands.every((c) => DATA_READERS.has(c.argv[0] ?? "") && !c.expands?.includes(0) && !c.globbed?.includes(0))) return undefined;
+    let t = cmd;
+    for (const [from, to] of a.heredocBodies) t = t.slice(0, from) + t.slice(from, to).replace(/[^\n]/g, " ") + t.slice(to);
+    // Blanking must leave what runs as it was, word for word and place for place.
+    const same = (x: CommandAnalysis) => JSON.stringify(x.commands.map((c) => [c.argv, c.spans, c.after ?? ""]));
+    const b = shellCommands(t);
+    return !b.heredocOpen && !b.unparsable && same(b) === same(a) ? t : undefined;
+}
+
+/**
+ * Returns a reason if the command matches a known-catastrophic pattern.
+ * A here-document's data counts only when something may run it.
+ */
+export function dangerousReason(cmd: string, depth = 0, dataBlanked = false): string | undefined {
+    if (!dataBlanked) {
+        const t = withoutHeredocData(cmd);
+        if (t !== undefined) return dangerousReason(t, depth, true);
+    }
     const said = withoutMessages(cmd);
     for (const text of [said, ...programsSpelled(said)]) for (const [re, reason] of DANGEROUS) if (re.test(text)) return reason;
     const spelled = [said, ...spellings(said)];
@@ -2415,7 +2558,9 @@ const TWO_WORD = new Set(["git", "npm", "pnpm", "yarn", "bun", "cargo", "go", "d
 
 /** Suggest prefix rules for each simple command (`npm run test:*`). */
 export function suggestBashRules(cmd: string): string[] {
-    const a = analyzeCommand(cmd);
+    const a = shellCommands(cmd);
+    // Rules come from what runs, never a here-document's data. When where its data ends isn't certain, none.
+    if (a.heredoc && (a.unparsable || a.heredocOpen)) return [];
     const out: string[] = [];
     for (const c of a.commands) {
         const argv = effectiveArgv(c.argv);
