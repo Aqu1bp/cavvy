@@ -160,6 +160,18 @@ export function openAgents(agentId?: string) {
     setPrefs("panel", true);
 }
 
+/**
+ * Open a session that needs you, from Needs you (the rail's pinned rows, the title
+ * bar, Settings' top line): its conversation, where its request is. Settings closes,
+ * and so does a sub-agent's view: opening the session already open (from Settings)
+ * wouldn't change the active id, so nothing else would leave it.
+ */
+export function openWaiting(id: string) {
+    setSettingsTab(undefined);
+    setAgentFocus(undefined);
+    return activate(id);
+}
+
 /** The docked review pane, on a file and a view when given (else the view last used). */
 /** `token`: the file's handle when its name was shown redacted (GitFileDiff.pathToken). */
 export function openReview(path?: string, scope?: ReviewScope, turnId?: number, token?: string) {

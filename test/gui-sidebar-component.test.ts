@@ -80,7 +80,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
         })),
         setPrefs: (key: string, value: any) => key === "groupBy" ? setGroupBy(value) : key === "collapsedProjects" ? setCollapsedProjects(value) : setSettledOpen(value),
         setSidebarOrder: (value: string[] | undefined) => { ids = value ?? []; }, now: () => 100000,
-        handleFor: () => undefined, isUnread: () => true, activate: setActiveId, refreshSessions, reportError,
+        handleFor: () => undefined, isUnread: () => true, activate: setActiveId, openWaiting: setActiveId, refreshSessions, reportError,
         Menu: (p: any) => { menus.push(p); return solid.createMemo(() => p.open ? p.children : null); },
         isTauri: false, mod: "⌘", os: "macos", toggleSidebar() {}, setPaletteOpen() {}, setSettingsTab() {}, shortcut: () => "⌘+K", withShortcut: (label: string) => label,
         setDeleteRequest() {}, chooseProject() {}, newSession() {}, openProject() {}, pin() {}, rename() {}, archive() {}, settle() {},

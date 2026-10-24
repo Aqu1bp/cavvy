@@ -8,7 +8,7 @@ import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanu
 import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronsUpDown, ChevronUp, CircleAlert, Folder, FolderPlus, Hand, Layers, ListFilter, MessageSquareText, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread, refreshSessions, reportError } from "../state/app";
-import { archive, archiveSessions, askToDelete, chooseProject, newSession, openProject, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
+import { archive, archiveSessions, askToDelete, chooseProject, newSession, openProject, openWaiting, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { setDeleteRequest, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
 import { frameDrag } from "../lib/drag";
@@ -77,7 +77,7 @@ function useRename(s: () => SessionSummary) {
 interface RailPick {
     picked: (id: string) => boolean;
     click: (e: MouseEvent, id: string) => void;
-    /** A plain click: opens the session, the selection cleared (what a row under Needs you does with any click). */
+    /** A plain click: opens the session (openWaiting), the selection cleared (what a row under Needs you does with any click). */
     open: (id: string) => void;
     /** The selection, when this row is in one of two or more: its menu acts on all of them. */
     group: (id: string) => readonly string[] | undefined;
@@ -754,7 +754,7 @@ export function Sidebar() {
         },
         open: (id) => {
             setRailSelection(clickSelect(railSelection(), id, "plain", order(), listOf));
-            void activate(id);
+            void openWaiting(id);
         },
         group: (id) => (selected().length > 1 && picked().has(id) ? selected() : undefined),
         plan,

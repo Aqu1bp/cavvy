@@ -7,8 +7,8 @@ import { createEffect, createMemo, createResource, createSignal, For, on, onClea
 import { Archive, ChevronDown, Copy, Ellipsis, FileDiff, FolderOpen, GitBranch, Hand, History, PanelBottom, PanelLeft, PanelRight, Pencil, Search, Share, ShieldAlert, Shrink, SquareArrowOutUpRight, SquarePen, SquareTerminal, Trash2 } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
-import { activate, app, reportError, rpc, toast } from "../state/app";
-import { archive, editorName, exportSession, newSession, openInEditor, openReview, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
+import { app, reportError, rpc, toast } from "../state/app";
+import { archive, editorName, exportSession, newSession, openInEditor, openReview, openWaiting, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
 import { sessionReadReady, useGitChanges } from "../state/changes";
 import { prefs } from "../state/prefs";
 import { terminalOpen, setTerminalOpen, setRewindOpen, setDeleteRequest, openFind, review, setReview, setSettingsTab, setTitleBarBox, settingsTab, shellLayout } from "../state/ui";
@@ -58,13 +58,14 @@ function placeToasts(header: HTMLElement) {
  * The sessions waiting on you while the rail is hidden (or a closed drawer): here,
  * beside the tools, until they're answered, never a toast that could time out
  * unseen. One by name, opening it; several by count, opening a menu of them.
- * Settings' top line has it too (lib/rail.ts needsPlace): opening one closes Settings.
+ * Settings' top line has it too (lib/rail.ts needsPlace). Opening one
+ * (state/actions.ts openWaiting) closes Settings and a sub-agent's view.
  */
 export function NeedsYou(p: { waiting: SessionSummary[] }) {
     const [open, setOpen] = createSignal(false);
     let btn: HTMLButtonElement | undefined;
     const one = () => (p.waiting.length === 1 ? p.waiting[0] : undefined);
-    const go = (id: string) => (setOpen(false), setSettingsTab(undefined), void activate(id));
+    const go = (id: string) => (setOpen(false), void openWaiting(id));
     // Gone with the last of them: the menu goes too.
     createEffect(() => p.waiting.length < 2 && setOpen(false));
     return (
