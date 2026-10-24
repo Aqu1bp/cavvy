@@ -160,6 +160,9 @@ interface BackgroundWork {
     label: string;
 }
 
+/** A call's result when the user declined it ("The user doesn't want to proceed with this tool use. The tool use was rejected …"). */
+export const DECLINED = /doesn't want to proceed with this tool use|tool use was rejected/i;
+
 /** What a background sub-agent's Agent call says when it ends without a report. */
 export const LAUNCH_END: Record<string, string> = {
     done: "Claude Code passed on no report from this sub-agent.",
@@ -1530,6 +1533,8 @@ class ClaudeTurn {
                 this.tools.set(b.id, { name, input, title, started: Date.now() });
                 if (b.name === "Bash" && typeof input.command === "string") this.shellCommands.set(b.id, { command: input.command, timeoutMs: claudeCommandTimeoutMs(input) });
                 if (b.name === "Agent" || b.name === "Task") this.agentLabels.set(b.id, String(input.description ?? input.subagent_type ?? "sub-agent"));
+                // A skill can run as its own agent (/code-review does): one only if its steps come (task_started, its messages).
+                if (b.name === "Skill") this.agentLabels.set(b.id, String(input.skill ?? "skill"));
                 this.sink.emit({ type: "tool_start", call: { type: "tool_call", id: b.id, name, input }, title });
             }
         }
@@ -1578,6 +1583,9 @@ class ClaudeTurn {
                 // Its report came as a handback: the result only says where to find it.
                 content = this.reports.get(b.tool_use_id) || content;
             }
+            // A skill that ran as its own agent: Claude Code says nothing more of it than its call's result, which ends it,
+            // with what it returned; declined while it worked, it was stopped, not failed.
+            if (p.name === "Skill" && this.liveAgents.has(b.tool_use_id)) this.endAgent(b.tool_use_id, b.is_error ? (DECLINED.test(content) ? "aborted" : "error") : "done", b.is_error ? undefined : content);
             // The structured result (for diffs) describes the message's one tool result.
             const structured = blocks.length === 1 && !b.is_error ? resultDisplay(p, m.tool_use_result, this.t.cwd) : undefined;
             this.endTool(b.tool_use_id, p, content, Boolean(b.is_error), structured);

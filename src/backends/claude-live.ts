@@ -52,6 +52,7 @@ import { CLAUDE_PREFIX, claudeNames, claudePrompt, forClaudeCode, skillFolder } 
 import type { BackendResult, BackendTurn, BackgroundStop, SessionHost, SteerMessage, TurnSink } from "./types";
 import type { ImagePart, PdfPart } from "../providers/types";
 import {
+    DECLINED,
     LAUNCH_END,
     MODES,
     attachTiming,
@@ -1282,6 +1283,8 @@ export class ClaudeConnection implements CliConnection {
                 const title = titleFor(name, input);
                 this.tools.set(b.id, { name, input, title, started: Date.now() });
                 if (b.name === "Agent" || b.name === "Task") this.agentLabels.set(b.id, String(input.description ?? input.subagent_type ?? "sub-agent"));
+                // A skill can run as its own agent (/code-review does): one only if its steps come (task_started, its messages).
+                if (b.name === "Skill") this.agentLabels.set(b.id, String(input.skill ?? "skill"));
                 if (b.name === "Bash" && typeof b.input?.command === "string") {
                     this.bashCommands.set(b.id, b.input.command);
                     if (this.bashCommands.size > 100) this.bashCommands.delete(this.bashCommands.keys().next().value!);
@@ -1336,6 +1339,9 @@ export class ClaudeConnection implements CliConnection {
                 else if (report) this.report(b.tool_use_id, report, true);
                 content = this.reports.get(b.tool_use_id) || content;
             }
+            // A skill that ran as its own agent: Claude Code says nothing more of it than its call's result, which ends it,
+            // with what it returned; declined while it worked, it was stopped, not failed.
+            if (p.name === "Skill" && this.liveAgents.has(b.tool_use_id)) this.endAgent(b.tool_use_id, b.is_error ? (DECLINED.test(content) ? "aborted" : "error") : "done", b.is_error ? undefined : content);
             // A command now in the background: what it runs, and the file its output goes to (its result says, as 2.1.304's does).
             const bg = blocks.length === 1 ? m.tool_use_result?.backgroundTaskId : undefined;
             if (typeof bg === "string" && bg) {

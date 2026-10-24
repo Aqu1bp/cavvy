@@ -454,15 +454,24 @@ const SUB_TOKEN = "ya29.subagentWroteThisToken1234567890";
  * turn Claude Code takes with them. A stuck one never finishes.
  */
 /** A skill that runs as its own agent (as /code-review does): the Skill call, then its sub-agent's steps under it, then the call's result. */
-function skillAgent() {
+/**
+ * A skill that runs as its own agent (as /code-review does): the Skill call, then its sub-agent's steps under it, then the
+ * call's result. "skill-agent-quiet": no task_notification, as Claude Code sends none for a forked skill.
+ * "skill-agent-declined": the user declines the call while its agent works; its result is the refusal.
+ */
+function skillAgent(variant: string) {
     const id = "toolu_skill";
     toolUse(id, "Skill", { skill: "code-review", args: "medium" });
     out({ type: "system", subtype: "task_started", task_id: "agent-1", tool_use_id: id, description: "code-review", task_type: "local_agent", is_backgrounded: false, session_id: sessionId });
     sub(id, "user", [{ type: "text", text: "Review the current diff." }]);
     sub(id, "assistant", [{ type: "tool_use", id: "toolu_skill_read", name: "Read", input: { file_path: join(cwd, "auth.ts") } }]);
     sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_skill_read", content: "export const strategies = [];", is_error: false }]);
+    if (variant === "skill-agent-declined") {
+        out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, is_error: true, content: "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed." }] }, parent_tool_use_id: null, session_id: sessionId });
+        return;
+    }
     sub(id, "assistant", [{ type: "text", text: "No findings." }]);
-    out({ type: "system", subtype: "task_notification", task_id: "agent-1", tool_use_id: id, status: "completed", summary: "No findings.", usage: { total_tokens: 900, tool_uses: 1, duration_ms: 30 }, session_id: sessionId });
+    if (variant !== "skill-agent-quiet") out({ type: "system", subtype: "task_notification", task_id: "agent-1", tool_use_id: id, status: "completed", summary: "No findings.", usage: { total_tokens: 900, tool_uses: 1, duration_ms: 30 }, session_id: sessionId });
     out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: [{ type: "text", text: "No findings." }] }] }, parent_tool_use_id: null, session_id: sessionId });
 }
 
@@ -1141,7 +1150,7 @@ async function turn(content: any[], uuid?: string) {
     else if (scenario === "agent-fails-then-reports") agentRenotified("failed-reported");
     else if (scenario === "agent-hands-back-late") agentRenotified("handed-back");
     else if (scenario === "agent-resume") agentResume();
-    else if (scenario === "skill-agent") skillAgent();
+    else if (scenario.startsWith("skill-agent")) skillAgent(scenario);
     else if (scenario.startsWith("agent")) agentCall(scenario !== "agent", scenario === "agent-background-late", scenario === "agent-background-stuck");
     else if (scenario === "mcp") {
         const calls: { server?: string; tool: string; args: Record<string, unknown> }[] = JSON.parse(process.env.FAKE_MCP_CALLS ?? "[]");
