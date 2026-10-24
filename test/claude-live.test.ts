@@ -392,6 +392,31 @@ describe("Esc stops only the answer", () => {
         expect(await done).toBe("aborted");
     });
 
+    test("a skill that runs as its own agent (as /code-review does) ends with its Skill call: done, or stopped when declined, whether or not Claude Code says it ended", async () => {
+        const subEnds = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "subagent" && e.event.type === "turn_end" ? [e.event.reason] : []));
+        const reports = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "subagent" && e.event.type === "text" ? [e.event.text] : []));
+        for (const [scenario, ended] of [["skill-agent", "done"], ["skill-agent-quiet", "done"], ["skill-agent-declined", "aborted"]] as const) {
+            process.env.FAKE_SCENARIO = scenario;
+            const { run, events } = await makeAgent();
+            await run("review the diff");
+            // Once: not left running after its call is over (it showed as running for hours), and not ended twice.
+            expect({ scenario, ends: subEnds(events) }).toEqual({ scenario, ends: [ended] });
+            // What the skill returned is its report, also when Claude Code said it ended first.
+            if (ended === "done") expect({ scenario, reported: reports(events).includes("No findings.") }).toEqual({ scenario, reported: true });
+        }
+    });
+
+    test("Esc while a skill's agent works stops it too, though Claude Code sends neither its call's result nor its end", async () => {
+        process.env.FAKE_SCENARIO = "skill-agent-hang";
+        const { run, events } = await makeAgent();
+        const ac = new AbortController();
+        const done = run("review the diff", ac.signal);
+        await until(() => events.some((e) => e.type === "subagent" && e.event.type === "tool_end"), 8000, "the skill's agent at work");
+        ac.abort();
+        expect(await done).toBe("aborted");
+        expect(events.flatMap((e) => (e.type === "subagent" && e.event.type === "turn_end" ? [e.event.reason] : []))).toEqual(["aborted"]);
+    });
+
     test("review #295 P2-8: a background sub-agent that ends during Esc's hidden carrier turn: its report and end still reach the session", async () => {
         process.env.FAKE_SCENARIO = "agent-background-hang";
         process.env.FAKE_BACKGROUND_MS = "60000";

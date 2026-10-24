@@ -2475,6 +2475,18 @@ describe("sub-agents", () => {
         expect([call.status, call.agent, call.output]).toEqual(["ok", true, "src/auth registers sign-in strategies in one list."]);
     }, 45_000);
 
+    test("a Claude Code skill that runs as its own agent (as /code-review does): its call is that agent's, so its row shows the agent's steps rather than just loading", async () => {
+        const v = await claudeCodeTurn("skill-agent", (v) => done(v) && v.agents[0]?.status === "done");
+        const call = tools(lastTurn(v)).find((b) => b.name === "Skill")!;
+        expect([call.status, call.agent]).toEqual(["ok", true]);
+        expect(v.agents).toHaveLength(1);
+        const a = v.agents[0]!;
+        expect([a.id, a.description, a.status]).toEqual(["toolu_skill", "code-review", "done"]);
+        // Claude Code says it ended before the Skill call's result comes: that result is still its report, kept.
+        expect(a.report).toBe("No findings.");
+        expect(a.blocks.filter((b) => b.t === "tool").map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : ""))).toEqual(["Read:ok"]);
+    }, 45_000);
+
     for (const [scenario, when] of [
         ["agent-background", "launched first"],
         ["agent-background-late", "launched after its first step"],
@@ -4059,6 +4071,39 @@ describe("a sub-agent's own sub-agents", () => {
             // Still under it, in its turn (with that turn's new id), with what it did.
             expect([sub?.parentId, sub?.turnId, sub?.status, sub?.report]).toEqual([auth.id, kept.turnId, "done", "Two tests."]);
             expect(v.turns.some((t) => t.id === kept.turnId)).toBe(true);
+        } finally {
+            await engine.stop();
+        }
+    }, 30_000);
+
+    test("a sub-agent's skill agent keeps what its Skill call returned as its report", async () => {
+        const { Engine } = await import("../src/server/engine");
+        const engine = new Engine({});
+        const c = { subs: new Set<string>(), send() {} };
+        engine.clients.add(c);
+        try {
+            const snap = (await engine.handle(c, "session.create", { cwd: project() })) as SessionSnapshot;
+            const id = snap.state.id;
+            const rt = engine.runtimes.get(id)!;
+            await engine.handle(c, "session.setModel", { id, ref: "mock:mock-opus", persist: false });
+            await engine.handle(c, "session.send", { id, text: "Use agents to review the auth module and its tests" });
+            for (let i = 0; i < 200 && rt.snapshot().agents.length < 2; i++) await Bun.sleep(50);
+            for (let i = 0; i < 200 && !(rt.idle && !rt.busy); i++) await Bun.sleep(50);
+            const auth = rt.snapshot().agents.find((a) => a.description === "Map the auth module")!;
+            const emit = (e: AgentEvent) => rt.agent!.options.host.emit({ type: "subagent", parentId: auth.id, label: "Map the auth module", event: e });
+            const skill = (id: string, content: string, isError?: boolean) => {
+                const call = { type: "tool_call" as const, id, name: "Skill", input: { skill: "code-review" } };
+                emit({ type: "tool_start", call, title: "Skill(code-review)" });
+                emit({ type: "subagent", parentId: id, label: "code-review", event: { type: "text", text: "Looking." } });
+                emit({ type: "subagent", parentId: id, label: "code-review", event: { type: "turn_end", reason: isError ? "aborted" : "done" } });
+                emit({ type: "tool_end", call, result: { content, isError }, durationMs: 5 });
+            };
+            skill("skill-1", "No findings.");
+            skill("skill-2", "The user doesn't want to proceed with this tool use.", true);
+            const agents = rt.snapshot().agents;
+            // A Skill that ran: what it returned is its report, not what it said on the way. One that failed keeps its own.
+            expect(agents.find((a) => a.id === "skill-1")?.report).toBe("No findings.");
+            expect(agents.find((a) => a.id === "skill-2")?.report).not.toContain("doesn't want to proceed");
         } finally {
             await engine.stop();
         }

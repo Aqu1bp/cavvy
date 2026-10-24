@@ -571,6 +571,19 @@ describe("Claude Code's background work (live test findings)", () => {
         expect(session.messages.at(-1)!.content.map((p) => (p as any).text).join("\n")).toContain("The explorer reported back");
     });
 
+    test("a skill that runs as its own agent (as /code-review does) ends with its Skill call: done, or stopped when declined, whether or not Claude Code says it ended", async () => {
+        for (const [scenario, ended] of [["skill-agent", "done"], ["skill-agent-quiet", "done"], ["skill-agent-declined", "aborted"]] as const) {
+            process.env.FAKE_SCENARIO = scenario;
+            const { run, events } = await makeAgent({ provider: "claude-code" });
+            await run("review the diff");
+            // Once: not left running after its call is over, and not ended twice when Claude Code does say.
+            expect({ scenario, ends: subEnds(events) }).toEqual({ scenario, ends: [ended] });
+            // What the skill returned is its report, also when Claude Code said it ended first.
+            const reported = events.some((e) => e.type === "subagent" && e.event.type === "text" && e.event.text === "No findings.");
+            if (ended === "done") expect({ scenario, reported }).toEqual({ scenario, reported: true });
+        }
+    });
+
     test("...and its usage is what Claude Code reports for it", async () => {
         process.env.FAKE_SCENARIO = "agent-background";
         const { run, events } = await makeAgent({ provider: "claude-code" });
