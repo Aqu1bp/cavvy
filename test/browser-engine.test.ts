@@ -501,6 +501,18 @@ describe("a session's browser", () => {
         }
     });
 
+    test("an already cancelled navigation cannot close or open a tab", async () => {
+        const { session, nav } = open();
+        await nav({ url: "http://localhost:4000/" });
+        const cancelled = new AbortController(); cancelled.abort();
+        for (const input of [{ action: "close_tab", tab: session.active }, { action: "new_tab" }]) {
+            const result = await BrowserNavigateTool.run(input as any, { state: { browser: session, projectRoot: session.root }, settings: {}, signal: cancelled.signal } as any);
+            expect(result.isError).toBe(true);
+            expect(result.content).toContain("Interrupted");
+            expect(session.tabCount).toBe(1);
+        }
+    });
+
     test("history navigation rechecks ownership after reading history", async () => {
         const { session, nav } = open();
         await nav({ url: "http://localhost:4000/" });

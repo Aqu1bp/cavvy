@@ -52,6 +52,7 @@ function acting(b: BrowserSession, page: Page, ctx: ToolContext) {
 async function guarded(ctx: ToolContext, fn: (b: BrowserSession) => Promise<ToolResult>): Promise<ToolResult> {
     const b = browserOf(ctx);
     try {
+        if (ctx.signal.aborted) throw new BrowserError("Interrupted by user.");
         return await b.run(() => fn(b));
     } catch (e) {
         return failure(e, ctx);
@@ -127,7 +128,7 @@ action: goto (default; needs url), back, forward, reload, new_tab (url optional)
             }
             if (action === "close_tab") {
                 const page = await b.page(input.tab);
-                b.agentAct(page);
+                acting(b, page, ctx);
                 await b.closeTab(input.tab!);
                 return { content: `Closed tab ${input.tab}.\n${b.tabsText()}` };
             }

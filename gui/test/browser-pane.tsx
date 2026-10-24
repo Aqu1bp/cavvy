@@ -95,6 +95,11 @@ async function run() {
         keyboard.dispatchEvent(new InputEvent("input", { data: "日本語", inputType: "insertFromComposition", bubbles: true }));
         check(inputs().filter(c => c.params.input.kind === "text" && c.params.input.text === "日本語").length === 1, "IME text missing or duplicated");
         check(!inputs().some(c => c.params.input.key === "Process"), "composition keys leaked");
+        keyboard.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+        keyboard.dispatchEvent(new FocusEvent("blur"));
+        keyboard.dispatchEvent(new CompositionEvent("compositionend", { data: "cancelled", bubbles: true }));
+        check(!inputs().some(c => c.params.input.text === "cancelled"), "cancelled composition reached the page");
+
 
         const rect = canvas.getBoundingClientRect();
         canvas.dispatchEvent(new MouseEvent("mousedown", { clientX: rect.left + 100, clientY: rect.top + 100, button: 0, buttons: 1, bubbles: true }));
