@@ -36,6 +36,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
     const [settledOpen, setSettledOpen] = solid.createSignal(true);
     const [collapsedProjects, setCollapsedProjects] = solid.createSignal<string[]>([]);
     const [motion, setMotion] = solid.createSignal("instant");
+    const [settingsTab, setSettingsTab] = solid.createSignal<string>();
     const [railSelection, setRailSelection] = solid.createSignal<railSelect.RailSelection>(railSelect.NO_SELECTION);
     const bulk = { settle: mock((_ids: readonly string[], _on: boolean) => Promise.resolve([] as string[])), archive: mock((_ids: readonly string[], _on: boolean) => Promise.resolve([] as string[])), askToDelete: mock((_ids: readonly string[]) => {}) };
     let reduced = false;
@@ -69,7 +70,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
         presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled)
         .replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
-    const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronsDownUp", "ChevronsUpDown", "ChevronUp", "CircleAlert", "Folder", "FolderPlus", "Hand", "Layers", "ListFilter", "MessageSquareText", "MoreHorizontal", "PanelLeft", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "X", "ProviderIcon"].map((name) => [name, () => null]));
+    const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronsDownUp", "ChevronsUpDown", "ChevronUp", "CircleAlert", "Folder", "FolderPlus", "Hand", "Layers", "ListFilter", "MessageSquareText", "MoreHorizontal", "PanelLeft", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "X", "ProviderIcon", "Logo"].map((name) => [name, () => null]));
     const scope = { renderer, ...solid, ...order, ...format, ...rail, ...railSelect, ...icons, sessionStatus, rowMenuKey, app, prefs,
         railSelection, setRailSelection, actionOf: o.actionOf ?? (() => undefined),
         settleSessions: bulk.settle, archiveSessions: bulk.archive, askToDelete: bulk.askToDelete,
@@ -86,6 +87,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
         requestAnimationFrame: (fn: () => void) => { frames.set(++sequence, fn); return sequence; },
         cancelAnimationFrame: (id: number) => frames.delete(id),
         matchMedia: () => ({ matches: reduced }),
+        settingsTab: () => settingsTab(), ResizeObserver: class { observe() {} disconnect() {} },
     };
     const render = new Function(...Object.keys(scope), `${js}; return Sidebar;`)(...Object.values(scope));
     let dispose!: () => void;
@@ -94,7 +96,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
     const update = (id: string, patch: Partial<SessionSummary>) => setSessions((list) => list.map((s) => s.id === id ? { ...s, ...patch } : s));
     const flushFrames = () => { for (const [id, fn] of [...frames]) { frames.delete(id); fn(); } };
     const contextMenu = (row: any) => row.props.onContextMenu({ target: row.querySelector(), currentTarget: row, button: 2, clientX: 40, clientY: 60, preventDefault() {} });
-    return { railSelection, setRailSelection, bulk, collapsedProjects, setCollapsedProjects, setSessionsError, refreshSessions, reportError, setSessionsLoaded, setConn, nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
+    return { railSelection, setRailSelection, bulk, setSettingsTab, collapsedProjects, setCollapsedProjects, setSessionsError, refreshSessions, reportError, setSessionsLoaded, setConn, nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
         resetEntryKeyReads: () => { entryKeyReads = 0; }, get entryKeyReads() { return entryKeyReads; },
         setReduced: (value: boolean) => { reduced = value; }, flushFrames, dispose, get ids() { return [...ids]; } };
 }
@@ -180,6 +182,44 @@ test("rail rows: needs-you rows get an amber dot and no archive; others archive 
         f.setGroupBy("project");
         const counts = f.nodes.filter((n) => n.props.class === "n").map((n) => n.content);
         expect(counts.slice(-3)).toEqual([2, 2, 2]);
+    } finally { f.dispose(); }
+});
+
+test("Needs you: waiting sessions but the open one, pinned above the list as well as in their place; keys act on the pinned row", () => {
+    let next: string | undefined;
+    const f = fixture(6, { actionOf: () => next });
+    const group = () => f.nodes.findLast((n) => n.props.class === "needs-g");
+    const pinned = () => f.nodes.filter((n) => n.props["data-needs-id"] !== undefined && f.descendants(group() ?? {}).includes(n));
+    const text = (n: any) => f.descendants(n).map((c) => c.text ?? (typeof c.content === "string" || typeof c.content === "number" ? c.content : "")).join("");
+    try {
+        expect(group()).toBeUndefined();
+        f.update("3", { status: "waiting", waitingKind: "plan", updatedAt: 50 });
+        f.update("4", { status: "waiting", updatedAt: 60 });
+        f.setActiveId("4");
+        // The open one's request is in front of you: only 3 is pinned, saying what it asks.
+        expect(pinned().map((n) => n.props["data-needs-id"])).toEqual(["3"]);
+        expect(text(group())).toContain("Needs you");
+        expect(text(pinned()[0])).toContain("Plan ready for review");
+        // Both stay in their own places too: the list's order (⌘-cycling, ranges) has each once.
+        expect(f.ids.filter((id) => id === "3")).toHaveLength(1);
+        expect(f.ids.slice(0, 2).sort()).toEqual(["3", "4"]);
+        // Settings covers the open one: it's pinned too.
+        f.setSettingsTab("general");
+        expect(pinned().map((n) => n.props["data-needs-id"]).sort()).toEqual(["3", "4"]);
+        f.setSettingsTab(undefined);
+        // A key on the pinned row is about its session, not the open one.
+        next = "sidebar:archiveSelected";
+        const row = pinned()[0];
+        key(f, "a", { target: { closest: (sel: string) => (sel.includes("data-needs-id") ? { dataset: { needsId: row.props["data-needs-id"] } } : null) } });
+        expect(f.bulk.archive).toHaveBeenLastCalledWith(["3"], true);
+        // Clicking it opens it.
+        click(f.descendants(row).find((n) => n.props.class === "card-hit needs-hit"));
+        expect(f.nodes.some((n) => n.props["aria-current"] === "page" && n.props.title?.startsWith("Session 3\n"))).toBe(true);
+        // Answered: the group goes.
+        f.update("3", { status: "idle" });
+        f.update("4", { status: "idle" });
+        expect(f.ids).toHaveLength(6);
+        expect(text(f.nav)).not.toContain("Needs you");
     } finally { f.dispose(); }
 });
 

@@ -1,20 +1,21 @@
 // The session rail, straight on the window glass. Sessions still in play are
 // two-line rows: how it's doing, what it's about, when; then its branch (and
 // project, when the list isn't grouped by project). Ones you've settled fold
-// into a one-line list at the bottom; sending to one brings it back.
+// into a one-line list at the bottom; sending to one brings it back. The ones
+// waiting on you are pinned above them all, under Needs you, until answered.
 
-import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, Show, Switch, untrack } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack } from "solid-js";
 import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronsUpDown, ChevronUp, CircleAlert, Folder, FolderPlus, Hand, Layers, ListFilter, MessageSquareText, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread, refreshSessions, reportError } from "../state/app";
 import { archive, archiveSessions, askToDelete, chooseProject, newSession, openProject, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
-import { setDeleteRequest, setPaletteOpen, setRailDrag, setSettingsTab } from "../state/ui";
+import { setDeleteRequest, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
 import { frameDrag } from "../lib/drag";
 import { ago, monogram, projectColor, since } from "../lib/format";
 import { holdSidebar, projectOf, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type SidebarEntry } from "../lib/session-order";
 import { sessionStatus } from "../lib/session-status";
-import { groupCounts, railFoot, railGlyph, type RailGlyph, type RailPlan } from "../lib/rail";
+import { asking, foldOrder, groupCounts, needsYou, planFit, railFoot, railGlyph, type RailGlyph, type RailPlan } from "../lib/rail";
 import { railSelection, setRailSelection, setSidebarOrder } from "../state/sidebar";
 import { bulkPlan, clickKind, clickSelect, extendSelect, pruneSelection, railTargets, selectAll, sessionCount, type BulkPlan, type RailList } from "../lib/rail-select";
 import { now } from "../lib/clock";
@@ -22,6 +23,7 @@ import { isTauri, os } from "../lib/platform";
 import { Menu } from "./ui/Menu";
 import { rowMenuKey } from "../lib/menu";
 import { ProviderIcon } from "./ui/ProviderIcon";
+import { Logo } from "./ui/bits";
 import { actionOf, shortcut, withShortcut } from "../state/keybindings";
 
 /** Cards shown before "Show more". */
@@ -228,9 +230,109 @@ function RowEnd(p: { s: SessionSummary; unread: boolean }) {
     );
 }
 
-/** A plan's usage ring: empty until the plan has reported. */
-function PlanRing(p: { plan: RailPlan; small?: boolean }) {
-    return <span class={`meter tone-${p.plan.tone} ${p.small ? "sm" : ""} ${p.plan.pct === undefined ? "unknown" : ""} ${p.plan.stale ? "stale" : ""}`} style={{ "--v": p.plan.pct ?? 0 }} role="img" aria-label={`${p.plan.name}: ${p.plan.pct === undefined ? "usage not known yet" : `${p.plan.pct}% used`}${p.plan.stale ? " when last reported" : ""}`} />;
+/**
+ * The plans' usage, beside Settings: one row however many there are. A chip per
+ * plan, its mark and how full its fullest window is, the same size in every
+ * state: the colour says how near a limit it is (amber, red; filled red at it).
+ * A plan on its own has room for its name and the window. Short of room (a
+ * narrow or floating rail), the % signs go first; only then do chips fold into
+ * "+N", the plain ones first (lib/rail.ts planFit). The row opens every
+ * window's detail.
+ */
+function PlanRow(p: { plans: RailPlan[] }) {
+    const [open, setOpen] = createSignal(false);
+    const [tight, setTight] = createSignal(false);
+    const [folded, setFolded] = createSignal(0);
+    let row: HTMLButtonElement | undefined;
+    let more: HTMLSpanElement | undefined;
+    const solo = () => p.plans.length === 1;
+    const order = createMemo(() => foldOrder(p.plans));
+    const hidden = (i: number) => order().indexOf(i) < folded();
+    // Measures the chips as they are and tight, with none folded, then settles on the fit
+    // (outside Solid's updates each change is in the DOM at once, so it can be read back).
+    const fit = () => {
+        if (!row) return;
+        batch(() => (setFolded(0), setTight(false)));
+        if (p.plans.length < 2) return;
+        const chips = [...row.querySelectorAll<HTMLElement>(".pl:not(.more)")];
+        const widths = () => chips.map((c) => c.getBoundingClientRect().width);
+        const gap = () => parseFloat(getComputedStyle(row!).columnGap) || 0;
+        const style = getComputedStyle(row);
+        const room = row.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+        const normal = widths();
+        const normalGap = gap();
+        setTight(true);
+        const f = planFit({ room, normal, tight: widths(), gap: normalGap, tightGap: gap(), more: more?.getBoundingClientRect().width ?? 0, order: order() });
+        batch(() => (setTight(f.tight), setFolded(f.folded)));
+    };
+    // The rail's width changes it (dragging its edge, the drawer); so do the text size and what the
+    // chips say, once they're drawn.
+    onMount(() => {
+        const ro = new ResizeObserver(() => fit());
+        ro.observe(row!.parentElement ?? row!);
+        onCleanup(() => ro.disconnect());
+    });
+    createEffect(on(() => `${prefs.fontSize} ${p.plans.map((plan) => `${plan.provider} ${plan.pct} ${plan.tone} ${plan.reached}`).join()}`, () => queueMicrotask(fit), { defer: true }));
+    const label = () => `Plan usage. ${p.plans.map((plan) => `${plan.name}: ${plan.brief}`).join(". ")}`;
+    return (
+        <>
+            <button ref={row} class={`plans ${tight() ? "tight" : ""}`} aria-label={label()} aria-haspopup="dialog" aria-expanded={open()} onClick={() => setOpen(!open())}>
+                <For each={p.plans}>{(plan, i) => (
+                    <span class={`pl ${plan.reached ? "danger full" : plan.tone} ${solo() ? "solo" : ""} ${plan.stale ? "stale" : ""}`} hidden={hidden(i())} title={plan.detail}>
+                        <ProviderIcon id={plan.provider} name={plan.name} size={13} />
+                        <Show when={solo()}><span class="pl-n truncate">{plan.name}</span></Show>
+                        <span class="pl-v">
+                            <Show when={plan.pct !== undefined} fallback="–">{plan.pct}<small>%</small></Show>
+                            <Show when={solo() && (plan.reached ? plan.lifts && `· resets ${plan.lifts}` : plan.window?.toLowerCase())}>{(w) => <span class="pl-w"> {w()}</span>}</Show>
+                        </span>
+                    </span>
+                )}</For>
+                {/* Always there, to be measured: out of the row (and unseen) while nothing is folded. */}
+                <span ref={more} class={`pl more ${folded() ? "" : "measure"}`} aria-hidden={folded() ? undefined : "true"}>+{Math.max(1, folded())}</span>
+            </button>
+            <Menu kind="dialog" label="Plan usage" open={open()} anchor={() => row} onClose={() => setOpen(false)} placement="top" align="start" width={320} class="plans-card">
+                <div class="menu-head">Plan usage<span class="pu-rh">Resets</span></div>
+                <For each={p.plans}>{(plan) => (
+                    <div class="pu-plan">
+                        <div class="pu-h" title={plan.detail}>
+                            <ProviderIcon id={plan.provider} name={plan.name} size={14} />
+                            <span class="truncate">{plan.name}</span>
+                            <Show when={plan.asOf}>{(at) => <span class="pu-asof">{at()}</span>}</Show>
+                        </div>
+                        <For each={plan.windows} fallback={<div class="pu-w none">Usage shows after a turn</div>}>{(w) => (
+                            <div class={`pu-w ${w.tone}`}>
+                                <span class="truncate">{w.label}</span>
+                                <span class="pu-bar" aria-hidden="true"><i style={{ width: `${w.reached ? 100 : w.pct ?? 0}%` }} /></span>
+                                <b>{w.reached ? "Full" : w.pct !== undefined ? `${w.pct}%` : "–"}</b>
+                                <span class="pu-r" title={w.resets}>{w.resets}</span>
+                            </div>
+                        )}</For>
+                    </div>
+                )}</For>
+                <div class="menu-sep" />
+                <button class="menu-item compact" onClick={() => (setOpen(false), setSettingsTab("usage"))}>Usage and accounts…</button>
+            </Menu>
+        </>
+    );
+}
+
+/**
+ * A session waiting on you, pinned under Needs you (it keeps its own row below
+ * too): an amber row saying what it's asking. A click opens it.
+ */
+function NeedsRow(p: { s: SessionSummary; pick: RailPick }) {
+    const title = () => (p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title);
+    const picked = () => p.pick.picked(p.s.id);
+    return (
+        <div data-needs-id={p.s.id} class={`needs-row card waiting ${picked() ? "picked" : ""}`}>
+            <button class="card-hit needs-hit" onClick={(e) => p.pick.click(e, p.s.id)} aria-label={`${title()}, ${asking(p.s)}${picked() ? ", selected" : ""}`} title={`${p.s.title}: ${asking(p.s)}`}>
+                <Glyph kind="waiting" picked={picked()} />
+                <span class="t">{title()}</span>
+                <span class="end"><span class="wait-dot" /></span>
+                <span class="m"><span class="truncate">{asking(p.s)}</span></span>
+            </button>
+        </div>
+    );
 }
 
 function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) => void; grouped: boolean; pick: RailPick }) {
@@ -397,12 +499,14 @@ function SelectionBar(p: { count: number; plan: BulkPlan; act: (what: "settle" |
 }
 
 /**
- * The top line, level with the traffic lights (macOS): hide the rail and start a
- * session, at the rail's far end. Shared with the Settings rail.
+ * The top line, level with the traffic lights (macOS): the app's mark just right
+ * of them, then hide the rail and start a session, at the rail's far end. Shared
+ * with the Settings rail. The mark is the rail's: hidden with it, it goes too.
  */
 export function SidebarTop() {
     return (
         <div class="side-top">
+            <Logo size={20} variant="brand" />
             <span class="grow" />
             <button class="hb" title={withShortcut("Hide sidebar", "app:toggleSidebar")} aria-label="Hide sidebar" onClick={toggleSidebar}>
                 <PanelLeft size={16} />
@@ -483,11 +587,13 @@ export function Sidebar() {
     });
     // While rows are picked they stay put too, so a range never jumps under the pointer or the keys.
     const held = () => ((hovered() || railSelection().ids.length > 0) && !manualLayout()) || locked().size > 0;
+    // Waiting on you, but the session in front of you (Settings covers it): pinned at the top as well.
+    const needs = createMemo(() => needsYou(all(), settingsTab() ? undefined : app.activeId).map((s) => s.id), undefined, { equals: (a, b) => a.length === b.length && a.every((id, i) => id === b[i]) });
     const layout = createMemo<SidebarEntry[]>((previous) => {
         const next = sidebarEntries(app.sessions, app.archived, {
             activeId: app.activeId, groupBy: prefs.groupBy, archived: showArchived(),
             settledOpen: prefs.settledOpen, cards: shown(), settled: settledShown(), archive: archiveShown(),
-            collapsed: prefs.collapsedProjects,
+            collapsed: prefs.collapsedProjects, needs: needs(),
         });
         return holdSidebar(previous ?? [], next, held(), all(), app.activeId);
     });
@@ -613,10 +719,16 @@ export function Sidebar() {
     const selectedPlan = createMemo(() => plan(selected()));
     const rowHit = (id: string) =>
         [...(listEl?.querySelectorAll<HTMLElement>("[data-session-id]") ?? [])].find((el) => el.dataset.sessionId === id)?.querySelector<HTMLElement>(".card-hit, .slim-hit") ?? undefined;
-    const focusRow = (id: string | undefined) => {
-        const hit = id ? rowHit(id) : undefined;
+    const focusHit = (hit: HTMLElement | undefined) => {
         hit?.focus({ preventScroll: true });
         hit?.scrollIntoView({ block: "nearest" });
+    };
+    const focusRow = (id: string | undefined) => focusHit(id ? rowHit(id) : undefined);
+    /** ↑/↓: the next row as the rail shows it, Needs you's included (a row being renamed has none). */
+    const stepFocus = (row: HTMLElement, dir: 1 | -1) => {
+        const hits = [...(listEl?.querySelectorAll<HTMLElement>(".card-hit, .slim-hit") ?? [])];
+        const at = hits.indexOf(row.querySelector<HTMLElement>(".card-hit, .slim-hit")!);
+        if (at >= 0) focusHit(hits[at + dir]);
     };
     const clear = (refocus = false) => {
         const sel = railSelection();
@@ -653,12 +765,15 @@ export function Sidebar() {
     const onRailKey = (e: KeyboardEvent) => {
         const target = e.target as HTMLElement | null;
         if (e.defaultPrevented || target?.closest?.("input, textarea, select, [contenteditable]")) return;
-        const focused = target?.closest?.<HTMLElement>("[data-session-id]")?.dataset.sessionId;
+        // A row under Needs you acts on its session too; it only isn't where a Shift+arrow range runs.
+        const row = target?.closest?.<HTMLElement>("[data-session-id], [data-needs-id]");
+        const pinned = row?.dataset.needsId;
+        const focused = row?.dataset.sessionId ?? pinned;
         const bare = !e.metaKey && !e.ctrlKey && !e.altKey;
-        if ((e.key === "ArrowDown" || e.key === "ArrowUp") && bare && focused) {
+        if ((e.key === "ArrowDown" || e.key === "ArrowUp") && bare && row && focused) {
             e.preventDefault();
             const dir = e.key === "ArrowDown" ? 1 : -1;
-            if (!e.shiftKey) return focusRow(order()[order().indexOf(focused) + dir]);
+            if (!e.shiftKey || pinned) return stepFocus(row, dir);
             const next = extendSelect(railSelection(), focused, dir, order(), listOf);
             if (next) {
                 setRailSelection(next.sel);
@@ -675,7 +790,8 @@ export function Sidebar() {
         if (!action?.startsWith("sidebar:")) return;
         e.preventDefault();
         if (action === "sidebar:selectAll") return void setRailSelection(selectAll(order(), (focused && listOf(focused)) || (showArchived() ? "archived" : "active"), listOf));
-        const ids = railTargets(railSelection(), focused, app.activeId, order());
+        // A pinned row's own place may be folded away: it's still the one the key is about.
+        const ids = pinned && !railSelection().ids.length ? [pinned] : railTargets(railSelection(), focused, app.activeId, order());
         if (action === "sidebar:deleteSelected") act("delete", ids);
         else if (action === "sidebar:settleSelected") act("settle", ids);
         else if (action === "sidebar:archiveSelected") act("archive", ids);
@@ -744,6 +860,14 @@ export function Sidebar() {
                     const entry = () => entriesByKey().get(key)!;
                     // A held row keeps its component (and menu/rename) through status changes.
                     const kind = untrack(() => entry().kind);
+                    if (kind === "needs") {
+                        const group = () => entry() as Extract<SidebarEntry, { kind: "needs" }>;
+                        const members = () => group().ids.filter((id) => sessions().has(id));
+                        return <div class="needs-g" data-session-row={key} role="group" aria-label={`Needs you: ${sessionCount(members().length)}`}>
+                            <div class="shelf needs-head"><Hand size={14} /><span>Needs you</span><span class="n">{members().length}</span></div>
+                            <For each={members()}>{(id) => <Show when={sessions().get(id)}>{(s) => <NeedsRow s={s()} pick={pick} />}</Show>}</For>
+                        </div>;
+                    }
                     if (kind === "run") {
                         const group = () => entry() as Extract<SidebarEntry, { kind: "run" }>;
                         const members = () => group().ids.filter((id) => sessions().has(id));
@@ -807,30 +931,9 @@ export function Sidebar() {
                 <SelectionBar count={selected().length} plan={selectedPlan()} act={(what) => act(what, selected())} clear={() => clear(true)} onKeyDown={onRailKey} />
             </Show>
 
-            <div class={`side-foot ${plans().length > 1 ? "two" : ""}`}>
-                <Show when={plans().length > 1} fallback={
-                    <Show when={plans()[0]} fallback={<span class="who" />}>{(plan) => (
-                        <>
-                            <PlanRing plan={plan()} />
-                            <span class="who" title={plan().detail}>
-                                <b>
-                                    <ProviderIcon id={plan().provider} size={13} />
-                                    <span class="truncate">{plan().name}</span>
-                                </b>
-                                <span class="truncate">{plan().line}</span>
-                            </span>
-                        </>
-                    )}</Show>
-                }>
-                    <span class="plans">
-                        <For each={plans()}>{(plan) => (
-                            <span class="plan" title={plan.detail}>
-                                <PlanRing plan={plan} small />
-                                <ProviderIcon id={plan.provider} name={plan.name} size={12} />
-                                <span class="truncate">{plan.brief}</span>
-                            </span>
-                        )}</For>
-                    </span>
+            <div class="side-foot">
+                <Show when={plans().length} fallback={<span class="grow" />}>
+                    <PlanRow plans={plans()} />
                 </Show>
                 <button class="hb lg" title={withShortcut("Settings", "app:settings")} aria-label="Settings" onClick={() => setSettingsTab("general")}>
                     <Settings size={16} />

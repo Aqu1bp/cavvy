@@ -1,9 +1,10 @@
 // The session rail's decisions, as plain functions: a row's glyph, the counts
-// on its group headings, and the plan line in its footer.
+// on its group headings, the sessions that need you, and the plan chips in its
+// footer (their tint, how they fit, and the usage card's windows).
 import { expect, test } from "bun:test";
-import type { PlanLimits, ProviderInfo } from "../src/server/protocol";
+import type { PlanLimits, ProviderInfo, SessionSummary } from "../src/server/protocol";
 
-const { groupCounts, railFoot, railGlyph } = await import("../gui/src/lib/rail");
+const { asking, foldOrder, groupCounts, needsLine, needsYou, planFit, planTone, railFoot, railGlyph } = await import("../gui/src/lib/rail");
 
 test("a row's glyph: working, needs you, stopped, finished unseen, quiet, new", () => {
     expect(railGlyph({ status: "running", messages: 3 }, true)).toBe("running");
@@ -81,8 +82,10 @@ test("both signed in: the session in view's plan first, else the one used last, 
     const providers = [claude, codex];
     // No session in view and no sessions: the latest report first.
     expect(railFoot({ limits: all, providers, now: NOW })).toEqual([
-        { provider: "codex", name: "ChatGPT plan", pct: 74, tone: "warn", line: "74% of the weekly limit", brief: "74% of the weekly limit", stale: false, detail: "ChatGPT plan\nWeekly 74%" },
-        { provider: "claude-code", name: "Claude Code Max", pct: 62, tone: "normal", line: "62% of the 5-hour limit", brief: "62% of the 5-hour limit", stale: false, detail: "Claude Code Max\n5-hour 62%\nWeekly 30%" },
+        { provider: "codex", name: "ChatGPT plan", pct: 74, tone: "normal", reached: false, window: "Weekly", line: "74% of the weekly limit", brief: "74% of the weekly limit", stale: false, detail: "ChatGPT plan\nWeekly 74%",
+            windows: [{ label: "Weekly", pct: 74, tone: "normal", reached: false }] },
+        { provider: "claude-code", name: "Claude Code Max", pct: 62, tone: "normal", reached: false, window: "5-hour", line: "62% of the 5-hour limit", brief: "62% of the 5-hour limit", stale: false, detail: "Claude Code Max\n5-hour 62%\nWeekly 30%",
+            windows: [{ label: "5-hour", pct: 62, tone: "normal", reached: false }, { label: "Weekly", pct: 30, tone: "normal", reached: false }] },
     ]);
     // The plan used last leads.
     expect(railFoot({ limits: all, providers, recent: ["anthropic", "claude-code", "codex"], now: NOW }).map((p) => p.provider)).toEqual(["claude-code", "codex"]);
@@ -142,4 +145,99 @@ test("limits saved before a restart show with their age; a window that has reset
     const [old] = railFoot({ limits: gone, providers: [codex], now: NOW });
     expect(old!.pct).toBeUndefined();
     expect(old!.line).toMatch(/^Reset since (\d{1,2}:\d{2}|[A-Za-z]+\.?$)/);
+    // The card has the window, with nothing current to show for it.
+    expect(old!.windows).toEqual([{ label: "5-hour", tone: "normal", reached: false, resets: "Reset" }]);
+});
+
+test("a chip's tint: amber from 75%, red from 90% and at a limit", () => {
+    expect([0, 74, 75, 89, 90, 100].map((p) => planTone(p))).toEqual(["normal", "normal", "warn", "warn", "danger", "danger"]);
+    expect(planTone(undefined)).toBe("normal");
+    expect(planTone(40, true)).toBe("danger");
+    const at = (usedPercent: number) => railFoot({ limits: { [key("codex")]: limits("codex", NOW, [{ id: "codex:primary", label: "5-hour", usedPercent }]) }, providers: [codex], now: NOW })[0]!;
+    expect([at(74).tone, at(75).tone, at(90).tone]).toEqual(["normal", "warn", "danger"]);
+});
+
+test("the usage card has each window: its share, tint and reset; a reached one is full and says when it lifts", () => {
+    const all = { [key("claude-code")]: limits("claude-code", NOW, [
+        { id: "five_hour", label: "5-hour", usedPercent: 100, resetsAt: NOW + 2 * 3_600_000 },
+        { id: "seven_day", label: "Weekly", usedPercent: 80, resetsAt: NOW + 3 * 86_400_000 },
+    ]) };
+    const [plan] = railFoot({ limits: all, providers: [claude], now: NOW });
+    expect(plan).toMatchObject({ pct: 100, tone: "danger", reached: true });
+    // At the limit the chip says when it lifts, not which window: "100% · resets 4:40 PM".
+    expect(plan!.window).toBeUndefined();
+    expect(plan!.lifts).toMatch(/^\d{1,2}:\d{2}/);
+    const [five, week] = plan!.windows;
+    expect(five).toMatchObject({ label: "5-hour", pct: 100, tone: "danger", reached: true });
+    // Short enough for its column: no ", in 2h".
+    expect(five!.resets).toMatch(/^\d{1,2}:\d{2}/);
+    expect(five!.resets).not.toContain(", in ");
+    expect(week).toMatchObject({ label: "Weekly", pct: 80, tone: "warn", reached: false });
+    expect(week!.resets).toMatch(/^[A-Za-z]+\.?$/);
+    // Not reported yet: no windows, and a chip with nothing in it.
+    expect(railFoot({ limits: {}, providers: [claude], now: NOW })[0]).toMatchObject({ windows: [], reached: false, tone: "normal" });
+    // Told only that a limit is reached: one row says so.
+    const bare = railFoot({ limits: { [key("codex")]: limits("codex", NOW, [], { reached: true }) }, providers: [codex], now: NOW })[0]!;
+    expect(bare.windows).toEqual([{ label: "Limit", tone: "danger", reached: true, resets: undefined }]);
+    // Old figures say how old in the card.
+    const old = railFoot({ limits: { [key("codex")]: limits("codex", NOW - 3_600_000, [{ id: "codex:primary", label: "5-hour", usedPercent: 20 }]) }, providers: [codex], now: NOW })[0]!;
+    expect(old.asOf).toMatch(/^as of /);
+});
+
+test("chips fold plain ones first, from the end, so a plan near its limit stays in view", () => {
+    expect(foldOrder([{ tone: "danger" }, { tone: "normal" }, { tone: "warn" }, { tone: "normal" }])).toEqual([3, 1, 2, 0]);
+    expect(foldOrder([])).toEqual([]);
+});
+
+test("the footer's fit: as they are when there's room, then without % signs, and only then into +N", () => {
+    // Four chips of 50px (46 tight), 2px apart (1 tight); "+N" is 22px.
+    const fit = (room: number, n = 4) => planFit({ room, normal: Array(n).fill(50), tight: Array(n).fill(46), gap: 2, tightGap: 1, more: 22, order: [3, 2, 1, 0].slice(4 - n) });
+    expect(fit(206)).toEqual({ tight: false, folded: 0 });
+    expect(fit(205.6)).toEqual({ tight: false, folded: 0 });
+    // Short of room: tight first, nothing folded while tight fits (187px).
+    expect(fit(200)).toEqual({ tight: true, folded: 0 });
+    expect(fit(187)).toEqual({ tight: true, folded: 0 });
+    // Then fold, counting the "+N" chip: three tight (140) + 1 + 22 = 163.
+    expect(fit(186)).toEqual({ tight: true, folded: 1 });
+    expect(fit(163)).toEqual({ tight: true, folded: 1 });
+    expect(fit(162)).toEqual({ tight: true, folded: 2 });
+    // However narrow, one chip stays.
+    expect(fit(10)).toEqual({ tight: true, folded: 3 });
+    // One plan never folds or tightens (its chip takes the row and truncates its name).
+    expect(fit(10, 1)).toEqual({ tight: false, folded: 0 });
+    // Uneven chips fold in the order given: dropping the wide one (index 0) first makes room sooner.
+    expect(planFit({ room: 100, normal: [80, 40, 40], tight: [76, 36, 36], gap: 2, tightGap: 1, more: 20, order: [0, 2, 1] })).toEqual({ tight: true, folded: 1 });
+});
+
+test("Needs you: waiting sessions but the one in front of you, latest first, saying what each asks", () => {
+    const s = (id: string, status: "waiting" | "idle" | "running", updatedAt: number, waitingKind?: "permission" | "plan" | "question" | "secret") => ({ id, status, updatedAt, waitingKind, title: `T${id}` });
+    const list = [s("a", "waiting", 1, "permission"), s("b", "idle", 5), s("c", "waiting", 3, "plan"), s("d", "running", 9), s("e", "waiting", 2)];
+    expect(needsYou(list).map((x) => x.id)).toEqual(["c", "e", "a"]);
+    expect(needsYou(list, "c").map((x) => x.id)).toEqual(["e", "a"]);
+    expect(needsYou([s("a", "waiting", 1)], "a")).toEqual([]);
+    expect(list.map(asking)).toEqual(["Wants your approval", "Waiting for your answer", "Plan ready for review", "Waiting for your answer", "Waiting for your answer"]);
+    expect(asking({ waitingKind: "question" })).toBe("Has a question for you");
+    expect(asking({ waitingKind: "secret" })).toBe("Asks for a secret");
+    expect(needsLine([list[0]!])).toBe("Ta needs you: Wants your approval");
+    expect(needsLine(needsYou(list))).toBe("3 sessions need you");
+});
+
+test("Needs you's group starts the active list, isn't counted under a project, and isn't in the list's order", async () => {
+    const order = await import("../gui/src/lib/session-order");
+    const sess = (id: string, o: Partial<SessionSummary> = {}): SessionSummary => ({ id, cwd: "/p", projectName: "p", title: id, createdAt: 1, updatedAt: 1, status: "idle", messages: 1, pinned: false, archived: false, settled: false, live: true, ...o });
+    const list = [sess("1", { status: "waiting" }), sess("2"), sess("3", { settled: true })];
+    const base = { groupBy: "project" as const, archived: false, settledOpen: true, cards: 25, settled: 25, archive: 25 };
+    const entries = order.sidebarEntries(list, [], { ...base, needs: ["1"] });
+    expect(entries[0]).toEqual({ key: "heading:needs", kind: "needs", ids: ["1"] });
+    expect(order.sidebarIds(entries)).toEqual(["1", "2", "3"]);
+    expect([...groupCounts(entries)]).toEqual([["project:/p", 2]]);
+    // None waiting, or the archived list: no group.
+    expect(order.sidebarEntries(list, [], { ...base, needs: [] }).some((e) => e.kind === "needs")).toBe(false);
+    expect(order.sidebarEntries(list, [], { ...base, archived: true, needs: ["1"] }).some((e) => e.kind === "needs")).toBe(false);
+    // Held (the pointer on the list), it keeps its rows, less any deleted.
+    const rest = [list[1]!, list[2]!];
+    const held = order.holdSidebar(entries, order.sidebarEntries(rest, [], { ...base, needs: [] }), true, rest);
+    expect(held.some((e) => e.kind === "needs")).toBe(false);
+    const kept = order.holdSidebar(entries, order.sidebarEntries(list, [], { ...base, needs: [] }), true, list);
+    expect(kept[0]).toEqual({ key: "heading:needs", kind: "needs", ids: ["1"] });
 });
