@@ -4,15 +4,17 @@
 // the terminal, the side panel and the session's menu.
 
 import { createEffect, createMemo, createResource, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
-import { Archive, Copy, Ellipsis, FileDiff, FolderOpen, GitBranch, History, PanelBottom, PanelLeft, PanelRight, Pencil, Search, Share, ShieldAlert, Shrink, SquareArrowOutUpRight, SquarePen, SquareTerminal, Trash2 } from "lucide-solid";
+import { Archive, ChevronDown, Copy, Ellipsis, FileDiff, FolderOpen, GitBranch, Hand, History, PanelBottom, PanelLeft, PanelRight, Pencil, Search, Share, ShieldAlert, Shrink, SquareArrowOutUpRight, SquarePen, SquareTerminal, Trash2 } from "lucide-solid";
+import type { SessionSummary } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc, toast } from "../state/app";
-import { archive, editorName, exportSession, newSession, openInEditor, openReview, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
+import { archive, editorName, exportSession, newSession, openInEditor, openReview, openWaiting, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
 import { sessionReadReady, useGitChanges } from "../state/changes";
 import { prefs } from "../state/prefs";
-import { terminalOpen, setTerminalOpen, setRewindOpen, setDeleteRequest, openFind, review, setReview, setSettingsTab, setTitleBarBox } from "../state/ui";
+import { agentFocus, terminalOpen, setTerminalOpen, setRewindOpen, setDeleteRequest, openFind, review, setReview, setSettingsTab, setTitleBarBox, settingsTab, shellLayout } from "../state/ui";
 import { copyText, isTauri, os } from "../lib/platform";
 import { plural, tildify } from "../lib/format";
+import { asking, inFront, needsLine, needsPlace, needsYou } from "../lib/rail";
 import { Menu } from "./ui/Menu";
 import { RunSwitcher } from "./RunSwitcher";
 import { ProjectScripts } from "./ProjectScripts";
@@ -53,11 +55,64 @@ function placeToasts(header: HTMLElement) {
 }
 
 /**
+ * The sessions waiting on you while the rail is hidden (or a closed drawer): here,
+ * beside the tools, until they're answered, never a toast that could time out
+ * unseen. One by name, opening it; several by count, opening a menu of them.
+ * Settings' top line has it too (lib/rail.ts needsPlace). Opening one
+ * (state/actions.ts openWaiting) closes Settings and a sub-agent's view.
+ */
+export function NeedsYou(p: { waiting: SessionSummary[] }) {
+    const [open, setOpen] = createSignal(false);
+    let btn: HTMLButtonElement | undefined;
+    const one = () => (p.waiting.length === 1 ? p.waiting[0] : undefined);
+    const go = (id: string) => (setOpen(false), void openWaiting(id));
+    // Gone with the last of them: the menu goes too.
+    createEffect(() => p.waiting.length < 2 && setOpen(false));
+    return (
+        <>
+            <button
+                ref={btn}
+                class="needs glass"
+                title={needsLine(p.waiting)}
+                aria-label={needsLine(p.waiting)}
+                aria-haspopup={one() ? undefined : "menu"}
+                aria-expanded={one() ? undefined : open()}
+                onClick={() => {
+                    const s = one();
+                    if (s) go(s.id);
+                    else setOpen(!open());
+                }}
+            >
+                <Hand size={14} />
+                <Show when={one()} fallback={<><b>{p.waiting.length}</b><span class="needs-w">sessions need you</span><ChevronDown size={12} class="needs-chev" /></>}>
+                    {(s) => <><b class="needs-one">1</b><span class="needs-t truncate">{s().title}</span><span class="needs-w">needs you</span></>}
+                </Show>
+            </button>
+            <Menu label="Needs you" open={open()} anchor={() => btn} onClose={() => setOpen(false)} align="end" width={320}>
+                <div class="menu-head">Needs you</div>
+                <For each={p.waiting}>{(s) => (
+                    <button role="menuitem" class="menu-item" onClick={() => go(s.id)}>
+                        <Hand size={15} />
+                        <span class="menu-text">
+                            <span class="menu-label truncate">{s.title}</span>
+                            <span class="menu-desc truncate">{s.projectName} · {asking(s)}</span>
+                        </span>
+                    </button>
+                )}</For>
+            </Menu>
+        </>
+    );
+}
+
+/**
  * The frame every main view shares. With the rail hidden it starts with the
  * rail's own two buttons (show it, new session), clear of the traffic lights;
- * then the title (or crumbs), and the tools at the far end.
+ * then the title (or crumbs), and the tools at the far end, with whoever is
+ * waiting on you before them.
  */
 export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
+    // Shown by the rail when it's there (by Settings over both); the session in front of you shows its own request.
+    const waiting = createMemo(() => (needsPlace({ railShown: shellLayout().railShown, settings: Boolean(settingsTab()) }) === "title" ? needsYou([...app.sessions, ...app.archived], inFront({ activeId: app.activeId, settings: false, agentFocus: agentFocus() })) : []));
     let el: HTMLElement | undefined;
     onMount(() => {
         const place = () => el && placeToasts(el);
@@ -72,7 +127,7 @@ export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
     return (
         <header ref={el} class={`header ${isTauri && os === "macos" ? "traffic" : ""} ${prefs.sidebar ? "" : "rail-off"}`}>
             <div class="bar-rail">
-                <button class="hb" title={withShortcut("Show sidebar", "app:toggleSidebar")} aria-label="Show sidebar" onClick={toggleSidebar}>
+                <button class={`hb ${waiting().length ? "has-wait" : ""}`} title={withShortcut(waiting().length ? "Show sidebar: a session needs you" : "Show sidebar", "app:toggleSidebar")} aria-label={waiting().length ? "Show sidebar, a session needs you" : "Show sidebar"} onClick={toggleSidebar}>
                     <PanelLeft size={16} />
                 </button>
                 <button class="hb" title={withShortcut("New session", "app:newSession")} aria-label="New session" onClick={() => (setSettingsTab(undefined), newSession(app.homeCwd))}>
@@ -83,9 +138,13 @@ export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
                 {p.children}
             </nav>
             <span class="grow" />
-            <Show when={p.end}>
-                <div class="bar-end">{p.end}</div>
-            </Show>
+            {/* Always there (empty, it's 0 wide), so the toasts' place follows Needs you coming and going in any view. */}
+            <div class="bar-end">
+                <Show when={waiting().length}>
+                    <NeedsYou waiting={waiting()} />
+                </Show>
+                {p.end}
+            </div>
         </header>
     );
 }

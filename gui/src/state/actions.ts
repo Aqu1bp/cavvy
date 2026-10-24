@@ -14,7 +14,7 @@ import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
 import { prefs, setPrefs } from "./prefs";
-import { railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setDeleteRequest, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, setReview, setRewindOpen, setSettingsTab, shellLayout } from "./ui";
+import { railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setDeleteRequest, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, setReview, setRewindOpen, setSettingsTab, setTerminalMax, shellLayout } from "./ui";
 import { clientAction, slashName } from "../lib/commands";
 import { forkAnchor } from "../lib/fork";
 import { backgroundOf, stopOutcome, stopTasks } from "../lib/background";
@@ -158,6 +158,23 @@ export function openAgents(agentId?: string) {
     if (agentId) return setAgentFocus(agentId);
     setAgentFocus(undefined);
     setPrefs("panel", true);
+}
+
+/**
+ * Open a session that needs you, from Needs you (the rail's pinned rows, the title
+ * bar, Settings' top line): its conversation, where its request is. Settings closes,
+ * and so does a sub-agent's view: opening the session already open (from Settings)
+ * wouldn't change the active id, so nothing else would leave it.
+ */
+export function openWaiting(id: string) {
+    // Settings can hide a reader whose restored width would cover the request.
+    setReview(undefined);
+    if (shellLayout().inspector.mode !== "dock") setPrefs("panel", false);
+    setSettingsTab(undefined);
+    setAgentFocus(undefined);
+    setTerminalMax(false);
+    setRailOpen(false);
+    return activate(id);
 }
 
 /** The docked review pane, on a file and a view when given (else the view last used). */

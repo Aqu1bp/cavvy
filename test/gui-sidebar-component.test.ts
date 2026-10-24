@@ -36,6 +36,8 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
     const [settledOpen, setSettledOpen] = solid.createSignal(true);
     const [collapsedProjects, setCollapsedProjects] = solid.createSignal<string[]>([]);
     const [motion, setMotion] = solid.createSignal("instant");
+    const [settingsTab, setSettingsTab] = solid.createSignal<string>();
+    const [agentFocus, setAgentFocus] = solid.createSignal<string>();
     const [railSelection, setRailSelection] = solid.createSignal<railSelect.RailSelection>(railSelect.NO_SELECTION);
     const bulk = { settle: mock((_ids: readonly string[], _on: boolean) => Promise.resolve([] as string[])), archive: mock((_ids: readonly string[], _on: boolean) => Promise.resolve([] as string[])), askToDelete: mock((_ids: readonly string[]) => {}) };
     let reduced = false;
@@ -69,7 +71,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
         presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled)
         .replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
-    const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronsDownUp", "ChevronsUpDown", "ChevronUp", "CircleAlert", "Folder", "FolderPlus", "Hand", "Layers", "ListFilter", "MessageSquareText", "MoreHorizontal", "PanelLeft", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "X", "ProviderIcon"].map((name) => [name, () => null]));
+    const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronsDownUp", "ChevronsUpDown", "ChevronUp", "CircleAlert", "Folder", "FolderPlus", "Hand", "Layers", "ListFilter", "MessageSquareText", "MoreHorizontal", "PanelLeft", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "X", "ProviderIcon", "Logo"].map((name) => [name, () => null]));
     const scope = { renderer, ...solid, ...order, ...format, ...rail, ...railSelect, ...icons, sessionStatus, rowMenuKey, app, prefs,
         railSelection, setRailSelection, actionOf: o.actionOf ?? (() => undefined),
         settleSessions: bulk.settle, archiveSessions: bulk.archive, askToDelete: bulk.askToDelete,
@@ -79,13 +81,14 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
         })),
         setPrefs: (key: string, value: any) => key === "groupBy" ? setGroupBy(value) : key === "collapsedProjects" ? setCollapsedProjects(value) : setSettledOpen(value),
         setSidebarOrder: (value: string[] | undefined) => { ids = value ?? []; }, now: () => 100000,
-        handleFor: () => undefined, isUnread: () => true, activate: setActiveId, refreshSessions, reportError,
+        handleFor: () => undefined, isUnread: () => true, activate: setActiveId, openWaiting: setActiveId, refreshSessions, reportError,
         Menu: (p: any) => { menus.push(p); return solid.createMemo(() => p.open ? p.children : null); },
         isTauri: false, mod: "⌘", os: "macos", toggleSidebar() {}, setPaletteOpen() {}, setSettingsTab() {}, shortcut: () => "⌘+K", withShortcut: (label: string) => label,
         setDeleteRequest() {}, chooseProject() {}, newSession() {}, openProject() {}, pin() {}, rename() {}, archive() {}, settle() {},
         requestAnimationFrame: (fn: () => void) => { frames.set(++sequence, fn); return sequence; },
         cancelAnimationFrame: (id: number) => frames.delete(id),
         matchMedia: () => ({ matches: reduced }),
+        settingsTab: () => settingsTab(), agentFocus: () => agentFocus(), ResizeObserver: class { observe() {} disconnect() {} },
     };
     const render = new Function(...Object.keys(scope), `${js}; return Sidebar;`)(...Object.values(scope));
     let dispose!: () => void;
@@ -94,7 +97,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
     const update = (id: string, patch: Partial<SessionSummary>) => setSessions((list) => list.map((s) => s.id === id ? { ...s, ...patch } : s));
     const flushFrames = () => { for (const [id, fn] of [...frames]) { frames.delete(id); fn(); } };
     const contextMenu = (row: any) => row.props.onContextMenu({ target: row.querySelector(), currentTarget: row, button: 2, clientX: 40, clientY: 60, preventDefault() {} });
-    return { railSelection, setRailSelection, bulk, collapsedProjects, setCollapsedProjects, setSessionsError, refreshSessions, reportError, setSessionsLoaded, setConn, nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
+    return { railSelection, setRailSelection, bulk, setSettingsTab, setAgentFocus, collapsedProjects, setCollapsedProjects, setSessionsError, refreshSessions, reportError, setSessionsLoaded, setConn, nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
         resetEntryKeyReads: () => { entryKeyReads = 0; }, get entryKeyReads() { return entryKeyReads; },
         setReduced: (value: boolean) => { reduced = value; }, flushFrames, dispose, get ids() { return [...ids]; } };
 }
@@ -180,6 +183,108 @@ test("rail rows: needs-you rows get an amber dot and no archive; others archive 
         f.setGroupBy("project");
         const counts = f.nodes.filter((n) => n.props.class === "n").map((n) => n.content);
         expect(counts.slice(-3)).toEqual([2, 2, 2]);
+    } finally { f.dispose(); }
+});
+
+test("Needs you: waiting sessions but the open one, pinned above the list as well as in their place; keys act on the pinned row", () => {
+    let next: string | undefined;
+    const f = fixture(6, { actionOf: () => next });
+    const group = () => f.nodes.findLast((n) => n.props.class === "needs-g");
+    const pinned = () => f.nodes.filter((n) => n.props["data-needs-id"] !== undefined && f.descendants(group() ?? {}).includes(n));
+    const text = (n: any) => f.descendants(n).map((c) => c.text ?? (typeof c.content === "string" || typeof c.content === "number" ? c.content : "")).join("");
+    try {
+        expect(group()).toBeUndefined();
+        f.update("3", { status: "waiting", waitingKind: "plan", updatedAt: 50 });
+        f.update("4", { status: "waiting", updatedAt: 60 });
+        f.setActiveId("4");
+        // The open one's request is in front of you: only 3 is pinned, saying what it asks.
+        expect(pinned().map((n) => n.props["data-needs-id"])).toEqual(["3"]);
+        expect(text(group())).toContain("Needs you");
+        expect(text(pinned()[0])).toContain("Plan ready for review");
+        // Both stay in their own places too: the list's order (⌘-cycling, ranges) has each once.
+        expect(f.ids.filter((id) => id === "3")).toHaveLength(1);
+        expect(f.ids.slice(0, 2).sort()).toEqual(["3", "4"]);
+        // Settings covers the open one: it's pinned too.
+        f.setSettingsTab("general");
+        expect(pinned().map((n) => n.props["data-needs-id"]).sort()).toEqual(["3", "4"]);
+        f.setSettingsTab(undefined);
+        // So does a sub-agent's view of it (that shows only the sub-agent's own requests).
+        f.setAgentFocus("agent-1");
+        expect(pinned().map((n) => n.props["data-needs-id"]).sort()).toEqual(["3", "4"]);
+        f.setAgentFocus(undefined);
+        expect(pinned().map((n) => n.props["data-needs-id"])).toEqual(["3"]);
+        // A key on the pinned row is about its session, not the open one.
+        next = "sidebar:archiveSelected";
+        const row = pinned()[0];
+        key(f, "a", { target: { closest: (sel: string) => (sel.includes("data-needs-id") ? { dataset: { needsId: row.props["data-needs-id"] } } : null) } });
+        expect(f.bulk.archive).toHaveBeenLastCalledWith(["3"], true);
+        // Clicking it opens it.
+        click(f.descendants(row).find((n) => n.props.class === "card-hit needs-hit"));
+        expect(f.nodes.some((n) => n.props["aria-current"] === "page" && n.props.title?.startsWith("Session 3\n"))).toBe(true);
+        // Answered: the group goes.
+        f.update("3", { status: "idle" });
+        f.update("4", { status: "idle" });
+        expect(f.ids).toHaveLength(6);
+        expect(text(f.nav)).not.toContain("Needs you");
+    } finally { f.dispose(); }
+});
+
+const needsGroup = (f: ReturnType<typeof fixture>) => f.nodes.findLast((n) => n.props.class === "needs-g");
+const pinnedRows = (f: ReturnType<typeof fixture>) => { const g = needsGroup(f); return g ? [...new Set(f.descendants(g))].filter((n) => n.props?.["data-needs-id"] !== undefined) : []; };
+const pinnedIds = (f: ReturnType<typeof fixture>) => pinnedRows(f).map((n) => n.props["data-needs-id"]);
+
+test("Needs you's rows aren't picked: a ⌘- or Shift-click opens the session, its own place folded away or not", () => {
+    const f = fixture(6);
+    try {
+        f.setGroupBy("project");
+        f.update("3", { status: "waiting", waitingKind: "permission" });
+        // Its project folded: its own row is under the heading, out of the list's order.
+        f.setCollapsedProjects(["/p/0"]);
+        expect(f.ids).not.toContain("3");
+        expect(pinnedIds(f)).toEqual(["3"]);
+        const hit = () => f.descendants(pinnedRows(f)[0]).find((n) => n.props?.class === "card-hit needs-hit");
+        f.setRailSelection({ ids: ["1", "2"], anchor: "1" });
+        click(hit(), { metaKey: true });
+        // Opened (its project unfolds to show it), the selection gone as a plain click leaves it.
+        expect(f.nodes.some((n) => n.props["aria-current"] === "page" && n.props.title?.startsWith("Session 3\n"))).toBe(true);
+        expect(f.railSelection().ids).toEqual([]);
+        // Shift-click too: never an empty range.
+        f.setActiveId(undefined);
+        f.setCollapsedProjects(["/p/0"]);
+        click(hit(), { shiftKey: true });
+        expect(f.railSelection().ids).toEqual([]);
+        expect(f.nodes.some((n) => n.props["aria-current"] === "page" && n.props.title?.startsWith("Session 3\n"))).toBe(true);
+    } finally { f.dispose(); }
+});
+
+test("Needs you while the rail holds still: rows say how they're doing now, and the group catches up once it lets go", () => {
+    const f = fixture(6);
+    const text = (n: any) => f.descendants(n).map((c) => c.text ?? (typeof c.content === "string" || typeof c.content === "number" ? c.content : "")).join("");
+    const classes = (n: any) => String(n.props.class).split(" ");
+    try {
+        f.update("3", { status: "waiting", waitingKind: "plan" });
+        expect(pinnedIds(f)).toEqual(["3"]);
+        // The pointer on the rail: nothing moves, so the one answered stays, but not as waiting.
+        f.nav.props.onPointerEnter();
+        f.update("3", { status: "idle" });
+        f.update("4", { status: "waiting" });
+        expect(pinnedIds(f)).toEqual(["3"]);
+        const row = pinnedRows(f)[0];
+        expect(classes(row)).not.toContain("waiting");
+        expect(text(row)).toContain("Answered");
+        expect(text(row)).not.toContain("Plan ready for review");
+        expect(f.descendants(row).some((n) => n.props?.class === "st waiting")).toBe(false);
+        // Let go: it reconciles at once.
+        f.nav.props.onPointerLeave();
+        expect(pinnedIds(f)).toEqual(["4"]);
+        expect(classes(pinnedRows(f)[0])).toContain("waiting");
+        // Rows picked hold the list, not the group: it follows who's waiting, the order stays.
+        f.setRailSelection({ ids: ["0", "1"], anchor: "0" });
+        const held = f.ids;
+        f.update("5", { status: "waiting", updatedAt: 500 });
+        f.update("4", { status: "idle" });
+        expect(pinnedIds(f)).toEqual(["5"]);
+        expect(f.ids).toEqual(held);
     } finally { f.dispose(); }
 });
 

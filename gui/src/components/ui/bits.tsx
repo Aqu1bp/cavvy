@@ -85,14 +85,19 @@ export function Segmented<T extends string>(p: { value: T; options: { value: T; 
     );
 }
 
-/** The app's mark: an H with a status dot. */
-export function Logo(p: { size?: number }) {
+/**
+ * The app's mark: an H with a status dot. `variant="brand"`: the small one in the
+ * window's frame (the rail's top row), in the rail's ink, its strokes a touch
+ * heavier so they hold at 20px.
+ */
+export function Logo(p: { size?: number; variant?: "brand" }) {
     const s = p.size ?? 22;
+    const brand = () => p.variant === "brand";
     return (
-        <svg class="logo" width={s} height={s} viewBox="0 0 64 64" aria-hidden="true">
-            <rect width="64" height="64" rx="16" fill="var(--fg)" />
-            <path d="M21 19v26M43 19v26M21 32h22" stroke="var(--sheet)" stroke-width="6.5" stroke-linecap="round" fill="none" />
-            <circle cx="43" cy="19" r="5.5" fill="var(--accent)" />
+        <svg class={brand() ? "logo brand" : "logo"} width={s} height={s} viewBox="0 0 64 64" aria-hidden="true">
+            <rect width="64" height="64" rx="16" fill={brand() ? "var(--rail-fg)" : "var(--fg)"} />
+            <path d="M21 19v26M43 19v26M21 32h22" stroke="var(--sheet)" stroke-width={brand() ? 7 : 6.5} stroke-linecap="round" fill="none" />
+            <circle cx="43" cy="19" r={brand() ? 6 : 5.5} fill="var(--accent)" />
         </svg>
     );
 }
