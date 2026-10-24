@@ -18,6 +18,7 @@ import { ACTIONS, CONTEXTS, KEYBINDINGS_DOCS, formatKeys } from "../../../src/ke
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { Accounts } from "./Accounts";
+import { createUpdateAction } from "./UpdateAction";
 import { MessageText } from "./ErrorCards";
 import { commandIn } from "../lib/error-text";
 import { ModeIcon, MODES } from "./ModePicker";
@@ -882,10 +883,12 @@ function Updates() {
     const [asking, setAsking] = createSignal(false);
     const u = () => app.update!;
     const SHOWN = 6;
-    async function act(action: "check" | "update") {
+    // The same as the rail's icon: asks first while sessions are working.
+    const update = createUpdateAction();
+    async function check() {
         setAsking(true);
         try {
-            setApp("update", reconcile(await rpc.call(action === "update" ? "app.update.start" : "app.update.check", {})));
+            setApp("update", reconcile(await rpc.call("app.update.check", {})));
         } catch (e) {
             reportError(e);
         } finally {
@@ -899,8 +902,8 @@ function Updates() {
                     <Row title={v().title} desc={v().detail} class={`upd-row ${u().updating ? "running" : ""}`}>
                         <Show when={!v().busy && v().action} fallback={<Show when={v().busy}><Spinner size={16} class="upd-spin" /></Show>}>
                             {(a) => (
-                                <Show when={a() === "update"} fallback={<button class="btn sm" disabled={asking()} onClick={() => void act("check")}>Check now</button>}>
-                                    <button class="btn primary sm" disabled={asking()} onClick={() => void act("update")}>
+                                <Show when={a() === "update"} fallback={<button class="btn sm" disabled={asking()} onClick={() => void check()}>Check now</button>}>
+                                    <button class="btn primary sm" disabled={update.pending()} onClick={update.request}>
                                         <Download size={14} /> Update &amp; restart
                                     </button>
                                 </Show>
@@ -929,6 +932,7 @@ function Updates() {
                             <span>{u().error}</span>
                         </div>
                     </Show>
+                    <update.Confirm />
                 </Section>
             )}
         </Show>

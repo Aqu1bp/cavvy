@@ -53,18 +53,48 @@ const isDir = (p: string) => {
 
 const lastLine = (s: string) => s.trim().split("\n").at(-1)?.trim() ?? "";
 
+/**
+ * Runs it and collects its output. Past `timeoutMs` its whole process group is killed (ssh, a remote helper, whatever
+ * git started) and it answers at once, even if something still holds its output open.
+ */
+export function capture(cmd: string[], cwd: string, timeoutMs: number, env: NodeJS.ProcessEnv = process.env): Promise<{ ok: boolean; out: string; err: string; timedOut?: boolean }> {
+    return new Promise((resolve) => {
+        let out = "";
+        let err = "";
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let settled = false;
+        const finish = (r: { ok: boolean; out: string; err: string; timedOut?: boolean }) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(r);
+        };
+        let p: ChildProcess;
+        try {
+            // Its own process group, so the timeout can end everything it started.
+            p = spawn(cmd[0]!, cmd.slice(1), { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+        } catch (e) {
+            return finish({ ok: false, out: "", err: (e as Error).message });
+        }
+        timer = setTimeout(() => {
+            try {
+                process.kill(-p.pid!, "SIGKILL");
+            } catch {
+                p.kill("SIGKILL");
+            }
+            finish({ ok: false, out: out.trimEnd(), err: `${cmd.slice(0, 2).join(" ")} took longer than ${Math.round(timeoutMs / 1000)}s`, timedOut: true });
+        }, timeoutMs);
+        p.stdout!.on("data", (d) => (out += d));
+        p.stderr!.on("data", (d) => (err += d));
+        p.once("error", (e) => finish({ ok: false, out: "", err: e.message }));
+        p.once("close", (code) => finish({ ok: code === 0, out: out.trimEnd(), err: err.trim() || (code === 0 ? "" : `exit code ${code}`) }));
+    });
+}
+
 /** Never asks for a password or passphrase: there's no one at a terminal to answer. */
-async function git(cwd: string, args: string[], timeoutMs = 30_000): Promise<{ ok: boolean; out: string; err: string }> {
-    const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND ?? "ssh -o BatchMode=yes" };
-    try {
-        const p = Bun.spawn(["git", ...args], { cwd, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-        const timer = setTimeout(() => p.kill(), timeoutMs);
-        const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
-        clearTimeout(timer);
-        return { ok: code === 0, out: out.trimEnd(), err: err.trim() || (code === 0 ? "" : `git ${args[0]} timed out or failed`) };
-    } catch (e) {
-        return { ok: false, out: "", err: (e as Error).message };
-    }
+function git(cwd: string, args: string[], timeoutMs = 30_000) {
+    const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND ?? "ssh -o BatchMode=yes -o ConnectTimeout=15" };
+    return capture(["git", ...args], cwd, timeoutMs, env);
 }
 
 /** The last line a log has, of its last few KB: cargo's "Compiling …", bun's, the script's own. Escapes and \r redraws dropped. */
@@ -90,6 +120,8 @@ export class AppUpdates {
     private info: AppUpdateInfo = { available: false, changes: [], behind: 0, checking: false };
     private timers: ReturnType<typeof setTimeout>[] = [];
     private checking?: Promise<AppUpdateInfo>;
+    /** An update being started: reserved before anything is awaited, so two requests at once start one. */
+    private starting?: Promise<AppUpdateInfo>;
     private child?: ChildProcess;
     private stopped = false;
 
@@ -119,14 +151,19 @@ export class AppUpdates {
 
     /** Fetches main and compares it with the installed build. One at a time; none while an update runs. */
     check(): Promise<AppUpdateInfo> {
-        if (this.info.updating) return Promise.resolve(this.get());
+        if (this.info.updating || this.starting) return Promise.resolve(this.get());
         this.checking ??= this.runCheck().finally(() => (this.checking = undefined));
         return this.checking;
     }
 
-    /** Starts the update, detached, its output in logs/app-update.log; how it goes comes as events. */
-    async update(): Promise<AppUpdateInfo> {
-        if (this.info.updating) return this.get();
+    /** Starts the update, detached, its output in logs/app-update.log; how it goes comes as events. One at a time. */
+    update(): Promise<AppUpdateInfo> {
+        if (this.info.updating) return Promise.resolve(this.get());
+        this.starting ??= this.startUpdate().finally(() => (this.starting = undefined));
+        return this.starting;
+    }
+
+    private async startUpdate(): Promise<AppUpdateInfo> {
         await this.checking;
         const w = await this.where();
         if ("unavailable" in w) return this.replace({ unavailable: w.unavailable });
@@ -165,9 +202,9 @@ export class AppUpdates {
         }, 1000);
         progress.unref?.();
         const done = (code: number, failure?: string) => {
+            clearInterval(progress);
             if (this.child !== child) return;
             this.child = undefined;
-            clearInterval(progress);
             void this.finished(code, startedAt, log, failure);
         };
         child.once("error", (e) => done(-1, `Couldn't start the update: ${e.message}`));

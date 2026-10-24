@@ -7,9 +7,8 @@
 import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack } from "solid-js";
 import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronsUpDown, ChevronUp, CircleAlert, Download, Folder, FolderPlus, Hand, Layers, ListFilter, MessageSquareText, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
-import { activate, app, handleFor, isUnread, refreshSessions, reportError, rpc, setApp } from "../state/app";
-import { reconcile } from "solid-js/store";
-import { ConfirmDialog } from "./ui/ConfirmDialog";
+import { activate, app, handleFor, isUnread, refreshSessions, reportError } from "../state/app";
+import { createUpdateAction } from "./UpdateAction";
 import { archive, archiveSessions, askToDelete, chooseProject, newSession, openProject, openWaiting, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { agentFocus, setDeleteRequest, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
@@ -258,34 +257,18 @@ function PlanGauge(p: { plan: RailPlan }) {
  * restarting; red: the last one failed, click to try again), its tooltip the rest. Settings → About has the detail.
  */
 function UpdateButton() {
-    const working = () => app.sessions.filter((s) => s.status === "running").length;
     const rail = () => updateView(app.update, 0)?.rail;
-    const [confirm, setConfirm] = createSignal(false);
-    const start = async () => {
-        try {
-            setApp("update", reconcile(await rpc.call("app.update.start", {})));
-        } catch (e) {
-            reportError(e);
-        }
-    };
-    // The restart stops sessions still working when the build is done: asked only then.
-    const click = () => {
-        if (rail()?.state === "busy") return;
-        if (working()) setConfirm(true);
-        else void start();
-    };
+    const update = createUpdateAction();
     return (
         <>
             <Show when={rail()}>
                 {(r) => (
-                    <button class={`hb lg upd-btn ${r().state}`} title={r().label} aria-label={r().label} aria-disabled={r().state === "busy" || undefined} onClick={click}>
+                    <button class={`hb lg upd-btn ${r().state}`} title={r().label} aria-label={r().label} aria-disabled={r().state === "busy" || update.pending() || undefined} onClick={update.request}>
                         {r().state === "busy" ? <Spinner size={15} /> : <Download size={16} />}
                     </button>
                 )}
             </Show>
-            <ConfirmDialog open={confirm()} title="Update Harness now?" confirmLabel="Update" onClose={() => setConfirm(false)} onConfirm={start}>
-                {working() === 1 ? "A session is" : `${working()} sessions are`} working. Harness restarts once the update is built, which stops whatever is still running then.
-            </ConfirmDialog>
+            <update.Confirm />
         </>
     );
 }

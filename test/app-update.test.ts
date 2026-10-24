@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { AppUpdates, bundleOf, lastLogLine } from "../src/server/app-update";
+import { AppUpdates, bundleOf, capture, lastLogLine } from "../src/server/app-update";
 import { appSourceDir, installRecordPath } from "../src/config/desktop-install";
 import type { AppUpdateInfo } from "../src/server/protocol";
 
@@ -204,6 +204,18 @@ describe("update", () => {
         await until(() => !u.get().updating);
     });
 
+    test("two requests at once start one update", async () => {
+        const { work } = repos();
+        record({ commit: sh(work, "rev-parse", "HEAD~1"), source: work });
+        const runs = join(dir, "runs");
+        script(work, `const fs = require("fs"); fs.appendFileSync(${JSON.stringify(runs)}, "run\\n"); await Bun.sleep(300);`);
+        const { u } = updates();
+        const [a, b] = await Promise.all([u.update(), u.update()]);
+        expect(b.updating?.startedAt).toBe(a.updating!.startedAt);
+        await until(() => !u.get().updating);
+        expect((await Bun.file(runs).text()).trim().split("\n")).toEqual(["run"]);
+    });
+
     test("a checkout without the script can't update yet", async () => {
         const { work } = repos();
         record({ commit: sh(work, "rev-parse", "HEAD~1"), source: work });
@@ -216,4 +228,15 @@ test("lastLogLine: the last line, escapes and redraws dropped", () => {
     writeFileSync(f, "Fetching…\n\x1b[32mCompiling\x1b[0m a v1\r   Compiling b v2\n\n");
     expect(lastLogLine(f)).toBe("Compiling b v2");
     expect(lastLogLine(join(dir, "missing"))).toBe("");
+});
+
+test("capture: past its timeout it answers at once, even with a child still holding its output open", async () => {
+    const started = Date.now();
+    // The shell exits; the sleep it left behind keeps stderr open, as an ssh git started can.
+    const r = await capture(["sh", "-c", "sleep 20 >&2 & sleep 20"], dir, 300);
+    expect(Date.now() - started).toBeLessThan(3000);
+    expect(r).toMatchObject({ ok: false, timedOut: true });
+    expect(r.err).toContain("took longer than");
+    expect(await capture(["sh", "-c", "echo hi; echo oops >&2; exit 2"], dir, 5000)).toEqual({ ok: false, out: "hi", err: "oops" });
+    expect(await capture(["no-such-command-here"], dir, 5000)).toMatchObject({ ok: false });
 });
