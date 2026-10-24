@@ -11,10 +11,10 @@ import { app, reportError, rpc, toast } from "../state/app";
 import { archive, editorName, exportSession, newSession, openInEditor, openReview, openWaiting, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
 import { sessionReadReady, useGitChanges } from "../state/changes";
 import { prefs } from "../state/prefs";
-import { terminalOpen, setTerminalOpen, setRewindOpen, setDeleteRequest, openFind, review, setReview, setSettingsTab, setTitleBarBox, settingsTab, shellLayout } from "../state/ui";
+import { agentFocus, terminalOpen, setTerminalOpen, setRewindOpen, setDeleteRequest, openFind, review, setReview, setSettingsTab, setTitleBarBox, settingsTab, shellLayout } from "../state/ui";
 import { copyText, isTauri, os } from "../lib/platform";
 import { plural, tildify } from "../lib/format";
-import { asking, needsLine, needsPlace, needsYou } from "../lib/rail";
+import { asking, inFront, needsLine, needsPlace, needsYou } from "../lib/rail";
 import { Menu } from "./ui/Menu";
 import { RunSwitcher } from "./RunSwitcher";
 import { ProjectScripts } from "./ProjectScripts";
@@ -112,7 +112,7 @@ export function NeedsYou(p: { waiting: SessionSummary[] }) {
  */
 export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
     // Shown by the rail when it's there (by Settings over both); the session in front of you shows its own request.
-    const waiting = createMemo(() => (needsPlace({ railShown: shellLayout().railShown, settings: Boolean(settingsTab()) }) === "title" ? needsYou([...app.sessions, ...app.archived], app.activeId) : []));
+    const waiting = createMemo(() => (needsPlace({ railShown: shellLayout().railShown, settings: Boolean(settingsTab()) }) === "title" ? needsYou([...app.sessions, ...app.archived], inFront({ activeId: app.activeId, settings: false, agentFocus: agentFocus() })) : []));
     let el: HTMLElement | undefined;
     onMount(() => {
         const place = () => el && placeToasts(el);

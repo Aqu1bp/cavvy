@@ -37,6 +37,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
     const [collapsedProjects, setCollapsedProjects] = solid.createSignal<string[]>([]);
     const [motion, setMotion] = solid.createSignal("instant");
     const [settingsTab, setSettingsTab] = solid.createSignal<string>();
+    const [agentFocus, setAgentFocus] = solid.createSignal<string>();
     const [railSelection, setRailSelection] = solid.createSignal<railSelect.RailSelection>(railSelect.NO_SELECTION);
     const bulk = { settle: mock((_ids: readonly string[], _on: boolean) => Promise.resolve([] as string[])), archive: mock((_ids: readonly string[], _on: boolean) => Promise.resolve([] as string[])), askToDelete: mock((_ids: readonly string[]) => {}) };
     let reduced = false;
@@ -87,7 +88,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
         requestAnimationFrame: (fn: () => void) => { frames.set(++sequence, fn); return sequence; },
         cancelAnimationFrame: (id: number) => frames.delete(id),
         matchMedia: () => ({ matches: reduced }),
-        settingsTab: () => settingsTab(), ResizeObserver: class { observe() {} disconnect() {} },
+        settingsTab: () => settingsTab(), agentFocus: () => agentFocus(), ResizeObserver: class { observe() {} disconnect() {} },
     };
     const render = new Function(...Object.keys(scope), `${js}; return Sidebar;`)(...Object.values(scope));
     let dispose!: () => void;
@@ -96,7 +97,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
     const update = (id: string, patch: Partial<SessionSummary>) => setSessions((list) => list.map((s) => s.id === id ? { ...s, ...patch } : s));
     const flushFrames = () => { for (const [id, fn] of [...frames]) { frames.delete(id); fn(); } };
     const contextMenu = (row: any) => row.props.onContextMenu({ target: row.querySelector(), currentTarget: row, button: 2, clientX: 40, clientY: 60, preventDefault() {} });
-    return { railSelection, setRailSelection, bulk, setSettingsTab, collapsedProjects, setCollapsedProjects, setSessionsError, refreshSessions, reportError, setSessionsLoaded, setConn, nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
+    return { railSelection, setRailSelection, bulk, setSettingsTab, setAgentFocus, collapsedProjects, setCollapsedProjects, setSessionsError, refreshSessions, reportError, setSessionsLoaded, setConn, nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
         resetEntryKeyReads: () => { entryKeyReads = 0; }, get entryKeyReads() { return entryKeyReads; },
         setReduced: (value: boolean) => { reduced = value; }, flushFrames, dispose, get ids() { return [...ids]; } };
 }
@@ -207,6 +208,11 @@ test("Needs you: waiting sessions but the open one, pinned above the list as wel
         f.setSettingsTab("general");
         expect(pinned().map((n) => n.props["data-needs-id"]).sort()).toEqual(["3", "4"]);
         f.setSettingsTab(undefined);
+        // So does a sub-agent's view of it (that shows only the sub-agent's own requests).
+        f.setAgentFocus("agent-1");
+        expect(pinned().map((n) => n.props["data-needs-id"]).sort()).toEqual(["3", "4"]);
+        f.setAgentFocus(undefined);
+        expect(pinned().map((n) => n.props["data-needs-id"])).toEqual(["3"]);
         // A key on the pinned row is about its session, not the open one.
         next = "sidebar:archiveSelected";
         const row = pinned()[0];

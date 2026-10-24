@@ -4,7 +4,7 @@
 import { expect, test } from "bun:test";
 import type { PlanLimits, ProviderInfo, SessionSummary } from "../src/server/protocol";
 
-const { asking, foldOrder, groupCounts, needsLine, needsPlace, needsRowLine, needsYou, planFit, planTone, railFoot, railGlyph } = await import("../gui/src/lib/rail");
+const { asking, foldOrder, groupCounts, inFront, needsLine, needsPlace, needsRowLine, needsYou, planFit, planTone, railFoot, railGlyph } = await import("../gui/src/lib/rail");
 
 test("a row's glyph: working, needs you, stopped, finished unseen, quiet, new", () => {
     expect(railGlyph({ status: "running", messages: 3 }, true)).toBe("running");
@@ -240,6 +240,16 @@ test("Needs you shows on the rail, else the title bar; over both, in Settings' t
     // Settings takes the rail's place (its own list) and covers the title bar, rail shown or not.
     expect(needsPlace({ railShown: true, settings: true })).toBe("settings");
     expect(needsPlace({ railShown: false, settings: true })).toBe("settings");
+});
+
+test("the session in front of you (left out of Needs you): the open one, but not under Settings or one of its sub-agents' views", () => {
+    expect(inFront({ activeId: "a", settings: false })).toBe("a");
+    expect(inFront({ activeId: "a", settings: true })).toBeUndefined();
+    // A sub-agent's view shows only its own requests: the session's own still needs showing.
+    expect(inFront({ activeId: "a", settings: false, agentFocus: "agent-1" })).toBeUndefined();
+    expect(inFront({ settings: false })).toBeUndefined();
+    const waiting = [{ id: "a", status: "waiting" as const, updatedAt: 1 }];
+    expect(needsYou(waiting, inFront({ activeId: "a", settings: false, agentFocus: "agent-1" })).map((s) => s.id)).toEqual(["a"]);
 });
 
 test("Needs you's group starts the active list, isn't counted under a project, and isn't in the list's order", async () => {

@@ -10,12 +10,12 @@ import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread, refreshSessions, reportError } from "../state/app";
 import { archive, archiveSessions, askToDelete, chooseProject, newSession, openProject, openWaiting, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
-import { setDeleteRequest, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
+import { agentFocus, setDeleteRequest, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
 import { frameDrag } from "../lib/drag";
 import { ago, monogram, projectColor, since } from "../lib/format";
 import { holdSidebar, projectOf, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type SidebarEntry } from "../lib/session-order";
 import { sessionStatus } from "../lib/session-status";
-import { foldOrder, groupCounts, needsRowLine, needsYou, planFit, railFoot, railGlyph, type RailGlyph, type RailPlan } from "../lib/rail";
+import { foldOrder, groupCounts, inFront, needsRowLine, needsYou, planFit, railFoot, railGlyph, type RailGlyph, type RailPlan } from "../lib/rail";
 import { railSelection, setRailSelection, setSidebarOrder } from "../state/sidebar";
 import { bulkPlan, clickKind, clickSelect, extendSelect, pruneSelection, railTargets, selectAll, sessionCount, type BulkPlan, type RailList } from "../lib/rail-select";
 import { now } from "../lib/clock";
@@ -594,8 +594,8 @@ export function Sidebar() {
     const held = () => ((hovered() || railSelection().ids.length > 0) && !manualLayout()) || locked().size > 0;
     // Needs you isn't in a selection's range, so rows picked don't hold it: only the pointer or an open menu does.
     const pinnedHeld = () => (hovered() && !manualLayout()) || locked().size > 0;
-    // Waiting on you, but the session in front of you (Settings covers it): pinned at the top as well.
-    const needs = createMemo(() => needsYou(all(), settingsTab() ? undefined : app.activeId).map((s) => s.id), undefined, { equals: (a, b) => a.length === b.length && a.every((id, i) => id === b[i]) });
+    // Waiting on you, but the session in front of you (not under Settings or a sub-agent's view: lib/rail.ts inFront): pinned at the top as well.
+    const needs = createMemo(() => needsYou(all(), inFront({ activeId: app.activeId, settings: Boolean(settingsTab()), agentFocus: agentFocus() })).map((s) => s.id), undefined, { equals: (a, b) => a.length === b.length && a.every((id, i) => id === b[i]) });
     const layout = createMemo<SidebarEntry[]>((previous) => {
         const next = sidebarEntries(app.sessions, app.archived, {
             activeId: app.activeId, groupBy: prefs.groupBy, archived: showArchived(),

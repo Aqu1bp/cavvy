@@ -58,6 +58,16 @@ export function needsPlace(o: { railShown: boolean; settings: boolean }): "rail"
     return o.settings ? "settings" : o.railShown ? "rail" : "title";
 }
 
+/**
+ * The session whose request is in front of you, so Needs you leaves it out: the
+ * open one, but not under Settings, nor while one of its sub-agents' views is
+ * open (that shows only the sub-agent's own requests; opening it from Needs you
+ * leaves the view: state/actions.ts openWaiting).
+ */
+export function inFront(o: { activeId?: string; settings: boolean; agentFocus?: string }): string | undefined {
+    return o.settings || o.agentFocus ? undefined : o.activeId;
+}
+
 /** What a waiting session asks of you, for its row under Needs you. */
 export function asking(s: Pick<SessionSummary, "waitingKind">): string {
     switch (s.waitingKind) {
