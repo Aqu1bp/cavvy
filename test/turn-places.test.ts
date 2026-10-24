@@ -112,8 +112,13 @@ test("a turn in a linked worktree records edits in the main checkout", async () 
     expect(info.places![0]!.top).toContainEqual({ path: "a.txt", change: "modified", added: 1, removed: 0 });
     await snapshots.begin(2, "leave main untouched");
     write(wt("task"), "a.txt", "one\ntwo\nlinked edit\n");
+    write(wt("task"), "new.txt", "new linked file\n");
     await snapshots.end();
     expect((await snapshots.changes({ scope: "turn", turnId: 2 })).places).toBeUndefined();
+    await snapshots.begin(3, "delete a linked file");
+    rmSync(join(wt("task"), "new.txt"));
+    await snapshots.end();
+    expect((await snapshots.changes({ scope: "turn", turnId: 3 })).places).toBeUndefined();
 });
 
 test("reading the worktrees inherits no git tracing: no trace file, and the places still read", async () => {

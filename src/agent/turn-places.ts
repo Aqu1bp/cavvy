@@ -171,7 +171,11 @@ export async function fingerprint(w: Checked, deadline: number): Promise<string>
         const entries = staged.out.toString("utf-8").split("\0").filter(Boolean);
         for (const e of entries) h.update(`${e}\0`);
         // Each file once, tagged tracked or new, so a file untracked or added changes it too.
-        const listed = [...new Set([...entries.map((e) => `T ${e.slice(e.indexOf("\t") + 1)}`), ...fresh.out.toString("utf-8").split("\0").filter(Boolean).map((p) => `? ${p}`)])];
+        // Without --directory, a trailing slash names a nested repository, not
+        // one of this checkout's files. Its directory stamp changes when its own
+        // files are created/deleted; that must not mark the containing checkout.
+        const untracked = fresh.out.toString("utf-8").split("\0").filter((p) => p && !p.endsWith("/"));
+        const listed = [...new Set([...entries.map((e) => `T ${e.slice(e.indexOf("\t") + 1)}`), ...untracked.map((p) => `? ${p}`)])];
         const stamps = new Array<string>(listed.length);
         let next = 0, late = false;
         await Promise.all(Array.from({ length: Math.min(STAT_WIDTH, listed.length) }, async () => {
