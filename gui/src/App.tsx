@@ -2,6 +2,7 @@ import { RenderBoundary } from "./components/ui/ErrorBoundary";
 import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { Toasts } from "./components/Toasts";
+import { ErrorCards } from "./components/ErrorCards";
 import { activate, app, attentionCount, handleFor, restoreActiveSession, rpc, type SessionHandle } from "./state/app";
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
@@ -96,6 +97,7 @@ function SessionView(p: { handle: SessionHandle }) {
                 <Transcript handle={p.handle} dock={dockH()} />
                 <div class="composer-dock" ref={dock}>
                     <div class="composer-col">
+                        <ErrorCards place="composer" />
                         <Composer sessionId={p.handle.id} />
                     </div>
                 </div>
@@ -471,6 +473,7 @@ export function App() {
                                     <RenderBoundary>
                                         <SettingsPage />
                                     </RenderBoundary>
+                                    <ErrorCards place="settings" />
                                 </Show>
                             </div>
                             {/* What the settings page covers stays mounted and laid out under it: coming back shows it
@@ -545,6 +548,8 @@ export function App() {
             <CommitDialog />
             <ImageViewer />
             <Toasts />
+            {/* Errors' last resort: shows only when none of the places above is on screen (ErrorCards.tsx). */}
+            <ErrorCards place="window" />
         </div>
     );
 }

@@ -654,17 +654,22 @@ export function activeHandle() {
  * Use the user's own plan through their installed Claude Code or Codex. The
  * CLI is asked whether it's signed in; signing in is the CLI's own business.
  */
-export async function connectCli(pr: ProviderInfo): Promise<boolean> {
+/**
+ * Turns on a CLI the user is signed in to. True once it's connected. `failed`: where a failure to connect goes, when
+ * something on screen shows it (Settings' provider row) rather than an error card.
+ */
+export async function connectCli(pr: ProviderInfo, failed: (e: unknown) => void = reportError): Promise<boolean> {
+    let r: Awaited<ReturnType<typeof rpc.call<"providers.connectCli">>>;
     try {
-        const r = await rpc.call("providers.connectCli", { provider: pr.id });
-        toast(`Using your ${pr.agentCli?.plan ?? pr.name} through ${pr.name} (${r.description})`, "success");
-        if (r.warning) toast(r.warning, "warn");
-        await Promise.all([refreshProviders(), refreshModels(), refreshSettings()]);
-        return true;
+        r = await rpc.call("providers.connectCli", { provider: pr.id });
     } catch (e) {
-        reportError(e);
+        failed(e);
         return false;
     }
+    toast(`Using your ${pr.agentCli?.plan ?? pr.name} through ${pr.name} (${r.description})`, "success");
+    if (r.warning) toast(r.warning, "warn");
+    await Promise.all([refreshProviders(), refreshModels(), refreshSettings()]).catch(reportError);
+    return true;
 }
 
 // ---------------------------------------------------------------------------

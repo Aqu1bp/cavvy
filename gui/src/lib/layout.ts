@@ -188,6 +188,14 @@ export function coversConversation(l: WindowLayout): boolean {
 }
 
 /**
+ * The foot of the conversation column (the composer, and the error cards over it) is out of sight: the
+ * terminal maximized over it, or a short floating or filling inspector, which comes down over the dock.
+ */
+export function coversComposer(l: WindowLayout): boolean {
+    return l.terminal.maximized || (l.inspector.open && l.inspector.mode !== "dock" && l.inspector.short);
+}
+
+/**
  * The sheet's tracks as shell.css slides them: the rail's column (docked and showing), a docked
  * inspector's, the terminal's row. A change in one opens or closes a panel; the window resizing
  * the column alone doesn't move them.

@@ -3,7 +3,7 @@
 // when it's been changed.
 
 import { createEffect, createMemo, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
-import { AlertTriangle, ArrowLeft, ChartColumn, ChevronDown, Copy, ExternalLink, FolderOpen, Info, Keyboard, Minus, Palette, Plug, Plus, Puzzle, RotateCcw, SlidersHorizontal, X } from "lucide-solid";
+import { AlertTriangle, ArrowLeft, ChartColumn, ChevronDown, CircleAlert, Copy, ExternalLink, FolderOpen, Info, Keyboard, Minus, Palette, Plug, Plus, Puzzle, RotateCcw, SlidersHorizontal, X } from "lucide-solid";
 import { MODE_LABELS, type FollowUpMode, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
 import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
 import { connectCli, editors, refreshEditors } from "../state/actions";
@@ -15,6 +15,8 @@ import { ACTIONS, CONTEXTS, KEYBINDINGS_DOCS, formatKeys } from "../../../src/ke
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { Accounts } from "./Accounts";
+import { MessageText } from "./ErrorCards";
+import { commandIn } from "../lib/error-text";
 import { ModeIcon, MODES } from "./ModePicker";
 import { EffortBars } from "./ModelPicker";
 import { effortLevels, effortOf } from "../lib/effort";
@@ -481,10 +483,28 @@ function ProviderRow(p: { pr: ProviderInfo }) {
     const [adding, setAdding] = createSignal(false);
     const [key, setKey] = createSignal("");
     const [busy, setBusy] = createSignal(false);
+    // A failure of the row's own action (connecting, saving its key) shows on the row, with its fix,
+    // for as long as it's true, and not also as an error card.
+    const [failure, setFailure] = createSignal<{ message: string; tag: string }>();
+    // Arriving, the row flashes; the name alternates so a second failure flashes again.
+    const [flash, setFlash] = createSignal<"a" | "b">();
+    const failed = (e: unknown, tag: string) => {
+        setFailure({ message: e instanceof Error ? e.message : String(e), tag });
+        setFlash((f) => (f === "a" ? "b" : "a"));
+    };
+    createEffect(on(() => p.pr.configured, (configured) => configured && setFailure(undefined)));
+    // A key that wasn't saved is wrong only while it's still there to save.
+    createEffect(on(adding, (open) => !open && !p.pr.agentCli && setFailure(undefined), { defer: true }));
+    const copyCommand = async (command: string) => {
+        const copied = await copyText(command);
+        toast(copied ? `Copied ${command}` : "Couldn't copy the command", copied ? "success" : "info");
+    };
     const save = async () => {
         setBusy(true);
         try {
-            const r = await rpc.call("providers.setKey", { provider: p.pr.id, key: key() });
+            const r = await rpc.call("providers.setKey", { provider: p.pr.id, key: key() }).catch((e: unknown) => void failed(e, "Key not saved"));
+            if (!r) return;
+            setFailure(undefined);
             toast(`Saved the ${p.pr.name} key ${r.masked}`, "success");
             if (r.warning) toast(r.warning, "warn");
             setAdding(false);
@@ -514,11 +534,48 @@ function ProviderRow(p: { pr: ProviderInfo }) {
             });
         }
     };
+    // connectCli's request (state/actions.ts), with its failure kept for the row: "Use my plan", and Check again.
     const connect = async () => {
+        if (busy()) return;
         setBusy(true);
-        await connectCli(p.pr);
-        setBusy(false);
+        try {
+            // A failure shows on this row, not as an error card.
+            const ok = await connectCli(p.pr, (e) => {
+                const code = (e as { code?: string }).code;
+                failed(e, code === "not_signed_in" ? "Not signed in" : code === "not_installed" ? "Not installed" : "Couldn't connect");
+            });
+            if (ok) setFailure(undefined);
+        } finally {
+            setBusy(false);
+        }
     };
+    const badTag = (tag: string) => (
+        <span class="tag bad">
+            <CircleAlert size={11} stroke-width={2.5} />
+            {tag}
+        </span>
+    );
+    /** The fix: the command the message names, to copy, and (for a CLI) the check again. */
+    const fix = (message: string, retry?: () => void) => (
+        <>
+            <Show when={commandIn(message)}>
+                {(command) => (
+                    <button class="btn ghost sm" onClick={() => void copyCommand(command())}>
+                        <Copy size={13} />
+                        Copy command
+                    </button>
+                )}
+            </Show>
+            <Show when={retry}>
+                <button class="btn primary sm" disabled={busy()} onClick={() => retry!()}>
+                    <Show when={busy()} fallback="Check again">
+                        <Spinner size={12} />
+                        Checking
+                    </Show>
+                </button>
+            </Show>
+        </>
+    );
     const removable = () => p.pr.requiresKey && p.pr.configured && !p.pr.source?.startsWith("$");
     // The line under the name: the key as stored (masked), or what's missing.
     const sub = () =>
@@ -526,7 +583,7 @@ function ProviderRow(p: { pr: ProviderInfo }) {
         : !p.pr.configured ? (p.pr.requiresKey ? "Not set up" : "Set up in the terminal")
         : undefined;
     return (
-        <div class="prov">
+        <div class="prov" classList={{ err: !!failure() }} data-flash={failure() ? flash() : undefined}>
             <ConfirmDialog
                 open={confirmRemove()}
                 onClose={() => setConfirmRemove(false)}
@@ -540,7 +597,23 @@ function ProviderRow(p: { pr: ProviderInfo }) {
             {/* Claude Code and Codex: their row, accounts and menus are in Accounts. */}
             <Show
                 when={!p.pr.agentCli}
-                fallback={<Accounts provider={p.pr} connecting={busy()} onConnect={() => void connect()} onTurnOff={() => setConfirmRemove(true)} />}
+                fallback={
+                    <>
+                        <Accounts provider={p.pr} connecting={busy()} onConnect={() => void connect()} onTurnOff={() => setConfirmRemove(true)} />
+                        {/* Accounts draws the CLI's line, so what's wrong goes on a line of its own under it. */}
+                        <Show when={failure()}>
+                            {(f) => (
+                                <div class="prov-err-line">
+                                    <div class="prov-err-msg selectable" role="alert">
+                                        {badTag(f().tag)}
+                                        <MessageText text={f().message} />
+                                    </div>
+                                    <span class="prov-fix">{fix(f().message, () => void connect())}</span>
+                                </div>
+                            )}
+                        </Show>
+                    </>
+                }
             >
                 <div class="prov-line">
                     <span class="prov-logo" title={p.pr.configured ? "Set up" : "Not set up"}>
@@ -552,16 +625,32 @@ function ProviderRow(p: { pr: ProviderInfo }) {
                             <Show when={p.pr.local}>
                                 <span class="tag">local</span>
                             </Show>
+                            <Show when={failure()}>{(f) => badTag(f().tag)}</Show>
                         </div>
-                        <Show when={p.pr.masked || sub()}>
-                            <div class="prov-sub">
-                                <Show when={p.pr.masked} fallback={sub()}>
-                                    <code class="prov-key">{p.pr.masked}</code>
+                        <Show
+                            when={failure()}
+                            fallback={
+                                <Show when={p.pr.masked || sub()}>
+                                    <div class="prov-sub">
+                                        <Show when={p.pr.masked} fallback={sub()}>
+                                            <code class="prov-key">{p.pr.masked}</code>
+                                        </Show>
+                                    </div>
                                 </Show>
-                            </div>
+                            }
+                        >
+                            {(f) => (
+                                <div class="prov-sub selectable" role="alert">
+                                    <MessageText text={f().message} />
+                                </div>
+                            )}
                         </Show>
                     </div>
                     <span class="prov-end">
+                        {/* Saving again is the key's own Save, under the row. */}
+                        <Show when={failure() && commandIn(failure()!.message)}>
+                            <span class="prov-fix">{fix(failure()!.message)}</span>
+                        </Show>
                         <Show when={p.pr.source && p.pr.source !== "local"}>
                             <span class="tag">{p.pr.source}</span>
                         </Show>

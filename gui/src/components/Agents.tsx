@@ -8,7 +8,7 @@ import { ArrowLeft, Bot, ChevronRight, CornerDownLeft, CornerLeftDown } from "lu
 import type { AgentRun, Block, NoticeBlock, TextBlock, ThinkingBlock } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { newSession, stopAgent } from "../state/actions";
-import { setAgentFocus } from "../state/ui";
+import { setAgentFocus, setDockHeight } from "../state/ui";
 import { clock, duration, plural } from "../lib/format";
 import { now } from "../lib/clock";
 import { ActivityGroup, CardFoldsProvider, groupBlocks, Thinking, type Item } from "./blocks/Activity";
@@ -19,6 +19,7 @@ import { Monogram } from "./Sidebar";
 import { Narration } from "./TurnView";
 import { Notice } from "./blocks/Notices";
 import { InteractionTab } from "./InteractionDock";
+import { ErrorCards } from "./ErrorCards";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { AgentMark } from "./ui/AgentMark";
 import { agentProvider, agentStep } from "../lib/agent-marks";
@@ -111,13 +112,21 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
     /** What it's waiting on you for (its own sub-agents' requests too): answered here as in the session. */
     const asks = () => st().interactions.filter((i) => i.kind === "permission" && i.agentId !== undefined && within(p.handle.view.agents, i.agentId, a().id));
     // The transcript keeps room at its end for the dock, which grows while it asks. (--dock-h goes on
-    // the box that reads it: not inherited, and not passed down with `inherit`; stage.css.)
+    // the box that reads it: not inherited, and not passed down with `inherit`; stage.css.) A floating
+    // inspector or diff reader ends above it, as in the session (App.tsx SessionView).
     let dock: HTMLDivElement | undefined;
     const [dockH, setDockH] = createSignal(72);
     onMount(() => {
-        const ro = new ResizeObserver(() => setDockH(dock?.offsetHeight ?? 0));
+        const ro = new ResizeObserver(() => {
+            const h = dock?.offsetHeight ?? 0;
+            setDockH(h);
+            setDockHeight(h);
+        });
         if (dock) ro.observe(dock);
-        onCleanup(() => ro.disconnect());
+        onCleanup(() => {
+            ro.disconnect();
+            setDockHeight(0);
+        });
     });
 
     return (
@@ -214,6 +223,7 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                 </div>
                 <div class="composer-dock" ref={dock}>
                     <div class="composer-col">
+                        <ErrorCards place="composer" />
                         <Show when={asks().length}>
                             <InteractionTab sessionId={p.handle.id} items={asks()} />
                         </Show>
