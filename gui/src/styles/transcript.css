@@ -41,7 +41,6 @@
     overflow-anchor: none;
     overscroll-behavior: contain;
     scrollbar-width: thin;
-    padding: 0 var(--lane-r) 0 var(--lane-l);
 }
 
 /* The column glides (a translate, Transcript.tsx pin): clipped here, vertically only, so a glide never adds
