@@ -32,6 +32,7 @@
 //   "ship"           commits, opens a pull request and watches it (GitCommit, CreatePullRequest)
 //   (a wake)         answers a watched pull request's news: failed checks, comments, passing checks
 //   "monitor"        watches a build log with Monitor; its lines wake the agent later
+//   "browser"        opens the demo site (or the address in the prompt) in the browser, clicks its first button, and says what happened
 //   anything else    a short markdown answer
 //
 //   bun scripts/mock-llm.ts [--port 4010] [--delay 12]
@@ -53,6 +54,8 @@ interface Step {
 
 export interface MockOptions {
     port?: number;
+    /** The address the "browser" script opens when the prompt names none (scripts/demo-site.ts). */
+    site?: string;
     /** Milliseconds between streamed chunks. */
     delayMs?: number;
 }
@@ -95,6 +98,9 @@ const TESTS_REPORT = `Only email sign-in is tested (\`test/auth.test.ts\`, one c
 2. The order of \`strategies\`
 3. Anything for SSO: assertion checks and the \`requireSso\` gate`;
 
+/** Where the "browser" script goes when the prompt doesn't say. */
+let demoSite: string | undefined;
+
 function scenario(prompt: string, toolRounds: number, lastResult: string): Step | undefined {
     const p = prompt.toLowerCase();
     // A turn of a long, realistic session (scripts/perf-seed.ts): looks around, writes a file, then a long answer.
@@ -132,6 +138,16 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
             { text: "Generated **322** endpoint clients under `gen/`." },
         ];
         return steps[toolRounds];
+    }
+    if (/\bbrowser\b/.test(p)) {
+        const url = /https?:\/\/\S+/.exec(prompt)?.[0] ?? demoSite ?? "http://localhost:3000/";
+        if (toolRounds === 0) return { text: "I'll open the app in the browser and look at it.", calls: [{ name: "BrowserNavigate", args: { url } }] };
+        if (toolRounds === 1) {
+            const button = /button "([^"]+)" \[(e\d+)\]/.exec(lastResult);
+            if (!button) return { text: `I couldn't open the page: ${lastResult.split("\n")[0]}` };
+            return { text: `The page is up. I'll try its "${button[1]}" button.`, calls: [{ name: "BrowserAct", args: { action: "click", ref: button[2] } }] };
+        }
+        return { text: `The page loads and the button works. What I saw after clicking it:\n\n\`\`\`\n${lastResult.split("\n").slice(0, 8).join("\n")}\n\`\`\`` };
     }
     // A monitor's lines woke the agent: say what they were.
     if (/<event source="monitor"/.test(prompt)) {
@@ -429,6 +445,7 @@ function titleFor(prompt: string): string {
     if (/\bnote\b/.test(p)) return "Write a release note";
     if (/\bbackground\b/.test(p)) return "Review tests in the background";
     if (/\bmonitor\b/.test(p)) return "Watch the build";
+    if (/\bbrowser\b/.test(p)) return "Check the app in the browser";
     return prompt.split(/\s+/).slice(0, 4).join(" ").replace(/^\w/, (c) => c.toUpperCase());
 }
 
@@ -512,6 +529,7 @@ function chunks(text: string): string[] {
 
 export function startMockLlm(o: MockOptions = {}) {
     const delay = o.delayMs ?? 12;
+    if (o.site) demoSite = o.site;
     let calls = 0;
     /** Each completion asked for, including the prompt/attachments and raw body sent. */
     const requests: { model: string; kind: "title" | "summary" | "turn"; body: string; prompt: string; images: number }[] = [];

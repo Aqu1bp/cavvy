@@ -263,6 +263,9 @@ function General() {
                         </select>
                     </SelectButton>
                 </Row>
+                <Row title="Browser" desc="Let agents open pages in a headless Chrome, which you can watch and take over in the side panel.">
+                    <Toggle label="Browser" checked={s().browser !== false} onChange={(v) => void update({ browser: v })} />
+                </Row>
                 <Row title="Expand tool activity" desc="Show every tool call instead of a one-line summary.">
                     <Toggle label="Expand tool activity" checked={prefs.expandActivity} onChange={(v) => setPrefs("expandActivity", v)} />
                 </Row>

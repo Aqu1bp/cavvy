@@ -1,0 +1,206 @@
+/* ---- The Browser pane (BrowserPane), a tab of the side panel ----
+   An address bar and the session's tabs over the page, which is a canvas the server's frames are drawn on.
+   Under the page: a note when the person has taken the tab (and how to hand it back), or a dialog the page asks. */
+
+/* The pane fills the panel's body: the page takes what the bars leave. */
+.insp-body.br-body {
+    padding: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.br-body > .pane {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+}
+
+.br {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+}
+
+.br-bar {
+    display: flex;
+    align-items: center;
+    gap: calc(2 * var(--sp));
+    padding: 0 calc(10 * var(--sp)) calc(6 * var(--sp));
+    flex: none;
+}
+
+.br-bar .hb {
+    border-radius: var(--pill);
+}
+
+.br-address {
+    flex: 1;
+    min-width: 0;
+    margin-left: calc(4 * var(--sp));
+}
+
+.br-address input {
+    width: 100%;
+    height: calc(28 * var(--sp));
+    padding: 0 calc(12 * var(--sp));
+    border: 0;
+    border-radius: var(--pill);
+    background: var(--sheet-2);
+    color: var(--fg);
+    font: inherit;
+    text-overflow: ellipsis;
+}
+
+.br-address input::placeholder {
+    color: var(--fg-4);
+}
+
+.br-address input:disabled {
+    opacity: 0.5;
+}
+
+.br-tabs {
+    display: flex;
+    align-items: center;
+    gap: calc(2 * var(--sp));
+    padding: 0 calc(10 * var(--sp)) calc(6 * var(--sp));
+    flex: none;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.br-tab {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 1 calc(150 * var(--sp));
+    min-width: calc(60 * var(--sp));
+    height: calc(26 * var(--sp));
+    border-radius: var(--pill);
+    color: var(--fg-3);
+    font-weight: 500;
+    transition: background var(--dur-fast), color var(--dur-fast);
+}
+
+.br-tab:hover {
+    background: var(--hover);
+    color: var(--fg-2);
+}
+
+.br-tab.on {
+    background: var(--sheet-2);
+    color: var(--fg);
+}
+
+.br-tab-main {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    padding: 0 calc(2 * var(--sp)) 0 calc(10 * var(--sp));
+    text-align: left;
+    color: inherit;
+}
+
+.br-tab-x {
+    display: inline-grid;
+    place-items: center;
+    flex: none;
+    width: calc(20 * var(--sp));
+    height: calc(20 * var(--sp));
+    margin-right: calc(3 * var(--sp));
+    border-radius: 50%;
+    color: var(--fg-4);
+}
+
+.br-tab-x:hover {
+    background: var(--hover);
+    color: var(--fg);
+}
+
+.br-who {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    flex: none;
+    padding-left: calc(8 * var(--sp));
+    color: var(--fg-3);
+    font-size: 0.857rem;
+    white-space: nowrap;
+}
+
+/* The page: the canvas fills it, and the bars of a pane with no page open sit over it. */
+.br-view {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    background: var(--sheet-2);
+    border-top: 0.5px solid var(--line);
+    overflow: hidden;
+}
+
+.br-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    cursor: default;
+    outline: none;
+}
+
+.br-canvas:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.br-blank {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    overflow: auto;
+}
+
+.br-note {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: calc(8 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
+    flex: none;
+    border-top: 0.5px solid var(--line);
+}
+
+.br-note-text {
+    flex: 1 1 calc(160 * var(--sp));
+    min-width: 0;
+    color: var(--fg-2);
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.br-note input {
+    flex: 1 1 calc(120 * var(--sp));
+    min-width: 0;
+    height: calc(28 * var(--sp));
+    padding: 0 calc(12 * var(--sp));
+    border: 0;
+    border-radius: var(--pill);
+    background: var(--sheet-2);
+    color: var(--fg);
+    font: inherit;
+}
+
+.br-note .btn {
+    flex: none;
+}
+
+/* The agent is driving this tab. */
+.br-dot {
+    width: calc(7 * var(--sp));
+    height: calc(7 * var(--sp));
+    border-radius: 50%;
+    flex: none;
+    background: var(--accent);
+}
