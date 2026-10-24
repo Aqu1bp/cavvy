@@ -10,7 +10,6 @@ import { lstat, readFile } from "fs/promises";
 import { join, relative } from "path";
 import { git } from "../server/git-changes";
 import type { TurnPlace } from "../server/protocol";
-import { redact } from "../util/redact";
 
 /** Worktrees fingerprinted and summed up per turn, at most: past this many, the rest go unseen. */
 export const MAX_PLACES = 16;
@@ -55,10 +54,13 @@ export interface Worktree {
     main: boolean;
 }
 
-/** The repository's worktrees as `git worktree list` gives them, but bare and prunable ones; the main checkout first. */
-export async function listWorktrees(root: string, deadline: number): Promise<Worktree[]> {
-    const r = await run(root, ["worktree", "list", "--porcelain", "-z"], { deadline, maxBytes: 1024 * 1024 });
-    if (r.code || r.cut) return [];
+/**
+ * The repository's worktrees as `git worktree list` gives them, but bare and prunable ones; the main checkout first.
+ * Undefined when git can't list them: not knowing which there are isn't the same as there being none.
+ */
+export async function listWorktrees(root: string, deadline: number): Promise<Worktree[] | undefined> {
+    const r = await run(root, ["worktree", "list", "--porcelain", "-z"], { deadline, maxBytes: 1024 * 1024 }).catch(() => undefined);
+    if (!r || r.code || r.cut) return undefined;
     const out: Worktree[] = [];
     let cur: { path?: string; branch?: string; skip?: boolean; first: boolean } = { first: true };
     // Fields end in NUL; an empty one ends a worktree's record.
@@ -108,17 +110,21 @@ function statusPaths(out: Buffer): string[] {
 }
 
 /**
- * What a worktree is like now, in a hash: its HEAD and branch, what git status lists, and those files'
- * sizes and times (a file edited again lists the same). UNKNOWN when git can't say in time.
+ * What a worktree is like now, in a hash: its HEAD and branch, what git status lists, and each of those files'
+ * stat stamp (a file edited again lists the same; an editor that saves by renaming changes its inode, a write its
+ * size or times). Not how far the branch is from its upstream: a fetch elsewhere moves that, not work here.
+ * UNKNOWN when git can't say, or the files can't all be stamped, in time.
  */
 export async function fingerprint(w: Worktree, deadline: number): Promise<string> {
     try {
         const st = await run(w.path, ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--no-renames"], { deadline, maxBytes: 8 * 1024 * 1024 });
         if (st.code || st.cut) return UNKNOWN;
-        const h = createHash("sha256").update(st.out);
-        for (const p of statusPaths(st.out).slice(0, 2000)) {
+        const h = createHash("sha256");
+        for (const rec of st.out.toString("utf-8").split("\0")) if (!rec.startsWith("# branch.ab ")) h.update(`${rec}\0`);
+        for (const p of statusPaths(st.out)) {
+            if (Date.now() >= deadline) return UNKNOWN;
             const s = await lstat(join(w.path, p)).catch(() => undefined);
-            h.update(`${p}\0${s ? `${s.size}:${s.mtimeMs}` : "-"}\0`);
+            h.update(`${p}\0${s ? `${s.ino}:${s.mode}:${s.size}:${s.mtimeMs}:${s.ctimeMs}` : "-"}\0`);
         }
         return h.digest("hex");
     } catch {
@@ -167,15 +173,16 @@ export async function summarize(w: Worktree, deadline: number): Promise<TurnPlac
         }
         if (!untracked.code && !untracked.cut) {
             const fresh = untracked.out.toString("utf-8").split("\0").filter(Boolean);
-            for (const [i, p] of fresh.entries()) files.push({ path: p, change: "added", added: i < 200 ? await lineCount(join(w.path, p)) : 0, removed: 0 });
+            // Their lines are counted while there's time (and for the first 200); past that they count as files.
+            for (const [i, p] of fresh.entries()) files.push({ path: p, change: "added", added: i < 200 && Date.now() < deadline ? await lineCount(join(w.path, p)) : 0, removed: 0 });
         }
         place.files = files.length;
         place.added = files.reduce((n, f) => n + f.added, 0);
         place.removed = files.reduce((n, f) => n + f.removed, 0);
         const count = Number(commits.out.toString().trim());
         if (!commits.code && Number.isSafeInteger(count)) place.commits = count;
-        // Names can hold secrets: they're shown as redact shows them.
-        place.top = files.sort((a, b) => b.added + b.removed - (a.added + a.removed)).slice(0, TOP).map((f) => ({ ...f, path: redact(f.path) }));
+        // As git names them, like the snapshot's own paths: shown redacted, with a handle (git-handles.ts).
+        place.top = files.sort((a, b) => b.added + b.removed - (a.added + a.removed)).slice(0, TOP);
         return place;
     } catch {
         return place;

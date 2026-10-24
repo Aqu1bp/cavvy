@@ -1284,8 +1284,8 @@ export interface TurnPlace {
     removed?: number;
     /** Commits on it since it left the base. */
     commits?: number;
-    /** The files with the most lines changed, the most first. */
-    top?: { path: string; change: "added" | "modified" | "deleted"; added: number; removed: number }[];
+    /** The files with the most lines changed, the most first. `pathToken`: the name hides a registered value (GitFileDiff.pathToken). */
+    top?: { path: string; change: "added" | "modified" | "deleted"; added: number; removed: number; pathToken?: string }[];
 }
 
 /** A confirmation snapshot; the server rechecks the destination and HEAD before publishing. */

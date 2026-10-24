@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, realpathSync, writeFileSync } from "fs";
+import { mkdirSync, realpathSync, renameSync, statSync, utimesSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { isolate } from "./helpers/isolate";
 
@@ -115,6 +115,85 @@ test("reading the worktrees inherits no git tracing: no trace file, and the plac
     }
     expect(await Bun.file(trace).exists()).toBe(false);
     expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places?.map((p) => p.files)).toEqual([2]);
+});
+
+test("at a steering boundary, what the next turn does in a worktree isn't the turn before's", async () => {
+    const { wt, snapshots } = setup(["home"]);
+    await snapshots.begin(1, "first");
+    work(wt("home"), "home");
+    // The boundary is captured when the steered prompt goes; the turn before is finished only later.
+    const boundary = await snapshots.prepare();
+    write(wt("home"), "next.txt", "the next turn's\n");
+    await snapshots.beginWith(2, "steered", boundary);
+    await snapshots.end();
+    expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places?.map((p) => [p.files, (p.top ?? []).map((f) => f.path).sort()])).toEqual([[2, ["a.txt", "home.txt"]]]);
+    // The next turn's start isn't carrying the turn before's places.
+    expect(snapshots.list().find((t) => t.id === 2)!.start).not.toHaveProperty("worked");
+});
+
+test("a fetch that moves a worktree's upstream isn't work in it", async () => {
+    const { base, cwd, wt, snapshots } = setup(["synced"]);
+    const remote = join(base, "remote.git");
+    git(base, ["init", "-q", "--bare", remote]);
+    git(cwd, ["remote", "add", "origin", remote]);
+    git(cwd, ["push", "-q", "origin", "agent/synced"]);
+    git(wt("synced"), ["branch", "-q", "-u", "origin/agent/synced"]);
+    // Someone else pushes to the branch; this turn only fetches.
+    const other = join(base, "other");
+    git(base, ["clone", "-q", "-b", "agent/synced", remote, other]);
+    write(other, "theirs.txt", "theirs\n");
+    git(other, ["add", "-A"]);
+    git(other, ["commit", "-q", "-m", "Theirs"]);
+    git(other, ["push", "-q", "origin", "agent/synced"]);
+    await snapshots.begin(1, "fetch");
+    git(wt("synced"), ["fetch", "-q", "origin"]);
+    expect(git(wt("synced"), ["status", "--porcelain=v2", "--branch"])).toContain("# branch.ab +0 -1");
+    await snapshots.end();
+    expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places).toBeUndefined();
+});
+
+test("a file swapped in by rename, the same size and time, still counts (its inode changed)", async () => {
+    const { wt, snapshots } = setup(["swap"]);
+    write(wt("swap"), "a.txt", "one\nTWO\n");
+    const { mtime } = statSync(join(wt("swap"), "a.txt"));
+    await snapshots.begin(1, "save as an editor does");
+    write(wt("swap"), "a.tmp", "one\nTW0\n");
+    utimesSync(join(wt("swap"), "a.tmp"), mtime, mtime);
+    renameSync(join(wt("swap"), "a.tmp"), join(wt("swap"), "a.txt"));
+    await snapshots.end();
+    expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places?.map((p) => p.branch)).toEqual(["agent/swap"]);
+});
+
+test("out of time, a worktree's fingerprint is unknown, and a listing git can't give is unknown, not empty", async () => {
+    const { wt } = setup(["late"]);
+    const { fingerprint, listWorktrees, UNKNOWN } = await import("../src/agent/turn-places");
+    expect(await fingerprint({ path: wt("late"), main: false }, Date.now() - 1)).toBe(UNKNOWN);
+    const notRepo = join(realpathSync(iso.home), `not-a-repo-${next++}`);
+    mkdirSync(notRepo, { recursive: true });
+    expect(await listWorktrees(notRepo, Date.now() + 2000)).toBeUndefined();
+});
+
+test("shown: a place's branch is redacted, and a file whose name hides a secret gets a handle for its worktree", async () => {
+    const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+    const { GitHandles } = await import("../src/server/git-handles");
+    const secret = "sk-test-places-0123456789abcdef";
+    registerSecret(secret);
+    try {
+        const { wt } = setup(["leaky"]);
+        const handles = new GitHandles();
+        const shown = handles.shown({
+            repo: true, scope: "turn", files: [], added: 0, removed: 0, tracked: true, bases: [], more: 0,
+            places: [{ path: wt("leaky"), branch: `fix/${secret}`, base: "main", files: 1, added: 1, removed: 0, top: [{ path: `notes-${secret}.txt`, change: "added", added: 1, removed: 0 }, { path: "plain.txt", change: "added", added: 0, removed: 0 }] }],
+        }, "/elsewhere");
+        const place = shown.places![0]!;
+        expect(JSON.stringify(place)).not.toContain(secret);
+        expect(place.top![0]!.pathToken).toBeString();
+        expect(place.top![1]).not.toHaveProperty("pathToken");
+        // The handle resolves in the worktree's own folder, as the diff reader lists it there.
+        expect(handles.resolve("path", realpathSync(wt("leaky")), place.top![0]!.pathToken)).toBe(`notes-${secret}.txt`);
+    } finally {
+        unregisterSecret(secret);
+    }
 });
 
 test("a turn's places are kept: reopened, the session shows them as they were", async () => {

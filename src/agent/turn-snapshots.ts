@@ -31,6 +31,8 @@ export interface TurnCapture {
     durationMs: number;
     /** The repository's other worktrees inside its folder, each with its fingerprint (turn-places.ts), or UNKNOWN. */
     places?: Record<string, string>;
+    /** Not saved: at a turn's end, the worktrees it worked in, summed up then, until finish() records them. */
+    worked?: TurnPlace[];
 }
 
 export interface SnapshotTurn {
@@ -119,6 +121,8 @@ export class TurnSnapshots {
     /** The repository's other worktrees inside its folder, as last listed, and their folders relative to it. */
     private worktrees: Worktree[] = [];
     private nested = new Set<string>();
+    /** The last listing worked: a failed one isn't "no worktrees", so nothing is marked from it. */
+    private worktreesListed = false;
     private readonly storage: string;
     private readonly journal: string;
 
@@ -245,6 +249,8 @@ export class TurnSnapshots {
         if (!captured || this.stopped) return; // Not a repository, or this session was let go.
         if (this.active) await this.finish(structuredClone(captured));
         if (this.stopped) return;
+        // What the turn before worked in is that turn's, not part of this one's start.
+        delete captured.worked;
         this.active = { version: 2, id, prompt: redact(prompt).slice(0, 2000), startedAt: Date.now(), start: captured };
         this.persist(this.active);
     }
@@ -283,24 +289,31 @@ export class TurnSnapshots {
             captured.incomplete = true;
             captured.notes.push("The snapshot comparison is unavailable; some objects may be missing.");
         }
-        // The other worktrees it worked in: changed, or new, since it began (not when its start went unmarked).
-        const before = turn.start.places, after = captured.places;
-        if (before && after && !this.stopped) {
-            const worked = this.worktrees.filter((w) => after[w.path] !== undefined && after[w.path] !== UNKNOWN && before[w.path] !== UNKNOWN && after[w.path] !== before[w.path]);
-            if (worked.length) {
-                const deadline = Date.now() + 3000;
-                turn.places = await eachLimited(worked, 4, (w) => summarize(w, deadline));
-            }
-        }
+        // The other worktrees it worked in, summed up when its end was captured (marks).
+        if (captured.worked?.length) turn.places = captured.worked;
+        delete captured.worked;
         if (!this.stopped) this.persist(turn);
     }
 
-    /** Each nearby worktree's fingerprint, for telling at the turn's end which it worked in (turn-places.ts). */
+    /**
+     * Each nearby worktree's fingerprint (turn-places.ts); and, at the end of a turn that's open, the ones it worked
+     * in (changed, or new, since it began), summed up now: at a steering boundary the next turn may already be under
+     * way by the time this one is finished, and what it does isn't this one's. Not when either end went unmarked.
+     */
     private async marks(captured: TurnCapture | undefined): Promise<TurnCapture | undefined> {
-        if (!captured?.root || this.stopped) return captured;
+        if (!captured?.root || this.stopped || !this.worktreesListed) return captured;
         const deadline = Date.now() + 1500;
         const prints = await eachLimited(this.worktrees, 4, (w) => fingerprint(w, deadline));
-        captured.places = Object.fromEntries(this.worktrees.map((w, i) => [w.path, prints[i]!]));
+        const after = Object.fromEntries(this.worktrees.map((w, i) => [w.path, prints[i]!]));
+        captured.places = after;
+        const before = this.active?.start.places;
+        if (before && !this.stopped) {
+            const worked = this.worktrees.filter((w) => after[w.path] !== UNKNOWN && before[w.path] !== UNKNOWN && after[w.path] !== before[w.path]);
+            if (worked.length) {
+                const until = Date.now() + 3000;
+                captured.worked = await eachLimited(worked, 4, (w) => summarize(w, until));
+            }
+        }
         return captured;
     }
 
@@ -395,7 +408,9 @@ export class TurnSnapshots {
             this.root = top.out.toString().replace(/\n$/, "");
             result.root = this.root;
             // The repository's other worktrees in its folder are places of their own (turn-places.ts), not contents left out.
-            this.worktrees = nearby(await listWorktrees(this.root, deadline).catch(() => []), this.root);
+            const listed = await listWorktrees(this.root, deadline);
+            this.worktreesListed = listed !== undefined;
+            this.worktrees = listed ? nearby(listed, this.root) : [];
             this.nested = insideRoot(this.worktrees, this.root);
             const [format, listing] = await Promise.all([
                 git(this.root, ["rev-parse", "--show-object-format"], { deadline, privateEnv: metadataEnv }),

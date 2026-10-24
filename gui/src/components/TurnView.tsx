@@ -418,7 +418,7 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                                 <For each={one().top}>
                                     {(f) => (
                                         <div class="frow-line">
-                                            <button class="frow" onClick={() => openWorktreeReview(one().path, f.path)}>
+                                            <button class="frow" onClick={() => openWorktreeReview(one().path, f.path, f.pathToken)}>
                                                 <SplitPath path={f.path} />
                                                 <Show when={f.change === "added"}>
                                                     <span class="frow-tag">new</span>

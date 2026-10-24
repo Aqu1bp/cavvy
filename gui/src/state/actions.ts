@@ -166,9 +166,9 @@ export function openReview(path?: string, scope?: ReviewScope, turnId?: number, 
     setReview({ path, scope, turnId, ...(path !== undefined && token ? { token } : {}) });
 }
 
-/** The diff reader on another worktree of the session's repository, on its branch: at `path` (relative to it), if given. */
-export function openWorktreeReview(worktree: string, path?: string) {
-    setReview({ worktree, ...(path !== undefined ? { path } : {}) });
+/** The diff reader on another worktree of the session's repository, on its branch: at `path` (relative to it), if given; `token` when its name was shown redacted. */
+export function openWorktreeReview(worktree: string, path?: string, token?: string) {
+    setReview({ worktree, ...(path !== undefined ? { path, ...(token ? { token } : {}) } : {}) });
 }
 
 /** Stop a delegated task (or every one running); Task sub-agents stop with the turn. */

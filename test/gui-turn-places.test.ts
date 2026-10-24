@@ -42,6 +42,15 @@ test("who worked where: the turn's sub-agents by the paths their calls name, and
     expect(map.has(places[2]!.path)).toBe(false);
 });
 
+test("a card's Review opens that worktree on its branch against main, even when it's the one already looked at in another view", async () => {
+    const { requestWorktree } = await import("../gui/src/lib/worktree-work");
+    const wt = "/work/repo/.claude/worktrees/home";
+    // From the session's own folder: that worktree on its branch, the folder's view kept for coming back.
+    expect(requestWorktree({ scope: "turn" }, wt)).toEqual({ worktree: wt, scope: "branch", base: undefined, own: { scope: "turn", base: undefined } });
+    // Already on it, in its Uncommitted view against another base: back to its branch against main.
+    expect(requestWorktree({ worktree: wt, scope: "uncommitted", base: "release", own: { scope: "turn" } }, wt)).toEqual({ worktree: wt, scope: "branch", base: undefined, own: { scope: "turn" } });
+});
+
 test("an incomplete snapshot is one line: how many paths it left out, the reasons in the tooltip, not the standing policy", () => {
     const policy = "Ignored files are not captured. Concurrent sessions in this repository see each other's changes. Submodule and nested repository contents are not captured.";
     expect(incompleteLine([policy, "Not captured: vendor/sdk/: Submodule or nested repository contents are not captured."])).toEqual({ text: "1 path not captured", detail: "Not captured: vendor/sdk/: Submodule or nested repository contents are not captured." });
