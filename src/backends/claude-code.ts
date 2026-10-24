@@ -59,6 +59,7 @@ import type { NativeGoal } from "../agent/goal";
 import { ClaudeGoalWatch, claudeTranscriptFile } from "./claude-goal";
 import { ClaudeLive } from "./claude-live";
 import type { AgentCliStatus } from "./index";
+import { servedBrowserTool } from "../tools/browser-tools";
 
 /** checkAgentCli, imported when it's asked for (index.ts imports this file). */
 async function checkAgentCliLazy(providerId: string, signal?: AbortSignal, accountId?: string): Promise<AgentCliStatus> {
@@ -1799,6 +1800,8 @@ class ClaudeTurn {
         const cb = this.hookCallbacks.get(String(req.callback_id ?? ""));
         if (!cb || !this.cliSession.hookHandler) return {};
         const input: Record<string, unknown> = req.input && typeof req.input === "object" ? req.input : {};
+        // Harness's browser tools run the hooks themselves, as BrowserAct and the rest: this CLI's run would be a second one.
+        if (servedBrowserTool(this.t.orchestrator?.name, input.tool_name)) return {};
         const r = await this.cliSession.hookHandler(cb.event, cb.hook, input, this.t.signal);
         return claudeCodeHookOutput(cb.event, r);
     }

@@ -51,6 +51,7 @@ import type { BackgroundTaskInfo } from "./live/info";
 import { CLAUDE_PREFIX, claudeNames, claudePrompt, forClaudeCode, skillFolder } from "./native-skills";
 import type { BackendResult, BackendTurn, BackgroundStop, SessionHost, SteerMessage, TurnSink } from "./types";
 import type { ImagePart, PdfPart } from "../providers/types";
+import { servedBrowserTool } from "../tools/browser-tools";
 import {
     DECLINED,
     LAUNCH_END,
@@ -1633,6 +1634,8 @@ export class ClaudeConnection implements CliConnection {
             const handler = this.host.hookHandler;
             if (!cb || !handler) return reply({});
             const input: Record<string, unknown> = req.input && typeof req.input === "object" ? req.input : {};
+            // Harness's browser tools run the hooks themselves, as BrowserAct and the rest: this CLI's run would be a second one.
+            if (servedBrowserTool(this.cfg.orchestrator?.name, input.tool_name)) return reply({});
             // The session's signal, not a turn's: a background sub-agent's hooks run between turns too.
             const r = await handler(cb.event, cb.hook, input, this.hookAbort.signal).catch(() => undefined);
             reply(r ? claudeCodeHookOutput(cb.event, r) : {});

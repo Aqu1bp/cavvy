@@ -3,6 +3,7 @@
 //
 // - HARNESS_HOME points at a fresh temp dir, so ~/.harness is never touched.
 // - HARNESS_NO_KEYCHAIN keeps the credential store off the OS keychain.
+// - HARNESS_BROWSER names no browser, so the Browser tools aren't offered unless a test sets it.
 // - Every API-key-like variable is removed from the environment.
 // - CLI config and secure-storage selectors point at fresh empty folders, so nothing
 //   (listing CLI sessions, say) can reach the real Claude Code or Codex stores.
@@ -21,6 +22,9 @@ export function isolate(): { home: string; cleanup: () => void } {
     if (!resolve(home).startsWith(resolve(tmpdir()) + sep)) throw new Error(`refusing to use ${home} as HARNESS_HOME`);
     process.env.HARNESS_HOME = home;
     process.env.HARNESS_NO_KEYCHAIN = "1";
+    // No test finds the machine's own Chrome (the Browser tools would be offered, and served to agent CLIs, wherever one is
+    // installed): only a test that points HARNESS_BROWSER at one gets a browser.
+    process.env.HARNESS_BROWSER = join(home, "no-browser");
     const claude = mkdtempSync(join(tmpdir(), "harness-test-claude-"));
     const codex = mkdtempSync(join(tmpdir(), "harness-test-codex-"));
     process.env.CLAUDE_CONFIG_DIR = claude;

@@ -247,12 +247,14 @@ export function ruleMatches(rule: ParsedRule, t: RuleTarget, root: string, mode:
         // A Monitor command runs like a Bash one: Bash rules cover it too.
         (tool === "Bash" && isShellTool(t.toolName)) ||
         (tool === "Edit" && EDIT_TOOLS.has(t.toolName)) ||
-        (tool === "Read" && READ_TOOLS.has(t.toolName));
+        (tool === "Read" && READ_TOOLS.has(t.toolName)) ||
+        // Opening a page in the browser is as much a visit to its host as fetching it: WebFetch(domain:…) rules cover it.
+        (tool === "WebFetch" && t.toolName === "BrowserNavigate" && Boolean(rule.spec));
     if (!toolMatches) return false;
     if (!rule.spec) return true;
     if (isShellTool(t.toolName)) return t.command !== undefined && bashRuleMatches(rule.spec, t.command, mode);
     if (EDIT_TOOLS.has(t.toolName) || READ_TOOLS.has(t.toolName)) return t.path !== undefined && matchPath(rule.spec, t.path, root, mode === "deny");
-    if (t.toolName === "WebFetch") {
+    if (t.toolName === "WebFetch" || t.toolName === "BrowserNavigate") {
         if (!t.url) return false;
         const m = rule.spec.match(/^domain:(.+)$/);
         if (!m) return false;

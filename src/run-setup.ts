@@ -14,7 +14,7 @@ import type { PermissionMode } from "./permissions/modes";
 import { PermissionChecker } from "./permissions/checker";
 import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "./permissions/classifier";
 import { McpManager } from "./mcp/manager";
-import { BUILTIN_TOOLS } from "./tools/index";
+import { BUILTIN_TOOLS, offered } from "./tools/index";
 import { skillTool } from "./tools/skill-tool";
 import { loadSkills, type Skill } from "./agent/skills";
 import type { Tool, ToolState } from "./tools/types";
@@ -194,7 +194,7 @@ async function setupWith(o: RunSetupOptions, settings: Settings, resumed: Sessio
     const skill = skillTool(skills);
     const tools = (): Tool<any>[] => [
         // Nobody can answer a question here.
-        ...BUILTIN_TOOLS.filter((t) => t.name !== "AskUserQuestion" && !(t.name === "WebSearch" && (nativeWebSearch || pref === "off"))),
+        ...BUILTIN_TOOLS.filter((t) => t.name !== "AskUserQuestion" && !(t.name === "WebSearch" && (nativeWebSearch || pref === "off")) && offered(t, settings)),
         ...(skill ? [skill] : []),
         ...mcp.tools(),
     ];
@@ -311,7 +311,7 @@ export async function endRun(s: RunSetup, agent: Agent | undefined, started: Pro
         : undefined;
     // Delegated tasks still running end with the run.
     try {
-        await Promise.all([ended, agent?.dispose(), killAllShells({ state: s.toolState }), s.toolState.lsp?.dispose(), within(s.mcp.closeAll(), 1500)]);
+        await Promise.all([ended, agent?.dispose(), killAllShells({ state: s.toolState }), s.toolState.lsp?.dispose(), s.toolState.browser?.dispose(), within(s.mcp.closeAll(), 1500)]);
     } finally {
         s.original?.release();
     }

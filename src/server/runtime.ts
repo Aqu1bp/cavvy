@@ -7,6 +7,7 @@ import { NO_SCHEDULES, SessionSchedules, type ScheduleAction } from "../agent/sc
 import { CRON_TOOLS, jobLine } from "../agent/schedule-tools";
 import type { ScheduledJob } from "../agent/schedule";
 import { GIT_TOOL_HEADINGS } from "../tools/git-tools";
+import { BROWSER_TOOL_HEADINGS } from "../tools/browser-tools";
 import { WakeQueue, WatcherMap, formatWakes, stopWatchers, wakeDisplay, type Wake } from "../agent/wakes";
 import { turnDuration } from "./duration";
 import { existsSync, readFileSync } from "fs";
@@ -26,7 +27,7 @@ import { MODE_INFO, PERMISSION_MODES, type PermissionMode } from "../permissions
 import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "../permissions/classifier";
 import { toolPath } from "../permissions/rules";
-import { BUILTIN_TOOLS } from "../tools/index";
+import { BUILTIN_TOOLS, offered } from "../tools/index";
 import { skillTool } from "../tools/skill-tool";
 import { formatSkill, skillMentions, withSkills } from "../agent/skills";
 import { cliRunsSkills } from "../backends/native-skills";
@@ -1400,7 +1401,7 @@ export class Runtime {
         const native = this.nativeSearch();
         const off = this.settings().webSearch === "off";
         const skill = skillTool(this.ws.skills);
-        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off))), ...(skill ? [skill] : []), ...CRON_TOOLS, ...this.ws.mcp.tools()];
+        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off)) && offered(t, this.settings())), ...(skill ? [skill] : []), ...CRON_TOOLS, ...this.ws.mcp.tools()];
     }
 
     private toolMeta(call: ToolCallPart): ToolMeta {
@@ -2277,6 +2278,12 @@ export class Runtime {
             it.url = String(input.url ?? "");
             if (input.prompt) it.description = redact(String(input.prompt).slice(0, 300));
             if (suggestions.length) it.options.push({ id: "always", label: `Always allow ${suggestions[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1")}` });
+        } else if (BROWSER_TOOL_HEADINGS[tool.name]) {
+            it.heading = BROWSER_TOOL_HEADINGS[tool.name]!;
+            if (tool.name === "BrowserNavigate") it.url = String(input.url ?? "");
+            else if (req.preview?.summary) it.description = redact(req.preview.summary);
+            if (req.preview?.body) it.command = redact(req.preview.body);
+            if (suggestions.length) it.options.push({ id: "always", label: tool.name === "BrowserNavigate" ? `Always allow ${suggestions[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1")}` : `Always allow ${tool.name} in ${projectName}` });
         } else if (GIT_TOOL_HEADINGS[tool.name]) {
             it.heading = GIT_TOOL_HEADINGS[tool.name]!;
             if (req.preview?.body) it.command = redact(req.preview.body);
@@ -3885,6 +3892,7 @@ export class Runtime {
             this.agent?.dispose(),
             killAllShells({ state: this.toolState }),
             this.toolState.lsp?.dispose(),
+            this.toolState.browser?.dispose(),
             commit,
         ]);
         try {
