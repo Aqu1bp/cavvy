@@ -302,6 +302,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         setMenu([]);
     };
     onCleanup(dismissMenu);
+    // Home keeps its draft while switching projects. Invalidate both displayed
+    // suggestions and in-flight replies immediately, independently of commands.list.
+    createEffect(on(() => st()?.cwd ?? app.homeCwd, () => updateMenu(false), { defer: true }));
 
     const apply = (item: MenuItem, run: boolean) => {
         if (item.kind === "command" && item.mention) {
