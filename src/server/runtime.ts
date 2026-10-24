@@ -1822,9 +1822,11 @@ export class Runtime {
         const b = this.blockIn(this.toolTurn.get(call.id), call.id) as ToolBlock | undefined;
         this.ui.write({ t: "tool", id: call.id, summary: patch.summary, diff: patch.diff, diagnostics: patch.diagnostics, durationMs, approval: b?.approval, sandboxed: b?.sandboxed, images: patch.images, job: b?.job, at: Date.now() });
         if (call.name === "TodoWrite") this.setState({ todos: this.toolState.todos.map((t) => ({ ...t })) });
-        // A Task's result is its sub-agent's report (a delegated task's comes when it settles). One
-        // still working (Claude Code's in the background) only says it started: its report comes when it ends.
-        const sub = call.name === "Task" ? this.view.agents.find((a) => a.id === call.id) : undefined;
+        // A Task's result is its sub-agent's report (a delegated task's comes when it settles), and so is a Skill's
+        // that ran as its own agent (Claude Code may say it ended first, with no report) unless it failed or was declined:
+        // that result is Claude Code's refusal, not the skill's. One still working (Claude Code's in the background) only
+        // says it started: its report comes when it ends.
+        const sub = call.name === "Task" || (call.name === "Skill" && !result.isError) ? this.view.agents.find((a) => a.id === call.id) : undefined;
         if (sub && sub.status !== "running" && sub.status !== "waiting") this.agentPatch(call.id, { report: redact(withoutActionsNote(result.content)) });
         if (patch.diff || b?.category === "edit") this.setState({ filesChanged: this.filesChanged() });
         this.syncShells();

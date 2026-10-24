@@ -2482,6 +2482,8 @@ describe("sub-agents", () => {
         expect(v.agents).toHaveLength(1);
         const a = v.agents[0]!;
         expect([a.id, a.description, a.status]).toEqual(["toolu_skill", "code-review", "done"]);
+        // Claude Code says it ended before the Skill call's result comes: that result is still its report, kept.
+        expect(a.report).toBe("No findings.");
         expect(a.blocks.filter((b) => b.t === "tool").map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : ""))).toEqual(["Read:ok"]);
     }, 45_000);
 
