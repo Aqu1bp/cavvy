@@ -167,6 +167,12 @@ export interface Settings {
      * lspServers shape). false turns it off.
      */
     lsp?: false | { enabled?: boolean; servers?: Record<string, LspServerConfig> };
+    /**
+     * The browser agents drive and the GUI's Browser pane shows (src/browser). `enabled` (default true) offers the Browser tools;
+     * `executable`, a Chrome, Chromium, Edge or Brave to run instead of the one found, and `headless: false` (to watch it in its own
+     * window while debugging) count from user settings alone: a project mustn't choose what gets launched.
+     */
+    browser?: { enabled?: boolean; executable?: string; headless?: boolean };
     /** Plugins turned on or off at this scope, by "name@marketplace" (src/plugins). */
     enabledPlugins?: Record<string, boolean>;
     /** The GUI's "Open files with" editor, an id from src/server/editors.ts. User settings only: a project mustn't choose what gets launched. */
@@ -179,6 +185,12 @@ export interface Settings {
         /** auto (default): remove a worktree nothing was done in, ask when there are commits. ask: always ask. keep: never remove. Uncommitted changes always keep it. */
         cleanup?: "auto" | "ask" | "keep";
     };
+}
+
+/** The browser settings, with anything malformed (a hand edit) replaced by its default. */
+export function browserSettings(s: Settings): { enabled: boolean; executable?: string; headless: boolean } {
+    const b = typeof s.browser === "object" && s.browser !== null ? s.browser : {};
+    return { enabled: b.enabled !== false, ...(typeof b.executable === "string" && b.executable.trim() ? { executable: b.executable.trim() } : {}), headless: b.headless !== false };
 }
 
 /** The worktree settings, with anything malformed (a hand edit) replaced by its default. */
@@ -440,7 +452,7 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
     const merged: Settings = {};
     const warnings = new Set<string>();
     for (const s of layers) {
-        const { permissions, env, mcpServers, hooks, worktree, lsp, enabledPlugins: _, ...rest } = s;
+        const { permissions, env, mcpServers, hooks, worktree, lsp, browser: _browser, enabledPlugins: _, ...rest } = s;
         // JSON.parse keeps a "__proto__" key as data; assigning it would set merged's prototype (and settings it seems to have).
         for (const [k, v] of Object.entries(rest)) if (k !== "__proto__") (merged as Record<string, unknown>)[k] = v;
         if (permissions) {
@@ -470,12 +482,23 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
     }
     if (user.reviewModel) merged.reviewModel = user.reviewModel;
     else delete merged.reviewModel;
+    mergeBrowser(merged, layers, user);
     mergeSandbox(merged, layers, user);
     mergeMcpApprovals(merged, trusted ? [user, local] : [user]);
     const unreadable = userFile.unreadable || userFile.empty ? settingsPath("user", cwd) : localFile.unreadable || localFile.empty ? settingsPath("local", cwd) : undefined;
     if (unreadable) unreadableWhenLoaded.set(merged, unreadable);
     if (warnings.size) hookWarnings.set(merged, [...warnings]);
     return merged;
+}
+
+/** Any layer can turn the browser off, none can turn it back on; what it runs (the program, whether it shows) comes from the user's own settings only. */
+function mergeBrowser(merged: Settings, layers: Settings[], user: Settings) {
+    delete merged.browser;
+    const own = typeof user.browser === "object" && user.browser !== null ? user.browser : {};
+    const off = layers.some((l) => typeof l.browser === "object" && l.browser !== null && l.browser.enabled === false);
+    const { executable } = browserSettings(user);
+    const browser = { ...(off ? { enabled: false } : own.enabled !== undefined ? { enabled: own.enabled } : {}), ...(executable ? { executable } : {}), ...(typeof own.headless === "boolean" ? { headless: own.headless } : {}) };
+    if (Object.keys(browser).length) merged.browser = browser;
 }
 
 /** Servers add up by name across layers (a later one replaces one of the same name); a later on/off wins. */

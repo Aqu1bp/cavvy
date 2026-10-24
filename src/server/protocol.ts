@@ -1418,6 +1418,49 @@ export interface ProjectScripts {
 }
 
 // ---------------------------------------------------------------------------
+// The browser (src/browser): a session's tabs, seen and driven from the GUI's Browser pane.
+
+/** What a person did in the pane, in the page's CSS pixels. `modifiers`: Input.dispatchKeyEvent's bits (Alt 1, Control 2, Meta 4, Shift 8). */
+export type BrowserInput =
+    /** `buttons`: MouseEvent.buttons (left 1, right 2, middle 4) held after the event. */
+    | { kind: "mouse"; type: "move" | "down" | "up"; x: number; y: number; button?: "left" | "middle" | "right"; buttons?: number; clickCount?: number; modifiers?: number }
+    | { kind: "wheel"; x: number; y: number; deltaX: number; deltaY: number; modifiers?: number }
+    | { kind: "key"; type: "down" | "up"; key: string; code: string; modifiers?: number }
+    /** Text as it is (a paste, an input method's result), not keys. */
+    | { kind: "text"; text: string };
+
+/** Who is driving a tab: the agent, the person watching, or neither yet. */
+export type BrowserOwner = "agent" | "human" | "none";
+
+export interface BrowserTabInfo {
+    id: number;
+    title: string;
+    url: string;
+    loading: boolean;
+    owner: BrowserOwner;
+    canGoBack: boolean;
+    canGoForward: boolean;
+    crashed: boolean;
+    /** A confirm or prompt waiting for an answer. */
+    dialog?: { type: string; message: string; defaultPrompt?: string };
+}
+
+/**
+ * Where a session's browser stands. `idle`: nothing started yet (it starts with the first page).
+ * `unavailable`: there's no browser to start, and `error` says how to fix that. `crashed`: it ended unexpectedly;
+ * the next page starts a new one.
+ */
+export interface BrowserState {
+    status: "idle" | "starting" | "ready" | "unavailable" | "crashed";
+    error?: string;
+    tabs: BrowserTabInfo[];
+    active?: number;
+}
+
+/** What the pane's address bar and tab strip can ask for. */
+export type BrowserCommand = "goto" | "back" | "forward" | "reload" | "new_tab" | "switch_tab" | "close_tab";
+
+// ---------------------------------------------------------------------------
 // Events
 
 export type ServerEvent =
