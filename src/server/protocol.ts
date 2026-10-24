@@ -1472,8 +1472,8 @@ export type ServerEvent =
     /** A session's browser changed: its tabs, who drives them, or whether it runs (sent to the windows that have the session open). */
     | { type: "browser.state"; sessionId: string; state: BrowserState }
     /**
-     * A frame of the current tab, for a window watching it (browser.watch), sent when it has drawn the last (browser.ack).
-     * `data`: a JPEG, base64; `width` and `height`: the page's size in CSS pixels, which a click's coordinates are in.
+     * A frame of the current tab, for a window watching it (browser.watch), sent after it acknowledges receipt of the last (browser.ack).
+     * `data`: a JPEG motion frame or PNG still, base64 on the legacy RPC connection; `width` and `height`: the page's size in CSS pixels, which a click's coordinates are in.
      */
     | { type: "browser.frame"; sessionId: string; frameId: string; tab: number; data: string; width: number; height: number }
     /**
@@ -1577,7 +1577,7 @@ export interface Methods {
      */
     "browser.watch": { params: { id: string; width: number; height: number; scale: number }; result: BrowserState };
     "browser.unwatch": { params: { id: string }; result: null };
-    /** The window has drawn the last frame it was sent. */
+    /** The window has received this frame; decoding independently retains only the latest waiting picture. */
     "browser.ack": { params: { id: string; frameId: string }; result: null };
     /** What the person did in the pane; it takes the tab from the agent (a pointer only moving doesn't). */
     "browser.input": { params: { id: string; tab?: number; input: BrowserInput }; result: null };

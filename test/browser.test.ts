@@ -448,6 +448,7 @@ describe.skipIf(!chromePath)("the browser tools, with Chrome", () => {
         expect(frames[0]!.tab).toBe(tab);
         const jpeg = Buffer.from(frames[0]!.data, "base64");
         expect(jpeg.subarray(0, 3).toString("hex")).toBe("ffd8ff");
+        expect(imageSize(jpeg)).toEqual({ width: 1400, height: 1000 });
         // the page follows the pane's size
         expect((await run(BrowserEvalTool, { expression: "[innerWidth, innerHeight]" })).content.replace(/\s/g, "")).toBe("[700,500]");
         // nothing more is sent until the pane has taken this one; then the latest waits for it

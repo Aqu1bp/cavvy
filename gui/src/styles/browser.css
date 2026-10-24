@@ -219,3 +219,20 @@
 }
 .br-view:focus-within { outline: 2px solid var(--accent); outline-offset: -2px; }
 .br-blank .blank { max-width: 32ch; padding: 24px; text-align: center; }
+
+.br-connection {
+    position: absolute;
+    left: 50%;
+    top: 16px;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--pill);
+    background: var(--sheet-2);
+    color: var(--fg-2);
+    pointer-events: none;
+    white-space: nowrap;
+}

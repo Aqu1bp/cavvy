@@ -7,21 +7,24 @@ import { ArrowLeft, ArrowRight, Globe, Plus, RotateCw, X } from "lucide-solid";
 import type { BrowserCommand, BrowserInput } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc } from "../state/app";
-import { adoptBrowserState, browserState, loadBrowserState, onBrowserFrame, setBrowserShown, type BrowserFrame } from "../state/browser";
+import { adoptBrowserState, browserState, loadBrowserState, setBrowserShown, type BrowserFrame } from "../state/browser";
 import { settingsTab } from "../state/ui";
 import { addressOf, currentTab, isPasteKey, isReleaseKey, keyInput, mouseInput, pagePoint, paneSize, paneStatus, placeFrame, resized, tabLabel, wheelInput, wheelPixels, type Point, type Size } from "../lib/browser";
+import type { BrowserImageFrame } from "@shared/browser-wire";
 import { Spinner } from "./ui/bits";
 
 /** The pane's size is sent this long after it stops changing (dragging the panel's edge resizes it every frame). */
 const RESIZE_MS = 120;
 
-function decode(base64: string): Promise<ImageBitmap> {
-    const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
-    return createImageBitmap(new Blob([bytes], { type: "image/jpeg" }));
+function decode(data: string | Uint8Array<ArrayBuffer>): Promise<ImageBitmap> {
+    const bytes = typeof data === "string" ? Uint8Array.from(atob(data), (c) => c.charCodeAt(0)) : data;
+    return createImageBitmap(new Blob([bytes]));
 }
 
 export function BrowserPane(p: { handle: SessionHandle }) {
     const id = () => p.handle.id;
+    const stream = rpc.browserStream();
+    const [connected, setConnected] = createSignal(stream.state === "open");
     const state = () => browserState(id());
     const tab = () => currentTab(state());
     const status = () => paneStatus(state());
@@ -41,6 +44,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     let frame: Size | undefined;
     let sized: Size | undefined;
     const [draft, setDraft] = createSignal<string>();
+    const [hasPicture, setHasPicture] = createSignal(false);
     const [dialogText, setDialogText] = createSignal("");
     const [visible, setVisible] = createSignal(document.visibilityState === "visible");
 
@@ -69,12 +73,13 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         draw();
     };
 
-    const onFrame = async (f: BrowserFrame) => {
-        const epoch = generation;
-        const sessionId = id();
+    type Picture = BrowserFrame | BrowserImageFrame;
+    let decoding = false;
+    let waiting: { picture: Picture; epoch: number } | undefined;
+    const paint = async (f: Picture, epoch: number) => {
+        decoding = true;
         try {
-            // A frame of a tab that isn't the one shown any more (the agent moved on) is only acknowledged.
-            if (!disposed && watching() && f.tab === tab()?.id) {
+            if (!disposed && epoch === generation && watching() && f.tab === tab()?.id) {
                 const next = await decode(f.data);
                 if (disposed || epoch !== generation || !watching() || f.tab !== tab()?.id) {
                     next.close();
@@ -82,31 +87,47 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                 }
                 bitmap?.close();
                 bitmap = next;
+                setHasPicture(true);
                 frame = { width: f.width, height: f.height };
                 draw();
             }
         } catch {
-            // an undecodable frame: the next one will do
+            // An undecodable picture does not stall subsequent frames.
         } finally {
-            // The server sends the next frame once this one is drawn, so a slow window is given fewer, never a backlog.
-            void rpc.call("browser.ack", { id: sessionId, frameId: f.frameId }).catch(() => undefined);
+            decoding = false;
+            const next = waiting;
+            waiting = undefined;
+            if (next && !disposed) void paint(next.picture, next.epoch);
         }
+    };
+    const onFrame = (f: Picture) => {
+        // Receipt releases transport backpressure. Decoding has its own bounded, latest-frame queue.
+        stream.notify("browser.ack", { id: f.sessionId, frameId: f.frameId });
+        if (disposed || f.sessionId !== id()) return;
+        if (decoding) waiting = { picture: f, epoch: generation };
+        else void paint(f, generation);
     };
 
     // -----------------------------------------------------------------------
     // Watching: the server sizes the page to the pane and streams it while the pane shows.
 
-    const watching = () => visible() && !settingsTab() && app.conn === "open";
+    const watching = () => visible() && !settingsTab() && app.conn === "open" && connected();
     let resizeTimer: ReturnType<typeof setTimeout> | undefined;
     const watch = () => {
         const size = paneSize(boxSize());
         if (size.width < 1 || size.height < 1) return;
         sized = size;
-        void rpc.call("browser.watch", { id: id(), ...size, scale: window.devicePixelRatio || 1 }).then((s) => adoptBrowserState(id(), s), reportError);
+        void stream.call("browser.watch", { id: id(), ...size, scale: window.devicePixelRatio || 1 }).then((s) => adoptBrowserState(id(), s), reportError);
     };
 
     onMount(() => {
-        const unframe = onBrowserFrame(id(), (f) => void onFrame(f));
+        const unframe = stream.onFrame(onFrame);
+        const unevent = stream.onEvent(e => {
+            if (e.type === "browser.frame") onFrame(e);
+            else if (e.type === "browser.state" && e.sessionId === id()) adoptBrowserState(id(), e.state);
+        });
+        const unstate = stream.onState(s => setConnected(s === "open"));
+        void stream.connect();
         setBrowserShown(id(), true);
         void loadBrowserState(id()).catch(() => undefined);
         const observer = new ResizeObserver(() => {
@@ -122,6 +143,8 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         fit();
         stop = () => {
             unframe();
+            unevent();
+            unstate();
             observer.disconnect();
             document.removeEventListener("visibilitychange", seen);
             window.removeEventListener("blur", cancelInput);
@@ -136,7 +159,9 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         clearTimeout(resizeTimer);
         cancelAnimationFrame(moving);
         setBrowserShown(id(), false);
-        void rpc.call("browser.unwatch", { id: id() }).catch(() => undefined);
+        void stream.call("browser.unwatch", { id: id() }).catch(() => undefined);
+        stream.close();
+        waiting = undefined;
         bitmap?.close();
         bitmap = undefined;
     });
@@ -150,7 +175,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
             } else {
                 generation++;
                 cancelInput();
-                void rpc.call("browser.unwatch", { id: id() }).catch(() => undefined);
+                void stream.call("browser.unwatch", { id: id() }).catch(() => undefined);
             }
         }),
     );
@@ -165,6 +190,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                 bitmap?.close();
                 bitmap = undefined;
                 frame = undefined;
+                setHasPicture(false);
                 draw();
             },
             { defer: true },
@@ -176,7 +202,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
 
     const sendTo = (target: number | undefined, input: BrowserInput) => {
         if (disposed || target === undefined) return;
-        void rpc.call("browser.input", { id: id(), tab: target, input }).catch(() => undefined);
+        stream.notify("browser.input", { id: id(), tab: target, input });
     };
     const send = (input: BrowserInput) => sendTo(tab()?.id, input);
     const cancelInput = () => {
@@ -279,7 +305,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     // -----------------------------------------------------------------------
     // The address bar, the tabs, and handing back
 
-    const command = (c: BrowserCommand, extra: { url?: string; tab?: number } = {}) => void rpc.call("browser.command", { id: id(), command: c, ...extra }).then((s) => adoptBrowserState(id(), s), reportError);
+    const command = (c: BrowserCommand, extra: { url?: string; tab?: number } = {}) => void stream.call("browser.command", { id: id(), command: c, ...extra }).then((s) => adoptBrowserState(id(), s), reportError);
     const go = (e: SubmitEvent) => {
         e.preventDefault();
         const url = draft();
@@ -287,11 +313,11 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         if (url?.trim()) command("goto", { url, tab: tab()?.id });
         keyboard?.focus({ preventScroll: true });
     };
-    const handBack = () => { cancelInput(); void rpc.call("browser.handBack", { id: id(), tab: tab()?.id }).catch(reportError); };
+    const handBack = () => { cancelInput(); void stream.call("browser.handBack", { id: id(), tab: tab()?.id }).catch(reportError); };
     const answer = (accept: boolean) => {
         const text = dialogText();
         setDialogText("");
-        void rpc.call("browser.dialog", { id: id(), accept, ...(tab()?.dialog?.type === "prompt" ? { text } : {}), tab: tab()?.id }).catch(reportError);
+        void stream.call("browser.dialog", { id: id(), accept, ...(tab()?.dialog?.type === "prompt" ? { text } : {}), tab: tab()?.id }).catch(reportError);
     };
 
     return (
@@ -393,6 +419,9 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                         e.currentTarget.value = "";
                     }}
                 />
+                <Show when={tab() && (!connected() || !hasPicture())}>
+                    <div class="br-connection" role="status"><Spinner size={14} />{connected() ? "Loading page…" : "Reconnecting browser…"}</div>
+                </Show>
                 <Show when={!tab()}>
                     <div class="br-blank">
                         <Show

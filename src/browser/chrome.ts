@@ -111,7 +111,9 @@ export interface ChromeArgsOptions {
 export function chromeArgs(o: ChromeArgsOptions): string[] {
     const noSandbox = o.uid === 0 || o.ci === true;
     return [
-        ...(o.headless ? ["--headless=new"] : []),
+        // Headless Chrome otherwise captures a 1x compositor surface even when emulated DPR is 2.
+        // A Retina surface preserves text detail; each viewer caps output to its backing-store size.
+        ...(o.headless ? ["--headless=new", "--force-device-scale-factor=2"] : []),
         "--remote-debugging-port=0",
         `--user-data-dir=${o.profile}`,
         "--no-first-run",

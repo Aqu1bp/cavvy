@@ -17,6 +17,7 @@ const { createDemoProject } = await import("../scripts/demo-project");
 const { startDemoSite } = await import("../scripts/demo-site");
 const { forgetChromeLookup } = await import("../src/browser/chrome");
 const { BrowserNavigateTool } = await import("../src/tools/browser-tools");
+import { decodeBrowserFrame, type BrowserImageFrame } from "../src/server/browser-wire";
 import type { BrowserState, ServerEvent, SessionSnapshot } from "../src/server/protocol";
 
 setDefaultTimeout(60_000);
@@ -267,7 +268,7 @@ describe("over the server's socket", () => {
                 ws.send(JSON.stringify({ id: n, method, params }));
             });
         // without the token, no connection at all
-        const stranger = new WebSocket(`ws://127.0.0.1:${server.port}/ws`, { protocols: ["harness.v1", "auth.wrong"] } as any);
+        const stranger = new WebSocket(`ws://127.0.0.1:${server.port}/browser-stream`, { protocols: ["harness.v1", "auth.wrong"] } as any);
         const refused = await new Promise<boolean>((resolve) => {
             stranger.onopen = () => resolve(false);
             stranger.onerror = () => resolve(true);
@@ -283,6 +284,29 @@ describe("over the server's socket", () => {
             await until(() => events.some((e) => e.type === "browser.frame"), "a frame over the socket");
             const frame = events.find((e) => e.type === "browser.frame");
             expect(frame).toMatchObject({ sessionId: made.state.id, width: 400, height: 300 });
+            const images: BrowserImageFrame[] = [];
+            const stream = new WebSocket(`ws://127.0.0.1:${server.port}/browser-stream`, { protocols: ["harness.v1", "auth.browser-token-0123456789"] } as any);
+            stream.binaryType = "arraybuffer";
+            stream.onmessage = m => { if (m.data instanceof ArrayBuffer) images.push(decodeBrowserFrame(m.data)!); };
+            await new Promise<void>((resolve, reject) => { stream.onopen = () => resolve(); stream.onerror = () => reject(new Error("stream connection failed")); });
+            try {
+                stream.send(JSON.stringify({ id: 1, method: "browser.watch", params: { id: made.state.id, width: 400, height: 300, scale: 1 } }));
+                await until(() => images.length > 0, "binary image on dedicated connection");
+                expect(images[0]).toMatchObject({ sessionId: made.state.id, width: 400, height: 300 });
+                expect(Buffer.from(images[0]!.data)).toEqual(Buffer.from(frame.data, "base64"));
+                const count = images.length;
+                // A forged/mismatched acknowledgement must not release the frame in flight.
+                stream.send(JSON.stringify({ method: "browser.ack", params: { id: made.state.id, frameId: "wrong" } }));
+                await Bun.sleep(100);
+                expect(images.length).toBe(count);
+                stream.send(JSON.stringify({ method: "browser.ack", params: { id: made.state.id, frameId: images[0]!.frameId } }));
+                const closed = new Promise<number>(resolve => { stream.onclose = e => resolve(e.code); });
+                stream.send(JSON.stringify({ id: 2, method: "session.list", params: {} }));
+                expect(await closed).toBe(1008);
+                // A failed browser connection does not disconnect the session's RPC socket.
+                expect((await rpc("browser.state", { id: made.state.id })).result.status).toBe("ready");
+            } finally { stream.close(); }
+
         } finally {
             ws.close();
             await server.stop();

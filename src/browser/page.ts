@@ -144,6 +144,10 @@ export class Page {
     private unlisten: (() => void)[] = [];
     private lock: Promise<unknown> = Promise.resolve();
     private streaming = false;
+    private streamEpoch = 0;
+    private lastStreamFrame?: Frame;
+    private stillTimer?: ReturnType<typeof setTimeout>;
+    private capturingStill = false;
     private approvedFile?: string;
     private evaluation = 0;
 
@@ -361,7 +365,12 @@ export class Page {
         this.on("Page.screencastFrame", (p: { data: string; sessionId: number; metadata: { deviceWidth: number; deviceHeight: number } }) => {
             // Acknowledged at once: Chrome sends the next frame when the page changes; the pane's own pace is the feed's (feed.ts).
             this.send("Page.screencastFrameAck", { sessionId: p.sessionId }).catch(() => undefined);
-            if (this.streaming) this.o.hooks.frame(this, { data: p.data, width: p.metadata.deviceWidth, height: p.metadata.deviceHeight });
+            if (this.streaming) this.lastStreamFrame = { data: p.data, width: p.metadata.deviceWidth, height: p.metadata.deviceHeight };
+            if (this.streaming && !this.capturingStill) {
+                // The frame carries its own CSS dimensions, including a frame already in flight during resize.
+                this.o.hooks.frame(this, this.lastStreamFrame!);
+                this.scheduleStill();
+            }
         });
     }
 
@@ -595,12 +604,40 @@ export class Page {
     /** Frames of the page go to the hooks, at most `width` by `height` device pixels. */
     async startScreencast(width: number, height: number) {
         this.streaming = true;
-        await this.send("Page.startScreencast", { format: "jpeg", quality: 70, maxWidth: Math.round(width), maxHeight: Math.round(height), everyNthFrame: 1 });
+        this.streamEpoch++;
+        await this.send("Page.startScreencast", { format: "jpeg", quality: 90, maxWidth: Math.round(width), maxHeight: Math.round(height), everyNthFrame: 1 });
+        this.scheduleStill();
+    }
+
+    /** A lossless final picture keeps text crisp and recovers a final repaint dropped by Chromium. */
+    private scheduleStill() {
+        clearTimeout(this.stillTimer);
+        const epoch = this.streamEpoch;
+        this.stillTimer = setTimeout(async () => {
+            if (!this.streaming || this.closed || this.capturingStill || epoch !== this.streamEpoch) return;
+            this.capturingStill = true;
+            const previous = this.lastStreamFrame?.data;
+            try {
+                const { data } = await this.send<{ data: string }>("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+                if (this.streaming && !this.closed && epoch === this.streamEpoch) {
+                    // Capture can itself emit an identical screencast frame. A genuinely changed
+                    // picture during the capture wins; try its lossless still when it settles.
+                    if (this.lastStreamFrame && this.lastStreamFrame.data !== previous) {
+                        this.o.hooks.frame(this, this.lastStreamFrame);
+                        this.scheduleStill();
+                    } else this.o.hooks.frame(this, { data, width: this.viewport.width, height: this.viewport.height });
+                }
+            } catch { /* A closing/crashed page needs no final picture. */ }
+            finally { this.capturingStill = false; }
+        }, 180);
     }
 
     async stopScreencast() {
         if (!this.streaming) return;
         this.streaming = false;
+        this.streamEpoch++;
+        this.lastStreamFrame = undefined;
+        clearTimeout(this.stillTimer);
         await this.send("Page.stopScreencast").catch(() => undefined);
     }
 
@@ -613,6 +650,9 @@ export class Page {
         if (this.closed) return;
         this.closed = true;
         this.streaming = false;
+        this.streamEpoch++;
+        this.lastStreamFrame = undefined;
+        clearTimeout(this.stillTimer);
         for (const off of this.unlisten) off();
         this.unlisten = [];
         this.wake();
