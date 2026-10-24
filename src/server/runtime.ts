@@ -395,7 +395,7 @@ export class Runtime {
         this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore(), wakes: new WakeQueue(), watchers: new WatcherMap(), background: new SessionBackground(session) };
         this.toolState.background!.onChange(() => this.syncBackground());
         // The browser exists from the start, so the window hears of the first page the agent opens (it makes no process until then).
-        this.toolState.browser = new BrowserSession({ root: ws.cwd, settings: () => this.settings(), refuse: (url) => this.checker.urlRefusal(url) });
+        this.toolState.browser = new BrowserSession({ root: ws.cwd, settings: () => this.settings(), refuse: (url, file) => this.checker.urlRefusal(url, file) });
         this.toolState.browser.onChange(() => this.engine.sendBrowser(this.id, this.browser.state()));
         this.toolState.secrets!.onChange(() => this.setState({ secrets: this.toolState.secrets!.names() }));
         this.schedules = new SessionSchedules({

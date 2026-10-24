@@ -11,7 +11,7 @@ import { posix, win32 } from "path";
 import { childEnv } from "../util/env";
 import { expandPath } from "../util/files";
 import { disarmGuard, parentGuard } from "../util/parent-guard";
-import { redact } from "../util/redact";
+import { redact, lineRedactor } from "../util/redact";
 
 export interface ChromeEnvironment {
     platform: NodeJS.Platform;
@@ -216,8 +216,10 @@ export async function launchChrome(o: LaunchOptions): Promise<ChromeProcess> {
     let tail = "";
     void (async () => {
         const decoder = new TextDecoder();
+        const safe = lineRedactor();
         try {
-            for await (const chunk of proc.stderr) tail = (tail + decoder.decode(chunk, { stream: true })).slice(-4000);
+            for await (const chunk of proc.stderr) tail = (tail + safe(decoder.decode(chunk, { stream: true }))).slice(-4000);
+            tail = (tail + safe(decoder.decode() + "\n")).slice(-4000);
         } catch {
             // the process went away
         }

@@ -25,6 +25,7 @@ export function checkUrl(raw: string, root: string): UrlCheck {
     try {
         u = new URL(raw.trim());
     } catch {
+        raw = redact(raw);
         return { ok: false, error: `Invalid URL: ${raw.length > 200 ? `${raw.slice(0, 200)}…` : raw}. Give a full URL, like http://localhost:3000/ or https://example.com/.` };
     }
     switch (u.protocol) {

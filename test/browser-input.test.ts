@@ -9,7 +9,7 @@ import { isolate, tempDir } from "./helpers/isolate";
 const iso = isolate();
 const { fromKeyboardEvent, modifierBits, parseKey } = await import("../src/browser/keys");
 const { TabControl, TAKEN_OVER } = await import("../src/browser/control");
-const { ACK_TIMEOUT_MS, FrameFeed } = await import("../src/browser/feed");
+const { FrameFeed } = await import("../src/browser/feed");
 const { parseInput, takesControl } = await import("../src/browser/interact");
 const { addressToUrl, allowedPage, checkUrl, displayUrl, isLocalHost, navigationTarget } = await import("../src/browser/url-policy");
 
@@ -206,11 +206,11 @@ describe("what the pane may send", () => {
 describe("frames on their way to windows", () => {
     function setup() {
         let now = 0;
-        const feed = new FrameFeed<string>(() => now);
-        const a = { got: [] as string[] };
-        const b = { got: [] as string[] };
-        feed.add(a, (f) => a.got.push(f));
-        feed.add(b, (f) => b.got.push(f));
+        const feed = new FrameFeed<string>();
+        const a = { got: [] as string[], ids: [] as string[] };
+        const b = { got: [] as string[], ids: [] as string[] };
+        feed.add(a, (f, id) => { a.got.push(f); a.ids.push(id); });
+        feed.add(b, (f, id) => { b.got.push(f); b.ids.push(id); });
         return { feed, a, b, tick: (ms: number) => (now += ms) };
     }
 
@@ -220,10 +220,10 @@ describe("frames on their way to windows", () => {
         feed.push("f2");
         feed.push("f3");
         expect(a.got).toEqual(["f1"]);
-        feed.ack(a);
+        feed.ack(a, a.ids.at(-1)!);
         // the newest frame that came while it was busy, not every one: a slow window never builds a backlog
         expect(a.got).toEqual(["f1", "f3"]);
-        feed.ack(a);
+        feed.ack(a, a.ids.at(-1)!);
         expect(a.got).toEqual(["f1", "f3"]);
         feed.push("f4");
         expect(a.got).toEqual(["f1", "f3", "f4"]);
@@ -232,24 +232,48 @@ describe("frames on their way to windows", () => {
     test("each window goes at its own pace", () => {
         const { feed, a, b } = setup();
         feed.push("f1");
-        feed.ack(a);
+        feed.ack(a, a.ids.at(-1)!);
         feed.push("f2");
         feed.push("f3");
         expect(a.got).toEqual(["f1", "f2"]);
         expect(b.got).toEqual(["f1"]);
-        feed.ack(b);
+        feed.ack(b, b.ids.at(-1)!);
         expect(b.got).toEqual(["f1", "f3"]);
     });
 
-    test("a window that never answers is sent frames again after a while", () => {
+    test("a stalled viewer never receives another frame without its matching acknowledgement", () => {
         const { feed, a, tick } = setup();
         feed.push("f1");
-        tick(ACK_TIMEOUT_MS - 1);
+        tick(3000);
         feed.push("f2");
         expect(a.got).toEqual(["f1"]);
         tick(2);
         feed.push("f3");
+        expect(a.got).toEqual(["f1"]);
+        feed.ack(a, "wrong");
+        expect(a.got).toEqual(["f1"]);
+        feed.ack(a, a.ids[0]!);
         expect(a.got).toEqual(["f1", "f3"]);
+        feed.push("f4");
+        feed.ack(a, a.ids[0]!);
+        expect(a.got).toEqual(["f1", "f3"]);
+    });
+
+    test("resizing preserves backpressure and a departed subscription cannot acknowledge its replacement", () => {
+        const { feed, a } = setup();
+        feed.push("old");
+        const oldId = a.ids[0]!;
+        feed.add(a, (f, id) => { a.got.push(f); a.ids.push(id); });
+        feed.push("resized");
+        expect(a.got).toEqual(["old"]);
+        feed.remove(a);
+        feed.add(a, (f, id) => { a.got.push(f); a.ids.push(id); });
+        feed.push("new");
+        feed.push("waiting");
+        feed.ack(a, oldId);
+        expect(a.got).toEqual(["old", "new"]);
+        feed.ack(a, a.ids.at(-1)!);
+        expect(a.got).toEqual(["old", "new", "waiting"]);
     });
 
     test("a window that is gone gets nothing, and an answer from a stranger is ignored", () => {
@@ -260,7 +284,7 @@ describe("frames on their way to windows", () => {
         feed.push("f1");
         expect(a.got).toEqual([]);
         expect(b.got).toEqual(["f1"]);
-        expect(() => feed.ack({})).not.toThrow();
+        expect(() => feed.ack({}, "unknown")).not.toThrow();
         expect(feed.size).toBe(1);
     });
 
@@ -269,7 +293,7 @@ describe("frames on their way to windows", () => {
         feed.push("old");
         feed.push("stale");
         feed.clearWaiting();
-        feed.ack(a);
+        feed.ack(a, a.ids.at(-1)!);
         expect(a.got).toEqual(["old"]);
     });
 });

@@ -547,7 +547,7 @@ export class Agent {
             this.state.lsp ??= new LspManager({ root, settings: o.settings, trusted: () => userTrusts(root) });
             this.state.lsp.attach(o.session.meta.id, (level, message) => this.emit({ type: "notice", level, message }));
             // Its tabs in the project's browser open with its first page, and close with the session (whoever owns the tool state disposes it).
-            this.state.browser ??= new BrowserSession({ root, settings: o.settings, refuse: (url) => o.checker.urlRefusal(url) });
+            this.state.browser ??= new BrowserSession({ root, settings: o.settings, refuse: (url, file) => o.checker.urlRefusal(url, file) });
         }
     }
 

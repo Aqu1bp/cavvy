@@ -1965,14 +1965,22 @@ export class Engine {
             case "browser.watch": {
                 const rt = this.runtime(p.id);
                 // The pane's size, its scale: the page is sized to it.
-                rt.browser.watch(client, (f) => client.send({ type: "browser.frame", sessionId: rt.id, tab: f.tab, data: f.data, width: f.width, height: f.height }), { width: num(p.width, 0), height: num(p.height, 0), scale: num(p.scale, 1) });
+                let shownTab: number | undefined;
+                rt.browser.watch(client, (f, frameId) => {
+                    // The first picture can beat the debounced tab announcement. Publish its tab first.
+                    if (shownTab !== f.tab) {
+                        shownTab = f.tab;
+                        client.send({ type: "browser.state", sessionId: rt.id, state: rt.browser.state() });
+                    }
+                    client.send({ type: "browser.frame", sessionId: rt.id, frameId, tab: f.tab, data: f.data, width: f.width, height: f.height });
+                }, { width: num(p.width, 0), height: num(p.height, 0), scale: num(p.scale, 1) });
                 return rt.browser.state();
             }
             case "browser.unwatch":
                 this.runtimes.get(str(p.id, "id"))?.browser.unwatch(client);
                 return null;
             case "browser.ack":
-                this.runtimes.get(str(p.id, "id"))?.browser.ack(client);
+                this.runtimes.get(str(p.id, "id"))?.browser.ack(client, str(p.frameId, "frameId"));
                 return null;
             case "browser.input":
                 await this.runtime(p.id).browser.input(p.input, typeof p.tab === "number" ? p.tab : undefined);

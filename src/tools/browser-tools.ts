@@ -12,6 +12,7 @@ import { pageReport } from "../browser/report";
 import { BrowserSession } from "../browser/session";
 import { checkUrl, displayUrl } from "../browser/url-policy";
 import type { ServerTool, ServerToolResult } from "../mcp/server";
+import { PermissionChecker } from "../permissions/checker";
 import { redact } from "../util/redact";
 import type { Tool, ToolContext, ToolResult } from "./types";
 
@@ -26,7 +27,9 @@ const NAVIGATIONS = ["goto", "back", "forward", "reload", "new_tab", "close_tab"
 const OBSERVING = new Set<string>(["wait"]);
 
 function browserOf(ctx: ToolContext): BrowserSession {
-    return (ctx.state.browser ??= new BrowserSession({ root: ctx.state.projectRoot, settings: () => ctx.settings }));
+    if (ctx.state.browser) return ctx.state.browser;
+    const checker = new PermissionChecker(() => ctx.settings, ctx.state.projectRoot);
+    return (ctx.state.browser = new BrowserSession({ root: ctx.state.projectRoot, settings: () => ctx.settings, refuse: (url, file) => checker.urlRefusal(url, file) }));
 }
 
 /** A failed browser call as the result the agent reads. */
@@ -62,7 +65,10 @@ function addressOf(url: string, root: string): string {
     return checked.url;
 }
 
-const short = (s: string, n = 60) => (s.length > n ? `${s.slice(0, n)}…` : s);
+const short = (text: string, n = 60) => {
+    const s = redact(text);
+    return s.length > n ? `${s.slice(0, n)}…` : s;
+};
 
 // ---------------------------------------------------------------------------
 
@@ -150,7 +156,7 @@ action: goto (default; needs url), back, forward, reload, new_tab (url optional)
                         done = `Resized the viewport to ${input.width}×${input.height}.`;
                         break;
                     default:
-                        loaded = await page.goto(url!, ctx.signal);
+                        loaded = await page.gotoApproved(url!, ctx.signal);
                         done = `Opened ${displayUrl(url!)}.`;
                 }
                 const note = loaded ? "" : " The page was still loading after 30 seconds; this is what it shows so far.";
@@ -265,7 +271,7 @@ Returns what changed on the page (or the new outline). Refused while the user ha
     },
     async preview(input) {
         const where = input.ref ? ` ${input.ref}` : typeof input.x === "number" ? ` at ${Math.round(input.x)},${Math.round(input.y ?? 0)}` : "";
-        const what = input.action === "type" ? ` ${JSON.stringify(redact(short(input.text ?? "", 200)))}` : input.action === "press" ? ` ${input.key}` : "";
+        const what = input.action === "type" ? ` ${JSON.stringify(short(redact(input.text ?? ""), 200))}` : input.action === "press" ? ` ${input.key}` : "";
         return { summary: `Browser: ${input.action}${where}${what}` };
     },
     run: (input, ctx) =>
@@ -335,7 +341,7 @@ export const BrowserScreenshotTool: Tool<{ tab?: number; fullPage?: boolean; ref
             if (input.ref) acting(b, page, ctx);
             return page.exclusive(async () => {
                 if (input.ref) acting(b, page, ctx);
-                const clip = input.ref ? await boxOf(page, input.ref) : undefined;
+                const clip = input.ref ? await boxOf(page, input.ref, ctx.signal) : undefined;
                 const shot = await page.screenshot({ fullPage: input.fullPage, clip });
                 const what = input.ref ? `element ${input.ref}` : input.fullPage ? "the full page" : "the viewport";
                 return { content: `Screenshot of ${what} of tab [${b.idOf(page)}] (${shot.width}×${shot.height} CSS pixels) at ${displayUrl(page.url)}.`, images: [{ type: "image", mediaType: shot.mediaType, data: shot.data }], display: { summary: `${shot.width}×${shot.height}` } };
@@ -362,7 +368,7 @@ export const BrowserEvalTool: Tool<{ expression: string; tab?: number }> = {
     enabled: ({ settings }) => browserAvailable(settings),
     validate: (input) => (typeof input.expression === "string" && input.expression.trim() ? undefined : "expression is empty"),
     async preview(input) {
-        return { summary: "Run JavaScript in the page", body: redact(input.expression.slice(0, 2000)) };
+        return { summary: "Run JavaScript in the page", body: redact(input.expression).slice(0, 2000) };
     },
     run: (input, ctx) =>
         guarded(ctx, async (b) => {

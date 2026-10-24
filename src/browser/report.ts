@@ -14,7 +14,7 @@ export async function pageHeader(session: BrowserSession, page: Page): Promise<s
     const lines = [`Tab [${id}]${title ? ` ${JSON.stringify(title)}` : ""} ${displayUrl(page.url || "about:blank")} — ${page.loading ? "still loading" : "loaded"}`];
     if (page.documentStatus !== undefined && page.documentStatus >= 400) lines.push(`The page answered HTTP ${page.documentStatus}.`);
     if (page.crashed) lines.push("This tab's page crashed: reload it (BrowserNavigate action=reload).");
-    if (page.dialog) lines.push(`A JavaScript ${page.dialog.type} dialog is waiting: ${JSON.stringify(page.dialog.message.slice(0, 300))}${page.dialog.defaultPrompt ? ` (default ${JSON.stringify(page.dialog.defaultPrompt.slice(0, 100))})` : ""}. Answer it with BrowserAct action=dialog accept=true or false${page.dialog.type === "prompt" ? " (text= is the answer)" : ""}.`);
+    if (page.dialog) lines.push(`A JavaScript ${page.dialog.type} dialog is waiting: ${JSON.stringify(redact(page.dialog.message).slice(0, 300))}${page.dialog.defaultPrompt ? ` (default ${JSON.stringify(redact(page.dialog.defaultPrompt).slice(0, 100))})` : ""}. Answer it with BrowserAct action=dialog accept=true or false${page.dialog.type === "prompt" ? " (text= is the answer)" : ""}.`);
     if (page.control.owner === "human") lines.push("The user has control of this tab: reading works, acting is refused until they hand it back.");
     const errors = page.console.unseenErrors;
     page.console.unseenErrors = 0;

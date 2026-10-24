@@ -3,6 +3,7 @@
 // lets go of it, after a while with nobody using it, or when it dies (the next page starts a new one). Sessions own
 // the tabs they open (session.ts); this owns the process, the connection and the tabs' plumbing.
 
+import { redact } from "../util/redact";
 import { join, resolve } from "path";
 import { projectStateDir } from "../config/paths";
 import { browserSettings, type Settings } from "../config/settings";
@@ -17,9 +18,9 @@ export interface PoolClient {
     /** The size a new tab opens at. */
     viewport(): Viewport;
     /** A page one of its tabs (`opener`) opened (window.open): now one of its tabs, or closed if it has too many. */
-    adopt(page: Page, opener: Page): void;
+    adopt(page: Page, opener: Page): boolean;
     /** Why the permission rules keep a page from being at this address, if they do (a page's own navigations aren't asked about). */
-    refuse(url: string): string | undefined;
+    refuse(url: string, approvedFile?: string): string | undefined;
     /** A tab went away on its own (the page closed itself). */
     closed(page: Page): void;
     /** The browser is gone, with every tab. `crashed`: it wasn't meant to end. */
@@ -83,7 +84,8 @@ export class BrowserPool {
     async openPage(client: PoolClient, owner: Owner): Promise<Page> {
         const cdp = await this.connect();
         this.touch();
-        const { targetId } = await cdp.send<{ targetId: string }>("Target.createTarget", { url: "about:blank" });
+        // Independent windows stay visible when another session activates its page; cookies/profile are still shared.
+        const { targetId } = await cdp.send<{ targetId: string }>("Target.createTarget", { url: "about:blank", newWindow: true });
         const attachment = await this.attachment(targetId);
         try {
             const page = await this.setUp(cdp, attachment, client, owner);
@@ -97,7 +99,7 @@ export class BrowserPool {
     }
 
     private async setUp(cdp: CdpClient, a: Attachment, client: PoolClient, owner: Owner): Promise<Page> {
-        const page = await Page.attach(cdp, a.sessionId, a.info.targetId, { root: this.o.root, viewport: client.viewport(), owner, hooks: client.hooks, refuse: (url) => client.refuse(url) });
+        const page = await Page.attach(cdp, a.sessionId, a.info.targetId, { root: this.o.root, viewport: client.viewport(), owner, hooks: client.hooks, refuse: (url, approvedFile) => client.refuse(url, approvedFile) });
         this.pages.set(a.info.targetId, { page, client });
         return page;
     }
@@ -207,7 +209,7 @@ export class BrowserPool {
             gone.client.closed(gone.page);
         });
         cdp.on("Browser.downloadWillBegin", (p: { frameId: string; url: string; suggestedFilename?: string }) => {
-            this.pages.get(p.frameId)?.page.console.add("download", `A download was blocked: ${p.suggestedFilename || p.url.slice(0, 200)}. Downloads aren't saved.`);
+            this.pages.get(p.frameId)?.page.console.add("download", `A download was blocked: ${redact(p.suggestedFilename || p.url).slice(0, 200)}. Downloads aren't saved.`);
         });
     }
 
@@ -215,8 +217,7 @@ export class BrowserPool {
     private async adopt(cdp: CdpClient, a: Attachment, opener: { page: Page; client: PoolClient }) {
         try {
             const page = await this.setUp(cdp, a, opener.client, opener.page.control.owner);
-            await cdp.send("Runtime.runIfWaitingForDebugger", {}, a.sessionId);
-            opener.client.adopt(page, opener.page);
+            if (opener.client.adopt(page, opener.page)) await cdp.send("Runtime.runIfWaitingForDebugger", {}, a.sessionId);
         } catch {
             this.pages.delete(a.info.targetId);
             await cdp.send("Target.closeTarget", { targetId: a.info.targetId }).catch(() => undefined);

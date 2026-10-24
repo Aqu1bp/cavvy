@@ -200,13 +200,13 @@ for (const browser of browsers) {
             await rt.browser.page().then((page: any) => page.evaluate("document.body.style.background = 'teal'"));
             await Bun.sleep(300);
             expect(frames(me).length).toBe(sent);
-            await call("browser.ack", { id });
+            await call("browser.ack", { id, frameId: frames(me).at(-1)!.frameId });
             await until(() => frames(me).length > sent, "the frame that waited");
             // another window is sent nothing it didn't ask for
             expect(frames(other)).toEqual([]);
 
             // a new size
-            await call("browser.ack", { id });
+            await call("browser.ack", { id, frameId: frames(me).at(-1)!.frameId });
             await call("browser.watch", { id, width: 500, height: 300, scale: 1 });
             await until(() => frames(me).at(-1)!.width === 500, "a frame at the new size");
 
@@ -228,7 +228,7 @@ for (const browser of browsers) {
             await until(() => states(me).at(-1)!.state.tabs[0]!.url === `${site.url}/`, "the page before");
 
             // the window going away stops the stream; the session closing ends the browser
-            await call("browser.ack", { id });
+            await call("browser.ack", { id, frameId: frames(me).at(-1)!.frameId });
             engine.dropClient(me);
             await Bun.sleep(100);
             const after = frames(me).length;

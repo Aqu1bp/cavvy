@@ -205,7 +205,13 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
             open(ws: ServerWebSocket<Conn>) {
                 const c = ws.data.client;
                 c.send = (ev: ServerEvent) => {
-                    if (ws.readyState === 1) ws.send(JSON.stringify({ event: ev } satisfies ServerMessage, wireReplacer));
+                    if (ws.readyState !== 1) return;
+                    // A stalled transport is disconnected, never allowed to queue megabytes of pictures.
+                    if (ev.type === "browser.frame" && ws.getBufferedAmount() > 1024 * 1024) {
+                        ws.close(1013, "Browser viewer is too slow; reconnect");
+                        return;
+                    }
+                    ws.send(JSON.stringify({ event: ev } satisfies ServerMessage, wireReplacer));
                 };
                 engine.clients.add(c);
             },

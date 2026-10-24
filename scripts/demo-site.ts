@@ -25,7 +25,7 @@ const HOME = PAGE(
 <button class="quiet" onclick="document.getElementById('out').textContent='confirmed: '+confirm('Send a test notification?')">Send test</button>
 <button class="quiet" onclick="console.error('Deploy hook failed');fetch('/missing.json').catch(function(){})">Check deploy hook</button>
 <p id="out" role="status"></p></div>
-<form class="card" onsubmit="event.preventDefault();document.getElementById('found').textContent='No incidents matching \\"'+document.getElementById('q').value+'\\"'">
+<form class="card" onsubmit="event.preventDefault();document.getElementById('found').textContent='No incidents matching &quot;'+document.getElementById('q').value+'&quot;'">
 <label for="q">Search incidents</label><br><input id="q" placeholder="e.g. billing"> <button type="submit">Search</button><p id="found"></p></form>
 <div class="tall"></div>`,
 );

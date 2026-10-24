@@ -47,9 +47,10 @@ function entryOf(page: Page, ref: string): RefEntry {
 }
 
 /** Scrolls an element into view and says its box on the screen (CSS pixels of the viewport). */
-export async function boxOf(page: Page, ref: string): Promise<{ x: number; y: number; width: number; height: number }> {
+export async function boxOf(page: Page, ref: string, signal?: AbortSignal): Promise<{ x: number; y: number; width: number; height: number }> {
     const entry = entryOf(page, ref);
     try {
+        page.actable(signal);
         await page.send("DOM.scrollIntoViewIfNeeded", { backendNodeId: entry.backendNodeId });
         const { model } = await page.send<{ model: { border: number[] } }>("DOM.getBoxModel", { backendNodeId: entry.backendNodeId });
         const xs = [0, 2, 4, 6].map((i) => model.border[i]!);
@@ -69,11 +70,12 @@ const FRAMES = "new Promise((resolve) => { requestAnimationFrame(() => requestAn
  * Scrolls an element into view and says where its middle is. A page that is scrolling (a smooth scroll the wheel started)
  * or animating moves the element as it goes: the middle is taken once it is where it was a frame ago.
  */
-async function locate(page: Page, ref: string): Promise<{ point: Point; entry: RefEntry }> {
+async function locate(page: Page, ref: string, signal?: AbortSignal): Promise<{ point: Point; entry: RefEntry }> {
     const entry = entryOf(page, ref);
     try {
         let point: Point | undefined;
         for (let tries = 0; tries < STILL_TRIES; tries++) {
+            page.actable(signal);
             await page.send("DOM.scrollIntoViewIfNeeded", { backendNodeId: entry.backendNodeId });
             const { model } = await page.send<{ model: { content: number[] } }>("DOM.getBoxModel", { backendNodeId: entry.backendNodeId });
             const q = model.content;
@@ -93,9 +95,9 @@ function clampPoint(page: Page, p: Point): Point {
 }
 
 /** Where a target is: the element's middle, or the coordinates given. */
-async function where(page: Page, t: Target): Promise<{ point: Point; what: string }> {
+async function where(page: Page, t: Target, signal?: AbortSignal): Promise<{ point: Point; what: string }> {
     if (t.ref) {
-        const { point, entry } = await locate(page, t.ref);
+        const { point, entry } = await locate(page, t.ref, signal);
         return { point, what: describe(entry, t.ref) };
     }
     if (typeof t.x !== "number" || typeof t.y !== "number") throw new BrowserError("Say where: a ref from a snapshot, or both x and y.");
@@ -121,7 +123,7 @@ async function afterInput(page: Page, signal?: AbortSignal) {
 
 export async function click(page: Page, t: Target, o: { count?: 1 | 2; button?: MouseButton } = {}, signal?: AbortSignal): Promise<string> {
     page.actable(signal);
-    const { point, what } = await where(page, t);
+    const { point, what } = await where(page, t, signal);
     const button = o.button ?? "left";
     const agent = { signal };
     await mouse(page, "mouseMoved", point, {}, agent);
@@ -135,7 +137,7 @@ export async function click(page: Page, t: Target, o: { count?: 1 | 2; button?: 
 
 export async function hover(page: Page, t: Target, signal?: AbortSignal): Promise<string> {
     page.actable(signal);
-    const { point, what } = await where(page, t);
+    const { point, what } = await where(page, t, signal);
     await mouse(page, "mouseMoved", point, {}, { signal });
     await afterInput(page, signal);
     return `Hovered ${what}`;
@@ -158,7 +160,7 @@ const SCROLLED = `new Promise((resolve) => {
 
 export async function scroll(page: Page, t: Target, delta: { x?: number; y?: number }, signal?: AbortSignal): Promise<string> {
     page.actable(signal);
-    const at = t.ref || typeof t.x === "number" ? await where(page, t) : { point: { x: page.viewport.width / 2, y: page.viewport.height / 2 }, what: "the page" };
+    const at = t.ref || typeof t.x === "number" ? await where(page, t, signal) : { point: { x: page.viewport.width / 2, y: page.viewport.height / 2 }, what: "the page" };
     const deltaX = delta.x ?? 0;
     const deltaY = delta.y ?? (delta.x === undefined ? 600 : 0);
     await mouse(page, "mouseWheel", at.point, { deltaX, deltaY }, { signal });
@@ -206,11 +208,13 @@ const OBJECTS = "harness-act";
 const releaseObjects = (page: Page) => page.send("Runtime.releaseObjectGroup", { objectGroup: OBJECTS }).catch(() => undefined);
 
 /** Makes the element at hand the active one: by ref (focused, or clicked when it can't be), else whatever has focus now. */
-async function focused(page: Page, ref: string | undefined): Promise<{ objectId: string; what: string }> {
+async function focused(page: Page, ref: string | undefined, signal?: AbortSignal): Promise<{ objectId: string; what: string }> {
     if (ref) {
         const entry = entryOf(page, ref);
         try {
+            page.actable(signal);
             await page.send("DOM.scrollIntoViewIfNeeded", { backendNodeId: entry.backendNodeId });
+            page.actable(signal);
             await page.send("DOM.focus", { backendNodeId: entry.backendNodeId });
             const { object } = await page.send<{ object: { objectId: string } }>("DOM.resolveNode", { backendNodeId: entry.backendNodeId, objectGroup: OBJECTS });
             return { objectId: object.objectId, what: describe(entry, ref) };
@@ -245,7 +249,7 @@ export async function type(page: Page, o: { ref?: string; text: string; clear?: 
     page.actable(signal);
     if (o.text.length > MAX_TEXT) throw new BrowserError(`That text is ${o.text.length} characters; type at most ${MAX_TEXT} at a time.`);
     try {
-        const target = await focused(page, o.ref);
+        const target = await focused(page, o.ref, signal);
         if (o.clear) {
             page.actable(signal);
             const r = await page.send<{ result: { value?: boolean } }>("Runtime.callFunctionOn", { objectId: target.objectId, functionDeclaration: CLEAR, returnByValue: true });
@@ -280,6 +284,7 @@ export async function select(page: Page, ref: string, value: string, signal?: Ab
     try {
         let objectId: string;
         try {
+            page.actable(signal);
             await page.send("DOM.scrollIntoViewIfNeeded", { backendNodeId: entry.backendNodeId });
             objectId = (await page.send<{ object: { objectId: string } }>("DOM.resolveNode", { backendNodeId: entry.backendNodeId, objectGroup: OBJECTS })).object.objectId;
         } catch (e) {
@@ -379,7 +384,7 @@ export function parseInput(raw: unknown): BrowserInput | undefined {
 }
 
 /** Whether an input takes the tab from the agent: moving the pointer over the pane doesn't. */
-export const takesControl = (e: BrowserInput) => !(e.kind === "mouse" && e.type === "move" && !e.buttons);
+export const takesControl = (e: BrowserInput) => e.kind === "mouse" ? e.type === "down" || (e.type === "move" && !!e.buttons) : e.kind === "key" ? e.type === "down" : true;
 
 /** Forwards what a person did in the pane to the page. */
 export async function forward(page: Page, e: BrowserInput): Promise<void> {

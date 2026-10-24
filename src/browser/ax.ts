@@ -2,6 +2,7 @@
 // of what a person would see and use, each interactive or named element with a ref (refs.ts) to act on it by.
 // Pure: the tree and what the DOM says of it (links, password fields) go in, text comes out.
 
+import { redact } from "../util/redact";
 import { RefTable, type RefEntry } from "./refs";
 
 export interface AxValue {
@@ -66,7 +67,7 @@ const CHECKABLE = new Set(["checkbox", "radio", "switch", "menuitemcheckbox", "m
 
 const text = (v: AxValue | undefined): string => (typeof v?.value === "string" ? v.value : typeof v?.value === "number" ? String(v.value) : "");
 const tidy = (s: string, max: number) => {
-    const t = s.replace(/\s+/g, " ").trim();
+    const t = redact(s).replace(/\s+/g, " ").trim();
     return t.length > max ? `${t.slice(0, max)}…` : t;
 };
 const quote = (s: string) => JSON.stringify(s);
@@ -108,10 +109,10 @@ function shownHref(raw: string, base: string | undefined): string {
     try {
         const u = new URL(raw, base);
         const here = base ? new URL(base) : undefined;
-        const shown = here && u.origin === here.origin ? `${u.pathname}${u.search}${u.hash}` : u.href;
+        const shown = redact(here && u.origin === here.origin ? `${u.pathname}${u.search}${u.hash}` : u.href);
         return shown.length > MAX_HREF ? `${shown.slice(0, MAX_HREF)}…` : shown;
     } catch {
-        return raw.slice(0, MAX_HREF);
+        return redact(raw).slice(0, MAX_HREF);
     }
 }
 

@@ -431,14 +431,14 @@ describe.skipIf(!chromePath)("the browser tools, with Chrome", () => {
 
     test("frames of the current tab stream to a watching pane one at a time, at its size, and stop when it leaves", async () => {
         const { tab } = await openMain();
-        const frames: { width: number; height: number; data: string; tab: number }[] = [];
+        const frames: { width: number; height: number; data: string; tab: number; frameId: string }[] = [];
         const key = {};
         let acking = false;
         session.watch(
             key,
-            (f) => {
-                frames.push(f);
-                if (acking) queueMicrotask(() => session.ack(key));
+            (f, frameId) => {
+                frames.push({ ...f, frameId });
+                if (acking) queueMicrotask(() => session.ack(key, frameId));
             },
             { width: 700, height: 500, scale: 2 },
         );
@@ -455,14 +455,14 @@ describe.skipIf(!chromePath)("the browser tools, with Chrome", () => {
         await run(BrowserEvalTool, { expression: "document.body.style.background = 'red'" });
         await Bun.sleep(300);
         expect(frames.length).toBe(before);
-        session.ack(key);
+        session.ack(key, frames.at(-1)!.frameId);
         await until(() => frames.length > before, "the frame that waited");
         // a screenshot is the same size whatever the pane's scale
         const shot = await run(BrowserScreenshotTool, {});
         expect(imageSize(Buffer.from(shot.images[0].data, "base64"))).toEqual({ width: 700, height: 500 });
         // resizing the pane resizes the page
         acking = true;
-        session.ack(key);
+        session.ack(key, frames.at(-1)!.frameId);
         session.resize({ width: 640, height: 400, scale: 1 });
         await until(() => frames.at(-1)!.width === 640, "a frame at the new size");
         session.unwatch(key);
@@ -513,7 +513,7 @@ describe.skipIf(!chromePath)("the browser's life", () => {
             expect(mine.tabCount).toBe(0);
             const gone = await mine.page(1).catch((e: Error) => e);
             expect((gone as Error).message).toContain("closed after sitting idle");
-            await mine.page();
+            await mine.page(undefined, { open: true });
             expect(mine.state().status).toBe("ready");
             expect(alive((mine as any).pool.pid)).toBe(true);
         } finally {

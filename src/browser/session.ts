@@ -3,6 +3,7 @@
 // as a stream of frames and sends a person's clicks and keys back. It needs no GUI: the TUI and headless runs use
 // it as the tools do, and the server only subscribes to what it announces.
 
+import { redact } from "../util/redact";
 import type { BrowserInput, BrowserState, BrowserTabInfo } from "../server/protocol";
 import { browserSettings, type Settings } from "../config/settings";
 import { cachedChrome } from "./chrome";
@@ -28,7 +29,7 @@ export interface SessionOptions {
     root: string;
     settings: () => Settings;
     /** Why the permission rules (deny rules) keep a page from being at this address, if they do. */
-    refuse?: (url: string) => string | undefined;
+    refuse?: (url: string, approvedFile?: string) => string | undefined;
     /** Tests: shorter idle and startup times. */
     pool?: Pick<PoolOptions, "idleMs" | "startupMs">;
 }
@@ -110,7 +111,7 @@ export class BrowserSession implements PoolClient {
     }
 
     /** A window starts (or resizes) watching the current tab: `send` gets its frames, one at a time as it acks them. */
-    watch(key: object, send: (frame: TabFrame) => void, size: { width: number; height: number; scale: number }) {
+    watch(key: object, send: (frame: TabFrame, frameId: string) => void, size: { width: number; height: number; scale: number }) {
         this.feed.add(key, send);
         this.resize(size);
     }
@@ -129,8 +130,8 @@ export class BrowserSession implements PoolClient {
         this.syncStream(true);
     }
 
-    ack(key: object) {
-        this.feed.ack(key);
+    ack(key: object, frameId: string) {
+        this.feed.ack(key, frameId);
     }
 
     watching(): boolean {
@@ -191,22 +192,23 @@ export class BrowserSession implements PoolClient {
         return this.view ?? AGENT_VIEWPORT;
     }
 
-    refuse(url: string): string | undefined {
-        return this.o.refuse?.(url);
+    refuse(url: string, approvedFile?: string): string | undefined {
+        return this.o.refuse?.(url, approvedFile);
     }
 
     /** A page a tab opened is a tab of the session; the current one stays where it is (the agent's next call is about the page it was on). */
-    adopt(page: Page, opener: Page) {
+    adopt(page: Page, opener: Page): boolean {
         // Past the limit it is closed: popups are no way round it.
         if (this.tabs.size + this.opening >= MAX_TABS) {
             opener.console.add("error", `A page this one opened was closed: this session already has ${MAX_TABS} tabs.`);
             void this.pool?.closePage(page);
-            return;
+            return false;
         }
         this.add(page);
         // The new page opened in front of the one the agent is working in.
         const current = this.tabs.get(this.active ?? -1);
         if (current) void this.pool?.activate(current);
+        return true;
     }
 
     closed(page: Page) {
@@ -369,6 +371,7 @@ export class BrowserSession implements PoolClient {
         const input = parseInput(raw);
         const page = this.tabs.get(tab ?? this.active ?? -1);
         if (!input || !page || page.closed) return;
+        if ((input.kind === "key" || input.kind === "mouse") && input.type === "up" && page.control.owner !== "human") return;
         if (takesControl(input)) this.taken(page);
         this.pool?.touch();
         try {
@@ -409,11 +412,11 @@ export class BrowserSession implements PoolClient {
 
     private async humanGoto(page: Page, text: string) {
         const url = addressToUrl(text);
-        if (!url) throw new BrowserError(`"${text.slice(0, 100)}" isn't an address. Type a URL like localhost:3000 or https://example.com.`);
+        if (!url) throw new BrowserError(`"${redact(text).slice(0, 100)}" isn't an address. Type a URL like localhost:3000 or https://example.com.`);
         const checked = checkUrl(url, this.o.root);
         if (!checked.ok) throw new BrowserError(checked.error);
         const refused = this.refuse(checked.url);
-        if (refused) throw new BrowserError(`${checked.url.slice(0, 100)} can't be opened: ${refused}`);
+        if (refused) throw new BrowserError(`${redact(checked.url).slice(0, 100)} can't be opened: ${refused}`);
         this.taken(page);
         await this.run(() => page.goto(checked.url));
     }

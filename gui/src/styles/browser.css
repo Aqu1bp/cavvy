@@ -16,7 +16,7 @@
     display: flex;
 }
 
-.br {
+.browser-pane {
     display: flex;
     flex-direction: column;
     flex: 1;
@@ -204,3 +204,18 @@
     flex: none;
     background: var(--accent);
 }
+
+/* A real editable focus target lets the OS deliver IME and dead-key compositions. */
+.br-keyboard {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    border: 0;
+    opacity: 0;
+    resize: none;
+}
+.br-view:focus-within { outline: 2px solid var(--accent); outline-offset: -2px; }
+.br-blank .blank { max-width: 32ch; padding: 24px; text-align: center; }

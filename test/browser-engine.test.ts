@@ -478,6 +478,77 @@ describe("a session's browser", () => {
         expect((await fake.sent("Input.dispatchMouseEvent")).map((c) => c.params.type)).toEqual(["mouseMoved"]);
     });
 
+    test("takeover or cancellation between element steps prevents focus and repeated scrolling", async () => {
+        for (const cancelled of [false, true]) for (const action of ["type", "click"] as const) {
+            const { session, nav } = open();
+            await nav({ url: "http://localhost:4000/" });
+            const page = await session.page();
+            const { type, click } = await import("../src/browser/interact");
+            const abort = new AbortController();
+            const original = page.send.bind(page);
+            const effects: string[] = [];
+            page.send = async (method: string, params = {}) => {
+                if (method === "DOM.focus" || method === "DOM.scrollIntoViewIfNeeded") effects.push(method);
+                const result = await original(method, params);
+                if (method === "DOM.scrollIntoViewIfNeeded") {
+                    if (cancelled) abort.abort(); else page.control.humanInput();
+                }
+                return result;
+            };
+            const work = action === "type" ? type(page, { ref: "e6", text: "x" }, abort.signal) : click(page, { ref: "e5" }, {}, abort.signal);
+            await expect(work).rejects.toThrow(cancelled ? "Interrupted" : "taken control");
+            expect(effects).toEqual(["DOM.scrollIntoViewIfNeeded"]);
+        }
+    });
+
+    test("history navigation rechecks ownership after reading history", async () => {
+        const { session, nav } = open();
+        await nav({ url: "http://localhost:4000/" });
+        const page = await session.page();
+        const effects: string[] = [];
+        const original = page.send.bind(page);
+        page.send = async (method: string, params = {}) => {
+            if (method === "Page.getNavigationHistory") {
+                page.control.humanInput();
+                return { currentIndex: 1, entries: [{ id: 1 }, { id: 2 }] } as any;
+            }
+            effects.push(method);
+            return original(method, params);
+        };
+        await expect(page.go(-1, new AbortController().signal)).rejects.toThrow("taken control");
+        expect(effects).not.toContain("Page.navigateToHistoryEntry");
+    });
+
+    test("cancelled evaluations release late objects in their own group and console handles are released", async () => {
+        const { session, nav } = open();
+        await nav({ url: "http://localhost:4000/" });
+        const page = await session.page();
+        const fake = await fakeChromeAt(profile);
+        const original = page.send.bind(page);
+        let finish!: (v: any) => void;
+        let group = "";
+        const released: string[] = [];
+        page.send = (method: string, params: any = {}) => {
+            if (method === "Runtime.evaluate" && params.expression === "late-object") {
+                group = params.objectGroup;
+                return new Promise(r => { finish = r; });
+            }
+            if (method === "Runtime.releaseObjectGroup") released.push(params.objectGroup);
+            return original(method, params);
+        };
+        const abort = new AbortController();
+        const result = page.evaluate("late-object", abort.signal);
+        abort.abort();
+        await expect(result).rejects.toThrow("Interrupted");
+        expect(released.filter(g => g === group)).toHaveLength(1);
+        finish({ result: { type: "object", objectId: "late" } });
+        await until(() => released.filter(g => g === group).length === 2, "late object release");
+        await page.evaluate("42");
+        expect(released.at(-1)).not.toBe(group);
+        await fake.emit("Runtime.consoleAPICalled", { type: "log", args: [{ type: "object", description: "Object", objectId: "console-handle" }] }, page.sessionId);
+        await until(async () => (await fake.sent("Runtime.releaseObject")).some(c => c.params.objectId === "console-handle"), "console handle release");
+    });
+
     test("an address bar opens a tab as the user's own, and its address is checked like any other", async () => {
         const { session } = open();
         await session.command({ command: "new_tab", url: "localhost:4000/app" });

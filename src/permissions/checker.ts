@@ -187,9 +187,11 @@ export class PermissionChecker {
 
     /**
      * Why a page may not go to this address by itself (a redirect, a link, a script, a popup), if it may not: a deny rule
-     * for its host, or for the file it names. Asks and allows don't come into it: the page's own navigations aren't asked about.
+     * for its host, or a file read restriction. Only the exact file of an authorized navigation may bypass asks and sensitivity.
      */
-    urlRefusal(url: string): string | undefined {
+    urlRefusal(url: string, approvedFile?: string): string | undefined {
+        const denied = findMatch(this.settings().permissions?.deny ?? [], { toolName: "BrowserNavigate", url }, this.root, "deny");
+        if (denied) return `Denied by permission rule ${denied}`;
         const file = fileUrlPath(url);
         if (file !== undefined) {
             let dir = false;
@@ -198,11 +200,15 @@ export class PermissionChecker {
             } catch {
                 // not there: the browser says so
             }
-            const why = this.userReadRefusal(file, { sensitive: true, dir });
-            return why && `${why[0]!.toUpperCase()}${why.slice(1)}`;
+            const approved = approvedFile !== undefined && canonical(file) === approvedFile;
+            const why = this.userReadRefusal(file, { sensitive: !approved, dir });
+            if (why) return `${why[0]!.toUpperCase()}${why.slice(1)}`;
+            const target = { toolName: "Read", path: file };
+            const ask = this.settings().permissions?.ask ?? [];
+            const rule = findMatch(ask, target, this.root, "deny") ?? findMatch(ask, { ...target, path: canonical(file) }, this.root, "deny");
+            return rule && !approved ? `Requires approval by permission rule ${rule}. Request this file explicitly with BrowserNavigate.` : undefined;
         }
-        const rule = findMatch(this.settings().permissions?.deny ?? [], { toolName: "BrowserNavigate", url }, this.root, "deny");
-        return rule ? `Denied by permission rule ${rule}` : undefined;
+        return undefined;
     }
 
     /** A new, cleared, resumed or switched-to session: nothing approved in another one carries over. */

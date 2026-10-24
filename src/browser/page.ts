@@ -2,6 +2,8 @@
 // A Page is attached to a browser target through the shared CDP connection (cdp.ts). Acting on a page by ref or
 // coordinates is in interact.ts; who may act on it, in control.ts.
 
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { ImagePart } from "../providers/types";
 import { redact } from "../util/redact";
 import { domFacts, outlineOf, SNAPSHOT_CHARS, type AxNode } from "./ax";
@@ -75,6 +77,7 @@ const SERIALIZE = `function () {
 const LEVELS: Record<string, ConsoleLevel> = { log: "log", info: "info", debug: "debug", verbose: "debug", warning: "warn", warn: "warn", error: "error", assert: "error", trace: "debug" };
 
 interface RemoteObject {
+    objectId?: string;
     type: string;
     subtype?: string;
     value?: unknown;
@@ -109,7 +112,7 @@ export interface PageOptions {
     /** The project: file: URLs must be inside it. */
     root: string;
     /** Why the permission rules refuse a page to be at this address (a deny rule), if they do. Asked of every document and file the page loads. */
-    refuse?: (url: string) => string | undefined;
+    refuse?: (url: string, approvedFile?: string) => string | undefined;
     viewport: Viewport;
     owner: Owner;
     hooks: PageHooks;
@@ -141,6 +144,8 @@ export class Page {
     private unlisten: (() => void)[] = [];
     private lock: Promise<unknown> = Promise.resolve();
     private streaming = false;
+    private approvedFile?: string;
+    private evaluation = 0;
 
     private constructor(
         readonly cdp: CdpClient,
@@ -237,7 +242,7 @@ export class Page {
     ready() {
         if (this.closed) throw new BrowserError("This tab was closed.");
         if (this.crashed) throw new BrowserError("This tab's page crashed. Reload it (BrowserNavigate action=reload) or open the address again.");
-        if (this.dialog) throw new BrowserError(`A JavaScript ${this.dialog.type} dialog is open ("${this.dialog.message.slice(0, 200)}"). Answer it with BrowserAct action=dialog (accept true or false) before anything else.`);
+        if (this.dialog) throw new BrowserError(`A JavaScript ${this.dialog.type} dialog is open ("${redact(this.dialog.message).slice(0, 200)}"). Answer it with BrowserAct action=dialog (accept true or false) before anything else.`);
     }
 
     // -----------------------------------------------------------------------
@@ -321,10 +326,12 @@ export class Page {
         });
         this.on("Runtime.consoleAPICalled", (p: { type: string; args: RemoteObject[] }) => {
             this.console.add(LEVELS[p.type] ?? "log", p.args.map(shown).join(" "));
+            for (const arg of p.args) if (arg.objectId) void this.send("Runtime.releaseObject", { objectId: arg.objectId }).catch(() => undefined);
             this.wake();
         });
-        this.on("Runtime.exceptionThrown", (p: { exceptionDetails: { text: string; url?: string; lineNumber?: number; exception?: { description?: string } } }) => {
+        this.on("Runtime.exceptionThrown", (p: { exceptionDetails: { text: string; url?: string; lineNumber?: number; exception?: { description?: string; objectId?: string } } }) => {
             const d = p.exceptionDetails;
+            if (d.exception?.objectId) void this.send("Runtime.releaseObject", { objectId: d.exception.objectId }).catch(() => undefined);
             this.console.add("exception", `${d.exception?.description ?? d.text}${d.url ? ` (${displayUrl(d.url)}:${(d.lineNumber ?? 0) + 1})` : ""}`);
             this.wake();
         });
@@ -362,7 +369,7 @@ export class Page {
     private refusal(url: string): string | undefined {
         if (!allowedPage(url, this.o.root)) return (checkUrl(url, this.o.root) as { error: string }).error;
         // The browser's own error page and a blank tab aren't places.
-        return url === "" || url.startsWith("chrome-error:") ? undefined : this.o.refuse?.(url);
+        return url === "" || url === "about:blank" || url.startsWith("chrome-error:") ? undefined : this.o.refuse?.(url, this.approvedFile);
     }
 
     /** The address changed to somewhere that isn't allowed (a script, a link): back to a blank page. */
@@ -454,9 +461,21 @@ export class Page {
     goto(url: string, signal?: AbortSignal, timeoutMs = LOAD_TIMEOUT_MS): Promise<boolean> {
         this.ready();
         return this.navigate(async () => {
+            if (signal) this.stillAgent(signal);
             const r = await this.send<{ errorText?: string }>("Page.navigate", { url });
             if (r.errorText) throw new BrowserError(navigationFailure(url, r.errorText));
         }, signal, timeoutMs);
+    }
+
+    /** Only called after BrowserNavigate authorization; the exact canonical file is allowed for this load. */
+    async gotoApproved(url: string, signal?: AbortSignal): Promise<boolean> {
+        this.stillAgent(signal);
+        if (url.startsWith("file:")) this.approvedFile = realpathSync(fileURLToPath(url));
+        try {
+            return await this.goto(url, signal);
+        } finally {
+            this.approvedFile = undefined;
+        }
     }
 
     async go(delta: -1 | 1, signal?: AbortSignal, timeoutMs = LOAD_TIMEOUT_MS): Promise<boolean> {
@@ -465,6 +484,7 @@ export class Page {
             const h = await this.send<{ currentIndex: number; entries: { id: number }[] }>("Page.getNavigationHistory");
             const entry = h.entries[h.currentIndex + delta];
             if (!entry) throw new BrowserError(delta < 0 ? "This tab has no earlier page to go back to." : "This tab has no later page to go forward to.");
+            if (signal) this.stillAgent(signal);
             await this.send("Page.navigateToHistoryEntry", { entryId: entry.id });
         }, signal, timeoutMs);
     }
@@ -473,7 +493,9 @@ export class Page {
         if (this.closed) return Promise.reject(new BrowserError("This tab was closed."));
         return this.navigate(async () => {
             // A crashed tab and one holding a dialog are what a reload is for.
+            if (signal) this.stillAgent(signal);
             if (this.dialog) await this.send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined);
+            if (signal) this.stillAgent(signal);
             await this.send("Page.reload");
         }, signal, timeoutMs);
     }
@@ -537,9 +559,14 @@ export class Page {
     /** Evaluates JavaScript in the page; its value as JSON (a description of what JSON can't carry), redacted and capped. */
     async evaluate(expression: string, signal?: AbortSignal): Promise<string> {
         this.ready();
-        const group = "harness-eval";
+        const group = `harness-eval-${++this.evaluation}`;
+        let finished = false;
+        const release = () => this.send("Runtime.releaseObjectGroup", { objectGroup: group }).catch(() => undefined);
         try {
-            const r = await raceAbort(this.send<{ result: RemoteObject & { objectId?: string }; exceptionDetails?: { text: string; exception?: { description?: string } } }>("Runtime.evaluate", { expression, awaitPromise: true, userGesture: true, allowUnsafeEvalBlockedByCSP: true, timeout: 15_000, objectGroup: group }, 20_000), signal);
+            if (signal) this.stillAgent(signal);
+            const pending = this.send<{ result: RemoteObject & { objectId?: string }; exceptionDetails?: { text: string; exception?: { description?: string } } }>("Runtime.evaluate", { expression, awaitPromise: true, userGesture: true, allowUnsafeEvalBlockedByCSP: true, timeout: 15_000, objectGroup: group }, 20_000);
+            void pending.then(() => { if (finished) void release(); }, () => { if (finished) void release(); });
+            const r = await raceAbort(pending, signal);
             if (r.exceptionDetails) throw new BrowserError(`The expression threw: ${redact(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text).slice(0, 2000)}`);
             const o = r.result;
             let text: string | undefined;
@@ -551,7 +578,8 @@ export class Page {
             const safe = redact(text ?? o.description ?? o.type);
             return safe.length > EVAL_MAX_CHARS ? `${safe.slice(0, EVAL_MAX_CHARS)}\n… (${safe.length - EVAL_MAX_CHARS} more characters)` : safe;
         } finally {
-            this.send("Runtime.releaseObjectGroup", { objectGroup: group }).catch(() => undefined);
+            finished = true;
+            void release();
         }
     }
 
@@ -597,8 +625,8 @@ export function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise
     if (!signal) return promise;
     return new Promise<T>((resolve, reject) => {
         const abort = () => reject(new BrowserError("Interrupted by user."));
+        promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
         if (signal.aborted) return abort();
         signal.addEventListener("abort", abort, { once: true });
-        promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
     });
 }

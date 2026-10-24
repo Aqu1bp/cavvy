@@ -28,6 +28,14 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     let box: HTMLDivElement | undefined;
     let canvas: HTMLCanvasElement | undefined;
     let address: HTMLInputElement | undefined;
+    let keyboard: HTMLTextAreaElement | undefined;
+    let disposed = false;
+    let generation = 0;
+    let composing = false;
+    let compositionTab: number | undefined;
+    let dragEnd: (() => void) | undefined;
+    const heldKeys = new Map<string, BrowserInput>();
+    let inputTab: number | undefined;
     /** The frame drawn, with the page's size it shows. */
     let bitmap: ImageBitmap | undefined;
     let frame: Size | undefined;
@@ -62,10 +70,16 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     };
 
     const onFrame = async (f: BrowserFrame) => {
+        const epoch = generation;
+        const sessionId = id();
         try {
             // A frame of a tab that isn't the one shown any more (the agent moved on) is only acknowledged.
-            if (f.tab === tab()?.id) {
+            if (!disposed && watching() && f.tab === tab()?.id) {
                 const next = await decode(f.data);
+                if (disposed || epoch !== generation || !watching() || f.tab !== tab()?.id) {
+                    next.close();
+                    return;
+                }
                 bitmap?.close();
                 bitmap = next;
                 frame = { width: f.width, height: f.height };
@@ -75,7 +89,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
             // an undecodable frame: the next one will do
         } finally {
             // The server sends the next frame once this one is drawn, so a slow window is given fewer, never a backlog.
-            void rpc.call("browser.ack", { id: id() }).catch(() => undefined);
+            void rpc.call("browser.ack", { id: sessionId, frameId: f.frameId }).catch(() => undefined);
         }
     };
 
@@ -104,15 +118,20 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         observer.observe(box!);
         const seen = () => setVisible(document.visibilityState === "visible");
         document.addEventListener("visibilitychange", seen);
+        window.addEventListener("blur", cancelInput);
         fit();
         stop = () => {
             unframe();
             observer.disconnect();
             document.removeEventListener("visibilitychange", seen);
+            window.removeEventListener("blur", cancelInput);
         };
     });
     let stop = () => {};
     onCleanup(() => {
+        cancelInput();
+        disposed = true;
+        generation++;
         stop();
         clearTimeout(resizeTimer);
         cancelAnimationFrame(moving);
@@ -128,7 +147,11 @@ export function BrowserPane(p: { handle: SessionHandle }) {
             if (on) {
                 sized = undefined;
                 watch();
-            } else void rpc.call("browser.unwatch", { id: id() }).catch(() => undefined);
+            } else {
+                generation++;
+                cancelInput();
+                void rpc.call("browser.unwatch", { id: id() }).catch(() => undefined);
+            }
         }),
     );
 
@@ -137,6 +160,8 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         on(
             () => tab()?.id,
             () => {
+                generation++;
+                cancelInput();
                 bitmap?.close();
                 bitmap = undefined;
                 frame = undefined;
@@ -149,7 +174,23 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     // -----------------------------------------------------------------------
     // The person's input
 
-    const send = (input: BrowserInput) => void rpc.call("browser.input", { id: id(), tab: tab()?.id, input }).catch(() => undefined);
+    const sendTo = (target: number | undefined, input: BrowserInput) => {
+        if (disposed || target === undefined) return;
+        void rpc.call("browser.input", { id: id(), tab: target, input }).catch(() => undefined);
+    };
+    const send = (input: BrowserInput) => sendTo(tab()?.id, input);
+    const cancelInput = () => {
+        dragEnd?.();
+        dragEnd = undefined;
+        for (const input of heldKeys.values()) sendTo(inputTab, input);
+        heldKeys.clear();
+        cancelAnimationFrame(moving);
+        moving = 0;
+        move = undefined;
+        wheel = undefined;
+        composing = false;
+        if (keyboard) keyboard.value = "";
+    };
     const pointOf = (e: MouseEvent): Point | undefined => {
         const rect = canvas!.getBoundingClientRect();
         return frame ? pagePoint({ x: e.clientX - rect.left, y: e.clientY - rect.top }, placeFrame(boxSize(), frame), frame) : undefined;
@@ -169,20 +210,26 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     const later = () => (moving ||= requestAnimationFrame(flush));
 
     const onMouseDown = (e: MouseEvent) => {
-        canvas!.focus();
+        keyboard!.focus({ preventScroll: true });
         const at = pointOf(e);
         if (!at) return;
         e.preventDefault();
         flush();
-        send(mouseInput("down", at, e));
+        dragEnd?.();
+        const target = tab()?.id;
+        sendTo(target, mouseInput("down", at, e));
         // A drag that leaves the canvas still ends where it's released.
         const up = (u: MouseEvent) => {
             window.removeEventListener("mouseup", up);
             const to = pointOf(u);
-            if (to) send(mouseInput("up", to, u));
-            else if (frame) send(mouseInput("up", at, u));
+            dragEnd = undefined;
+            sendTo(target, mouseInput("up", to ?? at, u));
         };
         window.addEventListener("mouseup", up);
+        dragEnd = () => {
+            window.removeEventListener("mouseup", up);
+            sendTo(target, mouseInput("up", at, { ...e, button: e.button, detail: e.detail, buttons: 0, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false }));
+        };
     };
     const onMouseMove = (e: MouseEvent) => {
         const at = pointOf(e);
@@ -207,11 +254,19 @@ export function BrowserPane(p: { handle: SessionHandle }) {
             return;
         }
         // Pasting arrives as a paste event, with the text.
-        if (isPasteKey(e)) return;
+        if (isPasteKey(e)) { e.stopPropagation(); return; }
+        if (composing || e.isComposing || e.key === "Dead" || e.key === "Process") {
+            e.stopPropagation();
+            return;
+        }
         const input = keyInput(type, e);
         if (!input) return;
         e.preventDefault();
         e.stopPropagation();
+        if (type === "down") {
+            inputTab = tab()?.id;
+            heldKeys.set(e.code, { ...input, type: "up" } as BrowserInput);
+        } else heldKeys.delete(e.code);
         send(input);
     };
     const onPaste = (e: ClipboardEvent) => {
@@ -230,9 +285,9 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         const url = draft();
         setDraft(undefined);
         if (url?.trim()) command("goto", { url, tab: tab()?.id });
-        canvas?.focus();
+        keyboard?.focus({ preventScroll: true });
     };
-    const handBack = () => void rpc.call("browser.handBack", { id: id(), tab: tab()?.id }).catch(reportError);
+    const handBack = () => { cancelInput(); void rpc.call("browser.handBack", { id: id(), tab: tab()?.id }).catch(reportError); };
     const answer = (accept: boolean) => {
         const text = dialogText();
         setDialogText("");
@@ -240,7 +295,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     };
 
     return (
-        <div class="br">
+        <div class="browser-pane">
             <div class="br-bar">
                 <button class="hb sm" aria-label="Back" title="Back" disabled={!tab()?.canGoBack} onClick={() => command("back", { tab: tab()?.id })}>
                     <ArrowLeft size={14} />
@@ -310,10 +365,33 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                     onMouseDown={onMouseDown}
                     onMouseMove={onMouseMove}
                     onWheel={onWheel}
+                    onFocus={() => keyboard?.focus({ preventScroll: true })}
+                    onContextMenu={(e) => e.preventDefault()}
+                />
+                <textarea
+                    ref={keyboard}
+                    class="br-keyboard"
+                    aria-label="Browser keyboard input"
+                    autocomplete="off"
+                    autocapitalize="off"
+                    spellcheck={false}
                     onKeyDown={onKey("down")}
                     onKeyUp={onKey("up")}
                     onPaste={onPaste}
-                    onContextMenu={(e) => e.preventDefault()}
+                    onBlur={cancelInput}
+                    onCompositionStart={() => { composing = true; compositionTab = tab()?.id; }}
+                    onCompositionEnd={(e) => {
+                        const commit = composing && compositionTab === tab()?.id;
+                        composing = false;
+                        if (commit && e.data) sendTo(compositionTab, { kind: "text", text: e.data });
+                        e.currentTarget.value = "";
+                    }}
+                    onInput={(e) => {
+                        // Dead-key and mobile text entry may arrive without composition events.
+                        if (composing || e.isComposing) return;
+                        if (e.currentTarget.value) send({ kind: "text", text: e.currentTarget.value });
+                        e.currentTarget.value = "";
+                    }}
                 />
                 <Show when={!tab()}>
                     <div class="br-blank">

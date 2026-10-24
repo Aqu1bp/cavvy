@@ -1,6 +1,7 @@
 // How the browser tells the agent about a page, with no browser running: the outline built from an accessibility tree
 // (what's pruned, what gets a ref, what's masked, where it's cut), refs and when they go stale, what changed between
 // two outlines, the console and network logs, and the header and body of a page report.
+import { registerSecret, unregisterSecret } from "../src/util/redact";
 import { describe, expect, test } from "bun:test";
 import { domFacts, outlineOf, SNAPSHOT_CHARS } from "../src/browser/ax";
 import { outlineDiff } from "../src/browser/diff";
@@ -122,6 +123,17 @@ describe("the outline of a page", () => {
         expect(o.text).not.toContain(`Button number ${o.shown + 5}`);
         expect(outline().shown).toBe(outline().lines);
         expect(SNAPSHOT_CHARS).toBeGreaterThan(10_000);
+    });
+
+    test("redacts original names and values before shortening them", () => {
+        const secret = "private-outline-value-987654321";
+        registerSecret(secret);
+        try {
+            const name = outline({ role: "button", name: "x".repeat(150) + secret }).text;
+            const value = outline({ role: "textbox", name: "Field", value: "x".repeat(110) + secret }).text;
+            expect(name).not.toContain("private-ou");
+            expect(value).not.toContain("private-ou");
+        } finally { unregisterSecret(secret); }
     });
 
     test("shortens a very long name and collapses its whitespace", () => {

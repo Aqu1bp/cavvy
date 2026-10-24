@@ -289,8 +289,8 @@ describe("files a page is opened from", () => {
         expect(c.urlRefusal(`file://${paths.credentialsFile()}`)).toBe("Access to the harness credential store is blocked");
         // a folder's listing is a read of the folder
         expect(checker({ permissions: { deny: ["Read(private)"] } }).urlRefusal(url("private"))).toContain("Denied by permission rule");
-        // neither asks nor allows matter: a page's own navigations aren't asked about
-        expect(checker({ permissions: { ask: ["Read(docs/**)"], allow: [] } }).urlRefusal(url("docs", "a.html"))).toBeUndefined();
+        // a page cannot answer an ask: the file must be requested explicitly
+        expect(checker({ permissions: { ask: ["Read(docs/**)"], allow: [] } }).urlRefusal(url("docs", "a.html"))).toContain("Requires approval");
     });
 
     test("and the hosts a page goes to by itself are refused by deny rules for them", () => {

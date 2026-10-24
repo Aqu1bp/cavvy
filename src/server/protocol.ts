@@ -1475,7 +1475,7 @@ export type ServerEvent =
      * A frame of the current tab, for a window watching it (browser.watch), sent when it has drawn the last (browser.ack).
      * `data`: a JPEG, base64; `width` and `height`: the page's size in CSS pixels, which a click's coordinates are in.
      */
-    | { type: "browser.frame"; sessionId: string; tab: number; data: string; width: number; height: number }
+    | { type: "browser.frame"; sessionId: string; frameId: string; tab: number; data: string; width: number; height: number }
     /**
      * `pos`: where in the shell's output this ends (the window gives it back to
      * terminal.attach). `reset`: the window's screen is to be reset before `data`,
@@ -1578,7 +1578,7 @@ export interface Methods {
     "browser.watch": { params: { id: string; width: number; height: number; scale: number }; result: BrowserState };
     "browser.unwatch": { params: { id: string }; result: null };
     /** The window has drawn the last frame it was sent. */
-    "browser.ack": { params: { id: string }; result: null };
+    "browser.ack": { params: { id: string; frameId: string }; result: null };
     /** What the person did in the pane; it takes the tab from the agent (a pointer only moving doesn't). */
     "browser.input": { params: { id: string; tab?: number; input: BrowserInput }; result: null };
     /** The address bar and the tab strip: the person opening or leaving a page takes the tab. */
