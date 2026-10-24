@@ -349,6 +349,8 @@ export class Engine {
     private closingIn = new Map<string, string>();
     /** Worktrees being removed (real paths): no session opens in them meanwhile. */
     private removing = new Set<string>();
+    /** File names of folders Home's @ searches before a session opens there (the last few, newest last). */
+    private homeFiles = new Map<string, FileIndex>();
     /** Closing everything: no new work is taken on, as it would outlive the server. */
     private stopping = false;
     /** Sessions whose plan is being taken to a worktree, and sessions being archived with theirs: one at a time each. */
@@ -2414,9 +2416,16 @@ export class Engine {
             }
             case "fs.mentions": {
                 const cwd = resolve(str(p.cwd, "cwd"));
+                const query = str(p.query ?? "", "query");
                 const ws = this.workspaces.get(cwd);
-                if (!ws) return [];
-                return ws.files.search(str(p.query ?? "", "query"), 12);
+                if (ws) return ws.files.search(query, 12);
+                // Home, before a session opens there: the folder's file names (listed, as for a session, nothing read).
+                if (!isDir(cwd) || [...this.removing].some((dir) => within(dir)(cwd))) return [];
+                const index = this.homeFiles.get(cwd) ?? new FileIndex(cwd);
+                this.homeFiles.delete(cwd);
+                this.homeFiles.set(cwd, index);
+                for (const old of this.homeFiles.keys()) if (this.homeFiles.size > 4) this.homeFiles.delete(old);
+                return index.search(query, 12);
             }
             case "fs.dirs":
                 return listDirs(str(p.path, "path"));

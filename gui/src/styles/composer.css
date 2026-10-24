@@ -1016,6 +1016,37 @@
     color: var(--danger);
 }
 
+/* Home: the plan's limit in place of the ring, only once it's close (ComposerMeter nearLimit). Opens the same card. */
+.ctx-limit {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    gap: calc(5 * var(--sp));
+    height: calc(26 * var(--sp));
+    margin: 0 calc(6 * var(--sp)) 0 calc(2 * var(--sp));
+    padding: 0 calc(10 * var(--sp)) 0 calc(8 * var(--sp));
+    border-radius: var(--pill);
+    font-size: 0.857rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    color: var(--warn);
+    background: var(--warn-bg);
+    transition: filter 140ms;
+}
+
+.ctx-limit b {
+    font-weight: 650;
+}
+
+.ctx-limit svg {
+    flex: none;
+}
+
+.ctx-limit:hover,
+.ctx-limit.open {
+    filter: brightness(1.08);
+}
+
 .send {
     display: grid;
     place-items: center;
@@ -2558,7 +2589,8 @@
     }
 
     .composer kbd.c-alt,
-    .ask .pbtn kbd {
+    .ask .pbtn kbd,
+    .ctx-limit .lbl {
         display: none;
     }
 

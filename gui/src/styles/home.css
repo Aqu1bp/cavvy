@@ -1,7 +1,8 @@
 /* ---- Home (new session) ------------------------------------------------
-   Fills the conversation column under the title bar. The mark, the question
-   and where the session runs sit above the middle; the composer at the
-   middle; ways to start under it. Short columns drop the mark and starts. */
+   Fills the conversation column under the title bar. One group, centred a
+   little above the middle: the question, the composer with where it runs in a
+   drawer under it, and sessions from the terminal. Short columns show fewer
+   terminal rows (Home.tsx) rather than overflowing. */
 
 .home {
     position: absolute;
@@ -11,144 +12,70 @@
     scrollbar-width: thin;
 }
 
+/* The group's height (px at 14) is the question and the composer with its strip, the cards above it
+   (--home-cards) and the terminal list (--cli-on, --cli-rows), as Home.tsx sets them; its spare height
+   in the column goes 42% above it. The composer stays where it is as its text grows (down, on Home). */
 .home-col {
+    --home-card-h: 150;
+    --home-group: calc((200 + var(--home-cards, 0) * var(--home-card-h) + var(--cli-on, 0) * 62 + var(--cli-rows, 0) * 47) * var(--sp));
     width: 100%;
     max-width: calc(var(--column-w) + 100 * var(--sp));
     margin: 0 auto;
-    padding: max(70 * var(--sp), calc(var(--column-h, 100vh) / 2 - 172 * var(--sp))) calc(18 * var(--sp)) calc(48 * var(--sp));
+    /* Never above the title bar's row, however short the column. */
+    padding: calc(var(--header-h) + 8 * var(--sp) + max(0px, (var(--column-h, 100vh) - var(--header-h) - 28 * var(--sp) - var(--home-group)) * 0.42)) calc(18 * var(--sp)) calc(20 * var(--sp));
     display: flex;
     flex-direction: column;
-    gap: calc(14 * var(--sp));
 }
 
-.home-hero {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    margin-bottom: calc(8 * var(--sp));
-}
-
-.home-hero .logo {
-    margin-bottom: calc(16 * var(--sp));
-    animation: home-in 320ms var(--ease) both;
+/* The terminal list arriving (or going) after Home is up: the group glides to its new place. */
+.home.glide .home-col {
+    transition: padding-top 560ms var(--spring);
 }
 
 .home-q {
-    margin: 0 0 calc(14 * var(--sp));
+    margin: 0 0 calc(24 * var(--sp));
     padding: 0 calc(20 * var(--sp));
     text-align: center;
-    font-size: calc(22 * var(--sp));
+    font-size: calc(26 * var(--sp));
     font-weight: 650;
-    letter-spacing: -0.02em;
-    line-height: 1.25;
+    letter-spacing: -0.024em;
+    line-height: 1.2;
     color: var(--fg);
-    animation: home-in 320ms 30ms var(--ease) both;
+    animation: home-in 320ms var(--ease) both;
 }
 
-/* Where the session runs: the project, then its branch or worktree. */
-.home-where {
+/* The cards before the first message, then the composer and its strip. */
+.home-composer {
     display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: center;
-    gap: calc(6 * var(--sp));
-    padding: 0 calc(16 * var(--sp));
-    max-width: 100%;
+    flex-direction: column;
+    gap: calc(8 * var(--sp));
     animation: home-in 320ms 60ms var(--ease) both;
 }
 
-.home-where .pillbtn,
-.home-where .strip-ctl {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
-    height: calc(30 * var(--sp));
-    max-width: calc(260 * var(--sp));
-    min-width: 0;
-    padding: 0 calc(10 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.929rem;
-    font-weight: 500;
-    white-space: nowrap;
-    color: var(--fg-2);
-    background: var(--sheet);
-    box-shadow: inset 0 0 0 0.5px var(--line);
-    transition: background var(--dur-fast), color var(--dur-fast);
-}
-
-.home-where .pillbtn:hover,
-.home-where .pillbtn[aria-expanded="true"],
-.home-where .strip-ctl:hover,
-.home-where .strip-ctl[aria-expanded="true"] {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-.home-where svg {
-    flex: none;
-}
-
-.home-where .chev,
-.home-where .chv {
-    color: var(--fg-3);
-}
-
-.home-composer {
-    animation: home-in 320ms 90ms var(--ease) both;
-}
-
-/* Ways to start: a click puts the prompt in the composer. */
-.home-starts {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: calc(8 * var(--sp));
-    margin-top: calc(12 * var(--sp));
-    padding: 0 calc(12 * var(--sp));
-    animation: home-in 320ms 120ms var(--ease) both;
-}
-
-.home-starts button {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    height: calc(32 * var(--sp));
-    padding: 0 calc(14 * var(--sp)) 0 calc(12 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.929rem;
-    white-space: nowrap;
-    color: var(--fg-2);
-    background: var(--sheet-2);
-    transition: background var(--dur-fast), color var(--dur-fast), transform 160ms var(--ease);
-}
-
-.home-starts button:hover {
-    background: var(--press);
-    color: var(--fg);
-}
-
-.home-starts button:active {
-    transform: scale(0.97);
-}
-
-.home-starts svg {
-    flex: none;
-    color: var(--fg-3);
-}
-
-:where(.main[data-short~="600"]) {
-    .home-hero .logo,
-    .home-starts {
-        display: none;
+/* A narrow column: a card's text runs to more lines and its buttons stack (composer.css .ask-row). */
+:where(.main[data-narrow~="600"]) {
+    .home-col {
+        --home-card-h: 220;
     }
 
-    .home-col {
-        padding-top: calc(64 * var(--sp));
+    .cli-off {
+        max-width: calc(130 * var(--sp));
+    }
+}
+
+/* A short column: the group closes up a little (and Home.tsx shows fewer terminal rows). */
+:where(.main[data-short~="600"]) {
+    .home-q {
+        margin-bottom: calc(18 * var(--sp));
+    }
+
+    .cli-sessions {
+        margin-top: calc(24 * var(--sp));
     }
 }
 
 /* Drawn before the window came up, at launch: it's all there when the window is. */
-.home.instant :is(.home-hero .logo, .home-q, .home-where, .home-composer, .home-starts) {
+.home.instant :is(.home-q, .home-composer, .composer-strip, .cli-sessions) {
     animation: none;
 }
 
@@ -156,6 +83,13 @@
     from {
         opacity: 0;
         transform: translateY(6px);
+    }
+}
+
+@keyframes home-drawer {
+    from {
+        opacity: 0;
+        transform: translateY(calc(-10 * var(--sp)));
     }
 }
 
@@ -170,20 +104,31 @@
     padding: calc(24 * var(--sp));
 }
 
-/* Under a composer like a drawer (a composer given a `strip`). */
+/* ---- The composer's drawer ------------------------------------------------
+   Under a composer given a `strip`: where the session runs (the project, then
+   its branch or worktree), and the composer's three prefixes. It starts just
+   under the card, which sits over its top edge. */
 .composer-strip {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: calc(4 * var(--sp));
+    gap: 1px;
     min-width: 0;
-    margin: -1px calc(22 * var(--sp)) 0;
-    padding: calc(5 * var(--sp)) calc(8 * var(--sp));
-    border: 0.5px solid var(--line);
-    border-top: none;
-    border-radius: 0 0 calc(14 * var(--sp)) calc(14 * var(--sp));
-    background: color-mix(in srgb, var(--fg) 2.5%, transparent);
-    font-size: 0.857rem;
+    height: calc(38 * var(--sp));
+    margin: calc(-9 * var(--sp)) calc(22 * var(--sp)) 0;
+    padding: 1px calc(6 * var(--sp)) 0;
+    border-radius: 0 0 calc(16 * var(--sp)) calc(16 * var(--sp));
+    font-size: 0.893rem;
     color: var(--fg-2);
+    background: color-mix(in srgb, var(--fg) 3.5%, var(--sheet));
+    box-shadow:
+        inset 0 -0.5px 0 var(--line),
+        inset 0.5px 0 0 var(--line),
+        inset -0.5px 0 0 var(--line);
+    /* One row, always: the chips shrink and their names truncate. */
+    flex-wrap: nowrap;
+    overflow: hidden;
+    animation: home-drawer 360ms 80ms var(--spring) both;
 }
 
 .strip-ctl {
@@ -191,161 +136,373 @@
     align-items: center;
     gap: calc(6 * var(--sp));
     min-width: 0;
-    max-width: 62%;
-    height: calc(24 * var(--sp));
-    padding: 0 calc(6 * var(--sp));
-    border-radius: calc(6 * var(--sp));
-    color: inherit;
-    transition: background var(--dur-fast), color var(--dur-fast);
+    max-width: calc(210 * var(--sp));
+    height: calc(26 * var(--sp));
+    padding: 0 calc(7 * var(--sp)) 0 calc(8 * var(--sp));
+    border-radius: var(--pill);
+    font-weight: 500;
+    white-space: nowrap;
+    color: var(--fg-2);
+    transition: background 140ms, color 140ms;
 }
 
 .strip-ctl svg {
     flex: none;
 }
 
-.strip-ctl .chv {
-    opacity: 0.6;
+.strip-ctl .ic {
+    color: var(--fg-3);
 }
 
-button.strip-ctl:hover,
-button.strip-ctl[aria-expanded="true"] {
+.strip-ctl .chv {
+    margin-left: calc(-2 * var(--sp));
+    color: var(--fg-4);
+}
+
+.strip-ctl:hover,
+.strip-ctl[aria-expanded="true"] {
     background: var(--hover);
     color: var(--fg);
 }
 
-.trust-callout {
+/* The prefixes: a keycap and its word; a click types it in the composer. */
+.strip-hints {
     display: flex;
-    gap: calc(12 * var(--sp));
-    padding: calc(14 * var(--sp)) calc(16 * var(--sp));
-    border-radius: var(--r-card);
-    background: var(--warn-bg);
-    animation: home-in 260ms var(--ease) both;
-}
-
-.trust-callout > svg {
-    color: var(--warn);
     flex: none;
-    margin-top: calc(2 * var(--sp));
+    gap: 1px;
 }
 
-.trust-title {
-    font-weight: 600;
-    margin-bottom: calc(3 * var(--sp));
+.strip-hints button {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    height: calc(24 * var(--sp));
+    padding: 0 calc(8 * var(--sp)) 0 calc(4 * var(--sp));
+    border-radius: var(--pill);
+    font-size: 0.857rem;
+    color: var(--fg-3);
+    transition: background 140ms, color 140ms;
 }
 
-.trust-actions {
-    display: flex;
-    gap: calc(8 * var(--sp));
-    margin-top: calc(12 * var(--sp));
-    flex-wrap: wrap;
+.strip-hints button:hover {
+    background: var(--hover);
+    color: var(--fg);
 }
 
-.trust-callout.onboard {
-    background: var(--accent-softer);
+/* / and ! with something typed: they start a message, so they rest until it's empty. */
+.strip-hints button[aria-disabled="true"] {
+    opacity: 0.45;
 }
 
-.trust-callout.onboard > svg {
+.strip-hints button[aria-disabled="true"]:hover {
+    background: none;
+    color: inherit;
+}
+
+.strip-hints .k {
+    display: grid;
+    place-items: center;
+    min-width: calc(17 * var(--sp));
+    height: calc(17 * var(--sp));
+    padding: 0 calc(3 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    font: 600 0.75rem/1 var(--font-mono);
+    color: var(--fg-2);
+    background: var(--sheet);
+    box-shadow:
+        inset 0 0 0 0.5px var(--line),
+        0 1px 0 var(--line);
+}
+
+:where(.main[data-narrow~="700"]) {
+    .strip-hints {
+        display: none;
+    }
+}
+
+/* ---- Before the first message: trusting the folder, connecting a model ----
+   Shaped like the request cards (composer.css .ask.glass), with their head and buttons. */
+.hcard.glass {
+    padding: calc(14 * var(--sp)) calc(14 * var(--sp)) calc(12 * var(--sp)) calc(16 * var(--sp));
+    border-radius: calc(20 * var(--sp));
+    animation: ask-rise 460ms var(--spring);
+}
+
+.hcard.glass.trust {
+    box-shadow:
+        0 0 0 1px color-mix(in srgb, var(--warn) 32%, transparent),
+        inset 0 1px 0 var(--ctl-hi),
+        var(--ctl-shadow);
+}
+
+.hcard.glass.connect {
+    box-shadow:
+        0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent),
+        inset 0 1px 0 var(--ctl-hi),
+        var(--ctl-shadow);
+}
+
+.hcard.connect .ask-ic {
     color: var(--accent);
 }
 
-/* Claude Code / Codex sessions of this project, to carry on here. */
-.cli-sessions {
-    margin-top: calc(18 * var(--sp));
-    border-radius: var(--r-card);
-    background: var(--group);
-    box-shadow: inset 0 0 0 0.5px var(--line);
-    overflow: hidden;
+.hcard p {
+    margin: calc(6 * var(--sp)) 0 0 calc(24 * var(--sp));
+    font-size: 0.893rem;
+    line-height: 1.5;
+    color: var(--fg-3);
 }
 
-.cli-head {
+.hcard p b {
+    font-weight: 600;
+    color: var(--fg-2);
+}
+
+.hcard code {
+    padding: 1px calc(5 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    font: 0.821rem var(--font-mono);
+    color: var(--fg-2);
+    background: var(--hover);
+}
+
+/* ---- Continue from your terminal ------------------------------------------
+   Claude Code / Codex sessions of this project, to carry on here: a quiet
+   list. Hovering a row swaps its time for Import. */
+.cli-sessions {
+    margin-top: calc(34 * var(--sp));
+    animation: home-in 320ms 120ms var(--ease) both;
+}
+
+.cli-h {
     display: flex;
     align-items: center;
     gap: calc(8 * var(--sp));
-    width: 100%;
-    padding: calc(10 * var(--sp)) calc(14 * var(--sp));
-    color: var(--fg-2);
-    transition: background var(--dur-fast), color var(--dur-fast);
+    height: calc(24 * var(--sp));
+    margin-bottom: calc(4 * var(--sp));
+    padding: 0 calc(2 * var(--sp)) 0 calc(10 * var(--sp));
+    font-size: 0.857rem;
+    font-weight: 600;
+    color: var(--fg-3);
 }
 
-.cli-head:hover {
+.cli-h .grow {
+    flex: 1;
+}
+
+.cli-all {
+    height: calc(24 * var(--sp));
+    padding: 0 calc(9 * var(--sp));
+    border-radius: var(--pill);
+    font-weight: 500;
+    color: var(--fg-3);
+    transition: background 140ms, color 140ms;
+}
+
+.cli-all:hover {
     background: var(--hover);
     color: var(--fg);
-}
-
-.cli-head .chv {
-    transition: transform var(--dur-fast);
-}
-
-.cli-head .chv.open {
-    transform: rotate(90deg);
-}
-
-.cli-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    max-height: calc(420 * var(--sp));
-    overflow-y: auto;
-    border-top: 0.5px solid var(--line);
 }
 
 .cli-row {
     display: flex;
     align-items: center;
     gap: calc(12 * var(--sp));
-    padding: calc(9 * var(--sp)) calc(14 * var(--sp));
+    min-width: 0;
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(7 * var(--sp)) calc(8 * var(--sp));
+    border-radius: calc(14 * var(--sp));
+    cursor: default;
+    outline: none;
+    transition: background 140ms;
 }
 
 .cli-row + .cli-row {
-    border-top: 0.5px solid var(--line);
+    margin-top: 1px;
+}
+
+.cli-row:hover {
+    background: var(--hover);
+}
+
+.cli-row:focus-visible {
+    background: var(--hover);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* The provider's mark on a tile. */
+.cli-pv {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: calc(32 * var(--sp));
+    height: calc(32 * var(--sp));
+    border-radius: calc(10 * var(--sp));
+    color: var(--fg);
+    background: var(--group);
+    box-shadow: inset 0 0 0 0.5px var(--line);
 }
 
 .cli-main {
+    display: flex;
     flex: 1;
+    flex-direction: column;
+    gap: 1px;
     min-width: 0;
 }
 
 .cli-title {
-    display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    min-width: 0;
-}
-
-.cli-source {
-    flex: none;
-    padding: 1px calc(6 * var(--sp));
-    border-radius: calc(5 * var(--sp));
-    font-size: 0.75rem;
     font-weight: 500;
-    background: var(--accent-softer);
-    color: var(--fg-2);
+    color: var(--fg);
 }
 
 .cli-meta {
-    margin-top: calc(2 * var(--sp));
+    overflow: hidden;
+    font-size: 0.857rem;
+    font-weight: 400;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--fg-3);
 }
 
-.cli-warn {
-    display: flex;
-    align-items: center;
-    gap: calc(5 * var(--sp));
-    margin-top: calc(4 * var(--sp));
+/* Changed in the last minutes: it may still be open in a terminal. */
+.cli-live {
     color: var(--warn);
 }
 
-.cli-warn svg {
-    flex: none;
+.cli-live::before {
+    content: "";
+    display: inline-block;
+    width: calc(6 * var(--sp));
+    height: calc(6 * var(--sp));
+    margin: 0 calc(5 * var(--sp)) 1px 0;
+    border-radius: 50%;
+    background: currentColor;
+    vertical-align: middle;
 }
 
+.cli-end {
+    display: grid;
+    flex: none;
+    align-items: center;
+    justify-items: end;
+}
+
+.cli-ago,
+.cli-go {
+    grid-area: 1 / 1;
+}
+
+.cli-ago {
+    font-size: 0.857rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    color: var(--fg-3);
+    transition: opacity 120ms;
+}
+
+.cli-go {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
+    height: calc(26 * var(--sp));
+    padding: 0 calc(9 * var(--sp)) 0 calc(12 * var(--sp));
+    border-radius: var(--pill);
+    font-size: 0.857rem;
+    font-weight: 600;
+    color: var(--accent-ink);
+    background: var(--accent);
+    box-shadow:
+        inset 0 1px 0 color-mix(in srgb, var(--accent-ink) 25%, transparent),
+        0 4px 12px -4px color-mix(in srgb, var(--accent) 60%, transparent);
+    opacity: 0;
+    transform: translateX(calc(6 * var(--sp)));
+    pointer-events: none;
+    transition: opacity 140ms, transform 240ms var(--ease);
+}
+
+.cli-row:is(:hover, :focus-visible, .busy) .cli-go {
+    opacity: 1;
+    transform: none;
+}
+
+.cli-row:is(:hover, :focus-visible, .busy) .cli-ago {
+    opacity: 0;
+}
+
+/* Its CLI isn't turned on: where to turn it on, in place of Import. */
 .cli-off {
-    flex: none;
-    max-width: 45%;
+    max-width: calc(220 * var(--sp));
+    font-size: 0.857rem;
+    font-weight: 550;
     text-align: right;
+    color: var(--accent-text);
 }
 
-.cli-more {
-    padding: calc(8 * var(--sp)) calc(14 * var(--sp));
-    border-top: 0.5px solid var(--line);
+.cli-row:hover .cli-off {
+    text-decoration: underline;
+    text-underline-offset: 2px;
 }
 
+/* ---- Show all: every terminal session of the project ---------------------- */
+.cl-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    max-height: min(calc(340 * var(--sp)), 52vh);
+    margin: calc(12 * var(--sp)) calc(-8 * var(--sp)) 0;
+    overflow-y: auto;
+}
+
+.cl-item {
+    display: flex;
+    align-items: center;
+    gap: calc(12 * var(--sp));
+    min-width: 0;
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(7 * var(--sp)) calc(8 * var(--sp));
+    border-radius: calc(10 * var(--sp));
+    text-align: left;
+    color: var(--fg-2);
+}
+
+.cl-item:hover:not(:disabled) {
+    background: var(--hover);
+}
+
+.cl-item .cli-pv {
+    width: calc(30 * var(--sp));
+    height: calc(30 * var(--sp));
+}
+
+.cl-main {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+    font-weight: 500;
+    color: var(--fg);
+}
+
+.cl-act {
+    flex: none;
+    padding: 0 calc(4 * var(--sp));
+    font-size: 0.857rem;
+    font-weight: 600;
+    color: var(--fg-3);
+}
+
+.cl-item:hover .cl-act {
+    color: var(--accent);
+}
+
+.cl-sub {
+    padding: calc(12 * var(--sp)) calc(10 * var(--sp)) calc(4 * var(--sp));
+    font-size: 0.821rem;
+    font-weight: 600;
+    color: var(--fg-3);
+}
+
+.cl-note {
+    padding: calc(6 * var(--sp)) calc(10 * var(--sp));
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
