@@ -1585,7 +1585,9 @@ class ClaudeTurn {
             }
             // A skill that ran as its own agent: Claude Code says nothing more of it than its call's result, which ends it,
             // with what it returned; declined while it worked, it was stopped, not failed.
+            // Ended already (Claude Code said so first): what it returned is still its report.
             if (p.name === "Skill" && this.liveAgents.has(b.tool_use_id)) this.endAgent(b.tool_use_id, b.is_error ? (DECLINED.test(content) ? "aborted" : "error") : "done", b.is_error ? undefined : content);
+            else if (p.name === "Skill" && this.endedAgents.has(b.tool_use_id) && !b.is_error) this.report(b.tool_use_id, content, true);
             // The structured result (for diffs) describes the message's one tool result.
             const structured = blocks.length === 1 && !b.is_error ? resultDisplay(p, m.tool_use_result, this.t.cwd) : undefined;
             this.endTool(b.tool_use_id, p, content, Boolean(b.is_error), structured);

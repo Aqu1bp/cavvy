@@ -884,8 +884,13 @@ export class ClaudeConnection implements CliConnection {
             return this.endTurn(waiting[1].ref, "error", failure ?? `${this.def.name} ended the turn with ${m.subtype}`);
         }
         const ref = turn.ref;
-        // Its own calls that never got a result are over (not a background sub-agent's launch: that ends with it).
-        for (const [id, p] of this.tools) if (!this.launched.has(id)) this.endTool(id, p, this.stopping.has(ref) ? "Interrupted by user" : `${this.def.name} stopped before this finished.`, true);
+        // Its own calls that never got a result are over (not a background sub-agent's launch: that ends with it), and a
+        // sub-agent working under one in the foreground with it: a skill's says nothing more once its turn is stopped.
+        for (const [id, p] of this.tools) {
+            if (this.launched.has(id)) continue;
+            if (this.liveAgents.has(id) && !this.backgroundAgents.has(id)) this.endAgent(id, this.stopping.has(ref) ? "aborted" : "error");
+            this.endTool(id, p, this.stopping.has(ref) ? "Interrupted by user" : `${this.def.name} stopped before this finished.`, true);
+        }
         const reason: TurnEndReason = this.stopping.has(ref) ? "aborted" : m.subtype === "error_max_turns" ? "max_turns" : m.subtype !== "success" || m.is_error ? "error" : "done";
         const answered = this.answeredBy.get(ref) ?? [];
         const pending = this.outstanding.get(ref);
@@ -1341,7 +1346,9 @@ export class ClaudeConnection implements CliConnection {
             }
             // A skill that ran as its own agent: Claude Code says nothing more of it than its call's result, which ends it,
             // with what it returned; declined while it worked, it was stopped, not failed.
+            // Ended already (Claude Code said so first): what it returned is still its report.
             if (p.name === "Skill" && this.liveAgents.has(b.tool_use_id)) this.endAgent(b.tool_use_id, b.is_error ? (DECLINED.test(content) ? "aborted" : "error") : "done", b.is_error ? undefined : content);
+            else if (p.name === "Skill" && this.endedAgents.has(b.tool_use_id) && !b.is_error) this.report(b.tool_use_id, content, true);
             // A command now in the background: what it runs, and the file its output goes to (its result says, as 2.1.304's does).
             const bg = blocks.length === 1 ? m.tool_use_result?.backgroundTaskId : undefined;
             if (typeof bg === "string" && bg) {

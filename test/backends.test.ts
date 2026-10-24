@@ -578,6 +578,9 @@ describe("Claude Code's background work (live test findings)", () => {
             await run("review the diff");
             // Once: not left running after its call is over, and not ended twice when Claude Code does say.
             expect({ scenario, ends: subEnds(events) }).toEqual({ scenario, ends: [ended] });
+            // What the skill returned is its report, also when Claude Code said it ended first.
+            const reported = events.some((e) => e.type === "subagent" && e.event.type === "text" && e.event.text === "No findings.");
+            if (ended === "done") expect({ scenario, reported }).toEqual({ scenario, reported: true });
         }
     });
 
