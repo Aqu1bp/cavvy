@@ -273,16 +273,17 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         }
         const tok = token();
         const cwd = st()?.cwd ?? app.homeCwd;
-        if (tok && cwd && p.sessionId) {
+        // Home (no session yet) searches its folder's files.
+        if (tok && cwd) {
             setMenuStatus("loading");
             const sid = p.sessionId;
             // Only a session whose servers offer resources is asked for them.
-            const hasResources = (st()?.mcp ?? []).some((m) => m.status === "connected" && m.resources);
+            const hasResources = Boolean(sid) && (st()?.mcp ?? []).some((m) => m.status === "connected" && m.resources);
             mentionTimer = setTimeout(async () => {
                 try {
                     const [found, resources] = await Promise.all([
                         rpc.call("fs.mentions", { cwd, query: tok.query }),
-                        hasResources && tok.query ? rpc.call("session.mcpResources", { id: sid, query: tok.query }).catch(() => [] as McpResourceInfo[]) : Promise.resolve([] as McpResourceInfo[]),
+                        hasResources && tok.query ? rpc.call("session.mcpResources", { id: sid!, query: tok.query }).catch(() => [] as McpResourceInfo[]) : Promise.resolve([] as McpResourceInfo[]),
                     ]);
                     if (version !== mentionVersion) return;
                     const files = found.map((path) => ({ kind: "file" as const, path }));

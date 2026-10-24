@@ -390,6 +390,20 @@ input("");
 // Exercise the actual Home submit handler through the run-sheet controller.
 const sessionSends = sends;
 setSession(undefined);
+// Home, before a session: @ searches the project's files (and asks no session for MCP resources).
+{
+    const before = calls.length;
+    input("@READ");
+    await Bun.sleep(80);
+    assert.deepEqual(calls.slice(before).map((c) => [c.method, c.params]), [["fs.mentions", { cwd: "/workspace", query: "READ" }]]);
+    replies.at(-1)!.resolve(["README.md"]);
+    await Bun.sleep(0);
+    assert.equal(ta.props["aria-expanded"], true);
+    assert.ok(renderedText.includes("README.md"));
+    key("Enter");
+    assert.equal(ta.props.value, "@README.md ");
+    input("");
+}
 const models = ["mock:a", "mock:b"];
 const success: RunResult = { ok: true, model: models[0]!, modelName: "A", sessionId: "run-a", branch: "run-a", path: "/workspace/run-a" };
 const failure: RunResult = { ok: false, model: models[1]!, modelName: "B", error: "Unavailable" };
