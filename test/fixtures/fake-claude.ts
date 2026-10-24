@@ -453,6 +453,19 @@ const SUB_TOKEN = "ya29.subagentWroteThisToken1234567890";
  * task_notification with its usage and those words as the summary, and a
  * turn Claude Code takes with them. A stuck one never finishes.
  */
+/** A skill that runs as its own agent (as /code-review does): the Skill call, then its sub-agent's steps under it, then the call's result. */
+function skillAgent() {
+    const id = "toolu_skill";
+    toolUse(id, "Skill", { skill: "code-review", args: "medium" });
+    out({ type: "system", subtype: "task_started", task_id: "agent-1", tool_use_id: id, description: "code-review", task_type: "local_agent", is_backgrounded: false, session_id: sessionId });
+    sub(id, "user", [{ type: "text", text: "Review the current diff." }]);
+    sub(id, "assistant", [{ type: "tool_use", id: "toolu_skill_read", name: "Read", input: { file_path: join(cwd, "auth.ts") } }]);
+    sub(id, "user", [{ type: "tool_result", tool_use_id: "toolu_skill_read", content: "export const strategies = [];", is_error: false }]);
+    sub(id, "assistant", [{ type: "text", text: "No findings." }]);
+    out({ type: "system", subtype: "task_notification", task_id: "agent-1", tool_use_id: id, status: "completed", summary: "No findings.", usage: { total_tokens: 900, tool_uses: 1, duration_ms: 30 }, session_id: sessionId });
+    out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: [{ type: "text", text: "No findings." }] }] }, parent_tool_use_id: null, session_id: sessionId });
+}
+
 function agentCall(background: boolean, late = false, stuck = false) {
     const id = "toolu_agent";
     // FAKE_AGENT_DESC: the call's description (the task's label).
@@ -1128,6 +1141,7 @@ async function turn(content: any[], uuid?: string) {
     else if (scenario === "agent-fails-then-reports") agentRenotified("failed-reported");
     else if (scenario === "agent-hands-back-late") agentRenotified("handed-back");
     else if (scenario === "agent-resume") agentResume();
+    else if (scenario === "skill-agent") skillAgent();
     else if (scenario.startsWith("agent")) agentCall(scenario !== "agent", scenario === "agent-background-late", scenario === "agent-background-stuck");
     else if (scenario === "mcp") {
         const calls: { server?: string; tool: string; args: Record<string, unknown> }[] = JSON.parse(process.env.FAKE_MCP_CALLS ?? "[]");

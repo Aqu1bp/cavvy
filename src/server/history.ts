@@ -360,7 +360,8 @@ export function agentFromCall(b: ToolBlock, turnId: string, ownModel?: string): 
     return {
         id: b.id,
         turnId,
-        description: text(i.description) ?? b.title,
+        // A skill that runs as its own agent is named by the skill ("code-review"), not its call ("Skill(code-review)").
+        description: text(i.description) ?? (b.name === "Skill" ? text(i.skill) : undefined) ?? b.title,
         agentType: text(i.subagent_type) ?? text(i.agent) ?? "general-purpose",
         model: model && model !== ownModel ? model : undefined,
         effort: EFFORT_LEVELS.includes(i.effort as Effort) ? i.effort as Effort : undefined,

@@ -1908,6 +1908,9 @@ export class Runtime {
             const call = turnId ? this.blockIn(turnId, id) : undefined;
             if (!turnId || call?.t !== "tool") return undefined;
             const run = agentFromCall(call, turnId, own);
+            // A call that isn't one of the agent tools can still run a sub-agent (Claude Code's Skill, for a skill
+            // that runs as its own agent, as /code-review does): its row is then that agent's, its steps a click away.
+            if (!call.agent && call.name === "Skill") this.op({ op: "block.patch", turnId, blockId: id, patch: { agent: true } });
             // Claude Code's SendMessage resuming a sub-agent an earlier process started (#458): its run is that call's, named as the CLI names the agent, with what it was sent.
             const resumed = call.name === "SendMessage" ? { description: label ? redact(label) : run.description, prompt: typeof call.input?.message === "string" ? call.input.message : run.prompt } : {};
             this.op({ op: "agent", agent: { ...run, ...resumed, startedAt: Date.now() } });

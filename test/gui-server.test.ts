@@ -2475,6 +2475,16 @@ describe("sub-agents", () => {
         expect([call.status, call.agent, call.output]).toEqual(["ok", true, "src/auth registers sign-in strategies in one list."]);
     }, 45_000);
 
+    test("a Claude Code skill that runs as its own agent (as /code-review does): its call is that agent's, so its row shows the agent's steps rather than just loading", async () => {
+        const v = await claudeCodeTurn("skill-agent", (v) => done(v) && v.agents[0]?.status === "done");
+        const call = tools(lastTurn(v)).find((b) => b.name === "Skill")!;
+        expect([call.status, call.agent]).toEqual(["ok", true]);
+        expect(v.agents).toHaveLength(1);
+        const a = v.agents[0]!;
+        expect([a.id, a.description, a.status]).toEqual(["toolu_skill", "code-review", "done"]);
+        expect(a.blocks.filter((b) => b.t === "tool").map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : ""))).toEqual(["Read:ok"]);
+    }, 45_000);
+
     for (const [scenario, when] of [
         ["agent-background", "launched first"],
         ["agent-background-late", "launched after its first step"],
