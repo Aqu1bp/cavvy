@@ -17,14 +17,16 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
     // Listed before it opens: the control shows whether this folder is the main checkout or a worktree of it.
     const [listing, { refetch }] = createResource(
         () => app.conn === "open" && p.cwd,
-        async (path): Promise<{ worktrees: WorktreeInfo[]; error?: string }> => {
-            try { return { worktrees: await rpc.call("projects.worktrees", { path }) }; }
-            catch (e) { return { worktrees: [], error: e instanceof Error ? e.message : String(e) }; }
+        async (path): Promise<{ path: string; worktrees: WorktreeInfo[]; error?: string }> => {
+            try { return { path, worktrees: await rpc.call("projects.worktrees", { path }) }; }
+            catch (e) { return { path, worktrees: [], error: e instanceof Error ? e.message : String(e) }; }
         },
     );
+    // Only this folder's: another project's, kept while this one's loads, would open or branch from that one.
+    const here = () => (listing()?.path === p.cwd ? listing() : undefined);
     const label = (w: WorktreeInfo) => w.branch || (w.detached ? `Detached · ${w.head?.slice(0, 7) ?? "HEAD"}` : "Worktree");
-    const main = () => listing()?.worktrees.find((w) => w.main);
-    const current = () => listing()?.worktrees.find((w) => w.current);
+    const main = () => here()?.worktrees.find((w) => w.main);
+    const current = () => here()?.worktrees.find((w) => w.current);
     const toggle = () => {
         // Opened, it lists them again (one may have been made or removed elsewhere since), unless that's under way.
         if (!open() && !listing.loading) void refetch();
@@ -45,10 +47,10 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
         </button>
         <Popover open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="start" width={400}>
             <div class="menu-head">Worktrees</div>
-            {/* What it listed before stays while it lists them again. */}
-            <Show when={listing() || !listing.loading} fallback={<div class="menu-note">Loading worktrees…</div>}>
-                <Show when={!listing()?.error} fallback={<div class="menu-note">{listing()?.error}</div>}>
-                    <For each={listing()?.worktrees} fallback={<div class="menu-note">No working trees found.</div>}>
+            {/* What it listed for this folder before stays while it lists them again. */}
+            <Show when={here() || !listing.loading} fallback={<div class="menu-note">Loading worktrees…</div>}>
+                <Show when={!here()?.error} fallback={<div class="menu-note">{here()?.error}</div>}>
+                    <For each={here()?.worktrees} fallback={<div class="menu-note">No working trees found.</div>}>
                         {(w) => <div class="wt-row">
                             <button class={`menu-item ${w.current ? "current" : ""}`} disabled={!w.exists || w.prunable !== undefined} title={w.path} onClick={async () => {
                                 setOpen(false);

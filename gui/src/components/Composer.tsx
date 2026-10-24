@@ -39,7 +39,7 @@ import { StepsTray } from "./StepsTray";
 /** `mention`: a skill picked from the $ menu, which goes in where the $ is. */
 type MenuItem = { kind: "command"; cmd: CommandInfo; mention?: boolean } | { kind: "file"; path: string } | { kind: "resource"; res: McpResourceInfo };
 
-export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; /** Tucked under the card, like a drawer (Home's project, worktree and the composer's prefixes). */ strip?: JSX.Element; /** Home: sending to several models at once. */ compare?: CompareOption }) {
+export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; /** Tucked under the card, like a drawer (Home's project, worktree and the composer's prefixes). */ strip?: JSX.Element; /** Home: sending to several models at once. */ compare?: CompareOption; /** Home: told what's in the box each time it changes. */ onText?: (text: string) => void }) {
     /** The last @ search asked MCP servers too, so its empty state says so. */
     const [searchedResources, setSearchedResources] = createSignal(false);
     const whileMounted = createLifetimeGuard();
@@ -124,6 +124,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     };
 
     createEffect(on([draftKey, text], () => requestAnimationFrame(resize)));
+    // Every change, whatever made it: typing, history, a send clearing the box.
+    createEffect(() => p.onText?.(text()));
     // The modest height is a few lines of the text size, or a share of the column: either changing moves it.
     createEffect(on([columnHeight, () => prefs.fontSize], () => requestAnimationFrame(resize), { defer: true }));
     // Large, it keeps its top where it is as what's above or in the box comes and goes (the tray, a request, attachments).

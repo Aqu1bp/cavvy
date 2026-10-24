@@ -27,7 +27,7 @@ const MIN = 60_000;
 const session = (id: string, o: Partial<CliSessionInfo> = {}): CliSessionInfo => ({ source: "claude-code", id, title: `Session ${id}`, updatedAt: Date.now() - 10 * MIN, messages: 4, partial: false, recent: false, ...o });
 const source = (o: Partial<CliSourceInfo> = {}): CliSourceInfo => ({ source: "claude-code", name: "Claude Code", enabled: true, more: 0, moreInHarness: 0, ...o });
 
-function cli(sessions: CliSessionInfo[], sources: CliSourceInfo[] = [source()], rows?: number) {
+function cli(sessions: CliSessionInfo[], sources: CliSourceInfo[] = [source()], rows?: number, providers: { id: string; configured: boolean }[] = []) {
     const continued: string[] = [];
     const tabs: string[] = [];
     const shown: number[] = [];
@@ -39,7 +39,7 @@ function cli(sessions: CliSessionInfo[], sources: CliSourceInfo[] = [source()], 
         ArrowRight: "ArrowRight",
         Dialog: tagged("Dialog"),
         ProviderIcon: tagged("ProviderIcon"),
-        app: { conn: "open" },
+        app: { conn: "open", providers },
         rpc: {},
         continueCliSession: async (_cwd: string, s: CliSessionInfo) => (continued.push(s.id), true),
         setSettingsTab: (t: string) => void tabs.push(t),
@@ -93,6 +93,21 @@ test("a row is a button: a click, Enter or Space imports it; one whose CLI is of
     b!.props.onClick();
     expect(r.tabs).toEqual(["providers"]);
     expect(r.continued).toEqual(["a", "a"]);
+});
+
+test("a CLI turned on in Settings while Home is up imports at once: the providers say so, not the list from before", async () => {
+    const off = [source({ source: "codex", name: "Codex", enabled: false })];
+    const r = cli([session("b", { source: "codex" })], off, undefined, [{ id: "codex", configured: true }]);
+    const [b] = r.rows();
+    expect(b!.props["aria-label"]).toBe("Import “Session b” from Codex");
+    b!.props.onClick();
+    await Bun.sleep(0);
+    expect(r.continued).toEqual(["b"]);
+    expect(r.tabs).toEqual([]);
+    // Turned off there since the list came: Settings again.
+    const gone = cli([session("a")], [source()], undefined, [{ id: "claude-code", configured: false }]);
+    gone.rows()[0]!.props.onClick();
+    expect(gone.tabs).toEqual(["providers"]);
 });
 
 test("with nothing to import the section is gone, even with sessions already in Harness", () => {
@@ -191,6 +206,7 @@ function home(o: { cwd?: string; needsTrust?: string[]; models?: unknown[]; prov
         requestComposerFocus: stub, setSettingsTab: (t: string) => void tabs.push(t),
         columnHeight: () => "800px", shellLayout: () => ({ column: { w: o.width ?? 900, h: o.height ?? 800 } }), sp: (n: number) => n,
         ago: stub, basename: (p: string) => p.split("/").pop(), tildify: (p: string) => p, now: stub, isWindowShown: () => true,
+        document: { execCommand: () => false },
         CliSessions: (p: Record<string, any>) => (cliProps.push(p), { tag: "CliSessions", props: p, children: [] }),
         Composer: tagged("Composer"), ErrorCards: tagged("ErrorCards"), Menu: tagged("Menu"), ProviderIcon: tagged("ProviderIcon"), WorktreePicker: tagged("WorktreePicker"),
     }) as () => Element;
@@ -217,6 +233,31 @@ test("Home is the question, then the composer with the project, its worktree and
     // No cards when there's nothing to ask.
     expect(byClass(h.tree, "div", "hcard")).toHaveLength(0);
     expect(h.cliProps[0]).toMatchObject({ cwd: "/work/harness", rows: 3 });
+});
+
+test("/ and ! type only into an empty composer, as it is when clicked, whatever filled or cleared it; @ goes anywhere", () => {
+    const h = home();
+    const ta = { value: "", selectionStart: 0, selectionEnd: 0, focused: 0, focus() { this.focused++; }, setSelectionRange(a: number, b: number) { this.selectionStart = a; this.selectionEnd = b; }, dispatchEvent: stub };
+    byClass(h.tree, "div", "home-composer")[0]!.props.ref({ querySelector: (q: string) => (q === "textarea" ? ta : null) });
+    const [slash, at, bang] = elements(byClass(h.strip, "span", "strip-hints"), "button");
+    // History recalled into the box, with no input event: / and ! only focus it.
+    ta.value = "earlier message";
+    ta.selectionStart = ta.selectionEnd = ta.value.length;
+    slash!.props.onClick();
+    bang!.props.onClick();
+    expect(ta.value).toBe("earlier message");
+    expect(ta.focused).toBe(2);
+    at!.props.onClick();
+    expect(ta.value).toBe("earlier message @");
+    // A send cleared it (no input event either): / types again.
+    ta.value = "";
+    ta.selectionStart = ta.selectionEnd = 0;
+    slash!.props.onClick();
+    expect(ta.value).toBe("/");
+    // The dimmed state follows every change the composer makes to its text.
+    expect(typeof h.composer.props.onText).toBe("function");
+    const composer = readFileSync(new URL("../gui/src/components/Composer.tsx", import.meta.url), "utf8");
+    expect(composer).toContain("createEffect(() => p.onText?.(text()));");
 });
 
 test("with no folder Home asks for one, and the strip has no prefixes", () => {
@@ -282,6 +323,35 @@ test("Home shows the error cards above the trust and connect cards", () => {
     expect(at).toBeLessThan(source.indexOf("<Show when={needsTrust().length}>"));
 });
 
+// ---- The worktree picker ----------------------------------------------------------------------------
+
+function picker(cwd: string, listed: { path: string; worktrees: unknown[] } | undefined, loading: boolean) {
+    const opened: string[] = [];
+    const WorktreePicker = componentCode("WorktreePicker", {
+        node, Show, For, createSignal, React: { Fragment: "Fragment" },
+        createResource: () => [Object.assign(() => listed, { loading }), { refetch: stub }],
+        Check: "Check", ChevronDown: "ChevronDown", FolderGit2: "FolderGit2", GitBranch: "GitBranch", Plus: "Plus", Trash2: "Trash2",
+        app: { conn: "open" }, rpc: {},
+        openProject: async (path: string) => void opened.push(path),
+        requestComposerFocus: stub, tildify: (p: string) => p,
+        Popover: tagged("Popover"), NewWorktreeDialog: tagged("NewWorktreeDialog"), RemoveWorktreeDialog: tagged("RemoveWorktreeDialog"),
+    }) as (p: { cwd: string; branch?: string }) => Element;
+    return { tree: WorktreePicker({ cwd, branch: "main" }), opened };
+}
+
+test("the worktree picker never offers another project's worktrees while this one's load", () => {
+    const a = { path: "/work/a", worktrees: [{ path: "/work/a", branch: "main", main: true, current: true, exists: true }, { path: "/work/a-wt", branch: "fix", managed: true, exists: true }] };
+    // Switched from A to B, B's listing not back yet: loading, nothing of A's to pick or branch from.
+    const switched = picker("/work/b", a, true);
+    const popover = elements(switched.tree, "Popover")[0]!;
+    expect(text(popover)).toContain("Loading worktrees…");
+    expect(elements(popover, "button")).toHaveLength(0);
+    // This folder's own, kept while it lists them again: still there.
+    const same = picker("/work/a", a, true);
+    const items = byClass(elements(same.tree, "Popover"), "button", "menu-item");
+    expect(items.map(text)).toEqual(["main/work/a · main checkout", "fix/work/a-wt", "New worktree…"]);
+});
+
 // ---- The limit pill ---------------------------------------------------------------------------------
 
 const nearLimit = componentCode("nearLimit", {}, undefined, "ComposerMeter") as (m: ReturnType<typeof meterOf>, l?: PlanLimits, at?: number) => { pct: number; window?: string } | undefined;
@@ -296,6 +366,9 @@ test("Home's limit pill shows from 80%, naming the fullest window (or the reache
     expect(at(limits([{ label: "GPT-5 5-hour", usedPercent: 91 }]))).toEqual({ pct: 91, window: "GPT-5 5-hour" });
     expect(at(limits([{ label: "5-hour", usedPercent: 97 }, { label: "Weekly Opus", reached: true }]))).toEqual({ pct: 100, window: "weekly Opus" });
     expect(at(limits([], { reached: true }))).toEqual({ pct: 100, window: undefined });
+    // A plain rate-limit stop with no window reached is the plan's limit, not whichever window is fullest.
+    expect(at(limits([{ label: "5-hour", usedPercent: 40 }], { reached: true }))).toStrictEqual({ pct: 100 });
+    expect(at(limits([{ label: "5-hour" }, { label: "Weekly", usedPercent: 95 }], { reached: true }))).toStrictEqual({ pct: 100 });
     // A window that has reset since the report doesn't count, however full it was.
     const lapsed = limits([{ label: "5-hour", usedPercent: 95, resetsAt: Date.now() - 60_000 }, { label: "Weekly", usedPercent: 40 }]);
     expect(nearLimit(meterOf(lapsed, Date.now()), lapsed, Date.now())).toBeUndefined();

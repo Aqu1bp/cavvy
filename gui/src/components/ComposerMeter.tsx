@@ -22,7 +22,9 @@ export function nearLimit(m: Meter | undefined, l?: PlanLimits, at = Date.now())
     // A reached window is the one to name, whatever another's percentage.
     const rank = (w: MeterWindow) => (w.reached ? 1000 : 0) + used(w);
     const w = live.reduce<MeterWindow | undefined>((a, b) => (!a || rank(b) > rank(a) ? b : a), undefined);
-    const pct = w ? used(w) : m.reached ? 100 : 0;
+    // Reached with no window reached (a plain rate-limit stop): the plan's limit, not whichever window is fullest.
+    if (m.reached && !w?.reached) return { pct: 100 };
+    const pct = w ? used(w) : 0;
     if (pct < 80 && !m.reached) return undefined;
     // "of weekly limit", but "of GPT-5 5-hour limit": only the plain words lose their capital.
     return { pct: Math.min(100, Math.round(pct)), window: w?.label.replace(/^(Weekly|Primary|Secondary)\b/, (x) => x.toLowerCase()) };

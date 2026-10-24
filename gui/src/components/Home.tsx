@@ -3,7 +3,7 @@
 // sessions from this project's terminal to carry on here. The whole group sits a
 // little above the middle of the column (home.css).
 
-import { createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { createResource, createSignal, For, onCleanup, Show } from "solid-js";
 import { ChevronDown, Folder, FolderGit2, FolderOpen, KeyRound, Plug, ShieldAlert } from "lucide-solid";
 import { app, refreshProjects, reportError, rpc } from "../state/app";
 import { chooseProject, connectCli, openProject, trustAndContinue } from "../state/actions";
@@ -101,9 +101,9 @@ export function Home() {
     };
     let composer: HTMLDivElement | undefined;
     // / and ! start a message (a command, a shell command), so they only type into an empty composer; @ goes anywhere.
+    // The composer says each change (history and a send clearing it too); a click reads the box itself.
     const [typed, setTyped] = createSignal(false);
-    const readTyped = () => setTyped(Boolean(composer?.querySelector("textarea")?.value));
-    onMount(() => requestAnimationFrame(readTyped));
+    const filled = () => Boolean(composer?.querySelector("textarea")?.value);
     // Drawn before the desktop window came up (at launch): the window appearing is its entrance.
     const instant = !isWindowShown();
 
@@ -134,7 +134,7 @@ export function Home() {
                                 title={h.starts && typed() ? `${h.title}: start a message with ${h.key}` : h.title}
                                 aria-disabled={h.starts && typed() ? "true" : undefined}
                                 onMouseDown={(e) => e.preventDefault()}
-                                onClick={() => (h.starts && typed() ? composer?.querySelector("textarea")?.focus() : typeInComposer(composer, h.key))}
+                                onClick={() => (h.starts && filled() ? composer?.querySelector("textarea")?.focus() : typeInComposer(composer, h.key))}
                             >
                                 <kbd class="k">{h.key}</kbd>
                                 {h.word}
@@ -184,7 +184,7 @@ export function Home() {
                     </button>
                 </Menu>
 
-                <div class="home-composer" ref={composer} onInput={readTyped}>
+                <div class="home-composer" ref={(el) => (composer = el)}>
                     <ErrorCards place="home" />
 
                     {/* What comes before the first message, shaped like the request cards: trusting the folder, connecting a model. */}
@@ -249,6 +249,7 @@ export function Home() {
                         variant="home"
                         autofocus
                         strip={strip}
+                        onText={(t) => setTyped(Boolean(t))}
                         compare={info()?.git ? { available: true } : { available: false, why: app.homeCwd ? "Comparing models needs a Git repository: each model works in a worktree of its own." : "Choose a project folder first." }}
                         placeholder={!app.homeCwd ? "Choose a project folder to start" : noModel() ? "Connect a model to start" : "Describe a task or ask a question"}
                     />

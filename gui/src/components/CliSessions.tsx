@@ -41,6 +41,8 @@ export function CliSessions(p: { cwd: string; rows?: number; onShown?: (rows: nu
     const moreHeld = () => (list()?.sources ?? []).reduce((n, s) => n + s.moreInHarness, 0);
     const source = (s: CliSessionInfo) => list()?.sources.find((x) => x.source === s.source);
     const name = (s: CliSessionInfo) => source(s)?.name ?? s.source;
+    // Turned on in Settings → Providers: read from the providers, which follow a change made there while Home is up.
+    const enabled = (s: CliSessionInfo) => app.providers.find((x) => x.id === s.source)?.configured ?? source(s)?.enabled;
     const more = () => (list()?.sources ?? []).filter((s) => s.more > 0);
     const shown = () => fresh().slice(0, Math.max(0, Math.min(3, p.rows ?? 3)));
     // Worth opening when it lists something these rows don't.
@@ -57,7 +59,7 @@ export function CliSessions(p: { cwd: string; rows?: number; onShown?: (rows: nu
     /** What a row does: import it, open the one already here, or (its CLI not turned on) go where it's turned on. */
     const act = (s: CliSessionInfo) => {
         setAll(false);
-        if (!s.harnessId && !source(s)?.enabled) setSettingsTab("providers");
+        if (!s.harnessId && !enabled(s)) setSettingsTab("providers");
         else void go(s);
     };
     const count = (s: CliSessionInfo) => `${s.messages}${s.partial ? "+" : ""} ${s.messages === 1 && !s.partial ? "message" : "messages"}`;
@@ -73,7 +75,7 @@ export function CliSessions(p: { cwd: string; rows?: number; onShown?: (rows: nu
             class={`cli-row ${busy() === s.id ? "busy" : ""}`}
             role="button"
             tabIndex={0}
-            aria-label={source(s)?.enabled ? `Import “${s.title}” from ${name(s)}` : `${turnOn(s)} to import “${s.title}”`}
+            aria-label={enabled(s) ? `Import “${s.title}” from ${name(s)}` : `${turnOn(s)} to import “${s.title}”`}
             aria-busy={busy() === s.id}
             onClick={() => act(s)}
             onKeyDown={keys(s)}
@@ -88,7 +90,7 @@ export function CliSessions(p: { cwd: string; rows?: number; onShown?: (rows: nu
                 </span>
             </span>
             <span class="cli-end">
-                <Show when={source(s)?.enabled} fallback={<span class="cli-off">{turnOn(s)}</span>}>
+                <Show when={enabled(s)} fallback={<span class="cli-off">{turnOn(s)}</span>}>
                     <span class="cli-ago">{(now(), agoText(s.updatedAt))}</span>
                     <span class="cli-go">
                         {busy() === s.id ? "Importing…" : "Import"}
@@ -110,7 +112,7 @@ export function CliSessions(p: { cwd: string; rows?: number; onShown?: (rows: nu
                     <Show when={s.recent && !s.harnessId}> · <span class="cli-live">Still open in a terminal</span></Show>
                 </span>
             </span>
-            <span class="cl-act">{s.harnessId ? "Open" : source(s)?.enabled ? "Import" : "Turn on in Settings"}</span>
+            <span class="cl-act">{s.harnessId ? "Open" : enabled(s) ? "Import" : "Turn on in Settings"}</span>
         </button>
     );
     const sourceNames = () => [...new Set((list()?.sources ?? []).map((s) => s.name))].join(" and ") || "Claude Code and Codex";
