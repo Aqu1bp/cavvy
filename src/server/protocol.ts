@@ -1373,6 +1373,8 @@ export interface GuiSettings {
     /** Compact long conversations left idle (true, the default: one-hour caches; "always": five-minute ones too). */
     idleCompaction?: boolean | "always";
     webSearch?: string;
+    /** The Browser tools and pane (false turns them off; true, the default, is stored as unset). */
+    browser?: boolean;
     allowBypass?: boolean;
     /** A message sent while a turn runs: steer it (default) or wait for it to end. */
     followUpBehavior?: FollowUpMode;
@@ -1420,7 +1422,10 @@ export interface ProjectScripts {
 // ---------------------------------------------------------------------------
 // The browser (src/browser): a session's tabs, seen and driven from the GUI's Browser pane.
 
-/** What a person did in the pane, in the page's CSS pixels. `modifiers`: Input.dispatchKeyEvent's bits (Alt 1, Control 2, Meta 4, Shift 8). */
+/** The modifier keys held during an input, as the bits of a BrowserInput's `modifiers` (Input.dispatchKeyEvent's). */
+export const BROWSER_MODIFIERS = { Alt: 1, Control: 2, Meta: 4, Shift: 8 } as const;
+
+/** What a person did in the pane, in the page's CSS pixels. */
 export type BrowserInput =
     /** `buttons`: MouseEvent.buttons (left 1, right 2, middle 4) held after the event. */
     | { kind: "mouse"; type: "move" | "down" | "up"; x: number; y: number; button?: "left" | "middle" | "right"; buttons?: number; clickCount?: number; modifiers?: number }
@@ -1464,6 +1469,13 @@ export type BrowserCommand = "goto" | "back" | "forward" | "reload" | "new_tab" 
 // Events
 
 export type ServerEvent =
+    /** A session's browser changed: its tabs, who drives them, or whether it runs (sent to the windows that have the session open). */
+    | { type: "browser.state"; sessionId: string; state: BrowserState }
+    /**
+     * A frame of the current tab, for a window watching it (browser.watch), sent when it has drawn the last (browser.ack).
+     * `data`: a JPEG, base64; `width` and `height`: the page's size in CSS pixels, which a click's coordinates are in.
+     */
+    | { type: "browser.frame"; sessionId: string; tab: number; data: string; width: number; height: number }
     /**
      * `pos`: where in the shell's output this ends (the window gives it back to
      * terminal.attach). `reset`: the window's screen is to be reset before `data`,
@@ -1557,6 +1569,24 @@ export interface Methods {
     "terminal.ack": { params: { id: string; chars: number }; result: null };
     "terminal.resize": { params: { id: string; cols: number; rows: number }; result: null };
     "terminal.close": { params: { id: string }; result: null };
+    /** The session's browser: where it stands, with its tabs. It starts with the first page, not with this. */
+    "browser.state": { params: { id: string }; result: BrowserState };
+    /**
+     * The window shows the session's current tab, in a pane of this size (CSS pixels; `scale`: device pixels per CSS pixel):
+     * the page takes that size, and frames come as browser.frame until browser.unwatch. Another call with a new size resizes.
+     */
+    "browser.watch": { params: { id: string; width: number; height: number; scale: number }; result: BrowserState };
+    "browser.unwatch": { params: { id: string }; result: null };
+    /** The window has drawn the last frame it was sent. */
+    "browser.ack": { params: { id: string }; result: null };
+    /** What the person did in the pane; it takes the tab from the agent (a pointer only moving doesn't). */
+    "browser.input": { params: { id: string; tab?: number; input: BrowserInput }; result: null };
+    /** The address bar and the tab strip: the person opening or leaving a page takes the tab. */
+    "browser.command": { params: { id: string; command: BrowserCommand; url?: string; tab?: number }; result: BrowserState };
+    /** The person gives the tab back to the agent. */
+    "browser.handBack": { params: { id: string; tab?: number }; result: null };
+    /** The person answers a confirm or prompt the page is showing. */
+    "browser.dialog": { params: { id: string; accept: boolean; text?: string; tab?: number }; result: null };
     /** After scripts.run, once the window has sent what was typed while it opened: the script's command may be typed now. */
     "terminal.arm": { params: { id: string }; result: null };
     /**

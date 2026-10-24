@@ -19,12 +19,16 @@ export const MAX_TABS = 8;
 /** What the window shows of the current tab, with the tab it came from. */
 export type TabFrame = Frame & { tab: number };
 
+const TURNED_OFF = "The browser is turned off: browser.enabled is false in the settings.";
+
 /** The most state announcements are sent: the changes of a busy page arrive in bursts. */
 const ANNOUNCE_MS = 40;
 
 export interface SessionOptions {
     root: string;
     settings: () => Settings;
+    /** Why the permission rules (deny rules) keep a page from being at this address, if they do. */
+    refuse?: (url: string) => string | undefined;
     /** Tests: shorter idle and startup times. */
     pool?: Pick<PoolOptions, "idleMs" | "startupMs">;
 }
@@ -41,6 +45,10 @@ export class BrowserSession implements PoolClient {
     private view?: Viewport;
     private streaming: Promise<void> = Promise.resolve();
     private crashed = false;
+    /** Tabs being opened (a slot each until they are tabs). */
+    private opening = 0;
+    /** Calls in progress (run). */
+    private calls = 0;
     /** Why the tabs are gone, told with the next call that asks for one. */
     private lostNote?: string;
     disposed = false;
@@ -60,7 +68,9 @@ export class BrowserSession implements PoolClient {
         const tabs = this.tabInfo();
         if (this.pool?.running || this.pool?.launching) return { status: this.pool.running ? "ready" : "starting", tabs, active: this.active };
         if (this.crashed) return { status: "crashed", error: "The browser stopped unexpectedly. Open a page to start it again.", tabs, active: this.active };
-        const found = cachedChrome(browserSettings(this.o.settings()).executable);
+        const s = browserSettings(this.o.settings());
+        if (!s.enabled) return { status: "unavailable", error: TURNED_OFF, tabs, active: this.active };
+        const found = cachedChrome(s.executable);
         return found.ok ? { status: "idle", tabs, active: this.active } : { status: "unavailable", error: found.error, tabs, active: this.active };
     }
 
@@ -127,6 +137,10 @@ export class BrowserSession implements PoolClient {
         return this.feed.size > 0;
     }
 
+    busy(): boolean {
+        return this.calls > 0;
+    }
+
     /**
      * Streams the current tab while a window watches, sized to its pane; every other tab, and all of them when nobody
      * watches, go back to the agent's size. One change at a time.
@@ -177,8 +191,18 @@ export class BrowserSession implements PoolClient {
         return this.view ?? AGENT_VIEWPORT;
     }
 
+    refuse(url: string): string | undefined {
+        return this.o.refuse?.(url);
+    }
+
     /** A page a tab opened is a tab of the session; the current one stays where it is (the agent's next call is about the page it was on). */
-    adopt(page: Page) {
+    adopt(page: Page, opener: Page) {
+        // Past the limit it is closed: popups are no way round it.
+        if (this.tabs.size + this.opening >= MAX_TABS) {
+            opener.console.add("error", `A page this one opened was closed: this session already has ${MAX_TABS} tabs.`);
+            void this.pool?.closePage(page);
+            return;
+        }
         this.add(page);
         // The new page opened in front of the one the agent is working in.
         const current = this.tabs.get(this.active ?? -1);
@@ -224,12 +248,12 @@ export class BrowserSession implements PoolClient {
         this.announce();
     }
 
-    /** The tab `id`, or the current one; opens one if there is none. */
-    async page(id?: number): Promise<Page> {
+    /** The tab `id`, or the current one; opens one if there is none (unless the browser just went away: `open` says to start it again). */
+    async page(id?: number, o: { open?: boolean } = {}): Promise<Page> {
         if (this.disposed) throw new BrowserError("This session's browser was closed.");
         if (id !== undefined) {
             const page = this.tabs.get(id);
-            if (!page) throw new BrowserError(`${this.lostNote ?? `There is no tab ${id}.`} ${this.tabsText()}`.trim());
+            if (!page) throw this.noTab(id);
             this.pool?.touch();
             return page;
         }
@@ -238,22 +262,27 @@ export class BrowserSession implements PoolClient {
             this.pool?.touch();
             return current;
         }
+        if (this.lostNote && !o.open) throw new BrowserError(`${this.lostNote} Open a page again (BrowserNavigate) to start a new browser.`);
         return this.openTab("agent");
     }
 
     /** A new blank tab, which becomes the current one. */
     async openTab(owner: Owner = "agent"): Promise<Page> {
         if (this.disposed) throw new BrowserError("This session's browser was closed.");
-        if (this.tabs.size >= MAX_TABS) throw new BrowserError(`This session already has ${MAX_TABS} tabs open. Close one first (BrowserNavigate action=close_tab). ${this.tabsText()}`);
+        if (!browserSettings(this.o.settings()).enabled) throw new BrowserError(TURNED_OFF);
+        if (this.tabs.size + this.opening >= MAX_TABS) throw new BrowserError(`This session already has ${MAX_TABS} tabs open. Close one first (BrowserNavigate action=close_tab). ${this.tabsText()}`);
         const pool = (this.pool ??= acquirePool({ root: this.o.root, settings: this.o.settings, ...this.o.pool }, this));
         this.crashed = false;
         this.announce();
         let page: Page;
+        this.opening++;
         try {
             page = await pool.openPage(this, owner);
         } catch (e) {
             this.announce();
             throw lostBrowser(e) ?? e;
+        } finally {
+            this.opening--;
         }
         this.lostNote = undefined;
         if (this.disposed) {
@@ -265,16 +294,21 @@ export class BrowserSession implements PoolClient {
     }
 
     async switchTab(id: number) {
-        if (!this.tabs.has(id)) throw new BrowserError(`There is no tab ${id}. ${this.tabsText()}`);
+        if (!this.tabs.has(id)) throw this.noTab(id);
         this.setActive(id);
         this.pool?.touch();
     }
 
     async closeTab(id: number) {
         const page = this.tabs.get(id);
-        if (!page) throw new BrowserError(`There is no tab ${id}. ${this.tabsText()}`);
+        if (!page) throw this.noTab(id);
         this.forget(id);
         await this.pool?.closePage(page);
+    }
+
+    /** A tab that isn't there: gone with the browser, or never was. */
+    private noTab(id: number): BrowserError {
+        return new BrowserError(`${this.lostNote ?? `There is no tab ${id}.`} ${this.tabsText()}`.trim());
     }
 
     /** The id of a tab, for messages. */
@@ -294,10 +328,14 @@ export class BrowserSession implements PoolClient {
 
     /** A browser call that failed because the browser went away says so in words the agent can act on. */
     async run<T>(fn: () => Promise<T>): Promise<T> {
+        this.calls++;
         try {
             return await fn();
         } catch (e) {
             throw lostBrowser(e) ?? e;
+        } finally {
+            this.calls--;
+            this.pool?.touch();
         }
     }
 
@@ -374,6 +412,8 @@ export class BrowserSession implements PoolClient {
         if (!url) throw new BrowserError(`"${text.slice(0, 100)}" isn't an address. Type a URL like localhost:3000 or https://example.com.`);
         const checked = checkUrl(url, this.o.root);
         if (!checked.ok) throw new BrowserError(checked.error);
+        const refused = this.refuse(checked.url);
+        if (refused) throw new BrowserError(`${checked.url.slice(0, 100)} can't be opened: ${refused}`);
         this.taken(page);
         await this.run(() => page.goto(checked.url));
     }

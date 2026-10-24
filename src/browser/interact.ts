@@ -106,8 +106,10 @@ async function where(page: Page, t: Target): Promise<{ point: Point; what: strin
 type MouseButton = "left" | "middle" | "right";
 const HELD = { left: 1, right: 2, middle: 4 } as const;
 
-function mouse(page: Page, type: "mouseMoved" | "mousePressed" | "mouseReleased" | "mouseWheel", p: Point, extra: Record<string, unknown> = {}) {
-    return page.input("Input.dispatchMouseEvent", { type, x: p.x, y: p.y, ...extra });
+/** `agent`: the agent's input, which stops the moment the person takes the tab or the call is cancelled; without it, the person's. */
+function mouse(page: Page, type: "mouseMoved" | "mousePressed" | "mouseReleased" | "mouseWheel", p: Point, extra: Record<string, unknown> = {}, agent?: { signal?: AbortSignal }) {
+    const params = { type, x: p.x, y: p.y, ...extra };
+    return agent ? page.agentInput("Input.dispatchMouseEvent", params, agent.signal) : page.input("Input.dispatchMouseEvent", params);
 }
 
 /** After an input: gives the page a moment to react, then waits for what it started (a request, a navigation) to settle. */
@@ -118,22 +120,23 @@ async function afterInput(page: Page, signal?: AbortSignal) {
 }
 
 export async function click(page: Page, t: Target, o: { count?: 1 | 2; button?: MouseButton } = {}, signal?: AbortSignal): Promise<string> {
-    page.ready();
+    page.actable(signal);
     const { point, what } = await where(page, t);
     const button = o.button ?? "left";
-    await mouse(page, "mouseMoved", point);
+    const agent = { signal };
+    await mouse(page, "mouseMoved", point, {}, agent);
     for (let n = 1; n <= (o.count ?? 1); n++) {
-        await mouse(page, "mousePressed", point, { button, buttons: HELD[button], clickCount: n });
-        await mouse(page, "mouseReleased", point, { button, buttons: 0, clickCount: n });
+        await mouse(page, "mousePressed", point, { button, buttons: HELD[button], clickCount: n }, agent);
+        await mouse(page, "mouseReleased", point, { button, buttons: 0, clickCount: n }, agent);
     }
     await afterInput(page, signal);
     return `${o.count === 2 ? "Double-clicked" : button === "right" ? "Right-clicked" : "Clicked"} ${what}`;
 }
 
 export async function hover(page: Page, t: Target, signal?: AbortSignal): Promise<string> {
-    page.ready();
+    page.actable(signal);
     const { point, what } = await where(page, t);
-    await mouse(page, "mouseMoved", point);
+    await mouse(page, "mouseMoved", point, {}, { signal });
     await afterInput(page, signal);
     return `Hovered ${what}`;
 }
@@ -154,11 +157,11 @@ const SCROLLED = `new Promise((resolve) => {
 })`;
 
 export async function scroll(page: Page, t: Target, delta: { x?: number; y?: number }, signal?: AbortSignal): Promise<string> {
-    page.ready();
+    page.actable(signal);
     const at = t.ref || typeof t.x === "number" ? await where(page, t) : { point: { x: page.viewport.width / 2, y: page.viewport.height / 2 }, what: "the page" };
     const deltaX = delta.x ?? 0;
     const deltaY = delta.y ?? (delta.x === undefined ? 600 : 0);
-    await mouse(page, "mouseWheel", at.point, { deltaX, deltaY });
+    await mouse(page, "mouseWheel", at.point, { deltaX, deltaY }, { signal });
     // Smooth scrolling takes a few frames to arrive, and scrolling can load more (an endless list).
     await page.send("Runtime.evaluate", { expression: SCROLLED, awaitPromise: true });
     await afterInput(page, signal);
@@ -183,20 +186,24 @@ function keyParams(press: KeyPress, type: "down" | "up") {
     };
 }
 
-async function pressKey(page: Page, press: KeyPress) {
-    await page.input("Input.dispatchKeyEvent", keyParams(press, "down"));
-    await page.input("Input.dispatchKeyEvent", keyParams(press, "up"));
+async function pressKey(page: Page, press: KeyPress, signal?: AbortSignal) {
+    await page.agentInput("Input.dispatchKeyEvent", keyParams(press, "down"), signal);
+    await page.agentInput("Input.dispatchKeyEvent", keyParams(press, "up"), signal);
 }
 
 export async function press(page: Page, key: string, modifiers: readonly string[] = [], signal?: AbortSignal): Promise<string> {
-    page.ready();
+    page.actable(signal);
     const parsed = parseKey(key, modifiers);
     if (!parsed) throw new BrowserError(`"${key}" isn't a key I know. Use a name like Enter, Tab, Escape, ArrowDown, PageDown, F5, a single character, or a combination such as Control+A; modifiers can also go in modifiers (Control, Shift, Alt, Meta).`);
-    await pressKey(page, parsed);
+    await pressKey(page, parsed, signal);
     await afterInput(page, signal);
     const held = ["Control", "Alt", "Shift", "Meta"].filter((m) => parsed.modifiers & MODIFIER_BITS[m as keyof typeof MODIFIER_BITS]);
     return `Pressed ${[...held, parsed.key === " " ? "Space" : parsed.key].join("+")}`;
 }
+
+/** The handles to page objects an action holds are made in this group, and let go of together when it's done. */
+const OBJECTS = "harness-act";
+const releaseObjects = (page: Page) => page.send("Runtime.releaseObjectGroup", { objectGroup: OBJECTS }).catch(() => undefined);
 
 /** Makes the element at hand the active one: by ref (focused, or clicked when it can't be), else whatever has focus now. */
 async function focused(page: Page, ref: string | undefined): Promise<{ objectId: string; what: string }> {
@@ -205,13 +212,13 @@ async function focused(page: Page, ref: string | undefined): Promise<{ objectId:
         try {
             await page.send("DOM.scrollIntoViewIfNeeded", { backendNodeId: entry.backendNodeId });
             await page.send("DOM.focus", { backendNodeId: entry.backendNodeId });
-            const { object } = await page.send<{ object: { objectId: string } }>("DOM.resolveNode", { backendNodeId: entry.backendNodeId });
+            const { object } = await page.send<{ object: { objectId: string } }>("DOM.resolveNode", { backendNodeId: entry.backendNodeId, objectGroup: OBJECTS });
             return { objectId: object.objectId, what: describe(entry, ref) };
         } catch (e) {
             throw elementError(e, ref, entry);
         }
     }
-    const r = await page.send<{ result: { objectId?: string; subtype?: string } }>("Runtime.evaluate", { expression: "document.activeElement" });
+    const r = await page.send<{ result: { objectId?: string; subtype?: string } }>("Runtime.evaluate", { expression: "document.activeElement", objectGroup: OBJECTS });
     if (!r.result.objectId || r.result.subtype === "null") throw new BrowserError("Nothing is focused to type into: give the ref of a text field.");
     return { objectId: r.result.objectId, what: "the focused element" };
 }
@@ -235,17 +242,22 @@ const CLEAR = `function () {
 }`;
 
 export async function type(page: Page, o: { ref?: string; text: string; clear?: boolean; submit?: boolean }, signal?: AbortSignal): Promise<string> {
-    page.ready();
+    page.actable(signal);
     if (o.text.length > MAX_TEXT) throw new BrowserError(`That text is ${o.text.length} characters; type at most ${MAX_TEXT} at a time.`);
-    const target = await focused(page, o.ref);
-    if (o.clear) {
-        const r = await page.send<{ result: { value?: boolean } }>("Runtime.callFunctionOn", { objectId: target.objectId, functionDeclaration: CLEAR, returnByValue: true });
-        if (!r.result.value) throw new BrowserError(`${target.what} isn't something text can be cleared from.`);
+    try {
+        const target = await focused(page, o.ref);
+        if (o.clear) {
+            page.actable(signal);
+            const r = await page.send<{ result: { value?: boolean } }>("Runtime.callFunctionOn", { objectId: target.objectId, functionDeclaration: CLEAR, returnByValue: true });
+            if (!r.result.value) throw new BrowserError(`${target.what} isn't something text can be cleared from.`);
+        }
+        if (o.text) await page.agentInput("Input.insertText", { text: o.text }, signal);
+        if (o.submit) await pressKey(page, parseKey("Enter")!, signal);
+        await afterInput(page, signal);
+        return `${o.clear ? "Replaced the text of" : "Typed into"} ${target.what}${o.submit ? " and pressed Enter" : ""}`;
+    } finally {
+        await releaseObjects(page);
     }
-    if (o.text) await page.input("Input.insertText", { text: o.text });
-    if (o.submit) await pressKey(page, parseKey("Enter")!);
-    await afterInput(page, signal);
-    return `${o.clear ? "Replaced the text of" : "Typed into"} ${target.what}${o.submit ? " and pressed Enter" : ""}`;
 }
 
 /** Chooses an option of a <select> by its value or its label (exact first, then a case-insensitive match). */
@@ -263,22 +275,27 @@ const CHOOSE = `function (wanted) {
 }`;
 
 export async function select(page: Page, ref: string, value: string, signal?: AbortSignal): Promise<string> {
-    page.ready();
+    page.actable(signal);
     const entry = entryOf(page, ref);
-    let objectId: string;
     try {
-        await page.send("DOM.scrollIntoViewIfNeeded", { backendNodeId: entry.backendNodeId });
-        objectId = (await page.send<{ object: { objectId: string } }>("DOM.resolveNode", { backendNodeId: entry.backendNodeId })).object.objectId;
-    } catch (e) {
-        throw elementError(e, ref, entry);
+        let objectId: string;
+        try {
+            await page.send("DOM.scrollIntoViewIfNeeded", { backendNodeId: entry.backendNodeId });
+            objectId = (await page.send<{ object: { objectId: string } }>("DOM.resolveNode", { backendNodeId: entry.backendNodeId, objectGroup: OBJECTS })).object.objectId;
+        } catch (e) {
+            throw elementError(e, ref, entry);
+        }
+        page.actable(signal);
+        const r = await page.send<{ result: { value?: { error?: string; options?: string[]; label?: string } } }>("Runtime.callFunctionOn", { objectId, functionDeclaration: CHOOSE, arguments: [{ value }], returnByValue: true });
+        const out = r.result.value ?? {};
+        if (out.error === "not a select") throw new BrowserError(`${describe(entry, ref)} isn't a <select>. Click it instead.`);
+        if (out.error === "no option") throw new BrowserError(`${describe(entry, ref)} has no option "${value}". Its options: ${(out.options ?? []).map((o) => JSON.stringify(o)).join(", ")}.`);
+        if (out.error === "disabled") throw new BrowserError(`The option "${out.label}" is disabled.`);
+        await afterInput(page, signal);
+        return `Selected ${JSON.stringify(out.label)} in ${describe(entry, ref)}`;
+    } finally {
+        await releaseObjects(page);
     }
-    const r = await page.send<{ result: { value?: { error?: string; options?: string[]; label?: string } } }>("Runtime.callFunctionOn", { objectId, functionDeclaration: CHOOSE, arguments: [{ value }], returnByValue: true });
-    const out = r.result.value ?? {};
-    if (out.error === "not a select") throw new BrowserError(`${describe(entry, ref)} isn't a <select>. Click it instead.`);
-    if (out.error === "no option") throw new BrowserError(`${describe(entry, ref)} has no option "${value}". Its options: ${(out.options ?? []).map((o) => JSON.stringify(o)).join(", ")}.`);
-    if (out.error === "disabled") throw new BrowserError(`The option "${out.label}" is disabled.`);
-    await afterInput(page, signal);
-    return `Selected ${JSON.stringify(out.label)} in ${describe(entry, ref)}`;
 }
 
 /** Resolves true once what's wanted is on the page; the page itself watches for it and gives up after `ms`. */

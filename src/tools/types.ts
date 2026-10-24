@@ -192,6 +192,11 @@ export function isBrowserTool(name: string): boolean {
     return BROWSER_TOOL_NAMES.has(name);
 }
 
+/** A browser call that only moves the pointer over the page: it goes unasked, though not in plan mode (a page's hover handlers run). */
+export function isQuietBrowserCall(name: string, input: any): boolean {
+    return name === "BrowserAct" && input?.action === "hover";
+}
+
 export function isReadOnly(tool: Tool<any>, input: any): boolean {
     return typeof tool.readOnly === "function" ? tool.readOnly(input) : tool.readOnly;
 }

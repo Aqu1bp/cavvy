@@ -30,12 +30,12 @@ import { findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./
 import { accountTarget, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, HARNESS_FILES, harnessHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules, withoutHeredocData } from "./bash-safety";
 import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, sandboxPolicy, type SandboxKind, type SandboxPolicy } from "./sandbox";
 import { stableStringify, type ApprovedAction } from "./classifier";
-import { isBrowserTool, isReadOnly, isShellTool } from "../tools/types";
+import { isBrowserTool, isQuietBrowserCall, isReadOnly, isShellTool } from "../tools/types";
 import { canonical, expandPath, isInside, spellings } from "../util/files";
 import { harnessHome, paths } from "../config/paths";
 import { childEnv } from "../util/env";
 import { accountCredentialFiles, accountFolders, accountProtectedPaths } from "../providers/accounts";
-import { navigationTarget } from "../browser/url-policy";
+import { fileUrlPath, navigationTarget } from "../browser/url-policy";
 
 export type Behavior = "allow" | "ask" | "deny";
 
@@ -176,6 +176,33 @@ export class PermissionChecker {
         if (tool.name === "WebFetch" || tool.name === "BrowserNavigate") t.url = String(input?.url ?? "");
         if (tool.name === "Task") t.agentType = String(input?.subagent_type ?? "general-purpose");
         return t;
+    }
+
+    /** The file a BrowserNavigate call to a file: URL would show, as a Read target. */
+    private openedFile(input: any): RuleTarget | undefined {
+        if ((input?.action ?? "goto") !== "goto" && input?.action !== "new_tab") return undefined;
+        const path = typeof input?.url === "string" ? fileUrlPath(input.url) : undefined;
+        return path === undefined ? undefined : { toolName: "Read", path };
+    }
+
+    /**
+     * Why a page may not go to this address by itself (a redirect, a link, a script, a popup), if it may not: a deny rule
+     * for its host, or for the file it names. Asks and allows don't come into it: the page's own navigations aren't asked about.
+     */
+    urlRefusal(url: string): string | undefined {
+        const file = fileUrlPath(url);
+        if (file !== undefined) {
+            let dir = false;
+            try {
+                dir = statSync(file).isDirectory();
+            } catch {
+                // not there: the browser says so
+            }
+            const why = this.userReadRefusal(file, { sensitive: true, dir });
+            return why && `${why[0]!.toUpperCase()}${why.slice(1)}`;
+        }
+        const rule = findMatch(this.settings().permissions?.deny ?? [], { toolName: "BrowserNavigate", url }, this.root, "deny");
+        return rule ? `Denied by permission rule ${rule}` : undefined;
     }
 
     /** A new, cleared, resumed or switched-to session: nothing approved in another one carries over. */
@@ -389,6 +416,13 @@ export class PermissionChecker {
         if (t.path && this.isProtected(t.path, tool.name, tool.name === "Grep", true)) {
             return { behavior: "deny", reason: "Access to the harness credential store is blocked." };
         }
+        // A page opened from a file shows the file: the rules for reading it apply as they do to Read.
+        const opened = tool.name === "BrowserNavigate" ? this.openedFile(input) : undefined;
+        if (opened) {
+            const rule = findMatch(deny, opened, this.root, "deny") ?? findMatch(deny, { ...opened, path: canonical(opened.path!) }, this.root, "deny");
+            if (rule) return { behavior: "deny", rule, reason: `Denied by permission rule ${rule}` };
+            if (this.isProtected(opened.path!, "Read", false, true)) return { behavior: "deny", reason: "Access to the harness credential store is blocked." };
+        }
         // What the content checks read: a here-document's data blanked when nothing on the line can run it.
         const judged = isShellTool(tool.name) ? heredocDataBlanked(t.command ?? "") : "";
         if (isShellTool(tool.name) && accountTarget(judged, cwd, this.shellEnv())) {
@@ -423,7 +457,7 @@ export class PermissionChecker {
             return { behavior: "ask", dangerous: true, reason: `This command ${dangerous}.` };
         }
 
-        const askRule = findMatch(ask, t, this.root, "deny") ?? (resolved && findMatch(ask, resolved, this.root, "deny"));
+        const askRule = findMatch(ask, t, this.root, "deny") ?? (resolved && findMatch(ask, resolved, this.root, "deny")) ?? (opened && (findMatch(ask, opened, this.root, "deny") ?? findMatch(ask, { ...opened, path: canonical(opened.path!) }, this.root, "deny")));
         if (askRule && mode !== "bypassPermissions") return { behavior: "ask", rule: askRule, reason: `Rule ${askRule} requires confirmation` };
 
         if (mode === "bypassPermissions") return { behavior: "allow", reason: "bypass mode" };
@@ -516,7 +550,7 @@ export class PermissionChecker {
                 }
                 // What a page does is the page's: clicking and typing run its scripts and can submit its forms. Hovering,
                 // scrolling and waiting change nothing, so they go unasked; the rest asks once, then "don't ask again" allows the tool.
-                if (isBrowserTool(tool.name) && isReadOnly(tool, input)) return { behavior: "allow" };
+                if (isBrowserTool(tool.name) && (isReadOnly(tool, input) || isQuietBrowserCall(tool.name, input))) return { behavior: "allow" };
                 // GitCommit, GitPush, CreatePullRequest: "don't ask again" allows the tool in this project.
                 const suggestions = [tool.name];
                 // Publishing reaches other people and can't be taken back: auto mode's reviewer doesn't decide it, the user does.
@@ -528,6 +562,7 @@ export class PermissionChecker {
                 if (tool.name === "BrowserNavigate") {
                     // A dev server, a file in the project or a blank page isn't the network; a host is (and one the browser would refuse always asks).
                     const target = navigationTarget(input);
+                    if (opened && this.isSensitive(opened.path!)) return { behavior: "ask", reason: "This file may contain credentials." };
                     if (!target || target.kind === "local") return { behavior: "allow" };
                     const suggestions = target.kind === "host" ? [`WebFetch(domain:${target.host})`] : [];
                     return mode === "auto" ? { behavior: "ask", needsClassifier: true, suggestions } : { behavior: "ask", suggestions };

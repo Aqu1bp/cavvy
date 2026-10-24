@@ -68,7 +68,7 @@ import { registerTools, type Registration, type ServerTool, type ServerToolResul
 import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
 import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMonitorNote } from "../tools/monitor";
-import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBrowserCall } from "../tools/browser-tools";
+import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBrowserCall, servedBrowserName } from "../tools/browser-tools";
 import { offered } from "../tools/index";
 import { lostNote, SessionBackground, type BackgroundTaskInfo } from "./background";
 import { SECRET_INSTRUCTIONS, secretTools, secretToolTitle } from "./secret-tools";
@@ -547,7 +547,7 @@ export class Agent {
             this.state.lsp ??= new LspManager({ root, settings: o.settings, trusted: () => userTrusts(root) });
             this.state.lsp.attach(o.session.meta.id, (level, message) => this.emit({ type: "notice", level, message }));
             // Its tabs in the project's browser open with its first page, and close with the session (whoever owns the tool state disposes it).
-            this.state.browser ??= new BrowserSession({ root, settings: o.settings });
+            this.state.browser ??= new BrowserSession({ root, settings: o.settings, refuse: (url) => o.checker.urlRefusal(url) });
         }
     }
 
@@ -1641,7 +1641,7 @@ export class Agent {
             instructions.push(orchestrationInstructions(caller, this.oneShot));
         }
         if (store && ask) {
-            tools.push(...secretTools({ store, ask, authorize: (name, input, signal) => this.authorizeSecretTool(name, input, signal), run: (o, signal) => this.runWithSecrets(o, signal) }));
+            tools.push(...secretTools({ store, ask, authorize: (name, input, signal) => this.authorizeServedTool(name, secretToolTitle(name, input), input, signal), run: (o, signal) => this.runWithSecrets(o, signal) }));
             instructions.push(SECRET_INSTRUCTIONS);
         }
         if (scheduling) {
@@ -2713,10 +2713,10 @@ export class Agent {
         this.emit({ type: "usage", usage, cost, contextTokens: this.contextTokens });
     }
 
-    /** The CLI auto-approves our MCP tools, so their explicit rules must be enforced here. */
-    private async authorizeSecretTool(name: string, input: Record<string, unknown>, signal: AbortSignal): Promise<ServerToolResult | undefined> {
+    /** The CLI auto-approves our MCP tools, so their explicit rules (mcp__harness__*, mcp__harness__browser_act) must be enforced here. */
+    private async authorizeServedTool(name: string, title: string | undefined, input: Record<string, unknown>, signal: AbortSignal): Promise<ServerToolResult | undefined> {
         const refuse = (text: string): ServerToolResult => ({ text, isError: true });
-        const tool = backendTool(`mcp__${MCP_SERVER_NAME}__${name}`, secretToolTitle(name, input));
+        const tool = backendTool(`mcp__${MCP_SERVER_NAME}__${name}`, title);
         // Like the command check below, explicit asks still apply in bypass mode.
         const decision = this.o.checker.check(tool, input, "default", this.state.cwd);
         if (decision.behavior === "deny") return refuse(decision.reason ?? "Denied by a permission rule.");
@@ -2762,6 +2762,12 @@ export class Agent {
     private async runServed(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal, callId?: string): Promise<ServerToolResult> {
         // Only the main agent can be woken, so a sub-agent gets no Monitor (Harness's sub-agents don't either). Nor can its stop end the main turn.
         if (tool.name === "Monitor" && callId && (await this.fromBackendSubagent(callId))) return { text: "Monitor isn't available to sub-agents: only the main agent can be woken by one.", isError: true };
+        // The CLI approves Harness's tools without asking: a rule naming the tool as served is enforced here, before the checks its own name gets.
+        const served = servedBrowserName(tool.name);
+        if (served) {
+            const refused = await this.authorizeServedTool(served, tool.title(input), input, signal);
+            if (refused) return refused;
+        }
         const call: ToolCallPart = { type: "tool_call", id: callId ?? `served_${++this.servedCalls}`, name: tool.name, input };
         const prep = await this.prepare(call, signal, tool);
         if ("result" in prep) {

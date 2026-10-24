@@ -16,14 +16,18 @@ export interface PoolClient {
     hooks: PageHooks;
     /** The size a new tab opens at. */
     viewport(): Viewport;
-    /** A page one of its tabs opened (window.open): now one of its tabs. */
-    adopt(page: Page): void;
+    /** A page one of its tabs (`opener`) opened (window.open): now one of its tabs, or closed if it has too many. */
+    adopt(page: Page, opener: Page): void;
+    /** Why the permission rules keep a page from being at this address, if they do (a page's own navigations aren't asked about). */
+    refuse(url: string): string | undefined;
     /** A tab went away on its own (the page closed itself). */
     closed(page: Page): void;
     /** The browser is gone, with every tab. `crashed`: it wasn't meant to end. */
     lost(crashed: boolean): void;
     /** A person is looking at one of its tabs. */
     watching(): boolean;
+    /** A call is using the browser now (a long wait, a slow page). */
+    busy(): boolean;
 }
 
 export interface PoolOptions {
@@ -93,7 +97,7 @@ export class BrowserPool {
     }
 
     private async setUp(cdp: CdpClient, a: Attachment, client: PoolClient, owner: Owner): Promise<Page> {
-        const page = await Page.attach(cdp, a.sessionId, a.info.targetId, { root: this.o.root, viewport: client.viewport(), owner, hooks: client.hooks });
+        const page = await Page.attach(cdp, a.sessionId, a.info.targetId, { root: this.o.root, viewport: client.viewport(), owner, hooks: client.hooks, refuse: (url) => client.refuse(url) });
         this.pages.set(a.info.targetId, { page, client });
         return page;
     }
@@ -126,7 +130,7 @@ export class BrowserPool {
         clearTimeout(this.idleTimer);
         if (!this.running || this.disposed) return;
         this.idleTimer = setTimeout(() => {
-            if ([...this.clients].some((c) => c.watching())) this.touch();
+            if ([...this.clients].some((c) => c.watching() || c.busy())) this.touch();
             else void this.shutdown(false);
         }, this.o.idleMs ?? IDLE_MS);
         this.idleTimer.unref?.();
@@ -152,9 +156,13 @@ export class BrowserPool {
         } catch (e) {
             throw new BrowserError(`The browser didn't start: ${(e as Error).message}`);
         }
-        let cdp: CdpClient;
+        const failed = async (e: unknown, cdp?: CdpClient): Promise<never> => {
+            cdp?.close();
+            await chrome.stop();
+            throw new BrowserError(`The browser didn't start: ${(e as Error).message}`);
+        };
+        const cdp = await CdpClient.connect(chrome.wsUrl, { signal: this.abort.signal }).catch((e) => failed(e));
         try {
-            cdp = await CdpClient.connect(chrome.wsUrl, { signal: this.abort.signal });
             this.listen(cdp);
             cdp.onClose(() => void this.lost(chrome, cdp, true));
             // Every new page waits for the pool to set it up (URL policy and the rest) before it loads anything.
@@ -164,8 +172,7 @@ export class BrowserPool {
             // A page can't put files on the disk: a download is refused, and told to the tab it came from.
             await cdp.send("Browser.setDownloadBehavior", { behavior: "deny", eventsEnabled: true });
         } catch (e) {
-            await chrome.stop();
-            throw new BrowserError(`The browser didn't start: ${(e as Error).message}`);
+            return failed(e, cdp);
         }
         if (this.disposed) {
             cdp.close();
@@ -209,7 +216,7 @@ export class BrowserPool {
         try {
             const page = await this.setUp(cdp, a, opener.client, opener.page.control.owner);
             await cdp.send("Runtime.runIfWaitingForDebugger", {}, a.sessionId);
-            opener.client.adopt(page);
+            opener.client.adopt(page, opener.page);
         } catch {
             this.pages.delete(a.info.targetId);
             await cdp.send("Target.closeTarget", { targetId: a.info.targetId }).catch(() => undefined);

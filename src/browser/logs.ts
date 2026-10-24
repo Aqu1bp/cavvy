@@ -49,7 +49,8 @@ export class ConsoleLog {
     unseenErrors = 0;
 
     add(level: ConsoleLevel, text: string, at = Date.now()) {
-        this.ring.push({ at, level, text: cut(text) });
+        // Redacted whole, before the cut: a secret cut in half would no longer look like one.
+        this.ring.push({ at, level, text: cut(redact(text)) });
         if (level === "error" || level === "exception") this.unseenErrors++;
     }
 

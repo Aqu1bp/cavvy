@@ -944,6 +944,13 @@ export class App {
         return true;
     }
 
+    /** Another conversation doesn't get the last one's browser tabs: they close, and the next page opens its own. */
+    private leaveBrowser() {
+        const browser = this.toolState.browser;
+        this.toolState.browser = undefined;
+        void browser?.dispose().catch(() => undefined);
+    }
+
     newSession() {
         const prev = this.session;
         this.leaveHeld();
@@ -956,6 +963,7 @@ export class App {
         this.toolState.fileState.clear();
         this.toolState.todos = [];
         this.toolState.secrets?.clear();
+        this.leaveBrowser();
         this.checker.resetSession();
         this.makeAgent();
         this.schedules.switchSession();
@@ -984,6 +992,7 @@ export class App {
         this.toolState.wakes?.drainRunning();
         resetToolState(this.toolState, this.session.messages);
         this.toolState.secrets?.clear();
+        this.leaveBrowser();
         this.checker.resetSession();
         if (this.agent) this.makeAgent();
         this.replayTranscript();

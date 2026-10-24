@@ -298,6 +298,39 @@ describe.skipIf(!chromePath)("the browser tools, with Chrome", () => {
         await nav({ action: "close_tab", tab: session.active });
     });
 
+    test("an image or script a page reads from a file outside the project doesn't load, one inside does", async () => {
+        const outside = tempDir("harness-browser-outside-");
+        // 1x1 PNG
+        const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
+        await Bun.write(`${outside}/secret.png`, png);
+        await Bun.write(`${root}/inside.png`, png);
+        await Bun.write(`${outside}/secret.js`, "window.leaked = true;");
+        await Bun.write(`${root}/images.html`, `<title>Images</title><img id="in" src="inside.png"><img id="out" src="file://${outside}/secret.png"><script src="file://${outside}/secret.js"></script>`);
+        const r = await nav({ url: `file://${root}/images.html` });
+        expect(r.isError, r.content).toBeFalsy();
+        const seen = JSON.parse((await run(BrowserEvalTool, { expression: `(async () => { await Promise.all([...document.images].map((i) => i.decode().catch(() => undefined))); return { inside: document.getElementById("in").naturalWidth, outside: document.getElementById("out").naturalWidth, leaked: window.leaked === true }; })()` })).content);
+        expect(seen).toEqual({ inside: 1, outside: 0, leaked: false });
+        const logs = (await run(BrowserLogsTool, {})).content;
+        expect(logs).toContain("Blocked a load of file://");
+        await nav({ action: "close_tab", tab: session.active });
+    });
+
+    test("a page that is sent to a host a deny rule names doesn't get there, and the console says why", async () => {
+        const guarded = new BrowserSession({ root, settings: () => ({}), refuse: (url) => (new URL(url).hostname === "localhost" ? "Denied by permission rule WebFetch(domain:localhost)" : undefined), pool: { startupMs: STARTUP_MS } });
+        try {
+            const page = await guarded.openTab("agent");
+            // fine on its own address; the redirect to another name for the same server is what's refused
+            await page.goto(`${site.url}/other`);
+            expect(page.url).toBe(`${site.url}/other`);
+            await page.goto(`${site.url}/bounce`).catch(() => undefined);
+            await until(() => page.console.entries.some((e) => e.text.includes("Denied by permission rule WebFetch(domain:localhost)")), "the console to say why");
+            expect(page.url).not.toContain("localhost");
+            expect(page.console.entries.some((e) => e.level === "error" && e.text.startsWith("Blocked a load of http://localhost:"))).toBe(true);
+        } finally {
+            await guarded.dispose();
+        }
+    });
+
     test("a failed load says why, and a download is refused and noted", async () => {
         const { tab } = await openMain();
         const refused = await nav({ url: "http://127.0.0.1:9/" });

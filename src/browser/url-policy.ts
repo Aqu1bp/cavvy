@@ -6,6 +6,7 @@
 
 import { fileURLToPath } from "url";
 import { canonical, isInside } from "../util/files";
+import { redact } from "../util/redact";
 
 export type UrlCheck = { ok: true; url: string } | { ok: false; error: string };
 
@@ -44,6 +45,16 @@ export function checkUrl(raw: string, root: string): UrlCheck {
         }
         default:
             return { ok: false, error: `${u.protocol} URLs aren't allowed in the browser: use http(s) pages, about:blank, or a file in the project.` };
+    }
+}
+
+/** The file a file: URL names, when it names one. */
+export function fileUrlPath(url: string): string | undefined {
+    try {
+        const u = new URL(url.trim());
+        return u.protocol === "file:" ? fileURLToPath(u) : undefined;
+    } catch {
+        return undefined;
     }
 }
 
@@ -87,7 +98,7 @@ export function navigationTarget(input: { action?: string; url?: unknown }): Nav
     }
 }
 
-/** A URL for messages: no user name or password, and not endless. */
+/** A URL for messages: no user name or password, no secret in it (taken out before it is cut, so a cut can't leave half of one), and not endless. */
 export function displayUrl(url: string): string {
     let shown = url;
     try {
@@ -100,5 +111,6 @@ export function displayUrl(url: string): string {
     } catch {
         // as it is
     }
+    shown = redact(shown);
     return shown.length > 300 ? `${shown.slice(0, 300)}…` : shown;
 }

@@ -1632,6 +1632,148 @@ describe("a served tool's images", () => {
     });
 });
 
+describe("Browser tools for Codex and Claude Code", () => {
+    const BROWSER_TOOLS = ["browser_navigate", "browser_snapshot", "browser_act", "browser_screenshot", "browser_eval", "browser_logs"];
+    const harnessTools = () => (logLines().find((l) => l.mcpConnected)?.tools ?? []) as string[];
+    const { fakeChromeAt, fakeChromeProgram } = require("./helpers/fake-chrome") as typeof import("./helpers/fake-chrome");
+    const { forgetChromeLookup } = require("../src/browser/chrome") as typeof import("../src/browser/chrome");
+    const { projectStateDir } = require("../src/config/paths") as typeof import("../src/config/paths");
+    const savedBrowser = process.env.HARNESS_BROWSER;
+    const program = fakeChromeProgram();
+    const SHOT_PAGE = "http://localhost:4000/";
+    const agentsMade: InstanceType<typeof Agent>[] = [];
+
+    beforeEach(() => {
+        process.env.HARNESS_BROWSER = program;
+        forgetChromeLookup();
+    });
+    afterEach(async () => {
+        for (const a of agentsMade.splice(0)) await a.state.browser?.dispose();
+        process.env.HARNESS_BROWSER = savedBrowser;
+        forgetChromeLookup();
+    });
+
+    /** What the fake Chrome the agent's tabs are in was sent. */
+    const chromeLog = async (method: string) => (await fakeChromeAt(join(projectStateDir(cwd), "browser"))).sent(method);
+    async function codex(o: Partial<Opts> = {}) {
+        const made = await makeAgent({ provider: "codex", ...o });
+        agentsMade.push(made.agent);
+        return made;
+    }
+    const open = { tool: "browser_navigate", args: { url: SHOT_PAGE } };
+
+    test("are served when a browser is found, and not when the setting turns them off or none is installed", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        const on = await codex();
+        expect(await on.run("hi")).toBe("done");
+        expect(harnessTools()).toEqual(expect.arrayContaining(BROWSER_TOOLS));
+        expect(received().find((m) => m.method === "thread/start")!.params.developerInstructions).toContain("browser_snapshot");
+
+        for (const [name, settings, env] of [["the setting", { browser: { enabled: false } }, program], ["no browser", {}, join(cwd, "none")]] as const) {
+            rmSync(LOG, { force: true });
+            process.env.HARNESS_BROWSER = env;
+            forgetChromeLookup();
+            const off = await codex({ settings });
+            expect(await off.run("hi")).toBe("done");
+            expect(harnessTools().filter((t) => BROWSER_TOOLS.includes(t)), name).toEqual([]);
+        }
+    });
+
+    test("reading runs unasked, a screenshot comes back as an image, and acting is asked about as BrowserAct", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([open, { tool: "browser_snapshot", args: {} }, { tool: "browser_screenshot", args: {} }, { tool: "browser_act", args: { action: "click", ref: "e5" } }, { tool: "browser_act", args: { action: "hover", ref: "e5" } }]);
+        const { run, asked, events } = await codex();
+        expect(await run("look at the app")).toBe("done");
+        const [opened, snapshot, shot, click, hover] = mcpResults();
+        expect(opened).toMatchObject({ tool: "browser_navigate", isError: false });
+        expect(opened.text).toContain('- button "Click me" [e5]');
+        expect(snapshot.text).toContain('- button "Click me" [e5]');
+        expect(shot).toMatchObject({ isError: false, images: ["image/png"] });
+        expect(snapshot.images).toBeUndefined();
+        expect(click.text).toMatch(/^Clicked button "Click me" \[e5\]/);
+        expect(hover.isError).toBe(false);
+        // only the click: localhost, reading and hovering don't ask
+        expect(asked.map((r) => [r.tool.name, r.input.action])).toEqual([["BrowserAct", "click"]]);
+        // shown once each, as the Harness tool
+        expect(events.flatMap((e) => (e.type === "tool_start" ? [e.call.name] : []))).toEqual(["BrowserNavigate", "BrowserSnapshot", "BrowserScreenshot", "BrowserAct", "BrowserAct"]);
+        expect((await chromeLog("Input.dispatchMouseEvent")).map((c) => c.params.type)).toEqual(["mouseMoved", "mousePressed", "mouseReleased", "mouseMoved"]);
+    });
+
+    test("a rule naming the tool as it is served is enforced before anything runs, whatever the CLI itself approves", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        for (const rule of ["mcp__harness__browser_act", "mcp__harness__*", "mcp__harness"]) {
+            rmSync(LOG, { force: true });
+            calls([open, { tool: "browser_act", args: { action: "click", ref: "e5" } }]);
+            const { run, asked, agent } = await codex({ settings: { permissions: { deny: [rule] } } });
+            await run("click it");
+            const [opened, click] = mcpResults();
+            // a rule for browser_act alone leaves browser_navigate alone
+            expect(opened.isError, rule).toBe(rule === "mcp__harness__browser_act" ? false : true);
+            expect(click, rule).toMatchObject({ tool: "browser_act", isError: true });
+            expect(click.text, rule).toContain(`Denied by permission rule ${rule}`);
+            expect(asked, rule).toEqual([]);
+            expect(await chromeLog("Input.dispatchMouseEvent").catch(() => []), rule).toEqual([]);
+            await agent.state.browser?.dispose();
+        }
+    });
+
+    test("an ask rule for the served name asks the user, and a no stops the call", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([open, { tool: "browser_snapshot", args: {} }]);
+        const { run, asked } = await codex({ settings: { permissions: { ask: ["mcp__harness__browser_snapshot"] } }, ask: () => ({ allow: false }) });
+        await run("read it");
+        const [, snapshot] = mcpResults();
+        expect(snapshot).toMatchObject({ tool: "browser_snapshot", isError: true });
+        expect(snapshot.text).toContain("declined");
+        expect(asked.map((r) => r.tool.name)).toEqual(["mcp__harness__browser_snapshot"]);
+    });
+
+    test("the rules that cover the tool by its own name hold on this path too: a host, a file, plan mode", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        mkdirSync(join(cwd, "private"), { recursive: true });
+        writeFileSync(join(cwd, "private", "x.html"), "<p>secret</p>");
+        writeFileSync(join(cwd, "public.html"), "<p>fine</p>");
+        calls([
+            { tool: "browser_navigate", args: { url: "https://evil.example/x" } },
+            { tool: "browser_navigate", args: { url: `file://${join(cwd, "private", "x.html")}` } },
+            { tool: "browser_navigate", args: { url: `file://${join(cwd, "public.html")}` } },
+        ]);
+        const { run, asked } = await codex({ settings: { permissions: { deny: ["WebFetch(domain:evil.example)", "Read(private/**)"] } } });
+        await run("open them");
+        const [host, file, fine] = mcpResults();
+        expect(host).toMatchObject({ isError: true });
+        expect(host.text).toContain("Denied by permission rule WebFetch(domain:evil.example)");
+        expect(file).toMatchObject({ isError: true });
+        expect(file.text).toContain("Denied by permission rule Read(private/**)");
+        expect(fine.isError).toBe(false);
+        expect(asked).toEqual([]);
+
+        rmSync(LOG, { force: true });
+        calls([open, { tool: "browser_act", args: { action: "click", ref: "e5" } }, { tool: "browser_act", args: { action: "hover", ref: "e5" } }, { tool: "browser_act", args: { action: "scroll", deltaY: 200 } }]);
+        const planned = await codex();
+        planned.switchMode("plan");
+        await planned.run("click it");
+        const [, click, hover, scroll] = mcpResults();
+        expect(click.isError).toBe(true);
+        expect(click.text).toContain("Plan mode is active");
+        expect(hover.isError).toBe(true);
+        expect(hover.text).toContain("Plan mode is active");
+        // reading more of the page is research
+        expect(scroll.isError).toBe(false);
+    });
+
+    test("a call the user already has the tab for is refused as the Harness tool is, and the page stays theirs", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([open]);
+        const { run, agent } = await codex();
+        await run("open it");
+        await agent.state.browser!.input({ kind: "key", type: "down", key: "a", code: "KeyA" });
+        const r = await (agent as any).runServed((await import("../src/tools/browser-tools")).BrowserActTool, { action: "scroll", deltaY: 100 }, new AbortController().signal);
+        expect(r.isError).toBe(true);
+        expect(r.text).toContain("taken control");
+    });
+});
+
 describe("harness models", () => {
     test("esc in an API session ends the turn, not a background Task started on an earlier turn: it still reports back (#228)", async () => {
         const main = (content: unknown[], stopReason = "end_turn") => ({ role: "assistant", provider: "anthropic", model: "claude-main", stopReason, content, usage: { inputTokens: 10, outputTokens: 5 } });
@@ -2261,6 +2403,39 @@ describe("the terminal's background list across sessions and turns: #282 review 
             expect(app.toolState.background!.shown({ shells: app.toolState.shells }).map((t) => [t.id, t.status])).toEqual([["bash_7", "running"]]);
         } finally {
             stopTimer(app);
+        }
+    });
+
+    test("another conversation (/new, /resume) doesn't get the browser tabs of the last; a new agent in the same one keeps them", async () => {
+        const { app } = tui();
+        const stub = () => {
+            const b = { disposed: 0, dispose: async () => void b.disposed++ };
+            return b;
+        };
+        try {
+            app.session = Session.create(cwd, { system: "sys" });
+            app.session.push({ role: "user", content: [{ type: "text", text: "open the app" }], meta: { kind: "prompt" } });
+            (app as any).bindBackground();
+            (app as any).persistBackground();
+            const first = stub();
+            app.toolState.browser = first as never;
+            const pathA = app.session.path;
+            // a model switch makes another agent over the same state
+            (app as any).makeAgent();
+            expect(app.toolState.browser).toBe(first as never);
+            expect(first.disposed).toBe(0);
+            app.newSession();
+            expect(first.disposed).toBe(1);
+            expect(app.toolState.browser).not.toBe(first as never);
+            const second = stub();
+            app.toolState.browser = second as never;
+            app.resume(pathA);
+            expect(second.disposed).toBe(1);
+            expect(app.toolState.browser).not.toBe(second as never);
+            expect(first.disposed).toBe(1);
+        } finally {
+            stopTimer(app);
+            await app.toolState.browser?.dispose();
         }
     });
 

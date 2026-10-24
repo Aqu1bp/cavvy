@@ -201,6 +201,8 @@ export async function launchChrome(o: LaunchOptions): Promise<ChromeProcess> {
     proc.unref();
     killAtExit(proc);
     let guard: ReturnType<typeof parentGuard> | undefined;
+    // Windows has no process groups to signal and no shell to watch from: a harness ended from Task Manager leaves its browser
+    // running (a normal exit stops it). A job object that kills its processes when its handle closes would fix that, and needs native calls.
     if (process.platform !== "win32") {
         try {
             guard = parentGuard(proc.pid, "browser-parent-guard");

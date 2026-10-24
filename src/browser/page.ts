@@ -6,7 +6,7 @@ import type { ImagePart } from "../providers/types";
 import { redact } from "../util/redact";
 import { domFacts, outlineOf, SNAPSHOT_CHARS, type AxNode } from "./ax";
 import { CdpClient, COMMAND_TIMEOUT_MS } from "./cdp";
-import { TabControl, type Owner } from "./control";
+import { TAKEN_OVER, TabControl, type Owner } from "./control";
 import { ConsoleLog, NetworkLog, type ConsoleLevel } from "./logs";
 import { RefTable } from "./refs";
 import { allowedPage, checkUrl, displayUrl } from "./url-policy";
@@ -108,6 +108,8 @@ function navigationFailure(url: string, error: string): string {
 export interface PageOptions {
     /** The project: file: URLs must be inside it. */
     root: string;
+    /** Why the permission rules refuse a page to be at this address (a deny rule), if they do. Asked of every document and file the page loads. */
+    refuse?: (url: string) => string | undefined;
     viewport: Viewport;
     owner: Owner;
     hooks: PageHooks;
@@ -164,8 +166,8 @@ export class Page {
                 page.send("Runtime.enable"),
                 page.send("Network.enable"),
                 page.send("Log.enable"),
-                // Pages that load from a file: or somewhere else the policy refuses never start loading.
-                page.send("Fetch.enable", { patterns: [{ resourceType: "Document", requestStage: "Request" }] }),
+                // Pages that load from somewhere the policy refuses never start loading; nor does anything a page reads from a file.
+                page.send("Fetch.enable", { patterns: [{ resourceType: "Document", requestStage: "Request" }, { urlPattern: "file:*", requestStage: "Request" }] }),
                 // A page nobody is looking at in a headless browser still behaves as focused: focus styles, blur handlers.
                 page.send("Emulation.setFocusEmulationEnabled", { enabled: true }),
                 page.setViewport(o.viewport),
@@ -211,6 +213,24 @@ export class Page {
         const run = this.lock.then(fn);
         this.lock = run.catch(() => undefined);
         return run;
+    }
+
+    /** An input the agent sends: refused once the person has the tab or the call is cancelled, so a click queued behind a long wait doesn't land on their page. */
+    agentInput(method: string, params: Record<string, unknown>, signal?: AbortSignal) {
+        this.stillAgent(signal);
+        return this.input(method, params);
+    }
+
+    /** The start of an action by the agent: the tab is up to it (ready), and still the agent's to act on. */
+    actable(signal?: AbortSignal) {
+        this.ready();
+        this.stillAgent(signal);
+    }
+
+    /** Throws if the agent may no longer act on the tab: the call was cancelled, or the person took the tab. */
+    stillAgent(signal?: AbortSignal) {
+        if (signal?.aborted) throw new BrowserError("Interrupted by user.");
+        if (this.control.owner === "human") throw new BrowserError(TAKEN_OVER);
     }
 
     /** Fails a call that can't run now: the tab crashed, or a dialog is holding the page. */
@@ -262,7 +282,8 @@ export class Page {
             this.network.forgetInflight();
             this.lastOutline = undefined;
             this.documentStatus = this.document && this.document.loaderId === p.frame.loaderId ? this.document.status : undefined;
-            if (!allowedPage(this.url, this.o.root)) void this.block(this.url);
+            const why = this.refusal(this.url);
+            if (why) void this.block(this.url, why);
             this.changed();
         });
         this.on("Page.navigatedWithinDocument", (p: { frameId: string; url: string }) => {
@@ -293,9 +314,9 @@ export class Page {
             this.changed();
         });
         this.on("Fetch.requestPaused", (p: { requestId: string; request: { url: string } }) => {
-            const allowed = allowedPage(p.request.url, this.o.root);
-            if (!allowed) this.console.add("error", `Blocked a load of ${displayUrl(p.request.url)}: ${(checkUrl(p.request.url, this.o.root) as { error: string }).error}`);
-            const command = allowed ? this.send("Fetch.continueRequest", { requestId: p.requestId }) : this.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "BlockedByClient" });
+            const why = this.refusal(p.request.url);
+            if (why) this.console.add("error", `Blocked a load of ${displayUrl(p.request.url)}: ${why}`);
+            const command = why ? this.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "BlockedByClient" }) : this.send("Fetch.continueRequest", { requestId: p.requestId });
             command.catch(() => undefined);
         });
         this.on("Runtime.consoleAPICalled", (p: { type: string; args: RemoteObject[] }) => {
@@ -337,10 +358,16 @@ export class Page {
         });
     }
 
-    /** The address changed to somewhere the policy doesn't allow (a script, a link): back to a blank page. */
-    private async block(url: string) {
-        const why = checkUrl(url, this.o.root);
-        this.console.add("error", `Navigation to ${displayUrl(url)} was blocked${why.ok ? "" : `: ${why.error}`}`);
+    /** Why a page may not be at (or load) this address, if it may not: the URL policy, then the permission rules' deny rules. */
+    private refusal(url: string): string | undefined {
+        if (!allowedPage(url, this.o.root)) return (checkUrl(url, this.o.root) as { error: string }).error;
+        // The browser's own error page and a blank tab aren't places.
+        return url === "" || url.startsWith("chrome-error:") ? undefined : this.o.refuse?.(url);
+    }
+
+    /** The address changed to somewhere that isn't allowed (a script, a link): back to a blank page. */
+    private async block(url: string, why: string) {
+        this.console.add("error", `Navigation to ${displayUrl(url)} was blocked: ${why}`);
         await this.send("Page.navigate", { url: "about:blank" }).catch(() => undefined);
     }
 

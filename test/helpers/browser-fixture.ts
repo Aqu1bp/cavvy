@@ -47,6 +47,8 @@ export function fixtureServer() {
             const html = (body: string) => new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } });
             if (path === "/") return html(PAGE);
             if (path === "/other") return html(OTHER);
+            // To the same server by another name: a deny rule for that host is what stops a page from following it.
+            if (path === "/bounce") return Response.redirect(`http://localhost:${server.port}/other`, 302);
             if (path === "/download") return new Response("data", { headers: { "content-type": "application/octet-stream", "content-disposition": 'attachment; filename="x.bin"' } });
             return new Response("not found", { status: 404 });
         },

@@ -1,8 +1,10 @@
 // Keys as the browser wants them (Input.dispatchKeyEvent), from the names an agent presses ("Enter", "Control+A") and
 // from what a person's keyboard reports in the GUI pane (a KeyboardEvent's key, code and modifiers). Pure.
 
+import { BROWSER_MODIFIERS } from "../server/protocol";
+
 /** Input.dispatchKeyEvent's modifiers bitmask. */
-export const MODIFIER_BITS = { Alt: 1, Control: 2, Meta: 4, Shift: 8 } as const;
+export const MODIFIER_BITS = BROWSER_MODIFIERS;
 export type Modifier = keyof typeof MODIFIER_BITS;
 
 export interface KeyPress {
@@ -106,7 +108,7 @@ export function modifierBits(mods: Iterable<string>): number {
  */
 export function parseKey(spec: string, modifiers: readonly string[] = []): KeyPress | undefined {
     // A "+" last is the plus key itself ("Control++").
-    const parts = spec.length > 1 && spec.endsWith("+") ? [...spec.slice(0, -2).split("+"), "+"] : spec.split("+");
+    const parts = spec === "+" ? ["+"] : spec.length > 1 && spec.endsWith("+") ? [...spec.slice(0, -2).split("+"), "+"] : spec.split("+");
     const base = parts.pop();
     if (!base) return undefined;
     const held = [...modifiers, ...parts];
@@ -141,7 +143,7 @@ function describe(key: string, modifiers: number): KeyPress | undefined {
         [code, vk] = PUNCTUATION[key]!;
         printed = shift ? PUNCTUATION[key]![2] : key;
     } else if (SHIFTED_DIGITS.includes(key)) {
-        const digit = (SHIFTED_DIGITS.indexOf(key) + 1) % 10;
+        const digit = SHIFTED_DIGITS.indexOf(key);
         code = `Digit${digit}`;
         vk = 48 + digit;
         modifiers |= MODIFIER_BITS.Shift;
