@@ -19,6 +19,7 @@
 import { accessSync, constants, existsSync, readdirSync, rmSync } from "fs";
 import { homedir, userInfo } from "os";
 import { join, resolve } from "path";
+import { writeInstallRecord } from "./desktop-install-record";
 
 if (process.platform !== "darwin") {
     console.error("desktop:install is for macOS. Elsewhere, bun run desktop:build makes the installers.");
@@ -183,5 +184,6 @@ if (restart) {
 rmSync(dest, { recursive: true, force: true });
 run(["ditto", built, dest], root);
 console.log(`Installed ${dest}`);
+writeInstallRecord(root, dest);
 if (restart) run(["open", dest], root);
 else if (running().app.length) console.log(`${productName} is still running the build before this one: quit it and open it again to use this one.`);
