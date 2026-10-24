@@ -27,7 +27,7 @@ import type { HiddenReason, Tool } from "../tools/types";
 import type { PermissionMode } from "./modes";
 import { sandboxAllowedHosts, sandboxExcludedCommands, type Settings } from "../config/settings";
 import { findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./rules";
-import { accountTarget, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, HARNESS_FILES, harnessHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules } from "./bash-safety";
+import { accountTarget, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, HARNESS_FILES, harnessHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules, withoutHeredocData } from "./bash-safety";
 import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, sandboxPolicy, type SandboxKind, type SandboxPolicy } from "./sandbox";
 import { stableStringify, type ApprovedAction } from "./classifier";
 import { isReadOnly, isShellTool } from "../tools/types";
@@ -250,7 +250,7 @@ export class PermissionChecker {
         if (isShellTool(tool.name)) {
             const cmd = String(input?.command ?? "");
             if (d.sensitive) {
-                const paths = [...new Set(this.sensitivePaths(cmd, cwd))];
+                const paths = [...new Set(this.sensitivePaths(heredocDataBlanked(cmd), cwd))];
                 return paths.length && paths.every((p) => !isInside(homedir(), p)) ? { label: paths.map((p) => displayHome(p)).join(", "), paths } : undefined;
             }
             if (d.listedHosts?.length) return { label: d.listedHosts.join(", "), hosts: d.listedHosts };
@@ -388,7 +388,9 @@ export class PermissionChecker {
         if (t.path && this.isProtected(t.path, tool.name, tool.name === "Grep", true)) {
             return { behavior: "deny", reason: "Access to the harness credential store is blocked." };
         }
-        if (isShellTool(tool.name) && accountTarget(t.command ?? "", cwd, this.shellEnv())) {
+        // What the content checks read: a here-document's data blanked when nothing on the line can run it.
+        const judged = isShellTool(tool.name) ? heredocDataBlanked(t.command ?? "") : "";
+        if (isShellTool(tool.name) && accountTarget(judged, cwd, this.shellEnv())) {
             return { behavior: "deny", reason: "Access to CLI account folders is blocked." };
         }
 
@@ -428,7 +430,7 @@ export class PermissionChecker {
             return { behavior: "ask", config: true, reason: "This file configures the harness or git itself (permissions, hooks, MCP servers); changes always need your approval." };
         }
         if (isShellTool(tool.name)) {
-            const cfg = configTarget(t.command ?? "", harnessHome());
+            const cfg = configTarget(judged, harnessHome());
             if (cfg) return { behavior: "ask", config: true, reason: `This command changes ${cfg} (permissions, hooks, MCP servers or programs git runs); it always needs your approval.` };
         }
 
@@ -464,7 +466,7 @@ export class PermissionChecker {
                 if (isShellTool(tool.name)) {
                     const cmd = t.command ?? "";
                     const suggestions = suggestBashRules(cmd);
-                    const access = accessNeeded(cmd, cwd);
+                    const access = accessNeeded(judged, cwd);
                     const listed = allowedHostsOf(input);
                     const kind = mode === "auto" && input?.dangerouslyDisableSandbox !== true && !this.excluded(cmd) ? this.sandbox() : undefined;
                     // Seatbelt can open hosts for a command (through its proxy); bubblewrap can't, so
@@ -476,12 +478,12 @@ export class PermissionChecker {
                     const needReview = listed.filter((h) => !auto.includes(h) && !this.grants(cwd).hosts.includes(h));
                     const hosts = [...new Set([...auto, ...listed])];
                     const opensHosts = sandbox && needReview.length > 0;
-                    const sensitive = this.sensitiveTarget(cmd, cwd, sandbox);
+                    const sensitive = this.sensitiveTarget(judged, cwd, sandbox);
                     if (sensitive && mode !== "auto") return { behavior: "ask", sensitive, reason: `This command reads or touches ${sensitive}, which may contain credentials.` };
                     // It would only fail in the sandbox: say how to ask for the network before running it.
                     if (sandbox && access.network && !hosts.length) return { behavior: "deny", reason: networkAdvice(access.network, cmd) };
                     const open = sandbox && hosts.length ? { hosts } : {};
-                    const push = mode === "auto" ? pushesDefaultBranch(cmd, cwd) : undefined;
+                    const push = mode === "auto" ? pushesDefaultBranch(judged, cwd) : undefined;
                     // Naming something sensitive doesn't take a push to main past the user.
                     if (push) return { behavior: "ask", reason: `This command updates the main branch on the remote (${push}); auto mode always asks for that.`, suggestions };
                     if (sensitive) {
@@ -501,7 +503,7 @@ export class PermissionChecker {
                     if (mode !== "auto") return { behavior: "ask", suggestions };
                     if (sandbox) {
                         // The sandbox contains everything but damage inside the project, so deletions get a look.
-                        const destructive = looksDestructive(cmd, cwd);
+                        const destructive = looksDestructive(judged, cwd);
                         if (destructive) return { behavior: "ask", needsClassifier: true, sandbox, ...open, reason: `This command deletes or discards work (${destructive}).`, suggestions };
                         if (opensHosts) return { behavior: "ask", needsClassifier: true, sandbox, ...open, listedHosts: needReview, reason: `This command opens network access to ${needReview.join(", ")}.`, suggestions };
                         return { behavior: "allow", sandbox, ...open, reason: "sandboxed" };
@@ -682,6 +684,15 @@ function linksOut(dir: string, covered: (p: string) => boolean): boolean {
         }
     }
     return false;
+}
+
+/**
+ * The command with its here-documents' data blanked when nothing on the line can run
+ * it (withoutHeredocData), for the checks that read a command's words and text: a
+ * `.env` or `git push` that `cat <<EOF` writes into a file is neither read nor run.
+ */
+function heredocDataBlanked(cmd: string): string {
+    return withoutHeredocData(cmd) ?? cmd;
 }
 
 /** The harness's own accounts folder: private whether or not any account is registered. */

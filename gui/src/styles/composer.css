@@ -1397,6 +1397,27 @@
     font-size: 0.857rem;
 }
 
+/* A button's label on one line: its code (a rule list, a path) gives way first, so the words around it stay whole. */
+.plabel {
+    display: flex;
+    align-items: baseline;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.plabel > span {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: pre;
+}
+
+.plabel > .plabel-c {
+    flex-shrink: 1000;
+    min-width: 3ch;
+}
+
 .ask kbd {
     height: auto;
     min-width: calc(16 * var(--sp));
@@ -2567,9 +2588,15 @@
         text-align: center;
     }
 
-    .ask-row .pbtn .truncate {
+    .ask-row .pbtn .plabel {
+        display: block;
+        overflow: visible;
+    }
+
+    .ask-row .pbtn .plabel > span {
         white-space: normal;
         overflow: visible;
+        overflow-wrap: anywhere;
         text-overflow: clip;
     }
 

@@ -10,7 +10,7 @@
 
 import { isAbsolute, join } from "path";
 import { homedir } from "os";
-import { analyzeCommand, effectiveArgv, onlySafeAssignments, programNames, runLevels, runs, SHELLS, substitutionBodies } from "./bash-safety";
+import { analyzeCommand, effectiveArgv, shellCommands, onlySafeAssignments, programNames, runLevels, runs, SHELLS, substitutionBodies } from "./bash-safety";
 import { CASE_FOLDS, canonical, spellings } from "../util/files";
 import { isShellTool } from "../tools/types";
 
@@ -150,9 +150,10 @@ function matchCommandSpec(spec: string, command: string): boolean {
  */
 export function bashRuleMatches(spec: string | undefined, command: string, mode: "allow" | "deny"): boolean {
     if (!spec) return true;
-    const a = analyzeCommand(command);
+    if (mode === "deny") return analyzeCommand(command).commands.length > 0 && denyMatches(spec, command, 0);
+    // What runs, as the shell reads it: a here-document's data isn't a command to approve (or to hide one).
+    const a = shellCommands(command);
     if (!a.commands.length) return false;
-    if (mode === "deny") return denyMatches(spec, command, 0);
     // A prefix rule must not approve whatever hides in $(...) or backticks:
     // `Bash(npm test:*)` vs `npm test $(rm -rf src)`. Only an exact rule can.
     if (a.hasSubstitution || a.unparsable || a.unsafeExpansion) return !spec.includes("*") && command.trim() === spec;
@@ -208,6 +209,10 @@ function denyMatches(spec: string, command: string, depth: number): boolean {
         }
     }
     if (depth < 4) for (const body of substitutionBodies(command)) if (denyMatches(spec, body, depth + 1)) return true;
+    // The shell joins escaped newlines before it reads `$(`: `$\⏎(touch x)` runs touch, also in an
+    // unquoted here-document. Joined everywhere, quotes or not, so this can only find more.
+    const joined = command.replace(/\\\n/g, "");
+    if (depth < 4 && joined !== command) for (const body of substitutionBodies(joined)) if (denyMatches(spec, body, depth + 1)) return true;
     return false;
 }
 
