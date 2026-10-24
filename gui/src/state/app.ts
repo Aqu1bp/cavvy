@@ -102,10 +102,7 @@ export function toast(message: string, level: Toast["level"] = "info", actionOrA
         // Straight into the error stack, which keeps them (it shows two and counts the rest).
         toastTimers.set(item.id, { life: new ToastLifetime(duration, performance.now()), duration, message });
         setToasts((t) => [...t, item]);
-        // Past the cap the oldest goes: one without a fix if there is one, else the oldest not running its fix.
-        const errors = toasts.filter(isError);
-        const oldest = errors.length > MAX_ERRORS ? errors.find((t) => !t.action && !t.running) ?? errors.find((t) => !t.running) : undefined;
-        if (oldest) dismissToast(oldest.id);
+        capErrors(item.id);
         return;
     }
     const waiting = repeatedToast(toastQueue, message, level, action);
@@ -125,6 +122,16 @@ export function toast(message: string, level: Toast["level"] = "info", actionOrA
         if (oldest < 0) break;
         toastQueue.splice(oldest, 1);
     }
+}
+
+/**
+ * Past the cap the oldest error goes: one without a fix if there is one, else the oldest not running its fix.
+ * Never `added`, the error just raised (it's the one you haven't seen yet).
+ */
+function capErrors(added: number) {
+    const errors = toasts.filter((t) => isError(t) && t.id !== added);
+    const oldest = errors.length >= MAX_ERRORS ? errors.find((t) => !t.action && !t.running) ?? errors.find((t) => !t.running) : undefined;
+    if (oldest) dismissToast(oldest.id);
 }
 
 export function dismissToast(id: number) {
@@ -161,6 +168,7 @@ export async function runToastChoice(id: number, index: number) {
         // error would leave the failed Undo to time out). Its place in the title bar frees.
         const message = e instanceof Error ? e.message : String(e);
         setToasts((t) => t.id === id, { level: "error", message: `${entry.message}: ${message}` });
+        capErrors(id);
         showQueuedToasts();
     } finally {
         // A failed action gets its full lifetime again (an error's has no end), never an automatic retry.

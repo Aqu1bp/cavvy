@@ -556,3 +556,23 @@ test("an Undo that fails becomes an error card and frees its place for a waiting
     advance(60_000);
     expect(toasts.map((t) => t.message)).toEqual(["Undo A: Offline"]);
 });
+
+test("an Undo that fails with twenty errors kept stays, and the oldest error goes instead, however often", async () => {
+    for (let i = 0; i < 20; i++) toast(`Error ${i}`, "error", { label: "Retry", run() {} });
+    for (const n of [1, 2, 3]) {
+        toast(`Deleted ${n}`, "info", { label: "Undo", run: () => Promise.reject(new Error("Offline")) });
+        await runToastAction(toasts.find((t) => t.message === `Deleted ${n}`)!.id);
+        expect(toasts.filter((t) => t.level === "error")).toHaveLength(20);
+        expect(toasts.find((t) => t.message === `Deleted ${n}: Offline`)).toMatchObject({ level: "error", running: false });
+    }
+    expect(toasts.map((t) => t.message).slice(0, 2)).toEqual(["Error 3", "Error 4"]);
+    expect(toasts).toHaveLength(20);
+});
+
+test("a new error past the cap is kept even when it alone has no action", () => {
+    for (let i = 0; i < 20; i++) toast(`Error ${i}`, "error", { label: "Retry", run() {} });
+    toast("Not connected", "error");
+    expect(toasts).toHaveLength(20);
+    expect(toasts[0]!.message).toBe("Error 1");
+    expect(toasts.at(-1)!.message).toBe("Not connected");
+});
