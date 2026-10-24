@@ -697,12 +697,13 @@
 }
 
 /* ---- Footer: the plans' usage, and Settings ----------------------------
-   One row, the gear's height, however many plans are signed in: a chip per
-   plan, its mark and how full its fullest window is, the same size in every
-   state. Near a limit it turns amber (75%) or red (90%); at the limit it
-   fills red. Lean on purpose: four fit beside the gear at the default width.
-   Short of room (a narrow or floating rail), the % signs go first; only what
-   still doesn't fit folds into "+N" (Sidebar.tsx PlanRow, lib/rail.ts
+   One row, the gear's height, however many plans are signed in: a gauge per
+   plan, its mark in a thin ring that fills as its fullest window does, then
+   the figure. No fills or pills: near a limit the ring and figure turn amber
+   (75%), then red (90%, and at the limit). Nothing reported yet: an empty
+   ring, no figure. Lean on purpose: four fit beside the gear at the default
+   width. Short of room (a narrow or floating rail), the % signs go first;
+   only what still doesn't fit folds into "+N" (Sidebar.tsx PlanRow, lib/rail.ts
    planFit). The row opens the detail card. */
 
 .side-foot {
@@ -722,9 +723,9 @@
     height: calc(32 * var(--sp));
     display: flex;
     align-items: center;
-    gap: calc(2 * var(--sp));
-    /* The first chip's mark is centred under the rows' status glyphs (their 18px column starts 8px in). */
-    padding: 0 calc(4 * var(--sp)) 0 calc(6.5 * var(--sp));
+    gap: calc(12 * var(--sp));
+    /* The first gauge is centred under the rows' status glyphs (their 18px column starts 8px in). */
+    padding: 0 calc(4 * var(--sp)) 0 calc(5 * var(--sp));
     border-radius: calc(10 * var(--sp));
     overflow: hidden;
     color: var(--rail-fg-2);
@@ -743,13 +744,15 @@
 }
 
 .pl {
+    --pl-ink: var(--rail-fg-2);
+    --pl-arc: color-mix(in srgb, var(--rail-fg) 62%, transparent);
     display: inline-flex;
     align-items: center;
-    gap: calc(3 * var(--sp));
+    gap: calc(5 * var(--sp));
     flex: none;
     height: calc(24 * var(--sp));
-    padding: 0 calc(4 * var(--sp));
-    border-radius: var(--pill);
+    padding: 0 calc(2 * var(--sp));
+    color: var(--pl-ink);
     font-size: 0.857rem;
     font-weight: 500;
     white-space: nowrap;
@@ -760,13 +763,40 @@
     display: none;
 }
 
-.pl > svg,
-.pl > .provider-mono {
+/* The gauge: the mark centred in its ring. */
+.pl-g {
+    position: relative;
+    display: grid;
+    place-items: center;
     flex: none;
+    width: calc(20 * var(--sp));
+    height: calc(20 * var(--sp));
 }
 
-.pl-n {
-    min-width: 0;
+.pl-g > svg:first-child {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    fill: none;
+    stroke-width: 1.75;
+}
+
+.pl-track {
+    stroke: color-mix(in srgb, var(--rail-fg) 14%, transparent);
+}
+
+.pl-arc {
+    stroke: var(--pl-arc);
+    stroke-linecap: round;
+    transition: stroke-dasharray 400ms ease, stroke 200ms;
+}
+
+.pl-g > .provider-icon,
+.pl-g > .provider-mono {
+    width: calc(11 * var(--sp));
+    height: calc(11 * var(--sp));
+    /* A one-colour mark (Codex) keeps the rail's ink: only the ring and figure say how near a limit it is. */
     color: var(--rail-fg);
 }
 
@@ -778,61 +808,37 @@
     margin-left: 0.5px;
     font-size: 0.714rem;
     font-weight: 500;
-    opacity: 0.75;
+    opacity: 0.7;
 }
 
 /* Short of room, the % signs go before any plan folds into "+N". */
 .side-foot .plans.tight {
-    gap: 1px;
+    gap: calc(7 * var(--sp));
 }
 
 .plans.tight .pl-v small {
     display: none;
 }
 
+/* A plan on its own adds the window: "62% 5-hour", "100% · resets Mon". */
 .pl-w {
     font-weight: 400;
-    opacity: 0.85;
-}
-
-/* A plan on its own: its name, and on the right the window ("62% 5-hour", "100% · resets Mon"). */
-.pl.solo {
-    flex: 1;
-    min-width: 0;
-    gap: calc(7 * var(--sp));
-}
-
-.pl.solo .pl-v {
-    margin-left: auto;
+    opacity: 0.8;
 }
 
 .pl.warn {
-    color: var(--warn);
-    background: color-mix(in srgb, var(--warn) 13%, transparent);
+    --pl-ink: var(--warn);
+    --pl-arc: var(--warn);
 }
 
 .pl.danger {
-    color: var(--danger);
-    background: color-mix(in srgb, var(--danger) 12%, transparent);
+    --pl-ink: var(--danger);
+    --pl-arc: var(--danger);
 }
 
-/* At the limit: a solid red chip, its mark in the chip's ink too. */
-.pl.full,
-.pl.full .pl-n {
-    color: var(--accent-ink);
-}
-
-.pl.full {
-    background: var(--danger);
-}
-
-.pl.full .provider-icon :is(path, circle, rect, polygon) {
-    fill: currentColor;
-}
-
-/* Figures from a while ago (the chip has no room to say "as of"; its tooltip and the card do). */
-.pl.stale .pl-v {
-    opacity: 0.6;
+/* Figures from a while ago (the gauge has no room to say "as of"; its tooltip and the card do). */
+.pl.stale :is(.pl-v, .pl-arc) {
+    opacity: 0.55;
 }
 
 .pl.more {

@@ -122,9 +122,9 @@ export interface RailPlan {
     name: string;
     /** The fullest window's share, 0-100 (100 at a limit); undefined: nothing reported yet, or every window has reset since. */
     pct?: number;
-    /** The chip's tint (planTone): amber near a limit, red nearer and at it. */
+    /** The gauge's tint (planTone): amber near a limit, red nearer and at it. */
     tone: PlanTone;
-    /** At a limit now: the chip fills red. */
+    /** At a limit now: the gauge's ring is full and red. */
     reached: boolean;
     /** The fullest window's label ("5-hour"), for a plan on its own: "62% 5-hour". */
     window?: string;
