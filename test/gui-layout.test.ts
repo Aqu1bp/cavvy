@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import {
-    clampInspectorWidth, clampTerminalHeight, closesOnShrink, coversConversation, floatBottom, floatShort, inspectorMode, railMode,
+    clampInspectorWidth, clampTerminalHeight, closesOnShrink, coversComposer, coversConversation, floatBottom, floatShort, inspectorMode, railMode,
     requestCloses, reviewWidth, sheetSize, terminalHeight, windowLayout,
 } from "../gui/src/lib/layout";
 
@@ -87,6 +87,20 @@ test("only a diff reader filling the sheet covers the conversation (Find and a j
     expect(coversConversation(windowLayout({ ...base, review: true }))).toBe(false);
     expect(coversConversation(windowLayout({ ...mid, panel: true }))).toBe(false);
     expect(coversConversation(windowLayout(mid))).toBe(false);
+});
+
+test("the composer is covered by a maximized terminal, or a short floating or filling inspector", () => {
+    const small = { ...base, win: { w: 720, h: 480 }, terminalShown: true };
+    expect(coversComposer(windowLayout({ ...small, review: true }))).toBe(true);
+    expect(coversComposer(windowLayout({ ...small, panel: true }))).toBe(true);
+    expect(coversComposer(windowLayout({ ...base, terminalShown: true, terminalMax: true }))).toBe(true);
+    // Ending above the dock, docked beside it, or closed: it shows.
+    const mid = { ...base, win: { w: 1024, h: 700 } };
+    expect(coversComposer(windowLayout({ ...mid, review: true }))).toBe(false);
+    expect(coversComposer(windowLayout({ ...mid, panel: true }))).toBe(false);
+    expect(coversComposer(windowLayout({ ...base, review: true }))).toBe(false);
+    expect(coversComposer(windowLayout(small))).toBe(false);
+    expect(coversComposer(windowLayout({ ...base, terminalShown: true }))).toBe(false);
 });
 
 test("the inspector's resizer stays within 280-620px and keeps it docked", () => {

@@ -6,11 +6,11 @@ export type ErrorPlace = "composer" | "home" | "settings" | "window";
 /**
  * The one place errors show, of those mounted: Settings while it's open (it covers the composer),
  * else above the composer, else the window's foot, so an error is somewhere in every state
- * (the splash, a session still opening, a sub-agent's view). While the conversation column is
- * hidden (the terminal maximized over it), all but the window's are mounted out of sight.
+ * (the splash, a session still opening, a sub-agent's view). While the foot of the conversation
+ * column is covered (lib/layout.ts coversComposer), the column's are mounted out of sight.
  */
-export function errorPlace(mounted: readonly ErrorPlace[], settingsOpen: boolean, columnHidden: boolean): ErrorPlace {
-    if (columnHidden) return "window";
+export function errorPlace(mounted: readonly ErrorPlace[], settingsOpen: boolean, composerCovered: boolean): ErrorPlace {
+    if (composerCovered) return "window";
     if (settingsOpen) return mounted.includes("settings") ? "settings" : "window";
     return mounted.includes("composer") ? "composer" : mounted.includes("home") ? "home" : "window";
 }

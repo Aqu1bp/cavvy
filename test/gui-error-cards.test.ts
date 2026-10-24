@@ -37,7 +37,7 @@ test("errors show in exactly one place, whatever's on screen", () => {
     // Settings open but not on screen (the splash): the window's.
     expect(errorPlace(["window", "composer"], true, false)).toBe("window");
     expect(errorPlace([], false, false)).toBe("window");
-    // The terminal maximized over the column: its composer (or Home's) is mounted but hidden, so the window's.
+    // The composer covered (the terminal maximized, a short diff reader): mounted but out of sight, so the window's.
     expect(errorPlace(["window", "composer"], false, true)).toBe("window");
     expect(errorPlace(["window", "home"], false, true)).toBe("window");
 });

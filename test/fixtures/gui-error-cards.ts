@@ -5,6 +5,7 @@ import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { createStore } from "../../gui/node_modules/solid-js/store/dist/store.js";
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
 import * as errorText from "../../gui/src/lib/error-text";
+import { coversComposer, windowLayout, type WindowLayout } from "../../gui/src/lib/layout";
 
 const read = (file: string) => readFileSync(new URL(`../../gui/src/components/${file}.tsx`, import.meta.url), "utf8");
 const strip = (source: string) => source.replace(/^import [\s\S]*?;\n/gm, "").replace(/^export /gm, "");
@@ -35,10 +36,15 @@ function store() {
     };
 }
 
+/** A session window with room for everything, its terminal and inspector closed (lib/layout.ts windowLayout). */
+const roomy = {
+    win: { w: 1360, h: 880 }, rail: true, railOpen: false, railWidth: 260, panel: false, review: false, split: false,
+    reviewBase: 720, inspectorWidth: 360, terminalShown: false, terminalPreferred: 260, terminalMax: false, dock: 140,
+};
+
 /** ErrorCards.tsx loaded once: its places share which of them shows. */
-function cardsModule(s: ReturnType<typeof store>, settings: () => string | undefined = () => undefined, terminalMax: () => boolean = () => false) {
-    const shellLayout = () => ({ terminal: { maximized: terminalMax() } });
-    const ErrorCards = component(strip(read("ErrorCards")), "ErrorCards", { ...s.deps, ...errorText, settingsTab: settings, shellLayout, CircleAlert: icon, Copy: icon, X: icon });
+function cardsModule(s: ReturnType<typeof store>, settings: () => string | undefined = () => undefined, shellLayout: () => WindowLayout = () => windowLayout(roomy)) {
+    const ErrorCards = component(strip(read("ErrorCards")), "ErrorCards", { ...s.deps, ...errorText, settingsTab: settings, shellLayout, coversComposer, CircleAlert: icon, Copy: icon, X: icon });
     return (place: string) => mountWith(ErrorCards, place);
 }
 
@@ -172,22 +178,26 @@ test("one place shows the errors: Settings while it's open, else the composer, e
     }
 });
 
-test("the terminal maximized over the composer: the window's shows the errors, and the composer again once it's restored", () => {
+test("the composer covered (a maximized terminal, a short diff reader): the window's shows the errors until it's uncovered", () => {
     const s = store();
     s.add("Not connected");
-    const [max, setMax] = solid.createSignal(false);
-    const place = cardsModule(s, () => undefined, max);
+    const [opts, setOpts] = solid.createSignal(roomy);
+    const place = cardsModule(s, () => undefined, () => windowLayout(opts()));
     const windowCards = place("window");
     const composer = place("composer");
+    const showsAt = () => [composer.cards().length, windowCards.cards().length];
     try {
-        expect(composer.cards()).toHaveLength(1);
-        expect(windowCards.cards()).toHaveLength(0);
-        setMax(true);
-        expect(composer.cards()).toHaveLength(0);
-        expect(windowCards.cards()).toHaveLength(1);
-        setMax(false);
-        expect(composer.cards()).toHaveLength(1);
-        expect(windowCards.cards()).toHaveLength(0);
+        expect(showsAt()).toEqual([1, 0]);
+        setOpts({ ...roomy, terminalShown: true, terminalMax: true });
+        expect(showsAt()).toEqual([0, 1]);
+        setOpts({ ...roomy, terminalShown: true });
+        expect(showsAt()).toEqual([1, 0]);
+        // 720×480 with the terminal: the diff reader is short, so it comes down over the composer's dock.
+        const small = { ...roomy, win: { w: 720, h: 480 }, terminalShown: true };
+        setOpts({ ...small, review: true });
+        expect(showsAt()).toEqual([0, 1]);
+        setOpts(small);
+        expect(showsAt()).toEqual([1, 0]);
     } finally {
         composer.dispose();
         windowCards.dispose();

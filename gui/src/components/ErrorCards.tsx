@@ -2,8 +2,9 @@
 // with the confirmations (Toasts.tsx). The whole message shows, and it stays until it's dismissed
 // or its cause is fixed (state/app.ts). Two show, then "N more"; a repeat bumps the card's count and
 // nudges it instead of stacking another. In Settings, where there's no composer, they sit at the foot
-// of the page; with neither on screen (or the terminal maximized over them), at the window's. An error that belongs to something on screen
-// shows there instead (a provider's row in Settings → Providers).
+// of the page; with neither on screen (or the composer covered: a maximized terminal, a short floating
+// inspector), at the window's. An error that belongs to something on screen shows there instead (a
+// provider's row in Settings → Providers).
 
 import { createEffect, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { CircleAlert, Copy, X } from "lucide-solid";
@@ -11,6 +12,7 @@ import { dismissToast, runToastChoice, toast, toasts, type Toast } from "../stat
 import { settingsTab, shellLayout } from "../state/ui";
 import { copyText } from "../lib/platform";
 import { errorPlace, messageParts, splitError, type ErrorPlace } from "../lib/error-text";
+import { coversComposer } from "../lib/layout";
 
 /** Cards shown at once; the rest are counted under them. */
 export const MAX_ERROR_CARDS = 2;
@@ -93,7 +95,7 @@ export function ErrorCards(p: { place: ErrorPlace }) {
         }),
     );
     // Newest first, as the mockup stacks them.
-    const errors = () => (errorPlace(mounted(), !!settingsTab(), shellLayout().terminal.maximized) === place ? toasts.filter((t) => t.level === "error").reverse() : []);
+    const errors = () => (errorPlace(mounted(), !!settingsTab(), coversComposer(shellLayout())) === place ? toasts.filter((t) => t.level === "error").reverse() : []);
     const shown = () => errors().slice(0, MAX_ERROR_CARDS);
     const more = () => errors().length - shown().length;
     return (
