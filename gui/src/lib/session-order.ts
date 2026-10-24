@@ -141,11 +141,16 @@ export function sidebarEntries(sessions: readonly SessionSummary[], archived: re
 }
 
 /** Hold the entire layout, not just sorting: moving between shelves also moves targets.
- * New attention/open rows append while held, without displacing any existing row. */
-export function holdSidebar(previous: readonly SidebarEntry[], next: SidebarEntry[], held: boolean, sessions: readonly SessionSummary[], activeId?: string): SidebarEntry[] {
+ * New attention/open rows append while held, without displacing any existing row.
+ * Needs you (pinned above it all) is held only while `pinnedHeld` (the pointer on the
+ * rail, a row's menu open): its ids aren't the list's order, so a selection alone
+ * needn't keep it from following who's waiting. */
+export function holdSidebar(previous: readonly SidebarEntry[], next: SidebarEntry[], held: boolean, sessions: readonly SessionSummary[], activeId?: string, pinnedHeld = held): SidebarEntry[] {
     if (!held || !previous.length) return next;
     const live = new Map(sessions.map((s) => [s.id, s]));
+    const pinned = pinnedHeld ? [] : next.filter((e) => e.kind === "needs");
     const kept = previous.flatMap((e): SidebarEntry[] => {
+        if (e.kind === "needs" && !pinnedHeld) return [];
         if (e.kind === "run" || e.kind === "needs") {
             const ids = e.ids.filter((id) => live.has(id));
             return ids.length ? [{ ...e, ids }] : [];
@@ -162,7 +167,7 @@ export function holdSidebar(previous: readonly SidebarEntry[], next: SidebarEntr
         }
         return "id" in e && !ids.has(e.id) && requiredSession(live.get(e.id)!, activeId) ? [e] : [];
     });
-    return [...kept, ...added];
+    return [...pinned, ...kept, ...added];
 }
 
 export function sidebarIds(entries: readonly SidebarEntry[]): string[] {

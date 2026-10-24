@@ -4,7 +4,7 @@
 import { expect, test } from "bun:test";
 import type { PlanLimits, ProviderInfo, SessionSummary } from "../src/server/protocol";
 
-const { asking, foldOrder, groupCounts, needsLine, needsYou, planFit, planTone, railFoot, railGlyph } = await import("../gui/src/lib/rail");
+const { asking, foldOrder, groupCounts, needsLine, needsPlace, needsRowLine, needsYou, planFit, planTone, railFoot, railGlyph } = await import("../gui/src/lib/rail");
 
 test("a row's glyph: working, needs you, stopped, finished unseen, quiet, new", () => {
     expect(railGlyph({ status: "running", messages: 3 }, true)).toBe("running");
@@ -179,6 +179,15 @@ test("the usage card has each window: its share, tint and reset; a reached one i
     // Told only that a limit is reached: one row says so.
     const bare = railFoot({ limits: { [key("codex")]: limits("codex", NOW, [], { reached: true }) }, providers: [codex], now: NOW })[0]!;
     expect(bare.windows).toEqual([{ label: "Limit", tone: "danger", reached: true, resets: undefined }]);
+    // A limit reached that no window is (Codex's workspace limit, its windows at 20% and 30%): the card says so too, first.
+    const workspace = railFoot({ limits: { [key("codex")]: limits("codex", NOW, [
+        { id: "codex:primary", label: "5-hour", usedPercent: 20 }, { id: "codex:secondary", label: "Weekly", usedPercent: 30 },
+    ], { reached: true, resetsAt: NOW + 3_600_000 }) }, providers: [codex], now: NOW })[0]!;
+    expect(workspace).toMatchObject({ reached: true, tone: "danger" });
+    expect(workspace.windows.map((w) => [w.label, w.reached])).toEqual([["Limit", true], ["5-hour", false], ["Weekly", false]]);
+    expect(workspace.windows[0]!.resets).toBe(workspace.lifts);
+    // A window that's reached says it itself: no extra row.
+    expect(plan!.windows.map((w) => w.label)).toEqual(["5-hour", "Weekly"]);
     // Old figures say how old in the card.
     const old = railFoot({ limits: { [key("codex")]: limits("codex", NOW - 3_600_000, [{ id: "codex:primary", label: "5-hour", usedPercent: 20 }]) }, providers: [codex], now: NOW })[0]!;
     expect(old.asOf).toMatch(/^as of /);
@@ -220,6 +229,17 @@ test("Needs you: waiting sessions but the one in front of you, latest first, say
     expect(asking({ waitingKind: "secret" })).toBe("Asks for a secret");
     expect(needsLine([list[0]!])).toBe("Ta needs you: Wants your approval");
     expect(needsLine(needsYou(list))).toBe("3 sessions need you");
+    // Its pinned row, answered while the rail holds still, doesn't go on saying it asks.
+    expect(needsRowLine({ status: "waiting", waitingKind: "plan" })).toBe("Plan ready for review");
+    expect(needsRowLine({ status: "running" })).toBe("Answered");
+});
+
+test("Needs you shows on the rail, else the title bar; over both, in Settings' top line", () => {
+    expect(needsPlace({ railShown: true, settings: false })).toBe("rail");
+    expect(needsPlace({ railShown: false, settings: false })).toBe("title");
+    // Settings takes the rail's place (its own list) and covers the title bar, rail shown or not.
+    expect(needsPlace({ railShown: true, settings: true })).toBe("settings");
+    expect(needsPlace({ railShown: false, settings: true })).toBe("settings");
 });
 
 test("Needs you's group starts the active list, isn't counted under a project, and isn't in the list's order", async () => {
@@ -240,4 +260,14 @@ test("Needs you's group starts the active list, isn't counted under a project, a
     expect(held.some((e) => e.kind === "needs")).toBe(false);
     const kept = order.holdSidebar(entries, order.sidebarEntries(list, [], { ...base, needs: [] }), true, list);
     expect(kept[0]).toEqual({ key: "heading:needs", kind: "needs", ids: ["1"] });
+    // Held by a selection alone (no pointer on it), the group follows who's waiting; the rows below stay put.
+    const answered = [sess("1"), list[1]!, list[2]!];
+    const picked = order.holdSidebar(entries, order.sidebarEntries(answered, [], { ...base, needs: [] }), true, answered, undefined, false);
+    expect(picked.some((e) => e.kind === "needs")).toBe(false);
+    expect(order.sidebarIds(picked)).toEqual(order.sidebarIds(entries));
+    const plain = order.sidebarEntries(answered, [], { ...base, needs: [] });
+    const now = [sess("1"), sess("2", { status: "waiting" }), list[2]!];
+    const joined = order.holdSidebar(plain, order.sidebarEntries(now, [], { ...base, needs: ["2"] }), true, now, undefined, false);
+    expect(joined[0]).toEqual({ key: "heading:needs", kind: "needs", ids: ["2"] });
+    expect(order.sidebarIds(joined)).toEqual(order.sidebarIds(plain));
 });

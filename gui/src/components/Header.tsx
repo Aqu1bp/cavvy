@@ -14,7 +14,7 @@ import { prefs } from "../state/prefs";
 import { terminalOpen, setTerminalOpen, setRewindOpen, setDeleteRequest, openFind, review, setReview, setSettingsTab, setTitleBarBox, settingsTab, shellLayout } from "../state/ui";
 import { copyText, isTauri, os } from "../lib/platform";
 import { plural, tildify } from "../lib/format";
-import { asking, needsLine, needsYou } from "../lib/rail";
+import { asking, needsLine, needsPlace, needsYou } from "../lib/rail";
 import { Menu } from "./ui/Menu";
 import { RunSwitcher } from "./RunSwitcher";
 import { ProjectScripts } from "./ProjectScripts";
@@ -58,12 +58,13 @@ function placeToasts(header: HTMLElement) {
  * The sessions waiting on you while the rail is hidden (or a closed drawer): here,
  * beside the tools, until they're answered, never a toast that could time out
  * unseen. One by name, opening it; several by count, opening a menu of them.
+ * Settings' top line has it too (lib/rail.ts needsPlace): opening one closes Settings.
  */
-function NeedsYou(p: { waiting: SessionSummary[] }) {
+export function NeedsYou(p: { waiting: SessionSummary[] }) {
     const [open, setOpen] = createSignal(false);
     let btn: HTMLButtonElement | undefined;
     const one = () => (p.waiting.length === 1 ? p.waiting[0] : undefined);
-    const go = (id: string) => (setOpen(false), void activate(id));
+    const go = (id: string) => (setOpen(false), setSettingsTab(undefined), void activate(id));
     // Gone with the last of them: the menu goes too.
     createEffect(() => p.waiting.length < 2 && setOpen(false));
     return (
@@ -109,8 +110,8 @@ function NeedsYou(p: { waiting: SessionSummary[] }) {
  * waiting on you before them.
  */
 export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
-    // Shown by the rail when it's there; the session in front of you shows its own request.
-    const waiting = createMemo(() => (shellLayout().railShown ? [] : needsYou([...app.sessions, ...app.archived], settingsTab() ? undefined : app.activeId)));
+    // Shown by the rail when it's there (by Settings over both); the session in front of you shows its own request.
+    const waiting = createMemo(() => (needsPlace({ railShown: shellLayout().railShown, settings: Boolean(settingsTab()) }) === "title" ? needsYou([...app.sessions, ...app.archived], app.activeId) : []));
     let el: HTMLElement | undefined;
     onMount(() => {
         const place = () => el && placeToasts(el);

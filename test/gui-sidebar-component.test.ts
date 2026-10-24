@@ -223,6 +223,65 @@ test("Needs you: waiting sessions but the open one, pinned above the list as wel
     } finally { f.dispose(); }
 });
 
+const needsGroup = (f: ReturnType<typeof fixture>) => f.nodes.findLast((n) => n.props.class === "needs-g");
+const pinnedRows = (f: ReturnType<typeof fixture>) => { const g = needsGroup(f); return g ? [...new Set(f.descendants(g))].filter((n) => n.props?.["data-needs-id"] !== undefined) : []; };
+const pinnedIds = (f: ReturnType<typeof fixture>) => pinnedRows(f).map((n) => n.props["data-needs-id"]);
+
+test("Needs you's rows aren't picked: a ⌘- or Shift-click opens the session, its own place folded away or not", () => {
+    const f = fixture(6);
+    try {
+        f.setGroupBy("project");
+        f.update("3", { status: "waiting", waitingKind: "permission" });
+        // Its project folded: its own row is under the heading, out of the list's order.
+        f.setCollapsedProjects(["/p/0"]);
+        expect(f.ids).not.toContain("3");
+        expect(pinnedIds(f)).toEqual(["3"]);
+        const hit = () => f.descendants(pinnedRows(f)[0]).find((n) => n.props?.class === "card-hit needs-hit");
+        f.setRailSelection({ ids: ["1", "2"], anchor: "1" });
+        click(hit(), { metaKey: true });
+        // Opened (its project unfolds to show it), the selection gone as a plain click leaves it.
+        expect(f.nodes.some((n) => n.props["aria-current"] === "page" && n.props.title?.startsWith("Session 3\n"))).toBe(true);
+        expect(f.railSelection().ids).toEqual([]);
+        // Shift-click too: never an empty range.
+        f.setActiveId(undefined);
+        f.setCollapsedProjects(["/p/0"]);
+        click(hit(), { shiftKey: true });
+        expect(f.railSelection().ids).toEqual([]);
+        expect(f.nodes.some((n) => n.props["aria-current"] === "page" && n.props.title?.startsWith("Session 3\n"))).toBe(true);
+    } finally { f.dispose(); }
+});
+
+test("Needs you while the rail holds still: rows say how they're doing now, and the group catches up once it lets go", () => {
+    const f = fixture(6);
+    const text = (n: any) => f.descendants(n).map((c) => c.text ?? (typeof c.content === "string" || typeof c.content === "number" ? c.content : "")).join("");
+    const classes = (n: any) => String(n.props.class).split(" ");
+    try {
+        f.update("3", { status: "waiting", waitingKind: "plan" });
+        expect(pinnedIds(f)).toEqual(["3"]);
+        // The pointer on the rail: nothing moves, so the one answered stays, but not as waiting.
+        f.nav.props.onPointerEnter();
+        f.update("3", { status: "idle" });
+        f.update("4", { status: "waiting" });
+        expect(pinnedIds(f)).toEqual(["3"]);
+        const row = pinnedRows(f)[0];
+        expect(classes(row)).not.toContain("waiting");
+        expect(text(row)).toContain("Answered");
+        expect(text(row)).not.toContain("Plan ready for review");
+        expect(f.descendants(row).some((n) => n.props?.class === "st waiting")).toBe(false);
+        // Let go: it reconciles at once.
+        f.nav.props.onPointerLeave();
+        expect(pinnedIds(f)).toEqual(["4"]);
+        expect(classes(pinnedRows(f)[0])).toContain("waiting");
+        // Rows picked hold the list, not the group: it follows who's waiting, the order stays.
+        f.setRailSelection({ ids: ["0", "1"], anchor: "0" });
+        const held = f.ids;
+        f.update("5", { status: "waiting", updatedAt: 500 });
+        f.update("4", { status: "idle" });
+        expect(pinnedIds(f)).toEqual(["5"]);
+        expect(f.ids).toEqual(held);
+    } finally { f.dispose(); }
+});
+
 test("FLIP respects instant/reduced motion and pauses under hover without snapping", () => {
     const f = fixture();
     try {

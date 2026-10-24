@@ -2,7 +2,7 @@
 // setting is one row: what it is, what it does, its control, and a reset
 // when it's been changed.
 
-import { createEffect, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
 import { AlertTriangle, ArrowLeft, ChartColumn, ChevronDown, Copy, ExternalLink, FolderOpen, Info, Keyboard, Minus, Palette, Plug, Plus, Puzzle, RotateCcw, SlidersHorizontal, X } from "lucide-solid";
 import { MODE_LABELS, type FollowUpMode, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
 import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
@@ -19,6 +19,8 @@ import { ModeIcon, MODES } from "./ModePicker";
 import { EffortBars } from "./ModelPicker";
 import { effortLevels, effortOf } from "../lib/effort";
 import { SidebarFrame } from "./Sidebar";
+import { NeedsYou } from "./Header";
+import { needsYou } from "../lib/rail";
 import { Segmented, Spinner, Toggle } from "./ui/bits";
 import { UsageView } from "./UsageView";
 import { Plugins } from "./Plugins";
@@ -797,6 +799,8 @@ function About() {
 
 export function SettingsPage() {
     const label = () => TABS.find((t) => t.id === tab())?.label ?? "Settings";
+    // Every session waiting on you, the open one too: Settings covers its request.
+    const waiting = createMemo(() => needsYou([...app.sessions, ...app.archived]));
     let page: HTMLDivElement | undefined;
     // Each section starts at its top.
     createEffect(on(tab, () => page?.scrollTo({ top: 0 }), { defer: true }));
@@ -806,6 +810,10 @@ export function SettingsPage() {
                 {/* The header stays while the page scrolls (on the window's top strip, which moves the window). */}
                 <div class="set-top">
                     <h2>{label()}</h2>
+                    {/* Settings covers the rail and the title bar, where Needs you would be: it's here instead. */}
+                    <Show when={waiting().length}>
+                        <NeedsYou waiting={waiting()} />
+                    </Show>
                     <button class="set-close" title={`${withShortcut("Close settings", "app:settings")}, or Esc`} aria-label="Close settings" onClick={() => setSettingsTab(undefined)}>
                         <X size={16} />
                     </button>

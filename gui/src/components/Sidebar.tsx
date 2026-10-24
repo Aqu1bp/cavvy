@@ -15,7 +15,7 @@ import { frameDrag } from "../lib/drag";
 import { ago, monogram, projectColor, since } from "../lib/format";
 import { holdSidebar, projectOf, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type SidebarEntry } from "../lib/session-order";
 import { sessionStatus } from "../lib/session-status";
-import { asking, foldOrder, groupCounts, needsYou, planFit, railFoot, railGlyph, type RailGlyph, type RailPlan } from "../lib/rail";
+import { foldOrder, groupCounts, needsRowLine, needsYou, planFit, railFoot, railGlyph, type RailGlyph, type RailPlan } from "../lib/rail";
 import { railSelection, setRailSelection, setSidebarOrder } from "../state/sidebar";
 import { bulkPlan, clickKind, clickSelect, extendSelect, pruneSelection, railTargets, selectAll, sessionCount, type BulkPlan, type RailList } from "../lib/rail-select";
 import { now } from "../lib/clock";
@@ -77,6 +77,8 @@ function useRename(s: () => SessionSummary) {
 interface RailPick {
     picked: (id: string) => boolean;
     click: (e: MouseEvent, id: string) => void;
+    /** A plain click: opens the session, the selection cleared (what a row under Needs you does with any click). */
+    open: (id: string) => void;
     /** The selection, when this row is in one of two or more: its menu acts on all of them. */
     group: (id: string) => readonly string[] | undefined;
     plan: (ids: readonly string[]) => BulkPlan;
@@ -318,18 +320,21 @@ function PlanRow(p: { plans: RailPlan[] }) {
 
 /**
  * A session waiting on you, pinned under Needs you (it keeps its own row below
- * too): an amber row saying what it's asking. A click opens it.
+ * too): an amber row saying what it's asking. Any click opens it: picking
+ * several happens in the rows below (its own may be folded away). Answered
+ * while the rail holds still, it shows how it's doing now until it goes.
  */
 function NeedsRow(p: { s: SessionSummary; pick: RailPick }) {
     const title = () => (p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title);
-    const picked = () => p.pick.picked(p.s.id);
+    const waiting = () => p.s.status === "waiting";
+    const unread = () => isUnread(p.s) && app.activeId !== p.s.id;
     return (
-        <div data-needs-id={p.s.id} class={`needs-row card waiting ${picked() ? "picked" : ""}`}>
-            <button class="card-hit needs-hit" onClick={(e) => p.pick.click(e, p.s.id)} aria-label={`${title()}, ${asking(p.s)}${picked() ? ", selected" : ""}`} title={`${p.s.title}: ${asking(p.s)}`}>
-                <Glyph kind="waiting" picked={picked()} />
+        <div data-needs-id={p.s.id} class={`needs-row card ${waiting() ? "waiting" : ""}`}>
+            <button class="card-hit needs-hit" onClick={() => p.pick.open(p.s.id)} aria-label={`${title()}, ${needsRowLine(p.s)}`} title={`${p.s.title}: ${needsRowLine(p.s)}`}>
+                <Glyph kind={railGlyph(p.s, unread())} />
                 <span class="t">{title()}</span>
-                <span class="end"><span class="wait-dot" /></span>
-                <span class="m"><span class="truncate">{asking(p.s)}</span></span>
+                <span class="end"><RowEnd s={p.s} unread={unread()} /></span>
+                <span class="m"><span class="truncate">{needsRowLine(p.s)}</span></span>
             </button>
         </div>
     );
@@ -587,6 +592,8 @@ export function Sidebar() {
     });
     // While rows are picked they stay put too, so a range never jumps under the pointer or the keys.
     const held = () => ((hovered() || railSelection().ids.length > 0) && !manualLayout()) || locked().size > 0;
+    // Needs you isn't in a selection's range, so rows picked don't hold it: only the pointer or an open menu does.
+    const pinnedHeld = () => (hovered() && !manualLayout()) || locked().size > 0;
     // Waiting on you, but the session in front of you (Settings covers it): pinned at the top as well.
     const needs = createMemo(() => needsYou(all(), settingsTab() ? undefined : app.activeId).map((s) => s.id), undefined, { equals: (a, b) => a.length === b.length && a.every((id, i) => id === b[i]) });
     const layout = createMemo<SidebarEntry[]>((previous) => {
@@ -595,7 +602,7 @@ export function Sidebar() {
             settledOpen: prefs.settledOpen, cards: shown(), settled: settledShown(), archive: archiveShown(),
             collapsed: prefs.collapsedProjects, needs: needs(),
         });
-        return holdSidebar(previous ?? [], next, held(), all(), app.activeId);
+        return holdSidebar(previous ?? [], next, held(), all(), app.activeId, pinnedHeld());
     });
     const entriesByKey = createMemo(() => new Map(layout().map((entry) => [entry.key, entry])));
     const counts = createMemo(() => groupCounts(layout()));
@@ -744,6 +751,10 @@ export function Sidebar() {
             if (kind === "plain") return void activate(id);
             // The keys that act on the selection need the focus in the list (WebKit doesn't focus a clicked button).
             (e.currentTarget as HTMLElement | null)?.focus?.({ preventScroll: true });
+        },
+        open: (id) => {
+            setRailSelection(clickSelect(railSelection(), id, "plain", order(), listOf));
+            void activate(id);
         },
         group: (id) => (selected().length > 1 && picked().has(id) ? selected() : undefined),
         plan,

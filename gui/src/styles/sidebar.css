@@ -527,7 +527,8 @@
 
 /* ---- Needs you: pinned above the list until answered -------------------
    Every session waiting on you but the open one (its request is in front of
-   you), as amber rows saying what it asks; each keeps its own row below. */
+   you), as amber rows saying what it asks; each keeps its own row below.
+   One answered while the rail holds still is a plain row until it goes. */
 
 .needs-g {
     flex: none;
@@ -544,15 +545,18 @@
 }
 
 .needs-row {
-    background: color-mix(in srgb, var(--warn) 9%, transparent);
     animation: needs-in 420ms var(--spring);
 }
 
-.needs-row:hover {
+.needs-row.waiting {
+    background: color-mix(in srgb, var(--warn) 9%, transparent);
+}
+
+.needs-row.waiting:hover {
     background: color-mix(in srgb, var(--warn) 15%, transparent);
 }
 
-.needs-row .m {
+.needs-row.waiting .m {
     color: var(--warn);
 }
 

@@ -48,6 +48,16 @@ export function needsYou<T extends Pick<SessionSummary, "id" | "status" | "updat
     return sessions.filter((s) => s.status === "waiting" && s.id !== inFront).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
 }
 
+/**
+ * Where the sessions that need you show: pinned at the top of the rail when
+ * it's shown, else in the title bar. Settings covers both (its own list takes
+ * the rail's place, its page the title bar's): its top line has them, the open
+ * one too, since Settings covers its request as well.
+ */
+export function needsPlace(o: { railShown: boolean; settings: boolean }): "rail" | "title" | "settings" {
+    return o.settings ? "settings" : o.railShown ? "rail" : "title";
+}
+
 /** What a waiting session asks of you, for its row under Needs you. */
 export function asking(s: Pick<SessionSummary, "waitingKind">): string {
     switch (s.waitingKind) {
@@ -57,6 +67,14 @@ export function asking(s: Pick<SessionSummary, "waitingKind">): string {
         case "secret": return "Asks for a secret";
         default: return "Waiting for your answer";
     }
+}
+
+/**
+ * A row under Needs you: what it asks, while it does. Answered while the rail
+ * holds still (the pointer on it), it says so until the row goes.
+ */
+export function needsRowLine(s: Pick<SessionSummary, "status" | "waitingKind">): string {
+    return s.status === "waiting" ? asking(s) : "Answered";
 }
 
 /** The title bar's Needs you, in words: "Fix the build needs you: Wants your approval", "3 sessions need you". */
@@ -209,8 +227,9 @@ export function railFoot(o: {
             const shown = reset(i) || w.pct === undefined ? undefined : Math.min(100, w.pct);
             return { label: w.label, pct: shown, tone: planTone(shown, w.reached), reached: w.reached, resets: reset(i) ? "Reset" : w.resets?.replace(/, in .*$/, "") };
         });
-        // Told only that a limit is reached: one row says so.
-        if (!windows.length && meter.reached) windows.push({ label: "Limit", tone: "danger", reached: true, resets: lifts });
+        // A limit reached that none of the windows is (only that, or Codex's workspace limit beside
+        // windows with room left): a row of its own says so, first.
+        if (meter.reached && !windows.some((w) => w.reached)) windows.unshift({ label: "Limit", tone: "danger", reached: true, resets: lifts });
         return {
             provider: info.id, name, pct, tone: planTone(pct, meter.reached), reached: meter.reached,
             window: meter.reached ? undefined : top?.label, lifts: meter.reached ? lifts : undefined,

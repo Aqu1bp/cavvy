@@ -281,7 +281,7 @@ button.bc:hover {
     transition: filter 140ms;
 }
 
-.header .needs.glass {
+:is(.header, .set-top) .needs.glass {
     background-image: linear-gradient(color-mix(in srgb, var(--warn) 10%, transparent), color-mix(in srgb, var(--warn) 5%, transparent));
     box-shadow: 0 0 0 1px color-mix(in srgb, var(--warn) 34%, transparent), inset 0 1px 0 var(--ctl-hi), var(--ctl-shadow);
 }
@@ -316,6 +316,11 @@ button.bc:hover {
 
 .needs-chev {
     margin-left: calc(-2 * var(--sp));
+}
+
+/* In Settings' top line (it covers the rail and the title bar): a button's height, beside Close. */
+.set-top .needs {
+    align-self: center;
 }
 
 /* Getting narrow: the title gives up room first, so the session's own title keeps some. */
