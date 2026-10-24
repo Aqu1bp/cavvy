@@ -30,17 +30,27 @@ rpc.retriesCredentials = isTauri;
 
 // ---------------------------------------------------------------------------
 // Toasts
+//
+// Confirmations and notices drop into the title bar's row (Toasts.tsx), at most two, each for a
+// moment. Errors don't: they're cards by the composer (ErrorCards.tsx) and stay until they're
+// dismissed, or until the code that raised them clears them. A repeat bumps the count of the one up.
 
-// Two wrapped rows fit above Home's input even in a 600px-tall window.
+// Two rows fit in the title bar's row.
 const MAX_TOASTS = 2;
 const MAX_QUEUED_TOASTS = 10;
+/** Errors waiting to be dismissed: past this many, the oldest without an action goes. */
+const MAX_ERRORS = 20;
 let toastId = 0;
 export const [toasts, setToasts] = createStore<Toast[]>([]);
 const toastTimers = new Map<number, { life: ToastLifetime; duration: number; message: string; timer?: ReturnType<typeof setTimeout> }>();
 const toastQueue: (Toast & { duration: number })[] = [];
 
+const isError = (t: Toast) => t.level === "error";
+/** The title bar's toasts: all but the errors. */
+const notices = () => toasts.filter((t) => !isError(t));
+
 function showQueuedToasts() {
-    while (toasts.length < MAX_TOASTS && toastQueue.length) {
+    while (notices().length < MAX_TOASTS && toastQueue.length) {
         const { duration, ...item } = toastQueue.shift()!;
         // Waiting in the queue uses none of the toast's visible lifetime.
         const life = new ToastLifetime(duration, performance.now());
@@ -55,6 +65,9 @@ function scheduleToast(id: number) {
     const entry = toastTimers.get(id);
     if (!entry) return;
     clearTimeout(entry.timer);
+    entry.timer = undefined;
+    // An error waits for you.
+    if (toasts.find((t) => t.id === id)?.level === "error") return;
     if (!entry.life.paused) entry.timer = setTimeout(() => dismissToast(id), entry.life.remaining(performance.now()));
 }
 
@@ -76,14 +89,33 @@ export function toast(message: string, level: Toast["level"] = "info", actionOrA
         scheduleToast(existing.id);
         return;
     }
+    const item: Toast = { id: ++toastId, level, message, count: 1, action, additionalActions: additionalActions.length ? additionalActions : undefined };
+    const duration = toastMs(level, ms, action);
+    if (level === "error") {
+        // An error's action is a fix ("Show", "Try again"), not one operation's Undo: the same error with the same
+        // fix is one card, counted, with the latest fix (repeatedToast keeps every Undo apart, so it doesn't merge these).
+        const same = action && toasts.find((t) => isError(t) && !t.running && t.message === message && t.action?.label === action.label);
+        if (same) {
+            setToasts(toasts.indexOf(same), { count: same.count + 1, action, additionalActions: item.additionalActions });
+            return;
+        }
+        // Straight into the error stack, which keeps them (it shows two and counts the rest).
+        toastTimers.set(item.id, { life: new ToastLifetime(duration, performance.now()), duration, message });
+        setToasts((t) => [...t, item]);
+        // Past the cap the oldest goes: one without a fix if there is one, else the oldest not running its fix.
+        const errors = toasts.filter(isError);
+        const oldest = errors.length > MAX_ERRORS ? errors.find((t) => !t.action && !t.running) ?? errors.find((t) => !t.running) : undefined;
+        if (oldest) dismissToast(oldest.id);
+        return;
+    }
     const waiting = repeatedToast(toastQueue, message, level, action);
     if (waiting) {
         waiting.count++;
         return;
     }
-    toastQueue.push({ id: ++toastId, level, message, count: 1, action, additionalActions: additionalActions.length ? additionalActions : undefined, duration: toastMs(level, ms, action) });
-    if (toasts.length >= MAX_TOASTS) {
-        const idle = toasts.find((t) => !t.action && !t.running && !toastTimers.get(t.id)?.life.interacting);
+    toastQueue.push({ ...item, duration });
+    if (notices().length >= MAX_TOASTS) {
+        const idle = notices().find((t) => !t.action && !t.running && !toastTimers.get(t.id)?.life.interacting);
         if (idle) dismissToast(idle.id);
     }
     showQueuedToasts();
@@ -125,11 +157,13 @@ export async function runToastChoice(id: number, index: number) {
             reportError(e);
             return;
         }
-        // A separate error toast could evict another failed Undo under the two-row cap.
+        // The toast itself becomes the error card, keeping its action for an explicit retry (a separate
+        // error would leave the failed Undo to time out). Its place in the title bar frees.
         const message = e instanceof Error ? e.message : String(e);
         setToasts((t) => t.id === id, { level: "error", message: `${entry.message}: ${message}` });
+        showQueuedToasts();
     } finally {
-        // A failed action gets its full visible lifetime again, never an automatic retry.
+        // A failed action gets its full lifetime again (an error's has no end), never an automatic retry.
         entry.life.restart(entry.duration, performance.now());
         entry.life.resume("action", performance.now());
         setToasts((t) => t.id === id, "running", false);

@@ -19,6 +19,7 @@ test("the composer dock's measured height is the transcript's dock prop, and the
         Header: () => node("header"),
         Transcript: (p: { dock?: number }) => { transcript = p; return node("transcript"); },
         Composer: () => node("composer"),
+        ErrorCards: () => node("error-cards"),
         setDockHeight: (h: number) => windowDock.push(h),
         ResizeObserver: class {
             targets: any[] = [];

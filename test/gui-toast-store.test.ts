@@ -198,7 +198,7 @@ for (const reason of ["hover", "focus"] as const) {
     });
 }
 
-test("false renews an action's lifetime and keeps overlapping focus pauses", async () => {
+test("false turns the toast into an error that keeps its action and waits to be dismissed", async () => {
     toast("Try again", "info", { label: "Retry", run: () => false }, UNDO_DELETE_MS);
     const id = toasts[0]!.id;
     advance(9999);
@@ -206,10 +206,11 @@ test("false renews an action's lifetime and keeps overlapping focus pauses", asy
     await runToastAction(id);
     advance(20_000);
     expect(toasts.map((t) => t.id)).toEqual([id]);
+    expect(toasts[0]).toMatchObject({ level: "error", message: "Try again: Action failed. Try again.", action: { label: "Retry" } });
     pauseToast(id, "focus", false);
-    advance(9999);
-    expect(toasts).toHaveLength(1);
-    advance(1);
+    advance(60_000);
+    expect(toasts.map((t) => t.id)).toEqual([id]);
+    dismissToast(id);
     expect(toasts).toHaveLength(0);
 });
 
@@ -330,10 +331,12 @@ test("two failed pending actions both retain Undo and readable errors without st
     failures[2]!(new Error("Still disconnected"));
     await retry;
     expect(toasts[0]!.message).toBe("Deleted A: Still disconnected");
-    advance(9999);
-    expect(toasts).toHaveLength(2);
-    advance(1);
-    expect(toasts).toHaveLength(0);
+    // Errors now: they wait to be dismissed, and leave the title bar's two places to the notices.
+    advance(60_000);
+    expect(toasts.map((t) => t.id)).toEqual(ids);
+    toast("Notice A");
+    toast("Notice B");
+    expect(toasts.map((t) => t.message)).toEqual(["Deleted A: Still disconnected", "Deleted B: Disconnected", "Notice A", "Notice B"]);
 });
 
 test("delete then offline Undo stays available; only an explicit retry after reconnect restores", async () => {
@@ -484,4 +487,72 @@ test("worktree removal Undo restores only the archive and remains available afte
     } finally {
         call.mockRestore();
     }
+});
+
+test("an error waits to be dismissed: no timer, hidden or not", () => {
+    toast("Couldn't reach Anthropic", "error");
+    const id = toasts[0]!.id;
+    advance(10 * 60_000);
+    pauseToast(id, "hidden", true);
+    pauseToast(id, "hidden", false);
+    advance(10 * 60_000);
+    expect(toasts.map((t) => [t.id, t.level])).toEqual([[id, "error"]]);
+    expect(timers.size).toBe(0);
+    dismissToast(id);
+    expect(toasts).toHaveLength(0);
+});
+
+test("a repeated error bumps its count instead of stacking", () => {
+    for (let i = 0; i < 3; i++) toast("Not connected", "error");
+    expect(toasts.map((t) => [t.message, t.count])).toEqual([["Not connected", 3]]);
+    toast("Not connected", "info");
+    expect(toasts.map((t) => [t.level, t.count])).toEqual([["error", 3], ["info", 1]]);
+});
+
+test("errors take none of the title bar's two places, and every one is kept", () => {
+    toast("First notice");
+    toast("Second notice");
+    for (const m of ["Error A", "Error B", "Error C"]) toast(m, "error");
+    expect(toasts.map((t) => t.message)).toEqual(["First notice", "Second notice", "Error A", "Error B", "Error C"]);
+    // A third notice evicts a notice, never an error.
+    toast("Third notice");
+    expect(toasts.filter((t) => t.level !== "error").map((t) => t.message)).toEqual(["Second notice", "Third notice"]);
+    expect(toasts.filter((t) => t.level === "error")).toHaveLength(3);
+    advance(4500);
+    expect(toasts.map((t) => t.message)).toEqual(["Error A", "Error B", "Error C"]);
+});
+
+test("past twenty errors the oldest without an action goes", () => {
+    toast("Undo failed", "error", { label: "Undo", run() {} });
+    for (let i = 0; i < 20; i++) toast(`Error ${i}`, "error");
+    expect(toasts).toHaveLength(20);
+    expect(toasts[0]!.message).toBe("Undo failed");
+    expect(toasts[1]!.message).toBe("Error 1");
+});
+
+test("the same error with the same fix is one card, counted, keeping the latest fix", () => {
+    const ran: number[] = [];
+    for (let i = 0; i < 3; i++) toast("Keybindings not reloaded: bad JSON", "error", { label: "Show", run() { ran.push(i); } });
+    expect(toasts.map((t) => [t.message, t.count, t.action?.label])).toEqual([["Keybindings not reloaded: bad JSON", 3, "Show"]]);
+    toasts[0]!.action!.run();
+    expect(ran).toEqual([2]);
+    // A different fix is a different card.
+    toast("Keybindings not reloaded: bad JSON", "error", { label: "Open file", run() {} });
+    expect(toasts).toHaveLength(2);
+});
+
+test("past twenty errors that all have a fix, the oldest still goes", () => {
+    for (let i = 0; i < 21; i++) toast(`Error ${i}`, "error", { label: "Retry", run() {} });
+    expect(toasts).toHaveLength(20);
+    expect(toasts[0]!.message).toBe("Error 1");
+});
+
+test("an Undo that fails becomes an error card and frees its place for a waiting notice", async () => {
+    for (const message of ["Undo A", "Undo B"]) toast(message, "info", { label: "Undo", run: () => Promise.reject(new Error("Offline")) });
+    toast("Waiting");
+    expect(toasts.map((t) => t.message)).toEqual(["Undo A", "Undo B"]);
+    await runToastAction(toasts[0]!.id);
+    expect(toasts.map((t) => [t.level, t.message])).toEqual([["error", "Undo A: Offline"], ["info", "Undo B"], ["info", "Waiting"]]);
+    advance(60_000);
+    expect(toasts.map((t) => t.message)).toEqual(["Undo A: Offline"]);
 });

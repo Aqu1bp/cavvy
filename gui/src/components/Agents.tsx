@@ -19,6 +19,7 @@ import { Monogram } from "./Sidebar";
 import { Narration } from "./TurnView";
 import { Notice } from "./blocks/Notices";
 import { InteractionTab } from "./InteractionDock";
+import { ErrorCards } from "./ErrorCards";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { AgentMark } from "./ui/AgentMark";
 import { agentProvider, agentStep } from "../lib/agent-marks";
@@ -214,6 +215,7 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                 </div>
                 <div class="composer-dock" ref={dock}>
                     <div class="composer-col">
+                        <ErrorCards place="composer" />
                         <Show when={asks().length}>
                             <InteractionTab sessionId={p.handle.id} items={asks()} />
                         </Show>
