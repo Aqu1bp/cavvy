@@ -155,6 +155,11 @@ function isCommand(q: Queued): boolean {
     return (t.startsWith("!") && !q.attachments?.length) || (t.startsWith("/") && !t.startsWith("//"));
 }
 
+/** A call whose result is its sub-agent's report: a Task's, or a Skill's that ran (a failed one's says why it didn't). */
+function reportsAgent(name: string, isError: boolean | undefined): boolean {
+    return name === "Task" || (name === "Skill" && !isError);
+}
+
 /** The slash commands the server runs itself (the GUI runs the others). */
 const SERVER_COMMANDS = new Set(["compact", "init", "review", "loop", "schedules", "goal", "trust"]);
 
@@ -1826,7 +1831,7 @@ export class Runtime {
         // that ran as its own agent (Claude Code may say it ended first, with no report) unless it failed or was declined:
         // that result is Claude Code's refusal, not the skill's. One still working (Claude Code's in the background) only
         // says it started: its report comes when it ends.
-        const sub = call.name === "Task" || (call.name === "Skill" && !result.isError) ? this.view.agents.find((a) => a.id === call.id) : undefined;
+        const sub = reportsAgent(call.name, result.isError) ? this.view.agents.find((a) => a.id === call.id) : undefined;
         if (sub && sub.status !== "running" && sub.status !== "waiting") this.agentPatch(call.id, { report: redact(withoutActionsNote(result.content)) });
         if (patch.diff || b?.category === "edit") this.setState({ filesChanged: this.filesChanged() });
         this.syncShells();
@@ -1991,8 +1996,8 @@ export class Runtime {
                 if (d?.diagnostics) patch.diagnostics = redactedReport(d.diagnostics);
                 this.op({ op: "agent.block.patch", id, blockId: e.call.id, patch });
                 this.noteShell(e.call, d?.summary);
-                // Its own sub-agent's call: the result is that one's report, as a Task's in a turn is (one still working only says it started).
-                const sub = e.call.name === "Task" ? this.view.agents.find((x) => x.id === e.call.id && x.parentId === id) : undefined;
+                // Its own sub-agent's call: the result is that one's report, as a Task's (or a Skill's) in a turn is (one still working only says it started).
+                const sub = reportsAgent(e.call.name, e.result.isError) ? this.view.agents.find((x) => x.id === e.call.id && x.parentId === id) : undefined;
                 if (sub && sub.status !== "running" && sub.status !== "waiting") this.agentPatch(sub.id, { report: redact(withoutActionsNote(e.result.content)) });
                 break;
             }
