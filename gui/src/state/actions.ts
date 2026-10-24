@@ -167,6 +167,9 @@ export function openAgents(agentId?: string) {
  * wouldn't change the active id, so nothing else would leave it.
  */
 export function openWaiting(id: string) {
+    // Settings can hide a reader whose restored width would cover the request.
+    setReview(undefined);
+    if (shellLayout().inspector.mode !== "dock") setPrefs("panel", false);
     setSettingsTab(undefined);
     setAgentFocus(undefined);
     setTerminalMax(false);

@@ -4,9 +4,12 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { app, rpc, setApp } from "../gui/src/state/app";
 import { openWaiting } from "../gui/src/state/actions";
-import { agentFocus, setAgentFocus, setSettingsTab, settingsTab, setTerminalMax, terminalMax, railOpen, setRailOpen } from "../gui/src/state/ui";
+import { agentFocus, setAgentFocus, setSettingsTab, settingsTab, setTerminalMax, terminalMax, railOpen, setRailOpen, review, setReview, setShellLayout, shellLayout } from "../gui/src/state/ui";
+import { prefs, setPrefs } from "../gui/src/state/prefs";
 
 const original = { activeId: app.activeId, opening: app.opening };
+const originalLayout = shellLayout();
+const originalPanel = prefs.panel;
 
 afterEach(() => {
     setApp({ activeId: original.activeId, opening: original.opening });
@@ -14,6 +17,9 @@ afterEach(() => {
     setSettingsTab(undefined);
     setTerminalMax(false);
     setRailOpen(false);
+    setReview(undefined);
+    setShellLayout(originalLayout);
+    setPrefs("panel", originalPanel);
 });
 
 test("opening a waiting session restores the maximized terminal so its request is visible", () => {
@@ -60,5 +66,23 @@ test("opening the active session from its agent view closes the overlay rail", (
         expect(agentFocus()).toBeUndefined();
         expect(railOpen()).toBe(false);
         expect(app.activeId).toBe("parent");
+    } finally { call.mockRestore(); }
+});
+
+test("opening a waiting session clears a review hidden under Settings and a floating panel", () => {
+    const call = spyOn(rpc, "call").mockReturnValue(new Promise(() => {}));
+    try {
+        setApp({ activeId: "parent" });
+        setSettingsTab("general");
+        setReview({});
+        setPrefs("panel", true);
+        // Settings can report dock mode even though the restored review would fill.
+        setShellLayout({ ...originalLayout, inspector: { ...originalLayout.inspector, mode: "dock" } });
+        void openWaiting("parent");
+        expect(review()).toBeUndefined();
+        expect(prefs.panel).toBe(true);
+        setShellLayout({ ...originalLayout, inspector: { ...originalLayout.inspector, mode: "float" } });
+        void openWaiting("parent");
+        expect(prefs.panel).toBe(false);
     } finally { call.mockRestore(); }
 });
