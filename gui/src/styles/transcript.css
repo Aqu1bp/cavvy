@@ -3045,6 +3045,155 @@
     color: var(--fg-3);
 }
 
+/* What the snapshot left out: one line, its reasons in the tooltip. */
+.files-card .files-note {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    cursor: help;
+}
+
+.files-sub {
+    font-size: 0.857rem;
+    color: var(--fg-3);
+    font-variant-numeric: tabular-nums;
+}
+
+/* One other worktree: its branch in the head, beside Review; where it is in the tooltip. */
+.place-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
+    min-width: 0;
+    max-width: 40%;
+    height: calc(24 * var(--sp));
+    padding: 0 calc(9 * var(--sp)) 0 calc(7 * var(--sp));
+    border-radius: var(--pill);
+    font: 0.821rem var(--font-mono);
+    color: var(--fg-2);
+    background: var(--hover);
+}
+
+.place-chip svg {
+    flex: none;
+    color: var(--fg-3);
+}
+
+/* Several places: a row each, its own folder first, then the busiest, with who worked there. */
+.place-row {
+    display: grid;
+    grid-template-columns: calc(18 * var(--sp)) minmax(0, 1fr) auto calc(52 * var(--sp)) auto auto;
+    align-items: center;
+    column-gap: calc(10 * var(--sp));
+    min-height: calc(44 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(4 * var(--sp)) calc(4 * var(--sp)) calc(8 * var(--sp));
+    border-radius: calc(10 * var(--sp));
+}
+
+.place-row + .place-row {
+    box-shadow: inset 0 0.5px 0 var(--line);
+}
+
+.place-row:hover {
+    background: var(--hover);
+}
+
+.place-ic {
+    display: grid;
+    place-items: center;
+    color: var(--fg-3);
+}
+
+.place-name {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.place-title {
+    font-weight: 500;
+    color: var(--fg);
+}
+
+.place-own {
+    margin-left: calc(7 * var(--sp));
+    font-size: 0.786rem;
+    font-weight: 500;
+    color: var(--fg-3);
+}
+
+.place-branch {
+    font: 0.821rem var(--font-mono);
+    color: var(--fg-3);
+}
+
+.place-who {
+    display: flex;
+    justify-content: flex-end;
+    gap: calc(4 * var(--sp));
+    min-width: 0;
+    max-width: calc(230 * var(--sp));
+}
+
+.place-ag {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
+    min-width: 0;
+    max-width: calc(120 * var(--sp));
+    height: calc(22 * var(--sp));
+    padding: 0 calc(8 * var(--sp)) 0 calc(6 * var(--sp));
+    border-radius: var(--pill);
+    font-size: 0.821rem;
+    color: var(--fg-2);
+    background: var(--hover);
+}
+
+.place-ag svg {
+    flex: none;
+}
+
+.place-ag.more {
+    padding: 0 calc(7 * var(--sp));
+}
+
+.place-files {
+    font-size: 0.857rem;
+    color: var(--fg-3);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.place-row .stat {
+    justify-self: end;
+}
+
+/* Narrow: who worked there by mark only, then not at all; the branch chip by its icon. */
+:where(.main[data-narrow~="640"]) {
+    .place-ag .truncate,
+    .place-files {
+        display: none;
+    }
+
+    .place-ag {
+        padding: 0 calc(5 * var(--sp));
+    }
+
+    .place-chip .truncate {
+        display: none;
+    }
+
+    .place-chip {
+        padding: 0 calc(6 * var(--sp));
+    }
+}
+
+:where(.main[data-narrow~="440"]) {
+    .place-who {
+        display: none;
+    }
+}
+
 .ghost-btn {
     display: inline-flex;
     align-items: center;
