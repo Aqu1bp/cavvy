@@ -16,6 +16,8 @@ const CHECK_EVERY_MS = 6 * 3600_000;
 const FIRST_CHECK_MS = 5_000;
 /** How long a finished update may take to restart the app before it says so. */
 const RESTART_WAIT_MS = 90_000;
+/** How long an update may print nothing before it's taken as stuck (a fetch, an install, a build that hangs) and stopped. */
+const STALL_MS = 15 * 60_000;
 const SHOWN = 20;
 
 /** The .app bundle a program runs from (…/Harness.app/Contents/MacOS/harness), if it does. */
@@ -33,6 +35,7 @@ export interface AppUpdatesOptions {
     everyMs?: number;
     firstCheckMs?: number;
     restartWaitMs?: number;
+    stallMs?: number;
 }
 
 const real = (p: string) => {
@@ -84,10 +87,11 @@ export function capture(cmd: string[], cwd: string, timeoutMs: number, env: Node
             }
             finish({ ok: false, out: out.trimEnd(), err: `${cmd.slice(0, 2).join(" ")} took longer than ${Math.round(timeoutMs / 1000)}s`, timedOut: true });
         }, timeoutMs);
-        p.stdout!.on("data", (d) => (out += d));
-        p.stderr!.on("data", (d) => (err += d));
+        // The handlers first: a spawn that fails (out of file descriptors) can leave the streams missing.
         p.once("error", (e) => finish({ ok: false, out: "", err: e.message }));
         p.once("close", (code) => finish({ ok: code === 0, out: out.trimEnd(), err: err.trim() || (code === 0 ? "" : `exit code ${code}`) }));
+        p.stdout?.on("data", (d) => (out += d));
+        p.stderr?.on("data", (d) => (err += d));
     });
 }
 
@@ -196,13 +200,29 @@ export class AppUpdates {
         }
         child.unref();
         this.child = child;
+        // Its output moving on is progress; none for STALL_MS and it's stopped, all of it (its own process group).
+        let size = 0;
+        let moved = Date.now();
+        let stalled: string | undefined;
+        const stallMs = this.o.stallMs ?? STALL_MS;
         const progress = setInterval(() => {
+            const now = statSync(log, { throwIfNoEntry: false })?.size ?? 0;
+            if (now !== size) (size = now), (moved = Date.now());
+            else if (!stalled && Date.now() - moved > stallMs) {
+                stalled = `The update stopped: it printed nothing for ${Math.round(stallMs / 60_000) || "under a"} minute${stallMs >= 120_000 ? "s" : ""}, after: ${lastLogLine(log) || "(nothing)"}`;
+                try {
+                    process.kill(-child.pid!, "SIGKILL");
+                } catch {
+                    child.kill("SIGKILL");
+                }
+            }
             const line = lastLogLine(log);
             if (line && this.info.updating && !this.info.updating.restarting && line !== this.info.updating.line) this.patch({ updating: { ...this.info.updating, line } });
         }, 1000);
         progress.unref?.();
         const done = (code: number, failure?: string) => {
             clearInterval(progress);
+            failure ??= stalled;
             if (this.child !== child) return;
             this.child = undefined;
             void this.finished(code, startedAt, log, failure);

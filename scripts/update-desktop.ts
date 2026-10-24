@@ -41,14 +41,18 @@ function git(cwd: string, ...a: string[]): { ok: boolean; out: string; err: stri
     return { ok: r.exitCode === 0, out: r.stdout.toString().trimEnd(), err: r.stderr.toString().trim() };
 }
 
-/** Runs it with its output in this terminal; exits if it fails. */
-function run(cmd: string[], cwd: string) {
-    const r = Bun.spawnSync(cmd, { cwd, env: { ...process.env, HARNESS_HOME: home }, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
-    if (r.exitCode !== 0) process.exit(r.exitCode ?? 1);
+/** Runs it with its output in this terminal; exits if it fails, or takes longer than `timeoutMs`. */
+function run(cmd: string[], cwd: string, o: { timeoutMs?: number; env?: Record<string, string> } = {}) {
+    const r = Bun.spawnSync(cmd, { cwd, env: { ...process.env, HARNESS_HOME: home, ...o.env }, stdin: "inherit", stdout: "inherit", stderr: "inherit", timeout: o.timeoutMs });
+    if (r.exitCode === 0) return;
+    if (r.signalCode && o.timeoutMs) console.error(`${cmd.slice(0, 2).join(" ")} took longer than ${Math.round(o.timeoutMs / 1000)}s.`);
+    process.exit(r.exitCode || 1);
 }
 
 // Into origin/main by name: a remote whose fetch refspec leaves main out would only fill FETCH_HEAD.
-run(["git", "fetch", "--quiet", "origin", `+refs/heads/main:refs/remotes/${REF}`], root);
+// From the app there's no one to type a password or passphrase: it fails instead of waiting for one.
+const noPrompts = fromApp ? { GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND ?? "ssh -o BatchMode=yes -o ConnectTimeout=15" } : undefined;
+run(["git", "fetch", "--quiet", "origin", `+refs/heads/main:refs/remotes/${REF}`], root, { timeoutMs: 120_000, env: noPrompts });
 const resolved = git(root, "rev-parse", "--verify", `${REF}^{commit}`);
 if (!resolved.ok) {
     console.error(`Fetched, but ${REF} isn't a commit here: ${resolved.err}`);

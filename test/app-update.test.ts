@@ -216,6 +216,18 @@ describe("update", () => {
         expect((await Bun.file(runs).text()).trim().split("\n")).toEqual(["run"]);
     });
 
+    test("an update that prints nothing for too long is stopped, and says where it was", async () => {
+        const { work } = repos();
+        record({ commit: sh(work, "rev-parse", "HEAD~1"), source: work });
+        script(work, `console.log("$ bun install"); await Bun.sleep(30_000); console.log("never");`);
+        const { u } = updates({ stallMs: 1500 });
+        const started = Date.now();
+        await u.update();
+        await until(() => !u.get().updating);
+        expect(Date.now() - started).toBeLessThan(10_000);
+        expect(u.get().failed).toBe("The update stopped: it printed nothing for under a minute, after: $ bun install");
+    });
+
     test("a checkout without the script can't update yet", async () => {
         const { work } = repos();
         record({ commit: sh(work, "rev-parse", "HEAD~1"), source: work });
