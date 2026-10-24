@@ -1,5 +1,5 @@
 import { createResource, createSignal, For, Show } from "solid-js";
-import { Check, ChevronDown, GitBranch, Plus, Trash2 } from "lucide-solid";
+import { Check, ChevronDown, FolderGit2, GitBranch, Plus, Trash2 } from "lucide-solid";
 import type { WorktreeInfo } from "@shared/protocol";
 import { app, rpc } from "../state/app";
 import { openProject } from "../state/actions";
@@ -8,13 +8,15 @@ import { tildify } from "../lib/format";
 import { Popover } from "./ui/Popover";
 import { NewWorktreeDialog, RemoveWorktreeDialog, type NewWorktreeRequest, type RemoveWorktreeRequest } from "./WorktreeDialogs";
 
+/** Home's branch control, in the strip under the composer: the project's worktrees, to run the new chat in one, remove one Harness made, or make one. */
 export function WorktreePicker(p: { cwd: string; branch?: string }) {
     const [open, setOpen] = createSignal(false);
     const [creating, setCreating] = createSignal<NewWorktreeRequest>();
     const [removing, setRemoving] = createSignal<RemoveWorktreeRequest>();
     let anchor: HTMLButtonElement | undefined;
-    const [listing] = createResource(
-        () => app.conn === "open" && open() && p.cwd,
+    // Listed before it opens: the control shows whether this folder is the main checkout or a worktree of it.
+    const [listing, { refetch }] = createResource(
+        () => app.conn === "open" && p.cwd,
         async (path): Promise<{ worktrees: WorktreeInfo[]; error?: string }> => {
             try { return { worktrees: await rpc.call("projects.worktrees", { path }) }; }
             catch (e) { return { worktrees: [], error: e instanceof Error ? e.message : String(e) }; }
@@ -22,21 +24,29 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
     );
     const label = (w: WorktreeInfo) => w.branch || (w.detached ? `Detached · ${w.head?.slice(0, 7) ?? "HEAD"}` : "Worktree");
     const main = () => listing()?.worktrees.find((w) => w.main);
+    const current = () => listing()?.worktrees.find((w) => w.current);
+    const toggle = () => {
+        // Opened, it lists them again (one may have been made or removed elsewhere since), unless that's under way.
+        if (!open() && !listing.loading) void refetch();
+        setOpen(!open());
+    };
     const startCreating = () => {
-        const current = listing()?.worktrees.find((w) => w.current);
         setOpen(false);
-        setCreating({ cwd: p.cwd, main: main()!.path, base: p.branch || current?.head || "" });
+        setCreating({ cwd: p.cwd, main: main()!.path, base: p.branch || current()?.head || "" });
     };
 
     return <>
-        <button ref={anchor} class="strip-ctl" title="Choose the worktree for this new chat" aria-label="Choose worktree" aria-haspopup="menu" aria-expanded={open()} onClick={() => setOpen(!open())}>
-            <GitBranch size={13} />
+        <button ref={anchor} class="strip-ctl" title={`${tildify(p.cwd, app.hello?.homeDir)}: choose the worktree for this new chat`} aria-label="Choose worktree" aria-haspopup="menu" aria-expanded={open()} onClick={toggle}>
+            <Show when={current() && !current()!.main} fallback={<GitBranch size={14} class="ic" />}>
+                <FolderGit2 size={14} class="ic" />
+            </Show>
             <span class="truncate">{p.branch || "Detached HEAD"}</span>
-            <ChevronDown size={12} class="chv" />
+            <ChevronDown size={12} stroke-width={2} class="chv" />
         </button>
-        <Popover open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="top" align="end" width={420}>
+        <Popover open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="start" width={400}>
             <div class="menu-head">Worktrees</div>
-            <Show when={!listing.loading} fallback={<div class="menu-note">Loading worktrees…</div>}>
+            {/* What it listed before stays while it lists them again. */}
+            <Show when={listing() || !listing.loading} fallback={<div class="menu-note">Loading worktrees…</div>}>
                 <Show when={!listing()?.error} fallback={<div class="menu-note">{listing()?.error}</div>}>
                     <For each={listing()?.worktrees} fallback={<div class="menu-note">No working trees found.</div>}>
                         {(w) => <div class="wt-row">
@@ -45,10 +55,12 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
                                 await openProject(w.path);
                                 requestComposerFocus();
                             }}>
-                                <GitBranch size={15} />
+                                <Show when={w.main} fallback={<FolderGit2 size={15} />}>
+                                    <GitBranch size={15} />
+                                </Show>
                                 <span class="menu-text">
                                     <span class="menu-label">{label(w)}</span>
-                                    <span class="menu-desc mono truncate">{tildify(w.path, app.hello?.homeDir)}</span>
+                                    <span class="menu-desc mono truncate">{tildify(w.path, app.hello?.homeDir)}{w.main ? " · main checkout" : ""}</span>
                                     <Show when={!w.exists || w.prunable !== undefined || w.locked !== undefined}>
                                         <span class="menu-desc">{!w.exists ? "Folder missing" : w.prunable !== undefined ? `Unavailable${w.prunable ? `: ${w.prunable}` : ""}` : `Locked${w.locked ? `: ${w.locked}` : ""}`}</span>
                                     </Show>

@@ -1,15 +1,35 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, Show } from "solid-js";
-import { planLimitKey, type AccountInfo } from "@shared/protocol";
+import { planLimitKey, type AccountInfo, type PlanLimits } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast } from "../state/app";
 import { contextCardOpen, setContextCardOpen, setSettingsTab } from "../state/ui";
 import { now } from "../lib/clock";
-import { limitAlternatives, meterOf, windowLine } from "../lib/limits";
+import { Gauge } from "lucide-solid";
+import { limitAlternatives, meterOf, windowLine, type Meter, type MeterWindow } from "../lib/limits";
 import { contextView } from "../lib/context";
 import { cost, tokens } from "../lib/format";
 import { Ring } from "./ui/bits";
 import { Popover } from "./ui/Popover";
 
-export function ComposerMeter(p: { provider?: string; sessionId?: string }) {
+/**
+ * Home's limit pill: the plan's fullest window once it's at 80% or more, or a limit is reached ("94%",
+ * "5-hour"). Below that Home shows nothing there: a new session has no context to put in a ring.
+ * A window that has reset since the report says nothing now (as in the rail's footer), so it's skipped.
+ */
+export function nearLimit(m: Meter | undefined, l?: PlanLimits, at = Date.now()): { pct: number; window?: string } | undefined {
+    if (!m) return undefined;
+    const live = m.windows.filter((_, i) => (l?.windows[i]?.resetsAt ?? Infinity) > at);
+    const used = (w: MeterWindow) => w.pct ?? (w.reached ? 100 : 0);
+    // A reached window is the one to name, whatever another's percentage.
+    const rank = (w: MeterWindow) => (w.reached ? 1000 : 0) + used(w);
+    const w = live.reduce<MeterWindow | undefined>((a, b) => (!a || rank(b) > rank(a) ? b : a), undefined);
+    const pct = w ? used(w) : m.reached ? 100 : 0;
+    if (pct < 80 && !m.reached) return undefined;
+    // "of weekly limit", but "of GPT-5 5-hour limit": only the plain words lose their capital.
+    return { pct: Math.min(100, Math.round(pct)), window: w?.label.replace(/^(Weekly|Primary|Secondary)\b/, (x) => x.toLowerCase()) };
+}
+
+/** `home`: a new session's composer, which shows the limit pill (nearLimit) in place of the ring. */
+export function ComposerMeter(p: { provider?: string; sessionId?: string; home?: boolean }) {
     let btn: HTMLButtonElement | undefined;
     let closeTimer: ReturnType<typeof setTimeout> | undefined;
     const [open, setOpen] = [contextCardOpen, setContextCardOpen];
@@ -68,10 +88,12 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string }) {
         if (credits || ctx >= 0.7 || plan >= 80) return "warning";
         return "normal";
     };
+    const planLine = () => (meter() ? `${name()} usage: ${meter()!.windows.map(windowLine).join("; ") || "limit reached"}${meter()!.usingCredits ? " · using credits" : ""}` : undefined);
     const label = () => [
         view().pct === undefined ? "Context window: size not known yet" : `Context: ${Math.round(view().pct! * 100)}% used`,
-        meter() ? `${name()} usage: ${meter()!.windows.map(windowLine).join("; ") || "limit reached"}${meter()!.usingCredits ? " · using credits" : ""}` : undefined,
+        planLine(),
     ].filter(Boolean).join(". ");
+    const near = createMemo(() => (p.home ? nearLimit(meter(), limits(), now()) : undefined));
     const cancelClose = () => clearTimeout(closeTimer);
     const show = () => { cancelClose(); setOpen(true); };
     const close = () => {
@@ -103,15 +125,15 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string }) {
         </div>
     );
     return (
-        <Show when={state() || meter()}>
+        <Show when={p.home ? near() : state() || meter()}>
             <button
                 ref={btn}
                 type="button"
-                class={`ctx-btn tone-${tone()} ${open() ? "open" : ""}`}
+                class={`${p.home ? "ctx-limit" : `ctx-btn tone-${tone()}`} ${open() ? "open" : ""}`}
                 aria-haspopup="dialog"
                 aria-expanded={open()}
                 aria-controls={open() ? panelId : undefined}
-                aria-label={label()}
+                aria-label={p.home ? planLine() : label()}
                 onMouseEnter={show}
                 onMouseLeave={hide}
                 onFocus={() => { if (!restoringFocus) show(); }}
@@ -121,8 +143,19 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string }) {
                     if (e.key === "ArrowDown") { e.preventDefault(); enterPanel(); }
                 }}
             >
-                <span class="ctx-ring" aria-hidden="true"><Ring value={urgency()} size={26} stroke={2.5} neutral tone={tone()} /></span>
-                <span class="ctx-num num" aria-hidden="true">{shownPct()}</span>
+                <Show
+                    when={near()}
+                    fallback={<>
+                        <span class="ctx-ring" aria-hidden="true"><Ring value={urgency()} size={26} stroke={2.5} neutral tone={tone()} /></span>
+                        <span class="ctx-num num" aria-hidden="true">{shownPct()}</span>
+                    </>}
+                >
+                    {(n) => <>
+                        <Gauge size={14} stroke-width={2} aria-hidden="true" />
+                        <b class="num" aria-hidden="true">{n().pct}%</b>
+                        <span class="lbl" aria-hidden="true">of {n().window ?? "plan"} limit</span>
+                    </>}
+                </Show>
             </button>
             <Popover open={open()} anchor={() => btn} onClose={close} placement="top" align="end" width={288} class="ctx-card usage-card">
                 <div ref={panel} id={panelId} role="dialog" aria-label="Context and usage" tabIndex={-1}

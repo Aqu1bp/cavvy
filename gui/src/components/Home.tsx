@@ -1,43 +1,63 @@
-// Home (a new session): the mark, one question, where the session will run
-// (project, branch or worktree), the composer, and a few ways to start.
+// Home (a new session): one question; the composer, with where the session will run
+// (project, branch or worktree) and the composer's prefixes in a drawer under it; and
+// sessions from this project's terminal to carry on here. The whole group sits a
+// little above the middle of the column (home.css).
 
-import { createResource, createSignal, For, Show } from "solid-js";
-import { ChevronDown, Folder, FolderGit2, FolderOpen, KeyRound, ListChecks, MessageSquareText, ShieldAlert, TerminalIcon } from "lucide-solid";
+import { createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { ChevronDown, Folder, FolderGit2, FolderOpen, KeyRound, Plug, ShieldAlert } from "lucide-solid";
 import { app, refreshProjects, reportError, rpc } from "../state/app";
 import { chooseProject, connectCli, openProject, trustAndContinue } from "../state/actions";
-import { columnHeight, requestComposerFocus, setSettingsTab } from "../state/ui";
+import { columnHeight, requestComposerFocus, setSettingsTab, shellLayout } from "../state/ui";
+import { sp } from "../state/prefs";
 import { ago, basename, tildify } from "../lib/format";
 import { isWindowShown } from "../lib/platform";
 import { now } from "../lib/clock";
 import { CliSessions } from "./CliSessions";
 import { Composer } from "./Composer";
 import { Menu } from "./ui/Menu";
+import { ProviderIcon } from "./ui/ProviderIcon";
 import { WorktreePicker } from "./WorktreePicker";
-import { Logo } from "./ui/bits";
+import { ErrorCards } from "./ErrorCards";
 
-/** Ways to start, under the composer: a click puts the prompt in it, to edit or send. */
-const STARTS = [
-    { icon: MessageSquareText, label: "Explain this project", prompt: "Give me a tour of this project: what it does, how it's laid out, and where to start reading." },
-    { icon: ListChecks, label: "Review my changes", prompt: "Review my uncommitted changes and point out anything that looks wrong." },
-    { icon: TerminalIcon, label: "Fix failing tests", prompt: "Run the tests, find what fails, and fix it." },
+/** The composer's prefixes, at the strip's end: a click types one where the caret is. */
+const HINTS = [
+    { key: "/", word: "commands", title: "Commands", starts: true },
+    { key: "@", word: "files", title: "Mention a file", starts: false },
+    { key: "!", word: "shell", title: "Run a shell command yourself", starts: true },
 ];
 
-/** Puts text in the composer under `root` as typing would (its draft, undo and autosize follow). */
-function fillComposer(root: HTMLElement | undefined, text: string) {
+/**
+ * Types `text` into the composer under `root` where its caret is, as typing would: its draft, undo
+ * and autosize follow, and so do its / and @ menus. An @ goes after a space, as the composer's own does.
+ */
+function typeInComposer(root: HTMLElement | undefined, text: string) {
     const ta = root?.querySelector("textarea");
     if (!ta) return;
     ta.focus();
-    ta.select();
-    if (!document.execCommand?.("insertText", false, text)) {
-        ta.value = text;
+    const at = ta.selectionStart ?? ta.value.length;
+    const ins = text === "@" && at > 0 && !/\s/.test(ta.value[at - 1]!) ? " @" : text;
+    if (!document.execCommand?.("insertText", false, ins)) {
+        ta.value = ta.value.slice(0, at) + ins + ta.value.slice(ta.selectionEnd ?? at);
+        ta.setSelectionRange(at + ins.length, at + ins.length);
         ta.dispatchEvent(new Event("input", { bubbles: true }));
     }
-    ta.setSelectionRange(text.length, text.length);
+}
+
+// Heights (px at text size 14) that decide how many terminal rows fit under the composer, as home.css
+// places the group: the title bar's row and the foot, the question and the composer with its strip, a
+// card above it (taller in a narrow column, its buttons stacked), the list's heading, and a row.
+const FRAME_H = 80, GROUP_H = 200, CARD_H = 150, NARROW_CARD_H = 220, LIST_H = 62, ROW_H = 47;
+
+/** How many terminal rows fit in the column with `cards` cards above the composer: 3 at most, down to none. */
+function rowsFitting(column: { w: number; h: number }, cards: number): number {
+    if (!column.h) return 3;
+    const card = column.w && column.w <= 600 ? NARROW_CARD_H : CARD_H;
+    return Math.max(0, Math.min(3, Math.floor((column.h - sp(FRAME_H + GROUP_H + cards * card + LIST_H)) / sp(ROW_H))));
 }
 
 export function Home() {
     const [pickerOpen, setPickerOpen] = createSignal(false);
-    /** The project pill: the recent-projects menu opens by it. */
+    /** The project chip: the recent-projects menu opens by it. */
     const [pickerAnchor, setPickerAnchor] = createSignal<HTMLElement>();
     const [info, { refetch }] = createResource(
         () => app.conn === "open" && app.homeCwd,
@@ -50,6 +70,25 @@ export function Home() {
     // Claude Code / Codex on this computer that aren't turned on yet: the user's own plan, one click away.
     const clis = () => app.providers.filter((p) => p.agentCli?.installed && !p.configured);
     const [connecting, setConnecting] = createSignal<string>();
+    const noModel = () => Boolean(app.modelsLoaded && !app.modelsLoading && app.models.every((g) => !g.models.length));
+    const needsTrust = () => info()?.needsTrust ?? [];
+    const cards = () => (needsTrust().length ? 1 : 0) + (noModel() ? 1 : 0);
+
+    // The terminal rows shown under the composer: home.css places the group by them. When they arrive
+    // (or go) after Home is up, the group glides to its new place rather than jumping.
+    const [cliRows, setCliRows] = createSignal(0);
+    const [glide, setGlide] = createSignal(false);
+    let glideTimer: ReturnType<typeof setTimeout> | undefined;
+    const [cliOn, setCliOn] = createSignal(false);
+    const shown = (n: number, section: boolean) => {
+        if (n === cliRows() && section === cliOn()) return;
+        clearTimeout(glideTimer);
+        setGlide(isWindowShown());
+        setCliRows(n);
+        setCliOn(section);
+        glideTimer = setTimeout(() => setGlide(false), 600);
+    };
+    onCleanup(() => clearTimeout(glideTimer));
 
     const togglePicker = (e: MouseEvent) => {
         setPickerAnchor(e.currentTarget as HTMLElement);
@@ -61,32 +100,59 @@ export function Home() {
         if (path) await openProject(path);
     };
     let composer: HTMLDivElement | undefined;
+    // / and ! start a message (a command, a shell command), so they only type into an empty composer; @ goes anywhere.
+    const [typed, setTyped] = createSignal(false);
+    const readTyped = () => setTyped(Boolean(composer?.querySelector("textarea")?.value));
+    onMount(() => requestAnimationFrame(readTyped));
     // Drawn before the desktop window came up (at launch): the window appearing is its entrance.
     const instant = !isWindowShown();
 
+    /** Under the composer, like a drawer: where the session runs, then the composer's prefixes. */
+    const strip = (
+        <>
+            <button
+                class="strip-ctl"
+                title={app.homeCwd ? `${tildify(app.homeCwd, app.hello?.homeDir)}: choose another folder` : "Choose a project folder"}
+                aria-haspopup="menu"
+                aria-expanded={pickerOpen()}
+                onClick={togglePicker}
+            >
+                <Folder size={14} class="ic" />
+                <span class="truncate">{app.homeCwd ? basename(app.homeCwd) : "Choose a project"}</span>
+                <ChevronDown size={12} stroke-width={2} class="chv" />
+            </button>
+            <Show when={app.homeCwd && info()?.git}>
+                <WorktreePicker cwd={app.homeCwd!} branch={info()?.branch} />
+            </Show>
+            <span class="grow" />
+            <Show when={app.homeCwd}>
+                <span class="strip-hints">
+                    <For each={HINTS}>
+                        {(h) => (
+                            // Pressed, it leaves the caret in the composer, where the prefix goes.
+                            <button
+                                title={h.starts && typed() ? `${h.title}: start a message with ${h.key}` : h.title}
+                                aria-disabled={h.starts && typed() ? "true" : undefined}
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => (h.starts && typed() ? composer?.querySelector("textarea")?.focus() : typeInComposer(composer, h.key))}
+                            >
+                                <kbd class="k">{h.key}</kbd>
+                                {h.word}
+                            </button>
+                        )}
+                    </For>
+                </span>
+            </Show>
+        </>
+    );
+
     return (
-        <div class="home" classList={{ instant }}>
-            <div class="home-col" style={{ "--column-h": columnHeight() }}>
-                <div class="home-hero">
-                    <Logo size={44} />
-                    <h1 class="home-q">{app.homeCwd ? "What should we work on?" : "Choose a project to start"}</h1>
-                    <div class="home-where">
-                        <button
-                            class="pillbtn"
-                            title={app.homeCwd ? `${tildify(app.homeCwd, app.hello?.homeDir)}: choose another folder` : "Choose a project folder"}
-                            aria-haspopup="menu"
-                            aria-expanded={pickerOpen()}
-                            onClick={togglePicker}
-                        >
-                            <Folder size={14} />
-                            <span class="truncate">{app.homeCwd ? basename(app.homeCwd) : "Choose a project"}</span>
-                            <ChevronDown size={13} class="chev" />
-                        </button>
-                        <Show when={app.homeCwd && info()?.git}>
-                            <WorktreePicker cwd={app.homeCwd!} branch={info()?.branch} />
-                        </Show>
-                    </div>
-                </div>
+        <div class="home" classList={{ instant, glide: glide() }}>
+            <div
+                class="home-col"
+                style={{ "--column-h": columnHeight(), "--cli-rows": app.homeCwd ? cliRows() : 0, "--cli-on": app.homeCwd && cliOn() ? 1 : 0, "--home-cards": cards() }}
+            >
+                <h1 class="home-q">{app.homeCwd ? "What should we work on?" : "Choose a project to start"}</h1>
                 <Menu label="Recent projects" open={pickerOpen()} anchor={pickerAnchor} onClose={() => setPickerOpen(false)} width={420}>
                     <div class="menu-head">Recent projects</div>
                     <For each={app.projects} fallback={<div class="menu-note">No projects yet.</div>}>
@@ -118,78 +184,78 @@ export function Home() {
                     </button>
                 </Menu>
 
-                <Show when={info()?.needsTrust.length}>
-                    <div class="trust-callout">
-                        <ShieldAlert size={18} />
-                        <div>
-                            <div class="trust-title">Do you trust this folder?</div>
-                            <div class="muted small">
-                                It has configuration ({info()!.needsTrust.join(", ")}) that can run commands on your machine through hooks and MCP servers, and permission rules that let the agent act without asking. If you don't trust it, that configuration is ignored.
+                <div class="home-composer" ref={composer} onInput={readTyped}>
+                    <ErrorCards place="home" />
+
+                    {/* What comes before the first message, shaped like the request cards: trusting the folder, connecting a model. */}
+                    <Show when={needsTrust().length}>
+                        <div class="hcard glass trust" role="group" aria-label="Trust this folder">
+                            <div class="ask-h">
+                                <span class="ask-ic"><ShieldAlert size={16} /></span>
+                                <span class="ask-title">Do you trust this folder?</span>
                             </div>
-                            <div class="trust-actions">
-                                <button class="btn primary sm" onClick={async () => { await trustAndContinue(app.homeCwd!, true); void refetch(); void refreshProjects(); }}>
-                                    Trust this folder
+                            <p>
+                                <b>{basename(app.homeCwd ?? "")}</b> has settings (
+                                <For each={needsTrust()}>{(f, i) => <>{i() ? ", " : ""}<code>{f}</code></>}</For>
+                                ) that can add hooks, MCP servers and permission rules: they can run commands on this computer. Until you trust it, Harness ignores them.
+                            </p>
+                            <div class="ask-row">
+                                <button class="pbtn" onClick={async () => { await trustAndContinue(app.homeCwd!, false); void refetch(); }}>
+                                    Open without them
                                 </button>
-                                <button class="btn secondary sm" onClick={async () => { await trustAndContinue(app.homeCwd!, false); void refetch(); }}>
-                                    Open without its configuration
+                                <button class="pbtn primary" onClick={async () => { await trustAndContinue(app.homeCwd!, true); void refetch(); void refreshProjects(); }}>
+                                    Trust this folder
                                 </button>
                             </div>
                         </div>
-                    </div>
-                </Show>
+                    </Show>
 
-                <Show when={app.modelsLoaded && !app.modelsLoading && app.models.every((g) => !g.models.length)}>
-                    <div class="trust-callout onboard">
-                        <KeyRound size={18} />
-                        <div>
-                            <div class="trust-title">Connect a model provider</div>
-                            <div class="muted small">
-                                {clis().length ? "Use the plan you already have through the CLI installed on this computer, or paste" : "Paste"} an API key from Anthropic, OpenAI, Google, OpenRouter, Groq, DeepSeek, xAI, Mistral and others, or start Ollama or LM Studio on this machine. Keys go to your OS keychain and only to their own provider.
+                    <Show when={noModel()}>
+                        <div class="hcard glass connect" role="group" aria-label="Connect a model">
+                            <div class="ask-h">
+                                <span class="ask-ic"><Plug size={16} /></span>
+                                <span class="ask-title">Connect a model to start</span>
                             </div>
-                            <div class="trust-actions">
+                            <p>
+                                {clis().length === 1
+                                    ? `Use the ${clis()[0]!.agentCli!.plan} you already have through ${clis()[0]!.name}, or add`
+                                    : clis().length
+                                      ? `Use a plan you already have through ${clis().map((pr) => pr.name).join(" or ")}, or add`
+                                      : "Add"}{" "}
+                                an API key from Anthropic, OpenAI, OpenRouter and others, or start Ollama or LM Studio on this computer. Keys stay in your keychain and go only to their own provider.
+                            </p>
+                            <div class="ask-row">
+                                <button class={`pbtn ${clis().length ? "" : "primary"}`} onClick={() => setSettingsTab("providers")}>
+                                    <KeyRound size={14} />
+                                    Add an API key
+                                </button>
                                 <For each={clis()}>
                                     {(pr) => (
-                                        <button class="btn primary sm" disabled={connecting() === pr.id} onClick={async () => {
+                                        <button class="pbtn primary" disabled={connecting() === pr.id} onClick={async () => {
                                             setConnecting(pr.id);
                                             await connectCli(pr);
                                             setConnecting(undefined);
                                         }}>
+                                            <ProviderIcon id={pr.id} name={pr.name} size={14} />
                                             Use my {pr.agentCli!.plan}
                                         </button>
                                     )}
                                 </For>
-                                <button class={`btn sm ${clis().length ? "secondary" : "primary"}`} onClick={() => setSettingsTab("providers")}>
-                                    Add an API key
-                                </button>
                             </div>
                         </div>
-                    </div>
-                </Show>
+                    </Show>
 
-                <div class="home-composer" ref={composer}>
                     <Composer
                         variant="home"
                         autofocus
+                        strip={strip}
                         compare={info()?.git ? { available: true } : { available: false, why: app.homeCwd ? "Comparing models needs a Git repository: each model works in a worktree of its own." : "Choose a project folder first." }}
-                        placeholder={app.homeCwd ? "Describe the task. / for commands, @ for files, ! to run a command" : "Choose a project folder to start"}
+                        placeholder={!app.homeCwd ? "Choose a project folder to start" : noModel() ? "Connect a model to start" : "Describe a task or ask a question"}
                     />
                 </div>
 
-                <Show when={app.homeCwd}>
-                    <div class="home-starts">
-                        <For each={STARTS}>
-                            {(start) => (
-                                <button title={start.prompt} onClick={() => fillComposer(composer, start.prompt)}>
-                                    <start.icon size={14} />
-                                    {start.label}
-                                </button>
-                            )}
-                        </For>
-                    </div>
-                </Show>
-
                 <Show when={app.homeCwd} keyed>
-                    {(cwd) => <CliSessions cwd={cwd} />}
+                    {(cwd) => <CliSessions cwd={cwd} rows={rowsFitting(shellLayout().column, cards())} onShown={shown} />}
                 </Show>
             </div>
         </div>
