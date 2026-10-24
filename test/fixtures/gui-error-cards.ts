@@ -36,8 +36,9 @@ function store() {
 }
 
 /** ErrorCards.tsx loaded once: its places share which of them shows. */
-function cardsModule(s: ReturnType<typeof store>, settings: () => string | undefined = () => undefined) {
-    const ErrorCards = component(strip(read("ErrorCards")), "ErrorCards", { ...s.deps, ...errorText, settingsTab: settings, CircleAlert: icon, Copy: icon, X: icon });
+function cardsModule(s: ReturnType<typeof store>, settings: () => string | undefined = () => undefined, terminalMax: () => boolean = () => false) {
+    const shellLayout = () => ({ terminal: { maximized: terminalMax() } });
+    const ErrorCards = component(strip(read("ErrorCards")), "ErrorCards", { ...s.deps, ...errorText, settingsTab: settings, shellLayout, CircleAlert: icon, Copy: icon, X: icon });
     return (place: string) => mountWith(ErrorCards, place);
 }
 
@@ -167,6 +168,28 @@ test("one place shows the errors: Settings while it's open, else the composer, e
         composer.dispose();
         expect(windowCards.cards()).toHaveLength(1);
     } finally {
+        windowCards.dispose();
+    }
+});
+
+test("the terminal maximized over the composer: the window's shows the errors, and the composer again once it's restored", () => {
+    const s = store();
+    s.add("Not connected");
+    const [max, setMax] = solid.createSignal(false);
+    const place = cardsModule(s, () => undefined, max);
+    const windowCards = place("window");
+    const composer = place("composer");
+    try {
+        expect(composer.cards()).toHaveLength(1);
+        expect(windowCards.cards()).toHaveLength(0);
+        setMax(true);
+        expect(composer.cards()).toHaveLength(0);
+        expect(windowCards.cards()).toHaveLength(1);
+        setMax(false);
+        expect(composer.cards()).toHaveLength(1);
+        expect(windowCards.cards()).toHaveLength(0);
+    } finally {
+        composer.dispose();
         windowCards.dispose();
     }
 });

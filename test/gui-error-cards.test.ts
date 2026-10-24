@@ -30,11 +30,14 @@ test("backticked text is code, and the first of it is the command to copy", () =
 });
 
 test("errors show in exactly one place, whatever's on screen", () => {
-    expect(errorPlace(["window", "composer"], false)).toBe("composer");
-    expect(errorPlace(["window", "home"], false)).toBe("home");
-    expect(errorPlace(["window"], false)).toBe("window");
-    expect(errorPlace(["window", "composer", "settings"], true)).toBe("settings");
+    expect(errorPlace(["window", "composer"], false, false)).toBe("composer");
+    expect(errorPlace(["window", "home"], false, false)).toBe("home");
+    expect(errorPlace(["window"], false, false)).toBe("window");
+    expect(errorPlace(["window", "composer", "settings"], true, false)).toBe("settings");
     // Settings open but not on screen (the splash): the window's.
-    expect(errorPlace(["window", "composer"], true)).toBe("window");
-    expect(errorPlace([], false)).toBe("window");
+    expect(errorPlace(["window", "composer"], true, false)).toBe("window");
+    expect(errorPlace([], false, false)).toBe("window");
+    // The terminal maximized over the column: its composer (or Home's) is mounted but hidden, so the window's.
+    expect(errorPlace(["window", "composer"], false, true)).toBe("window");
+    expect(errorPlace(["window", "home"], false, true)).toBe("window");
 });
