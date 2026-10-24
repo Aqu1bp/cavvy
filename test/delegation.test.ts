@@ -308,6 +308,26 @@ describe("the harness's MCP server", () => {
         }
     });
 
+    test("a tool's images follow its text as image content", async () => {
+        const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+        const reg = registerTools([
+            { name: "shot", description: "", inputSchema: { type: "object" }, call: async () => ({ text: "A page", images: [{ type: "image", mediaType: "image/png", data: png }, { type: "image", mediaType: "image/jpeg", data: "/9j/" }] }) },
+            { name: "plain", description: "", inputSchema: { type: "object" }, call: async () => ({ text: "No picture", images: [] }) },
+        ]);
+        const auth = { Authorization: reg.authorization };
+        const shot = (await message(await post(reg.url, call(1, "shot"), auth))).result;
+        expect(shot).toEqual({
+            content: [
+                { type: "text", text: "A page" },
+                { type: "image", data: png, mimeType: "image/png" },
+                { type: "image", data: "/9j/", mimeType: "image/jpeg" },
+            ],
+            isError: false,
+        });
+        expect((await message(await post(reg.url, call(2, "plain"), auth))).result.content).toEqual([{ type: "text", text: "No picture" }]);
+        reg.close();
+    });
+
     test("a tool that throws gives an error result, with secrets redacted", async () => {
         const { registerSecret } = await import("../src/util/redact");
         const secret = "s3cr3t-" + "q".repeat(30);
@@ -1581,6 +1601,36 @@ describe("Monitor for Codex (it has none of its own)", () => {
 });
 
 // ---------------------------------------------------------------------------
+
+describe("a served tool's images", () => {
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const shot = (images: { type: "image"; mediaType: string; data: string }[]): import("../src/tools/types").Tool<any> => ({
+        name: "Shot",
+        description: "",
+        parameters: { type: "object", properties: {} },
+        category: "read",
+        readOnly: true,
+        title: () => "Shot",
+        run: async () => ({ content: "A page", images }),
+    });
+
+    test("go to the CLI with the result, fitted like a model's tool images", async () => {
+        const { agent } = await makeAgent({ provider: "codex" });
+        const ok = await (agent as any).runServed(shot([{ type: "image", mediaType: "image/png", data: png }]), {}, new AbortController().signal);
+        expect(ok).toEqual({ text: "A page", isError: undefined, images: [{ type: "image", mediaType: "image/png", data: png }] });
+        // One that can't be fitted is taken out, and the text says so.
+        const broken = await (agent as any).runServed(shot([{ type: "image", mediaType: "image/png", data: "bm90IGEgcGljdHVyZQ==" }]), {}, new AbortController().signal);
+        expect(broken.images).toBeUndefined();
+        expect(broken.text).toContain("A page");
+        expect(broken.text.length).toBeGreaterThan("A page".length);
+    });
+
+    test("a result without images stays text", async () => {
+        const { agent } = await makeAgent({ provider: "codex" });
+        const r = await (agent as any).runServed(shot([]), {}, new AbortController().signal);
+        expect(r).toEqual({ text: "A page", isError: undefined });
+    });
+});
 
 describe("harness models", () => {
     test("esc in an API session ends the turn, not a background Task started on an earlier turn: it still reports back (#228)", async () => {

@@ -2762,7 +2762,7 @@ export class Agent {
         const r = await this.runTool(call, prep.tool, prep.input, signal, prep.auto, prep.sandbox, context);
         if (this.hookStop) this.stopServedTurn?.();
         // What a PostToolUse hook adds goes with the result: it's the backend that reads it.
-        return { text: [r.content, ...context].join("\n\n"), isError: r.isError };
+        return { text: [r.content, ...context].join("\n\n"), isError: r.isError, ...(r.images?.length ? { images: r.images } : {}) };
     }
 
     /**
