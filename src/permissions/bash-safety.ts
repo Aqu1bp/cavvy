@@ -220,10 +220,13 @@ function scan(cmd: string, discovery: boolean, consume: boolean): CommandAnalysi
             const raw = cmd.slice(from, dataEnd);
             heredocBodies.push([from, dataEnd]);
             // The shell expands an unquoted document's data: `$(…)` and backticks in it run.
+            // It joins escaped newlines first (`$\⏎(…)` is `$(…)`), so both the lines as written and joined are read.
             if (!doc.quoted) {
-                if (/`|\$\(/.test(raw)) hasSubstitution = true;
-                for (let k = raw.indexOf("$"); k >= 0; k = raw.indexOf("$", k + 1)) {
-                    if (raw[k + 1] === "[" || (raw[k + 1] === "{" && !plainBraceParam(raw, k))) unsafeExpansion = true;
+                for (const body of [raw, data]) {
+                    if (/`|\$\(/.test(body)) hasSubstitution = true;
+                    for (let k = body.indexOf("$"); k >= 0; k = body.indexOf("$", k + 1)) {
+                        if (body[k + 1] === "[" || (body[k + 1] === "{" && !plainBraceParam(body, k))) unsafeExpansion = true;
+                    }
                 }
             }
             doc.scripts.push(data);
@@ -310,6 +313,11 @@ function scan(cmd: string, discovery: boolean, consume: boolean): CommandAnalysi
     for (let i = 0; i < cmd.length; i++) {
         const c = cmd[i]!;
         const n = cmd[i + 1];
+        // The next character once escaped newlines are joined, as the shell joins them before it reads
+        // `$(`, `${`, `$[` or `<(` (`$\⏎(touch x)` is `$(touch x)`). Only the checks that flag a line use it.
+        let nj = n;
+        for (let k = i + 1; cmd[k] === "\\" && cmd[k + 1] === "\n"; k += 2) nj = cmd[k + 2];
+        const joined = nj !== n;
         if (quote === "'") {
             if (c === "'") quote = null;
             else {
@@ -335,8 +343,8 @@ function scan(cmd: string, discovery: boolean, consume: boolean): CommandAnalysi
             }
             if (c === '"') quote = null;
             else {
-                if (c === "`" || (c === "$" && n === "(")) hasSubstitution = true;
-                if (c === "$" && (n === "[" || (n === "{" && !plainBraceParam(cmd, i)))) unsafeExpansion = true;
+                if (c === "`" || (c === "$" && nj === "(")) hasSubstitution = true;
+                if (c === "$" && (nj === "[" || (nj === "{" && (joined || !plainBraceParam(cmd, i))))) unsafeExpansion = true;
                 if (expansionAt(i)) wordExpands = true;
                 lead(expansionAt(i));
                 word += c;
@@ -388,10 +396,12 @@ function scan(cmd: string, discovery: boolean, consume: boolean): CommandAnalysi
             text += c;
             continue;
         }
-        if (c === "`" || (c === "$" && n === "(") || ((c === "<" || c === ">") && n === "(")) {
+        if (c === "`" || (c === "$" && nj === "(") || ((c === "<" || c === ">") && nj === "(")) {
             hasSubstitution = true;
         }
-        if (c === "$" && (n === "[" || (n === "{" && !plainBraceParam(cmd, i)))) unsafeExpansion = true;
+        if (c === "$" && (nj === "[" || (nj === "{" && (joined || !plainBraceParam(cmd, i))))) unsafeExpansion = true;
+        // `$\⏎'…'` is still ANSI-C quoting, `$\⏎"…"` still a locale string.
+        if (c === "$" && joined && (nj === "'" || nj === '"')) unsafeExpansion = true;
         if (c === "(" || c === ")") unsafeExpansion = true;
         // Only space, tab and newline separate words: to the shell `\r`, `\v` and Unicode spaces are letters.
         if (c === "{" && /^\{[^ \t\n;|&{}]*(,|\.\.)[^ \t\n;|&{}]*\}/.test(cmd.slice(i))) unsafeExpansion = true;

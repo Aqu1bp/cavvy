@@ -209,6 +209,10 @@ function denyMatches(spec: string, command: string, depth: number): boolean {
         }
     }
     if (depth < 4) for (const body of substitutionBodies(command)) if (denyMatches(spec, body, depth + 1)) return true;
+    // The shell joins escaped newlines before it reads `$(`: `$\⏎(touch x)` runs touch, also in an
+    // unquoted here-document. Joined everywhere, quotes or not, so this can only find more.
+    const joined = command.replace(/\\\n/g, "");
+    if (depth < 4 && joined !== command) for (const body of substitutionBodies(joined)) if (denyMatches(spec, body, depth + 1)) return true;
     return false;
 }
 

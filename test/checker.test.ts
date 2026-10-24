@@ -1093,6 +1093,14 @@ describe("here-documents (#448)", () => {
             expect(noSandbox().check(T("Bash"), bash(cmd), "plan", W).behavior).toBe("deny");
         });
 
+        test("so is a substitution an escaped newline splits (`$\\⏎(…)`)", () => {
+            const cmd = "cat <<EOF\n$\\\n(touch marker)\nEOF";
+            expect(noSandbox().check(T("Bash"), bash(cmd), "default", W).behavior).toBe("ask");
+            expect(noSandbox().check(T("Bash"), bash(cmd), "plan", W).behavior).toBe("deny");
+            settings.permissions!.allow = ["Bash(cat:*)"];
+            expect(noSandbox().check(T("Bash"), bash(cmd), "default", W).behavior).not.toBe("allow");
+        });
+
         test("an allow rule for the data's program doesn't approve it", () => {
             settings.permissions!.allow = ["Bash(cat:*)"];
             for (const mode of ["default", "acceptEdits", "auto"] as const) expect(noSandbox().check(T("Bash"), bash(HIDDEN), mode, W).behavior).not.toBe("allow");

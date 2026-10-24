@@ -739,7 +739,7 @@ describe("here-documents (#448)", () => {
             }
             expect(dangerousReason("tee -a notes.txt <<'EOF'\nrm -rf ~\nEOF")).toBeUndefined();
             // uniq writes its second operand; aliases, direnv and login items run later too.
-            for (const cmd of ["uniq - ~/.bashrc <<'EOF'\nrm -rf ~\nEOF", "tee -a ~/.bash_aliases <<'EOF'\nrm -rf ~\nEOF", "cat <<'EOF' >> .envrc\nrm -rf ~\nEOF", "cat <<'EOF' > ~/.config/autostart/x.desktop\nExec=rm -rf ~\nEOF", "tee ~/Library/LaunchAgents/x.plist <<'EOF'\nrm -rf ~\nEOF"]) {
+            for (const cmd of ["uniq - ~/.bashrc <<'EOF'\nrm -rf ~\nEOF", "uniq /dev/stdin ~/.bashrc <<EOF\nrm -rf ~\nEOF", "tee -a ~/.bash_aliases <<'EOF'\nrm -rf ~\nEOF", "cat <<'EOF' >> .envrc\nrm -rf ~\nEOF", "cat <<'EOF' > ~/.config/autostart/x.desktop\nExec=rm -rf ~\nEOF", "tee ~/Library/LaunchAgents/x.plist <<'EOF'\nrm -rf ~\nEOF"]) {
                 expect(withoutHeredocData(cmd)).toBeUndefined();
             }
             expect(withoutHeredocData("uniq <<'EOF'\nrm -rf ~\nEOF")).toBeDefined();
@@ -800,6 +800,34 @@ describe("here-documents (#448)", () => {
 
         test.each(["bash --version", "bash --help", "sh --version", "zsh --version", "zsh --help", "npx --version", "npx -h", "python3 -V", "python3 --version", "python3 -h", "node -v", "ruby -v", "curl -h", "ssh -V", "git --version"])("%p still is", (cmd) => {
             expect(isReadOnlyCommand(cmd)).toBe(true);
+        });
+    });
+
+    // Review of #453: the shell joins escaped newlines before it reads `$(`, so each runs touch (bash and dash).
+    describe("an escaped newline inside `$(`, `${` or `$[` doesn't hide it", () => {
+        test.each([
+            "cat <<EOF\n$\\\n(touch marker)\nEOF",
+            "cat <<EOF\n$\\\n\\\n(touch marker)\nEOF",
+            "cat <<EOF\nx $\\\n(touch marker) y\nEOF",
+            "echo $\\\n(touch marker)",
+            'echo "$\\\n(touch marker)"',
+            "cat <\\\n(touch marker)",
+        ])("%p runs touch", (cmd) => {
+            expect(isReadOnlyCommand(cmd)).toBe(false);
+            expect(bashRuleMatches("cat:*", cmd, "allow")).toBe(false);
+            expect(bashRuleMatches("echo:*", cmd, "allow")).toBe(false);
+            expect(bashRuleMatches("touch:*", cmd, "deny")).toBe(true);
+            expect(withoutHeredocData(cmd)).toBeUndefined();
+        });
+
+        test.each(["cat <<EOF\n$\\\n{x/a/b}\nEOF", "cat <<EOF\n$\\\n[1+1]\nEOF", "echo $\\\n{x:-y}", "echo $\\\n'\\x41'"])("%p isn't read-only", (cmd) => {
+            expect(isReadOnlyCommand(cmd)).toBe(false);
+        });
+
+        test("a quoted here-document's data is still only data", () => {
+            const cmd = "cat <<'EOF'\n$\\\n(touch marker)\nEOF";
+            expect(isReadOnlyCommand(cmd)).toBe(true);
+            expect(withoutHeredocData(cmd)).toBeDefined();
         });
     });
 
