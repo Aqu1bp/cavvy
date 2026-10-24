@@ -569,6 +569,26 @@ test("an Undo that fails with twenty errors kept stays, and the oldest error goe
     expect(toasts).toHaveLength(20);
 });
 
+test("past the cap while every other error runs its fix, the cap comes back as soon as one ends", async () => {
+    const done: ((ok: boolean) => void)[] = [];
+    for (let i = 0; i < 20; i++) toast(`Error ${i}`, "error", { label: "Retry", run: () => new Promise<boolean>((resolve) => done.push(resolve)) });
+    const runs = toasts.map((t) => runToastAction(t.id));
+    // None of the twenty can go while its fix runs: one over the cap, for now (a newer error displaces the last).
+    toast("Offline", "error");
+    toast("Not connected", "error");
+    expect(toasts).toHaveLength(21);
+    expect(toasts.at(-1)!.message).toBe("Not connected");
+    // A fix that fails again keeps its card; the cap is back as soon as one that isn't running can go.
+    done[5]!(false);
+    await runs[5];
+    expect(toasts).toHaveLength(20);
+    expect(toasts.map((t) => t.message)).toContain("Error 5: Action failed. Try again.");
+    expect(toasts.map((t) => t.message)).not.toContain("Not connected");
+    done.forEach((resolve, i) => i !== 5 && resolve(false));
+    await Promise.all(runs);
+    expect(toasts).toHaveLength(20);
+});
+
 test("a new error past the cap is kept even when it alone has no action", () => {
     for (let i = 0; i < 20; i++) toast(`Error ${i}`, "error", { label: "Retry", run() {} });
     toast("Not connected", "error");

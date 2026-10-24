@@ -125,13 +125,19 @@ export function toast(message: string, level: Toast["level"] = "info", actionOrA
 }
 
 /**
- * Past the cap the oldest error goes: one without a fix if there is one, else the oldest not running its fix.
- * Never `added`, the error just raised (it's the one you haven't seen yet).
+ * Past the cap the oldest errors go: ones without a fix first, then the oldest not running its fix.
+ * Never `added`, the error just raised (it's the one you haven't seen yet). While every other error is
+ * running its fix, there may be more for a moment: each fix as it ends calls this again (runToastChoice).
  */
 function capErrors(added: number) {
-    const errors = toasts.filter((t) => isError(t) && t.id !== added);
-    const oldest = errors.length >= MAX_ERRORS ? errors.find((t) => !t.action && !t.running) ?? errors.find((t) => !t.running) : undefined;
-    if (oldest) dismissToast(oldest.id);
+    for (;;) {
+        const errors = toasts.filter(isError);
+        if (errors.length <= MAX_ERRORS) return;
+        const others = errors.filter((t) => t.id !== added && !t.running);
+        const oldest = others.find((t) => !t.action) ?? others[0];
+        if (!oldest) return;
+        dismissToast(oldest.id);
+    }
 }
 
 export function dismissToast(id: number) {
@@ -168,7 +174,6 @@ export async function runToastChoice(id: number, index: number) {
         // error would leave the failed Undo to time out). Its place in the title bar frees.
         const message = e instanceof Error ? e.message : String(e);
         setToasts((t) => t.id === id, { level: "error", message: `${entry.message}: ${message}` });
-        capErrors(id);
         showQueuedToasts();
     } finally {
         // A failed action gets its full lifetime again (an error's has no end), never an automatic retry.
@@ -176,6 +181,8 @@ export async function runToastChoice(id: number, index: number) {
         entry.life.resume("action", performance.now());
         setToasts((t) => t.id === id, "running", false);
         scheduleToast(id);
+        // Running, it couldn't go to keep the cap; now it, or another, can (this one's kept if it failed again).
+        capErrors(id);
     }
 }
 
