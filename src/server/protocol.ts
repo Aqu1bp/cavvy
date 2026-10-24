@@ -1193,6 +1193,39 @@ export interface UsageSummary {
     truncated?: string;
 }
 
+/** A commit on main the installed desktop app doesn't have yet. */
+export interface AppUpdateChange {
+    hash: string;
+    subject: string;
+}
+
+/** Whether the desktop app, built from a checkout (scripts/update-desktop.ts), is behind origin/main, and its update if one is running. */
+export interface AppUpdateInfo {
+    /** Why this copy can't update itself (not the installed desktop app, no record of the checkout it came from); nothing else is set. */
+    unavailable?: string;
+    /** The installed build's commit, short. */
+    installed?: string;
+    /** main's latest commit when last checked, short. */
+    latest?: string;
+    /** main has something the installed build doesn't. */
+    available: boolean;
+    /** Changes on main since the installed build, newest first: the first 20 of `behind`. */
+    changes: AppUpdateChange[];
+    behind: number;
+    /** What's odd about the installed build, when there's no plain list: built with uncommitted changes, or from a branch. */
+    note?: string;
+    checkedAt?: number;
+    checking: boolean;
+    /** An update running: since when, and the last line it printed. `restarting`: built and installed, Harness restarts next. */
+    updating?: { startedAt: number; line: string; restarting: boolean };
+    /** The last check failed (couldn't fetch main, say): the rest is as of the fetch before. */
+    error?: string;
+    /** The last update failed, or installed without the app restarting: what happened. Cleared when one starts. */
+    failed?: string;
+    /** The last update's output. */
+    log?: string;
+}
+
 export interface RewindTargetInfo {
     index: number;
     text: string;
@@ -1510,7 +1543,9 @@ export type ServerEvent =
     /** An agent CLI reported where the user's plan stands. */
     | { type: "limits"; limits: PlanLimits }
     /** The keybindings file was saved, created or deleted. */
-    | { type: "keybindings.changed"; keybindings: KeybindingsFile };
+    | { type: "keybindings.changed"; keybindings: KeybindingsFile }
+    /** The desktop app's update state changed: a check finished, an update started, moved on or ended. */
+    | { type: "app.update"; info: AppUpdateInfo };
 
 // ---------------------------------------------------------------------------
 // Requests
@@ -1765,6 +1800,12 @@ export interface Methods {
     "limits.get": { params: Record<string, never>; result: PlanLimits[] };
     /** Tokens and cost per provider and model, from the session transcripts. */
     "usage.summary": { params: { days: UsageDays }; result: UsageSummary };
+    /** Whether the desktop app is behind origin/main, as of the last check. */
+    "app.update.get": { params: Record<string, never>; result: AppUpdateInfo };
+    /** Fetch origin/main now and compare it with the installed build. */
+    "app.update.check": { params: Record<string, never>; result: AppUpdateInfo };
+    /** Build and install main (scripts/update-desktop.ts), then restart the app. It runs on its own: progress comes as app.update events. */
+    "app.update.start": { params: Record<string, never>; result: AppUpdateInfo };
     /**
      * The session's folder's MCP servers, read again from settings and
      * .mcp.json (so what the terminal's /mcp did shows), each with what it

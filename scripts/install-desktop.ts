@@ -19,7 +19,7 @@
 import { accessSync, constants, existsSync, readdirSync, rmSync } from "fs";
 import { homedir, userInfo } from "os";
 import { join, resolve } from "path";
-import { writeInstallRecord } from "./desktop-install-record";
+import { writeInstallRecord } from "../src/config/desktop-install";
 
 if (process.platform !== "darwin") {
     console.error("desktop:install is for macOS. Elsewhere, bun run desktop:build makes the installers.");

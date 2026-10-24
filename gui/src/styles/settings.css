@@ -869,3 +869,87 @@
         height: calc(58 * var(--sp));
     }
 }
+
+/* ---- About: updates from main (Settings.tsx Updates) ------------------- */
+
+/* While it builds, the line it last printed: one line, the build's own words. */
+.upd-row.running .set-desc {
+    font-family: var(--font-mono);
+    font-size: 0.786rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.upd-row .btn svg {
+    margin-right: calc(2 * var(--sp));
+}
+
+.upd-spin {
+    color: var(--fg-3);
+}
+
+.upd-warn {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    margin-top: calc(-4 * var(--sp));
+    padding: 0 calc(14 * var(--sp)) calc(12 * var(--sp));
+    font-size: 0.821rem;
+    color: var(--warn);
+}
+
+.upd-changes {
+    margin: 0;
+    padding: calc(10 * var(--sp)) calc(14 * var(--sp)) calc(12 * var(--sp));
+    list-style: none;
+    border-top: 0.5px solid var(--line);
+}
+
+.upd-changes li {
+    display: flex;
+    align-items: baseline;
+    gap: calc(10 * var(--sp));
+    min-width: 0;
+    padding: calc(3 * var(--sp)) 0;
+    font-size: 0.857rem;
+    color: var(--fg-2);
+}
+
+.upd-changes code {
+    flex: none;
+    font: 0.786rem var(--font-mono);
+    color: var(--fg-3);
+}
+
+.upd-changes .upd-more {
+    padding-left: calc(62 * var(--sp));
+    color: var(--fg-3);
+}
+
+.upd-error {
+    display: flex;
+    align-items: flex-start;
+    gap: calc(8 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(14 * var(--sp));
+    border-top: 0.5px solid var(--line);
+    font-size: 0.857rem;
+    line-height: 1.4;
+    color: var(--danger);
+    overflow-wrap: anywhere;
+}
+
+.upd-error > svg {
+    flex: none;
+    margin-top: calc(2 * var(--sp));
+}
+
+.upd-error > span {
+    flex: 1;
+    min-width: 0;
+}
+
+.upd-error .btn {
+    flex: none;
+    margin-top: calc(-3 * var(--sp));
+}

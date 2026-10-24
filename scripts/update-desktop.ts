@@ -6,9 +6,10 @@
 //   bun run desktop:update --check         only say what's new since the installed build
 //   bun run desktop:update --force         build and install even if nothing's new
 //   bun run desktop:update --no-restart    install only; a running Harness carries on
+//   bun run desktop:update --from-app      as the app runs it (src/server/app-update.ts): restarts it from outside
 //
-// Run from Harness's own terminal, it builds and installs while Harness runs,
-// then restarts it from outside, so quitting Harness doesn't stop the update.
+// Run from Harness's own terminal or the app's Update button, it builds and installs
+// while Harness runs, then restarts it from outside, so quitting Harness doesn't stop the update.
 // The worktree keeps its build products, so after the first update only what
 // changed is rebuilt.
 
@@ -17,7 +18,7 @@ import { existsSync, realpathSync, writeFileSync } from "fs";
 import { userInfo } from "os";
 import { join, resolve } from "path";
 import { harnessHome } from "../src/config/paths";
-import { readInstallRecord } from "./desktop-install-record";
+import { appSourceDir, readInstallRecord } from "../src/config/desktop-install";
 
 if (process.platform !== "darwin") {
     console.error("desktop:update is for macOS. Elsewhere, bun run desktop:build makes the installers.");
@@ -28,10 +29,11 @@ const args = process.argv.slice(2);
 const check = args.includes("--check");
 const force = args.includes("--force");
 const restart = !args.includes("--no-restart");
+const fromApp = args.includes("--from-app");
 const root = resolve(import.meta.dir, "..");
 // Absolute, and handed to the installer as such: it runs in the worktree, where a relative HARNESS_HOME would mean somewhere else.
 const home = harnessHome();
-const source = join(home, "app-source");
+const source = appSourceDir();
 const REF = "origin/main";
 
 function git(cwd: string, ...a: string[]): { ok: boolean; out: string; err: string } {
@@ -112,8 +114,8 @@ if (existsSync(source)) {
 }
 console.log(`Building ${short} in ${source}…`);
 
-// Inside Harness's terminal, quitting Harness would end this process with it: install first, then restart from outside.
-const inHarness = process.env.TERM_PROGRAM === "Harness";
+// Inside Harness (its terminal, or its Update button), quitting Harness could end this process with it: install first, then restart from outside.
+const inHarness = fromApp || process.env.TERM_PROGRAM === "Harness";
 run([process.execPath, "--no-env-file", `--config=${join(source, "bunfig.toml")}`, join(source, "scripts", "install-desktop.ts"), ...(restart && !inHarness ? [] : ["--no-restart"])], source);
 if (restart && inHarness) {
     const { productName, identifier } = (await Bun.file(join(source, "desktop", "src-tauri", "tauri.conf.json")).json()) as { productName: string; identifier: string };

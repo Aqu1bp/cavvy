@@ -1,8 +1,9 @@
-// What desktop:install last put in Applications, so desktop:update can tell whether main has moved past it.
+// What desktop:install last put in Applications (scripts/install-desktop.ts), so desktop:update and the app
+// itself (src/server/app-update.ts) can tell whether main has moved past it.
 
 import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
-import { harnessHome } from "../src/config/paths";
+import { harnessHome } from "./paths";
 
 export interface InstallRecord {
     /** The commit it was built from. */
@@ -17,6 +18,8 @@ export interface InstallRecord {
 }
 
 export const installRecordPath = () => join(harnessHome(), "desktop-install.json");
+/** The worktree desktop:update builds main in: it only ever has main checked out. */
+export const appSourceDir = () => join(harnessHome(), "app-source");
 
 export async function readInstallRecord(): Promise<InstallRecord | undefined> {
     try {
