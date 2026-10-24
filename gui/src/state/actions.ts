@@ -170,6 +170,7 @@ export function openWaiting(id: string) {
     setSettingsTab(undefined);
     setAgentFocus(undefined);
     setTerminalMax(false);
+    setRailOpen(false);
     return activate(id);
 }
 

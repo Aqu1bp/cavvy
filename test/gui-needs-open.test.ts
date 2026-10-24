@@ -4,7 +4,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { app, rpc, setApp } from "../gui/src/state/app";
 import { openWaiting } from "../gui/src/state/actions";
-import { agentFocus, setAgentFocus, setSettingsTab, settingsTab, setTerminalMax, terminalMax } from "../gui/src/state/ui";
+import { agentFocus, setAgentFocus, setSettingsTab, settingsTab, setTerminalMax, terminalMax, railOpen, setRailOpen } from "../gui/src/state/ui";
 
 const original = { activeId: app.activeId, opening: app.opening };
 
@@ -13,6 +13,7 @@ afterEach(() => {
     setAgentFocus(undefined);
     setSettingsTab(undefined);
     setTerminalMax(false);
+    setRailOpen(false);
 });
 
 test("opening a waiting session restores the maximized terminal so its request is visible", () => {
@@ -46,5 +47,18 @@ test("opening the open session from Settings' Needs you leaves its sub-agent's v
         void openWaiting("other");
         expect(agentFocus()).toBeUndefined();
         expect(app.activeId).toBe("other");
+    } finally { call.mockRestore(); }
+});
+
+test("opening the active session from its agent view closes the overlay rail", () => {
+    const call = spyOn(rpc, "call").mockReturnValue(new Promise(() => {}));
+    try {
+        setApp({ activeId: "parent" });
+        setAgentFocus("agent-1");
+        setRailOpen(true);
+        void openWaiting("parent");
+        expect(agentFocus()).toBeUndefined();
+        expect(railOpen()).toBe(false);
+        expect(app.activeId).toBe("parent");
     } finally { call.mockRestore(); }
 });
