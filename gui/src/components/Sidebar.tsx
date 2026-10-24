@@ -232,14 +232,32 @@ function RowEnd(p: { s: SessionSummary; unread: boolean }) {
     );
 }
 
+/** A plan's mark inside a ring, filled as far as its fullest window: all the way at a limit, not at all before a report. */
+function PlanGauge(p: { plan: RailPlan }) {
+    const fill = () => (p.plan.reached ? 100 : Math.max(0, Math.min(100, p.plan.pct ?? 0)));
+    return (
+        <span class="pl-g">
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+                <circle class="pl-track" cx="10" cy="10" r="9" />
+                <Show when={fill() > 0}>
+                    {/* A sliver at least, so 1% still shows. */}
+                    <circle class="pl-arc" cx="10" cy="10" r="9" pathLength="100" stroke-dasharray={`${Math.max(4, fill())} 100`} transform="rotate(-90 10 10)" />
+                </Show>
+            </svg>
+            <ProviderIcon id={p.plan.provider} name={p.plan.name} size={11} />
+        </span>
+    );
+}
+
 /**
- * The plans' usage, beside Settings: one row however many there are. A chip per
- * plan, its mark and how full its fullest window is, the same size in every
- * state: the colour says how near a limit it is (amber, red; filled red at it).
- * A plan on its own has room for its name and the window. Short of room (a
- * narrow or floating rail), the % signs go first; only then do chips fold into
- * "+N", the plain ones first (lib/rail.ts planFit). The row opens every
- * window's detail.
+ * The plans' usage, beside Settings: one row however many there are. A gauge per
+ * plan, its mark in a ring that fills as its fullest window does, then the
+ * figure: the same size in every state, the ring and figure turning amber, then
+ * red, near a limit. Nothing reported yet: an empty ring and no figure (PlanGauge).
+ * The mark names the plan (the tooltip and card spell it out); a plan on its
+ * own adds the window. Short of room (a narrow or floating rail), the % signs
+ * go first; only then do chips fold into "+N", the plain ones first
+ * (lib/rail.ts planFit). The row opens every window's detail.
  */
 function PlanRow(p: { plans: RailPlan[] }) {
     const [open, setOpen] = createSignal(false);
@@ -280,13 +298,14 @@ function PlanRow(p: { plans: RailPlan[] }) {
         <>
             <button ref={row} class={`plans ${tight() ? "tight" : ""}`} aria-label={label()} aria-haspopup="dialog" aria-expanded={open()} onClick={() => setOpen(!open())}>
                 <For each={p.plans}>{(plan, i) => (
-                    <span class={`pl ${plan.reached ? "danger full" : plan.tone} ${solo() ? "solo" : ""} ${plan.stale ? "stale" : ""}`} hidden={hidden(i())} title={plan.detail}>
-                        <ProviderIcon id={plan.provider} name={plan.name} size={13} />
-                        <Show when={solo()}><span class="pl-n truncate">{plan.name}</span></Show>
-                        <span class="pl-v">
-                            <Show when={plan.pct !== undefined} fallback="–">{plan.pct}<small>%</small></Show>
-                            <Show when={solo() && (plan.reached ? plan.lifts && `· resets ${plan.lifts}` : plan.window?.toLowerCase())}>{(w) => <span class="pl-w"> {w()}</span>}</Show>
-                        </span>
+                    <span class={`pl ${plan.reached ? "danger" : plan.tone} ${plan.stale ? "stale" : ""}`} hidden={hidden(i())} title={plan.detail}>
+                        <PlanGauge plan={plan} />
+                        <Show when={plan.pct !== undefined}>
+                            <span class="pl-v">
+                                {plan.pct}<small>%</small>
+                                <Show when={solo() && (plan.reached ? plan.lifts && `· resets ${plan.lifts}` : plan.window?.toLowerCase())}>{(w) => <span class="pl-w"> {w()}</span>}</Show>
+                            </span>
+                        </Show>
                     </span>
                 )}</For>
                 {/* Always there, to be measured: out of the row (and unseen) while nothing is folded. */}
