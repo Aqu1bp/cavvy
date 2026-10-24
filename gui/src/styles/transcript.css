@@ -227,6 +227,12 @@
     content-visibility: auto;
 }
 
+/* Measured tool rows and Markdown blocks, including those inside one large active turn.
+   work-rendering.ts supplies their natural size, preserving their layout and mounted state. */
+[data-work-far] {
+    content-visibility: auto;
+}
+
 /* A turn a steer ended: the next one carries straight on, so they sit close. */
 .turn.chained {
     padding-bottom: calc(6 * var(--sp));
