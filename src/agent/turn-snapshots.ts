@@ -17,7 +17,7 @@ import { gitArgv } from "../util/git";
 import { coalesce, type Slot } from "../server/coalesce";
 import { MAX_DIFF_INPUT } from "../server/diffs";
 import type { GitChangesInfo, GitScope, TurnPlace } from "../server/protocol";
-import { eachLimited, fingerprint, insideRoot, listWorktrees, nearby, summarize, UNKNOWN, type Worktree } from "./turn-places";
+import { eachLimited, fingerprint, insideRoot, listWorktrees, nearby, summarize, UNKNOWN, WorktreeChecks, type Checked, type Worktree } from "./turn-places";
 import { redact } from "../util/redact";
 
 export interface TurnCapture {
@@ -123,6 +123,8 @@ export class TurnSnapshots {
     private nested = new Set<string>();
     /** The last listing worked: a failed one isn't "no worktrees", so nothing is marked from it. */
     private worktreesListed = false;
+    /** Which listed worktree folders really are them (turn-places.ts), kept while each folder stays the same one. */
+    private checks = new WorktreeChecks();
     private readonly storage: string;
     private readonly journal: string;
 
@@ -303,12 +305,15 @@ export class TurnSnapshots {
     private async marks(captured: TurnCapture | undefined): Promise<TurnCapture | undefined> {
         if (!captured?.root || this.stopped || !this.worktreesListed) return captured;
         const deadline = Date.now() + 1500;
-        const prints = await eachLimited(this.worktrees, 4, (w) => fingerprint(w, deadline));
-        const after = Object.fromEntries(this.worktrees.map((w, i) => [w.path, prints[i]!]));
+        // Only folders that really are those worktrees are read (one swapped for a link isn't); the rest go unmarked.
+        const root = captured.root;
+        const checked = (await eachLimited(this.worktrees, 4, (w) => this.checks.check(root, w))).filter((w): w is Checked => w !== undefined);
+        const prints = await eachLimited(checked, 4, (w) => fingerprint(w, deadline));
+        const after = Object.fromEntries(checked.map((w, i) => [w.path, prints[i]!]));
         captured.places = after;
         const before = this.active?.start.places;
         if (before && !this.stopped) {
-            const worked = this.worktrees.filter((w) => after[w.path] !== UNKNOWN && before[w.path] !== UNKNOWN && after[w.path] !== before[w.path]);
+            const worked = checked.filter((w) => after[w.path] !== UNKNOWN && before[w.path] !== UNKNOWN && after[w.path] !== before[w.path]);
             if (worked.length) {
                 const until = Date.now() + 3000;
                 captured.worked = await eachLimited(worked, 4, (w) => summarize(w, until));

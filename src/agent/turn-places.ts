@@ -1,15 +1,21 @@
 // The other worktrees of a session's repository that a turn works in: an agent that entered one, sub-agents
 // that each made their own. A turn's snapshot covers only the session's own folder (turn-snapshots.ts), so
 // at each end of a turn every worktree inside the main checkout's folder (.claude/worktrees, say) gets a
-// fingerprint: its HEAD, what `git status` lists, and those files' sizes and times. One whose fingerprint
-// changed, or that appeared, was worked in; it's summed up as the diff reader shows another worktree: its
-// branch against the main branch, committed or not.
+// fingerprint: its HEAD and branch, its index, and every file it has or lists as new, each by its stat stamp.
+// One whose fingerprint changed, or that appeared, was worked in; it's summed up as the diff reader shows
+// another worktree (git-changes.ts, branch scope): its branch against the main branch, committed or not.
+//
+// As in the snapshot, nothing here runs a program the repository names: no `git status` or working-tree diff
+// (a clean or process filter would run), only listings and stat; the summary is the diff reader's own pinned,
+// filter-safe read. A worktree is read only once its folder is checked to be that worktree (as session-worktrees.ts checks).
 
 import { createHash } from "crypto";
+import { realpathSync } from "fs";
 import { lstat, readFile } from "fs/promises";
-import { join, relative } from "path";
-import { git } from "../server/git-changes";
-import type { TurnPlace } from "../server/protocol";
+import { dirname, join, relative, resolve } from "path";
+import { git, gitChanges } from "../server/git-changes";
+import type { GitChangesInfo, TurnPlace } from "../server/protocol";
+import { sameFolder } from "../server/session-worktrees";
 
 /** Worktrees fingerprinted and summed up per turn, at most: past this many, the rest go unseen. */
 export const MAX_PLACES = 16;
@@ -17,41 +23,29 @@ export const MAX_PLACES = 16;
 const TOP = 6;
 /** A fingerprint that couldn't be taken: neither it nor what it's compared with says anything. */
 export const UNKNOWN = "?";
+/** Files stamped at once. */
+const STAT_WIDTH = 32;
 
 /**
- * Git, as the snapshot's own reads run it: privately, so nothing inherited (a GIT_TRACE path, say) writes
- * trace files or slips warnings into what's read, and no replace refs change what objects say.
+ * Git, as the snapshot's own reads run it: privately (nothing inherited, a GIT_TRACE path say, writes trace files
+ * or slips warnings into what's read; no replace refs), and, given a checked worktree, pinned to its folder and
+ * Git dir so its config can't move the read elsewhere.
  */
-function run(cwd: string, args: string[], o: { deadline: number; maxBytes?: number }) {
-    return git(cwd, args, { ...o, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } });
-}
-
-/**
- * The main branch, as the diff reader takes it (git-changes.ts defaultBase): what origin/HEAD points at,
- * else main or master, local or the remote's.
- */
-async function mainBranch(cwd: string, deadline: number): Promise<{ name: string; ref: string } | undefined> {
-    const [list, originHead] = await Promise.all([
-        run(cwd, ["for-each-ref", "--format=%(refname) %(symref)", "refs/heads", "refs/remotes"], { deadline, maxBytes: 4 * 1024 * 1024 }),
-        run(cwd, ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"], { deadline }),
-    ]);
-    if (list.code || list.cut) return undefined;
-    const full = new Map<string, string>();
-    for (const line of list.out.toString("utf-8").split("\n")) {
-        const [ref, symref] = line.split(" ");
-        if (!ref || symref) continue;
-        const short = ref.replace(/^refs\/(heads|remotes)\//, "");
-        if (!full.has(short)) full.set(short, ref);
-    }
-    const fromOrigin = originHead.code === 0 ? originHead.out.toString().trim().replace(/^refs\/remotes\//, "") : undefined;
-    const name = [fromOrigin, "main", "master", "origin/main", "origin/master"].find((b) => b && full.has(b));
-    return name ? { name, ref: full.get(name)! } : undefined;
+function run(cwd: string, args: string[], o: { deadline: number; maxBytes?: number; pin?: Checked }) {
+    const pin: Record<string, string> = o.pin ? { GIT_DIR: o.pin.gitDir, GIT_WORK_TREE: o.pin.real } : {};
+    return git(cwd, args, { deadline: o.deadline, maxBytes: o.maxBytes, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1", ...pin } });
 }
 
 export interface Worktree {
     path: string;
     branch?: string;
     main: boolean;
+}
+
+/** A worktree whose folder session-worktrees.ts found to be that worktree: its real folder and its own Git dir. */
+export interface Checked extends Worktree {
+    real: string;
+    gitDir: string;
 }
 
 /**
@@ -98,95 +92,131 @@ export function insideRoot(places: readonly Worktree[], root: string): Set<strin
     return out;
 }
 
-/** The paths a `git status --porcelain=v2 -z` record names (ordinary, unmerged, untracked). */
-function statusPaths(out: Buffer): string[] {
-    const paths: string[] = [];
-    for (const rec of out.toString("utf-8").split("\0")) {
-        if (rec.startsWith("1 ")) paths.push(rec.split(" ").slice(8).join(" "));
-        else if (rec.startsWith("u ")) paths.push(rec.split(" ").slice(10).join(" "));
-        else if (rec.startsWith("? ")) paths.push(rec.slice(2));
+/**
+ * Worktrees whose folders really are them (session-worktrees.ts: the same repository, its entry naming that folder,
+ * not a link or a folder put in its place), checked once while the folder stays the same one (its device and inode).
+ */
+export class WorktreeChecks {
+    private known = new Map<string, { at: string; checked: Checked }>();
+
+    async check(root: string, w: Worktree): Promise<Checked | undefined> {
+        const st = await lstat(w.path).catch(() => undefined);
+        if (!st?.isDirectory()) return undefined;
+        const at = `${st.dev}:${st.ino}`;
+        const had = this.known.get(w.path);
+        if (had?.at === at) return { ...had.checked, branch: w.branch };
+        const found = await identify(root, w.path).catch(() => undefined);
+        if (!found) {
+            this.known.delete(w.path);
+            return undefined;
+        }
+        const checked: Checked = { ...w, ...found };
+        this.known.set(w.path, { at, checked });
+        return checked;
     }
-    return paths;
 }
 
 /**
- * What a worktree is like now, in a hash: its HEAD and branch, what git status lists, and each of those files'
- * stat stamp (a file edited again lists the same; an editor that saves by renaming changes its inode, a write its
- * size or times). Not how far the branch is from its upstream: a fetch elsewhere moves that, not work here.
- * UNKNOWN when git can't say, or the files can't all be stamped, in time.
+ * The checks session-worktrees.ts sessionWorktree makes, with this file's private runs (nothing inherited is traced):
+ * the folder's repository is `root`'s, it is its own top level (not a link into another), its Git dir is an entry
+ * of the repository's worktrees, and that entry's gitdir file names this folder.
  */
-export async function fingerprint(w: Worktree, deadline: number): Promise<string> {
+async function identify(root: string, path: string): Promise<{ real: string; gitDir: string } | undefined> {
+    const deadline = Date.now() + 2000;
+    const real = canonical(path);
+    const ask = async (cwd: string, flags: string[]) => {
+        const r = await run(cwd, ["rev-parse", ...flags], { deadline });
+        const out = r.out.toString("utf-8").replace(/\n$/, "");
+        return r.code === 0 && out ? canonical(out) : undefined;
+    };
+    const [expected, common, own, top] = await Promise.all([
+        ask(root, ["--path-format=absolute", "--git-common-dir"]),
+        ask(real, ["--path-format=absolute", "--git-common-dir"]),
+        ask(real, ["--absolute-git-dir"]),
+        ask(real, ["--show-toplevel"]),
+    ]);
+    if (!expected || common !== expected || !own || top !== real || dirname(own) !== join(expected, "worktrees")) return undefined;
+    const named = await readFile(join(own, "gitdir"), "utf-8").then((f) => f.replace(/\r?\n$/, "")).catch(() => "");
+    return named && sameFolder(dirname(resolve(own, named)), path) ? { real, gitDir: own } : undefined;
+}
+
+function canonical(path: string): string {
     try {
-        const st = await run(w.path, ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--no-renames"], { deadline, maxBytes: 8 * 1024 * 1024 });
-        if (st.code || st.cut) return UNKNOWN;
-        const h = createHash("sha256");
-        for (const rec of st.out.toString("utf-8").split("\0")) if (!rec.startsWith("# branch.ab ")) h.update(`${rec}\0`);
-        for (const p of statusPaths(st.out)) {
-            if (Date.now() >= deadline) return UNKNOWN;
-            const s = await lstat(join(w.path, p)).catch(() => undefined);
-            h.update(`${p}\0${s ? `${s.ino}:${s.mode}:${s.size}:${s.mtimeMs}:${s.ctimeMs}` : "-"}\0`);
-        }
+        return realpathSync(path);
+    } catch {
+        return resolve(path);
+    }
+}
+
+/**
+ * What a worktree is like now, in a hash: its HEAD and branch, what its index stages (each entry's mode, object and
+ * stage: what's staged, not the stat cache any `git status` rewrites), and every file it tracks or lists as new with
+ * its stat stamp (inode, mode, size, times: an edit, a rename-save, a delete each change it). Read with listings and
+ * stat only. UNKNOWN when it can't all be read in time.
+ */
+export async function fingerprint(w: Checked, deadline: number): Promise<string> {
+    try {
+        const [head, ref, staged, fresh] = await Promise.all([
+            run(w.real, ["rev-parse", "--verify", "-q", "HEAD"], { deadline, pin: w }),
+            run(w.real, ["symbolic-ref", "-q", "HEAD"], { deadline, pin: w }),
+            run(w.real, ["ls-files", "-z", "--stage"], { deadline, maxBytes: 32 * 1024 * 1024, pin: w }),
+            run(w.real, ["ls-files", "-z", "--others", "--exclude-standard"], { deadline, maxBytes: 16 * 1024 * 1024, pin: w }),
+        ]);
+        if (staged.code || staged.cut || fresh.code || fresh.cut) return UNKNOWN;
+        const stamp = (s: Awaited<ReturnType<typeof lstat>> | undefined) => (s ? `${s.ino}:${s.mode}:${s.size}:${s.mtimeMs}:${s.ctimeMs}` : "-");
+        const h = createHash("sha256").update(`${head.out.toString().trim()}\0${ref.out.toString().trim()}\0`);
+        // "<mode> <object> <stage>\t<path>" per entry: staging, unstaging or a merge changes it.
+        const entries = staged.out.toString("utf-8").split("\0").filter(Boolean);
+        for (const e of entries) h.update(`${e}\0`);
+        // Each file once, tagged tracked or new, so a file untracked or added changes it too.
+        const listed = [...new Set([...entries.map((e) => `T ${e.slice(e.indexOf("\t") + 1)}`), ...fresh.out.toString("utf-8").split("\0").filter(Boolean).map((p) => `? ${p}`)])];
+        const stamps = new Array<string>(listed.length);
+        let next = 0, late = false;
+        await Promise.all(Array.from({ length: Math.min(STAT_WIDTH, listed.length) }, async () => {
+            while (next < listed.length && !late) {
+                if (Date.now() >= deadline) { late = true; return; }
+                const i = next++;
+                stamps[i] = `${listed[i]}\0${stamp(await lstat(join(w.real, listed[i]!.slice(2))).catch(() => undefined))}`;
+            }
+        }));
+        if (late) return UNKNOWN;
+        for (const s of stamps) h.update(`${s}\0`);
         return h.digest("hex");
     } catch {
         return UNKNOWN;
     }
 }
 
-/** The lines in a new file, as a diff counts them (none for one that looks binary or is big). */
-async function lineCount(file: string): Promise<number> {
-    const s = await lstat(file).catch(() => undefined);
-    if (!s?.isFile() || s.size > 512 * 1024) return 0;
-    const buf = await readFile(file).catch(() => undefined);
-    if (!buf?.length || buf.includes(0)) return 0;
-    let n = 0;
-    for (const b of buf) if (b === 10) n++;
-    return buf[buf.length - 1] === 10 ? n : n + 1;
+/** `work`, or undefined once `ms` have passed (it's left to finish, and be thrown away). */
+async function inTime<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), Math.max(0, ms)); });
+    try {
+        return await Promise.race([work.catch(() => undefined), late]);
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
+const changeOf = (c: GitChangesInfo["files"][number]["change"]): NonNullable<TurnPlace["top"]>[number]["change"] => (c === "added" || c === "untracked" ? "added" : c === "deleted" ? "deleted" : "modified");
+
 /**
- * A worktree as the diff reader shows another one: its branch against the main branch, committed or not
- * (what's tracked, and new files). Without a main branch, or out of time, only where it is and its branch.
+ * A worktree as the diff reader shows another one: its branch against the main branch, committed or not, read the
+ * way the diff reader reads it (pinned, filter-safe). Out of time, or without a main branch, only where it is and its branch.
  */
-export async function summarize(w: Worktree, deadline: number): Promise<TurnPlace> {
+export async function summarize(w: Checked, deadline: number): Promise<TurnPlace> {
     const place: TurnPlace = { path: w.path, ...(w.branch ? { branch: w.branch } : {}) };
-    try {
-        const base = await mainBranch(w.path, deadline);
-        if (!base) return place;
-        const mb = await run(w.path, ["merge-base", base.ref, "HEAD"], { deadline });
-        const from = mb.code === 0 ? mb.out.toString().trim() : "";
-        if (!/^[0-9a-f]{40,64}$/.test(from)) return place;
-        place.base = base.name;
-        const [numstat, names, commits, untracked] = await Promise.all([
-            run(w.path, ["diff", "--numstat", "-z", "--no-renames", from, "--"], { deadline, maxBytes: 8 * 1024 * 1024 }),
-            run(w.path, ["diff", "--name-status", "-z", "--no-renames", from, "--"], { deadline, maxBytes: 8 * 1024 * 1024 }),
-            run(w.path, ["rev-list", "--count", `${from}..HEAD`, "--"], { deadline }),
-            run(w.path, ["ls-files", "--others", "--exclude-standard", "-z"], { deadline, maxBytes: 8 * 1024 * 1024 }),
-        ]);
-        if (numstat.code || names.code || numstat.cut || names.cut) return place;
-        const change = new Map<string, "added" | "modified" | "deleted">();
-        const ns = names.out.toString("utf-8").split("\0");
-        for (let i = 0; i + 1 < ns.length; i += 2) change.set(ns[i + 1]!, ns[i] === "A" ? "added" : ns[i] === "D" ? "deleted" : "modified");
-        const files: NonNullable<TurnPlace["top"]> = [];
-        for (const rec of numstat.out.toString("utf-8").split("\0")) {
-            const m = /^(-|\d+)\t(-|\d+)\t(.+)$/s.exec(rec);
-            if (m) files.push({ path: m[3]!, change: change.get(m[3]!) ?? "modified", added: m[1] === "-" ? 0 : Number(m[1]), removed: m[2] === "-" ? 0 : Number(m[2]) });
-        }
-        if (!untracked.code && !untracked.cut) {
-            const fresh = untracked.out.toString("utf-8").split("\0").filter(Boolean);
-            // Their lines are counted while there's time (and for the first 200); past that they count as files.
-            for (const [i, p] of fresh.entries()) files.push({ path: p, change: "added", added: i < 200 && Date.now() < deadline ? await lineCount(join(w.path, p)) : 0, removed: 0 });
-        }
-        place.files = files.length;
-        place.added = files.reduce((n, f) => n + f.added, 0);
-        place.removed = files.reduce((n, f) => n + f.removed, 0);
-        const count = Number(commits.out.toString().trim());
-        if (!commits.code && Number.isSafeInteger(count)) place.commits = count;
-        // As git names them, like the snapshot's own paths: shown redacted, with a handle (git-handles.ts).
-        place.top = files.sort((a, b) => b.added + b.removed - (a.added + a.removed)).slice(0, TOP);
-        return place;
-    } catch {
-        return place;
-    }
+    const info = await inTime(gitChanges(w.real, { scope: "branch" }, undefined, { gitDir: w.gitDir }), deadline - Date.now());
+    if (!info?.repo || !info.base) return place;
+    place.base = info.base.ref;
+    place.files = info.files.length + info.more;
+    place.added = info.added;
+    place.removed = info.removed;
+    place.top = [...info.files].sort((a, b) => b.added + b.removed - (a.added + a.removed)).slice(0, TOP).map((f) => ({ path: f.path, change: changeOf(f.change), added: f.added, removed: f.removed }));
+    const commits = await run(w.real, ["rev-list", "--count", `${info.base.sha}..HEAD`, "--"], { deadline, pin: w }).catch(() => undefined);
+    const count = Number(commits?.out.toString().trim());
+    if (commits && !commits.code && Number.isSafeInteger(count)) place.commits = count;
+    return place;
 }
 
 /** Runs `work` on each of `items`, `width` at a time. */

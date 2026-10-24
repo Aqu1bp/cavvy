@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, realpathSync, renameSync, statSync, utimesSync, writeFileSync } from "fs";
+import { mkdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { isolate } from "./helpers/isolate";
 
@@ -194,6 +194,53 @@ test("shown: a place's branch is redacted, and a file whose name hides a secret 
     } finally {
         unregisterSecret(secret);
     }
+});
+
+test("reading a worktree runs none of the repository's programs: a clean filter on its dirty files never runs", async () => {
+    const { base, cwd, wt, snapshots } = setup(["filtered"]);
+    const marker = join(base, "filter-ran");
+    // The repository asks for a filter on .txt files: one that would leave a marker if anything ran it.
+    git(cwd, ["config", "filter.mark.clean", `sh -c 'touch "${marker}"; cat'`]);
+    git(cwd, ["config", "filter.mark.process", `sh -c 'touch "${marker}"'`]);
+    write(wt("filtered"), ".gitattributes", "*.txt filter=mark\n");
+    await snapshots.begin(1, "edit a filtered file");
+    write(wt("filtered"), "a.txt", "one\ntwo\nthree\n");
+    write(wt("filtered"), "b.txt", "new\n");
+    await snapshots.end();
+    expect(await Bun.file(marker).exists()).toBe(false);
+    expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places?.map((p) => p.branch)).toEqual(["agent/filtered"]);
+});
+
+test("a worktree's folder swapped for a link to another repository isn't read", async () => {
+    const { base, cwd, wt, snapshots } = setup(["swapped"]);
+    const other = join(base, "other-repo");
+    mkdirSync(other, { recursive: true });
+    git(other, ["init", "-q", "-b", "main"]);
+    write(other, "private.txt", "someone else's\n");
+    git(other, ["add", "-A"]);
+    git(other, ["commit", "-q", "-m", "Other"]);
+    git(cwd, ["worktree", "lock", wt("swapped")]);
+    await snapshots.begin(1, "swap it");
+    rmSync(wt("swapped"), { recursive: true, force: true });
+    symlinkSync(other, wt("swapped"));
+    write(other, "more.txt", "changed\n");
+    await snapshots.end();
+    const info = await snapshots.changes({ scope: "turn", turnId: 1 });
+    expect(JSON.stringify(info.places ?? [])).not.toContain("private.txt");
+    expect(JSON.stringify(info.places ?? [])).not.toContain("more.txt");
+});
+
+test("a file untracked but kept (git rm --cached) isn't counted twice: the place is counted as the diff reader shows it", async () => {
+    const { wt, snapshots } = setup(["untracked"]);
+    await snapshots.begin(1, "stop tracking a file");
+    git(wt("untracked"), ["rm", "-q", "--cached", "a.txt"]);
+    write(wt("untracked"), "a.txt", "one\ntwo\nthree\n");
+    await snapshots.end();
+    const place = (await snapshots.changes({ scope: "turn", turnId: 1 })).places?.[0];
+    // Worked in (its index changed); the file once, as on disk against main, not a deletion plus an addition.
+    expect(place?.branch).toBe("agent/untracked");
+    expect(place?.files).toBe(1);
+    expect((place?.top ?? []).filter((f) => f.path === "a.txt")).toHaveLength(1);
 });
 
 test("a turn's places are kept: reopened, the session shows them as they were", async () => {
