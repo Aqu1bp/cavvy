@@ -31,7 +31,7 @@ import { newCommentId, reviewComments } from "../state/review-comments";
 import { PublishStatus } from "./PublishStatus";
 import { BasePicker } from "./BasePicker";
 import { facts, rankedWorktrees, ReviewWorktreePicker, usable, workNamed, worktreeLabel } from "./ReviewWorktreePicker";
-import { keepWorktree, ownOnScreen, pickScope, pickWorktree, worktreeWork, type ReviewPlace, type WorktreeWork } from "../lib/worktree-work";
+import { keepWorktree, ownOnScreen, pickScope, pickWorktree, requestWorktree, worktreeWork, type ReviewPlace, type WorktreeWork } from "../lib/worktree-work";
 import { Spinner } from "./ui/bits";
 import { Menu } from "./ui/Menu";
 
@@ -619,9 +619,11 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const [publishRequest, setPublishRequest] = createSignal<string>();
     createEffect(on(id, () => setPublishRequest(undefined)));
     const saved = lastView.get(p.handle.id);
-    /** A request for a file or a view (a turn's Review changes, the side panel's files) is about the session's own folder. */
-    const asksOwn = (r: ReturnType<typeof review>) => Boolean(r && (r.scope || r.turnId !== undefined || r.path));
+    /** A request for a file or a view (a turn's Review changes, the side panel's files) is about the session's own folder, unless it names another worktree. */
+    const asksOwn = (r: ReturnType<typeof review>) => Boolean(r && r.worktree === undefined && (r.scope || r.turnId !== undefined || r.path));
     const opened = (c: ReviewPlace, r: ReturnType<typeof review>): ReviewPlace => {
+        // A turn's card naming another worktree it worked in: that worktree, on its branch.
+        if (r?.worktree !== undefined) return requestWorktree(c, r.worktree);
         const here = asksOwn(r) ? pickWorktree(c, undefined) : c;
         return r?.scope ? pickScope(here, r.scope) : here;
     };

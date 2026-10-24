@@ -1264,6 +1264,28 @@ export interface GitChangesInfo extends ChangesInfo {
     /** Changed files not listed; `moreAtLeast` when even the count was cut short. */
     more: number;
     moreAtLeast?: boolean;
+    /** A turn's: the other worktrees of the repository it worked in (TurnPlace), as they were when it ended. */
+    places?: TurnPlace[];
+}
+
+/**
+ * Another worktree of the session's repository that a turn worked in (it changed, or appeared, during the
+ * turn): its branch against the main branch, committed or not, as the diff reader shows it there, when the
+ * turn ended. Counts are missing when they couldn't be read in time.
+ */
+export interface TurnPlace {
+    /** The worktree's folder, as `git worktree list` gives it. */
+    path: string;
+    branch?: string;
+    /** The branch it's compared with. */
+    base?: string;
+    files?: number;
+    added?: number;
+    removed?: number;
+    /** Commits on it since it left the base. */
+    commits?: number;
+    /** The files with the most lines changed, the most first. `pathToken`: the name hides a registered value (GitFileDiff.pathToken). */
+    top?: { path: string; change: "added" | "modified" | "deleted"; added: number; removed: number; pathToken?: string }[];
 }
 
 /** A confirmation snapshot; the server rechecks the destination and HEAD before publishing. */
