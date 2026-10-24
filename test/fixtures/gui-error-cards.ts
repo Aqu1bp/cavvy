@@ -204,6 +204,32 @@ test("the composer covered (a maximized terminal, a short diff reader): the wind
     }
 });
 
+test("floating inspectors keep error actions stable as cards change the measured dock height", () => {
+    for (const review of [false, true]) {
+        const s = store();
+        const id = s.add("Retry failed", "error", { action: { label: "Retry", run() {} } });
+        const [opts, setOpts] = solid.createSignal({ ...roomy, win: { w: 720, h: 600 }, panel: !review, review, dock: 300 });
+        const place = cardsModule(s, () => undefined, () => windowLayout(opts()));
+        const windowCards = place("window");
+        const composer = place("composer");
+        try {
+            expect(windowLayout(opts()).inspector.short).toBe(true);
+            const card = windowCards.cards()[0];
+            expect(card).toBeDefined();
+            // ResizeObserver sees the composer shrink after its cards leave.
+            setOpts((o) => ({ ...o, dock: 140 }));
+            expect(windowLayout(opts()).inspector.short).toBe(false);
+            expect(composer.cards()).toHaveLength(0);
+            expect(windowCards.cards()[0]).toBe(card);
+            button(windowCards.root, "Retry")!.props.onClick();
+            expect(s.calls.ran).toEqual([[id, 0]]);
+            setOpts((o) => ({ ...o, panel: false, review: false }));
+            expect(composer.cards()).toHaveLength(1);
+            expect(windowCards.cards()).toHaveLength(0);
+        } finally { composer.dispose(); windowCards.dispose(); }
+    }
+});
+
 // ---- A provider's row: its own failure shows on it, not as a card ----
 
 function providerRow(info: Record<string, any>, handler: (method: string, params: any) => Promise<any>) {

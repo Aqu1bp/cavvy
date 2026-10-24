@@ -94,8 +94,15 @@ export function ErrorCards(p: { place: ErrorPlace }) {
             return i < 0 ? m : [...m.slice(0, i), ...m.slice(i + 1)];
         }),
     );
+    // A floating inspector uses the window host regardless of its current height. The
+    // cards themselves change dockHeight: routing on inspector.short would move them
+    // back and forth as adding/removing them makes the inspector short/tall.
+    const windowHost = () => {
+        const layout = shellLayout();
+        return coversComposer(layout) || (layout.inspector.open && layout.inspector.mode !== "dock");
+    };
     // Newest first, as the mockup stacks them.
-    const errors = () => (errorPlace(mounted(), !!settingsTab(), coversComposer(shellLayout())) === place ? toasts.filter((t) => t.level === "error").reverse() : []);
+    const errors = () => (errorPlace(mounted(), !!settingsTab(), windowHost()) === place ? toasts.filter((t) => t.level === "error").reverse() : []);
     const shown = () => errors().slice(0, MAX_ERROR_CARDS);
     const more = () => errors().length - shown().length;
     return (
