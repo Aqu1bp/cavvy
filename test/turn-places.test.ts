@@ -100,6 +100,22 @@ test("a worktree outside the folder isn't looked at", async () => {
     expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places).toBeUndefined();
 });
 
+test("a turn in a linked worktree records edits in the main checkout", async () => {
+    const { cwd, wt, dir } = setup(["task"]);
+    const snapshots = new TurnSnapshots(dir, wt("task"));
+    await snapshots.begin(1, "edit the main checkout too");
+    write(cwd, "a.txt", "one\ntwo\nmain edit\n");
+    await snapshots.end();
+    const info = await snapshots.changes({ scope: "turn", turnId: 1 });
+    expect(info.files).toEqual([]);
+    expect(info.places?.map((p) => [p.path, p.branch])).toEqual([[cwd, "main"]]);
+    expect(info.places![0]!.top).toContainEqual({ path: "a.txt", change: "modified", added: 1, removed: 0 });
+    await snapshots.begin(2, "leave main untouched");
+    write(wt("task"), "a.txt", "one\ntwo\nlinked edit\n");
+    await snapshots.end();
+    expect((await snapshots.changes({ scope: "turn", turnId: 2 })).places).toBeUndefined();
+});
+
 test("reading the worktrees inherits no git tracing: no trace file, and the places still read", async () => {
     const { cwd, wt, snapshots } = setup(["home"]);
     const trace = join(cwd, "..", "trace-output.txt");

@@ -73,11 +73,11 @@ export async function listWorktrees(root: string, deadline: number): Promise<Wor
 
 const within = (path: string, dir: string) => path.startsWith(dir.endsWith("/") ? dir : `${dir}/`);
 
-/** The worktrees a turn may work in beside the session's own folder (`own`): the others inside the main checkout's folder. */
+/** The worktrees beside the session's own folder: the main checkout and the others inside its folder. */
 export function nearby(all: readonly Worktree[], own: string): Worktree[] {
     const main = all.find((w) => w.main);
     if (!main) return [];
-    return all.filter((w) => !w.main && w.path !== own && within(w.path, main.path)).slice(0, MAX_PLACES);
+    return all.filter((w) => w.path !== own && (w.main || within(w.path, main.path))).slice(0, MAX_PLACES);
 }
 
 /** The repository-relative folders of `places` inside `root`, as the snapshot's file list names them (with and without the slash). */
@@ -105,7 +105,7 @@ export class WorktreeChecks {
         const at = `${st.dev}:${st.ino}`;
         const had = this.known.get(w.path);
         if (had?.at === at) return { ...had.checked, branch: w.branch };
-        const found = await identify(root, w.path).catch(() => undefined);
+        const found = await identify(root, w.path, w.main).catch(() => undefined);
         if (!found) {
             this.known.delete(w.path);
             return undefined;
@@ -121,7 +121,7 @@ export class WorktreeChecks {
  * the folder's repository is `root`'s, it is its own top level (not a link into another), its Git dir is an entry
  * of the repository's worktrees, and that entry's gitdir file names this folder.
  */
-async function identify(root: string, path: string): Promise<{ real: string; gitDir: string } | undefined> {
+async function identify(root: string, path: string, main: boolean): Promise<{ real: string; gitDir: string } | undefined> {
     const deadline = Date.now() + 2000;
     const real = canonical(path);
     const ask = async (cwd: string, flags: string[]) => {
@@ -135,7 +135,9 @@ async function identify(root: string, path: string): Promise<{ real: string; git
         ask(real, ["--absolute-git-dir"]),
         ask(real, ["--show-toplevel"]),
     ]);
-    if (!expected || common !== expected || !own || top !== real || dirname(own) !== join(expected, "worktrees")) return undefined;
+    if (!expected || common !== expected || !own || top !== real) return undefined;
+    if (main) return own === expected ? { real, gitDir: own } : undefined;
+    if (dirname(own) !== join(expected, "worktrees")) return undefined;
     const named = await readFile(join(own, "gitdir"), "utf-8").then((f) => f.replace(/\r?\n$/, "")).catch(() => "");
     return named && sameFolder(dirname(resolve(own, named)), path) ? { real, gitDir: own } : undefined;
 }
