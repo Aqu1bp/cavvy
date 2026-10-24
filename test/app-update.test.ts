@@ -3,11 +3,11 @@
 // started update's state moves, with a stand-in update script.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { AppUpdates, bundleOf, capture, lastLogLine } from "../src/server/app-update";
-import { appSourceDir, installRecordPath } from "../src/config/desktop-install";
+import { appSourceDir, installRecordPath, replaceBundle } from "../src/config/desktop-install";
 import type { AppUpdateInfo } from "../src/server/protocol";
 
 let dir: string;
@@ -251,4 +251,55 @@ test("capture: past its timeout it answers at once, even with a child still hold
     expect(r.err).toContain("took longer than");
     expect(await capture(["sh", "-c", "echo hi; echo oops >&2; exit 2"], dir, 5000)).toEqual({ ok: false, out: "hi", err: "oops" });
     expect(await capture(["no-such-command-here"], dir, 5000)).toMatchObject({ ok: false });
+});
+
+describe("replaceBundle: the new app in place of the old, never a broken one in between", () => {
+    /** A stand-in .app: a folder whose file says which build it is. */
+    function bundle(path: string, build: string) {
+        mkdirSync(join(path, "Contents"), { recursive: true });
+        writeFileSync(join(path, "Contents", "build"), build);
+    }
+    const build = (app: string) => readFileSync(join(app, "Contents", "build"), "utf8");
+    const copy = (from: string, to: string) => cpSync(from, to, { recursive: true });
+    const apps = () => readdirSync(join(dir, "Applications")).sort();
+
+    beforeEach(() => {
+        mkdirSync(join(dir, "Applications"));
+        bundle(join(dir, "built.app"), "new");
+    });
+
+    test("in place of the installed one, or where there was none, leaving nothing beside it", () => {
+        const dest = join(dir, "Applications", "Harness.app");
+        replaceBundle(join(dir, "built.app"), dest, copy);
+        expect(build(dest)).toBe("new");
+        bundle(join(dir, "built.app"), "newer");
+        replaceBundle(join(dir, "built.app"), dest, copy);
+        expect(build(dest)).toBe("newer");
+        expect(apps()).toEqual(["Harness.app"]);
+    });
+
+    test("a copy stopped part way leaves the installed app as it was, and the next install clears what it left", () => {
+        const dest = join(dir, "Applications", "Harness.app");
+        bundle(dest, "old");
+        expect(() => replaceBundle(join(dir, "built.app"), dest, (_from, to) => {
+            mkdirSync(to);
+            throw new Error("stopped");
+        })).toThrow("stopped");
+        expect(build(dest)).toBe("old");
+        replaceBundle(join(dir, "built.app"), dest, copy);
+        expect(build(dest)).toBe("new");
+        expect(apps()).toEqual(["Harness.app"]);
+    });
+
+    test("a swap stopped between its renames is put back first", () => {
+        const dest = join(dir, "Applications", "Harness.app");
+        // The old app moved aside, the new one never moved in.
+        bundle(join(dir, "Applications", ".Harness.app.old"), "old");
+        expect(existsSync(dest)).toBe(false);
+        expect(() => replaceBundle(join(dir, "built.app"), dest, () => {
+            throw new Error("copy failed");
+        })).toThrow("copy failed");
+        expect(build(dest)).toBe("old");
+        expect(apps()).toEqual(["Harness.app"]);
+    });
 });

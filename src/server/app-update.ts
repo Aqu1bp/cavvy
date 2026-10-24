@@ -16,8 +16,13 @@ const CHECK_EVERY_MS = 6 * 3600_000;
 const FIRST_CHECK_MS = 5_000;
 /** How long a finished update may take to restart the app before it says so. */
 const RESTART_WAIT_MS = 90_000;
-/** How long an update may print nothing before it's taken as stuck (a fetch, an install, a build that hangs) and stopped. */
-const STALL_MS = 15 * 60_000;
+/**
+ * How long an update may print nothing, while the Mac is awake, before it's taken as stuck (a fetch, an install, a
+ * build that hangs) and stopped: well past any quiet step that works (a release link, signing).
+ */
+const STALL_MS = 30 * 60_000;
+/** The most one tick of the progress check counts as quiet: a longer gap is the Mac asleep, when nothing can run. */
+const TICK_CAP_MS = 5_000;
 const SHOWN = 20;
 
 /** The .app bundle a program runs from (…/Harness.app/Contents/MacOS/harness), if it does. */
@@ -200,15 +205,22 @@ export class AppUpdates {
         }
         child.unref();
         this.child = child;
-        // Its output moving on is progress; none for STALL_MS and it's stopped, all of it (its own process group).
+        // Its output moving on is progress; none for STALL_MS of awake time and it's stopped, all of it (its own
+        // process group). The installer swaps the new app in only once it's fully copied (replaceBundle), so stopping
+        // it never leaves a broken app.
         let size = 0;
-        let moved = Date.now();
+        let quiet = 0;
+        let tick = Date.now();
         let stalled: string | undefined;
         const stallMs = this.o.stallMs ?? STALL_MS;
         const progress = setInterval(() => {
+            const at = Date.now();
+            const gap = Math.min(at - tick, TICK_CAP_MS);
+            tick = at;
             const now = statSync(log, { throwIfNoEntry: false })?.size ?? 0;
-            if (now !== size) (size = now), (moved = Date.now());
-            else if (!stalled && Date.now() - moved > stallMs) {
+            if (now !== size) (size = now), (quiet = 0);
+            else quiet += gap;
+            if (!stalled && quiet > stallMs) {
                 stalled = `The update stopped: it printed nothing for ${Math.round(stallMs / 60_000) || "under a"} minute${stallMs >= 120_000 ? "s" : ""}, after: ${lastLogLine(log) || "(nothing)"}`;
                 try {
                     process.kill(-child.pid!, "SIGKILL");
