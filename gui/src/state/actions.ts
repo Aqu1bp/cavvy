@@ -14,7 +14,7 @@ import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
 import { prefs, setPrefs } from "./prefs";
-import { railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setDeleteRequest, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, setReview, setRewindOpen, setSettingsTab, shellLayout } from "./ui";
+import { railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setDeleteRequest, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, setReview, setRewindOpen, setSettingsTab, setTerminalMax, shellLayout } from "./ui";
 import { clientAction, slashName } from "../lib/commands";
 import { forkAnchor } from "../lib/fork";
 import { backgroundOf, stopOutcome, stopTasks } from "../lib/background";
@@ -169,6 +169,7 @@ export function openAgents(agentId?: string) {
 export function openWaiting(id: string) {
     setSettingsTab(undefined);
     setAgentFocus(undefined);
+    setTerminalMax(false);
     return activate(id);
 }
 
