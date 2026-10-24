@@ -10,6 +10,7 @@ import * as liveLine from "../../gui/src/lib/live-line";
 import * as notices from "../../gui/src/lib/notices";
 import * as commandRow from "../../gui/src/lib/command-row";
 import { backgroundOf } from "../../gui/src/lib/background";
+import * as turnPlaces from "../../gui/src/lib/turn-places";
 import * as agentMarks from "../../gui/src/lib/agent-marks";
 import { MarkdownRenderer } from "../../gui/src/lib/markdown";
 import { createReveal } from "../../gui/src/lib/reveal";
@@ -34,7 +35,7 @@ function setup(blocks: any[], expanded = true, agents: any[] = [], session?: str
     const stops: [string, string[]][] = [];
     const icon = () => { icons++; return node("icon"); };
     const scope = {
-        ...format, ...toolWords, ...liveLine, ...notices, ...commandRow, ...agentMarks, backgroundOf, RenderBoundary: boundary(), AgentMark: icon, ProviderStack: icon, Notice: () => node("notice"),
+        ...format, ...toolWords, ...liveLine, ...notices, ...commandRow, ...agentMarks, ...turnPlaces, backgroundOf, app: {}, RenderBoundary: boundary(), AgentMark: icon, ProviderStack: icon, Notice: () => node("notice"),
         // The session the rows are in: its background tasks, and Stop on one (recorded).
         handleFor: () => ({ view }), stopBackground: (id: string, ids: string[]) => { stops.push([id, ids]); }, now: clock, motionMs: () => 0, prefs: { expandActivity: expanded, showThinking: true }, findReveal: reveal,
         CodeBlock: (p: any) => { const n = node("code"); solid.createRenderEffect(() => n.text = p.code); return n; },

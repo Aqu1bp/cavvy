@@ -2,10 +2,10 @@
    The stage fills the conversation column, under the title bar: the transcript
    scrolls under the bar's soft edge and under the composer's dock.
 
-   For the transcript (Transcript, AgentView):
-     --lane-l / --lane-r  the scroller's side padding
-     --stage-top          room above the first message, clear of the title bar
-     --dock-h             the composer dock's height (requests included)
+   The transcript (Transcript, AgentView) gets its responsive padding directly.
+   Inheriting spacing variables from .stage makes WebKit restyle every tool row
+   when a panel crosses a width/height breakpoint, even when that row is skipped.
+   --dock-h is the composer dock's height (requests included).
    The composer and request cards go in .composer-dock > .composer-col.
 
    --dock-h changes whenever the composer grows or shrinks (a prompt wrapping
@@ -23,15 +23,16 @@
 .stage {
     position: absolute;
     inset: 0;
-    --lane-l: calc(32 * var(--sp));
-    --lane-r: calc(32 * var(--sp));
-    --stage-top: calc(var(--bar-h, 52px) + 14 * var(--sp));
     /* The composer's width: the text column and a little more. */
     --dock-w: calc(var(--column-w) + 100 * var(--sp));
 }
 
+.stage .transcript {
+    padding: 0 calc(32 * var(--sp));
+}
+
 .stage .transcript-col {
-    padding-top: var(--stage-top);
+    padding-top: calc(var(--bar-h, 52px) + 14 * var(--sp));
 }
 
 .composer-dock {
@@ -65,9 +66,8 @@
 }
 
 :where(.main[data-narrow~="700"]) {
-    .stage {
-        --lane-l: calc(22 * var(--sp));
-        --lane-r: calc(22 * var(--sp));
+    .stage .transcript {
+        padding-inline: calc(22 * var(--sp));
     }
 }
 
@@ -78,14 +78,13 @@
 }
 
 :where(.main[data-narrow~="440"]) {
-    .stage {
-        --lane-l: calc(16 * var(--sp));
-        --lane-r: calc(16 * var(--sp));
+    .stage .transcript {
+        padding-inline: calc(16 * var(--sp));
     }
 }
 
 :where(.main[data-short~="560"]) {
-    .stage {
-        --stage-top: calc(var(--bar-h, 52px) + 6 * var(--sp));
+    .stage .transcript-col {
+        padding-top: calc(var(--bar-h, 52px) + 6 * var(--sp));
     }
 }

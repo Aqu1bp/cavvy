@@ -10,6 +10,7 @@ import { anchoredTop, atBottom, FAR, firstBelow, restoredShown, transcriptPositi
 import { turnAt } from "../lib/find";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
 import { revealing } from "../lib/reveal";
+import { observeWorkRendering } from "../lib/work-rendering";
 import { TurnView } from "./TurnView";
 import { LiveLine, motionMs } from "./LiveLine";
 import { CardFoldsProvider } from "./blocks/Activity";
@@ -222,11 +223,18 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         const turn = els[firstBelow(els.length, (i) => els[i]!.getBoundingClientRect().bottom - shiftOf(els[i]!), top)];
         if (!turn) return;
         // A block anchor also survives replacing the live head with a work-log toggle.
-        const part = [...turn.querySelectorAll<HTMLElement>("[data-find], .worklog")].find((el) => el.getBoundingClientRect().bottom - shiftOf(el) > top);
+        let part = [...turn.querySelectorAll<HTMLElement>("[data-find], .worklog")].find((el) => el.getBoundingClientRect().bottom - shiftOf(el) > top);
+        // Within one large work log or reply, anchor the measured row in view. A container's
+        // top alone cannot preserve the paragraph/tool being read when rows above reflow.
+        const rows = part ? [...part.querySelectorAll<HTMLElement>('[data-work-row="sized"]')] : [];
+        const rowIndex = firstBelow(rows.length, (i) => rows[i]!.getBoundingClientRect().bottom - shiftOf(rows[i]!), top);
+        const row = rows[rowIndex];
+        if (row?.dataset.find) part = row;
         return {
             turnId: turn.dataset.turn!, offset: turn.getBoundingClientRect().top - shiftOf(turn) - top,
             part: part?.dataset.find ?? (part ? `worklog:${[...turn.querySelectorAll(".worklog")].indexOf(part)}` : undefined),
             partOffset: part ? part.getBoundingClientRect().top - shiftOf(part) - top : undefined,
+            ...(row && row !== part ? { row: [...part!.querySelectorAll<HTMLElement>("[data-work-row]")].indexOf(row), rowOffset: row.getBoundingClientRect().top - shiftOf(row) - top } : {}),
         };
     };
     const restore = () => {
@@ -236,9 +244,10 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         const part = reading.part?.startsWith("worklog:")
             ? turn.querySelectorAll<HTMLElement>(".worklog")[Number(reading.part.slice(8))]
             : reading.part ? turn.querySelector<HTMLElement>(`[data-find="${CSS.escape(reading.part)}"]`) : undefined;
-        const el = part ?? turn;
+        const row = part && reading.row !== undefined ? part.querySelectorAll<HTMLElement>("[data-work-row]")[reading.row] : undefined;
+        const el = row ?? part ?? turn;
         const box = el.getBoundingClientRect();
-        const savedOffset = part && reading.partOffset !== undefined ? reading.partOffset : reading.offset;
+        const savedOffset = row && reading.rowOffset !== undefined ? reading.rowOffset : part && reading.partOffset !== undefined ? reading.partOffset : reading.offset;
         // A remounted prompt may be clamped again. If the saved reading point
         // no longer fits, show this anchor's top instead of skipping past it.
         const offset = savedOffset <= -box.height ? 0 : savedOffset;
@@ -291,6 +300,12 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                 to.fn = undefined;
             });
         }
+        onCleanup(observeWorkRendering(scroller, content, (moved) => {
+            if (stick() || smoothScroll) return;
+            scroller!.scrollTop += moved;
+            wrote();
+            reading = capture();
+        }));
         const ro = new ResizeObserver(() => {
             if (!ready) return;
             const running = turns().at(-1)?.status === "running";

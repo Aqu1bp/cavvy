@@ -41,7 +41,6 @@
     overflow-anchor: none;
     overscroll-behavior: contain;
     scrollbar-width: thin;
-    padding: 0 var(--lane-r) 0 var(--lane-l);
 }
 
 /* The column glides (a translate, Transcript.tsx pin): clipped here, vertically only, so a glide never adds
@@ -224,6 +223,12 @@
 /* A screen or more from the view (Transcript.tsx): no layout or paint until it comes near, so a long
    conversation costs what its last screens do. Auto, not hidden: one scrolled to before it's marked near is drawn. */
 .turn[data-far] {
+    content-visibility: auto;
+}
+
+/* Measured tool rows and Markdown blocks, including those inside one large active turn.
+   work-rendering.ts supplies their natural size, preserving their layout and mounted state. */
+[data-work-far] {
     content-visibility: auto;
 }
 

@@ -37,6 +37,8 @@ const turnHeights = new Map<string, number>();
 /** A far turn (data-far) keeps the size it was skipped at, if one is set here, whatever it would be drawn at now. */
 const skippedAt = new Map<string, number>();
 let omitPromptPart = false;
+let rowAnchors: "prose" | "tool" | undefined;
+let rowShift = 0;
 /** The composer told the conversation its next change of the dock's height is it opening or closing its large size. */
 let dockGlide = false;
 /** Some streamed text is still coming out (lib/reveal.ts revealing()). */
@@ -142,6 +144,7 @@ const scope = {
         observe(target: Node) { if (!observers.has(this.cb)) observers.set(this.cb, new Set()); observers.get(this.cb)!.add(target); }
         disconnect() { observers.delete(this.cb); }
     },
+    observeWorkRendering: () => () => {},
     matchMedia: () => ({ matches: reduced }), CSS: { escape: (s: string) => s },
     jumpTarget: jump, setJumpTarget: setJump, findOpen: findShown, panelHold,
     takeDockGlide: () => { const glides = dockGlide; dockGlide = false; return glides; }, GROW_MS: 240, GROW_EASE: "cubic-bezier(0.2, 0.8, 0.2, 1)",
@@ -159,6 +162,18 @@ const scope = {
         const part = create("div"); part.props["data-find"] = "prompt";
         part.getBoundingClientRect = () => ({ top: absolute(n) - top + drawn(n) + partShift, bottom: absolute(n) - top + drawn(n) + height(n), height: height(n) - partShift });
         renderer.insert(n, part);
+        if (rowAnchors && p.turn.id === "turn-5") {
+            part.props["data-find"] = "reply";
+            for (let i = 0; i < 3; i++) {
+                const row = create("div"); row.props["data-work-row"] = "sized";
+                if (rowAnchors === "tool") row.props["data-find"] = `tool-${i}`;
+                row.getBoundingClientRect = () => {
+                    const at = absolute(n) - top + partShift + rowShift + i * 40;
+                    return { top: at, bottom: at + 40, height: 40 };
+                };
+                renderer.insert(part, row);
+            }
+        }
         return n;
     },
 };
@@ -796,3 +811,24 @@ try {
     assert.equal(slides.length, 2, "nothing to move");
     setPanelHold(undefined);
 } finally { dispose(); }
+
+
+// A long reply/work log anchors the row being read, not just the enclosing block's top.
+for (const mode of ["prose", "tool"] as const) {
+    rowAnchors = mode; rowShift = 0;
+    const handle = { id: `row-anchor-${mode}`, view: { state: {}, turns: turns(45) } };
+    dispose = mount(handle);
+    try {
+        scroll(130);
+        rowShift = 20; resize();
+        assert.equal(top, 150, `${mode}: a reflow above the measured row preserves its viewport offset`);
+    } finally { dispose(); }
+    const anchor = cache.get(handle.id)!.anchor!;
+    assert.equal(anchor.part, mode === "tool" ? "tool-1" : "reply");
+    assert.equal(anchor.row, mode === "tool" ? undefined : 1);
+    rowShift = 45;
+    dispose = mount(handle);
+    try {
+        assert.equal(top, 175, `${mode}: reopening at a different row position restores the saved reading point`);
+    } finally { dispose(); rowAnchors = undefined; rowShift = 0; }
+}
