@@ -1684,6 +1684,8 @@ export interface Methods {
     "plugins.list": { params: { cwd?: string }; result: PluginsInfo };
     /** Change plugins or marketplaces. Fetching (git, npm) happens before it answers; every open folder reloads after. */
     "plugins.action": { params: PluginActionParams; result: PluginsInfo & { message: string } };
+    /** A plugin maker's logo: their GitHub account's avatar (fetched by the server, as the GUI loads no outside images), or null. */
+    "plugins.logo": { params: { owner: string }; result: { mediaType: string; data: string } | null };
     "settings.get": { params: { cwd?: string }; result: GuiSettings };
     "settings.update": { params: { patch: GuiSettings }; result: GuiSettings };
     /** The agent CLIs' plan limits known so far: the last ones saved before the server started, then any newer report. */
