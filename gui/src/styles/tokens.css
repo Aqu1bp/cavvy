@@ -169,6 +169,11 @@
     --warn: #985a00; /* mockup #9a5b00, nudged for AA */
     --warn-bg: rgba(255, 179, 64, 0.16);
     --danger: #c0352f;
+    /* Usage sources (data colours, not the accent): fixed whatever accent is picked, and checked for
+       colour-blind separation as a set in each scheme (all pairs ΔE ≥ 9.2 light, 9.4 dark). */
+    --src-claude: #eb6834;
+    --src-codex: #2a78d6;
+    --src-api: #1baf7a;
     --add-bg: #e7f6ec;
     --add-bg-strong: #c9ecd4;
     --add-fg: #166a37;
@@ -247,6 +252,9 @@
     --warn: #ffc15c;
     --warn-bg: rgba(255, 179, 64, 0.13);
     --danger: #ff7b72;
+    --src-claude: #d95926;
+    --src-codex: #3987e5;
+    --src-api: #199e70;
     --add-bg: rgba(46, 160, 67, 0.15);
     --add-bg-strong: rgba(46, 160, 67, 0.32);
     --add-fg: #79d995;

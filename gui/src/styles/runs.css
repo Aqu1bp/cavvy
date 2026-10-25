@@ -96,39 +96,9 @@
 .usage-view { min-width: 0; }
 .usage-view .usage-bar { flex-wrap: wrap; }
 .usage-view h3 { margin: 0; font: inherit; }
-.usage-headline { font-size: clamp(1.8rem, 5vw, 2.8rem); font-weight: 600; letter-spacing: -.04em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.usage-sources { display: grid; gap: calc(12 * var(--sp)); margin: calc(20 * var(--sp)) 0; }
-.usage-source { display: flex; align-items: center; gap: calc(10 * var(--sp)); min-width: 0; }
-.usage-source-value { margin-left: auto; text-align: right; font-variant-numeric: tabular-nums; }
-.usage-color-claude-code { --usage-color: var(--accent); }
-.usage-color-codex { --usage-color: var(--ok); }
-.usage-color-api { --usage-color: var(--fg-2); }
-.usage-swatch { width: calc(9 * var(--sp)); height: calc(9 * var(--sp)); flex: 0 0 auto; border-radius: 50%; background: var(--usage-color); }
-.usage-chart { margin: calc(24 * var(--sp)) 0; }
-.usage-chart figcaption { font-size: .8rem; color: var(--fg-2); }
-.usage-chart svg { display: block; width: 100%; overflow: visible; }
-.usage-chart text { fill: var(--fg-2); font-size: calc(12 * var(--sp)); }
-.usage-grid { stroke: var(--line); }
-.usage-line { fill: none; stroke: var(--usage-color); stroke-width: 2.5; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
-.usage-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(calc(115 * var(--sp)), 1fr)); gap: calc(8 * var(--sp)); }
 .usage-card { padding: calc(12 * var(--sp)); border: 1px solid var(--line); border-radius: calc(8 * var(--sp)); background: var(--raised); }
 .usage-card span { display: block; color: var(--fg-2); font-size: .8rem; }
 .usage-card strong { display: block; margin-top: calc(8 * var(--sp)); font-size: 1.15rem; font-variant-numeric: tabular-nums; }
-.usage-cost-bar { height: calc(12 * var(--sp)); display: flex; border-radius: calc(4 * var(--sp)); overflow: hidden; background: var(--hover); }
-.usage-type-input { background: var(--accent); }
-.usage-type-cacheRead { background: var(--ok); }
-.usage-type-cacheWrite { background: var(--warn); }
-.usage-type-output { background: var(--fg-2); }
-.usage-type-unallocated { background: var(--line-strong); }
-.usage-cost-legend { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: calc(8 * var(--sp)) calc(18 * var(--sp)); font-size: .8rem; }
-.usage-cost-legend li { display: flex; align-items: center; gap: calc(5 * var(--sp)); }
-.usage-cost-legend i { height: calc(8 * var(--sp)); width: calc(8 * var(--sp)); border-radius: calc(2 * var(--sp)); }
-.usage-share { min-width: calc(65 * var(--sp)); font-size: .8rem; font-variant-numeric: tabular-nums; }
-.usage-share > div { height: calc(4 * var(--sp)); margin-top: calc(5 * var(--sp)); border-radius: calc(2 * var(--sp)); background: var(--hover); }
-.usage-share i { display: block; height: 100%; background: var(--accent); border-radius: inherit; }
-.usage-dashboard tbody th { font-weight: 400; white-space: normal; min-width: calc(140 * var(--sp)); }
 @media (max-width: 520px) {
-    .usage-source { flex-wrap: wrap; }
-    .usage-source-value { flex-basis: 100%; margin-left: calc(19 * var(--sp)); text-align: left; }
     .usage-view .usage-bar > .spacer { display: none; }
 }
