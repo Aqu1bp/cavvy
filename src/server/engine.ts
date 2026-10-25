@@ -100,6 +100,7 @@ import type {
 } from "./protocol";
 import { ensureKeybindingsFile, keybindingsPath, readKeybindings, watchKeybindings } from "../keybindings/file";
 import { listPlugins } from "../plugins/install";
+import { pluginLogo } from "../plugins/logos";
 import { runPluginCli } from "../plugins/cli";
 import { pluginServerMatch } from "../plugins/loader";
 import { withPluginCommands } from "../plugins/native";
@@ -2496,6 +2497,8 @@ export class Engine {
                 return this.pluginsInfo(optStr(p.cwd));
             case "plugins.action":
                 return this.pluginAction(p as PluginActionParams);
+            case "plugins.logo":
+                return pluginLogo(str(p.owner, "owner"));
             case "session.mcpSignIn": {
                 const rt = this.runtime(p.id);
                 const name = str(p.name, "name");

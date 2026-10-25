@@ -52,7 +52,8 @@ function DialogInner(p: DialogProps) {
                 p.onClose();
             } else if (e.key === "Tab") {
                 // Tab stays in the dialog: what's behind it can't be reached while it's open.
-                const items = [...box.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => el.getClientRects().length > 0);
+                // A roving group's other members (tabIndex -1) aren't Tab stops, so they can't be the ends it wraps at.
+                const items = [...box.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => el.tabIndex >= 0 && el.getClientRects().length > 0);
                 if (!items.length) {
                     e.preventDefault();
                     box.focus();
