@@ -83,7 +83,7 @@ export function UsageDashboard(p: { data: UsageSummary; metric: Metric }) {
     const [hl, setHl] = createSignal<UsageSource>();
     const m = () => p.metric;
     const total = () => amount(p.data.totals, m());
-    const sources = () => p.data.sources.filter((s) => processed(s) > 0);
+    const sources = () => p.data.sources.filter((s) => processed(s) > 0 || s.cost > 0);
     const unpriced = () => [...new Set(p.data.rows.filter((r) => r.unknown).map((r) => r.model))];
     const accounts = createMemo(() => byAccount(p.data.accounts));
     const accountCount = (s: UsageSource) => accounts().filter((a) => a.source === s).length;
@@ -95,7 +95,7 @@ export function UsageDashboard(p: { data: UsageSummary; metric: Metric }) {
                 <Show when={m() === "cost" && unpriced().length}> No price is known for {unpriced().join(", ")}, so {unpriced().length === 1 ? "its" : "their"} usage isn't in the cost.</Show>
             </p>
             <div class="uh-bar" role="img" aria-label={sources().map((s) => `${s.label} ${pct(amount(s, m()), total())}`).join(", ")}>
-                <For each={sources()}>{(s) => <i class={`src-${s.source}`} data-src={s.source} style={{ "flex-grow": amount(s, m()) }} />}</For>
+                <For each={sources()}>{(s) => <i class={`src-${s.source}`} data-src={s.source} style={{ "flex-grow": share(amount(s, m()), total()) }} />}</For>
             </div>
             <div class="uh-leg" style={{ "--k": sources().length }}>
                 <For each={sources()}>{(s) => <div class={`uh-li src-${s.source}`} data-src={s.source} onPointerEnter={() => setHl(s.source)} onPointerLeave={() => setHl(undefined)}>
@@ -195,7 +195,7 @@ function UsageChart(p: { data: UsageSummary; metric: Metric }) {
         <figure class="set-group uc" data-dense={n() > 20 ? "" : undefined}>
             <Show when={series()[shown()]}>{(b) => <div class="uc-read" aria-live="polite">
                 <span class="when">{periodName(b().at, hourly())}<Show when={note(shown())}><small>{note(shown())}</small></Show></span>
-                <Show when={tot(b())} fallback={<span class="none">No usage</span>}>
+                <Show when={tot(b())} fallback={<span class="none">{processed(b()) > 0 ? "No known cost" : "No usage"}</span>}>
                     <span class="tot num">{f(tot(b()))}</span>
                     <For each={SOURCES.filter((s) => amount(b().sources[s], p.metric) > 0)}>{(s) => <span class={`src src-${s}`} data-src={s}><i class="sw" />{SHORT[s]} <b class="num">{f(amount(b().sources[s], p.metric))}</b></span>}</For>
                 </Show>
@@ -206,7 +206,7 @@ function UsageChart(p: { data: UsageSummary; metric: Metric }) {
                 <div class="uc-cols" ref={cols} style={{ "--n": n() }} aria-hidden="true">
                     <For each={series()}>{(b, i) => <div class={`uc-col ${tot(b) ? "" : "zero"} ${at() === i() ? "sel" : ""}`} style={{ padding: `0 ${n() > 60 ? 1 : n() > 20 ? 2 : 0}px` }}>
                         <span class="uc-stack" style={{ height: tot(b) ? `${Math.max(1.5, (tot(b) / top()) * 100)}%` : undefined }}>
-                            <For each={SOURCES.filter((s) => amount(b.sources[s], p.metric) > 0)}>{(s) => <i class={`src-${s}`} data-src={s} style={{ "flex-grow": amount(b.sources[s], p.metric) }} />}</For>
+                            <For each={SOURCES.filter((s) => amount(b.sources[s], p.metric) > 0)}>{(s) => <i class={`src-${s}`} data-src={s} style={{ "flex-grow": share(amount(b.sources[s], p.metric), tot(b)) }} />}</For>
                         </span>
                     </div>}</For>
                 </div>
@@ -226,7 +226,7 @@ function UsageTable(p: { data: UsageSummary; metric: Metric; by: string; hl: (s?
     const sorted = (col: Metric) => (p.metric === col ? "on" : "");
     return <div class="set-group usage-table-wrap" tabindex="0" role="region" aria-label="Usage breakdown table">
         <table class="usage-table"><caption class="sr-only">{p.by === "model" ? "Models" : "UTC periods"}: sessions, processed tokens and combined estimates</caption>
-            <thead><tr><th scope="col">{p.by === "model" ? "Model" : `${hourly() ? "Hour" : "Day"} (UTC)`}</th><th scope="col" class="num opt">Sessions</th><th scope="col" class={`num ${sorted("tokens")}`} aria-sort={p.metric === "tokens" ? "descending" : undefined}>Tokens</th><th scope="col" class={`num ${sorted("cost")}`} aria-sort={p.metric === "cost" ? "descending" : undefined}>Cost</th><th scope="col" class="share">Share</th></tr></thead>
+            <thead><tr><th scope="col" aria-sort={p.by === "model" ? undefined : "descending"}>{p.by === "model" ? "Model" : `${hourly() ? "Hour" : "Day"} (UTC)`}</th><th scope="col" class="num opt">Sessions</th><th scope="col" class={`num ${sorted("tokens")}`} aria-sort={p.by === "model" && p.metric === "tokens" ? "descending" : undefined}>Tokens</th><th scope="col" class={`num ${sorted("cost")}`} aria-sort={p.by === "model" && p.metric === "cost" ? "descending" : undefined}>Cost</th><th scope="col" class="share">Share</th></tr></thead>
             <tbody>
                 <Show when={p.by === "model"} fallback={<For each={periods()}>{({ b, i }) => <tr>
                     <th scope="row"><div class="usage-model">{periodName(b.at, hourly())}</div><Show when={i === last() || i === 0}><div class="usage-sub">{i === last() ? "So far" : "Partial"}</div></Show></th>

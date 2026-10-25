@@ -23,7 +23,8 @@ function mount(call = async (_method: string, _params: any): Promise<UsageSummar
         createElement: (tag: string) => ({ tag, props: {} as any, children: [] as any[] }),
         createTextNode: (text: string) => text,
         insertNode: (parent: any, child: any) => parent.children.push(child),
-        setProp: (node: any, key: string, value: any) => { node.props[key] = value; },
+        // Solid keeps what setProp returns as the previous value, so it must return the value it set.
+        setProp: (node: any, key: string, value: any) => (node.props[key] = value),
         insert: (parent: any, value: any) => { const slot = { current: undefined as any }; parent.children.push(slot); solid.createRenderEffect(() => { slot.current = resolve(value); }); },
     };
     function resolve(v: any): any { return typeof v === "function" ? resolve(v()) : v; }
@@ -196,4 +197,30 @@ test("by account adds up a CLI's models per account and API usage per provider",
     expect(out.map((a) => [a.source, a.accountId, a.provider, a.cost, a.inputTokens, a.unknown])).toEqual([
         ["claude-code", "a", "claude-code", 2, 2, true], ["claude-code", "b", "claude-code", 1, 1, false], ["api", "default", "openrouter", 2, 2, false],
     ]);
+});
+
+test("review fixes: shares fill the bars under $1, a cost without tokens counts, unpriced isn't 'No usage', periods sort by time", async () => {
+    const s = summary();
+    const cents = { ...zero(), inputTokens: 100, cost: 0.06 };
+    const api = { ...zero(), cost: 0.04 };
+    s.totals = { ...zero(), inputTokens: 100, cost: 0.1 };
+    s.sources = [{ ...cents, source: "claude-code", label: "Claude Code plan", sessions: 1 }, { ...zero(), source: "codex", label: "Codex plan", sessions: 0 }, { ...api, source: "api", label: "API providers", sessions: 1 }];
+    const unpriced = { ...zero(), inputTokens: 430, unknown: true };
+    s.series = [{ ...s.totals, at: 1_800_000_000_000, sessions: 2, sources: { "claude-code": cents, codex: zero(), api } }, { ...unpriced, at: 1_800_086_400_000, sessions: 1, sources: { "claude-code": unpriced, codex: zero(), api: zero() } }];
+    const f = mount(async () => s);
+    try {
+        await tick();
+        // A provider-reported cost with no tokens is still in the split.
+        expect(f.text()).toContain("API providers");
+        // Weights are shares of 100, so $0.06 + $0.04 fills the bar.
+        const grow = (n: any) => Number(n.props.style?.["flex-grow"] ?? 0);
+        const hero = f.nodes().filter(n => n.props?.["data-src"] && n.tag === "i" && n.props.style?.["flex-grow"] !== undefined);
+        expect(Math.round(hero.slice(0, 2).reduce((a, n) => a + grow(n), 0))).toBe(100);
+        // The last day had only unpriced usage: its readout says so.
+        f.nodes().find(n => n.props?.class === "uc-plot").props.onKeyDown({ key: "End", preventDefault() {} });
+        expect(f.text()).toContain("No known cost");
+        f.segment("Usage breakdown").onChange("time");
+        const heads = f.nodes().filter(n => n.tag === "th" && n.props.scope === "col");
+        expect(heads.map(h => h.props["aria-sort"])).toEqual(["descending", undefined, undefined, undefined, undefined]);
+    } finally { f.dispose(); }
 });
