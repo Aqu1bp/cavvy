@@ -188,12 +188,14 @@ test("the model chip's tooltip and accessible name say whose model it is", () =>
 
 test("provider filters show one provider's models, each with its line; search finds every provider's, under its name", () => {
     const big = { ref: "api:big", id: "big-model-1", name: "Big", provider: "api", contextWindow: 200_000, pricing: { input: 3, output: 15 } };
-    const f = picker(true, { groups: [{ provider: "api", providerName: "API", models: [big] }] });
+    const tiny = { ref: "api:tiny", id: "tiny", name: "Tiny", provider: "api", pricing: { input: 0.004, output: 0 }, pricingEstimated: true };
+    const f = picker(true, { groups: [{ provider: "api", providerName: "API", models: [big, tiny] }] });
     expect(f.tabs().map(text)).toEqual(["Favorites", "Mock", "API"]);
     expect(f.tabs()[1].props["aria-selected"]).toBe(true);
     expect(f.options()).toHaveLength(5);
     f.tabs()[2].click();
-    expect(f.options().map(text)).toEqual(["Bigbig-model-1 · 200k context · $3 / $15 per MCtrl+1"]);
+    // A paid price under a cent isn't "$0"; one borrowed from another provider is marked "~".
+    expect(f.options().map(text)).toEqual(["Bigbig-model-1 · 200k context · $3 / $15 per MCtrl+1", "Tiny~<$0.01 / $0 per MCtrl+2"]);
     // ← in the empty search box goes back a filter.
     f.search().focus(); f.key("ArrowLeft");
     expect(f.tabs()[1].props["aria-selected"]).toBe(true);

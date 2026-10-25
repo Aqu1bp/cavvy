@@ -62,8 +62,8 @@ const planLabel = (plan?: string) => (plan ? plan.charAt(0).toUpperCase() + plan
 /** An account's tooltip: who it is, its plan, and what's wrong with it, if anything. */
 const accountDetail = (a: Partial<AccountInfo>) => [a.email, planLabel(a.plan), a.invalid ? "Unavailable" : a.signedIn === false ? "Not signed in" : undefined].filter(Boolean).join(" · ");
 
-/** "$3", "$0.3", "$1.25": a price per million tokens. */
-const perMillion = (n: number) => `$${Number(n.toFixed(2))}`;
+/** "$3", "$0.3", "$1.25": a price per million tokens; a paid one under a cent never reads "$0". */
+const perMillion = (n: number) => (n > 0 && n < 0.005 ? "<$0.01" : `$${Number(n.toFixed(2))}`);
 const squash = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
 /**
@@ -74,7 +74,8 @@ function modelLine(m: ModelSummary, opts: { provider?: string; priced: boolean }
     const resolved = m.name?.match(/\(([^()\s]+)\)\s*$/)?.[1];
     const name = squash(modelName(m));
     const id = resolved && ID_LIKE.test(resolved) ? resolved : name.includes(squash(m.id)) ? undefined : m.id;
-    const price = opts.priced && m.pricing ? `${perMillion(m.pricing.input)} / ${perMillion(m.pricing.output)} per M` : undefined;
+    // Borrowed from another provider's list (pricingEstimated): marked "~", as the CLI marks it.
+    const price = opts.priced && m.pricing ? `${m.pricingEstimated ? "~" : ""}${perMillion(m.pricing.input)} / ${perMillion(m.pricing.output)} per M` : undefined;
     return [opts.provider, id, m.contextWindow ? `${tokens(m.contextWindow)} context` : undefined, price].filter(Boolean).join(" · ");
 }
 
