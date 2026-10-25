@@ -954,8 +954,13 @@ describe("/context", () => {
         const fresh = { contextTokens: 0, model: { providerName: "Claude Code" } };
         // Nothing drawn until asked for, then the ring and a card that says why there's no number.
         expect(contextView(fresh, false).ring).toBe(false);
-        expect(contextView(fresh, true)).toEqual({ ring: true, line: "Not known yet: Claude Code reports the window's size after its first reply." });
-        expect(contextView({ contextTokens: 50_000, model: { contextWindow: 200_000 } }, false)).toEqual({ ring: true, pct: 0.25, line: "50k of 200k tokens" });
+        expect(contextView(fresh, true)).toEqual({ ring: true, line: "Known after Claude Code's first reply" });
+        expect(contextView({ contextTokens: 50_000, model: { contextWindow: 200_000 } }, false)).toEqual({ ring: true, pct: 0.25, full: 200_000, window: 200_000, early: false, line: "50k of 200k" });
+        // Measured to where it compacts, when that's before the window is full; never past the window.
+        expect(contextView({ contextTokens: 50_000, compactAt: 100_000, model: { contextWindow: 200_000 } }, false)).toEqual({ ring: true, pct: 0.5, full: 100_000, window: 200_000, early: true, line: "50k of 100k" });
+        expect(contextView({ contextTokens: 50_000, compactAt: 500_000, model: { contextWindow: 200_000 } }, false)).toMatchObject({ pct: 0.25, full: 200_000, early: false });
+        // Where it compacts is known before the window is (a CLI's setting).
+        expect(contextView({ contextTokens: 50_000, compactAt: 100_000, model: { providerName: "Codex" } }, false)).toMatchObject({ pct: 0.5, full: 100_000, early: false });
         expect(contextView(undefined, true).ring).toBe(false);
     });
 });

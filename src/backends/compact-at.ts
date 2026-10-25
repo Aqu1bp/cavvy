@@ -1,5 +1,5 @@
 // Where a session compacts on its own, in tokens of context: what the composer's context card and ring
-// measure against. An agent CLI's own setting when there is one, else nothing (the CLI decides).
+// measure against. An agent CLI's own trigger, worked out the way the CLI does; Harness's for its own sessions.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -16,39 +16,84 @@ function readJson(file: string): Record<string, unknown> | undefined {
 
 const tokenCount = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : undefined);
 
-/**
- * Claude Code's /autocompact window for a model: `modelSettings[model].autoCompactWindow` in its settings,
- * the project's (.claude/settings.json, then .claude/settings.local.json) over the account's. `models`: the
- * ids the setting may be under, the model served first ("claude-opus-5-5" for the "opus" alias).
- */
-export function claudeCompactWindow(configDir: string, cwd: string | undefined, models: string[]): number | undefined {
-    const files = [join(configDir, "settings.json"), ...(cwd ? [join(cwd, ".claude", "settings.json"), join(cwd, ".claude", "settings.local.json")] : [])];
-    let found: number | undefined;
-    for (const file of files) {
-        const all = readJson(file)?.modelSettings;
-        if (!all || typeof all !== "object") continue;
-        for (const id of models) {
-            const w = tokenCount((all as Record<string, { autoCompactWindow?: unknown } | undefined>)[id]?.autoCompactWindow);
-            if (w) { found = w; break; }
-        }
-    }
-    return found;
+/** Claude Code takes an auto-compact window from 100K to 1M tokens, or "auto" (its own choice). */
+const CLAUDE_MIN_WINDOW = 100_000;
+const CLAUDE_MAX_WINDOW = 1_000_000;
+type ClaudeWindow = number | "auto";
+function claudeWindow(v: unknown): ClaudeWindow | undefined {
+    if (v === "auto") return "auto";
+    return typeof v === "number" && Number.isInteger(v) && v >= CLAUDE_MIN_WINDOW && v <= CLAUDE_MAX_WINDOW ? v : undefined;
 }
 
-/** Codex's `model_auto_compact_token_limit`, at the top of its config.toml (before any [table]). */
+/**
+ * The key Claude Code files a model's settings under: one model however it's spelled, with its 1M-context
+ * suffix, a release date, or a Bedrock or Vertex id ("us.anthropic.claude-opus-5-5-20260101-v1:0",
+ * "claude-opus-5-5@20260101", "claude-opus-5-5[1m]" all read "claude-opus-5-5").
+ */
+export function claudeSettingsKey(id: string): string {
+    return id
+        .trim()
+        .toLowerCase()
+        .replace(/\[1m\]$/, "")
+        .replace(/^(?:(?:us|eu|apac|global)\.)?anthropic\./, "")
+        .replace(/-v\d+(?::\d+)?$/, "")
+        .replace(/@\d{8}$/, "")
+        .replace(/-\d{8}$/, "");
+}
+
+/**
+ * Claude Code's /autocompact window for a model, resolved as Claude Code resolves it: its account's
+ * settings.json, then (only where it reads them, a trusted folder) the project's .claude/settings.json and
+ * .claude/settings.local.json. Each layer's `modelSettings[model].autoCompactWindow` adds to the ones
+ * before; a layer's top-level `autoCompactWindow` replaces them all as the default. "auto" is no window.
+ * `models`: the ids the model may be filed under, the model served first ("claude-opus-5-5" for "opus").
+ */
+export function claudeCompactWindow(configDir: string, project: { cwd: string; trusted: boolean } | undefined, models: string[]): number | undefined {
+    const env = claudeWindow(Number(process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW));
+    if (typeof env === "number") return env;
+    const files = [join(configDir, "settings.json"), ...(project?.trusted ? [join(project.cwd, ".claude", "settings.json"), join(project.cwd, ".claude", "settings.local.json")] : [])];
+    let resolved: { default?: ClaudeWindow; byModel: Record<string, ClaudeWindow> } = { byModel: {} };
+    for (const file of files) {
+        const j = readJson(file);
+        if (!j) continue;
+        const layer: Record<string, ClaudeWindow> = {};
+        const all = j.modelSettings && typeof j.modelSettings === "object" ? (j.modelSettings as Record<string, { autoCompactWindow?: unknown } | undefined>) : {};
+        for (const [id, v] of Object.entries(all)) {
+            const w = claudeWindow(v?.autoCompactWindow);
+            if (w === undefined) continue;
+            const key = claudeSettingsKey(id);
+            // The id exactly as it's keyed wins over another spelling of it.
+            if (id === key || !Object.hasOwn(layer, key)) layer[key] = w;
+        }
+        const top = claudeWindow(j.autoCompactWindow);
+        resolved = top === undefined ? { default: resolved.default, byModel: { ...resolved.byModel, ...layer } } : { default: top, byModel: layer };
+    }
+    const key = models.map(claudeSettingsKey).find((k) => Object.hasOwn(resolved.byModel, k));
+    const w = key ? resolved.byModel[key] : resolved.default;
+    return w === "auto" ? undefined : w;
+}
+
+/** Claude Code's trigger below its window: room for the answer (at most 20K) and a 13K margin (2.1.x). */
+const CLAUDE_OUTPUT_ROOM = 20_000;
+const CLAUDE_MARGIN = 13_000;
+
+/** Where Claude Code compacts: its window (the model's, or the setting's if smaller) less the answer's room and its margin. */
+export function claudeCompactAt(contextWindow: number | undefined, configured: number | undefined, maxOutput?: number): number | undefined {
+    const window = contextWindow && configured ? Math.min(contextWindow, configured) : (contextWindow ?? configured);
+    if (!window) return undefined;
+    return Math.max(0, window - Math.min(maxOutput ?? CLAUDE_OUTPUT_ROOM, CLAUDE_OUTPUT_ROOM) - CLAUDE_MARGIN);
+}
+
+/** Codex's top-level `model_auto_compact_token_limit` in its config.toml. */
 export function codexCompactLimit(codexHome: string): number | undefined {
-    let text: string;
+    let config: Record<string, unknown>;
     try {
-        text = readFileSync(join(codexHome, "config.toml"), "utf8");
+        config = Bun.TOML.parse(readFileSync(join(codexHome, "config.toml"), "utf8")) as Record<string, unknown>;
     } catch {
         return undefined;
     }
-    for (const line of text.split(/\r?\n/)) {
-        if (/^\s*\[/.test(line)) break;
-        const m = line.match(/^\s*model_auto_compact_token_limit\s*=\s*([\d_]+)\s*(?:#.*)?$/);
-        if (m) return tokenCount(Number(m[1]!.replaceAll("_", "")));
-    }
-    return undefined;
+    const v = config.model_auto_compact_token_limit;
+    return typeof v === "number" && Number.isInteger(v) ? tokenCount(v) : undefined;
 }
 
 /** The ids a Claude Code setting may be filed under: the model served, the one asked for, and what its name says it resolves to. */
@@ -61,18 +106,19 @@ export function modelKeys(m: { id: string; name?: string }, served?: string): st
 const CACHE_MS = 5_000;
 const cache = new Map<string, { at: number; value: number | undefined }>();
 
-/** An agent CLI's own auto-compact point for this model and account, or undefined when it isn't set. */
-export function cliCompactAt(provider: string, accountId: string, cwd: string | undefined, models: string[], now = Date.now()): number | undefined {
+/** An agent CLI's own auto-compact setting for this model and account (a window or a limit), or undefined when it has none. */
+export function cliCompactSetting(provider: string, accountId: string, project: { cwd: string; trusted: boolean } | undefined, models: string[], now = Date.now()): number | undefined {
     if (provider !== "claude-code" && provider !== "codex") return undefined;
-    const key = JSON.stringify([provider, accountId, cwd, models]);
+    const key = JSON.stringify([provider, accountId, project?.cwd, project?.trusted, models]);
     const hit = cache.get(key);
     if (hit && now - hit.at < CACHE_MS) return hit.value;
-    const value = readCompactAt(provider, accountId, cwd, models);
+    const value = readSetting(provider, accountId, project, models);
     cache.set(key, { at: now, value });
+    if (cache.size > 200) cache.delete(cache.keys().next().value!);
     return value;
 }
 
-function readCompactAt(provider: "claude-code" | "codex", accountId: string, cwd: string | undefined, models: string[]): number | undefined {
+function readSetting(provider: "claude-code" | "codex", accountId: string, project: { cwd: string; trusted: boolean } | undefined, models: string[]): number | undefined {
     let folder: string | undefined;
     try {
         folder = listAccounts(provider).find((a) => a.id === accountId)?.folder;
@@ -80,7 +126,12 @@ function readCompactAt(provider: "claude-code" | "codex", accountId: string, cwd
         return undefined;
     }
     if (!folder) return undefined;
-    return provider === "claude-code" ? claudeCompactWindow(folder, cwd, models) : codexCompactLimit(folder);
+    return provider === "claude-code" ? claudeCompactWindow(folder, project, models) : codexCompactLimit(folder);
+}
+
+/** For tests: read the files again. */
+export function clearCompactCache(): void {
+    cache.clear();
 }
 
 /**
@@ -92,7 +143,7 @@ export function outputReserve(window: number, maxOutput?: number): number {
     return Math.min(maxOutput ?? 32_000, 32_000, Math.floor(window / 4));
 }
 
-/** Harness's own sessions compact once their context passes this: `threshold` of what the window leaves after the answer's room. */
-export function harnessCompactAt(window: number, maxOutput: number | undefined, threshold = 0.92): number {
-    return (window - outputReserve(window, maxOutput)) * threshold;
+/** Harness's own sessions compact once their context passes this: `threshold` (0.92 unless set) of what the window leaves after the answer's room. */
+export function harnessCompactAt(window: number, maxOutput: number | undefined, threshold?: number | null): number {
+    return (window - outputReserve(window, maxOutput)) * (threshold ?? 0.92);
 }

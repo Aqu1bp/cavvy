@@ -1537,9 +1537,7 @@ export class Agent {
         let trusted = false;
         let approvedMcpServers: ApprovedMcpServers | undefined;
         try {
-            // Implicit session trust does not authorize CLI project configuration, and a run told not to trust the folder
-            // (the SDK's trusted: false) keeps it off even where the user trusted it.
-            trusted = this.projectTrusted() !== false && trustedByUser(this.state.cwd);
+            trusted = this.cliProjectTrusted();
             approvedMcpServers = this.o.approvedMcpServers?.();
         } catch {
             trusted = false;
@@ -1679,6 +1677,20 @@ export class Agent {
      */
     private projectTrusted(): boolean | undefined {
         return this.o.trusted?.();
+    }
+
+    /**
+     * Whether an agent CLI's turn here reads the project's own configuration (its settings, hooks, MCP servers).
+     * Implicit session trust does not authorize it, and a run told not to trust the folder (the SDK's trusted:
+     * false) keeps it off even where the user trusted it. Throws when trust can't be checked.
+     */
+    cliProjectTrusted(): boolean {
+        return this.projectTrusted() !== false && trustedByUser(this.state.cwd);
+    }
+
+    /** The folder an agent CLI's turn runs in: where shell commands have moved to, not always where the session began. */
+    get cliCwd(): string {
+        return this.state.cwd;
     }
 
     /** A non-interactive run (-p): it ends with this turn, and tasks still running end with it. */
