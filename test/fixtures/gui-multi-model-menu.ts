@@ -112,7 +112,7 @@ function picker(available = true, more: { groups?: any[]; providers?: any[]; lim
     for (const [id, cb] of frames) { frames.delete(id); cb(); }
     return { root, doc, trigger, key, open, comparePicks, chosen, warnings, accountPicks, find,
         tabs: () => all(root).filter((n) => n.props.role === "tab").map(adapt),
-        radios: () => all(root).filter((n) => n.props.role === "radio").map(adapt),
+        accountButtons: () => all(root).filter((n) => n.tag === "button" && n.props["aria-pressed"] !== undefined && (n.props.class ?? "").split(" ").includes("mp-ac")).map(adapt),
         search: () => find((n) => n.props.role === "combobox"),
         toggle: () => find((n) => n.props.role === "switch"),
         options: () => all(root).filter((n) => n.props.role === "option").map(adapt),
@@ -207,7 +207,7 @@ test("provider filters show one provider's models, each with its line; search fi
     expect(f.chosen).toEqual(["api:big"]);
 });
 
-test("a subscription's accounts are pills in its heading: the session's one checked, a reached plan marked", () => {
+test("a subscription's accounts are buttons in its heading: the session's one pressed, a reached plan marked", () => {
     const cli = { ref: "cli:fast", id: "fast", name: "Fast", provider: "cli" };
     const accounts = [{ id: "default", name: "Work", email: "w@example.com" }, { id: "p", name: "Personal", plan: "max" }];
     const f = picker(true, {
@@ -216,12 +216,13 @@ test("a subscription's accounts are pills in its heading: the session's one chec
         limits: { [planLimitKey("cli", "p")]: { provider: "cli", accountId: "p", windows: [{ label: "5-hour", usedPercent: 100, reached: true }], at: 0 } },
     });
     f.tabs()[2].click();
-    const radios = f.radios;
-    expect(radios().map(text)).toEqual(["Work", "Personallimit"]);
-    expect(radios().map((r) => r.props["aria-checked"])).toEqual([true, false]);
-    expect(radios()[1].props.title).toBe("Max. Limit reached");
-    radios()[0].focus(); f.key("ArrowRight");
-    expect(f.doc.activeElement).toBe(radios()[1]);
-    radios()[1].click();
+    const buttons = f.accountButtons;
+    expect(buttons().map(text)).toEqual(["Work", "Personallimit"]);
+    expect(buttons().map((r) => r.props["aria-pressed"])).toEqual([true, false]);
+    expect(buttons()[1].props.title).toBe("Max. Limit reached");
+    // Arrows don't switch accounts: only activating one does.
+    buttons()[0].focus(); f.key("ArrowRight");
+    expect(f.accountPicks).toEqual([]);
+    buttons()[1].focus(); f.key("Enter");
     expect(f.accountPicks).toEqual(["cli:p"]);
 });

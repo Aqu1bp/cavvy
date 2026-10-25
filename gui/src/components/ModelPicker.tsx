@@ -250,15 +250,6 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
             return;
         }
         const target = e.target as HTMLElement;
-        // The accounts: arrows move between them; Enter and Space are the buttons' own.
-        const radio = target.closest<HTMLElement>('[role="radiogroup"]');
-        if (radio && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) {
-            e.preventDefault();
-            const items = [...radio.querySelectorAll<HTMLButtonElement>("button")];
-            const key = e.key === "ArrowLeft" ? "ArrowUp" : e.key === "ArrowRight" ? "ArrowDown" : e.key;
-            items[menuIndex(items.length, items.indexOf(target as HTMLButtonElement), key)]?.focus();
-            return;
-        }
         const tab = target.closest<HTMLElement>('[role="tab"]');
         if (tab && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) {
             e.preventDefault();
@@ -372,12 +363,13 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                     </span>
                 }
             >
-                <span class="mp-acs" role="radiogroup" aria-label={`${providerName(provider)} account`}>
+                {/* Buttons, not radios: picking one switches the session's account (and restarts its CLI), so it waits for a click or Enter. */}
+                <span class="mp-acs" role="group" aria-label={`${providerName(provider)} account`}>
                     <For each={accountChoices(provider)}>
                         {(a) => {
                             const lim = () => accountLimit(provider, a.id);
                             return (
-                                <button class={`mp-ac ${a.id === selectedAccount(provider) ? "on" : ""} ${lim() ? (lim()!.pct >= 100 ? "full" : "hot") : ""}`} role="radio" aria-checked={a.id === selectedAccount(provider)} title={accountTip(provider, a)} onClick={() => pickAccount(provider, a)}>
+                                <button class={`mp-ac ${a.id === selectedAccount(provider) ? "on" : ""} ${lim() ? (lim()!.pct >= 100 ? "full" : "hot") : ""}`} aria-pressed={a.id === selectedAccount(provider)} title={accountTip(provider, a)} onClick={() => pickAccount(provider, a)}>
                                     <span class="truncate">{a.name}</span>
                                     <Show when={lim()}>{(l) => <span class="mp-ac-lv">{l().pct >= 100 ? "limit" : `${l().pct}%`}</span>}</Show>
                                 </button>
@@ -442,7 +434,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                     // The session's account was removed (#410): it opens on that CLI's accounts, to pick another.
                     const provider = currentProvider();
                     if (!provider || acctProvider() !== provider || !missingAccount(provider)) return input;
-                    return acctEl?.querySelector<HTMLElement>('[role="radio"]') ?? input;
+                    return acctEl?.querySelector<HTMLElement>(".mp-ac:not(.add)") ?? input;
                 }}
                 onKeyDown={onKey}
                 open={p.open}
