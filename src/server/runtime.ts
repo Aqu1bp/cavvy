@@ -42,6 +42,7 @@ import { isAgentBackend, type BackendWake, type BackgroundStop } from "../backen
 import { SessionBackground } from "../agent/background";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { agentCli, type AttachmentKind } from "../backends/defs";
+import { claudeCompactAt, cliCompactSetting, harnessCompactAt, modelKeys } from "../backends/compact-at";
 import { account, accountSwitch, removedAccount, removedAccountNote, switchHow } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
 import { continuationGroups, modelRef, parseModelRef, textOf, toolCallsOf, assistantText, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
@@ -246,6 +247,8 @@ export class Runtime {
     private reviewer: string | undefined;
     agent?: Agent;
     model?: ModelInfo;
+    /** The model an agent CLI served for the model asked for ("claude-opus-5-5" for "opus"), from its usage. */
+    private servedModel?: string;
     client?: ProviderClient;
     mode: PermissionMode;
     /** The mode it was in before it last entered plan mode (unknown when it started in plan mode). */
@@ -815,7 +818,46 @@ export class Runtime {
         if (!this.flushTimer) this.flushTimer = setTimeout(() => this.flush(), FLUSH_MS);
     }
 
+    /** Where this session compacts on its own, in tokens of context (SessionState.compactAt). */
+    private compactAt(): number | undefined {
+        const m = this.model;
+        if (!m) return undefined;
+        const window = m.contextWindow;
+        if (m.provider === "claude-code" || m.provider === "codex") {
+            const setting = cliCompactSetting(m.provider, this.session.accountId(m.provider), this.cliProject(), modelKeys(m, this.servedModel));
+            if (m.provider === "claude-code") return claudeCompactAt(window, setting, m.maxOutput);
+            return setting && window ? Math.min(setting, window) : setting;
+        }
+        const s = this.settings();
+        if (s.autoCompact === false || !window) return undefined;
+        return Math.floor(harnessCompactAt(window, m.maxOutput, s.autoCompactThreshold));
+    }
+
+    /** Where an agent CLI's turn runs and whether it reads that project's settings, as its turns do (Agent.backendTurn). */
+    private cliProject(): { cwd: string; trusted: boolean } {
+        const cwd = this.agent?.cliCwd ?? this.ws.cwd;
+        const now = Date.now();
+        // Trust is read from disk: again at most every few seconds, or as soon as the folder changes.
+        const hit = this.cliProjectSeen;
+        if (hit && hit.cwd === cwd && now - hit.at < 5_000) return hit;
+        let trusted = false;
+        try {
+            trusted = this.agent?.cliProjectTrusted() ?? false;
+        } catch {
+            trusted = false;
+        }
+        this.cliProjectSeen = { cwd, trusted, at: now };
+        return this.cliProjectSeen;
+    }
+    private cliProjectSeen?: { cwd: string; trusted: boolean; at: number };
+
     private setState(patch: Partial<SessionState>) {
+        // Where it compacts follows the model, its account, the model served, the folder and the settings, any of
+        // which a patch may follow (a settings reload patches MCP state): checked with each, from cached reads.
+        if (this.view && !("compactAt" in patch)) {
+            const at = this.compactAt();
+            if (at !== this.view?.state.compactAt) patch = { ...patch, compactAt: at };
+        }
         this.op({ op: "state", patch });
     }
 
@@ -902,6 +944,8 @@ export class Runtime {
         this.schedules.cancelLimitResume("account");
         // The new account hasn't read the history: an idle compaction planned on the earlier one's cache would read it all afresh.
         if (this.agent?.accountChanged(provider)) this.idleCompact.disarm();
+        // Another account may serve the alias as another model: known again from its first usage.
+        this.servedModel = undefined;
         this.setState({ accounts: { "claude-code": this.session.accountId("claude-code"), codex: this.session.accountId("codex") } });
         const name = getProvider(provider)?.name ?? provider;
         const how = switchHow(had, this.session.backends.get(provider)?.id, this.session.messages.length > 0);
@@ -1033,6 +1077,7 @@ export class Runtime {
         // The model it was on, if the conversation has begun (none to tell of before the first prompt).
         const prev = this.conversationStarted ? this.model : undefined;
         this.model = info;
+        this.servedModel = undefined;
         this.client = client;
         this.schedules.cancelLimitResume("model");
         // A CLI's own goal stays with that CLI: another provider doesn't carry it on, and it pauses there (#412). The
@@ -1705,6 +1750,7 @@ export class Runtime {
                 break;
             }
             case "usage": {
+                if (e.usage.resolvedModel) this.servedModel = parseModelRef(e.usage.resolvedModel)?.id ?? this.servedModel;
                 // A backend says its context window with its usage (Claude Code's models list none): the ring can show now.
                 const window = this.model?.contextWindow !== this.view.state.model?.contextWindow && this.model ? { model: modelSummary(this.model) } : {};
                 this.setState({ contextTokens: e.contextTokens, cost: this.session.cost, costUnknown: this.session.costUnknown, ...this.tokenTotals(), ...window });

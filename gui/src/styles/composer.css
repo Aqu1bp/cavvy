@@ -1547,109 +1547,154 @@
     color: var(--fg-3);
 }
 
-/* ---- Context and plan limits, from the ring --------------------------------- */
+/* ---- The context card, from the ring ------------------------------------------
+   Context, measured to where it compacts, with Compact now beside the numbers;
+   then this session's tokens. Plan limits are in the rail's footer: only a
+   reached one is said here, since it stops this session. */
 
 .popover.ctx-card {
-    padding: calc(5 * var(--sp)) calc(5 * var(--sp)) calc(10 * var(--sp));
+    padding: 0;
     border-radius: calc(16 * var(--sp));
     max-width: calc(100vw - 16 * var(--sp));
     overflow-wrap: anywhere;
 }
 
-.usage-section {
-    padding: 0 calc(10 * var(--sp));
+.cx {
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp)) 0;
+    outline: 0;
 }
 
-.usage-section + .usage-section {
-    margin-top: calc(6 * var(--sp));
-    padding-top: calc(2 * var(--sp));
-    border-top: 0.5px solid var(--line);
-}
-
-.ctx-label {
-    margin: 0;
-    padding: calc(7 * var(--sp)) 0 calc(4 * var(--sp));
-    font-size: 0.821rem;
-    font-weight: 600;
-    color: var(--fg-3);
-}
-
-.usage-heading {
+.cx-head {
     display: flex;
-    align-items: center;
-    gap: calc(5 * var(--sp));
-    min-width: 0;
-}
-
-.usage-account {
-    min-width: 0;
-    padding: calc(7 * var(--sp)) 0 calc(4 * var(--sp));
-    font-size: 0.821rem;
-    font-weight: 600;
-    color: var(--fg-3);
-}
-
-.usage-heading .grow {
-    flex: 1;
-}
-
-.cc-line {
-    display: flex;
+    align-items: baseline;
     justify-content: space-between;
     gap: calc(8 * var(--sp));
-    margin-top: calc(4 * var(--sp));
+}
+
+.cx-head h3 {
+    margin: 0;
     font-size: 0.893rem;
+    font-weight: 600;
     color: var(--fg-2);
 }
 
-.cc-line b {
-    flex: none;
-    font-weight: 600;
+.cx-pct {
+    font-size: 0.929rem;
+    font-weight: 650;
     color: var(--fg);
 }
 
-.cc-bar {
+.cx-pct.warning { color: var(--warn); }
+.cx-pct.danger { color: var(--danger); }
+
+.cx-bar {
     height: calc(5 * var(--sp));
-    margin: calc(6 * var(--sp)) 0 calc(4 * var(--sp));
+    margin: calc(10 * var(--sp)) 0 calc(8 * var(--sp));
     overflow: hidden;
     border-radius: var(--pill);
     background: var(--press);
 }
 
-.cc-bar i {
+.cx-bar i {
     display: block;
     height: 100%;
     border-radius: inherit;
     background: var(--accent);
 }
 
-/* A reached window: red while it blocks, amber while credits carry the turns past it (#426). */
-.cc-bar.danger i {
-    background: var(--danger);
-}
+.cx-bar.warning i { background: var(--warn); }
+.cx-bar.danger i { background: var(--danger); }
 
-.cc-bar.warning i {
-    background: var(--warn);
-}
-
-.cc-sub {
-    margin-bottom: calc(6 * var(--sp));
-    font-size: 0.821rem;
-    color: var(--fg-3);
-}
-
-.usage-actions {
+/* The numbers on the left, the action on the right: the same shape as the footer below. */
+.cx-line,
+.cx-foot {
     display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: calc(8 * var(--sp));
-    margin: calc(8 * var(--sp)) 0 calc(4 * var(--sp));
-    font-size: 0.821rem;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: calc(12 * var(--sp));
+    font-size: 0.857rem;
     color: var(--fg-3);
 }
 
-.usage-actions > span {
-    flex: 1 1 calc(120 * var(--sp));
+.cx-line {
+    padding: calc(4 * var(--sp)) 0 calc(12 * var(--sp));
+}
+
+.cx-line > span,
+.cx-foot > span {
+    min-width: 0;
+}
+
+.cx-foot {
+    margin: 0 calc(-14 * var(--sp));
+    padding: calc(9 * var(--sp)) calc(14 * var(--sp)) calc(10 * var(--sp));
+    border-top: 0.5px solid var(--line);
+}
+
+.cx-link {
+    flex: none;
+    padding: 0;
+    font-size: 0.857rem;
+    font-weight: 500;
+    color: var(--accent);
+}
+
+.cx-link:hover:not([aria-disabled="true"]) {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.cx-link[aria-disabled="true"] {
+    color: var(--fg-4);
+    cursor: default;
+}
+
+/* A reached limit: red while it blocks, amber while credits carry the turns past it (#426). */
+.cx-limit {
+    display: flex;
+    gap: calc(9 * var(--sp));
+    margin: 0 0 calc(12 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(11 * var(--sp));
+    border-radius: calc(12 * var(--sp));
+    background: var(--danger-soft);
+}
+
+.cx-limit > svg {
+    flex: none;
+    margin-top: calc(1 * var(--sp));
+    color: var(--danger);
+}
+
+.cx-limit.credits { background: var(--warn-bg); }
+.cx-limit.credits > svg { color: var(--warn); }
+
+.cx-limit b {
+    display: block;
+    font-size: 0.893rem;
+    font-weight: 600;
+}
+
+.cx-limit span {
+    display: block;
+    margin-top: calc(2 * var(--sp));
+    font-size: 0.857rem;
+    color: var(--fg-2);
+}
+
+.cx-switches {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    margin-top: calc(8 * var(--sp));
+}
+
+.cx-switches:empty { display: none; }
+
+.cx-switches .cbtn {
+    height: auto;
+    min-height: calc(26 * var(--sp));
+    white-space: normal;
 }
 
 /* The card's small buttons, like the mockup's ghost pills. */
@@ -1688,19 +1733,6 @@
     color: var(--accent);
 }
 
-.usage-switches {
-    display: flex;
-    flex-wrap: wrap;
-    gap: calc(6 * var(--sp));
-    margin-top: calc(8 * var(--sp));
-}
-
-.usage-switches .cbtn {
-    height: auto;
-    min-height: calc(26 * var(--sp));
-    white-space: normal;
-}
-
 .plan-asof {
     font-size: 0.786rem;
     color: var(--fg-3);
@@ -1721,30 +1753,9 @@
     color: var(--warn);
 }
 
-.plan-window + .plan-window {
-    margin-top: calc(6 * var(--sp));
-}
-
 .plan-account-hint {
     font-size: 0.786rem;
     color: var(--fg-3);
-}
-
-.ctx-grid {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: calc(4 * var(--sp)) calc(12 * var(--sp));
-    margin-top: calc(4 * var(--sp));
-    font-size: 0.893rem;
-}
-
-.ctx-grid > :nth-child(odd) {
-    color: var(--fg-2);
-}
-
-.ctx-grid > :nth-child(even) {
-    text-align: right;
-    color: var(--fg);
 }
 
 /* ---- Effort: the popover and the bars ------------------------------------------ */

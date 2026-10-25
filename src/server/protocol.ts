@@ -640,6 +640,12 @@ export interface SessionState {
     /** The spinner line: what it's doing right now. */
     activity?: { label: string; since: number; detail?: string; /** An idle compaction: what the user does next takes over from it. */ idle?: boolean };
     contextTokens: number;
+    /**
+     * Context, in tokens, at which this session compacts on its own: an agent CLI's auto-compact setting for
+     * this model and account (Claude Code's /autocompact window, Codex's model_auto_compact_token_limit), or
+     * Harness's own threshold. Absent when compaction is off here, or the CLI decides.
+     */
+    compactAt?: number;
     cost: number;
     /** Some usage had no known price: `cost` leaves it out (it isn't free). */
     costUnknown?: boolean;

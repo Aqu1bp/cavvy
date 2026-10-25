@@ -98,6 +98,7 @@ import { deniedWithin } from "../permissions/rules";
 import { canonical, expandPath, isInside } from "../util/files";
 import type { NoticeData, PlanLimits, StoppedTask } from "../server/protocol";
 import type { NativeGoal } from "./goal";
+import { harnessCompactAt, outputReserve } from "../backends/compact-at";
 
 // ---------------------------------------------------------------------------
 // Host interface (implemented by the TUI and by headless mode)
@@ -1329,18 +1330,12 @@ export class Agent {
         if (isAgentBackend(this.client)) return false;
         const window = this.model.contextWindow;
         if (!window) return false;
-        const threshold = s.autoCompactThreshold ?? 0.92;
-        return this.session.messages.length > 4 && this.estimatedContext() > (window - this.outputReserve(window)) * threshold;
+        return this.session.messages.length > 4 && this.estimatedContext() > harnessCompactAt(window, this.model.maxOutput, s.autoCompactThreshold);
     }
 
-    /**
-     * Room for the answer that auto-compaction keeps free below the window: the
-     * model's max output, at most 32K, and never more than a quarter of the window.
-     * A model that can write about its whole window would otherwise compact with
-     * next to nothing in it; its requests ask for less output instead (turnMaxTokens).
-     */
+    /** Room for the answer below the window (compact-at.ts). */
     private outputReserve(window: number): number {
-        return Math.min(this.model.maxOutput ?? 32_000, 32_000, Math.floor(window / 4));
+        return outputReserve(window, this.model.maxOutput);
     }
 
     /**
@@ -1542,9 +1537,7 @@ export class Agent {
         let trusted = false;
         let approvedMcpServers: ApprovedMcpServers | undefined;
         try {
-            // Implicit session trust does not authorize CLI project configuration, and a run told not to trust the folder
-            // (the SDK's trusted: false) keeps it off even where the user trusted it.
-            trusted = this.projectTrusted() !== false && trustedByUser(this.state.cwd);
+            trusted = this.cliProjectTrusted();
             approvedMcpServers = this.o.approvedMcpServers?.();
         } catch {
             trusted = false;
@@ -1684,6 +1677,20 @@ export class Agent {
      */
     private projectTrusted(): boolean | undefined {
         return this.o.trusted?.();
+    }
+
+    /**
+     * Whether an agent CLI's turn here reads the project's own configuration (its settings, hooks, MCP servers).
+     * Implicit session trust does not authorize it, and a run told not to trust the folder (the SDK's trusted:
+     * false) keeps it off even where the user trusted it. Throws when trust can't be checked.
+     */
+    cliProjectTrusted(): boolean {
+        return this.projectTrusted() !== false && trustedByUser(this.state.cwd);
+    }
+
+    /** The folder an agent CLI's turn runs in: where shell commands have moved to, not always where the session began. */
+    get cliCwd(): string {
+        return this.state.cwd;
     }
 
     /** A non-interactive run (-p): it ends with this turn, and tasks still running end with it. */
