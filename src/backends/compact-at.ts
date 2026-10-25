@@ -25,6 +25,17 @@ function claudeWindow(v: unknown): ClaudeWindow | undefined {
     return typeof v === "number" && Number.isInteger(v) && v >= CLAUDE_MIN_WINDOW && v <= CLAUDE_MAX_WINDOW ? v : undefined;
 }
 
+/** CLAUDE_CODE_AUTO_COMPACT_WINDOW as Claude Code reads it: "500000", "500k", "0.5m"; clamped to 100K-1M; else none. */
+export function claudeEnvWindow(raw: string | undefined): number | undefined {
+    if (raw === undefined) return undefined;
+    const t = raw.trim();
+    const unit = t.slice(-1).toLowerCase();
+    const scale = unit === "m" ? 1_000_000 : unit === "k" ? 1_000 : undefined;
+    const n = scale === undefined ? Number(t) : parseFloat(t) * scale;
+    if (!t || Number.isNaN(n) || n < 1) return undefined;
+    return Math.min(CLAUDE_MAX_WINDOW, Math.max(CLAUDE_MIN_WINDOW, Math.round(n)));
+}
+
 /**
  * The key Claude Code files a model's settings under: one model however it's spelled, with its 1M-context
  * suffix, a release date, or a Bedrock or Vertex id ("us.anthropic.claude-opus-5-5-20260101-v1:0",
@@ -46,11 +57,17 @@ export function claudeSettingsKey(id: string): string {
  * settings.json, then (only where it reads them, a trusted folder) the project's .claude/settings.json and
  * .claude/settings.local.json. Each layer's `modelSettings[model].autoCompactWindow` adds to the ones
  * before; a layer's top-level `autoCompactWindow` replaces them all as the default. "auto" is no window.
- * `models`: the ids the model may be filed under, the model served first ("claude-opus-5-5" for "opus").
+ * `models`: the ids the model may be filed under, the model served first ("claude-opus-5-5" for "opus"): all
+ * of them are one model, as Claude Code resolves an alias, so a project's "opus" overrides the account's
+ * "claude-opus-5-5".
  */
 export function claudeCompactWindow(configDir: string, project: { cwd: string; trusted: boolean } | undefined, models: string[]): number | undefined {
-    const env = claudeWindow(Number(process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW));
-    if (typeof env === "number") return env;
+    const env = claudeEnvWindow(process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW);
+    if (env !== undefined) return env;
+    // The model's every spelling files under one key: its full id where one is known, as Claude Code resolves aliases.
+    const spellings = models.map(claudeSettingsKey);
+    const canonical = spellings.find((k) => k.startsWith("claude-")) ?? spellings[0];
+    const keyOf = (id: string) => (spellings.includes(claudeSettingsKey(id)) && canonical ? canonical : claudeSettingsKey(id));
     const files = [join(configDir, "settings.json"), ...(project?.trusted ? [join(project.cwd, ".claude", "settings.json"), join(project.cwd, ".claude", "settings.local.json")] : [])];
     let resolved: { default?: ClaudeWindow; byModel: Record<string, ClaudeWindow> } = { byModel: {} };
     for (const file of files) {
@@ -61,15 +78,14 @@ export function claudeCompactWindow(configDir: string, project: { cwd: string; t
         for (const [id, v] of Object.entries(all)) {
             const w = claudeWindow(v?.autoCompactWindow);
             if (w === undefined) continue;
-            const key = claudeSettingsKey(id);
+            const key = keyOf(id);
             // The id exactly as it's keyed wins over another spelling of it.
             if (id === key || !Object.hasOwn(layer, key)) layer[key] = w;
         }
         const top = claudeWindow(j.autoCompactWindow);
         resolved = top === undefined ? { default: resolved.default, byModel: { ...resolved.byModel, ...layer } } : { default: top, byModel: layer };
     }
-    const key = models.map(claudeSettingsKey).find((k) => Object.hasOwn(resolved.byModel, k));
-    const w = key ? resolved.byModel[key] : resolved.default;
+    const w = canonical && Object.hasOwn(resolved.byModel, canonical) ? resolved.byModel[canonical] : resolved.default;
     return w === "auto" ? undefined : w;
 }
 

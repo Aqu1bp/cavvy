@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeCompactAt, claudeCompactWindow, claudeSettingsKey, codexCompactLimit, harnessCompactAt, modelKeys, outputReserve } from "../src/backends/compact-at";
+import { claudeCompactAt, claudeCompactWindow, claudeEnvWindow, claudeSettingsKey, codexCompactLimit, harnessCompactAt, modelKeys, outputReserve } from "../src/backends/compact-at";
 
 const dir = () => mkdtempSync(join(tmpdir(), "compact-at-"));
 const json = (file: string, v: unknown) => writeFileSync(file, JSON.stringify(v));
@@ -49,6 +49,29 @@ test("Claude Code: a layer's top-level window replaces the ones before it, \"aut
     // The environment's window comes first, as for Claude Code.
     process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = "150000";
     expect(claudeCompactWindow(config, trusted, ["claude-opus-5-5"])).toBe(150_000);
+});
+
+test("Claude Code: the environment's window as Claude Code reads it, suffixes and clamping", () => {
+    expect(claudeEnvWindow("500k")).toBe(500_000);
+    expect(claudeEnvWindow("0.5m")).toBe(500_000);
+    expect(claudeEnvWindow(" 250000 ")).toBe(250_000);
+    expect(claudeEnvWindow("50k")).toBe(100_000);
+    expect(claudeEnvWindow("2m")).toBe(1_000_000);
+    for (const bad of [undefined, "", "big", "0", "-5"]) expect(claudeEnvWindow(bad)).toBeUndefined();
+    process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = "500k";
+    expect(claudeCompactAt(1_000_000, claudeCompactWindow(dir(), undefined, ["claude-opus-5-5"]), 64_000)).toBe(467_000);
+});
+
+test("Claude Code: an alias and the model it stands for are one model across layers", () => {
+    const config = dir(), cwd = dir();
+    mkdirSync(join(cwd, ".claude"));
+    json(join(config, "settings.json"), { modelSettings: { "claude-opus-5-5": window(500_000) } });
+    json(join(cwd, ".claude", "settings.json"), { modelSettings: { opus: window(300_000) } });
+    expect(claudeCompactWindow(config, { cwd, trusted: true }, ["claude-opus-5-5", "opus"])).toBe(300_000);
+    expect(claudeCompactWindow(config, { cwd, trusted: true }, ["opus", "claude-opus-5-5"])).toBe(300_000);
+    // Within a layer, the full id as keyed wins over the alias.
+    json(join(cwd, ".claude", "settings.json"), { modelSettings: { opus: window(300_000), "claude-opus-5-5": window(400_000) } });
+    expect(claudeCompactWindow(config, { cwd, trusted: true }, ["opus", "claude-opus-5-5"])).toBe(400_000);
 });
 
 test("Claude Code: one model however it's spelled", () => {
