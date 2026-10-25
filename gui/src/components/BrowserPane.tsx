@@ -378,8 +378,17 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                 <Show when={status() === "agent"}>
                     <span class="br-who" title="Click or type in the page to take over">
                         <span class="br-dot" />
-                        Agent is using this tab
+                        <span class="truncate">Agent is using this tab</span>
                     </span>
+                </Show>
+                {/* Here and not under the page: a bar that came and went with control would resize the page under the click that took it. */}
+                <Show when={status() === "human"}>
+                    <span class="br-who" title="You're in control. The agent can look at this tab, but not act on it.">
+                        <span class="truncate">You're in control</span>
+                    </span>
+                    <button class="btn ghost sm br-handback" onClick={handBack}>
+                        Hand back to agent
+                    </button>
                 </Show>
             </div>
             <div class="br-view" ref={box}>
@@ -446,31 +455,24 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                         </Show>
                     </div>
                 </Show>
+                {/* Over the page, which it blocks anyway: the page keeps its size. */}
+                <Show when={tab()?.dialog}>
+                    {(d) => (
+                        <div class="br-note br-dialog" role="alertdialog" aria-label={`The page asks: ${d().message}`}>
+                            <span class="br-note-text selectable">{d().message}</span>
+                            <Show when={d().type === "prompt"}>
+                                <input aria-label="Answer" value={dialogText()} placeholder={d().defaultPrompt} onInput={(e) => setDialogText(e.currentTarget.value)} />
+                            </Show>
+                            <button class="btn primary sm" onClick={() => answer(true)}>
+                                OK
+                            </button>
+                            <button class="btn ghost sm" onClick={() => answer(false)}>
+                                Cancel
+                            </button>
+                        </div>
+                    )}
+                </Show>
             </div>
-            <Show when={tab()?.dialog}>
-                {(d) => (
-                    <div class="br-note br-dialog" role="alertdialog" aria-label={`The page asks: ${d().message}`}>
-                        <span class="br-note-text selectable">{d().message}</span>
-                        <Show when={d().type === "prompt"}>
-                            <input aria-label="Answer" value={dialogText()} placeholder={d().defaultPrompt} onInput={(e) => setDialogText(e.currentTarget.value)} />
-                        </Show>
-                        <button class="btn primary sm" onClick={() => answer(true)}>
-                            OK
-                        </button>
-                        <button class="btn ghost sm" onClick={() => answer(false)}>
-                            Cancel
-                        </button>
-                    </div>
-                )}
-            </Show>
-            <Show when={status() === "human"}>
-                <div class="br-note">
-                    <span class="br-note-text">You're in control of this tab. The agent can look at it, but not act on it.</span>
-                    <button class="btn primary sm" onClick={handBack}>
-                        Hand back to agent
-                    </button>
-                </div>
-            </Show>
         </div>
     );
 }

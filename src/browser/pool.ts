@@ -4,11 +4,12 @@
 // the tabs they open (session.ts); this owns the process, the connection and the tabs' plumbing.
 
 import { redact } from "../util/redact";
+import { release } from "os";
 import { join, resolve } from "path";
 import { projectStateDir } from "../config/paths";
 import { browserSettings, type Settings } from "../config/settings";
 import { CdpClient, CdpError } from "./cdp";
-import { cachedChrome, launchChrome, type ChromeProcess } from "./chrome";
+import { cachedChrome, chromeIdentity, launchChrome, type ChromeIdentity, type ChromeProcess } from "./chrome";
 import type { Owner } from "./control";
 import { BrowserError, Page, type PageHooks, type Viewport } from "./page";
 
@@ -53,6 +54,8 @@ export class BrowserPool {
     disposed = false;
     private chrome?: ChromeProcess;
     private cdp?: CdpClient;
+    /** What the pages say they are to sites (chromeIdentity), for the running browser. */
+    private identity?: ChromeIdentity;
     private starting?: Promise<CdpClient>;
     private abort = new AbortController();
     private pages = new Map<string, { page: Page; client: PoolClient }>();
@@ -99,7 +102,7 @@ export class BrowserPool {
     }
 
     private async setUp(cdp: CdpClient, a: Attachment, client: PoolClient, owner: Owner): Promise<Page> {
-        const page = await Page.attach(cdp, a.sessionId, a.info.targetId, { root: this.o.root, viewport: client.viewport(), owner, hooks: client.hooks, refuse: (url, approvedFile) => client.refuse(url, approvedFile) });
+        const page = await Page.attach(cdp, a.sessionId, a.info.targetId, { root: this.o.root, viewport: client.viewport(), owner, hooks: client.hooks, identity: this.identity, refuse: (url, approvedFile) => client.refuse(url, approvedFile) });
         this.pages.set(a.info.targetId, { page, client });
         return page;
     }
@@ -173,6 +176,8 @@ export class BrowserPool {
             await cdp.send("Target.setDiscoverTargets", { discover: true });
             // A page can't put files on the disk: a download is refused, and told to the tab it came from.
             await cdp.send("Browser.setDownloadBehavior", { behavior: "deny", eventsEnabled: true });
+            const { userAgent } = await cdp.send<{ userAgent: string }>("Browser.getVersion");
+            this.identity = chromeIdentity(userAgent ?? "", { platform: process.platform, arch: process.arch, release: release() });
         } catch (e) {
             return failed(e, cdp);
         }

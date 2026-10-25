@@ -101,6 +101,12 @@
     padding: 0 calc(2 * var(--sp)) 0 calc(10 * var(--sp));
     text-align: left;
     color: inherit;
+    overflow: hidden;
+}
+
+/* A block, so a long title ends in an ellipsis inside its tab rather than running under the next thing. */
+.br-tab-main .truncate {
+    display: block;
 }
 
 .br-tab-x {
@@ -123,7 +129,8 @@
     display: inline-flex;
     align-items: center;
     gap: calc(6 * var(--sp));
-    flex: none;
+    flex: 0 1 auto;
+    min-width: 0;
     padding-left: calc(8 * var(--sp));
     color: var(--fg-3);
     font-size: 0.857rem;
@@ -194,6 +201,25 @@
 
 .br-note .btn {
     flex: none;
+}
+
+.br-dialog {
+    position: absolute;
+    left: calc(8 * var(--sp));
+    right: calc(8 * var(--sp));
+    bottom: calc(8 * var(--sp));
+    z-index: 1;
+    border: 0;
+    border-radius: var(--radius-md);
+    background: var(--sheet);
+    box-shadow: var(--sheet-shadow);
+}
+
+/* The height of a tab, so control changing hands never changes the strip's (and so the page's) height. */
+.br-tabs .btn.br-handback {
+    flex: none;
+    height: calc(26 * var(--sp));
+    margin-left: calc(6 * var(--sp));
 }
 
 /* The agent is driving this tab. */

@@ -40,18 +40,13 @@ window.WebSocket = class extends NativeSocket {
 };
 const decode = window.createImageBitmap.bind(window);
 let decoded = 0;
-let lossless = 0;
-const makeStream = rpc.browserStream.bind(rpc);
-rpc.browserStream = () => {
-    const stream = makeStream();
-    stream.onFrame(f => { if (f.data[0] === 137 && f.data[1] === 80) lossless++; });
-    return stream;
-};
 let largest = { width: 0, height: 0 };
+let smallest = Infinity;
 window.createImageBitmap = (async (...args: Parameters<typeof createImageBitmap>) => {
     const image = await (decode as any)(...args) as ImageBitmap;
     decoded++;
     largest = { width: image.width, height: image.height };
+    smallest = Math.min(smallest, image.width);
     return image;
 }) as typeof createImageBitmap;
 
@@ -96,7 +91,16 @@ async function run() {
             motionLatencies.push(performance.now()-start);
         }
         click(350, 70);
-        await until(() => lossless > 0, "settled page never received a lossless picture");
+        // Scrolling streams smaller frames; once it stops, the picture is full Retina size again.
+        const full = canvas.clientWidth * 2;
+        const box = canvas.getBoundingClientRect();
+        smallest = Infinity;
+        for (let i = 0; i < 40; i++) {
+            canvas.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: box.x + 350, clientY: box.y + 300, deltaY: i < 20 ? 30 : -30 }));
+            await sleep(16);
+        }
+        check(smallest < full, `scrolling never streamed motion-size frames (smallest ${smallest}, full ${full})`);
+        await until(() => largest.width === full, "settled page never returned to a full-size picture");
         // Input bridge into the remote form; the remote input handler turns the marker green.
         click(120, 140);
         const keyboard = root.querySelector("textarea")!;
@@ -120,7 +124,7 @@ async function run() {
         await until(() => largest.width === 1200, "resized stream retained old dimensions");
         latencies.sort((a,b) => a-b);
         motionLatencies.sort((a,b) => a-b);
-        return { dpr: devicePixelRatio, clickToPaintMs: { p50: Math.round(latencies[10]!), p95: Math.round(latencies[18]!), max: Math.round(latencies[19]!) }, samples: latencies.length, motion: { fps: motionFps, p50: Math.round(motionLatencies[10]!), p95: Math.round(motionLatencies[18]!) }, lossless, decoded, resized: largest };
+        return { dpr: devicePixelRatio, clickToPaintMs: { p50: Math.round(latencies[10]!), p95: Math.round(latencies[18]!), max: Math.round(latencies[19]!) }, samples: latencies.length, motion: { fps: motionFps, p50: Math.round(motionLatencies[10]!), p95: Math.round(motionLatencies[18]!) }, scrollFrameWidth: smallest, decoded, resized: largest };
     } finally { dispose(); rpc.close(); }
 }
 run().then(metrics => { result.textContent = JSON.stringify(metrics); result.dataset.status = "passed"; }, error => { result.textContent = error.stack ?? String(error); result.dataset.status = "failed"; });

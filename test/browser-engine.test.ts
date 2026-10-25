@@ -13,7 +13,7 @@ process.env.HARNESS_BROWSER = program;
 setDefaultTimeout(30_000);
 
 const { CdpClient, CdpError } = await import("../src/browser/cdp");
-const { chromeArgs, forgetChromeLookup, launchChrome } = await import("../src/browser/chrome");
+const { chromeArgs, chromeIdentity, forgetChromeLookup, launchChrome } = await import("../src/browser/chrome");
 const { BrowserSession } = await import("../src/browser/session");
 const { BrowserNavigateTool, BrowserSnapshotTool, BrowserActTool, BrowserScreenshotTool, BrowserEvalTool, BrowserLogsTool } = await import("../src/tools/browser-tools");
 const { projectStateDir } = await import("../src/config/paths");
@@ -240,6 +240,22 @@ describe("starting the browser", () => {
         expect(chromeArgs({ ...base, platform: "darwin", uid: 501, ci: true })).toContain("--no-sandbox");
         expect(chromeArgs({ ...base, platform: "win32", ci: true })).not.toContain("--disable-dev-shm-usage");
         expect(chromeArgs({ ...base, headless: false, platform: "linux", uid: 1000 })).not.toContain("--headless=new");
+        // navigator.webdriver true gets a robot check from Google and YouTube
+        expect(mac).toContain("--disable-blink-features=AutomationControlled");
+        expect(mac).not.toContain("--enable-automation");
+    });
+
+    test("tells sites it is Chrome, not HeadlessChrome, with client hints that agree", () => {
+        const headless = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.7012.4 Safari/537.36";
+        const id = chromeIdentity(headless, { platform: "darwin", arch: "arm64", release: "25.0.0" })!;
+        expect(id.userAgent).toBe("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36");
+        expect(id.userAgentMetadata.brands).toContainEqual({ brand: "Google Chrome", version: "155" });
+        expect(id.userAgentMetadata.brands.map((b) => b.brand).join()).not.toContain("Headless");
+        expect(id.userAgentMetadata.fullVersionList).toContainEqual({ brand: "Google Chrome", version: "155.0.7012.4" });
+        expect(id.userAgentMetadata).toMatchObject({ platform: "macOS", architecture: "arm", bitness: "64", mobile: false });
+        expect(chromeIdentity(headless, { platform: "linux", arch: "x64", release: "6.8.0" })!.userAgentMetadata).toMatchObject({ platform: "Linux", platformVersion: "6.8.0", architecture: "x86" });
+        // a browser with a window already reads as itself
+        expect(chromeIdentity(headless.replace("HeadlessChrome", "Chrome"), { platform: "darwin", arch: "arm64", release: "" })).toBeUndefined();
     });
 
     test("waits for its endpoint, checks it is that browser's, and stops with its whole process group", async () => {

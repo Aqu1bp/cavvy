@@ -68,6 +68,22 @@ async function run() {
         check(pixel[0] > 240 && pixel[1] < 20, `frame was not drawn: ${pixel}`);
         check(calls.some(c => c.method === "browser.ack" && c.params.frameId === "red"), "matching acknowledgement missing");
 
+        // Taking control and a page's dialog leave the page its size: a resize would reflow it under the click.
+        const size = `${view.clientWidth}x${view.clientHeight}`;
+        const human = state(1);
+        human.tabs[0]!.owner = "human";
+        adoptBrowserState(id, human);
+        await tick();
+        check(root.textContent?.includes("Hand back to agent"), "human control has no hand-back");
+        check(`${view.clientWidth}x${view.clientHeight}` === size, `taking control resized the page view from ${size} to ${view.clientWidth}x${view.clientHeight}`);
+        human.tabs[0]!.dialog = { type: "confirm", message: "Leave this page?" };
+        adoptBrowserState(id, { ...human });
+        await tick();
+        check(root.querySelector("[role=alertdialog]"), "dialog not shown");
+        check(`${view.clientWidth}x${view.clientHeight}` === size, `a dialog resized the page view from ${size} to ${view.clientWidth}x${view.clientHeight}`);
+        adoptBrowserState(id, state(1));
+        await tick();
+
         // Pause decoding across a tab change and then across unmount.
         const decode = window.createImageBitmap.bind(window);
         let resolve!: (b: ImageBitmap) => void;

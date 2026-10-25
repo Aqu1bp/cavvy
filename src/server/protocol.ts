@@ -1473,7 +1473,7 @@ export type ServerEvent =
     | { type: "browser.state"; sessionId: string; state: BrowserState }
     /**
      * A frame of the current tab, for a window watching it (browser.watch), sent after it acknowledges receipt of the last (browser.ack).
-     * `data`: a JPEG motion frame or PNG still, base64 on the legacy RPC connection; `width` and `height`: the page's size in CSS pixels, which a click's coordinates are in.
+     * `data`: a JPEG frame, base64 on the legacy RPC connection; `width` and `height`: the page's size in CSS pixels, which a click's coordinates are in.
      */
     | { type: "browser.frame"; sessionId: string; frameId: string; tab: number; data: string; width: number; height: number }
     /**

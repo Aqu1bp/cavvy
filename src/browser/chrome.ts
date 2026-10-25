@@ -114,6 +114,8 @@ export function chromeArgs(o: ChromeArgsOptions): string[] {
         // Headless Chrome otherwise captures a 1x compositor surface even when emulated DPR is 2.
         // A Retina surface preserves text detail; each viewer caps output to its backing-store size.
         ...(o.headless ? ["--headless=new", "--force-device-scale-factor=2"] : []),
+        // navigator.webdriver stays false: sites (Google's search, YouTube) answer an automated browser with a robot check.
+        "--disable-blink-features=AutomationControlled",
         "--remote-debugging-port=0",
         `--user-data-dir=${o.profile}`,
         "--no-first-run",
@@ -127,6 +129,53 @@ export function chromeArgs(o: ChromeArgsOptions): string[] {
         ...(noSandbox ? ["--no-sandbox", ...(o.platform === "linux" ? ["--disable-dev-shm-usage"] : [])] : []),
         "about:blank",
     ];
+}
+
+export interface ChromeIdentity {
+    userAgent: string;
+    userAgentMetadata: {
+        brands: { brand: string; version: string }[];
+        fullVersionList: { brand: string; version: string }[];
+        platform: string;
+        platformVersion: string;
+        architecture: string;
+        bitness: string;
+        model: string;
+        mobile: boolean;
+        wow64: boolean;
+    };
+}
+
+const UA_PLATFORMS: Partial<Record<NodeJS.Platform, string>> = { darwin: "macOS", linux: "Linux", win32: "Windows" };
+
+/**
+ * What a headless browser tells sites it is, as the same browser with a window: its user agent says HeadlessChrome,
+ * which sites answer with a robot check. The client hints (Sec-CH-UA) change with it, since a user agent that
+ * disagrees with them is itself a sign. Undefined for a browser that already reads as itself.
+ */
+export function chromeIdentity(userAgent: string, host: { platform: NodeJS.Platform; arch: string; release: string }): ChromeIdentity | undefined {
+    const version = /HeadlessChrome\/((\d+)[\d.]*)/.exec(userAgent);
+    if (!version) return undefined;
+    const [found, full, major] = version as unknown as [string, string, string];
+    const brands = (of: (v: string) => string) => [
+        { brand: "Chromium", version: of(major) },
+        { brand: "Google Chrome", version: of(major) },
+        { brand: "Not A(Brand", version: of("99") },
+    ];
+    return {
+        userAgent: userAgent.replace(found, `Chrome/${major}.0.0.0`),
+        userAgentMetadata: {
+            brands: brands((v) => v),
+            fullVersionList: brands((v) => (v === major ? full : `${v}.0.0.0`)),
+            platform: UA_PLATFORMS[host.platform] ?? "Unknown",
+            platformVersion: host.platform === "linux" ? host.release : "",
+            architecture: host.arch.startsWith("arm") ? "arm" : "x86",
+            bitness: host.arch.endsWith("64") ? "64" : "32",
+            model: "",
+            mobile: false,
+            wow64: false,
+        },
+    };
 }
 
 /** A profile folder another running browser holds (Chrome's SingletonLock names `host-pid`): not one to start a second browser on. */

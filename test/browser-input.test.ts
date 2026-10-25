@@ -10,6 +10,7 @@ const iso = isolate();
 const { fromKeyboardEvent, modifierBits, parseKey } = await import("../src/browser/keys");
 const { TabControl, TAKEN_OVER } = await import("../src/browser/control");
 const { FrameFeed } = await import("../src/browser/feed");
+const { InputQueue, mergeInput } = await import("../src/browser/input-queue");
 const { parseInput, takesControl } = await import("../src/browser/interact");
 const { addressToUrl, allowedPage, checkUrl, displayUrl, isLocalHost, navigationTarget } = await import("../src/browser/url-policy");
 
@@ -407,5 +408,57 @@ describe("where a page may go", () => {
         const long = displayUrl(`http://example.com/${"a".repeat(500)}`);
         expect(long.length).toBe(301);
         expect(long.endsWith("…")).toBe(true);
+    });
+});
+
+describe("a person's input queue", () => {
+    test("wheel turns and pointer moves that arrive during a slow dispatch merge; nothing else does, and order holds", async () => {
+        const sent: unknown[] = [];
+        let release!: () => void;
+        const queue = new InputQueue(async (i) => {
+            sent.push(i);
+            // the first wheel is held, as a page with a wheel listener holds Chrome's answer
+            if (sent.length === 1) await new Promise<void>((r) => (release = r));
+        });
+        const done = [
+            queue.push({ kind: "wheel", x: 1, y: 1, deltaX: 0, deltaY: 40 }),
+            queue.push({ kind: "wheel", x: 2, y: 2, deltaX: 0, deltaY: 40 }),
+            queue.push({ kind: "wheel", x: 3, y: 3, deltaX: 5, deltaY: 40 }),
+            queue.push({ kind: "mouse", type: "move", x: 10, y: 10 }),
+            queue.push({ kind: "mouse", type: "move", x: 20, y: 20 }),
+            queue.push({ kind: "mouse", type: "down", x: 20, y: 20, button: "left", buttons: 1, clickCount: 1 }),
+            queue.push({ kind: "mouse", type: "move", x: 30, y: 30, button: "left", buttons: 1 }),
+            queue.push({ kind: "key", type: "down", key: "a", code: "KeyA" }),
+            queue.push({ kind: "key", type: "down", key: "a", code: "KeyA" }),
+        ];
+        await Bun.sleep(5);
+        expect(sent).toHaveLength(1);
+        release();
+        await Promise.all(done);
+        expect(sent).toEqual([
+            { kind: "wheel", x: 1, y: 1, deltaX: 0, deltaY: 40 },
+            { kind: "wheel", x: 3, y: 3, deltaX: 5, deltaY: 80 },
+            { kind: "mouse", type: "move", x: 20, y: 20 },
+            { kind: "mouse", type: "down", x: 20, y: 20, button: "left", buttons: 1, clickCount: 1 },
+            { kind: "mouse", type: "move", x: 30, y: 30, button: "left", buttons: 1 },
+            { kind: "key", type: "down", key: "a", code: "KeyA" },
+            { kind: "key", type: "down", key: "a", code: "KeyA" },
+        ]);
+    });
+
+    test("a failed dispatch settles its callers and the queue goes on", async () => {
+        const sent: string[] = [];
+        const queue = new InputQueue(async (i) => {
+            sent.push(i.kind);
+            if (i.kind === "text") throw new Error("crashed");
+        });
+        await Promise.all([queue.push({ kind: "text", text: "x" }), queue.push({ kind: "key", type: "down", key: "a", code: "KeyA" })]);
+        expect(sent).toEqual(["text", "key"]);
+    });
+
+    test("only like with like merges: modifiers and held buttons keep events apart", () => {
+        expect(mergeInput({ kind: "wheel", x: 0, y: 0, deltaX: 0, deltaY: 1 }, { kind: "wheel", x: 0, y: 0, deltaX: 0, deltaY: 1, modifiers: 2 })).toBeUndefined();
+        expect(mergeInput({ kind: "mouse", type: "move", x: 0, y: 0 }, { kind: "mouse", type: "move", x: 1, y: 1, button: "left", buttons: 1 })).toBeUndefined();
+        expect(mergeInput({ kind: "mouse", type: "move", x: 0, y: 0 }, { kind: "wheel", x: 0, y: 0, deltaX: 0, deltaY: 1 })).toBeUndefined();
     });
 });
