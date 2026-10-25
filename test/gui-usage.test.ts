@@ -224,3 +224,16 @@ test("review fixes: shares fill the bars under $1, a cost without tokens counts,
         expect(heads.map(h => h.props["aria-sort"])).toEqual(["descending", undefined, undefined, undefined, undefined]);
     } finally { f.dispose(); }
 });
+
+test("a period known to be free reads $0.00, not an unknown cost", async () => {
+    const s = summary();
+    const free = { ...zero(), inputTokens: 430 };
+    s.series = [s.series[0]!, { ...free, at: 1_800_086_400_000, sessions: 1, sources: { "claude-code": free, codex: zero(), api: zero() } }];
+    const f = mount(async () => s);
+    try {
+        await tick();
+        f.nodes().find(n => n.props?.class === "uc-plot").props.onKeyDown({ key: "End", preventDefault() {} });
+        const none = f.nodes().find(n => n.props?.class === "none");
+        expect(none.children.flat(9).map((c: any) => (typeof c === "object" && c && "current" in c ? c.current : c)).join("")).toBe("$0.00");
+    } finally { f.dispose(); }
+});

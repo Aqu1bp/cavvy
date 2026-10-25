@@ -195,7 +195,7 @@ function UsageChart(p: { data: UsageSummary; metric: Metric }) {
         <figure class="set-group uc" data-dense={n() > 20 ? "" : undefined}>
             <Show when={series()[shown()]}>{(b) => <div class="uc-read" aria-live="polite">
                 <span class="when">{periodName(b().at, hourly())}<Show when={note(shown())}><small>{note(shown())}</small></Show></span>
-                <Show when={tot(b())} fallback={<span class="none">{processed(b()) > 0 ? "No known cost" : "No usage"}</span>}>
+                <Show when={tot(b())} fallback={<span class="none">{processed(b()) > 0 ? (b().unknown ? "No known cost" : f(0)) : "No usage"}</span>}>
                     <span class="tot num">{f(tot(b()))}</span>
                     <For each={SOURCES.filter((s) => amount(b().sources[s], p.metric) > 0)}>{(s) => <span class={`src src-${s}`} data-src={s}><i class="sw" />{SHORT[s]} <b class="num">{f(amount(b().sources[s], p.metric))}</b></span>}</For>
                 </Show>
