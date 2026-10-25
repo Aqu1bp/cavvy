@@ -1859,10 +1859,14 @@
     transform: scaleY(1.06);
 }
 
-/* ---- Model picker: a provider rail, then that provider's models ------------ */
+/* ---- Model picker: provider filters, then one provider's models ------------ */
 
+/* One size whatever the list: a short list leaves room, a long one scrolls. Popover's max-height clamps it
+   on a short window. */
 .popover.mp {
     display: flex;
+    flex-direction: column;
+    height: calc(440 * var(--sp));
     padding: 0;
     overflow: hidden;
     border-radius: calc(16 * var(--sp));
@@ -1871,6 +1875,7 @@
 .mp-wrap {
     position: relative;
     display: flex;
+    flex-direction: column;
     flex: 1;
     width: 100%;
     min-height: 0;
@@ -1900,96 +1905,15 @@
     }
 }
 
-.mp-rail {
-    display: flex;
-    flex-direction: column;
-    flex: none;
-    gap: calc(4 * var(--sp));
-    width: calc(50 * var(--sp));
-    padding: calc(5 * var(--sp)) calc(4 * var(--sp));
-    overflow-y: auto;
-    scrollbar-width: none;
-}
-
-.rb {
-    position: relative;
-    display: grid;
-    place-items: center;
-    flex: none;
-    width: calc(42 * var(--sp));
-    height: calc(42 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    color: var(--fg-2);
-    transition: background 140ms, color 140ms;
-}
-
-.rb:hover {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-.rb.on {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-/* A provider that couldn't list its models: a small dot at its icon's corner. */
-.rb-err {
-    position: absolute;
-    top: calc(9 * var(--sp));
-    right: calc(9 * var(--sp));
-    width: calc(5 * var(--sp));
-    height: calc(5 * var(--sp));
-    border-radius: 50%;
-    background: var(--danger);
-    box-shadow: 0 0 0 1.5px var(--ctl-strong);
-}
-
-/* A rail button's name, beside it: the rail is only marks. */
-@keyframes mp-tip-in {
-    from {
-        opacity: 0;
-        transform: translate(-3px, -50%);
-    }
-}
-
-.mp-tip {
-    position: absolute;
-    left: calc(52 * var(--sp));
-    z-index: 3;
-    max-width: calc(220 * var(--sp));
-    padding: calc(4 * var(--sp)) calc(9 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-    background: var(--fg);
-    color: var(--sheet);
-    font-size: 0.857rem;
-    font-weight: 500;
-    line-height: 1.35;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    pointer-events: none;
-    transform: translateY(-50%);
-    animation: mp-tip-in var(--dur-fast) var(--ease-out);
-}
-
-.mp-main {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-    min-width: 0;
-    border-left: 0.5px solid var(--line);
-}
-
 .mp-search {
     display: flex;
     align-items: center;
+    flex: none;
     gap: calc(8 * var(--sp));
     margin: calc(6 * var(--sp)) calc(6 * var(--sp)) 0;
-    padding: 0 calc(6 * var(--sp)) 0 calc(10 * var(--sp));
-    height: calc(34 * var(--sp));
-    border-radius: var(--pill);
+    padding: 0 calc(5 * var(--sp)) 0 calc(11 * var(--sp));
+    height: calc(36 * var(--sp));
+    border-radius: calc(12 * var(--sp));
     background: var(--hover);
     color: var(--fg-3);
 }
@@ -2016,136 +1940,217 @@
     border-radius: 50%;
 }
 
-.mp-label {
+/* The provider filters: one row that scrolls sideways, faded at an edge with more past it. */
+.mp-filters {
     display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    min-width: 0;
-    margin-top: calc(4 * var(--sp));
-    padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(4 * var(--sp)) calc(16 * var(--sp));
-    font-size: 0.821rem;
-    font-weight: 600;
-    color: var(--fg-3);
-}
-
-.mp-label-name {
-    flex: 1;
-}
-
-/* The header and the account list that drops from it. */
-.mp-head {
-    position: relative;
     flex: none;
+    gap: calc(4 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(6 * var(--sp)) calc(6 * var(--sp));
+    overflow-x: auto;
+    scrollbar-width: none;
+    scroll-padding: 0 calc(28 * var(--sp));
+    border-bottom: 0.5px solid var(--line);
 }
 
-.mp-note {
-    margin-left: auto;
-    font-weight: 400;
-    color: var(--fg-3);
+.mp-filters::-webkit-scrollbar {
+    display: none;
 }
 
-/* The provider's account, in its header: the active one by name, the others a click away. */
-.mp-acct {
+.mp-filters.more-r {
+    mask-image: linear-gradient(90deg, #000 calc(100% - 36px), transparent);
+}
+
+.mp-filters.more-l {
+    mask-image: linear-gradient(90deg, transparent, #000 36px);
+}
+
+.mp-filters.more-l.more-r {
+    mask-image: linear-gradient(90deg, transparent, #000 36px, #000 calc(100% - 36px), transparent);
+}
+
+.mp-f {
+    position: relative;
     display: inline-flex;
     align-items: center;
-    flex: 0 1 auto;
-    gap: calc(5 * var(--sp));
-    min-width: 0;
-    max-width: 60%;
-    height: calc(24 * var(--sp));
-    margin: calc(-4 * var(--sp)) 0;
-    padding: 0 calc(6 * var(--sp)) 0 calc(8 * var(--sp));
+    flex: none;
+    gap: calc(6 * var(--sp));
+    height: calc(26 * var(--sp));
+    padding: 0 calc(10 * var(--sp)) 0 calc(8 * var(--sp));
     border-radius: var(--pill);
+    white-space: nowrap;
     font-size: 0.857rem;
     font-weight: 500;
     color: var(--fg-2);
     transition: background var(--dur-fast), color var(--dur-fast);
 }
 
-.mp-acct:hover,
-.mp-acct.open {
+.mp-f:hover:not(.on) {
     background: var(--hover);
     color: var(--fg);
 }
 
-.mp-acct svg {
-    flex: none;
+.mp-f.on {
+    background: var(--seg-on);
+    color: var(--fg);
+    box-shadow: 0 0 0 0.5px var(--line), 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
-.mp-acct .chev {
+.mp-f:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.mp-f-star {
     color: var(--fg-3);
-    transition: transform var(--dur-fast) var(--ease);
 }
 
-.mp-acct.open .chev {
-    transform: rotate(180deg);
+.mp-f.on .mp-f-star {
+    color: var(--warn);
+    fill: currentColor;
 }
 
-.mp-acct.missing,
-.mp-acct.missing:hover {
+/* A provider that couldn't list its models: a small dot at its pill's corner. */
+.mp-f.err::after {
+    content: "";
+    position: absolute;
+    top: calc(4 * var(--sp));
+    right: calc(4 * var(--sp));
+    width: calc(6 * var(--sp));
+    height: calc(6 * var(--sp));
+    border-radius: 50%;
+    background: var(--danger);
+    box-shadow: 0 0 0 1.5px var(--ctl-strong);
+}
+
+/* A list's heading: the provider, a note on its list, and a subscription's accounts. */
+.mp-h {
+    display: flex;
+    align-items: center;
+    flex: none;
+    gap: calc(7 * var(--sp));
+    min-width: 0;
+    min-height: calc(32 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(10 * var(--sp)) calc(2 * var(--sp)) calc(15 * var(--sp));
+    font-size: 0.821rem;
+    color: var(--fg-3);
+}
+
+.mp-h b {
+    flex: 0 1 auto;
+    font-weight: 600;
+}
+
+.mp-h .grow {
+    flex: 1;
+}
+
+.mp-h-star {
+    flex: none;
+    color: var(--warn);
+    fill: currentColor;
+}
+
+.mp-group .mp-h {
+    padding-left: calc(10 * var(--sp));
+}
+
+.mp-group + .mp-group {
+    margin-top: calc(4 * var(--sp));
+}
+
+.mp-note {
+    font-weight: 400;
+    color: var(--fg-3);
+}
+
+/* A subscription's accounts: pills, the session's one filled; one alone, its name. */
+.mp-accts {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 1 auto;
+    gap: calc(4 * var(--sp));
+    min-width: 0;
+    margin: calc(-3 * var(--sp)) 0;
+}
+
+.mp-acs {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(2 * var(--sp));
+    min-width: 0;
+    padding: calc(2 * var(--sp));
+    border-radius: var(--pill);
+    background: var(--hover);
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.mp-ac {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    gap: calc(5 * var(--sp));
+    max-width: calc(120 * var(--sp));
+    height: calc(22 * var(--sp));
+    padding: 0 calc(9 * var(--sp));
+    border-radius: var(--pill);
+    font-size: 0.821rem;
+    font-weight: 500;
+    white-space: nowrap;
+    color: var(--fg-2);
+    transition: background var(--dur-fast), color var(--dur-fast);
+}
+
+.mp-ac:hover:not(.on) {
+    color: var(--fg);
+}
+
+.mp-ac.on {
+    background: var(--seg-on);
+    color: var(--fg);
+    box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.mp-ac:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.mp-ac-lv {
+    flex: none;
+    font-size: 0.75rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
     color: var(--warn);
 }
 
-.mp-acct-menu {
-    position: absolute;
-    top: calc(100% + 2 * var(--sp));
-    right: calc(8 * var(--sp));
-    z-index: 2;
-    width: calc(236 * var(--sp));
-    padding: calc(4 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    /* Opaque: it sits over the model list, whose text would show through glass. */
-    background: var(--seg-on);
-    box-shadow: 0 0 0 0.5px var(--line-strong), var(--pop-shadow), inset 0 1px 0 var(--ctl-hi);
-    transform-origin: top right;
-    /* Grows in without fading, so it's never see-through over the rows. */
-    animation: mp-acct-in var(--dur-panel) var(--ease-out);
+.mp-ac.full .mp-ac-lv {
+    color: var(--danger);
 }
 
-@keyframes mp-acct-in {
-    from {
-        transform: scale(0.96) translateY(-4px);
-    }
+.mp-ac.add {
+    width: calc(22 * var(--sp));
+    padding: 0;
+    justify-content: center;
+    background: var(--hover);
+    color: var(--fg-3);
 }
 
-/* Its accounts scroll inside it (placeAccounts sets its max-height); the note and Add account… stay put. */
-.mp-acct-menu {
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
+.mp-ac.add:hover {
+    color: var(--fg);
 }
 
-.mp-acct-menu > * {
-    flex: none;
-}
-
-.mp-acct-menu > .mp-acct-list {
-    flex: 0 1 auto;
-    min-height: calc(40 * var(--sp));
-    overflow-y: auto;
-    overscroll-behavior: contain;
-}
-
-.mp-acct-menu .menu-item {
-    min-height: 0;
-    padding: calc(5 * var(--sp)) calc(8 * var(--sp));
-    font-size: 0.893rem;
-}
-
-.mp-acct-menu .menu-desc {
-    margin-top: 0;
-    font-size: 0.786rem;
-}
-
-.mp-acct-menu .menu-item[aria-checked="true"] .menu-label {
-    font-weight: 600;
+.mp-acct1 {
+    font-size: 0.821rem;
+    color: var(--fg-2);
 }
 
 .mp-acct-note {
     display: flex;
     align-items: flex-start;
+    flex: none;
     gap: calc(7 * var(--sp));
-    margin-bottom: calc(2 * var(--sp));
+    margin: calc(2 * var(--sp)) calc(8 * var(--sp)) calc(2 * var(--sp));
     padding: calc(6 * var(--sp)) calc(8 * var(--sp));
     border-radius: calc(8 * var(--sp));
     background: color-mix(in srgb, var(--warn) 12%, transparent);
@@ -2170,9 +2175,17 @@
     flex-direction: column;
     flex: 1;
     gap: 1px;
-    min-height: calc(120 * var(--sp));
-    padding: calc(2 * var(--sp)) calc(5 * var(--sp)) calc(5 * var(--sp));
+    min-height: 0;
+    padding: calc(2 * var(--sp)) calc(5 * var(--sp)) calc(6 * var(--sp));
     overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.mp-group {
+    display: flex;
+    flex-direction: column;
+    flex: none;
+    gap: 1px;
 }
 
 .mp-empty {
@@ -2180,7 +2193,7 @@
     flex-direction: column;
     align-items: center;
     gap: calc(8 * var(--sp));
-    padding: calc(28 * var(--sp)) calc(16 * var(--sp));
+    padding: calc(34 * var(--sp)) calc(20 * var(--sp));
     font-size: 0.893rem;
     line-height: 1.4;
     text-align: center;
@@ -2214,8 +2227,13 @@
     contain-intrinsic-size: auto calc(34 * var(--sp));
 }
 
+.mr.two {
+    height: calc(46 * var(--sp));
+    contain-intrinsic-size: auto calc(46 * var(--sp));
+}
+
 .mr.sel {
-    background: var(--press);
+    background: var(--hover);
 }
 
 .mr-pick {
@@ -2225,7 +2243,7 @@
     gap: calc(8 * var(--sp));
     min-width: 0;
     height: 100%;
-    padding: 0 calc(4 * var(--sp)) 0 calc(8 * var(--sp));
+    padding: 0 calc(4 * var(--sp)) 0 calc(10 * var(--sp));
     border-radius: calc(10 * var(--sp));
     font-size: 0.929rem;
     text-align: left;
@@ -2252,25 +2270,22 @@
     padding: calc(2 * var(--sp)) calc(5 * var(--sp));
     font-size: 0.75rem;
     color: var(--fg-3);
-    background: var(--hover);
-    opacity: 0;
-    transition: opacity var(--dur-fast);
-}
-
-.mr.sel kbd {
-    opacity: 1;
+    background: none;
 }
 
 .mr-text {
     display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
+    flex-direction: column;
     flex: 1;
-    column-gap: calc(8 * var(--sp));
     min-width: 0;
-    height: calc(20 * var(--sp));
+}
+
+.mr-top {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
     line-height: calc(20 * var(--sp));
-    overflow: hidden;
 }
 
 .mr-name {
@@ -2280,14 +2295,13 @@
 }
 
 .mr.on .mr-name {
-    font-weight: 550;
+    font-weight: 600;
 }
 
-/* The provider, in Favorites and results: after the name, taking only the room left. */
+/* Under the name: whose it is (in Favorites), the id an alias stands for, its context window and price. */
 .mr-sub {
-    flex: 1 1 0;
-    min-width: min(9ch, 100%);
     font-size: 0.821rem;
+    line-height: calc(16 * var(--sp));
     color: var(--fg-3);
 }
 
@@ -2317,8 +2331,8 @@
     width: calc(26 * var(--sp));
     height: calc(26 * var(--sp));
     margin-right: calc(2 * var(--sp));
-    border-radius: 50%;
-    color: var(--fg-3);
+    border-radius: calc(8 * var(--sp));
+    color: var(--fg-4);
     opacity: 0;
     transition: opacity var(--dur-fast), color var(--dur-fast);
 }
@@ -2331,7 +2345,8 @@
 }
 
 .mr-star:hover {
-    color: var(--fg);
+    background: var(--hover);
+    color: var(--fg-2);
 }
 
 .mr-star.f,
@@ -2343,52 +2358,76 @@
     fill: currentColor;
 }
 
+/* Compare's checkboxes. */
+.mr-check {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: calc(15 * var(--sp));
+    height: calc(15 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    box-shadow: inset 0 0 0 1.5px var(--fg-4);
+    color: var(--accent-ink);
+}
+
+.mr-check.on {
+    background: var(--accent);
+    box-shadow: none;
+}
+
+/* While comparing: each model gets a worktree of its own. */
+.mp-cmp-note {
+    flex: none;
+    padding: calc(6 * var(--sp)) calc(14 * var(--sp));
+    border-top: 0.5px solid var(--line);
+    font-size: 0.786rem;
+    line-height: 1.35;
+    color: var(--fg-3);
+}
+
 .mp-foot {
     display: flex;
     align-items: center;
+    justify-content: space-between;
+    flex: none;
     gap: calc(8 * var(--sp));
-    min-height: calc(36 * var(--sp));
-    padding: 0 calc(14 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(8 * var(--sp));
     border-top: 0.5px solid var(--line);
-    font-size: 0.893rem;
-    text-align: left;
-    color: var(--fg-2);
 }
 
-.mp-foot:hover {
+.mp-link,
+.mp-cmp {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(7 * var(--sp));
+    height: calc(28 * var(--sp));
+    padding: 0 calc(8 * var(--sp));
+    border-radius: calc(8 * var(--sp));
+    font-size: 0.857rem;
+    color: var(--fg-2);
+    transition: background var(--dur-fast), color var(--dur-fast);
+}
+
+.mp-link:hover,
+.mp-cmp:hover:not(:disabled) {
     background: var(--hover);
     color: var(--fg);
 }
 
-/* Compare: one prompt to several models (Home). */
-.mp-compare {
-    margin: calc(6 * var(--sp)) calc(6 * var(--sp)) 0;
-    padding-bottom: calc(6 * var(--sp));
-    border-bottom: 0.5px solid var(--line);
+.mp-cmp.on {
+    color: var(--fg);
 }
 
-.mp-compare-btn {
-    display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    width: 100%;
-    padding: calc(6 * var(--sp)) calc(8 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    font-size: 0.893rem;
-    font-weight: 500;
-    text-align: left;
+.mp-cmp:disabled {
+    opacity: 0.5;
 }
 
-.mp-compare-btn:hover:not(:disabled) {
-    background: var(--hover);
+.mp-cmp-wrap {
+    display: inline-flex;
 }
 
-.mp-compare-btn:disabled {
-    opacity: 0.55;
-}
-
-.mp-compare-btn .mp-note {
-    margin-left: 0;
+.mp-cmp-n {
+    color: var(--fg-3);
 }
 
 /* A small switch: on while picking several models. */
@@ -2420,29 +2459,6 @@
 
 .mp-switch.on::after {
     transform: translateX(calc(11 * var(--sp)));
-}
-
-.mp-compare-note {
-    padding: calc(2 * var(--sp)) calc(8 * var(--sp)) 0 calc(30 * var(--sp));
-    font-size: 0.786rem;
-    line-height: 1.35;
-    color: var(--fg-3);
-}
-
-.mr-check {
-    display: grid;
-    place-items: center;
-    flex: none;
-    width: calc(15 * var(--sp));
-    height: calc(15 * var(--sp));
-    border-radius: calc(5 * var(--sp));
-    box-shadow: inset 0 0 0 1.5px var(--fg-4);
-    color: var(--accent-ink);
-}
-
-.mr-check.on {
-    background: var(--accent);
-    box-shadow: none;
 }
 
 /* A provider's mark; the two letters when there isn't one (ProviderIcon, used across the app). */

@@ -3,6 +3,14 @@ import { readFileSync } from "node:fs";
 import { createEffect, createSignal, onCleanup } from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
 import { menuIndex, menuTypeahead, mountMenu } from "../../gui/src/lib/menu";
+import { meterOf } from "../../gui/src/lib/limits";
+import { tokens } from "../../gui/src/lib/format";
+import { planLimitKey } from "../../src/server/protocol";
+
+import { sendsAccountPick } from "../../gui/src/lib/account-pick";
+
+// ComposerMeter's, which this fixture doesn't compile: a reached plan reads 100%.
+const nearLimit = (m?: { reached: boolean }) => (m?.reached ? { pct: 100 } : undefined);
 
 const cleanups: (() => void)[] = [];
 function test(_name: string, run: () => void) {
@@ -10,7 +18,7 @@ function test(_name: string, run: () => void) {
 }
 const source = (name: string) => readFileSync(new URL(`../../gui/src/components/${name}.tsx`, import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "");
 
-function picker(available = true) {
+function picker(available = true, more: { groups?: any[]; providers?: any[]; limits?: Record<string, any> } = {}) {
     const root = node("root");
     const body = node("body");
     let active: any = body;
@@ -47,7 +55,8 @@ function picker(available = true) {
         return Object.assign(n, {
             ownerDocument: doc,
             focus() { active = n; n.props.onFocus?.({ currentTarget: n, target: n }); },
-            click() { if (!n.props.disabled) n.props.onClick?.(); },
+            // detail 0: a keyboard activation, as the browser reports one.
+            click() { if (!n.props.disabled) n.props.onClick?.({ detail: 0, currentTarget: n, target: n }); },
             scrollIntoView() {}, getClientRects: () => [{}],
             // mountMenu's click guard for aria-disabled rows; click() here calls the handler directly.
             addEventListener() {}, removeEventListener() {},
@@ -77,10 +86,12 @@ function picker(available = true) {
     const [comparePicks, setComparePicks] = createSignal<string[]>();
     const chosen: string[] = [];
     const warnings: string[] = [];
+    const accountPicks: string[] = [];
     const models = ["Alpha", "Bravo", "Charlie", "Delta", "Echo"].map((name) => ({ ref: `mock:${name}`, id: name, name, provider: "mock" }));
     const ModelPicker = component(source("ModelPicker"), "ModelPicker", {
-        Menu, menuIndex, menuTypeahead, comparePicks, setComparePicks,
-        app: { models: [{ provider: "mock", providerName: "Mock", models }], providers: [] },
+        Menu, menuIndex, menuTypeahead, comparePicks, setComparePicks, planLimitKey, meterOf, nearLimit, tokens, now: () => 0,
+        app: { models: [{ provider: "mock", providerName: "Mock", models }, ...(more.groups ?? [])], providers: more.providers ?? [], limits: more.limits ?? {} },
+        sendsAccountPick, setAccount: (provider: string, id: string) => accountPicks.push(`${provider}:${id}`),
         prefs: { favoriteModels: [] }, setPrefs() {}, handleFor() {}, refreshModels() {},
         setModel: (ref: string) => chosen.push(ref), setAddAccountFor() {}, setSettingsTab() {}, toast: (msg: string) => warnings.push(msg),
         isMod: (e: any) => e.ctrlKey, mod: "Ctrl", withShortcut: (label: string, action: string) => (action === "chat:modelPicker" ? `${label} (Ctrl+/)` : label), ProviderIcon: () => node("icon"),
@@ -99,7 +110,9 @@ function picker(available = true) {
     };
     trigger.focus(); trigger.click();
     for (const [id, cb] of frames) { frames.delete(id); cb(); }
-    return { root, doc, trigger, key, open, comparePicks, chosen, warnings, find,
+    return { root, doc, trigger, key, open, comparePicks, chosen, warnings, accountPicks, find,
+        tabs: () => all(root).filter((n) => n.props.role === "tab").map(adapt),
+        accountButtons: () => all(root).filter((n) => n.tag === "button" && n.props["aria-pressed"] !== undefined && (n.props.class ?? "").split(" ").includes("mp-ac")).map(adapt),
         search: () => find((n) => n.props.role === "combobox"),
         toggle: () => find((n) => n.props.role === "switch"),
         options: () => all(root).filter((n) => n.props.role === "option").map(adapt),
@@ -171,4 +184,45 @@ test("the model chip's tooltip and accessible name say whose model it is", () =>
     // The accessible name is the chip's own text plus the provider the hidden icon stands for.
     expect(f.trigger.props["aria-label"]).toBeUndefined();
     expect(text(f.trigger)).toBe("Alpha, Mock");
+});
+
+test("provider filters show one provider's models, each with its line; search finds every provider's, under its name", () => {
+    const big = { ref: "api:big", id: "big-model-1", name: "Big", provider: "api", contextWindow: 200_000, pricing: { input: 3, output: 15 } };
+    const tiny = { ref: "api:tiny", id: "tiny", name: "Tiny", provider: "api", pricing: { input: 0.004, output: 0 }, pricingEstimated: true };
+    const f = picker(true, { groups: [{ provider: "api", providerName: "API", models: [big, tiny] }] });
+    expect(f.tabs().map(text)).toEqual(["Favorites", "Mock", "API"]);
+    expect(f.tabs()[1].props["aria-selected"]).toBe(true);
+    expect(f.options()).toHaveLength(5);
+    f.tabs()[2].click();
+    // A paid price under a cent isn't "$0"; one borrowed from another provider is marked "~".
+    expect(f.options().map(text)).toEqual(["Bigbig-model-1 · 200k context · $3 / $15 per MCtrl+1", "Tiny~<$0.01 / $0 per MCtrl+2"]);
+    // ← in the empty search box goes back a filter.
+    f.search().focus(); f.key("ArrowLeft");
+    expect(f.tabs()[1].props["aria-selected"]).toBe(true);
+    f.search().props.onInput({ currentTarget: { value: "b" } });
+    const groups = all(f.root).filter((n) => n.props.role === "group");
+    expect(groups.map((g) => g.props["aria-label"])).toEqual(["Mock", "API"]);
+    expect(f.options().map((o) => o.props.id.endsWith("-0") || o.props.id.endsWith("-1"))).toEqual([true, true]);
+    f.key("ArrowDown"); f.key("Enter");
+    expect(f.chosen).toEqual(["api:big"]);
+});
+
+test("a subscription's accounts are buttons in its heading: the session's one pressed, a reached plan marked", () => {
+    const cli = { ref: "cli:fast", id: "fast", name: "Fast", provider: "cli" };
+    const accounts = [{ id: "default", name: "Work", email: "w@example.com" }, { id: "p", name: "Personal", plan: "max" }];
+    const f = picker(true, {
+        groups: [{ provider: "cli", providerName: "CLI", models: [cli] }],
+        providers: [{ id: "cli", name: "CLI", agentCli: { accounts, defaultAccount: "default" } }],
+        limits: { [planLimitKey("cli", "p")]: { provider: "cli", accountId: "p", windows: [{ label: "5-hour", usedPercent: 100, reached: true }], at: 0 } },
+    });
+    f.tabs()[2].click();
+    const buttons = f.accountButtons;
+    expect(buttons().map(text)).toEqual(["Work", "Personallimit"]);
+    expect(buttons().map((r) => r.props["aria-pressed"])).toEqual([true, false]);
+    expect(buttons()[1].props.title).toBe("Max. Limit reached");
+    // Arrows don't switch accounts: only activating one does.
+    buttons()[0].focus(); f.key("ArrowRight");
+    expect(f.accountPicks).toEqual([]);
+    buttons()[1].focus(); f.key("Enter");
+    expect(f.accountPicks).toEqual(["cli:p"]);
 });

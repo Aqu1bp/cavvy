@@ -1,9 +1,9 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show } from "solid-js";
-import { Check, ChevronDown, CircleAlert, Layers, Plus, RefreshCw, Search, Settings2, Star, UserRound, Zap } from "lucide-solid";
-import { catalogSentence, type AccountInfo, type EffortLevel, type ModelSummary } from "@shared/protocol";
+import { Check, ChevronDown, CircleAlert, Layers, Plus, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
+import { catalogSentence, planLimitKey, type AccountInfo, type EffortLevel, type ModelSummary } from "@shared/protocol";
 import { app, handleFor, refreshModels, toast } from "../state/app";
 import { setEffort, setModel, setFastMode, setAccount } from "../state/actions";
-import { prefs, setPrefs, sp } from "../state/prefs";
+import { prefs, setPrefs } from "../state/prefs";
 import { comparePicks, setAddAccountFor, setComparePicks, setSettingsTab } from "../state/ui";
 import { isMod, mod } from "../lib/platform";
 import { menuIndex, menuTypeahead } from "../lib/menu";
@@ -13,6 +13,10 @@ import { ProviderIcon } from "./ui/ProviderIcon";
 import { withShortcut } from "../state/keybindings";
 import { effortAt, effortKey, effortLevels, effortOf, takesEffort, type Effort } from "../lib/effort";
 import { sendsAccountPick } from "../lib/account-pick";
+import { meterOf } from "../lib/limits";
+import { now } from "../lib/clock";
+import { tokens } from "../lib/format";
+import { nearLimit } from "./ComposerMeter";
 
 function fuzzy(q: string, s: string): boolean {
     q = q.toLowerCase();
@@ -49,12 +53,31 @@ function resolve(current: ModelSummary | undefined, ref: string | undefined): Mo
 
 const FAVORITES = "favorites";
 
-type Row = { m: ModelSummary; sub?: string };
+type Row = { m: ModelSummary; i: number; line: string };
+/** A run of rows under one heading: the provider's (or Favorites) in a list, each provider's in search results. */
+type Section = { key: string; name: string; provider?: string; rows: Row[] };
 
 /** The CLIs report plans in lower case ("max", "plus"). */
 const planLabel = (plan?: string) => (plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : undefined);
-/** Under an account's name in the switcher: who it is, its plan, and what's wrong with it, if anything. */
+/** An account's tooltip: who it is, its plan, and what's wrong with it, if anything. */
 const accountDetail = (a: Partial<AccountInfo>) => [a.email, planLabel(a.plan), a.invalid ? "Unavailable" : a.signedIn === false ? "Not signed in" : undefined].filter(Boolean).join(" · ");
+
+/** "$3", "$0.3", "$1.25": a price per million tokens; a paid one under a cent never reads "$0". */
+const perMillion = (n: number) => (n > 0 && n < 0.005 ? "<$0.01" : `$${Number(n.toFixed(2))}`);
+const squash = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/**
+ * The line under a model's name: whose it is (in Favorites), the id it stands for when its name doesn't say
+ * ("default" → "claude-opus-5-5"), its context window and, billed by the token, its price per million.
+ */
+function modelLine(m: ModelSummary, opts: { provider?: string; priced: boolean }): string {
+    const resolved = m.name?.match(/\(([^()\s]+)\)\s*$/)?.[1];
+    const name = squash(modelName(m));
+    const id = resolved && ID_LIKE.test(resolved) ? resolved : name.includes(squash(m.id)) ? undefined : m.id;
+    // Borrowed from another provider's list (pricingEstimated): marked "~", as the CLI marks it.
+    const price = opts.priced && m.pricing ? `${m.pricingEstimated ? "~" : ""}${perMillion(m.pricing.input)} / ${perMillion(m.pricing.output)} per M` : undefined;
+    return [opts.provider, id, m.contextWindow ? `${tokens(m.contextWindow)} context` : undefined, price].filter(Boolean).join(" · ");
+}
 
 /** A menu from a button in the composer: just above it in a session, below it on Home, where the composer sits higher. */
 export interface ComposerMenu {
@@ -70,23 +93,22 @@ export interface CompareOption {
 }
 
 const MAX_COMPARE = 4;
+const COMPARE_ON = "Each model works in a new worktree from HEAD. Uncommitted changes here aren't carried over.";
+const COMPARE_OFF = "Send one prompt to 2–4 models, each in a worktree of its own";
 
 export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentRef?: string; compare?: CompareOption }) {
     let anchor: HTMLButtonElement | undefined;
     let input: HTMLInputElement | undefined;
     let list: HTMLDivElement | undefined;
-    let railEl: HTMLDivElement | undefined;
-    let acctBtn: HTMLButtonElement | undefined;
-    let acctMenu: HTMLDivElement | undefined;
+    let filtersEl: HTMLDivElement | undefined;
+    let acctEl: HTMLElement | undefined;
     const listId = createUniqueId();
     const typeahead = menuTypeahead();
     const [q, setQ] = createSignal("");
     const [sel, setSel] = createSignal(0);
-    const [rail, setRail] = createSignal<string>(FAVORITES);
-    /** The account list under the provider's header. */
-    const [acctOpen, setAcctOpen] = createSignal(false);
-    /** A rail button's name beside it, while it's hovered or focused. */
-    const [tip, setTip] = createSignal<{ name: string; top: number }>();
+    const [filter, setFilter] = createSignal<string>(FAVORITES);
+    /** The provider filters' fades: "more-l", "more-r", where more pills are scrolled out of sight. */
+    const [edges, setEdges] = createSignal("");
     const currentRef = () => p.current?.ref ?? p.currentRef;
     const isCurrent = (ref: string) => ref === currentRef();
     const currentModel = createMemo(() => resolve(p.current, currentRef()));
@@ -122,13 +144,22 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
         const all = new Map(groups().flatMap((g) => g.models.map((m) => [m.ref, m] as const)));
         return prefs.favoriteModels.map((ref) => all.get(ref)).filter((m): m is ModelSummary => Boolean(m));
     });
-    const group = () => groups().find((g) => g.provider === rail());
-    const rows = createMemo((): Row[] => {
-        if (q()) return groups().flatMap((g) => g.models.filter((m) => fuzzy(q(), `${g.providerName} ${m.name} ${m.id}`)).map((m) => ({ m, sub: g.providerName })));
-        if (rail() === FAVORITES) return favorites().map((m) => ({ m, sub: providerName(m.provider) }));
-        return (group()?.models ?? []).map((m) => ({ m }));
+    const group = () => groups().find((g) => g.provider === filter());
+    /** One provider's models, or the favorites; searching looks through every provider's, under its name. */
+    const sections = createMemo((): Section[] => {
+        let i = 0;
+        const row = (m: ModelSummary, mixed = false): Row => ({ m, i: i++, line: modelLine(m, { provider: mixed ? providerName(m.provider) : undefined, priced: !accountInfo(m.provider) }) });
+        if (q()) {
+            return groups()
+                .map((g) => ({ g, models: g.models.filter((m) => fuzzy(q(), `${g.providerName} ${m.name} ${m.id}`)) }))
+                .filter((x) => x.models.length)
+                .map(({ g, models }) => ({ key: g.provider, name: g.providerName, provider: g.provider, rows: models.map((m) => row(m)) }));
+        }
+        if (filter() === FAVORITES) return [{ key: FAVORITES, name: "Favorites", rows: favorites().map((m) => row(m, true)) }];
+        return [{ key: filter(), name: group()?.providerName ?? providerName(filter()), provider: filter(), rows: (group()?.models ?? []).map((m) => row(m)) }];
     });
-    const label = () => (q() ? "Results" : rail() === FAVORITES ? "Favorites" : (group()?.providerName ?? ""));
+    const rows = createMemo(() => sections().flatMap((s) => s.rows));
+    const label = () => (q() ? "Results" : (sections()[0]?.name ?? ""));
     const isFav = (ref: string) => prefs.favoriteModels.includes(ref);
     const toggleFav = (ref: string) => setPrefs("favoriteModels", (list) => (list.includes(ref) ? list.filter((r) => r !== ref) : [...list, ref]));
     // Several models: rows toggle, and the default model stays as it is.
@@ -142,81 +173,69 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     };
     const toggleCompare = () => setComparePicks(multi() ? undefined : currentRef() ? [currentRef()!] : []);
 
-    // The provider whose header shows an account switcher: a CLI provider, in its own list.
-    const acctProvider = () => (!q() && rail() !== FAVORITES && accountInfo(rail()) ? rail() : undefined);
-    const acctItems = () => [...(acctMenu?.querySelectorAll<HTMLButtonElement>('[role^="menuitem"]') ?? [])];
-    /** Focus an account (or Add account…) and scroll the list to it. */
-    const focusAccount = (el?: HTMLElement) => {
-        el?.focus({ preventScroll: true });
-        el?.scrollIntoView({ block: "nearest" });
+    // The provider whose heading has its accounts: a CLI provider, in its own list.
+    const acctProvider = () => (!q() && filter() !== FAVORITES && accountInfo(filter()) ? filter() : undefined);
+    /** A plan nearing or at its limit: its fullest window's percentage, from 80%; 100 once reached. */
+    const accountLimit = (provider: string, id: string) => {
+        const l = app.limits[planLimitKey(provider, id)];
+        return nearLimit(meterOf(l, now()), l, now());
     };
-    /**
-     * The list fits inside the picker, which clips what overflows it: below the header if there's room,
-     * else moved up over the header as far as it needs. The accounts scroll; Add account… stays at the
-     * bottom. Measured from layout (the header, the list's scrollHeight), not the opening transform.
-     */
-    const placeAccounts = () => {
-        const menu = acctMenu;
-        const panel = menu?.closest<HTMLElement>(".popover")?.getBoundingClientRect();
-        const head = menu?.parentElement?.getBoundingClientRect();
-        if (!menu || !panel || !head) return;
-        const pad = sp(8);
-        const top = head.bottom + sp(2);
-        const shift = Math.max(0, Math.min(menu.scrollHeight - (panel.bottom - pad - top), top - panel.top - pad));
-        menu.style.marginTop = shift ? `${-shift}px` : "";
-        menu.style.maxHeight = `${panel.bottom - pad - (top - shift)}px`;
-    };
-    const openAccounts = () => {
-        setAcctOpen(true);
-        placeAccounts();
-        const items = acctItems();
-        focusAccount(items.find((el) => el.getAttribute("aria-checked") === "true") ?? items[0]);
-    };
-    const closeAccounts = (refocus = true) => {
-        setAcctOpen(false);
-        if (refocus) acctBtn?.focus();
+    const accountTip = (provider: string, a: Partial<AccountInfo> & { id: string }) => {
+        const m = meterOf(app.limits[planLimitKey(provider, a.id)], now());
+        const limits = m?.reached ? `Limit reached${m.resets ? `, resets ${m.resets}` : ""}` : m?.windows.filter((w) => w.pct !== undefined).map((w) => `${w.label} ${w.pct}%`).join(", ");
+        return [accountDetail(a), limits].filter(Boolean).join(". ") || undefined;
     };
     const pickAccount = (provider: string, a: { id: string }) => {
-        closeAccounts();
         const needed = Boolean(app.activeId && handleFor(app.activeId)?.view.state.accountNeeded === provider);
         if (sendsAccountPick(a.id, selectedAccount(provider), { missing: missingAccount(provider), needed })) void setAccount(provider, a.id);
     };
     const addAccount = (provider: string) => {
-        setAcctOpen(false);
         p.setOpen(false);
         setAddAccountFor(provider);
         setSettingsTab("providers");
     };
-    const showTip = (el: HTMLElement, name: string) => setTip({ name, top: el.offsetTop - (railEl?.scrollTop ?? 0) + el.offsetHeight / 2 });
+
+    const measureFilters = () => {
+        const f = filtersEl;
+        if (!f) return;
+        setEdges(`${f.scrollLeft > 2 ? "more-l" : ""} ${f.scrollLeft + f.clientWidth < f.scrollWidth - 2 ? "more-r" : ""}`);
+    };
+    /** The chosen filter, scrolled into the row's view. */
+    const revealFilter = () =>
+        requestAnimationFrame(() => {
+            filtersEl?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
+            measureFilters();
+        });
 
     createEffect(
         on(
             () => p.open,
             (open) => {
-                setAcctOpen(false);
-                setTip(undefined);
                 if (!open) return;
                 setQ("");
                 // Start where the current model lives.
                 const provider = currentProvider();
-                setRail(provider && groups().some((g) => g.provider === provider) ? provider : favorites().length || !groups().length ? FAVORITES : groups()[0]!.provider);
+                setFilter(provider && groups().some((g) => g.provider === provider) ? provider : favorites().length || !groups().length ? FAVORITES : groups()[0]!.provider);
                 setSel(Math.max(0, rows().findIndex((r) => r.m.ref === currentRef())));
                 if (!app.models.length) void refreshModels();
                 requestAnimationFrame(() => {
                     if (!p.open) return;
                     list?.querySelector(".mr.sel")?.scrollIntoView({ block: "nearest" });
+                    filtersEl?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
+                    measureFilters();
                 });
             },
         ),
     );
-    // A new list starts at its top. Set here, not in an effect on q and rail: opening the picker moves
-    // the rail to the current model's provider, and that must not undo its highlight on the current model.
+    // A new list starts at its top. Set here, not in an effect on q and the filter: opening the picker moves
+    // the filter to the current model's provider, and that must not undo its highlight on the current model.
     const show = (provider: string) => {
         setQ("");
-        setRail(provider);
+        setFilter(provider);
         setSel(0);
-        setAcctOpen(false);
+        revealFilter();
     };
+    const filterIds = () => [FAVORITES, ...groups().map((g) => g.provider)];
 
     const choose = (m: ModelSummary) => {
         if (multi()) return togglePick(m.ref);
@@ -231,18 +250,6 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
             return;
         }
         const target = e.target as HTMLElement;
-        // The account list: arrows move through it; Enter and Space are the buttons' own.
-        if (acctOpen() && acctMenu?.contains(target) && ["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) {
-            e.preventDefault();
-            const items = acctItems();
-            focusAccount(items[menuIndex(items.length, items.indexOf(target as HTMLButtonElement), e.key)]);
-            return;
-        }
-        if (target === acctBtn && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
-            e.preventDefault();
-            openAccounts();
-            return;
-        }
         const tab = target.closest<HTMLElement>('[role="tab"]');
         if (tab && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) {
             e.preventDefault();
@@ -251,6 +258,13 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
             const next = tabs[menuIndex(tabs.length, tabs.indexOf(tab as HTMLButtonElement), key)];
             next?.focus();
             next?.click();
+            return;
+        }
+        // ← and → in an empty search box move through the provider filters.
+        if (target === input && !q() && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+            e.preventDefault();
+            const ids = filterIds();
+            show(ids[menuIndex(ids.length, ids.indexOf(filter()), e.key === "ArrowLeft" ? "ArrowUp" : "ArrowDown")] ?? FAVORITES);
             return;
         }
         if (target !== input && !target.closest(".mp-list")) return;
@@ -281,9 +295,118 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
         if (app.modelsLoading && !app.models.length) return { text: "Loading models…", icon: "loading" };
         if (q()) return { text: `No models match “${q()}”.`, icon: "search" };
         if (!groups().length) return { text: "No providers yet. Add an API key or sign in to a CLI.", action: providers };
-        if (rail() === FAVORITES) return { text: "Star a model to keep it here.", icon: "star" };
+        if (filter() === FAVORITES) return { text: "Star a model to keep it here.", icon: "star" };
         if (group()?.status === "error") return { text: group()?.error ?? "Couldn't list this provider's models.", icon: "error", action: { label: "Try again", run: () => void refreshModels(true) } };
         return { text: "No models." };
+    };
+
+    const rowView = (r: Row) => {
+        const name = modelName(r.m);
+        const i = r.i;
+        const on = () => (multi() ? picked(r.m.ref) : isCurrent(r.m.ref));
+        return (
+            <div class={`mr ${i === sel() ? "sel" : ""} ${on() ? "on" : ""} ${r.line ? "two" : ""}`} onMouseMove={() => sel() !== i && setSel(i)}>
+                <button
+                    class="mr-pick"
+                    id={`${listId}-${i}`}
+                    onFocus={() => setSel(i)}
+                    role="option"
+                    aria-selected={on()}
+                    aria-keyshortcuts={i < 9 ? `${mod === "⌘" ? "Meta" : "Control"}+${i + 1}` : undefined}
+                    title={[name, r.line].filter(Boolean).join(" · ")}
+                    onClick={() => choose(r.m)}
+                >
+                    <span class="mr-mark" aria-hidden="true">
+                        <Show
+                            when={multi()}
+                            fallback={
+                                <Show when={isCurrent(r.m.ref)}>
+                                    <Check size={14} stroke-width={2.5} />
+                                </Show>
+                            }
+                        >
+                            <span class={`mr-check ${picked(r.m.ref) ? "on" : ""}`}>
+                                <Show when={picked(r.m.ref)}>
+                                    <Check size={11} stroke-width={3} />
+                                </Show>
+                            </span>
+                        </Show>
+                    </span>
+                    <span class="mr-text">
+                        <span class="mr-top">
+                            <span class="mr-name truncate">{name}</span>
+                            <CatalogTag provider={r.m.provider} />
+                        </span>
+                        <Show when={r.line}>
+                            <span class="mr-sub truncate">{r.line}</span>
+                        </Show>
+                    </span>
+                    <Show when={i < 9}>
+                        <kbd aria-hidden="true">{`${mod === "⌘" ? "⌘" : "Ctrl+"}${i + 1}`}</kbd>
+                    </Show>
+                </button>
+                <button onFocus={() => setSel(i)} class={`mr-star ${isFav(r.m.ref) ? "f" : ""}`} aria-pressed={isFav(r.m.ref)} title={isFav(r.m.ref) ? "Remove from Favorites" : "Add to Favorites"} aria-label={isFav(r.m.ref) ? `Remove ${name} from Favorites` : `Add ${name} to Favorites`} onClick={() => toggleFav(r.m.ref)}>
+                    <Star size={14} />
+                </button>
+            </div>
+        );
+    };
+
+    /** A subscription's accounts, in its heading: the session's one filled; one alone goes by its name. */
+    const accounts = (provider: string) => (
+        <span class="mp-accts" ref={acctEl}>
+            <Show
+                when={accountChoices(provider).length > 1 || missingAccount(provider)}
+                fallback={
+                    <span class="mp-acct1 truncate" title={accountTip(provider, accountChoices(provider)[0]!)}>
+                        {accountName(provider)}
+                    </span>
+                }
+            >
+                {/* Buttons, not radios: picking one switches the session's account (and restarts its CLI), so it waits for a click or Enter. */}
+                <span class="mp-acs" role="group" aria-label={`${providerName(provider)} account`}>
+                    <For each={accountChoices(provider)}>
+                        {(a) => {
+                            const lim = () => accountLimit(provider, a.id);
+                            return (
+                                <button class={`mp-ac ${a.id === selectedAccount(provider) ? "on" : ""} ${lim() ? (lim()!.pct >= 100 ? "full" : "hot") : ""}`} aria-pressed={a.id === selectedAccount(provider)} title={accountTip(provider, a)} onClick={() => pickAccount(provider, a)}>
+                                    <span class="truncate">{a.name}</span>
+                                    <Show when={lim()}>{(l) => <span class="mp-ac-lv">{l().pct >= 100 ? "limit" : `${l().pct}%`}</span>}</Show>
+                                </button>
+                            );
+                        }}
+                    </For>
+                </span>
+            </Show>
+            <button class="mp-ac add" title={`Add a ${providerName(provider)} account`} aria-label={`Add a ${providerName(provider)} account`} onClick={() => addAccount(provider)}>
+                <Plus size={12} stroke-width={2.25} />
+            </button>
+        </span>
+    );
+
+    /** A list's heading: the provider's mark and name, a note on its list, and its accounts. */
+    const heading = (s: Section, searching: boolean) => {
+        const g = () => groups().find((x) => x.provider === s.provider);
+        return (
+            <div class="mp-h" aria-hidden={searching ? "true" : undefined}>
+                <Show when={s.provider} fallback={<Star size={13} class="mp-h-star" />}>
+                    {(id) => <ProviderIcon id={id()} name={s.name} size={14} />}
+                </Show>
+                <b class="truncate">{s.name}</b>
+                <Show when={!searching && g()?.status === "cached"}>
+                    <span class="mp-note" title="The provider didn't answer; this is the last list it gave">
+                        cached
+                    </span>
+                </Show>
+                <Show when={!searching && g()?.status === "error" && g()!.models.length}>
+                    <span class="mp-note tone-err truncate" title={g()!.error}>
+                        {g()!.error ?? "unavailable"}
+                    </span>
+                </Show>
+                <span class="grow" />
+                <Show when={!searching && s.provider === acctProvider() && s.provider}>{(id) => accounts(id())}</Show>
+            </div>
+        );
     };
 
     return (
@@ -311,266 +434,141 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                     // The session's account was removed (#410): it opens on that CLI's accounts, to pick another.
                     const provider = currentProvider();
                     if (!provider || acctProvider() !== provider || !missingAccount(provider)) return input;
-                    openAccounts();
-                    return acctItems()[0] ?? input;
+                    return acctEl?.querySelector<HTMLElement>(".mp-ac:not(.add)") ?? input;
                 }}
                 onKeyDown={onKey}
-                onEscape={() => {
-                    if (!acctOpen()) return false;
-                    closeAccounts();
-                    return true;
-                }}
                 open={p.open}
                 anchor={() => anchor}
                 onClose={() => p.setOpen(false)}
                 placement={p.placement ?? "top"}
-                width={360}
-                maxHeight={340}
-                minHeight={240}
+                width={400}
+                maxHeight={440}
+                minHeight={300}
                 class="mp"
                 exit
             >
-                <div
-                    class="mp-wrap"
-                    // The account list closes when the pointer or focus goes elsewhere in the picker.
-                    onPointerDown={(e) => {
-                        const t = e.target as Node;
-                        if (acctOpen() && !acctMenu?.contains(t) && !acctBtn?.contains(t)) closeAccounts(false);
-                    }}
-                    onFocusIn={(e) => {
-                        const t = e.target as Node;
-                        if (acctOpen() && !acctMenu?.contains(t) && t !== acctBtn) setAcctOpen(false);
-                    }}
-                >
-                    <div class="mp-rail" ref={railEl} role="tablist" aria-label="Providers" aria-orientation="vertical" onScroll={() => setTip(undefined)}>
-                        <button
-                            class={`rb ${rail() === FAVORITES && !q() ? "on" : ""}`}
-                            role="tab"
-                            aria-selected={rail() === FAVORITES}
-                            aria-label="Favorites"
-                            onClick={() => show(FAVORITES)}
-                            onPointerEnter={(e) => showTip(e.currentTarget, "Favorites")}
-                            onPointerLeave={() => setTip(undefined)}
-                            onFocus={(e) => showTip(e.currentTarget, "Favorites")}
-                            onBlur={() => setTip(undefined)}
-                        >
-                            <Star size={18} />
+                <div class="mp-wrap">
+                    <div class="mp-search">
+                        <Search size={14} />
+                        <input ref={input} role="combobox" aria-expanded="true" aria-controls={listId} aria-autocomplete="list" aria-activedescendant={rows()[sel()] ? `${listId}-${sel()}` : undefined} value={q()} onInput={(e) => (setQ(e.currentTarget.value), setSel(0))} placeholder="Search models…" aria-label="Search models" spellcheck={false} />
+                        <button class="hb sm" title="Refresh model lists" aria-label="Refresh model lists" onClick={() => void refreshModels(true)} disabled={app.modelsLoading}>
+                            <Show when={app.modelsLoading} fallback={<RefreshCw size={13} />}>
+                                <Spinner size={13} />
+                            </Show>
+                        </button>
+                    </div>
+                    {/* Each provider by mark and name, so nothing hides behind a tooltip. A wheel scrolls them sideways. */}
+                    <div
+                        class={`mp-filters ${edges()}`}
+                        ref={filtersEl}
+                        role="tablist"
+                        aria-label="Providers"
+                        onScroll={measureFilters}
+                        onWheel={(e) => {
+                            if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+                            e.currentTarget.scrollLeft += e.deltaY;
+                            e.preventDefault();
+                        }}
+                    >
+                        <button class={`mp-f ${filter() === FAVORITES && !q() ? "on" : ""}`} role="tab" aria-selected={filter() === FAVORITES} onClick={(e) => (show(FAVORITES), e.detail && input?.focus())}>
+                            <Star size={13} class="mp-f-star" />
+                            <span>Favorites</span>
                         </button>
                         <For each={groups()}>
-                            {(g) => {
-                                const cur = () => g.provider === currentProvider();
-                                // No mark on the rail (the composer's button already names the model); screen readers still hear it.
-                                const label = () => (cur() ? `${g.providerName}, current model` : g.providerName);
-                                return (
-                                    <button
-                                        class={`rb ${rail() === g.provider && !q() ? "on" : ""}`}
-                                        role="tab"
-                                        aria-selected={rail() === g.provider}
-                                        aria-label={label()}
-                                        onClick={() => show(g.provider)}
-                                        onPointerEnter={(e) => showTip(e.currentTarget, g.providerName)}
-                                        onPointerLeave={() => setTip(undefined)}
-                                        onFocus={(e) => showTip(e.currentTarget, g.providerName)}
-                                        onBlur={() => setTip(undefined)}
-                                    >
-                                        <ProviderIcon id={g.provider} name={g.providerName} size={20} />
-                                        <Show when={g.status === "error"}>
-                                            <span class="rb-err" aria-hidden="true" />
-                                        </Show>
-                                    </button>
-                                );
-                            }}
+                            {(g) => (
+                                <button
+                                    class={`mp-f ${filter() === g.provider && !q() ? "on" : ""} ${g.status === "error" ? "err" : ""}`}
+                                    role="tab"
+                                    aria-selected={filter() === g.provider}
+                                    // No mark on the filter (the composer's button already names the model); screen readers still hear it.
+                                    aria-label={g.provider === currentProvider() ? `${g.providerName}, current model` : undefined}
+                                    title={g.status === "error" ? (g.error ?? "Couldn't list this provider's models") : undefined}
+                                    onClick={(e) => (show(g.provider), e.detail && input?.focus())}
+                                >
+                                    <ProviderIcon id={g.provider} name={g.providerName} size={14} />
+                                    <span>{g.providerName}</span>
+                                </button>
+                            )}
                         </For>
                     </div>
-                    <Show when={tip()}>
-                        {(t) => (
-                            <div class="mp-tip" aria-hidden="true" style={{ top: `${t().top}px` }}>
-                                {t().name}
-                            </div>
-                        )}
+                    {/* Rebuilt only when the list changes, so focus on an account pill survives an update. */}
+                    <Show when={!q() && sections()[0]?.key} keyed>
+                        {(key) => heading({ key, name: key === FAVORITES ? "Favorites" : providerName(key), provider: key === FAVORITES ? undefined : key, rows: [] }, false)}
                     </Show>
-                    <div class="mp-main">
-                        <Show when={p.compare}>
-                            {(c) => (
-                                <div class="mp-compare">
-                                    <button class={`mp-compare-btn ${multi() ? "on" : ""}`} role="switch" aria-checked={multi()} disabled={!c().available} onClick={toggleCompare}>
-                                        <Layers size={14} />
-                                        <span class="grow">Compare models</span>
-                                        <Show when={multi()}>
-                                            <span class="mp-note">{picks().length} picked</span>
-                                        </Show>
-                                        <span class={`mp-switch ${multi() ? "on" : ""}`} aria-hidden="true" />
-                                    </button>
-                                    <div class="mp-compare-note">{!c().available ? c().why : multi() ? "Each model works in a new worktree from HEAD. Uncommitted changes here aren't carried over." : "Send one prompt to 2–4 models, each in a worktree of its own."}</div>
-                                </div>
-                            )}
-                        </Show>
-                        <div class="mp-search">
-                            <Search size={14} />
-                            <input ref={input} role="combobox" aria-expanded="true" aria-controls={listId} aria-autocomplete="list" aria-activedescendant={rows()[sel()] ? `${listId}-${sel()}` : undefined} value={q()} onInput={(e) => (setQ(e.currentTarget.value), setSel(0))} placeholder="Search models…" aria-label="Search models" spellcheck={false} />
-                            <button class="hb sm" title="Refresh model lists" aria-label="Refresh model lists" onClick={() => void refreshModels(true)} disabled={app.modelsLoading}>
-                                <Show when={app.modelsLoading} fallback={<RefreshCw size={13} />}>
-                                    <Spinner size={13} />
-                                </Show>
-                            </button>
+                    <Show when={acctProvider() && missingAccount(acctProvider())}>
+                        <div class="mp-acct-note">
+                            <CircleAlert size={13} />
+                            <span>This session's account was removed. Choose another.</span>
                         </div>
-                        <div class="mp-head">
-                        <div class="mp-label">
-                            <span class="mp-label-name truncate">{label()}</span>
-                            <Show when={!q() && group()?.status === "cached"}>
-                                <span class="mp-note" title="The provider didn't answer; this is the last list it gave">
-                                    cached
-                                </span>
-                            </Show>
-                            <Show when={!q() && group()?.status === "error" && group()!.models.length}>
-                                <span class="mp-note tone-err truncate" title={group()!.error}>
-                                    {group()!.error ?? "unavailable"}
-                                </span>
-                            </Show>
-                            <Show when={acctProvider()}>
-                                {(provider) => (
-                                    <button
-                                        ref={acctBtn}
-                                        class={`mp-acct ${missingAccount(provider()) ? "missing" : ""} ${acctOpen() ? "open" : ""}`}
-                                        aria-haspopup="menu"
-                                        aria-expanded={acctOpen()}
-                                        aria-controls={acctOpen() ? `${listId}-acct` : undefined}
-                                        aria-label={`${providerName(provider())} account: ${missingAccount(provider()) ? "removed, choose another" : accountName(provider())}`}
-                                        title={missingAccount(provider()) ? "This session's account was removed. Choose another." : `${providerName(provider())} account`}
-                                        onClick={() => (acctOpen() ? closeAccounts() : openAccounts())}
-                                    >
-                                        <Show when={missingAccount(provider())} fallback={<UserRound size={13} />}>
-                                            <CircleAlert size={13} />
-                                        </Show>
-                                        <span class="truncate">{accountName(provider())}</span>
-                                        <ChevronDown size={12} class="chev" />
-                                    </button>
-                                )}
-                            </Show>
-                        </div>
-                        <Show when={acctOpen() && acctProvider()}>
-                            {(provider) => (
-                                <div ref={acctMenu} id={`${listId}-acct`} class="mp-acct-menu" role="menu" aria-label={`${providerName(provider())} accounts`}>
-                                    <Show when={missingAccount(provider())}>
-                                        <div class="mp-acct-note">
-                                            <CircleAlert size={13} />
-                                            <span>This session's account was removed. Choose another.</span>
-                                        </div>
+                    </Show>
+                    <div class="mp-list" ref={list} id={listId} role="listbox" aria-label={label()} aria-multiselectable={multi()}>
+                        <Show
+                            when={rows().length}
+                            fallback={
+                                <div class={`mp-empty ${empty().icon === "error" ? "err" : ""}`} role="status">
+                                    <Show when={empty().icon}>
+                                        {(icon) => (icon() === "loading" ? <Spinner size={16} /> : icon() === "error" ? <CircleAlert size={16} /> : icon() === "star" ? <Star size={16} /> : <Search size={16} />)}
                                     </Show>
-                                    <div class="mp-acct-list">
-                                    <For each={accountChoices(provider())}>
+                                    <span>{empty().text}</span>
+                                    <Show when={empty().action}>
                                         {(a) => (
-                                            <button class="menu-item" role="menuitemradio" aria-checked={a.id === selectedAccount(provider())} onClick={() => pickAccount(provider(), a)}>
-                                                <span class="menu-text">
-                                                    <span class="menu-label truncate">{a.name}</span>
-                                                    <Show when={accountDetail(a)}>
-                                                        <span class="menu-desc truncate">{accountDetail(a)}</span>
-                                                    </Show>
-                                                </span>
-                                                <Show when={a.id === selectedAccount(provider())}>
-                                                    <Check size={14} class="menu-check" />
-                                                </Show>
+                                            <button class="btn secondary sm" onClick={() => a().run()}>
+                                                {a().label}
                                             </button>
                                         )}
-                                    </For>
-                                    </div>
-                                    <div class="menu-sep" role="separator" />
-                                    <button class="menu-item" role="menuitem" onClick={() => addAccount(provider())}>
-                                        <Plus size={14} />
-                                        Add account…
-                                    </button>
+                                    </Show>
                                 </div>
-                            )}
-                        </Show>
-                        </div>
-                        <div class="mp-list" ref={list} id={listId} role="listbox" aria-label={label()} aria-multiselectable={multi()}>
-                            <Show
-                                when={rows().length}
-                                fallback={
-                                    <div class={`mp-empty ${empty().icon === "error" ? "err" : ""}`} role="status">
-                                        <Show when={empty().icon}>
-                                            {(icon) => (icon() === "loading" ? <Spinner size={16} /> : icon() === "error" ? <CircleAlert size={16} /> : icon() === "star" ? <Star size={16} /> : <Search size={16} />)}
-                                        </Show>
-                                        <span>{empty().text}</span>
-                                        <Show when={empty().action}>
-                                            {(a) => (
-                                                <button class="btn secondary sm" onClick={() => a().run()}>
-                                                    {a().label}
-                                                </button>
-                                            )}
-                                        </Show>
-                                    </div>
-                                }
-                            >
-                                <For each={rows()}>
-                                    {(r, i) => {
-                                        const name = modelName(r.m);
-                                        const on = () => (multi() ? picked(r.m.ref) : isCurrent(r.m.ref));
-                                        return (
-                                            <div class={`mr ${i() === sel() ? "sel" : ""} ${on() ? "on" : ""}`} onMouseMove={() => sel() !== i() && setSel(i())}>
-                                                <button
-                                                    class="mr-pick"
-                                                    id={`${listId}-${i()}`}
-                                                    onFocus={() => setSel(i())}
-                                                    role="option"
-                                                    aria-selected={on()}
-                                                    aria-keyshortcuts={i() < 9 ? `${mod === "⌘" ? "Meta" : "Control"}+${i() + 1}` : undefined}
-                                                    title={[name, r.sub].filter(Boolean).join(" · ")}
-                                                    onClick={() => choose(r.m)}
-                                                >
-                                                    <span class="mr-mark" aria-hidden="true">
-                                                        <Show
-                                                            when={multi()}
-                                                            fallback={
-                                                                <Show when={isCurrent(r.m.ref)}>
-                                                                    <Check size={14} stroke-width={2.5} />
-                                                                </Show>
-                                                            }
-                                                        >
-                                                            <span class={`mr-check ${picked(r.m.ref) ? "on" : ""}`}>
-                                                                <Show when={picked(r.m.ref)}>
-                                                                    <Check size={11} stroke-width={3} />
-                                                                </Show>
-                                                            </span>
-                                                        </Show>
-                                                    </span>
-                                                    {/* The provider, in mixed lists, drops out of sight rather than show a few letters when there's no room. */}
-                                                    <span class="mr-text">
-                                                        <span class="mr-name truncate">{name}</span>
-                                                        <CatalogTag provider={r.m.provider} />
-                                                        <Show when={r.sub}>
-                                                            <span class="mr-sub truncate">{r.sub}</span>
-                                                        </Show>
-                                                    </span>
-                                                    <Show when={i() < 9}>
-                                                        <kbd aria-hidden="true">{`${mod === "⌘" ? "⌘" : "Ctrl+"}${i() + 1}`}</kbd>
-                                                    </Show>
-                                                </button>
-                                                <button onFocus={() => setSel(i())} class={`mr-star ${isFav(r.m.ref) ? "f" : ""}`} aria-pressed={isFav(r.m.ref)} title={isFav(r.m.ref) ? "Remove from Favorites" : "Add to Favorites"} aria-label={isFav(r.m.ref) ? `Remove ${name} from Favorites` : `Add ${name} to Favorites`} onClick={() => toggleFav(r.m.ref)}>
-                                                    <Star size={14} />
-                                                </button>
-                                            </div>
-                                        );
-                                    }}
+                            }
+                        >
+                            <Show when={q()} fallback={<For each={rows()}>{rowView}</For>}>
+                                <For each={sections()}>
+                                    {(s) => (
+                                        <div class="mp-group" role="group" aria-label={s.name}>
+                                            {heading(s, true)}
+                                            <For each={s.rows}>{rowView}</For>
+                                        </div>
+                                    )}
                                 </For>
                             </Show>
-                        </div>
+                        </Show>
+                    </div>
+                    <Show when={multi()}>
+                        <div class="mp-cmp-note">{COMPARE_ON}</div>
+                    </Show>
+                    <div class="mp-foot">
                         <button
-                            class="mp-foot"
+                            class="mp-link"
                             onClick={() => {
                                 p.setOpen(false);
                                 setSettingsTab("providers");
                             }}
                         >
-                            <Settings2 size={14} /> Providers…
+                            <Settings2 size={13} /> Providers…
                         </button>
+                        <Show when={p.compare}>
+                            {(c) => (
+                                // The wrapper carries the reason: a disabled button shows no tooltip of its own.
+                                <span class="mp-cmp-wrap" title={!c().available ? c().why : multi() ? COMPARE_ON : COMPARE_OFF}>
+                                    <button class={`mp-cmp ${multi() ? "on" : ""}`} role="switch" aria-checked={multi()} disabled={!c().available} onClick={toggleCompare}>
+                                        <Layers size={13} />
+                                        Compare
+                                        <Show when={multi()}>
+                                            <span class="mp-cmp-n">{picks().length} picked</span>
+                                        </Show>
+                                        <span class={`mp-switch ${multi() ? "on" : ""}`} aria-hidden="true" />
+                                        <Show when={!c().available}>
+                                            <span class="sr-only">. {c().why}</span>
+                                        </Show>
+                                    </button>
+                                </span>
+                            )}
+                        </Show>
                     </div>
                 </div>
             </Menu>
         </>
     );
 }
-
 
 /** Effort as a glyph: five bars, filled up to the level (1 low … 5 max; 0 none chosen). */
 export function EffortGlyph(p: { level: number }) {
