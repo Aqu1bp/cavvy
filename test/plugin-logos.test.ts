@@ -6,8 +6,8 @@ const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2
 
 function fakeFetch(answer: () => Response | Promise<Response>) {
     const urls: string[] = [];
-    const get = (async (url: string) => {
-        urls.push(url);
+    const get = (async (url: string | URL) => {
+        urls.push(String(url));
         return answer();
     }) as unknown as typeof fetch;
     return { get, urls };
@@ -21,6 +21,39 @@ describe("pluginLogo", () => {
         expect(await pluginLogo("getsentry", f.get)).toEqual({ mediaType: "image/png", data: Buffer.from(PNG).toString("base64") });
         expect(await pluginLogo("GetSentry", f.get)).not.toBeNull();
         expect(f.urls).toEqual(["https://github.com/getsentry.png?size=96"]);
+    });
+
+    test("follows redirects to GitHub's avatar host only", async () => {
+        const hops = (to: string) => fakeFetch(() => new Response(null, { status: 302, headers: { location: to } }));
+        let n = 0;
+        const avatar = fakeFetch(() => (n++ ? new Response(PNG) : new Response(null, { status: 302, headers: { location: "https://avatars.githubusercontent.com/u/1?s=96" } })));
+        expect(await pluginLogo("octo", avatar.get)).not.toBeNull();
+        expect(avatar.urls).toEqual(["https://github.com/octo.png?size=96", "https://avatars.githubusercontent.com/u/1?s=96"]);
+        const elsewhere = hops("http://169.254.169.254/latest");
+        expect(await pluginLogo("evil", elsewhere.get)).toBeNull();
+        expect(elsewhere.urls).toHaveLength(1);
+    });
+
+    test("a body past the cap is dropped while it streams, whatever its length header says", async () => {
+        let pulled = 0;
+        const stream = new ReadableStream<Uint8Array>({
+            pull(c) {
+                pulled++;
+                c.enqueue(new Uint8Array(64 * 1024));
+                if (pulled > 100) c.close();
+            },
+        });
+        expect(await pluginLogo("huge", fakeFetch(() => new Response(stream)).get)).toBeNull();
+        expect(pulled).toBeLessThan(10);
+    });
+
+    test("GitHub busy (429, 5xx) is asked again", async () => {
+        let status = 503;
+        const f = fakeFetch(() => (status === 200 ? new Response(PNG) : new Response("", { status })));
+        expect(await pluginLogo("busy", f.get)).toBeNull();
+        status = 200;
+        expect(await pluginLogo("busy", f.get)).not.toBeNull();
+        expect(f.urls).toHaveLength(2);
     });
 
     test("not an account name, not an image, too big or missing: null", async () => {

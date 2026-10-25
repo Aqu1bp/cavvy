@@ -52,7 +52,14 @@ const logos = new Map<string, Promise<string | undefined>>();
 function logoFor(owner: string): Promise<string | undefined> {
     let hit = logos.get(owner);
     if (!hit) {
-        hit = rpc.call("plugins.logo", { owner }).then((l) => (l ? `data:${l.mediaType};base64,${l.data}` : undefined), () => undefined);
+        hit = rpc.call("plugins.logo", { owner }).then(
+            (l) => (l ? `data:${l.mediaType};base64,${l.data}` : undefined),
+            () => {
+                // Disconnected: asked again the next time the page shows it.
+                logos.delete(owner);
+                return undefined;
+            },
+        );
         logos.set(owner, hit);
     }
     return hit;
@@ -120,7 +127,7 @@ export function Plugins() {
             setBusy(undefined);
         }
     };
-    const install = (pl: PluginInfo, scope: PluginScope = "user") => act(`install:${pl.id}`, { action: "install", id: pl.id, scope });
+    const install = (pl: PluginInfo, scope: PluginScope = "user", done?: () => void) => act(`install:${pl.id}`, { action: "install", id: pl.id, scope }, done);
 
     const markets = () => info()?.marketplaces ?? [];
     const match = (p: PluginInfo) => {
@@ -176,7 +183,7 @@ export function Plugins() {
                 {confirm()?.body}
             </ConfirmDialog>
             <Show when={details()} keyed>
-                {(pl) => <PluginDetails plugin={pl} markets={markets()} project={project()} projectScopes={projectScopes()} busy={busy()} onClose={() => setDetails(undefined)} install={(scope) => install(pl, scope).then(() => setDetails(undefined))} />}
+                {(pl) => <PluginDetails plugin={pl} markets={markets()} project={project()} projectScopes={projectScopes()} busy={busy()} onClose={() => setDetails(undefined)} install={(scope) => install(pl, scope, () => details() === pl && setDetails(undefined))} />}
             </Show>
             <div class="pg-bar">
                 <Segmented
@@ -246,13 +253,13 @@ export function Plugins() {
                         >
                             <Show when={available().length} fallback={empty(Puzzle, "Everything is installed", "Every plugin your marketplaces offer is installed.")}>
                                 <Show when={categories().length > 1}>
-                                    <div class="pg-cats" role="radiogroup" aria-label="Category">
-                                        <button class={!category() ? "on" : ""} role="radio" aria-checked={!category()} onClick={() => setCategory(undefined)}>
+                                    <div class="pg-cats" role="group" aria-label="Category">
+                                        <button class={!category() ? "on" : ""} aria-pressed={!category()} onClick={() => setCategory(undefined)}>
                                             All<span>{available().filter(match).length}</span>
                                         </button>
                                         <For each={categories().filter((c) => c.n || c.name === category())}>
                                             {(c) => (
-                                                <button class={category() === c.name ? "on" : ""} role="radio" aria-checked={category() === c.name} onClick={() => setCategory(category() === c.name ? undefined : c.name)}>
+                                                <button class={category() === c.name ? "on" : ""} aria-pressed={category() === c.name} onClick={() => setCategory(category() === c.name ? undefined : c.name)}>
                                                     <i style={{ "--h": c.hue }} />
                                                     {c.name}
                                                     <span>{c.n}</span>
@@ -302,7 +309,7 @@ export function Plugins() {
                             </Show>
                         </p>
                         <div class="pg-list">
-                            <For each={installedShown()}>{(pl) => <PluginRow plugin={pl} markets={markets()} busy={busy()} act={act} confirm={setConfirm} details={() => setDetails(pl)} />}</For>
+                            <For each={installedShown()}>{(pl) => <PluginRow plugin={pl} markets={markets()} busy={busy()} act={act} confirm={setConfirm} details={() => setDetails(pl)} sameName={installed().some((x) => x !== pl && x.name === pl.name)} />}</For>
                         </div>
                         <Show when={installed().some((p) => p.installed && !p.orphaned)}>
                             <div class="pg-after">
@@ -368,7 +375,7 @@ function PluginCard(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; b
 }
 
 /** A plugin's details: its full summary, who makes it, and where to install it. */
-function PluginDetails(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; project?: string; projectScopes: boolean; busy?: string; onClose: () => void; install: (scope: PluginScope) => Promise<unknown> }) {
+function PluginDetails(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; project?: string; projectScopes: boolean; busy?: string; onClose: () => void; install: (scope: PluginScope) => Promise<void> }) {
     const [scope, setScope] = createSignal<PluginScope>("user");
     const pl = p.plugin;
     const cat = categoryOf(pl.category);
@@ -459,7 +466,7 @@ function whereText(pl: PluginInfo): string {
     return on === "local" ? "On just for you here" : on === "project" ? "On for everyone in this project" : "On for you everywhere";
 }
 
-function PluginRow(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; busy?: string; act: Act; confirm: (c: Confirm) => void; details: () => void }) {
+function PluginRow(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; busy?: string; act: Act; confirm: (c: Confirm) => void; details: () => void; sameName?: boolean }) {
     let more: HTMLButtonElement | undefined;
     const [menu, setMenu] = createSignal(false);
     const pl = () => p.plugin;
@@ -473,8 +480,11 @@ function PluginRow(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; bu
             <PluginMark plugin={pl()} markets={p.markets} size={32} />
             <div class="pg-rmain">
                 <div class="pg-rname">
-                    <b class="truncate">{pl().name}</b>
+                    <b class="truncate" title={`${pl().name}, from ${pl().marketplace}`}>{pl().name}</b>
                     <Show when={pl().installed?.version ?? pl().version}>{(v) => <span class="pg-ver">{v()}</span>}</Show>
+                    <Show when={p.sameName}>
+                        <span class="pg-ver">{pl().marketplace}</span>
+                    </Show>
                     <Show when={pl().missing}>
                         <span class="pg-prob">Not installed</span>
                     </Show>
@@ -510,7 +520,7 @@ function PluginRow(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; bu
             <button ref={more} class="hb sm" aria-label={`More for ${pl().name}`} title="More" aria-haspopup="menu" aria-expanded={menu()} onClick={() => setMenu(!menu())}>
                 {p.busy === key("update") || p.busy === key("uninstall") ? <Spinner size={12} /> : <Ellipsis size={16} />}
             </button>
-            <Menu open={menu()} anchor={() => more} onClose={() => setMenu(false)} label={`${pl().name} actions`} width={200} align="end">
+            <Menu open={menu()} anchor={() => more} onClose={() => setMenu(false)} label={`${pl().name} (${pl().marketplace}) actions`} width={200} align="end">
                 <Show when={pl().installed && !pl().orphaned}>
                     <button class="menu-item" role="menuitem" disabled={Boolean(p.busy)} onClick={() => choose(() => void p.act(key("update"), { action: "update", id: pl().id }))}>
                         <RefreshCw size={14} /> Update
@@ -534,7 +544,7 @@ function PluginRow(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; bu
                         choose(() =>
                             p.confirm({
                                 title: `Uninstall ${pl().name}?`,
-                                body: "Removes it from every scope in this project and your own settings. Its commands, agents, hooks and MCP servers stop loading.",
+                                body: `${pl().name} from ${pl().marketplace} is removed from every scope in this project and your own settings. Its commands, agents, hooks and MCP servers stop loading.`,
                                 label: "Uninstall",
                                 run: () => p.act(key("uninstall"), { action: "uninstall", id: pl().id }),
                             }),
