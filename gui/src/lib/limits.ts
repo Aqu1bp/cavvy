@@ -93,8 +93,8 @@ export function limitAlternatives(accounts: AccountInfo[], accountId: string): A
 export function usd(n: number): string {
     if (n === 0) return "$0.00";
     if (n < 0.01) return "<$0.01";
-    if (n < 1000) return `$${n.toFixed(2)}`;
-    return `$${Math.round(n).toLocaleString()}`;
+    if (n < 99.995) return `$${n.toFixed(2)}`;
+    return `$${Math.round(n).toLocaleString("en-US")}`;
 }
 
 /** A row's or the total's cost: "unknown" when none of it had a price, "$X + unknown" when part didn't. Never "$0" for unpriced usage. */
