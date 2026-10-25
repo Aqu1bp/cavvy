@@ -98,6 +98,7 @@ import { deniedWithin } from "../permissions/rules";
 import { canonical, expandPath, isInside } from "../util/files";
 import type { NoticeData, PlanLimits, StoppedTask } from "../server/protocol";
 import type { NativeGoal } from "./goal";
+import { harnessCompactAt, outputReserve } from "../backends/compact-at";
 
 // ---------------------------------------------------------------------------
 // Host interface (implemented by the TUI and by headless mode)
@@ -1329,18 +1330,12 @@ export class Agent {
         if (isAgentBackend(this.client)) return false;
         const window = this.model.contextWindow;
         if (!window) return false;
-        const threshold = s.autoCompactThreshold ?? 0.92;
-        return this.session.messages.length > 4 && this.estimatedContext() > (window - this.outputReserve(window)) * threshold;
+        return this.session.messages.length > 4 && this.estimatedContext() > harnessCompactAt(window, this.model.maxOutput, s.autoCompactThreshold);
     }
 
-    /**
-     * Room for the answer that auto-compaction keeps free below the window: the
-     * model's max output, at most 32K, and never more than a quarter of the window.
-     * A model that can write about its whole window would otherwise compact with
-     * next to nothing in it; its requests ask for less output instead (turnMaxTokens).
-     */
+    /** Room for the answer below the window (compact-at.ts). */
     private outputReserve(window: number): number {
-        return Math.min(this.model.maxOutput ?? 32_000, 32_000, Math.floor(window / 4));
+        return outputReserve(window, this.model.maxOutput);
     }
 
     /**

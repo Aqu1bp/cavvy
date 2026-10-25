@@ -42,6 +42,7 @@ import { isAgentBackend, type BackendWake, type BackgroundStop } from "../backen
 import { SessionBackground } from "../agent/background";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { agentCli, type AttachmentKind } from "../backends/defs";
+import { cliCompactAt, harnessCompactAt, modelKeys } from "../backends/compact-at";
 import { account, accountSwitch, removedAccount, removedAccountNote, switchHow } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
 import { continuationGroups, modelRef, parseModelRef, textOf, toolCallsOf, assistantText, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
@@ -246,6 +247,8 @@ export class Runtime {
     private reviewer: string | undefined;
     agent?: Agent;
     model?: ModelInfo;
+    /** The model an agent CLI served for the model asked for ("claude-opus-5-5" for "opus"), from its usage. */
+    private servedModel?: string;
     client?: ProviderClient;
     mode: PermissionMode;
     /** The mode it was in before it last entered plan mode (unknown when it started in plan mode). */
@@ -815,7 +818,26 @@ export class Runtime {
         if (!this.flushTimer) this.flushTimer = setTimeout(() => this.flush(), FLUSH_MS);
     }
 
+    /** Where this session compacts on its own, in tokens of context (SessionState.compactAt). */
+    private compactAt(): number | undefined {
+        const m = this.model;
+        if (!m) return undefined;
+        const window = m.contextWindow;
+        if (m.provider === "claude-code" || m.provider === "codex") {
+            const at = cliCompactAt(m.provider, this.session.accountId(m.provider), this.ws.cwd, modelKeys(m, this.servedModel));
+            return at && window ? Math.min(at, window) : at;
+        }
+        const s = this.settings();
+        if (s.autoCompact === false || !window) return undefined;
+        return Math.floor(harnessCompactAt(window, m.maxOutput, s.autoCompactThreshold));
+    }
+
     private setState(patch: Partial<SessionState>) {
+        // Where it compacts follows the model, its account and (for Claude Code's alias) the model served.
+        if ("model" in patch || "accounts" in patch || "contextTokens" in patch) {
+            const at = this.compactAt();
+            if (at !== this.view?.state.compactAt) patch = { ...patch, compactAt: at };
+        }
         this.op({ op: "state", patch });
     }
 
@@ -1033,6 +1055,7 @@ export class Runtime {
         // The model it was on, if the conversation has begun (none to tell of before the first prompt).
         const prev = this.conversationStarted ? this.model : undefined;
         this.model = info;
+        this.servedModel = undefined;
         this.client = client;
         this.schedules.cancelLimitResume("model");
         // A CLI's own goal stays with that CLI: another provider doesn't carry it on, and it pauses there (#412). The
@@ -1705,6 +1728,7 @@ export class Runtime {
                 break;
             }
             case "usage": {
+                if (e.usage.resolvedModel) this.servedModel = parseModelRef(e.usage.resolvedModel)?.id ?? this.servedModel;
                 // A backend says its context window with its usage (Claude Code's models list none): the ring can show now.
                 const window = this.model?.contextWindow !== this.view.state.model?.contextWindow && this.model ? { model: modelSummary(this.model) } : {};
                 this.setState({ contextTokens: e.contextTokens, cost: this.session.cost, costUnknown: this.session.costUnknown, ...this.tokenTotals(), ...window });

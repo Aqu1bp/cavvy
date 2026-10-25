@@ -78,23 +78,33 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
         finally { setSwitching(false); }
     }
     const view = () => contextView(state(), open());
-    // The more urgent of the two. With neither known (no context size, no plan
-    // report), the ring stays empty and neutral rather than implying a share.
-    const urgency = () => Math.max(view().pct ?? 0, meter()?.reached ? 1 : (meter()?.top ?? 0) / 100);
-    // Each source keeps its own thresholds: context nears compaction sooner,
-    // while a plan only turns red at 90% or once a limit is reached. Past a reached limit on credits nothing is
-    // blocked, but it costs: amber, not red (#426).
+    // The ring is the context, measured to where it compacts: plan limits are in the rail's footer. With no
+    // size known it stays empty and neutral rather than implying a share.
+    const urgency = () => view().pct ?? 0;
+    // A reached limit is the one plan state shown here, since it stops this session: red while it blocks,
+    // amber past it on credits, where nothing is blocked but it costs (#426).
     const tone = (): "danger" | "warning" | "normal" => {
-        const ctx = view().pct ?? 0, plan = meter()?.top ?? 0, credits = Boolean(meter()?.usingCredits);
-        if (ctx >= 0.85 || (!credits && (meter()?.reached || plan >= 90))) return "danger";
-        if (credits || ctx >= 0.7 || plan >= 80) return "warning";
+        const ctx = view().pct ?? 0, credits = Boolean(meter()?.usingCredits);
+        if (ctx >= 0.85 || (meter()?.reached && !credits)) return "danger";
+        if (ctx >= 0.7 || (meter()?.reached && credits)) return "warning";
         return "normal";
     };
     const planLine = () => (meter() ? `${name()} usage: ${meter()!.windows.map(windowLine).join("; ") || "limit reached"}${meter()!.usingCredits ? " · using credits" : ""}` : undefined);
     const label = () => [
         view().pct === undefined ? "Context window: size not known yet" : `Context: ${Math.round(view().pct! * 100)}% used`,
-        planLine(),
+        meter()?.reached ? planLine() : undefined,
     ].filter(Boolean).join(". ");
+    const cli = () => Boolean(providerInfo()?.agentCli);
+    const autoOff = () => !cli() && app.settings.autoCompact === false;
+    /** Where "full" comes from, on the numbers' tooltip. */
+    const fullWhy = () => {
+        const v = view(), whole = v.window ? ` The model holds up to ${tokens(v.window)}.` : "";
+        if (autoOff()) return `Automatic compaction is off, so this is the model's whole window.`;
+        if (cli()) return v.early ? `${providerInfo()?.name ?? "The CLI"} compacts at ${tokens(v.full!)}, your auto-compact setting.${whole}` : `${providerInfo()?.name ?? "The CLI"} decides when to compact.${whole}`;
+        return `Compacts on its own at ${tokens(v.full!)}, leaving room for the answer.${whole}`;
+    };
+    const reachedWindow = () => meter()?.windows.find((w) => w.reached);
+    const busy = () => !state() || Boolean(state()?.busy && !state()?.activity?.idle);
     const near = createMemo(() => (p.home ? nearLimit(meter(), limits(), now()) : undefined));
     const cancelClose = () => clearTimeout(closeTimer);
     const show = () => { cancelClose(); setOpen(true); };
@@ -120,12 +130,8 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
     };
     onCleanup(cancelClose);
     /** The ring's share as a number inside it; nothing while neither share is known. */
-    const shownPct = () => (view().pct === undefined && !meter() ? undefined : Math.round(Math.min(1, urgency()) * 100));
-    const bar = (pct: number | undefined, tone?: "danger" | "warning") => (
-        <div class={`cc-bar ${tone ?? ""}`} aria-hidden="true">
-            <i style={{ width: `${Math.max(0, Math.min(100, pct ?? 0))}%` }} />
-        </div>
-    );
+    const shownPct = () => (view().pct === undefined ? undefined : Math.round(Math.min(1, urgency()) * 100));
+    const ctxTone = () => ((view().pct ?? 0) >= 0.85 ? "danger" : (view().pct ?? 0) >= 0.7 ? "warning" : "");
     return (
         <Show when={p.home ? near() : state() || meter()}>
             <button
@@ -159,58 +165,52 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
                     </>}
                 </Show>
             </button>
-            <Popover open={open()} anchor={() => btn} onClose={close} placement="top" align="end" width={288} class="ctx-card usage-card">
-                <div ref={panel} id={panelId} role="dialog" aria-label="Context and usage" tabIndex={-1}
+            <Popover open={open()} anchor={() => btn} onClose={close} placement="top" align="end" width={280} class="ctx-card">
+                <div ref={panel} id={panelId} class="cx" role="dialog" aria-label="Context and session" tabIndex={-1}
                     onMouseEnter={cancelClose} onMouseLeave={hide} onFocusIn={cancelClose} onFocusOut={hide}>
-                    <section class="usage-section" aria-label="Context window">
-                        <h3 class="ctx-label">Context window</h3>
-                        <div class="cc-line">
-                            <span class="num">{state() ? view().line : "Send a message to measure context usage."}</span>
-                            <Show when={view().pct !== undefined}><b class="num">{Math.round(view().pct! * 100)}%</b></Show>
-                        </div>
-                        <Show when={view().pct !== undefined}>{bar(view().pct! * 100)}</Show>
-                        <div class="usage-actions">
-                            <span>{app.settings.autoCompact === false ? "Automatic compaction is off." : "Compacts on its own near the limit."}</span>
-                            <button class="cbtn" disabled={!state() || (state()?.busy && !state()?.activity?.idle)} onClick={() => {
-                                if (!p.sessionId) return;
-                                close();
-                                void rpc.call("session.compact", { id: p.sessionId }).catch(reportError);
-                            }}>Compact now</button>
-                        </div>
-                    </section>
-                    <Show when={meter()}>
-                        <section class="usage-section" aria-label="Plan limits">
-                            <div class="usage-heading">
-                                <h3 class="ctx-label">Plan limits</h3>
-                                <span class="usage-account truncate">· {name()}</span>
+                    {/* A reached limit stops this session, so it's the one plan state said here, with the accounts to switch to. */}
+                    <Show when={meter()?.reached}>
+                        <section class={`cx-limit ${meter()!.usingCredits ? "credits" : ""}`} aria-label="Plan limit">
+                            <Gauge size={15} aria-hidden="true" />
+                            <div>
+                                <b>{meter()!.usingCredits ? "Limit reached, using credits" : "Limit reached"}</b>
+                                <span>{name()}{reachedWindow() ? `, ${reachedWindow()!.label.replace(/^(Weekly|Primary|Secondary)\b/, (x) => x.toLowerCase())} limit` : ""}.<Show when={meter()!.resets ?? reachedWindow()?.resets}>{(r) => <> Resets {r()}.</>}</Show></span>
+                                <Show when={p.sessionId}>
+                                    <div class="cx-switches">
+                                        <Show when={checking()}><span class="plan-account-hint" role="status">Checking accounts…</span></Show>
+                                        <For each={alternatives()}>{(a) => <button class="cbtn" disabled={busy() || switching()} onClick={() => void switchTo(a.id)} title="Starts a new CLI thread with this conversation; send your message again">Switch to {a.name}</button>}</For>
+                                    </div>
+                                </Show>
                             </div>
-                            <Show when={meter()?.asOf}><div class="plan-asof">{meter()!.asOf}</div></Show>
-                            <Show when={meter()?.reached}><div class={`plan-reached ${meter()!.usingCredits ? "credits" : ""}`}>{meter()!.usingCredits ? "Limit reached · using credits" : "Limit reached"}</div></Show>
-                            <For each={meter()?.windows}>{(w) => (
-                                <div class="plan-window">
-                                    <div class="cc-line"><span>{w.label}</span><b class="num">{w.pct !== undefined ? `${w.pct}%` : w.reached ? "reached" : "—"}</b></div>
-                                    {bar(w.reached && w.pct === undefined ? 100 : w.pct, w.reached ? (meter()!.usingCredits ? "warning" : "danger") : undefined)}
-                                    <Show when={w.resets}><div class="cc-sub num">Resets {w.resets}</div></Show>
-                                </div>
-                            )}</For>
-                            <Show when={meter()?.resets && !meter()?.windows.some((w) => w.resets === meter()?.resets)}><div class="cc-sub num">Resets {meter()!.resets}</div></Show>
-                            <Show when={p.sessionId && meter()?.reached}>
-                                <div class="usage-switches">
-                                    <Show when={checking()}><span class="plan-account-hint" role="status">Checking accounts…</span></Show>
-                                    <For each={alternatives()}>{(a) => <button class="cbtn" disabled={(state()?.busy && !state()?.activity?.idle) || switching()} onClick={() => void switchTo(a.id)} title="Starts a new CLI thread with this conversation; send your message again">Switch to {a.name}</button>}</For>
-                                </div>
-                            </Show>
                         </section>
                     </Show>
-                    <section class="usage-section" aria-label="Spend">
-                        <div class="usage-heading"><h3 class="ctx-label">Spend</h3><span class="grow" /><button class="cbtn quiet" onClick={() => { close(); setSettingsTab("usage"); }}>Usage</button></div>
-                        <Show when={state()} fallback={<div class="cc-sub">No session yet.</div>}>
-                            <div class="ctx-grid">
-                                <span>Session</span><span class="num" title={state()?.costUnknown ? "No price is known for some of the models used, so their usage isn't counted" : undefined}>{cost(state()?.cost ?? 0, state()?.costUnknown)}</span>
-                                <span>Tokens</span><span class="num">{tokens(state()?.tokensIn ?? 0)} in · {tokens(state()?.tokensOut ?? 0)} out</span>
-                            </div>
-                        </Show>
-                    </section>
+                    <div class="cx-head">
+                        <h3>Context</h3>
+                        <Show when={view().pct !== undefined}><span class={`cx-pct num ${ctxTone()}`}>{Math.round(view().pct! * 100)}%</span></Show>
+                    </div>
+                    <Show when={view().pct !== undefined}>
+                        <div class={`cx-bar ${ctxTone()}`} aria-hidden="true"><i style={{ width: `${Math.max(0, Math.min(100, view().pct! * 100))}%` }} /></div>
+                    </Show>
+                    <div class="cx-line">
+                        <span class="num" title={view().pct !== undefined ? fullWhy() : undefined}>{state() ? view().line : "Send a message to measure it"}{view().pct !== undefined && autoOff() ? ", auto-compact off" : ""}</span>
+                        {/* Unavailable, not disabled: its tooltip still says why, to the pointer and the keyboard. */}
+                        <button class="cx-link" aria-disabled={busy() || undefined} title={!state() ? "Available in a session" : busy() ? "Available when the reply finishes" : "Summarize earlier turns to free up room"} onClick={() => {
+                            if (busy() || !p.sessionId) return;
+                            close();
+                            void rpc.call("session.compact", { id: p.sessionId }).catch(reportError);
+                        }}>Compact now</button>
+                    </div>
+                    <div class="cx-foot">
+                        <span class="num">
+                            <Show when={state()} fallback="No session yet">
+                                {tokens(state()?.tokensIn ?? 0)} in, {tokens(state()?.tokensOut ?? 0)} out
+                                <Show when={(state()?.cost ?? 0) > 0 || state()?.costUnknown}>
+                                    <span title={state()?.costUnknown ? "No price is known for some of the models used, so their usage isn't counted" : undefined}>, {cost(state()?.cost ?? 0, state()?.costUnknown)}</span>
+                                </Show>
+                            </Show>
+                        </span>
+                        <button class="cx-link" onClick={() => { close(); setSettingsTab("usage"); }}>Usage</button>
+                    </div>
                 </div>
             </Popover>
         </Show>
