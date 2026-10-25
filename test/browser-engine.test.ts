@@ -2,7 +2,7 @@
 // browser, its tabs, who drives them, and what a page may load, against a stand-in that opens a DevTools endpoint the way
 // Chrome does (test/helpers/fake-chrome-main.ts). What only a real Chrome can show is in test/browser.test.ts.
 import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
-import { mkdirSync, readdirSync, writeFileSync } from "fs";
+import { closeSync, fstatSync, mkdirSync, openSync, readdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { fakeChromeAt, fakeChromeProgram } from "./helpers/fake-chrome";
 import { isolate, tempDir } from "./helpers/isolate";
@@ -229,7 +229,12 @@ describe("starting the browser", () => {
         const base = { profile: "/p", headless: true };
         const mac = chromeArgs({ ...base, platform: "darwin", uid: 501 });
         expect(mac[0]).toBe("--headless=new");
-        expect(mac).toContain("--remote-debugging-port=0");
+        // spoken to over its pipe, which only the harness holds; a port, anything on the machine can reach
+        expect(mac).toContain("--remote-debugging-pipe");
+        expect(mac.join(" ")).not.toContain("--remote-debugging-port");
+        expect(chromeArgs({ ...base, platform: "linux", uid: 1000 })).toContain("--remote-debugging-pipe");
+        expect(chromeArgs({ ...base, platform: "win32" })).toContain("--remote-debugging-port=0");
+        expect(chromeArgs({ ...base, platform: "darwin", pipe: false })).toContain("--remote-debugging-port=0");
         expect(mac).toContain("--user-data-dir=/p");
         expect(mac).toContain("--use-mock-keychain");
         expect(mac).not.toContain("--no-sandbox");
@@ -258,22 +263,67 @@ describe("starting the browser", () => {
         expect(chromeIdentity(headless.replace("HeadlessChrome", "Chrome"), { platform: "darwin", arch: "arm64", release: "" })).toBeUndefined();
     });
 
-    test("waits for its endpoint, checks it is that browser's, and stops with its whole process group", async () => {
+    test("is spoken to over its pipe once it answers there, and stops with its whole process group", async () => {
         const profile = join(tempDir("harness-browser-profile-"), "p");
         const chrome = await launchChrome({ executable: program, profile, startupMs: 20_000 });
         stops.push(() => chrome.stop());
         expect(chrome.profile).toBe(profile);
-        expect(chrome.wsUrl).toMatch(/^ws:\/\/127\.0\.0\.1:\d+\/devtools\/browser\/fake$/);
         expect(alive(chrome.pid)).toBe(true);
         // it leads a group of its own, so its helpers end with it
         expect(() => process.kill(-chrome.pid, 0)).not.toThrow();
-        const cdp = await CdpClient.connect(chrome.wsUrl);
-        expect(await cdp.send("Target.setDiscoverTargets", { discover: true })).toEqual({});
-        cdp.close();
+        expect(await chrome.cdp.send("Target.setDiscoverTargets", { discover: true })).toEqual({});
+        const fake = await fakeChromeAt(profile);
+        // what it was asked, it was asked on its pipe: the endpoint the stand-in also opens wasn't used
+        expect((await fake.log()).map((c) => c.method)).toEqual(["Browser.getVersion", "Target.setDiscoverTargets"]);
+        // an answer of megabytes comes through whole, among others
+        const [large, small] = await Promise.all([chrome.cdp.send<{ data: string }>("Fake.large", { size: 4_000_000 }), chrome.cdp.send("Target.setDiscoverTargets", { discover: false })]);
+        expect(large.data).toBe("ü—".repeat(2_000_000));
+        expect(small).toEqual({});
         await chrome.stop();
         expect(alive(chrome.pid)).toBe(false);
+        expect(chrome.cdp.closed).toBe(true);
         // stopping a stopped one is nothing
         await chrome.stop();
+    });
+
+    test("where a port is used instead (Windows), waits for its endpoint and checks it is that browser's", async () => {
+        const profile = join(tempDir("harness-browser-profile-"), "p");
+        const chrome = await launchChrome({ executable: program, profile, startupMs: 20_000, pipe: false });
+        stops.push(() => chrome.stop());
+        expect(await chrome.cdp.send("Target.setDiscoverTargets", { discover: true })).toEqual({});
+        await chrome.stop();
+        expect(alive(chrome.pid)).toBe(false);
+    });
+
+    test("a browser that has gone leaves descriptors that are now another's alone", async () => {
+        // Bun closes a process's pipe when it collects the process. Closed here as well, the numbers would be another's by
+        // then: the next browser's guard, say, which would read its pipe closing as the harness ending, and end that browser.
+        const once = async () => {
+            const chrome = await launchChrome({ executable: program, profile: join(tempDir("harness-browser-profile-"), "p"), startupMs: 20_000 });
+            await chrome.stop();
+        };
+        for (let i = 0; i < 3; i++) await once();
+        await Bun.sleep(200);
+        // these take any number the browsers gave back
+        const mine = Array.from({ length: 8 }, () => openSync("/dev/null", "r"));
+        const next = await launchChrome({ executable: program, profile: join(tempDir("harness-browser-profile-"), "p"), startupMs: 20_000 });
+        stops.push(() => next.stop());
+        for (let i = 0; i < 5; i++) {
+            Bun.gc(true);
+            await Bun.sleep(50);
+        }
+        const closed = mine.filter((fd) => {
+            try {
+                fstatSync(fd);
+                closeSync(fd);
+                return false;
+            } catch {
+                return true;
+            }
+        });
+        expect(closed).toEqual([]);
+        expect(alive(next.pid)).toBe(true);
+        expect(await next.cdp.send("Target.setDiscoverTargets", { discover: true })).toEqual({});
     });
 
     test("is told why when it exits first, with what it said", async () => {
@@ -309,7 +359,7 @@ describe("starting the browser", () => {
         // names a port nothing listens on
         writeFileSync(join(profile, "DevToolsActivePort"), "1\n/devtools/browser/old");
         process.env.FAKE_CHROME = "silent";
-        const e = (await launchChrome({ executable: program, profile, startupMs: 300 }).catch((x) => x)) as Error;
+        const e = (await launchChrome({ executable: program, profile, startupMs: 300, pipe: false }).catch((x) => x)) as Error;
         expect(e.message).toContain("didn't open its DevTools endpoint");
     });
 });
@@ -637,6 +687,23 @@ describe("a session's browser", () => {
         await until(() => !alive(pid), "the browser to end with its last session");
     });
 
+    test("a page opened by a tab whose session ends while it's being set up is closed, not left running", async () => {
+        const first = open();
+        const second = open();
+        await first.nav({ url: "http://localhost:4000/a" });
+        await second.nav({ url: "http://localhost:4000/b" });
+        const fake = await fakeChromeAt(profile);
+        // The popup's setup waits on the browser; meanwhile its session ends (the other keeps the browser).
+        await fake.hold("Page.enable");
+        const popup = await fake.popup("T1");
+        await until(async () => (await fake.sent("Page.enable")).length === 3, "the popup's setup to start");
+        await first.session.dispose();
+        await fake.release("Page.enable");
+        await until(async () => (await fake.sent("Target.closeTarget")).some((c) => c.params.targetId === popup), "the popup to be closed");
+        expect((await fake.sent("Runtime.runIfWaitingForDebugger")).some((c) => c.sessionId === `S${popup.slice(1)}`)).toBe(false);
+        expect(second.session.state().tabs).toHaveLength(1);
+    });
+
     test("ends after sitting idle, says so, and starts again with the next page", async () => {
         const { session, nav } = open({ pool: { idleMs: 300 } });
         await nav({ url: "http://localhost:4000/" });
@@ -809,6 +876,35 @@ describe("what a page may load", () => {
         expect(await request(`file://${join(outside, "secret.png")}`, "Image")).toBe("BlockedByClient");
         expect(await request("file:///etc/hosts", "Script")).toBe("BlockedByClient");
         expect(await request(`file://${join(root, "a.png")}`, "Image")).toBe("continued");
+    });
+
+    test("frames from other sites, and theirs, are held until their loads are checked like the page's", async () => {
+        const { page, fake } = await paused((url) => (new URL(url).hostname === "blocked.example" ? "Denied by permission rule WebFetch(domain:blocked.example)" : undefined));
+        const [attach] = (await fake.sent("Target.setAutoAttach")).filter((c) => c.sessionId === page.sessionId);
+        expect(attach!.params).toMatchObject({ autoAttach: true, waitForDebuggerOnStart: true, flatten: true, filter: [{ type: "iframe" }, { exclude: true }] });
+        const of = async (method: string, sessionId: string) => (await fake.sent(method)).filter((c) => c.sessionId === sessionId);
+        // A frame starts: it isn't let go before its loads are checked.
+        await fake.hold("Fetch.enable");
+        await fake.emit("Target.attachedToTarget", { sessionId: "F1", targetInfo: { targetId: "I1", type: "iframe", url: "" }, waitingForDebugger: true }, page.sessionId);
+        await until(async () => (await of("Fetch.enable", "F1")).length === 1, "the frame's loads to be checked");
+        expect(await of("Runtime.runIfWaitingForDebugger", "F1")).toEqual([]);
+        await fake.release("Fetch.enable");
+        await until(async () => (await of("Runtime.runIfWaitingForDebugger", "F1")).length === 1, "the frame to be let go");
+        expect((await of("Fetch.enable", "F1"))[0]!.params.patterns).toEqual((await of("Fetch.enable", page.sessionId))[0]!.params.patterns);
+        // Where it goes by itself is refused as the page's would be, and so are its own frames'.
+        await fake.emit("Target.attachedToTarget", { sessionId: "F2", targetInfo: { targetId: "I2", type: "iframe", url: "" }, waitingForDebugger: true }, "F1");
+        await until(async () => (await of("Runtime.runIfWaitingForDebugger", "F2")).length === 1, "the frame's frame to be let go");
+        for (const [sessionId, requestId] of [["F1", "R1"], ["F2", "R2"]] as const) {
+            await fake.emit("Fetch.requestPaused", { requestId, resourceType: "Document", request: { url: "https://blocked.example/x" } }, sessionId);
+            await until(async () => (await of("Fetch.failRequest", sessionId)).some((c) => c.params.requestId === requestId), "the frame's load to be refused");
+        }
+        await fake.emit("Fetch.requestPaused", { requestId: "R3", resourceType: "Document", request: { url: "https://allowed.example/x" } }, "F1");
+        await until(async () => (await of("Fetch.continueRequest", "F1")).some((c) => c.params.requestId === "R3"), "an allowed load to go on");
+        expect(page.console.entries.filter((e) => e.text.startsWith("Blocked a load of https://blocked.example/x"))).toHaveLength(2);
+        // Another page's frames are that page's.
+        await fake.emit("Target.attachedToTarget", { sessionId: "F9", targetInfo: { targetId: "I9", type: "iframe", url: "" }, waitingForDebugger: true }, "S99");
+        await Bun.sleep(100);
+        expect(await of("Fetch.enable", "F9")).toEqual([]);
     });
 
     test("a deny rule for a host holds against a page that goes there by itself, with the reason in the console", async () => {

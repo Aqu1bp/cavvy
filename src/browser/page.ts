@@ -12,7 +12,7 @@ import type { ChromeIdentity } from "./chrome";
 import { TAKEN_OVER, TabControl, type Owner } from "./control";
 import { ConsoleLog, NetworkLog, type ConsoleLevel } from "./logs";
 import { RefTable } from "./refs";
-import { allowedPage, checkUrl, displayUrl } from "./url-policy";
+import { allowedPage, checkUrl, displayUrl, hostOf, type BrowserApproval } from "./url-policy";
 
 /** A failure the agent can act on: its message says what to do. */
 export class BrowserError extends Error {}
@@ -117,14 +117,19 @@ function navigationFailure(url: string, error: string): string {
 export interface PageOptions {
     /** The project: file: URLs must be inside it. */
     root: string;
-    /** Why the permission rules refuse a page to be at this address (a deny rule), if they do. Asked of every document and file the page loads. */
-    refuse?: (url: string, approvedFile?: string) => string | undefined;
+    /** Why the permission rules refuse a page to be at this address (a deny rule, an ask rule for its host), if they do. Asked of every document and file the page loads. */
+    refuse?: (url: string, approved?: BrowserApproval) => string | undefined;
     viewport: Viewport;
     owner: Owner;
     hooks: PageHooks;
     /** Who the page says it is to sites (chromeIdentity), set before it loads anything. */
     identity?: ChromeIdentity;
 }
+
+/** What a page and its frames hold for checking before it goes out: documents (pages and frames) and files. */
+const CHECKED_REQUESTS = [{ resourceType: "Document", requestStage: "Request" }, { urlPattern: "file:*", requestStage: "Request" }];
+/** Frames from other sites, attached as they start and held until they're checked like the page (Page.watchFrame). */
+const FRAME_ATTACH = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true, filter: [{ type: "iframe" }, { exclude: true }] };
 
 export class Page {
     readonly refs = new RefTable();
@@ -150,6 +155,8 @@ export class Page {
     private navigations = 0;
     private waiters = new Set<() => void>();
     private unlisten: (() => void)[] = [];
+    /** The sessions of its frames from other sites (watchFrame). */
+    private frames = new Set<string>();
     private lock: Promise<unknown> = Promise.resolve();
     private streaming = false;
     private streamEpoch = 0;
@@ -159,6 +166,8 @@ export class Page {
     /** Taking a still can itself repaint a frame of the same picture; frames until then don't call for another. */
     private stillUntil = 0;
     private approvedFile?: string;
+    /** The host the agent was let open in this tab, or a person went to: its ask rules don't stop the page moving about on it. */
+    private approvedHost?: string;
     private evaluation = 0;
 
     private constructor(
@@ -186,7 +195,9 @@ export class Page {
                 page.send("Network.enable"),
                 page.send("Log.enable"),
                 // Pages that load from somewhere the policy refuses never start loading; nor does anything a page reads from a file.
-                page.send("Fetch.enable", { patterns: [{ resourceType: "Document", requestStage: "Request" }, { urlPattern: "file:*", requestStage: "Request" }] }),
+                page.send("Fetch.enable", { patterns: CHECKED_REQUESTS }),
+                // Nor do frames from other sites, which run apart from the page (watchFrame).
+                page.send("Target.setAutoAttach", FRAME_ATTACH),
                 // A page nobody is looking at in a headless browser still behaves as focused: focus styles, blur handlers.
                 page.send("Emulation.setFocusEmulationEnabled", { enabled: true }),
                 ...(o.identity ? [page.send("Emulation.setUserAgentOverride", { ...o.identity })] : []),
@@ -302,6 +313,9 @@ export class Page {
             this.network.forgetInflight();
             this.lastOutline = undefined;
             this.documentStatus = this.document && this.document.loaderId === p.frame.loaderId ? this.document.status : undefined;
+            // Where a person goes is theirs to go; otherwise a yes holds only while the tab stays on the host it was for.
+            if (this.control.owner === "human") this.approvedHost = hostOf(this.url);
+            else if (this.approvedHost !== undefined && hostOf(this.url) !== this.approvedHost) this.approvedHost = undefined;
             const why = this.refusal(this.url);
             if (why) void this.block(this.url, why);
             this.changed();
@@ -333,12 +347,20 @@ export class Page {
             this.loading = false;
             this.changed();
         });
-        this.on("Fetch.requestPaused", (p: { requestId: string; request: { url: string } }) => {
-            const why = this.refusal(p.request.url);
-            if (why) this.console.add("error", `Blocked a load of ${displayUrl(p.request.url)}: ${why}`);
-            const command = why ? this.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "BlockedByClient" }) : this.send("Fetch.continueRequest", { requestId: p.requestId });
-            command.catch(() => undefined);
-        });
+        this.on("Fetch.requestPaused", (p: { requestId: string; request: { url: string } }) => this.paused(p, this.sessionId));
+        // Frames from other sites, and theirs in turn: their loads are checked as the page's are.
+        const ours = (sessionId: string | undefined) => sessionId === this.sessionId || (sessionId !== undefined && this.frames.has(sessionId));
+        this.unlisten.push(
+            this.cdp.on("Target.attachedToTarget", (p: { sessionId: string; targetInfo: { type: string } }, sessionId) => {
+                if (ours(sessionId) && p.targetInfo.type === "iframe") void this.watchFrame(p.sessionId);
+            }),
+            this.cdp.on("Target.detachedFromTarget", (p: { sessionId: string }, sessionId) => {
+                if (ours(sessionId)) this.frames.delete(p.sessionId);
+            }),
+            this.cdp.on("Fetch.requestPaused", (p: { requestId: string; request: { url: string } }, sessionId) => {
+                if (sessionId !== undefined && this.frames.has(sessionId)) this.paused(p, sessionId);
+            }),
+        );
         this.on("Runtime.consoleAPICalled", (p: { type: string; args: RemoteObject[] }) => {
             this.console.add(LEVELS[p.type] ?? "log", p.args.map(shown).join(" "));
             for (const arg of p.args) if (arg.objectId) void this.send("Runtime.releaseObject", { objectId: arg.objectId }).catch(() => undefined);
@@ -384,11 +406,37 @@ export class Page {
         });
     }
 
+    /** A document or file request held for checking (Fetch), of the page or one of its frames (`sessionId`): let go, or failed. */
+    private paused(p: { requestId: string; request: { url: string } }, sessionId: string) {
+        const why = this.refusal(p.request.url);
+        if (why) this.console.add("error", `Blocked a load of ${displayUrl(p.request.url)}: ${why}`);
+        const command = why ? this.cdp.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "BlockedByClient" }, sessionId) : this.cdp.send("Fetch.continueRequest", { requestId: p.requestId }, sessionId);
+        command.catch(() => undefined);
+    }
+
+    /**
+     * A frame from another site, which Chrome runs in a process of its own: the page's request checks don't reach what it
+     * loads after its first page (where it navigates itself, its own frames). It waits, attached, until it is checked the
+     * same way; one that can't be checked never starts.
+     */
+    private async watchFrame(sessionId: string) {
+        if (this.closed) return;
+        this.frames.add(sessionId);
+        try {
+            await Promise.all([this.cdp.send("Fetch.enable", { patterns: CHECKED_REQUESTS }, sessionId), this.cdp.send("Target.setAutoAttach", FRAME_ATTACH, sessionId)]);
+        } catch {
+            return;
+        }
+        await this.cdp.send("Runtime.runIfWaitingForDebugger", {}, sessionId).catch(() => undefined);
+    }
+
     /** Why a page may not be at (or load) this address, if it may not: the URL policy, then the permission rules' deny rules. */
     private refusal(url: string): string | undefined {
         if (!allowedPage(url, this.o.root)) return (checkUrl(url, this.o.root) as { error: string }).error;
         // The browser's own error page and a blank tab aren't places.
-        return url === "" || url === "about:blank" || url.startsWith("chrome-error:") ? undefined : this.o.refuse?.(url, this.approvedFile);
+        if (url === "" || url === "about:blank" || url.startsWith("chrome-error:")) return undefined;
+        const approved: BrowserApproval = { file: this.approvedFile, host: this.control.owner === "human" ? hostOf(url) : this.approvedHost };
+        return this.o.refuse?.(url, approved);
     }
 
     /** The address changed to somewhere that isn't allowed (a script, a link): back to a blank page. */
@@ -486,14 +534,20 @@ export class Page {
         }, signal, timeoutMs);
     }
 
-    /** Only called after BrowserNavigate authorization; the exact canonical file is allowed for this load. */
+    /**
+     * Only called after BrowserNavigate authorization: the exact canonical file is allowed for this load, and the host for
+     * as long as the tab stays on it.
+     */
     async gotoApproved(url: string, signal?: AbortSignal): Promise<boolean> {
         this.stillAgent(signal);
         if (url.startsWith("file:")) this.approvedFile = realpathSync(fileURLToPath(url));
+        this.approvedHost = hostOf(url);
         try {
             return await this.goto(url, signal);
         } finally {
             this.approvedFile = undefined;
+            // A load that was refused or failed left the tab where it was.
+            if (hostOf(this.url) !== this.approvedHost) this.approvedHost = undefined;
         }
     }
 

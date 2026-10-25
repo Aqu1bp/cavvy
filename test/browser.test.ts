@@ -2,6 +2,8 @@
 // a fixture site on 127.0.0.1, and the tools and session the agent and the GUI pane use. One Chrome serves the file: its
 // start is the slow part, and each test takes tabs of its own.
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { isolate, tempDir } from "./helpers/isolate";
 import { chromePath, fixtureServer } from "./helpers/browser-fixture";
 
@@ -501,6 +503,8 @@ describe.skipIf(!chromePath)("the browser's life", () => {
         expect(mine.state().status).toBe("ready");
         const pid = (mine as any).pool.pid as number;
         expect(alive(pid)).toBe(true);
+        // Driven over its pipe: Chrome opened no port for anything else on the machine to drive it by (it writes this file when it does).
+        if (process.platform !== "win32") expect(existsSync(join((mine as any).pool.chrome.profile, "DevToolsActivePort"))).toBe(false);
         await mine.dispose();
         await until(() => !alive(pid), "the browser to end");
     }, STARTUP_MS + 10_000);

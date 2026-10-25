@@ -1,13 +1,16 @@
 // Finding an installed Chromium-based browser, and starting it headless with a DevTools endpoint.
 //
-// The endpoint is `--remote-debugging-port=0`: the browser picks a free port and writes it, with the path of its
-// WebSocket, to DevToolsActivePort in the profile folder, so there is no port to race for. (`--remote-debugging-pipe`
-// would keep the endpoint private to this process, but Bun can't hand a child the two extra file descriptors it takes.)
-// The endpoint listens on 127.0.0.1 only; the browser checks the Host header of what connects to it.
+// The endpoint is `--remote-debugging-pipe`: the browser reads commands on its file descriptor 3 and answers on 4, so
+// only this process can drive it. A port, which anything on the machine can connect to without a password (and from
+// there read the profile's cookies or run script in its pages), is only for Windows, where the pipe is untried: there
+// it's `--remote-debugging-port=0`, the browser picking a free port and writing it, with the path of its WebSocket, to
+// DevToolsActivePort in the profile folder. That port listens on 127.0.0.1 only, and checks the Host header.
 
+import type { Subprocess } from "bun";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync } from "fs";
 import { homedir, hostname, platform as osPlatform } from "os";
 import { posix, win32 } from "path";
+import { CdpClient, type CdpTransport } from "./cdp";
 import { childEnv } from "../util/env";
 import { expandPath } from "../util/files";
 import { disarmGuard, parentGuard } from "../util/parent-guard";
@@ -105,6 +108,13 @@ export interface ChromeArgsOptions {
     /** The user id, when the platform has them: Chrome refuses its sandbox as root. */
     uid?: number;
     ci?: boolean;
+    /** Spoken to over its pipe rather than a port: by default, everywhere but Windows (see the top of this file). */
+    pipe?: boolean;
+}
+
+/** Whether a browser on this platform is spoken to over its pipe, unless told. */
+export function usesPipe(o: { platform: NodeJS.Platform; pipe?: boolean }): boolean {
+    return o.pipe ?? o.platform !== "win32";
 }
 
 /** The command line. Chrome's sandbox needs user namespaces and a non-root user; where it can't have them it is off. */
@@ -116,7 +126,7 @@ export function chromeArgs(o: ChromeArgsOptions): string[] {
         ...(o.headless ? ["--headless=new", "--force-device-scale-factor=2"] : []),
         // navigator.webdriver stays false: sites (Google's search, YouTube) answer an automated browser with a robot check.
         "--disable-blink-features=AutomationControlled",
-        "--remote-debugging-port=0",
+        usesPipe(o) ? "--remote-debugging-pipe" : "--remote-debugging-port=0",
         `--user-data-dir=${o.profile}`,
         "--no-first-run",
         "--no-default-browser-check",
@@ -199,12 +209,14 @@ export interface LaunchOptions {
     /** How long the browser has to open its DevTools endpoint. */
     startupMs?: number;
     signal?: AbortSignal;
+    /** Spoken to over its pipe rather than a port (usesPipe). */
+    pipe?: boolean;
 }
 
 export interface ChromeProcess {
     pid: number;
-    /** The browser's WebSocket endpoint. */
-    wsUrl: string;
+    /** The connection to the browser: its pipe, or its port's WebSocket. */
+    cdp: CdpClient;
     /** The profile folder in use: a throwaway copy when the asked-for one was held by another browser. */
     profile: string;
     exitCode: number | null;
@@ -238,8 +250,8 @@ function killAtExit(p: { pid: number }) {
 const ENDPOINT = /^(\d+)\n(\/devtools\/browser\/[^\s]+)/;
 
 /**
- * Starts the browser and waits for its DevTools endpoint. The browser leads a process group of its own, so its
- * helper processes end with it, and a watcher (parentGuard) stops the group if this process is killed outright.
+ * Starts the browser and connects to it, over its pipe or its endpoint. The browser leads a process group of its own,
+ * so its helper processes end with it, and a watcher (parentGuard) stops the group if this process is killed outright.
  */
 export async function launchChrome(o: LaunchOptions): Promise<ChromeProcess> {
     const busy = profileInUse(o.profile);
@@ -247,8 +259,10 @@ export async function launchChrome(o: LaunchOptions): Promise<ChromeProcess> {
     mkdirSync(profile, { recursive: true, mode: 0o700 });
     // A leftover from an earlier browser would name a port nothing listens on, or another browser's.
     rmSync(`${profile}/DevToolsActivePort`, { force: true });
-    const args = chromeArgs({ profile, headless: o.headless !== false, platform: process.platform, uid: process.getuid?.(), ci: Boolean(process.env.CI) });
-    const proc = Bun.spawn([o.executable, ...args], { env: childEnv(), stdin: "ignore", stdout: "ignore", stderr: "pipe", detached: process.platform !== "win32" });
+    const pipe = usesPipe({ platform: process.platform, pipe: o.pipe });
+    const args = chromeArgs({ profile, headless: o.headless !== false, platform: process.platform, uid: process.getuid?.(), ci: Boolean(process.env.CI), pipe });
+    // Its pipe is the two descriptors after stderr: 3 it reads commands from, 4 it answers on.
+    const proc = Bun.spawn([o.executable, ...args], { env: childEnv(), stdio: ["ignore", "ignore", "pipe", ...(pipe ? (["pipe", "pipe"] as const) : [])], detached: process.platform !== "win32" });
     proc.unref();
     killAtExit(proc);
     let guard: ReturnType<typeof parentGuard> | undefined;
@@ -285,7 +299,7 @@ export async function launchChrome(o: LaunchOptions): Promise<ChromeProcess> {
     );
     const handle: ChromeProcess = {
         pid: proc.pid,
-        wsUrl: "",
+        cdp: undefined as unknown as CdpClient,
         profile,
         get exitCode() {
             return proc.exitCode;
@@ -302,8 +316,10 @@ export async function launchChrome(o: LaunchOptions): Promise<ChromeProcess> {
             }
         },
     };
+    const startupMs = o.startupMs ?? 60_000;
     try {
-        handle.wsUrl = await openEndpoint(proc, profile, o.startupMs ?? 60_000, o.signal);
+        if (pipe) handle.cdp = await answered(CdpClient.over(pipeTransport(proc)), proc, exited, startupMs, o.signal);
+        else handle.cdp = await CdpClient.connect(await openEndpoint(proc, profile, startupMs, o.signal), { signal: o.signal });
     } catch (e) {
         killGroup(proc.pid, "SIGKILL");
         await exited;
@@ -311,6 +327,97 @@ export async function launchChrome(o: LaunchOptions): Promise<ChromeProcess> {
         throw new Error(`${(e as Error).message}${log ? `\nThe browser said:\n${log}` : ""}`, { cause: e });
     }
     return handle;
+}
+
+/**
+ * Browsers whose pipe is in use. Bun closes a process's pipe descriptors when it collects the process, so nothing here
+ * closes them (a second close would hit whatever has the number by then: another browser's guard, which takes that for
+ * the harness ending), and the process is held until its pipe is done with.
+ */
+const piped = new Set<Subprocess>();
+
+/**
+ * The browser's pipe as a connection: commands go to its descriptor 3, and answers and events come from 4, each
+ * message ending in a NUL. It lasts as long as the browser: closing it only stops it being used, and the browser is
+ * stopped to end it.
+ */
+function pipeTransport(proc: Subprocess): CdpTransport {
+    const [, , , write, read] = proc.stdio as unknown as number[];
+    const sink = Bun.file(write!).writer();
+    piped.add(proc);
+    let open = true;
+    const transport: CdpTransport = {
+        onmessage: null,
+        onclose: null,
+        onerror: null,
+        send(text) {
+            if (!open) throw new Error("the pipe to the browser is closed");
+            sink.write(`${text}\0`);
+            void Promise.resolve()
+                .then(() => sink.flush())
+                .catch(() => undefined);
+        },
+        close() {
+            open = false;
+        },
+    };
+    void (async () => {
+        const decoder = new TextDecoder();
+        let parts: string[] = [];
+        try {
+            for await (const chunk of Bun.file(read!).stream()) {
+                let text = decoder.decode(chunk, { stream: true });
+                // Only what just came is searched for a message's end: an answer can be megabytes (a screenshot).
+                for (let end = text.indexOf("\0"); end >= 0; end = text.indexOf("\0")) {
+                    parts.push(text.slice(0, end));
+                    text = text.slice(end + 1);
+                    const message = parts.join("");
+                    parts = [];
+                    if (open) transport.onmessage?.({ data: message });
+                }
+                if (text) parts.push(text);
+            }
+        } catch {
+            // the browser went away
+        }
+        open = false;
+        transport.onclose?.();
+        // What is still being written fails once the browser has gone; after that Bun may close the descriptors.
+        await proc.exited;
+        await Promise.resolve()
+            .then(() => sink.end())
+            .catch(() => undefined);
+        piped.delete(proc);
+    })();
+    return transport;
+}
+
+/**
+ * What there is to wait for on a pipe in place of an endpoint: the browser answering. Rejects when it exits first, or
+ * doesn't answer within `startupMs`, or `outer` aborts.
+ */
+async function answered(cdp: CdpClient, proc: { exitCode: number | null; signalCode: NodeJS.Signals | number | null }, exited: Promise<void>, startupMs: number, outer?: AbortSignal): Promise<CdpClient> {
+    const signal = outer ? AbortSignal.any([outer, AbortSignal.timeout(startupMs)]) : AbortSignal.timeout(startupMs);
+    let stop: (() => void) | undefined;
+    try {
+        await new Promise<void>((resolve, reject) => {
+            stop = () => reject(new Error(outer?.aborted ? "Starting the browser was cancelled" : `The browser didn't open its DevTools endpoint within ${startupMs} ms`));
+            if (signal.aborted) return stop();
+            signal.addEventListener("abort", stop, { once: true });
+            // Its pipe closes as it ends: how it ended, once it has.
+            cdp.onClose(() => void Promise.race([exited, Bun.sleep(1000)]).then(() => reject(new Error(`The browser exited before opening its DevTools endpoint (${proc.exitCode ?? proc.signalCode ?? "its pipe closed"})`))));
+            cdp.send("Browser.getVersion", {}, undefined, startupMs).then(
+                () => resolve(),
+                () => undefined,
+            );
+        });
+    } catch (e) {
+        cdp.close();
+        throw e;
+    } finally {
+        if (stop) signal.removeEventListener("abort", stop);
+    }
+    return cdp;
 }
 
 async function openEndpoint(proc: { exitCode: number | null; signalCode: NodeJS.Signals | number | null }, profile: string, startupMs: number, outer?: AbortSignal): Promise<string> {

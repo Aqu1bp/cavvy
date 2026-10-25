@@ -1,6 +1,6 @@
-// A small Chrome DevTools Protocol client over a WebSocket: commands answered by id, each with a time limit, and
-// events by name. One connection serves the browser and every page attached to it (a page's commands and events
-// carry its sessionId).
+// A small Chrome DevTools Protocol client over a WebSocket or the browser's pipe: commands answered by id, each with a
+// time limit, and events by name. One connection serves the browser and every page attached to it (a page's commands
+// and events carry its sessionId).
 
 export class CdpError extends Error {
     constructor(
@@ -12,6 +12,15 @@ export class CdpError extends Error {
 }
 
 export type CdpListener = (params: any, sessionId: string | undefined) => void;
+
+/** A connection already open, as a WebSocket is used: a message is one JSON text. */
+export interface CdpTransport {
+    send(text: string): void;
+    close(): void;
+    onmessage: ((event: { data: string }) => void) | null;
+    onclose: (() => void) | null;
+    onerror: (() => void) | null;
+}
 
 interface Pending {
     method: string;
@@ -30,10 +39,15 @@ export class CdpClient {
     private closeListeners = new Set<(reason: string) => void>();
     closed = false;
 
-    private constructor(private ws: WebSocket) {
-        ws.onmessage = (event) => this.receive(String(event.data));
+    private constructor(private ws: WebSocket | CdpTransport) {
+        ws.onmessage = (event: { data: unknown }) => this.receive(String(event.data));
         ws.onclose = () => this.shutdown("The connection to the browser closed");
         ws.onerror = () => this.shutdown("The connection to the browser failed");
+    }
+
+    /** A client on a connection that's already open (the browser's pipe). */
+    static over(transport: CdpTransport): CdpClient {
+        return new CdpClient(transport);
     }
 
     /** Opens the connection; rejects when it doesn't open within `timeoutMs`, or `signal` aborts. */

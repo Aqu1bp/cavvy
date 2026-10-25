@@ -51,7 +51,7 @@ describe.skipIf(!chromePath)("browser regressions with Chrome", () => {
         writeFileSync(join(root, ".env"), "APP_FIXTURE=approved-file-contents");
         let settings = { permissions: { ask: ["Read(private/**)"], deny: [] as string[] } };
         const checker = new PermissionChecker(() => settings, root);
-        const b = session({ refuse: (url: string, file?: string) => checker.urlRefusal(url, file) });
+        const b = session({ refuse: (url: string, approved?: { file?: string }) => checker.urlRefusal(url, approved) });
         const page = await b.page();
         const url = (p: string) => pathToFileURL(join(root, p)).href;
         await page.goto(url("index.html"));
@@ -66,8 +66,71 @@ describe.skipIf(!chromePath)("browser regressions with Chrome", () => {
         await page.gotoApproved(url(".env"), new AbortController().signal);
         expect((await page.outline()).text).toContain("approved-file-contents");
         settings.permissions.deny = ["Read(private/**)"];
-        expect(checker.urlRefusal(url("private/report.html"), realpathSync(join(root, "private/report.html")))).toContain("Denied");
+        expect(checker.urlRefusal(url("private/report.html"), { file: realpathSync(join(root, "private/report.html")) })).toContain("Denied");
         await expect(page.gotoApproved(url("private/report.html"), new AbortController().signal)).rejects.toThrow();
+    }, 30_000);
+
+    test("a page can't take the agent to a host an ask rule names; on the host it was let open, it moves freely", async () => {
+        const server = Bun.serve({
+            hostname: "127.0.0.1",
+            port: 0,
+            fetch(req) {
+                const u = new URL(req.url);
+                if (u.pathname === "/hop") return Response.redirect(`http://127.0.0.1:${server.port}/inside`, 302);
+                return new Response(`<h1>${u.hostname}${u.pathname}</h1>`, { headers: { "content-type": "text/html" } });
+            },
+        });
+        try {
+            const checker = new PermissionChecker(() => ({ permissions: { ask: ["WebFetch(domain:127.0.0.1)"] } }), root);
+            const b = session({ refuse: (url: string, approved?: { file?: string; host?: string }) => checker.urlRefusal(url, approved) });
+            const page = await b.page();
+            const plain = `http://localhost:${server.port}`, asked = `http://127.0.0.1:${server.port}`;
+            const blocked = () => page.console.entries.filter((e) => e.text.includes("Requires approval by permission rule WebFetch(domain:127.0.0.1)")).length;
+            // A redirect from a host that isn't asked about doesn't answer for one that is.
+            await page.goto(`${plain}/hop`).catch(() => undefined);
+            expect(page.url).not.toContain("127.0.0.1");
+            expect(blocked()).toBe(1);
+            // Let open there, the page goes about on its host by itself.
+            await page.gotoApproved(`${asked}/start`, new AbortController().signal);
+            await page.evaluate("location.href = '/next'");
+            await until(() => page.url === `${asked}/next`, "the page to move on its host");
+            // Once it has left, coming back is a visit of its own.
+            await page.evaluate(`location.href = '${plain}/away'`);
+            await until(() => page.url === `${plain}/away`, "the page to leave");
+            await page.evaluate(`location.href = '${asked}/back'`);
+            await until(() => blocked() === 2, "the way back to be refused");
+            expect(page.url).not.toBe(`${asked}/back`);
+        } finally {
+            server.stop(true);
+        }
+    }, 30_000);
+
+    test("a frame from another site can't go where its page may not", async () => {
+        const seen: string[] = [];
+        const server = Bun.serve({
+            hostname: "127.0.0.1",
+            port: 0,
+            fetch(req) {
+                const u = new URL(req.url);
+                seen.push(`${req.headers.get("host")?.split(":")[0]}${u.pathname}`);
+                if (u.pathname === "/frame") return new Response(`<img src="/pixel"><script>setTimeout(() => (location.href = "http://localhost:${server.port}/x"), 100)</script>`, { headers: { "content-type": "text/html" } });
+                return new Response("ok");
+            },
+        });
+        try {
+            // The page is a file in the project; its frame, from 127.0.0.1, runs in a process of its own.
+            writeFileSync(join(root, "framed.html"), `<iframe src="http://127.0.0.1:${server.port}/frame"></iframe>`);
+            const checker = new PermissionChecker(() => ({ permissions: { deny: ["WebFetch(domain:localhost)"] } }), root);
+            const b = session({ refuse: (url: string, approved?: { file?: string; host?: string }) => checker.urlRefusal(url, approved) });
+            const page = await b.page();
+            await page.goto(pathToFileURL(join(root, "framed.html")).href);
+            // It ran (it was let go once checked), and where it then tried to go was refused before anything was asked of it.
+            await until(() => seen.includes("127.0.0.1/pixel"), "the frame to run");
+            await until(() => page.console.entries.some((e) => e.text.startsWith(`Blocked a load of http://localhost:${server.port}/x`)), "the frame's navigation to be refused");
+            expect(seen.filter((r) => r.startsWith("localhost"))).toEqual([]);
+        } finally {
+            server.stop(true);
+        }
     }, 30_000);
 
     test("two sessions in one project continue streaming as both pages change", async () => {

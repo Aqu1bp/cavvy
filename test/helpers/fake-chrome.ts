@@ -32,5 +32,8 @@ export async function fakeChromeAt(profile: string) {
         emit: (method: string, params: unknown, sessionId?: string) => post("/fake/event", { method, params, sessionId }),
         /** A tab `opener` opened (as window.open does); its target id. */
         popup: async (opener: string): Promise<string> => (await post("/fake/popup", { opener })).targetId,
+        /** Leaves every `method` command unanswered until release(method). */
+        hold: (method: string) => post("/fake/hold", { method }),
+        release: (method: string) => post("/fake/release", { method }),
     };
 }

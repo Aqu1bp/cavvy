@@ -35,7 +35,7 @@ import { canonical, expandPath, isInside, spellings } from "../util/files";
 import { harnessHome, paths } from "../config/paths";
 import { childEnv } from "../util/env";
 import { accountCredentialFiles, accountFolders, accountProtectedPaths } from "../providers/accounts";
-import { fileUrlPath, navigationTarget } from "../browser/url-policy";
+import { fileUrlPath, hostOf, navigationTarget, type BrowserApproval } from "../browser/url-policy";
 
 export type Behavior = "allow" | "ask" | "deny";
 
@@ -114,7 +114,7 @@ function isLink(p: string): boolean {
 
 /** What isHarnessConfig looks for in a path. */
 /** Tools whose yes covers only the call it answered (see approve). */
-const ONE_CALL_APPROVAL = new Set(["GitCommit", "GitPush", "CreatePullRequest"]);
+const ONE_CALL_APPROVAL = new Set(["GitCommit", "GitPush", "CreatePullRequest", "BrowserAct", "BrowserEval"]);
 const CONFIG_NAMES = new Set([".harness", ".claude", ".codex", ".git", ".mcp.json"]);
 
 /**
@@ -186,12 +186,14 @@ export class PermissionChecker {
     }
 
     /**
-     * Why a page may not go to this address by itself (a redirect, a link, a script, a popup), if it may not: a deny rule
-     * for its host, or a file read restriction. Only the exact file of an authorized navigation may bypass asks and sensitivity.
+     * Why a page may not go to this address by itself (a redirect, a link, a script, a popup, a frame), if it may not: a
+     * deny rule for its host, a file read restriction, or an ask rule for its host. `approved`: what the tab was opened
+     * to with a yes (or by a person): only that exact file bypasses asks and sensitivity; only that host, its ask rules.
      */
-    urlRefusal(url: string, approvedFile?: string): string | undefined {
+    urlRefusal(url: string, approved: BrowserApproval = {}): string | undefined {
         const denied = findMatch(this.settings().permissions?.deny ?? [], { toolName: "BrowserNavigate", url }, this.root, "deny");
         if (denied) return `Denied by permission rule ${denied}`;
+        const ask = this.settings().permissions?.ask ?? [];
         const file = fileUrlPath(url);
         if (file !== undefined) {
             let dir = false;
@@ -200,15 +202,17 @@ export class PermissionChecker {
             } catch {
                 // not there: the browser says so
             }
-            const approved = approvedFile !== undefined && canonical(file) === approvedFile;
-            const why = this.userReadRefusal(file, { sensitive: !approved, dir });
+            const fileApproved = approved.file !== undefined && canonical(file) === approved.file;
+            const why = this.userReadRefusal(file, { sensitive: !fileApproved, dir });
             if (why) return `${why[0]!.toUpperCase()}${why.slice(1)}`;
             const target = { toolName: "Read", path: file };
-            const ask = this.settings().permissions?.ask ?? [];
             const rule = findMatch(ask, target, this.root, "deny") ?? findMatch(ask, { ...target, path: canonical(file) }, this.root, "deny");
-            return rule && !approved ? `Requires approval by permission rule ${rule}. Request this file explicitly with BrowserNavigate.` : undefined;
+            return rule && !fileApproved ? `Requires approval by permission rule ${rule}. Request this file explicitly with BrowserNavigate.` : undefined;
         }
-        return undefined;
+        // An ask rule for a host asks before every visit, as WebFetch never follows a redirect to another host: a page
+        // can't take the agent there unasked. Within the visit that was asked for, it moves freely.
+        const rule = findMatch(ask, { toolName: "BrowserNavigate", url }, this.root, "deny");
+        return rule && !(approved.host !== undefined && hostOf(url) === approved.host) ? `Requires approval by permission rule ${rule}. Open it explicitly with BrowserNavigate.` : undefined;
     }
 
     /** A new, cleared, resumed or switched-to session: nothing approved in another one carries over. */
@@ -242,7 +246,8 @@ export class PermissionChecker {
      */
     approve(tool: Tool<any>, input: any, cwd: string, opts: { sandbox?: boolean; grant?: SessionGrant } = {}) {
         // The git tools act on whatever the repo holds when they run, so the same input can mean another
-        // branch, commit or set of files: a yes covers the call it answered. "Don't ask again" is the rule.
+        // branch, commit or set of files; a browser action, on whatever page is open, so the same click or
+        // script can do something else on the next one: a yes covers the call it answered. "Don't ask again" is the rule.
         // Nor does the reviewer hear of it: it would read close variations (a push from Bash) as approved too.
         if (ONE_CALL_APPROVAL.has(tool.name)) return;
         this.approved.add(this.actionKey(tool, input, cwd, opts.sandbox));

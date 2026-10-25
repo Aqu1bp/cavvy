@@ -12,16 +12,17 @@ import { CdpClient, CdpError } from "./cdp";
 import { cachedChrome, chromeIdentity, launchChrome, type ChromeIdentity, type ChromeProcess } from "./chrome";
 import type { Owner } from "./control";
 import { BrowserError, Page, type PageHooks, type Viewport } from "./page";
+import type { BrowserApproval } from "./url-policy";
 
 /** What the pool asks of a session: the tabs it owns. */
 export interface PoolClient {
     hooks: PageHooks;
     /** The size a new tab opens at. */
     viewport(): Viewport;
-    /** A page one of its tabs (`opener`) opened (window.open): now one of its tabs, or closed if it has too many. */
+    /** A page one of its tabs (`opener`) opened (window.open): true, now one of its tabs; false, the pool closes it (too many tabs, or the session is ending). */
     adopt(page: Page, opener: Page): boolean;
     /** Why the permission rules keep a page from being at this address, if they do (a page's own navigations aren't asked about). */
-    refuse(url: string, approvedFile?: string): string | undefined;
+    refuse(url: string, approved?: BrowserApproval): string | undefined;
     /** A tab went away on its own (the page closed itself). */
     closed(page: Page): void;
     /** The browser is gone, with every tab. `crashed`: it wasn't meant to end. */
@@ -102,7 +103,7 @@ export class BrowserPool {
     }
 
     private async setUp(cdp: CdpClient, a: Attachment, client: PoolClient, owner: Owner): Promise<Page> {
-        const page = await Page.attach(cdp, a.sessionId, a.info.targetId, { root: this.o.root, viewport: client.viewport(), owner, hooks: client.hooks, identity: this.identity, refuse: (url, approvedFile) => client.refuse(url, approvedFile) });
+        const page = await Page.attach(cdp, a.sessionId, a.info.targetId, { root: this.o.root, viewport: client.viewport(), owner, hooks: client.hooks, identity: this.identity, refuse: (url, approved) => client.refuse(url, approved) });
         this.pages.set(a.info.targetId, { page, client });
         return page;
     }
@@ -166,7 +167,7 @@ export class BrowserPool {
             await chrome.stop();
             throw new BrowserError(`The browser didn't start: ${(e as Error).message}`);
         };
-        const cdp = await CdpClient.connect(chrome.wsUrl, { signal: this.abort.signal }).catch((e) => failed(e));
+        const cdp = chrome.cdp;
         try {
             this.listen(cdp);
             cdp.onClose(() => void this.lost(chrome, cdp, true));
@@ -222,7 +223,9 @@ export class BrowserPool {
     private async adopt(cdp: CdpClient, a: Attachment, opener: { page: Page; client: PoolClient }) {
         try {
             const page = await this.setUp(cdp, a, opener.client, opener.page.control.owner);
-            if (opener.client.adopt(page, opener.page)) await cdp.send("Runtime.runIfWaitingForDebugger", {}, a.sessionId);
+            // The session may have ended while the page was set up, after its tabs were closed: it isn't one of them.
+            if (this.clients.has(opener.client) && opener.client.adopt(page, opener.page)) await cdp.send("Runtime.runIfWaitingForDebugger", {}, a.sessionId);
+            else await this.closePage(page);
         } catch {
             this.pages.delete(a.info.targetId);
             await cdp.send("Target.closeTarget", { targetId: a.info.targetId }).catch(() => undefined);

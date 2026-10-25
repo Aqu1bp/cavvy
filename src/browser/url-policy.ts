@@ -59,6 +59,22 @@ export function fileUrlPath(url: string): string | undefined {
     }
 }
 
+/** The host of an http(s) address, as permission rules for hosts name it. */
+export function hostOf(url: string): string | undefined {
+    try {
+        const u = new URL(url);
+        return u.protocol === "http:" || u.protocol === "https:" ? u.hostname : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/** What a tab was opened to with a yes (BrowserNavigate) or by a person: the file (canonical) and the host. */
+export interface BrowserApproval {
+    file?: string;
+    host?: string;
+}
+
 /** Whether a page may stay where it navigated by itself: the same policy, and the browser's own error page. */
 export function allowedPage(url: string, root: string): boolean {
     return url === "" || url.startsWith(ERROR_PAGE) || checkUrl(url, root).ok;

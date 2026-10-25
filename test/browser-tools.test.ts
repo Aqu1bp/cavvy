@@ -213,6 +213,18 @@ describe("what asks", () => {
         expect(decide(BrowserEvalTool, { expression: "1" })).toMatchObject({ behavior: "ask", suggestions: ["BrowserEval"] });
     });
 
+    test("a yes to a click or a script covers that call: the same input on the next page asks again", () => {
+        const c = checker();
+        for (const [tool, input] of [[BrowserActTool, { action: "click", x: 100, y: 100 }], [BrowserActTool, { action: "type", ref: "e7", text: "x", submit: true }], [BrowserEvalTool, { expression: "document.forms[0].submit()" }]] as const) {
+            c.approve(tool as never, input, root);
+            expect(c.check(tool as never, input, "default", root), tool.name).toMatchObject({ behavior: "ask" });
+            expect(c.recentApprovals(), tool.name).toEqual([]);
+        }
+        // Opening the same address is the same thing every time: a yes to it is remembered.
+        c.approve(BrowserNavigateTool as never, { url: "https://example.com/" }, root);
+        expect(c.check(BrowserNavigateTool as never, { url: "https://example.com/" }, "default", root)).toMatchObject({ behavior: "allow", remembered: true });
+    });
+
     test("hovering, scrolling and waiting go unasked", () => {
         for (const input of [{ action: "hover", ref: "e1" }, { action: "scroll", deltaY: 300 }, { action: "wait", text: "Saved" }]) expect(decide(BrowserActTool, input).behavior, input.action).toBe("allow");
     });
@@ -304,6 +316,22 @@ describe("files a page is opened from", () => {
         expect(checker({ permissions: { deny: ["WebFetch(domain:localhost)"] } }).urlRefusal("http://localhost:3000/")).toContain("WebFetch(domain:localhost)");
         expect(checker({ permissions: { deny: ["BrowserNavigate"] } }).urlRefusal("https://example.com/")).toBe("Denied by permission rule BrowserNavigate");
         expect(checker().urlRefusal("https://example.com/")).toBeUndefined();
+    });
+
+    test("and so are hosts an ask rule names, except the one the tab was let open (or a person went to)", () => {
+        const c = checker({ permissions: { ask: ["WebFetch(domain:private.example)"], deny: ["WebFetch(domain:evil.example)"] } });
+        const asks = "Requires approval by permission rule WebFetch(domain:private.example). Open it explicitly with BrowserNavigate.";
+        // a redirect, a link or a script from anywhere: the user is asked about every visit
+        expect(c.urlRefusal("https://private.example/")).toBe(asks);
+        expect(c.urlRefusal("https://api.private.example/x")).toBe(asks);
+        expect(c.urlRefusal("https://private.example/", { host: "elsewhere.example" })).toBe(asks);
+        // within the visit asked for, the page moves about freely; not to another host the rule names
+        expect(c.urlRefusal("https://private.example/next?page=2", { host: "private.example" })).toBeUndefined();
+        expect(c.urlRefusal("https://api.private.example/x", { host: "private.example" })).toBe(asks);
+        // hosts no rule names are a page's to go to; deny rules hold whatever was approved
+        expect(c.urlRefusal("https://unlisted.example/")).toBeUndefined();
+        expect(c.urlRefusal("https://evil.example/", { host: "evil.example" })).toBe("Denied by permission rule WebFetch(domain:evil.example)");
+        expect(checker({ permissions: { ask: ["BrowserNavigate"] } }).urlRefusal("https://example.com/")).toContain("Requires approval by permission rule BrowserNavigate");
     });
 });
 

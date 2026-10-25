@@ -29,7 +29,7 @@ const OBSERVING = new Set<string>(["wait"]);
 function browserOf(ctx: ToolContext): BrowserSession {
     if (ctx.state.browser) return ctx.state.browser;
     const checker = new PermissionChecker(() => ctx.settings, ctx.state.projectRoot);
-    return (ctx.state.browser = new BrowserSession({ root: ctx.state.projectRoot, settings: () => ctx.settings, refuse: (url, file) => checker.urlRefusal(url, file) }));
+    return (ctx.state.browser = new BrowserSession({ root: ctx.state.projectRoot, settings: () => ctx.settings, refuse: (url, approved) => checker.urlRefusal(url, approved) }));
 }
 
 /** A failed browser call as the result the agent reads. */

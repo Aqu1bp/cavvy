@@ -12,7 +12,7 @@ import { FrameFeed } from "./feed";
 import { forward, parseInput, takesControl } from "./interact";
 import { AGENT_VIEWPORT, BrowserError, MAX_SIDE, MIN_SIDE, type Frame, type Page, type PageHooks, type Viewport } from "./page";
 import { acquirePool, lostBrowser, releasePool, type BrowserPool, type PoolClient, type PoolOptions } from "./pool";
-import { addressToUrl, checkUrl } from "./url-policy";
+import { addressToUrl, checkUrl, hostOf, type BrowserApproval } from "./url-policy";
 
 /** A session's tabs at most: each is a page in the browser's memory. */
 export const MAX_TABS = 8;
@@ -29,7 +29,7 @@ export interface SessionOptions {
     root: string;
     settings: () => Settings;
     /** Why the permission rules (deny rules) keep a page from being at this address, if they do. */
-    refuse?: (url: string, approvedFile?: string) => string | undefined;
+    refuse?: (url: string, approved?: BrowserApproval) => string | undefined;
     /** Tests: shorter idle and startup times. */
     pool?: Pick<PoolOptions, "idleMs" | "startupMs">;
 }
@@ -192,16 +192,16 @@ export class BrowserSession implements PoolClient {
         return this.view ?? AGENT_VIEWPORT;
     }
 
-    refuse(url: string, approvedFile?: string): string | undefined {
-        return this.o.refuse?.(url, approvedFile);
+    refuse(url: string, approved?: BrowserApproval): string | undefined {
+        return this.o.refuse?.(url, approved);
     }
 
     /** A page a tab opened is a tab of the session; the current one stays where it is (the agent's next call is about the page it was on). */
     adopt(page: Page, opener: Page): boolean {
-        // Past the limit it is closed: popups are no way round it.
+        // Closing, it takes no new tab; past the limit, the page is closed: popups are no way round it.
+        if (this.disposed) return false;
         if (this.tabs.size + this.opening >= MAX_TABS) {
             opener.console.add("error", `A page this one opened was closed: this session already has ${MAX_TABS} tabs.`);
-            void this.pool?.closePage(page);
             return false;
         }
         this.add(page);
@@ -416,7 +416,8 @@ export class BrowserSession implements PoolClient {
         if (!url) throw new BrowserError(`"${redact(text).slice(0, 100)}" isn't an address. Type a URL like localhost:3000 or https://example.com.`);
         const checked = checkUrl(url, this.o.root);
         if (!checked.ok) throw new BrowserError(checked.error);
-        const refused = this.refuse(checked.url);
+        // The person asks for the host themselves: only a deny rule (or the rules for a file) stops them.
+        const refused = this.refuse(checked.url, { host: hostOf(checked.url) });
         if (refused) throw new BrowserError(`${redact(checked.url).slice(0, 100)} can't be opened: ${refused}`);
         this.taken(page);
         await this.run(() => page.goto(checked.url));

@@ -1,15 +1,16 @@
 // A stand-in for Chrome, for tests of everything around the browser (starting and stopping it, tabs, who drives them, what a
-// page may load) that needn't a real one: it opens a DevTools endpoint the way Chrome does (DevToolsActivePort in the profile,
-// /json/version, a WebSocket) and answers the commands the browser code sends with scripted replies. Run through
-// test/helpers/fake-chrome.ts.
+// page may load) that needn't a real one: it takes commands the ways Chrome does (with --remote-debugging-pipe, on its file
+// descriptor 3, answering on 4; and always on a DevTools endpoint: DevToolsActivePort in the profile, /json/version, a
+// WebSocket) and answers them with scripted replies. Run through test/helpers/fake-chrome.ts.
 //
 // Besides CDP it has a control endpoint on the same port: GET /fake/log is every command it was sent, POST /fake/event emits an
-// event to the client ({ method, params, sessionId }), POST /fake/popup opens a tab as window.open would.
+// event to the client ({ method, params, sessionId }), POST /fake/popup opens a tab as window.open would, POST /fake/hold
+// ({ method }) leaves that command unanswered until POST /fake/release ({ method }) answers every one held.
 //
 // FAKE_CHROME=exit      exits at once, saying something on stderr
-// FAKE_CHROME=silent    runs, and never opens its endpoint
+// FAKE_CHROME=silent    runs, and never opens its endpoint nor reads its pipe
 // FAKE_CHROME=slow      answers Target.setAutoAttach never (a browser that doesn't finish starting)
-import { mkdirSync, writeFileSync } from "fs";
+import { createReadStream, mkdirSync, writeFileSync, writeSync } from "fs";
 import { SHOP, axTree } from "./ax-tree";
 
 const dir = process.argv.find((a) => a.startsWith("--user-data-dir="))?.slice("--user-data-dir=".length);
@@ -42,6 +43,8 @@ let seq = 0;
 let loaders = 0;
 let objects = 0;
 const sockets = new Set<{ send(data: string): void }>();
+/** Commands held unanswered, by method: their answers, sent on release. */
+const held = new Map<string, (() => void)[]>();
 const emit = (method: string, params: unknown, sessionId?: string) => {
     for (const ws of sockets) ws.send(JSON.stringify({ method, params, ...(sessionId ? { sessionId } : {}) }));
 };
@@ -130,6 +133,9 @@ function answer(method: string, params: any, sessionId?: string): unknown {
             return { model: { content: box, border: box } };
         case "DOM.resolveNode":
             return { object: { objectId: `O${++objects}` } };
+        case "Fake.large":
+            // An answer as big as a screenshot's, with text that isn't all one byte a character.
+            return { data: "ü—".repeat(params.size / 2) };
         default:
             return {};
     }
@@ -147,6 +153,16 @@ const server = Bun.serve<undefined>({
             emit(e.method, e.params, e.sessionId);
             return Response.json({});
         }
+        if (url.pathname === "/fake/hold" || url.pathname === "/fake/release") {
+            const { method } = (await req.json()) as { method: string };
+            const waiting = held.get(method) ?? [];
+            if (url.pathname === "/fake/hold") held.set(method, waiting);
+            else {
+                held.delete(method);
+                for (const reply of waiting) reply();
+            }
+            return Response.json({});
+        }
         if (url.pathname === "/fake/popup") {
             const { opener } = (await req.json()) as { opener: string };
             return Response.json({ targetId: open(opener).id });
@@ -157,15 +173,38 @@ const server = Bun.serve<undefined>({
     websocket: {
         open: (ws) => void sockets.add(ws),
         close: (ws) => void sockets.delete(ws),
-        message(ws, raw) {
-            const msg = JSON.parse(String(raw)) as { id: number; method: string; params?: unknown; sessionId?: string };
-            log.push({ method: msg.method, params: msg.params, sessionId: msg.sessionId });
-            if (msg.method === "Fake.hang" || (mode === "slow" && msg.method === "Target.setAutoAttach")) return;
-            const result = answer(msg.method, msg.params ?? {}, msg.sessionId);
-            ws.send(JSON.stringify({ id: msg.id, result, ...(msg.sessionId ? { sessionId: msg.sessionId } : {}) }));
-        },
+        message: (ws, raw) => command(ws, String(raw)),
     },
 });
+
+/** A command from the client, on the pipe or the WebSocket (`to`): logged, then answered (or held, or never). */
+function command(to: { send(data: string): void }, raw: string) {
+    const msg = JSON.parse(raw) as { id: number; method: string; params?: unknown; sessionId?: string };
+    log.push({ method: msg.method, params: msg.params, sessionId: msg.sessionId });
+    if (msg.method === "Fake.hang" || (mode === "slow" && msg.method === "Target.setAutoAttach")) return;
+    const reply = () => to.send(JSON.stringify({ id: msg.id, result: answer(msg.method, msg.params ?? {}, msg.sessionId), ...(msg.sessionId ? { sessionId: msg.sessionId } : {}) }));
+    const waiting = held.get(msg.method);
+    if (waiting) waiting.push(reply);
+    else reply();
+}
+
+// The pipe: messages end in a NUL, both ways.
+if (process.argv.includes("--remote-debugging-pipe") && mode !== "silent") {
+    const pipe = { send: (data: string) => void writeSync(4, `${data}\0`) };
+    sockets.add(pipe);
+    let pending = "";
+    createReadStream("", { fd: 3, encoding: "utf8" })
+        .on("data", (chunk) => {
+            pending += chunk;
+            for (let end = pending.indexOf("\0"); end >= 0; end = pending.indexOf("\0")) {
+                const raw = pending.slice(0, end);
+                pending = pending.slice(end + 1);
+                command(pipe, raw);
+            }
+        })
+        // The client closed its end: as Chrome does, it ends.
+        .on("end", () => process.exit(0));
+}
 
 if (mode !== "silent") {
     mkdirSync(dir, { recursive: true });
