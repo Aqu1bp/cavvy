@@ -860,6 +860,7 @@
 }
 
 .pg-card {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: calc(10 * var(--sp));
@@ -877,8 +878,39 @@
     box-shadow: inset 0 0 0 0.5px var(--line-strong);
 }
 
-.pg-card:focus-visible {
+.pg-card:has(.pg-open:focus-visible) {
     box-shadow: inset 0 0 0 0.5px var(--line), 0 0 0 2px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+/* The name is the card's button: it reads as the name, and its hit area covers the card. */
+.pg-open {
+    display: block;
+    max-width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    font-weight: 600;
+    color: inherit;
+    text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+    outline: none;
+}
+
+.pg-open::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+}
+
+/* Install sits above the stretched hit area. */
+.pg-install {
+    position: relative;
+    z-index: 1;
 }
 
 .pg-top {

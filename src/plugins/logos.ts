@@ -41,14 +41,16 @@ export function pluginLogo(owner: string, get: typeof fetch = fetch): Promise<Lo
 
 let active = 0;
 const waiting: (() => void)[] = [];
+/** At most MAX_ACTIVE at once: a finished request hands its slot straight to the next waiting, so none slips in between. */
 async function limited<T>(run: () => Promise<T>): Promise<T> {
-    if (active >= MAX_ACTIVE) await new Promise<void>((go) => waiting.push(go));
-    active++;
+    if (active < MAX_ACTIVE) active++;
+    else await new Promise<void>((go) => waiting.push(go));
     try {
         return await run();
     } finally {
-        active--;
-        waiting.shift()?.();
+        const next = waiting.shift();
+        if (next) next();
+        else active--;
     }
 }
 

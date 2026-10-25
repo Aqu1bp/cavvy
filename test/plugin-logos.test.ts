@@ -56,6 +56,31 @@ describe("pluginLogo", () => {
         expect(f.urls).toHaveLength(2);
     });
 
+    test("at most four requests at once; the queue drains as they finish", async () => {
+        let inFlight = 0, most = 0;
+        const release: (() => void)[] = [];
+        const get = (async () => {
+            inFlight++;
+            most = Math.max(most, inFlight);
+            await new Promise<void>((go) => release.push(go));
+            inFlight--;
+            return new Response(PNG);
+        }) as unknown as typeof fetch;
+        const all = ["a1", "a2", "a3", "a4", "a5"].map((o) => pluginLogo(o, get));
+        await Bun.sleep(0);
+        expect(inFlight).toBe(4);
+        release.shift()!();
+        const late = pluginLogo("a6", get);
+        for (let i = 0; i < 20; i++) await Bun.sleep(0);
+        expect(most).toBe(4);
+        while (release.length || inFlight) {
+            release.shift()?.();
+            await Bun.sleep(0);
+        }
+        expect((await Promise.all([...all, late])).every((l) => l !== null)).toBe(true);
+        expect(most).toBe(4);
+    });
+
     test("not an account name, not an image, too big or missing: null", async () => {
         const f = fakeFetch(() => new Response("<html>", { headers: { "content-type": "text/html" } }));
         expect(await pluginLogo("../evil", f.get)).toBeNull();

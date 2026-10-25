@@ -52,14 +52,13 @@ const logos = new Map<string, Promise<string | undefined>>();
 function logoFor(owner: string): Promise<string | undefined> {
     let hit = logos.get(owner);
     if (!hit) {
+        // Only a logo is kept here. Without one (none, GitHub busy, offline) it's asked again the next time the
+        // page shows it, and the server answers an account without an avatar from its own memory.
         hit = rpc.call("plugins.logo", { owner }).then(
             (l) => (l ? `data:${l.mediaType};base64,${l.data}` : undefined),
-            () => {
-                // Disconnected: asked again the next time the page shows it.
-                logos.delete(owner);
-                return undefined;
-            },
+            () => undefined,
         );
+        void hit.then((src) => src || logos.delete(owner));
         logos.set(owner, hit);
     }
     return hit;
@@ -90,7 +89,8 @@ export function Plugins() {
     const [query, setQuery] = createSignal("");
     const [category, setCategory] = createSignal<string>();
     const [source, setSource] = createSignal("");
-    const [details, setDetails] = createSignal<PluginInfo>();
+    /** The details dialog, one object per opening: an install started in one closes only that one. */
+    const [details, setDetails] = createSignal<{ pl: PluginInfo }>();
     const [confirm, setConfirm] = createSignal<Confirm>();
     const cwd = () => app.homeCwd;
     let searchEl: HTMLInputElement | undefined;
@@ -183,7 +183,7 @@ export function Plugins() {
                 {confirm()?.body}
             </ConfirmDialog>
             <Show when={details()} keyed>
-                {(pl) => <PluginDetails plugin={pl} markets={markets()} project={project()} projectScopes={projectScopes()} busy={busy()} onClose={() => setDetails(undefined)} install={(scope) => install(pl, scope, () => details() === pl && setDetails(undefined))} />}
+                {(d) => <PluginDetails plugin={d.pl} markets={markets()} project={project()} projectScopes={projectScopes()} busy={busy()} onClose={() => setDetails(undefined)} install={(scope) => install(d.pl, scope, () => details() === d && setDetails(undefined))} />}
             </Show>
             <div class="pg-bar">
                 <Segmented
@@ -277,7 +277,7 @@ export function Plugins() {
                                     ) : undefined)}
                                 >
                                     <div class="pg-grid">
-                                        <For each={discovered()}>{(pl) => <PluginCard plugin={pl} markets={markets()} busy={busy()} open={() => setDetails(pl)} install={() => void install(pl)} />}</For>
+                                        <For each={discovered()}>{(pl) => <PluginCard plugin={pl} markets={markets()} busy={busy()} open={() => setDetails({ pl })} install={() => void install(pl)} />}</For>
                                     </div>
                                 </Show>
                                 <p class="set-note pg-note">Plugins can add commands, agents, skills, hooks and MCP servers. Hooks and MCP servers run commands on this computer, so install from people you trust.</p>
@@ -309,7 +309,7 @@ export function Plugins() {
                             </Show>
                         </p>
                         <div class="pg-list">
-                            <For each={installedShown()}>{(pl) => <PluginRow plugin={pl} markets={markets()} busy={busy()} act={act} confirm={setConfirm} details={() => setDetails(pl)} sameName={installed().some((x) => x !== pl && x.name === pl.name)} />}</For>
+                            <For each={installedShown()}>{(pl) => <PluginRow plugin={pl} markets={markets()} busy={busy()} act={act} confirm={setConfirm} details={() => setDetails({ pl })} sameName={installed().some((x) => x !== pl && x.name === pl.name)} />}</For>
                         </div>
                         <Show when={installed().some((p) => p.installed && !p.orphaned)}>
                             <div class="pg-after">
@@ -331,22 +331,14 @@ function PluginCard(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; b
     const cat = () => categoryOf(pl().category);
     const installing = () => p.busy === `install:${pl().id}`;
     return (
-        <article
-            class="pg-card"
-            tabIndex={0}
-            role="button"
-            aria-label={`${pl().name}, ${cat().name}. Details`}
-            onClick={p.open}
-            onKeyDown={(e) => {
-                if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
-                e.preventDefault();
-                p.open();
-            }}
-        >
+        // Not a button holding a button: the name opens the details, and its hit area covers the card (CSS).
+        <article class="pg-card">
             <div class="pg-top">
                 <PluginMark plugin={pl()} markets={p.markets} size={36} />
                 <div class="pg-id">
-                    <b>{pl().name}</b>
+                    <button class="pg-open" aria-label={`${pl().name}, ${cat().name}. Details`} onClick={p.open}>
+                        {pl().name}
+                    </button>
                     <span>{pl().author ?? pl().marketplace}</span>
                 </div>
             </div>
@@ -361,10 +353,7 @@ function PluginCard(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; b
                     disabled={Boolean(p.busy)}
                     title="Install for you, in every project. Hooks and MCP servers in a plugin run commands on this computer."
                     aria-label={`Install ${pl().name}`}
-                    onClick={(e) => {
-                        e.stopPropagation();
-                        p.install();
-                    }}
+                    onClick={() => p.install()}
                 >
                     {installing() ? <Spinner size={12} /> : <Download size={13} />}
                     {installing() ? "Installing" : "Install"}
