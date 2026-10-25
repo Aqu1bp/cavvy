@@ -36,12 +36,12 @@ section{background:#fff;border-radius:14px;box-shadow:0 2px 6px rgba(0,0,0,.05),
 .card:hover{transform:translateY(-3px) scale(1.02);box-shadow:0 12px 28px rgba(0,0,0,.16)}
 #code{position:fixed;left:0;top:0;z-index:10;display:grid;grid-template-columns:repeat(6,12px);grid-auto-rows:12px}
 #code i{background:#fff}#code i.on{background:#000}
-</style></head><body><div id="code">${"<i></i>".repeat(18)}</div>
+</style></head><body><div id="code">${"<i></i>".repeat(30)}</div>
 <header><input id="q" placeholder="Type here"></header><main>${sections}</main>
 <script>
 const cells=[...document.querySelectorAll('#code i')];
 const show=(row,n)=>{for(let b=0;b<6;b++)cells[row*6+b].classList.toggle('on',!!(n>>b&1))};
-addEventListener('scroll',()=>show(0,Math.floor(scrollY/40)%64),{passive:true});
+addEventListener('scroll',()=>{show(0,Math.floor(scrollY/40)%64);const f=Math.round(scrollY/4);show(3,f%64);show(4,Math.floor(f/64)%64)},{passive:true});
 q.addEventListener('input',()=>show(1,q.value.length%64));
 addEventListener('mousemove',e=>show(2,Math.floor(e.clientX/8)%64));
 </script></body></html>`;
@@ -66,7 +66,15 @@ await server.engine.handle(client, "browser.command", { id, command: "goto", url
 // Frames Chrome produced, on the server: against the frames the pane drew, where any cap comes from.
 const produced: number[] = [];
 const remote = await (server.engine as any).runtimes.get(id).browser.page();
-remote.cdp.on("Page.screencastFrame", (_: unknown, sessionId: string) => sessionId === remote.sessionId && produced.push(performance.now()));
+const epoch = () => performance.timeOrigin + performance.now();
+// Wall-clock stages on the server: Chrome's own frame time, and when the frame reached the server.
+const serverFrames: [number, number][] = [];
+const serverWheels: [number, number][] = [];
+remote.cdp.on("Page.screencastFrame", (p: { metadata: { timestamp?: number } }, sessionId: string) => {
+    if (sessionId !== remote.sessionId) return;
+    produced.push(performance.now());
+    serverFrames.push([(p.metadata.timestamp ?? 0) * 1000, epoch()]);
+});
 // How long Chrome takes to answer each wheel dispatch, and how many are in flight at once.
 const wheelMs: number[] = [];
 let inFlight = 0;
@@ -75,8 +83,9 @@ const input = remote.input.bind(remote);
 remote.input = async (method: string, params: Record<string, unknown>) => {
     if (params.type !== "mouseWheel") return input(method, params);
     const t = performance.now();
+    const at = epoch();
     maxInFlight = Math.max(maxInFlight, ++inFlight);
-    try { return await input(method, params); } finally { inFlight--; wheelMs.push(performance.now() - t); }
+    try { return await input(method, params); } finally { inFlight--; wheelMs.push(performance.now() - t); serverWheels.push([at, epoch()]); }
 };
 const profile = join(scratch, "viewer");
 const viewer = Bun.spawn([process.env.PERF_VIEWER ?? chrome, "--headless=new", "--no-first-run", "--no-default-browser-check", `--force-device-scale-factor=${process.env.PERF_DPR ?? 2}`, "--window-size=1200,1000", `--user-data-dir=${profile}`, "--remote-debugging-port=0"], { stdout: "ignore", stderr: "ignore" });
@@ -175,6 +184,69 @@ try {
     await sleep(1200);
     log = await slice(m);
     results.hover = { ...latencies(log, "mousemove", 2, base), ...cadence(log) };
+    // E. Trackpad flicks: 125 Hz deltas ramping up, then momentum decaying, three times with pauses.
+    // Per drawn picture: where the page is (4 px steps) against where the hand had taken it, and when.
+    const fine = (c: number[]) => ((c[3] ?? 0) + (c[4] ?? 0) * 64) * 4;
+    const sw0 = serverWheels.length, sf0 = serverFrames.length;
+    m = await mark();
+    const startY = fine(await evaluate("__perf.draws.at(-1)[1]"));
+    for (let g = 0; g < 3; g++) {
+        const t0 = performance.now();
+        const deltas: number[] = [];
+        for (let t = 0; t < 300; t += 8) deltas.push(Math.min(22, 2 + t / 5));
+        for (let t = 0; t < 1200; t += 8) deltas.push(Math.max(1, Math.round(22 * Math.exp(-t / 350))));
+        // Not awaited: a trackpad doesn't wait for the page, and the viewer's own answer to each would slow the trace.
+        for (let i = 0; i < deltas.length; i++) {
+            void cdp("Input.dispatchMouseEvent", { type: "mouseWheel", ...center, deltaX: 0, deltaY: deltas[i] });
+            const wait = t0 + (i + 1) * 8 - performance.now();
+            if (wait > 0) await sleep(wait);
+        }
+        await sleep(400);
+    }
+    await sleep(800);
+    log = await slice(m);
+    {
+        const wheels = (log.inputs as [number, string, number][]).filter((x) => x[1] === "wheel");
+        const expected = (t: number) => wheels.filter((w) => w[0] <= t).reduce((a, w) => a + w[2], 0);
+        const when = (y: number) => wheels.reduce((acc: { sum: number; t?: number }, w) => (acc.t === undefined && (acc.sum += w[2]) >= y ? { ...acc, t: w[0] } : acc), { sum: 0 }).t;
+        const draws = (log.draws as [number, number[], number][]).filter((d) => d[0] >= wheels[0]![0] && d[0] <= wheels.at(-1)![0] + 300);
+        const pos = draws.map((d) => fine(d[1]) - startY);
+        const gaps = draws.slice(1).map((d, i) => d[0] - draws[i]![0]);
+        const lagPx = draws.map((d, i) => expected(d[0]) - pos[i]!);
+        const age = draws.map((d, i) => { const t = when(pos[i]!); return t === undefined ? NaN : d[0] - t; }).filter((x) => Number.isFinite(x) && x >= 0);
+        let back = 0, still = 0, switches = 0, maxJump = 0;
+        for (let i = 1; i < draws.length; i++) {
+            if (pos[i]! < pos[i - 1]! - 4) back++;
+            if (pos[i] === pos[i - 1] && expected(draws[i]![0]) > pos[i]! + 8) still++;
+            if (draws[i]![2] !== draws[i - 1]![2]) switches++;
+            maxJump = Math.max(maxJump, pos[i]! - pos[i - 1]!);
+        }
+        const span = wheels.at(-1)![0] - wheels[0]![0];
+        // Stages, on one wall clock (ms): averages over the gestures.
+        const extra = await evaluate("({ sends: __perf.sends, origin: __perf.origin })");
+        const o = extra.origin as number;
+        const sends = (extra.sends as number[]).map((t) => t + o).filter((t) => t >= wheels[0]![0] + o - 50);
+        const sw = serverWheels.slice(sw0);
+        const sf = serverFrames.slice(sf0);
+        const avg = (xs: number[]) => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : NaN);
+        const toServer = sends.map((t) => { const s = sw.find((w) => w[0] >= t); return s ? s[0] - t : NaN; }).filter((x) => x >= 0 && x < 500);
+        const dispatch = sw.map((w) => w[1] - w[0]);
+        // A wheel's first frame: Chrome's timestamp of the first frame after the wheel reached Chrome.
+        const render = sw.map((w) => { const f = sf.find((x) => x[0] >= w[0]); return f ? f[0] - w[0] : NaN; }).filter((x) => x >= 0 && x < 500);
+        const capture = sf.map((f) => f[1] - f[0]).filter((x) => x >= 0 && x < 1000);
+        const received = (log.frames as [number][]).map((f) => f[0] + o);
+        const toPane = received.map((t) => { const prior = sf.filter((x) => x[1] <= t).at(-1); return prior ? t - prior[1] : NaN; }).filter((x) => x >= 0 && x < 500);
+        const wheelToSend = (log.inputs as [number, string][]).filter((x) => x[1] === "wheel").map((x) => { const s = sends.find((t) => t >= x[0] + o); return s ? s - (x[0] + o) : NaN; }).filter((x) => x >= 0 && x < 100);
+        results.stages = { paneWheelToSend: avg(wheelToSend), sendToServer: avg(toServer), wheelDispatch: avg(dispatch), wheelToChromeFrame: avg(render), chromeFrameToServer: avg(capture), serverToPane: avg(toPane), decode: avg(log.decodes) };
+        results.trackpad = {
+            wheelEvents: wheels.length, handPx: expected(Infinity), pagePx: pos.at(-1), draws: draws.length, drawsPerSec: Math.round((draws.length * 1000) / span),
+            gapP50: pct(gaps, 0.5), gapP95: pct(gaps, 0.95), gapMax: pct(gaps, 1),
+            pictureAgeP50: pct(age, 0.5), pictureAgeP95: pct(age, 0.95), lagPxP50: pct(lagPx, 0.5), lagPxP95: pct(lagPx, 0.95),
+            backwards: back, repeatedWhileBehind: still, resolutionSwitches: switches, maxJumpPx: maxJump,
+            widths: Object.fromEntries([...new Set(draws.map((d) => String(d[2])))].map((w) => [w, draws.filter((d) => String(d[2]) === w).length])),
+            gestureMs: span,
+        };
+    }
     results.wheelDispatch = { count: wheelMs.length, p50: pct(wheelMs, 0.5), p95: pct(wheelMs, 0.95), maxInFlight };
     results.viewport = { css: box, dpr: await evaluate("devicePixelRatio") };
     results.renderer = await remote.evaluate("(() => { const g = document.createElement('canvas').getContext('webgl'); const i = g && g.getExtension('WEBGL_debug_renderer_info'); return i ? g.getParameter(i.UNMASKED_RENDERER_WEBGL) : String(g); })()");

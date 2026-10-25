@@ -91,7 +91,7 @@ async function run() {
             motionLatencies.push(performance.now()-start);
         }
         click(350, 70);
-        // Scrolling streams smaller frames; once it stops, the picture is full Retina size again.
+        // Scrolling keeps the stream at full Retina size: no switching resolution mid-gesture.
         const full = canvas.clientWidth * 2;
         const box = canvas.getBoundingClientRect();
         smallest = Infinity;
@@ -99,8 +99,10 @@ async function run() {
             canvas.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: box.x + 350, clientY: box.y + 300, deltaY: i < 20 ? 30 : -30 }));
             await sleep(16);
         }
-        check(smallest < full, `scrolling never streamed motion-size frames (smallest ${smallest}, full ${full})`);
-        await until(() => largest.width === full, "settled page never returned to a full-size picture");
+        check(smallest === full, `scrolling streamed frames below full size (smallest ${smallest}, full ${full})`);
+        await until(() => largest.width === full, "settled page lost its full-size picture");
+        // The scroll back to the top lands before the next click aims at the page.
+        await sleep(500);
         // Input bridge into the remote form; the remote input handler turns the marker green.
         click(120, 140);
         const keyboard = root.querySelector("textarea")!;

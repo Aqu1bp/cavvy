@@ -54,13 +54,8 @@ export const LOAD_TIMEOUT_MS = 30_000;
 /** How long without a request in flight counts as the page having settled, and the most a call waits for it. */
 const QUIET_MS = 300;
 const SETTLE_MAX_MS = 3000;
-/** The pane's stream: JPEG quality at rest and while scrolling, and the share of the size it scrolls at. */
+/** The pane's stream: its JPEG quality, and how long without a frame counts as the page having stopped changing. */
 const STREAM_QUALITY = 90;
-const MOTION_QUALITY = 70;
-const MOTION_SCALE = 0.5;
-/** Scrolling is this many frames within the window of a wheel turn; it has stopped this long after the last. */
-const MOTION_FRAMES = 4;
-const MOTION_WINDOW_MS = 300;
 const SETTLE_MS = 200;
 /** How long after a still a frame may still be the repaint that taking it caused. */
 const STILL_ECHO_MS = 60;
@@ -158,14 +153,8 @@ export class Page {
     private lock: Promise<unknown> = Promise.resolve();
     private streaming = false;
     private streamEpoch = 0;
-    /** The stream's limits in device pixels, and the share of them it runs at now (less while scrolling). */
-    private castSize = { width: 0, height: 0 };
-    private castScale = 1;
-    private casting: Promise<unknown> = Promise.resolve();
-    /** Frames since the stream last (re)started at full size: a still is only for a picture nothing newer replaced. */
+    /** Frames so far: a still is only for a picture nothing newer replaced. */
     private fullFrames = 0;
-    private recentFrames: number[] = [];
-    private scrolledAt = 0;
     private settleTimer?: ReturnType<typeof setTimeout>;
     /** Taking a still can itself repaint a frame of the same picture; frames until then don't call for another. */
     private stillUntil = 0;
@@ -225,7 +214,6 @@ export class Page {
      * is answered, and the answer may only come from a later call: so a dialog opening ends the wait too.
      */
     async input(method: string, params: Record<string, unknown>) {
-        if (params.type === "mouseWheel") this.scrolledAt = Date.now();
         const stop = new AbortController();
         const sent = this.send(method, params);
         const dialog = this.waitUntil(() => this.dialog !== undefined, COMMAND_TIMEOUT_MS, stop.signal).then(
@@ -627,45 +615,16 @@ export class Page {
     async startScreencast(width: number, height: number) {
         this.streaming = true;
         this.streamEpoch++;
-        this.castSize = { width, height };
-        this.recentFrames = [];
-        await this.cast(1);
+        this.fullFrames = 0;
+        // One size and quality throughout: a stream that changed them while scrolling (restarting it each time) saved a
+        // few milliseconds and cost a blur, a stall and a pop on every gesture.
+        await this.send("Page.startScreencast", { format: "jpeg", quality: STREAM_QUALITY, maxWidth: Math.round(width), maxHeight: Math.round(height), everyNthFrame: 1 });
         // An idle page doesn't repaint for a new stream: it starts from a still unless a frame beats it.
         this.settleLater();
     }
 
-    /**
-     * (Re)starts Chrome's stream at a share of the full size. While the person scrolls, a frame at half the size (a
-     * quarter of the pixels) and lower quality is several times cheaper to capture, encode, send and decode, so the
-     * page keeps up with the wheel; text that is moving can't be read anyway. At rest it is full size again.
-     */
-    private cast(scale: number): Promise<unknown> {
-        const epoch = this.streamEpoch;
-        this.castScale = scale;
-        this.casting = this.casting.then(async () => {
-            if (!this.streaming || this.closed || epoch !== this.streamEpoch) return;
-            await this.send("Page.stopScreencast");
-            if (!this.streaming || this.closed || epoch !== this.streamEpoch) return;
-            await this.send("Page.startScreencast", {
-                format: "jpeg",
-                quality: scale < 1 ? MOTION_QUALITY : STREAM_QUALITY,
-                maxWidth: Math.max(1, Math.round(this.castSize.width * scale)),
-                maxHeight: Math.max(1, Math.round(this.castSize.height * scale)),
-                everyNthFrame: 1,
-            });
-            if (scale === 1) this.fullFrames = 0;
-        }).catch(() => undefined);
-        return this.casting;
-    }
-
-    /** A frame arrived: the stream goes to motion size when frames come fast under the wheel, and back when scrolling stops. */
+    /** A frame arrived: once frames stop, the page has settled. */
     private paced(now: number) {
-        this.recentFrames.push(now);
-        while (this.recentFrames[0]! < now - MOTION_WINDOW_MS) this.recentFrames.shift();
-        const scrolling = now - this.scrolledAt < MOTION_WINDOW_MS;
-        if (this.castScale === 1 && scrolling && this.recentFrames.length >= MOTION_FRAMES) void this.cast(MOTION_SCALE);
-        // A page that goes on moving by itself (a video) settles by the wheel alone.
-        else if (this.castScale < 1 && now - this.scrolledAt > SETTLE_MS) void this.settleStream();
         if (now >= this.stillUntil) this.settleLater();
     }
 
@@ -675,23 +634,19 @@ export class Page {
     }
 
     /**
-     * The page has stopped changing: back to full size, and a still if no full-size frame shows the page as it is now.
-     * Chrome doesn't repaint for a restarted stream, and can drop the last frame of a burst. The still never holds up
-     * frames: one that arrives while it's taken is newer, and the still is dropped.
+     * The page has stopped changing: a still, unless a frame comes meanwhile. Chrome doesn't repaint for a new stream,
+     * and can drop the last frame of a burst. The still never holds up frames: one that arrives while it's taken is
+     * newer, and the still is dropped.
      */
     private async settleStream() {
         clearTimeout(this.settleTimer);
         const epoch = this.streamEpoch;
         if (!this.streaming || this.closed) return;
-        if (this.castScale < 1) {
-            this.recentFrames = [];
-            await this.cast(1);
-        }
         const seen = this.fullFrames;
         this.stillUntil = Infinity;
         try {
             const { data } = await this.send<{ data: string }>("Page.captureScreenshot", { format: "jpeg", quality: STREAM_QUALITY, captureBeyondViewport: false });
-            if (this.streaming && !this.closed && epoch === this.streamEpoch && this.castScale === 1 && this.fullFrames === seen) {
+            if (this.streaming && !this.closed && epoch === this.streamEpoch && this.fullFrames === seen) {
                 this.o.hooks.frame(this, { data, width: this.viewport.width, height: this.viewport.height });
             }
         } catch {

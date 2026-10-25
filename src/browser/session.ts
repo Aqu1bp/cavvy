@@ -9,7 +9,6 @@ import { browserSettings, type Settings } from "../config/settings";
 import { cachedChrome } from "./chrome";
 import type { Owner } from "./control";
 import { FrameFeed } from "./feed";
-import { InputQueue } from "./input-queue";
 import { forward, parseInput, takesControl } from "./interact";
 import { AGENT_VIEWPORT, BrowserError, MAX_SIDE, MIN_SIDE, type Frame, type Page, type PageHooks, type Viewport } from "./page";
 import { acquirePool, lostBrowser, releasePool, type BrowserPool, type PoolClient, type PoolOptions } from "./pool";
@@ -39,8 +38,6 @@ export class BrowserSession implements PoolClient {
     private pool?: BrowserPool;
     private tabs = new Map<number, Page>();
     private ids = new WeakMap<Page, number>();
-    /** The person's input, per tab (input-queue.ts). */
-    private inputs = new WeakMap<Page, InputQueue>();
     private seq = 0;
     private feed = new FrameFeed<TabFrame>();
     private listeners = new Set<() => void>();
@@ -377,9 +374,12 @@ export class BrowserSession implements PoolClient {
         if ((input.kind === "key" || input.kind === "mouse") && input.type === "up" && page.control.owner !== "human") return;
         if (takesControl(input)) this.taken(page);
         this.pool?.touch();
-        let queue = this.inputs.get(page);
-        if (!queue) this.inputs.set(page, (queue = new InputQueue((i) => forward(page, i))));
-        await queue.push(input);
+        // Sent as they come: Chrome merges wheel turns and pointer moves the page hasn't taken yet itself.
+        try {
+            await forward(page, input);
+        } catch {
+            // a page that has crashed or closed takes no input
+        }
     }
 
     /** What the pane's address bar and tab strip ask for. Opening or navigating a page is the person acting: the tab is theirs. */

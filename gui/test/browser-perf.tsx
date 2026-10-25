@@ -14,17 +14,17 @@ const params = new URLSearchParams(location.search);
 const id = params.get("session")!;
 const [paneWidth, paneHeight] = (params.get("pane") ?? "720x900").split("x");
 Object.assign(document.getElementById("root")!.style, { width: `${paneWidth}px`, height: `${paneHeight}px` });
-type Log = { frames: [number, number, boolean][]; draws: [number, number[]][]; decodes: number[]; inputs: [number, string][] };
-const log: Log = { frames: [], draws: [], decodes: [], inputs: [] };
+type Log = { frames: [number, number, boolean][]; draws: [number, number[], number][]; decodes: number[]; inputs: [number, string, number?][]; sends: number[]; origin: number };
+const log: Log = { frames: [], draws: [], decodes: [], inputs: [], sends: [], origin: performance.timeOrigin };
 (window as any).__perf = log;
 
 const probe = new OffscreenCanvas(1, 1);
 const pctx = probe.getContext("2d", { willReadFrequently: true })!;
-// Three rows of six 12px blocks at the page's top-left: each row a 6-bit number (black = 1).
+// Five rows of six 12px blocks (rows 3 and 4: scrollY / 4, low and high bits) at the page's top-left: each row a 6-bit number (black = 1).
 function codes(img: CanvasImageSource & { width: number; height: number }, cssWidth: number): number[] {
     const s = img.width / cssWidth;
     const out: number[] = [];
-    for (let row = 0; row < 3; row++) {
+    for (let row = 0; row < 5; row++) {
         let n = 0;
         for (let b = 0; b < 6; b++) {
             pctx.drawImage(img, Math.round((b * 12 + 6) * s), Math.round((row * 12 + 6) * s), 1, 1, 0, 0, 1, 1);
@@ -48,15 +48,20 @@ const make = rpc.browserStream.bind(rpc);
 rpc.browserStream = () => {
     const stream = make();
     stream.onFrame((f) => log.frames.push([performance.now(), f.data.byteLength, f.data[0] === 137]));
+    const notify = stream.notify.bind(stream);
+    stream.notify = ((method: string, params: any) => {
+        if (method === "browser.input" && params?.input?.kind === "wheel") log.sends.push(performance.now());
+        return notify(method as never, params);
+    }) as typeof stream.notify;
     return stream;
 };
 const drawImage = CanvasRenderingContext2D.prototype.drawImage;
 CanvasRenderingContext2D.prototype.drawImage = function (this: CanvasRenderingContext2D, ...args: any[]) {
     (drawImage as any).apply(this, args);
     const img = args[0] as ImageBitmap;
-    if (this.canvas.classList.contains("br-canvas") && args.length === 5) log.draws.push([performance.now(), codes(img, args[3] as number)]);
+    if (this.canvas.classList.contains("br-canvas") && args.length === 5) log.draws.push([performance.now(), codes(img, args[3] as number), img.width]);
 } as any;
-for (const t of ["wheel", "keydown", "mousemove", "mousedown"]) window.addEventListener(t, () => log.inputs.push([performance.now(), t]), true);
+for (const t of ["wheel", "keydown", "mousemove", "mousedown"]) window.addEventListener(t, (e) => log.inputs.push([performance.now(), t, t === "wheel" ? (e as WheelEvent).deltaY : undefined]), true);
 
 async function run() {
     rpc.onState((s) => setApp("conn", s));

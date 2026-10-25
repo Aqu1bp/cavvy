@@ -213,7 +213,6 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         cancelAnimationFrame(moving);
         moving = 0;
         move = undefined;
-        wheel = undefined;
         composing = false;
         if (keyboard) keyboard.value = "";
     };
@@ -222,16 +221,13 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         return frame ? pagePoint({ x: e.clientX - rect.left, y: e.clientY - rect.top }, placeFrame(boxSize(), frame), frame) : undefined;
     };
 
-    // Pointer moves and wheel turns come faster than frames: the latest of each goes once a frame.
+    // Pointer moves come faster than frames: the latest goes once a frame.
     let moving = 0;
     let move: BrowserInput | undefined;
-    let wheel: { at: Point; pixels: { x: number; y: number }; keys: WheelEvent } | undefined;
     const flush = () => {
         moving = 0;
         if (move) send(move);
         move = undefined;
-        if (wheel) send(wheelInput(wheel.at, wheel.pixels, wheel.keys));
-        wheel = undefined;
     };
     const later = () => (moving ||= requestAnimationFrame(flush));
 
@@ -267,9 +263,10 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         const at = pointOf(e);
         if (!at || !frame) return;
         e.preventDefault();
-        const turn = wheelPixels(e, frame.height);
-        wheel = { at, pixels: { x: (wheel?.pixels.x ?? 0) + turn.x, y: (wheel?.pixels.y ?? 0) + turn.y }, keys: e };
-        later();
+        // At once, not on the next frame: a wheel turn's latency is what scrolling feels like, and Chrome merges turns
+        // the page hasn't taken yet itself.
+        if (move) flush();
+        send(wheelInput(at, wheelPixels(e, frame.height), e));
     };
     const onKey = (type: "down" | "up") => (e: KeyboardEvent) => {
         // The one key that isn't the page's: it gives the keyboard back to the window.
