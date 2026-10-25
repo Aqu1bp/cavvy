@@ -77,6 +77,7 @@ describe.skipIf(!chromePath)("browser regressions with Chrome", () => {
             fetch(req) {
                 const u = new URL(req.url);
                 if (u.pathname === "/hop") return Response.redirect(`http://127.0.0.1:${server.port}/inside`, 302);
+                if (u.pathname === "/empty") return new Response(null, { status: 204 });
                 return new Response(`<h1>${u.hostname}${u.pathname}</h1>`, { headers: { "content-type": "text/html" } });
             },
         });
@@ -94,6 +95,12 @@ describe.skipIf(!chromePath)("browser regressions with Chrome", () => {
             await page.gotoApproved(`${asked}/start`, new AbortController().signal);
             await page.evaluate("location.href = '/next'");
             await until(() => page.url === `${asked}/next`, "the page to move on its host");
+            // A yes for somewhere that never becomes a page (a 204) leaves the tab where it was, with the yes it had there.
+            await page.gotoApproved(`${plain}/empty`, new AbortController().signal).catch(() => undefined);
+            expect(page.url).toBe(`${asked}/next`);
+            await page.evaluate("location.href = '/again'");
+            await until(() => page.url === `${asked}/again`, "the page to move on its host still");
+            expect(blocked()).toBe(1);
             // Once it has left, coming back is a visit of its own.
             await page.evaluate(`location.href = '${plain}/away'`);
             await until(() => page.url === `${plain}/away`, "the page to leave");
@@ -128,6 +135,48 @@ describe.skipIf(!chromePath)("browser regressions with Chrome", () => {
             await until(() => seen.includes("127.0.0.1/pixel"), "the frame to run");
             await until(() => page.console.entries.some((e) => e.text.startsWith(`Blocked a load of http://localhost:${server.port}/x`)), "the frame's navigation to be refused");
             expect(seen.filter((r) => r.startsWith("localhost"))).toEqual([]);
+        } finally {
+            server.stop(true);
+        }
+    }, 30_000);
+
+    test("what a service worker keeps for a host an ask rule names is checked like the network's", async () => {
+        const seen: string[] = [];
+        // It answers for /secret itself, from no request a check could stop; the page it gives says it ran.
+        const worker = `self.addEventListener("install", () => self.skipWaiting());
+            self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
+            self.addEventListener("fetch", (e) => { if (new URL(e.request.url).pathname === "/secret") e.respondWith(new Response('<script>fetch("/ran")</script>', { headers: { "content-type": "text/html" } })); });`;
+        const server = Bun.serve({
+            hostname: "127.0.0.1",
+            port: 0,
+            fetch(req) {
+                const u = new URL(req.url);
+                seen.push(`${req.headers.get("host")?.split(":")[0]}${u.pathname}`);
+                const as = (type: string) => ({ headers: { "content-type": type } });
+                if (u.pathname === "/sw.js") return new Response(worker, as("text/javascript"));
+                if (u.pathname === "/keep") return new Response(`<script>addEventListener("message", () => (location.href = "/secret")); navigator.serviceWorker.register("/sw.js").then(() => navigator.serviceWorker.ready).then(() => fetch("/kept"))</script>`, as("text/html"));
+                if (u.pathname === "/outer") return new Response(`<iframe src="http://127.0.0.1:${server.port}${u.searchParams.get("frame")}"></iframe>`, as("text/html"));
+                return new Response("ok", as("text/plain"));
+            },
+        });
+        try {
+            let ask: string[] = [];
+            const checker = new PermissionChecker(() => ({ permissions: { ask } }), root);
+            const b = session({ refuse: (url: string, approved?: { file?: string; host?: string }) => checker.urlRefusal(url, approved) });
+            const page = await b.page();
+            const plain = `http://localhost:${server.port}`;
+            const refused = () => page.console.entries.filter((e) => e.text.startsWith(`Blocked a load of http://127.0.0.1:${server.port}/secret`)).length;
+            // Before there was a rule, a frame from 127.0.0.1 (in a process of its own) had a worker keep its pages.
+            await page.goto(`${plain}/outer?frame=/keep`);
+            await until(() => seen.includes("127.0.0.1/kept"), "the worker to be ready");
+            ask = ["WebFetch(domain:127.0.0.1)"];
+            // That frame going there itself, and a new frame starting there: each refused, though the worker would answer.
+            await page.evaluate(`document.querySelector("iframe").contentWindow.postMessage("go", "*")`);
+            await until(() => refused() === 1, "the frame's own navigation to be refused");
+            await page.goto(`${plain}/outer?frame=/secret`);
+            await until(() => refused() === 2, "the new frame's load to be refused");
+            await Bun.sleep(300);
+            expect(seen.filter((r) => r.startsWith("127.0.0.1/secret") || r.startsWith("127.0.0.1/ran"))).toEqual([]);
         } finally {
             server.stop(true);
         }

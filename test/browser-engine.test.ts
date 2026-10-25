@@ -833,7 +833,7 @@ describe("what a page may load", () => {
         for (const s of sessions.splice(0)) await s.dispose();
     });
 
-    async function paused(refuse?: (url: string) => string | undefined) {
+    async function paused(refuse?: (url: string, approved?: { file?: string; host?: string }) => string | undefined) {
         const session = new BrowserSession({ root, settings: () => ({}), refuse, pool: { startupMs: 20_000 } });
         sessions.push(session);
         const page = await session.page();
@@ -891,6 +891,8 @@ describe("what a page may load", () => {
         await fake.release("Fetch.enable");
         await until(async () => (await of("Runtime.runIfWaitingForDebugger", "F1")).length === 1, "the frame to be let go");
         expect((await of("Fetch.enable", "F1"))[0]!.params.patterns).toEqual((await of("Fetch.enable", page.sessionId))[0]!.params.patterns);
+        // What a service worker keeps would come from it, with no request to check: neither the page nor its frames use it.
+        for (const sessionId of [page.sessionId, "F1"]) expect((await of("Network.setBypassServiceWorker", sessionId)).map((c) => c.params)).toEqual([{ bypass: true }]);
         // Where it goes by itself is refused as the page's would be, and so are its own frames'.
         await fake.emit("Target.attachedToTarget", { sessionId: "F2", targetInfo: { targetId: "I2", type: "iframe", url: "" }, waitingForDebugger: true }, "F1");
         await until(async () => (await of("Runtime.runIfWaitingForDebugger", "F2")).length === 1, "the frame's frame to be let go");
@@ -913,6 +915,33 @@ describe("what a page may load", () => {
         expect(await request("https://allowed.example/x")).toBe("continued");
         expect(page.console.entries.some((e) => e.level === "error" && e.text.includes("blocked.example/x") && e.text.includes("Denied by permission rule WebFetch(domain:blocked.example)"))).toBe(true);
         expect(page.console.unseenErrors).toBe(1);
+    });
+
+    test("a yes for somewhere that never becomes a page (a 204) leaves the tab with the yes it had", async () => {
+        const asks = (url: string, approved?: { host?: string }) => {
+            const host = new URL(url).hostname;
+            return host.endsWith("asked.example") && host !== approved?.host ? "Requires approval by permission rule WebFetch(domain:*.asked.example)" : undefined;
+        };
+        const { page, fake } = await paused(asks);
+        const signal = new AbortController().signal;
+        await page.gotoApproved("https://a.asked.example/start", signal);
+        // the page changing its own address meanwhile (history.replaceState) is still a's page
+        await fake.hold("Page.navigate");
+        const pending = page.gotoApproved("https://b.asked.example/no-content", signal).catch(() => undefined);
+        await until(async () => (await fake.sent("Page.navigate")).some((c) => c.params.url.endsWith("/no-content")), "the navigation to start");
+        await fake.emit("Page.navigatedWithinDocument", { frameId: page.targetId, url: "https://a.asked.example/start#step" }, page.sessionId);
+        await until(async () => page.url.endsWith("#step"), "the address to change");
+        await fake.release("Page.navigate");
+        await pending;
+        expect(page.url).toBe("https://a.asked.example/start#step");
+        // the page going on about its host is still let be
+        await fake.emit("Page.frameNavigated", { frame: { id: page.targetId, url: "https://a.asked.example/next", loaderId: "Ln" } }, page.sessionId);
+        await Bun.sleep(100);
+        expect((await fake.sent("Page.navigate")).filter((c) => c.params.url === "about:blank")).toEqual([]);
+        // and having gone to b, it is b's alone: a going back to a is a visit of its own
+        await page.gotoApproved("https://b.asked.example/landing", signal);
+        await fake.emit("Page.frameNavigated", { frame: { id: page.targetId, url: "https://a.asked.example/again", loaderId: "Lm" } }, page.sessionId);
+        await until(async () => (await fake.sent("Page.navigate")).some((c) => c.params.url === "about:blank"), "the page to be sent back");
     });
 
     test("a page that has navigated somewhere refused is sent back to a blank page", async () => {

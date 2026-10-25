@@ -89,6 +89,8 @@ function answer(method: string, params: any, sessionId?: string): unknown {
             setTimeout(() => emit("Target.targetDestroyed", { targetId: params.targetId }), 0);
             return { success: true };
         case "Page.navigate":
+            // An answer with no content leaves the tab where it was, as Chrome does with a 204.
+            if (params.url.endsWith("/no-content")) return { frameId: t?.id, errorText: "net::ERR_ABORTED" };
             setTimeout(() => navigate(t!, params.url), 0);
             return { frameId: t?.id };
         case "Page.getNavigationHistory":

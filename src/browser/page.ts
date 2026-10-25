@@ -153,6 +153,8 @@ export class Page {
     closed = false;
     /** Main-frame navigations so far: a call that causes one waits for this to move. */
     private navigations = 0;
+    /** Of those, the ones to a new document (not a same-document change: an anchor, history.pushState). */
+    private documents = 0;
     private waiters = new Set<() => void>();
     private unlisten: (() => void)[] = [];
     /** The sessions of its frames from other sites (watchFrame). */
@@ -193,6 +195,8 @@ export class Page {
                 page.send("Page.setLifecycleEventsEnabled", { enabled: true }),
                 page.send("Runtime.enable"),
                 page.send("Network.enable"),
+                // What a service worker keeps comes from it without a request to check: it isn't used (watchFrame too).
+                page.send("Network.setBypassServiceWorker", { bypass: true }),
                 page.send("Log.enable"),
                 // Pages that load from somewhere the policy refuses never start loading; nor does anything a page reads from a file.
                 page.send("Fetch.enable", { patterns: CHECKED_REQUESTS }),
@@ -306,6 +310,7 @@ export class Page {
         this.on("Page.frameNavigated", (p: { frame: { id: string; parentId?: string; url: string; loaderId?: string } }) => {
             if (p.frame.parentId) return;
             this.navigations++;
+            this.documents++;
             this.url = p.frame.url;
             this.title = "";
             this.crashed = false;
@@ -423,7 +428,12 @@ export class Page {
         if (this.closed) return;
         this.frames.add(sessionId);
         try {
-            await Promise.all([this.cdp.send("Fetch.enable", { patterns: CHECKED_REQUESTS }, sessionId), this.cdp.send("Target.setAutoAttach", FRAME_ATTACH, sessionId)]);
+            await Promise.all([
+                this.cdp.send("Fetch.enable", { patterns: CHECKED_REQUESTS }, sessionId),
+                this.cdp.send("Network.enable", {}, sessionId),
+                this.cdp.send("Network.setBypassServiceWorker", { bypass: true }, sessionId),
+                this.cdp.send("Target.setAutoAttach", FRAME_ATTACH, sessionId),
+            ]);
         } catch {
             return;
         }
@@ -541,13 +551,17 @@ export class Page {
     async gotoApproved(url: string, signal?: AbortSignal): Promise<boolean> {
         this.stillAgent(signal);
         if (url.startsWith("file:")) this.approvedFile = realpathSync(fileURLToPath(url));
+        const before = this.approvedHost;
+        const documents = this.documents;
         this.approvedHost = hostOf(url);
         try {
             return await this.goto(url, signal);
         } finally {
             this.approvedFile = undefined;
-            // A load that was refused or failed left the tab where it was.
-            if (hostOf(this.url) !== this.approvedHost) this.approvedHost = undefined;
+            // A load that never became a page (a 204, a download, one stopped) left the tab where it was, with what it was let
+            // do there; one that went anywhere (an error page too) holds only on the host it was let open on.
+            if (this.documents === documents) this.approvedHost = before;
+            else if (hostOf(this.url) !== this.approvedHost) this.approvedHost = undefined;
         }
     }
 
