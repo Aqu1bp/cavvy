@@ -105,6 +105,11 @@ function shown(o: RemoteObject): string {
 }
 
 /** Why a navigation failed, with what to do about it. */
+/** The browser's own error page and a blank tab aren't places. */
+function nowhere(url: string): boolean {
+    return url === "" || url === "about:blank" || url.startsWith("chrome-error:");
+}
+
 function navigationFailure(url: string, error: string): string {
     const where = displayUrl(url);
     if (/ERR_CONNECTION_REFUSED/.test(error)) return `Couldn't load ${where}: nothing is listening there (${error}). If it's a dev server, start it first (Bash with run_in_background) and wait for it to be ready.`;
@@ -155,6 +160,8 @@ export class Page {
     private navigations = 0;
     /** Of those, the ones to a new document (not a same-document change: an anchor, history.pushState). */
     private documents = 0;
+    /** Approved navigations under way (gotoApproved). */
+    private approving = 0;
     private waiters = new Set<() => void>();
     private unlisten: (() => void)[] = [];
     /** The sessions of its frames from other sites (watchFrame). */
@@ -318,9 +325,12 @@ export class Page {
             this.network.forgetInflight();
             this.lastOutline = undefined;
             this.documentStatus = this.document && this.document.loaderId === p.frame.loaderId ? this.document.status : undefined;
-            // Where a person goes is theirs to go; otherwise a yes holds only while the tab stays on the host it was for.
+            // Where a person goes is theirs to go; otherwise a yes holds only while the tab stays on the host it was for. The
+            // browser's error page for a load refused just before can land while the next yes is on its way, and is no leaving
+            // (no other page can script it; a blank page another opened, it could).
+            const late = this.approving > 0 && this.url.startsWith("chrome-error:");
             if (this.control.owner === "human") this.approvedHost = hostOf(this.url);
-            else if (this.approvedHost !== undefined && hostOf(this.url) !== this.approvedHost) this.approvedHost = undefined;
+            else if (this.approvedHost !== undefined && !late && hostOf(this.url) !== this.approvedHost) this.approvedHost = undefined;
             const why = this.refusal(this.url);
             if (why) void this.block(this.url, why);
             this.changed();
@@ -443,8 +453,7 @@ export class Page {
     /** Why a page may not be at (or load) this address, if it may not: the URL policy, then the permission rules' deny rules. */
     private refusal(url: string): string | undefined {
         if (!allowedPage(url, this.o.root)) return (checkUrl(url, this.o.root) as { error: string }).error;
-        // The browser's own error page and a blank tab aren't places.
-        if (url === "" || url === "about:blank" || url.startsWith("chrome-error:")) return undefined;
+        if (nowhere(url)) return undefined;
         const approved: BrowserApproval = { file: this.approvedFile, host: this.control.owner === "human" ? hostOf(url) : this.approvedHost };
         return this.o.refuse?.(url, approved);
     }
@@ -554,9 +563,11 @@ export class Page {
         const before = this.approvedHost;
         const documents = this.documents;
         this.approvedHost = hostOf(url);
+        this.approving++;
         try {
             return await this.goto(url, signal);
         } finally {
+            this.approving--;
             this.approvedFile = undefined;
             // A load that never became a page (a 204, a download, one stopped) left the tab where it was, with what it was let
             // do there; one that went anywhere (an error page too) holds only on the host it was let open on.
@@ -684,6 +695,9 @@ export class Page {
         this.streaming = true;
         this.streamEpoch++;
         this.fullFrames = 0;
+        // Started before the page has drawn at the size it was just given, its first frame is the old picture labelled with
+        // the new size: it starts once the page has drawn twice, or a moment has passed (a page stuck in a dialog draws nothing).
+        await this.send("Runtime.evaluate", { expression: "new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))", awaitPromise: true }, 1000).catch(() => undefined);
         // One size and quality throughout: a stream that changed them while scrolling (restarting it each time) saved a
         // few milliseconds and cost a blur, a stall and a pop on every gesture.
         await this.send("Page.startScreencast", { format: "jpeg", quality: STREAM_QUALITY, maxWidth: Math.round(width), maxHeight: Math.round(height), everyNthFrame: 1 });

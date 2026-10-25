@@ -944,6 +944,22 @@ describe("what a page may load", () => {
         await until(async () => (await fake.sent("Page.navigate")).some((c) => c.params.url === "about:blank"), "the page to be sent back");
     });
 
+    test("the error page of a load refused just before, landing late, doesn't end a yes just given; a blank page does", async () => {
+        const asks = (url: string, approved?: { host?: string }) => (new URL(url).hostname === "asked.example" && approved?.host !== "asked.example" ? "Requires approval by permission rule WebFetch(domain:asked.example)" : undefined);
+        const { page, fake, request } = await paused(asks);
+        await fake.hold("Page.navigate");
+        const going = page.gotoApproved("https://asked.example/start", new AbortController().signal);
+        await until(async () => (await fake.sent("Page.navigate")).some((c) => c.params.url === "https://asked.example/start"), "the navigation to start");
+        await fake.emit("Page.frameNavigated", { frame: { id: page.targetId, url: "chrome-error://chromewebdata/", loaderId: "Le" } }, page.sessionId);
+        expect(await request("https://asked.example/start")).toBe("continued");
+        await fake.release("Page.navigate");
+        await going;
+        expect(page.url).toBe("https://asked.example/start");
+        // A blank page another page sent the tab to is that page's to script: the yes ends there.
+        await fake.emit("Page.frameNavigated", { frame: { id: page.targetId, url: "about:blank", loaderId: "Lb" } }, page.sessionId);
+        expect(await request("https://asked.example/framed")).toBe("BlockedByClient");
+    });
+
     test("a page that has navigated somewhere refused is sent back to a blank page", async () => {
         const { page, fake } = await paused((url) => (url.includes("blocked.example") ? "Denied by permission rule WebFetch(domain:blocked.example)" : undefined));
         await fake.emit("Page.frameNavigated", { frame: { id: "T1", url: "https://blocked.example/landed", loaderId: "Lx" } }, page.sessionId);
