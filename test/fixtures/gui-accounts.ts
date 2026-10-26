@@ -9,6 +9,8 @@ const source = readFileSync(new URL("../../gui/src/components/Accounts.tsx", imp
 const defaultAccount: AccountInfo = { id: "default", name: "Default", folder: "/fake/default", managed: false };
 const personal: AccountInfo = { id: "personal", name: "Personal", folder: "/fake/personal", managed: true, signedIn: true, email: "person@example.test", plan: "Pro" };
 const settle = () => Bun.sleep(0);
+// The model picker's "Add account…" asks Settings for a provider's new-account form through this.
+const [addAccountFor, setAddAccountFor] = solid.createSignal<string | undefined>();
 
 function fixture(initial = [defaultAccount], provider = "claude-code", extra: { info?: Record<string, any>; cli?: Record<string, any>; props?: Record<string, any> } = {}) {
     const root = node("root");
@@ -45,6 +47,7 @@ function fixture(initial = [defaultAccount], provider = "claude-code", extra: { 
         Dialog: (p: any) => solid.createMemo(() => p.open ? p.children : null),
         MoreHorizontal: () => null, Check: () => null, ExternalLink: () => null, ProviderIcon: () => null, Spinner: () => node("spinner"),
         openExternal: (url: string) => opened.push(url),
+        addAccountFor, setAddAccountFor, requestAnimationFrame: () => 0,
     });
     const dispose = renderer.render(() => Accounts(Object.defineProperties({ get provider() { return info(); } }, Object.getOwnPropertyDescriptors(extra.props ?? {}))), root);
     const nodes = () => {
@@ -88,6 +91,20 @@ for (const provider of ["claude-code", "codex"]) test(`${provider}: one account 
         trigger.props.onClick(); f.button("Learn more…").props.onClick();
         expect(text(f.root)).toContain("separate sign-ins, for example personal and work");
     } finally { f.dispose(); }
+});
+
+test("Add account from the model picker opens that provider's new-account form, once", () => {
+    setAddAccountFor("claude-code");
+    const other = fixture(undefined, "codex", { info: { configured: true } });
+    const f = fixture(undefined, "claude-code", { info: { configured: true } });
+    try {
+        expect(f.form("Add account")).toBeDefined();
+        expect(other.form("Add account")).toBeUndefined();
+        // Asked for once: closing the form doesn't bring it back.
+        expect(addAccountFor()).toBeUndefined();
+        f.button("Cancel").props.onClick();
+        expect(f.form("Add account")).toBeUndefined();
+    } finally { f.dispose(); other.dispose(); setAddAccountFor(undefined); }
 });
 
 test("a connected provider shows its plan, a status dot and its one account's email, and turns off from its menu", async () => {

@@ -144,5 +144,39 @@ async function checkGlide() {
     setView("turns", 0, "blocks", 0, "text", text(52));
     await settle();
     near(scroller().scrollTop, top, "glide: growth doesn't pull an unpinned reader down");
+    await checkOpenWhileRunning();
     setPrefs({ motion: "instant" });
+}
+
+/** Opening a command row or a tool row while the turn runs: it stays where it was clicked, nothing glides, and growth below leaves it be. */
+async function checkOpenWhileRunning() {
+    const text = (n: number) => Array.from({ length: n }, (_, i) => `Line ${i} of the answer.`).join("\n\n");
+    const bash = { t: "tool", id: "cmd", name: "Bash", title: "", status: "ok", durationMs: 2000, input: { command: "bun test", description: "Run the tests" }, output: Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n") };
+    const read = { t: "tool", id: "read", name: "Read", title: "Read(a.ts)", status: "ok", input: { file_path: "a.ts" }, summary: "Read 3 lines", output: "one\ntwo\nthree" };
+    for (const [id, toggle] of [["cmd", ".cmd-h"], ["read", ".tool-line"]] as const) {
+        setView("turns", [{ id: "open", status: "running", startedAt: Date.now(), prompt: { text: "Go" }, blocks: [{ t: "text", id: "o0", text: text(30) }, bash, read, { t: "text", id: "o1", text: text(4) }] }]);
+        setView("state", { ...state, busy: true, activity: { label: "Thinking", since: Date.now() } });
+        await settle();
+        // Down to the end from above, as the reader would scroll (already there, no scroll event would come).
+        await scroll(0);
+        await scroll(scroller().scrollHeight);
+        check(!row(".jump"), `open ${id}: starts pinned to the end`);
+        const el = row(`[data-find="${id}"] ${toggle}`);
+        const before = el.getBoundingClientRect().top;
+        el.click();
+        check(el.getAttribute("aria-expanded") === "true", `open ${id}: it opens`);
+        near(el.getBoundingClientRect().top, before, `open ${id}: the row stays where it was clicked`);
+        await frames(3);
+        near(el.getBoundingClientRect().top, before, `open ${id}: and stays there, the frames after`);
+        check(![...root.querySelectorAll("[data-turn], .transcript-end")].some((n) => n.getAnimations().some((a) => !(a instanceof CSSAnimation))), `open ${id}: nothing glides`);
+        check(row(".jump"), `open ${id}: the reader is reading it, so the end isn't followed`);
+        // More streamed below doesn't move it.
+        setView("turns", 0, "blocks", 3, "text", text(12));
+        await settle();
+        near(el.getBoundingClientRect().top, before, `open ${id}: growth below leaves it where it is`);
+        // Folded again, it stays too.
+        el.click();
+        await frames(2);
+        near(el.getBoundingClientRect().top, before, `fold ${id}: the row stays where it was clicked`);
+    }
 }

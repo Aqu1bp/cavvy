@@ -51,7 +51,9 @@ export async function connect(s: McpServerRef): Promise<{ instructions?: string;
     return { instructions: init.instructions, tools: list.tools };
 }
 
-export async function callTool(s: McpServerRef, name: string, args: Record<string, unknown>, meta?: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {
+export async function callTool(s: McpServerRef, name: string, args: Record<string, unknown>, meta?: Record<string, unknown>): Promise<{ text: string; isError: boolean; images?: string[] }> {
     const r = await rpc(s, "tools/call", { name, arguments: args, ...(meta ? { _meta: meta } : {}) });
-    return { text: (r.content ?? []).map((c: any) => c.text ?? "").join("\n"), isError: Boolean(r.isError) };
+    // The media types of the image content that came with the text.
+    const images = (r.content ?? []).filter((c: any) => c.type === "image").map((c: any) => c.mimeType as string);
+    return { text: (r.content ?? []).map((c: any) => c.text ?? "").join("\n"), isError: Boolean(r.isError), ...(images.length ? { images } : {}) };
 }

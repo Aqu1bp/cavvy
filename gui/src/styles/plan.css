@@ -1,0 +1,333 @@
+/* ---- The plan, in the conversation ----
+   Two pieces (design: the inspector mockup's "Plan in chat"):
+   - Steps (StepsTray.tsx): the agent's to-do list, as a glass strip on top of
+     the composer, above the Up next tray. One line while it works: the
+     progress and the step under way. It opens upward into the whole list.
+   - The proposed plan (Activity.tsx PlanCard): a card in the turn that
+     presented it, with Read the plan, its actions (worktree, save, copy), and
+     where it went. */
+
+/* ---- Steps -------------------------------------------------------------- */
+
+/* The strip's place in the dock: its one line. The list opens over the conversation from there (the tray is
+   pinned to this slot's bottom), so opening it changes neither the dock's height nor the conversation. */
+.steps-slot {
+    position: relative;
+    z-index: 1;
+    flex: none;
+    height: calc(38 * var(--sp));
+    /* 6px above what's under it (the Up next tray or the box): the composer's column gap is 8px. */
+    margin: 0 calc(14 * var(--sp)) calc(-2 * var(--sp));
+}
+
+.steps-tray.glass {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    flex-direction: column;
+    border-radius: calc(16 * var(--sp));
+    overflow: hidden;
+    animation: c-in 260ms var(--ease);
+}
+
+.st-row {
+    position: relative;
+    flex: none;
+}
+
+.st-main {
+    display: flex;
+    align-items: center;
+    gap: calc(9 * var(--sp));
+    width: 100%;
+    height: calc(38 * var(--sp));
+    padding: 0 calc(10 * var(--sp)) 0 calc(12 * var(--sp));
+    text-align: left;
+    font-size: 0.929rem;
+    color: var(--fg-2);
+}
+
+.st-main:hover .st-chev {
+    color: var(--fg);
+}
+
+/* Progress, as a ring that fills with each step done. */
+.st-ring {
+    width: calc(16 * var(--sp));
+    height: calc(16 * var(--sp));
+    flex: none;
+    border-radius: 50%;
+    background: conic-gradient(var(--ok) 0 var(--p), var(--line-strong) 0);
+    -webkit-mask: radial-gradient(circle, transparent calc(5 * var(--sp)), #000 calc(5.5 * var(--sp)));
+    mask: radial-gradient(circle, transparent calc(5 * var(--sp)), #000 calc(5.5 * var(--sp)));
+}
+
+.st-ring.all {
+    display: grid;
+    place-items: center;
+    background: var(--ok);
+    color: var(--accent-ink);
+    -webkit-mask: none;
+    mask: none;
+}
+
+.st-k {
+    flex: none;
+    font-size: 0.857rem;
+    font-weight: 600;
+    color: var(--fg-3);
+    font-variant-numeric: tabular-nums;
+}
+
+.st-now {
+    flex: 1;
+    min-width: 0;
+    color: var(--fg);
+}
+
+.st-xroom {
+    width: calc(24 * var(--sp));
+    flex: none;
+}
+
+.st-chev {
+    flex: none;
+    color: var(--fg-3);
+    transition: transform calc(var(--dur-panel) * 1.25) var(--ease);
+}
+
+.steps-tray.open .st-chev {
+    transform: rotate(180deg);
+}
+
+/* Hide: over its room in the line, shown while the pointer is on the strip (or it has the focus). */
+.st-x {
+    position: absolute;
+    top: 50%;
+    right: calc(33 * var(--sp));
+    display: grid;
+    place-items: center;
+    width: calc(24 * var(--sp));
+    height: calc(24 * var(--sp));
+    margin-top: calc(-12 * var(--sp));
+    border-radius: calc(7 * var(--sp));
+    color: var(--fg-3);
+    opacity: 0;
+    transition: opacity 120ms, background 120ms, color 120ms;
+}
+
+.steps-tray:hover .st-x,
+.st-x:focus-visible {
+    opacity: 1;
+}
+
+.st-x:hover {
+    background: var(--hover);
+    color: var(--fg);
+}
+
+/* The whole list, above the line (which stays at the bottom, next to the composer). */
+.st-list {
+    display: grid;
+    grid-template-rows: 0fr;
+    /* 240ms, and none when Settings → Motion is off. */
+    transition: grid-template-rows calc(var(--dur-panel) * 1.5) var(--ease);
+}
+
+.steps-tray.open .st-list {
+    grid-template-rows: 1fr;
+}
+
+.st-list > div {
+    min-height: 0;
+    overflow: hidden;
+}
+
+.st-list ul {
+    margin: 0;
+    padding: calc(6 * var(--sp)) calc(6 * var(--sp)) calc(2 * var(--sp));
+    max-height: min(220 * var(--sp), 40vh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    list-style: none;
+    border-bottom: 0.5px solid var(--line);
+}
+
+.st-list li {
+    display: grid;
+    grid-template-columns: calc(18 * var(--sp)) minmax(0, 1fr);
+    gap: calc(9 * var(--sp));
+    padding: calc(5 * var(--sp)) calc(8 * var(--sp));
+    border-radius: calc(9 * var(--sp));
+    font-size: 0.929rem;
+    line-height: 1.45;
+    color: var(--fg);
+}
+
+.st-list .box {
+    display: grid;
+    place-items: center;
+    width: calc(15 * var(--sp));
+    height: calc(15 * var(--sp));
+    margin-top: calc(2 * var(--sp));
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 1.5px var(--fg-4);
+}
+
+.st-list .done .box {
+    background: var(--ok);
+    box-shadow: none;
+    color: var(--accent-ink);
+}
+
+.st-list .done > span:last-child {
+    color: var(--fg-3);
+    text-decoration: line-through;
+    text-decoration-color: var(--fg-4);
+}
+
+.st-list .now .box {
+    box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+
+.st-list .now .box::after {
+    content: "";
+    width: calc(6 * var(--sp));
+    height: calc(6 * var(--sp));
+    border-radius: 50%;
+    background: var(--accent);
+}
+
+.st-list .now > span:last-child {
+    font-weight: 500;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .steps-tray.glass {
+        animation: none;
+    }
+
+    .st-list,
+    .st-chev {
+        transition: none;
+    }
+}
+
+/* ---- The proposed plan, as a card in its turn ------------------------------ */
+
+.tcard.plan-card {
+    margin: calc(4 * var(--sp)) 0 calc(14 * var(--sp));
+    border-radius: calc(14 * var(--sp));
+    box-shadow: 0 0 0 0.5px var(--line-strong), 0 1px 2px var(--hover);
+}
+
+.pc-h {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+    padding: calc(10 * var(--sp)) calc(8 * var(--sp)) 0 calc(14 * var(--sp));
+    font-size: 0.857rem;
+    font-weight: 600;
+    color: var(--fg-3);
+}
+
+.pc-h .grow {
+    flex: 1;
+}
+
+.pc-state {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
+    min-width: 0;
+    font-weight: 500;
+    color: var(--fg-3);
+}
+
+.pc-state.ok {
+    color: var(--ok);
+}
+
+.pc-state.wait {
+    color: var(--warn);
+}
+
+.pc-t {
+    padding: calc(6 * var(--sp)) calc(14 * var(--sp)) 0;
+    font-size: 1.071rem;
+    font-weight: 650;
+    letter-spacing: -0.005em;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+/* About three lines of the plan, fading out: Read the plan has all of it. */
+.pc-p {
+    position: relative;
+    max-height: calc(72 * var(--sp));
+    overflow: hidden;
+    padding: calc(6 * var(--sp)) calc(14 * var(--sp)) 0;
+    color: var(--fg-2);
+}
+
+.pc-p::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: calc(36 * var(--sp));
+    background: linear-gradient(transparent, var(--sheet));
+    pointer-events: none;
+}
+
+.pc-f {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(8 * var(--sp)) calc(8 * var(--sp));
+}
+
+.pc-f .btn.ghost {
+    background: var(--sheet-2);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+}
+
+/* Where the plan went: a new worktree's session ("Implementing on <branch>"). */
+.pc-link {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    width: 100%;
+    min-width: 0;
+    padding: calc(9 * var(--sp)) calc(14 * var(--sp));
+    border-top: 0.5px solid var(--line);
+    font-size: 0.893rem;
+    color: var(--fg-2);
+    background: var(--sheet-2);
+    text-align: left;
+}
+
+.pc-link:hover {
+    color: var(--fg);
+}
+
+.pc-link > svg {
+    flex: none;
+    color: var(--fg-3);
+}
+
+.pc-link .mono {
+    font-size: 0.857rem;
+    color: var(--fg);
+}
+
+.pc-link .go {
+    flex: none;
+    margin-left: auto;
+    color: var(--accent-text);
+    font-weight: 500;
+}

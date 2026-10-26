@@ -30,3 +30,12 @@ test("files shown under one name stay apart: by handle, a literal name first, a 
     expect(findPick([one], { path: "[REDACTED X].txt", token: "git:gone" }, same)).toBeUndefined();
     expect(new Set([one, two, literal, named].map((f) => pickKey(pickOf(f)))).size).toBe(4);
 });
+
+test("a refreshed list is the same files: the reader's stacked cards, keyed as picks are, keep their place", () => {
+    const before = [one, two, literal, named];
+    const after = before.map((f) => ({ ...f }));
+    expect(after.map((f) => pickKey(pickOf(f)))).toEqual(before.map((f) => pickKey(pickOf(f))));
+    // A file asked for that the list doesn't hold (past its 300) is none of them: the reader fetches it by itself.
+    expect(findPick(after, { path: "src/elsewhere.ts" }, same)).toBeUndefined();
+    expect(findPick(after, pickOf(two), same)).toBe(after[1]);
+});

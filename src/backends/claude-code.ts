@@ -35,10 +35,11 @@ import { ONE_OFF_TIMEOUT_MS, oneOffAnswer, oneOffPrompt, oneOffRefusal } from ".
 import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
 import type { PlanLimits } from "../server/protocol";
-import { limitAccountLabel, limitNews, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
+import { cliNotice } from "./notice-data";
+import { creditsNote, limitAccountLabel, limitNews, limitNotice, limitStopOf, limitStopReport, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
 import { accountEnv, defaultAccount } from "../providers/accounts";
 import { signInAdvice } from "./account-login";
-import { accountProtectionFolders, claudeAccountSandbox, watchAccountFolders } from "./account-permissions";
+import { accountProtectionFolders } from "./account-permissions";
 import type { PermissionMode } from "../permissions/modes";
 import type { ToolDisplay } from "../tools/types";
 import { diffLines, diffStats } from "../util/diff";
@@ -58,6 +59,7 @@ import type { NativeGoal } from "../agent/goal";
 import { ClaudeGoalWatch, claudeTranscriptFile } from "./claude-goal";
 import { ClaudeLive } from "./claude-live";
 import type { AgentCliStatus } from "./index";
+import { servedBrowserTool } from "../tools/browser-tools";
 
 /** checkAgentCli, imported when it's asked for (index.ts imports this file). */
 async function checkAgentCliLazy(providerId: string, signal?: AbortSignal, accountId?: string): Promise<AgentCliStatus> {
@@ -158,6 +160,9 @@ interface BackgroundWork {
     toolUseId?: string;
     label: string;
 }
+
+/** A call's result when the user declined it ("The user doesn't want to proceed with this tool use. The tool use was rejected …"). */
+export const DECLINED = /doesn't want to proceed with this tool use|tool use was rejected/i;
 
 /** What a background sub-agent's Agent call says when it ends without a report. */
 export const LAUNCH_END: Record<string, string> = {
@@ -509,6 +514,16 @@ class ClaudeTurn {
      * which of its turns. The first turn after that takes its report (reportDue).
      */
     private endedIn = new Map<string, number>();
+    /**
+     * Shells and monitors that left Claude Code's list with no task_notification yet: their report turn follows the
+     * notification, so a turn that starts before it (a queued message's) doesn't take their report (#308).
+     */
+    private unnotified = new Set<string>();
+    /**
+     * Of those, ones whose notification came while a prompt of ours was unanswered: its turn may not have started
+     * yet, and doesn't take their report, so they're kept until it's answered.
+     */
+    private notifiedEarly = new Set<string>();
     /** What each sub-agent said last: its report, when nothing else carries one. */
     private lastWords = new Map<string, string>();
     /** Each sub-agent's token count as Claude Code last reported it. */
@@ -825,7 +840,9 @@ class ClaudeTurn {
             } else if (now - this.commandWaitingSince.get(id)! >= grace) stopping.push({ task, why: `when its background grace expired after ${grace / 1000}s` });
         }
         if (stopping.length) {
-            if (stopping.length === left.length) {
+            // All that's left is stopped, unless a task's report is still due: then they're stopped by task id and
+            // that turn is waited for, as at the overall cap below (#308).
+            if (stopping.length === left.length && !this.reportDue()) {
                 for (const { task, why } of stopping) this.noteStopped([task], "harness", why);
                 this.toldStopped = true;
                 return true;
@@ -1177,7 +1194,7 @@ class ClaudeTurn {
 
     async run(content: unknown[]): Promise<BackendResult> {
         const { signal } = this.t;
-        if (signal.aborted) return { reason: "aborted", text: "", actions: [] };
+        if (signal.aborted) return { reason: "aborted", text: "", actions: [], refused: true };
         let env: ReturnType<typeof accountEnv>;
         try {
             env = accountEnv(this.def.id, this.t.accountId, this.t.cwd);
@@ -1188,11 +1205,6 @@ class ClaudeTurn {
         }
         // Its /goal, as it goes: read from its transcript (src/backends/claude-goal.ts).
         this.goals = new ClaudeGoalWatch(() => (this.sessionId ? claudeTranscriptFile(env.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR, this.t.cwd, this.sessionId) : undefined), Date.now(), (goal) => this.sink.emit({ type: "goal", goal }));
-        const stopAccountWatch = watchAccountFolders(() => {
-            this.failure = "Account folders changed while Claude Code was running. Send again to apply their updated protections.";
-            this.reason = "error";
-            void this.proc.kill();
-        });
         let killTimer: ReturnType<typeof setTimeout> | undefined;
         const onAbort = () => {
             this.aborted = true;
@@ -1217,6 +1229,11 @@ class ClaudeTurn {
                     this.commandWaitingSince.clear();
                     this.busy = false;
                     const ours = this.answers(m);
+                    // Our prompts are answered: a report whose notification came meanwhile is due after this turn.
+                    if (!this.unanswered.size) {
+                        for (const id of this.notifiedEarly) this.unnotified.delete(id);
+                        this.notifiedEarly.clear();
+                    }
                     this.onResult(m, ours);
                     if (ours && !this.unanswered.size) this.answered = true;
                     this.syncBackground();
@@ -1238,7 +1255,6 @@ class ClaudeTurn {
         } finally {
             clearInterval(goalTimer);
             this.goals?.poll();
-            stopAccountWatch();
             signal.removeEventListener("abort", onAbort);
             this.stopWaiting();
             clearTimeout(this.settleTimer);
@@ -1274,7 +1290,8 @@ class ClaudeTurn {
         for (const id of [...this.liveAgents]) this.endAgent(id, "aborted");
         for (const [id, p] of this.tools) this.endTool(id, p, this.aborted ? "Interrupted by user" : "Claude Code stopped before this finished.", true);
         const text = this.texts.join("\n\n");
-        if (this.aborted) return { reason: "aborted", text, actions: this.actions, backgroundStopped };
+        // Stopped before the prompt went: Claude Code never had it.
+        if (this.aborted) return { reason: "aborted", text, actions: this.actions, backgroundStopped, ...(this.prompted ? {} : { refused: true }) };
         const error = this.failure && this.diagnostic && !this.failure.includes(this.diagnostic) ? `${this.failure} ${this.diagnostic}` : this.failure;
         // A session it can't find ends with an error result (or exit) before init.
         const err = this.proc.stderr();
@@ -1282,7 +1299,10 @@ class ClaudeTurn {
         if (!this.answered || this.unanswered.size || resumeFailed) {
             const code = await this.proc.exited;
             const why = [error, cliMessage(err)].filter(Boolean).join(": ") || `claude exited with code ${code}`;
-            return { reason: "error", text, actions: this.actions, backgroundStopped, error: resumeFailed ? `Couldn't resume the Claude Code session: ${why}` : `Claude Code stopped: ${why}`, resumeFailed, ...this.limitStop() };
+            // No turn started (no init): it exited before taking the prompt, which isn't in its session. Once a turn has
+            // started, it keeps the prompt in its transcript, even when the request then fails (signed out, the limit).
+            const refused = this.turnCount === 0 && !resumeFailed;
+            return { reason: "error", text, actions: this.actions, backgroundStopped, error: resumeFailed ? `Couldn't resume the Claude Code session: ${why}` : `Claude Code stopped: ${why}`, resumeFailed, ...this.limitStop(), ...(refused ? { refused } : {}) };
         }
         const reason = this.reason ?? "done";
         // An answer with nothing in it (not a command of Claude Code's own, like /compact): said, so the turn isn't just blank.
@@ -1292,7 +1312,7 @@ class ClaudeTurn {
 
     /** The turn stopped on the plan's usage limit: when it resets, for an automatic resume. */
     private limitStop(): Pick<BackendResult, "limit"> {
-        return this.limitHit ? { limit: { resetsAt: this.limits?.reached ? this.limits.resetsAt : undefined } } : {};
+        return this.limitHit ? { limit: limitStopOf(this.limits, this.limits?.reached ? this.limits.resetsAt : undefined) } : {};
     }
 
     private fastModeNotice?: string;
@@ -1357,6 +1377,8 @@ class ClaudeTurn {
                 // Each turn starts with one, a turn Claude Code takes itself (with background reports) too.
                 this.busy = true;
                 this.turnCount++;
+                // Their report turn is still to come, after this one.
+                for (const id of this.unnotified) this.endedIn.set(id, this.turnCount);
                 clearTimeout(this.settleTimer);
                 this.settleTimer = undefined;
                 if (typeof m.session_id === "string" && m.session_id) {
@@ -1376,7 +1398,11 @@ class ClaudeTurn {
                     const next = m.tasks.map((t: any) => ({ id: String(t?.task_id ?? ""), type: String(t?.task_type ?? ""), description: typeof t?.description === "string" ? t.description : "" }));
                     // A shell/Monitor may leave the list before its notification and
                     // automatic report turn. Give that turn the same grace as agents.
-                    for (const t of this.background ?? []) if (t.type !== "local_agent" && !this.stoppedTaskIds.has(t.id) && !next.some((n: { id: string }) => n.id === t.id)) this.markEnded(t.id);
+                    for (const t of this.background ?? []) {
+                        if (t.type === "local_agent" || this.stoppedTaskIds.has(t.id) || next.some((n: { id: string }) => n.id === t.id)) continue;
+                        if (!this.endedIn.has(t.id) && !this.taskEnds.has(t.id)) this.unnotified.add(t.id);
+                        this.markEnded(t.id);
+                    }
                     for (const id of this.commandWaitingSince.keys()) {
                         if (!next.some((t: { id: string }) => t.id === id)) this.commandWaitingSince.delete(id);
                     }
@@ -1407,6 +1433,9 @@ class ClaudeTurn {
             }
             case "task_notification": {
                 this.commandWaitingSince.delete(m.task_id);
+                // Its report turn follows; a prompt's turn that was already waiting goes before it (notifiedEarly).
+                if (this.unanswered.size && this.unnotified.has(m.task_id)) this.notifiedEarly.add(m.task_id);
+                else this.unnotified.delete(m.task_id);
                 if (typeof m.task_id === "string" && typeof m.status === "string") this.taskEnds.set(m.task_id, m.status);
                 // A sub-agent finished (in the foreground, this comes before its Agent call's result). It
                 // ran even if nothing of it showed. A later one replaces what this one said (the report it
@@ -1424,8 +1453,11 @@ class ClaudeTurn {
                 const listed = this.background?.find((t) => t.id === m.task_id);
                 if (listed && !this.agentLabels.has(id)) this.background = this.background!.filter((t) => t.id !== m.task_id);
                 if (!this.agentLabels.has(id)) {
-                    // One an earlier run left behind (stopped with it, said when the session is resumed).
-                    if (summary && (m.status === "stopped" || m.status === "failed")) this.sink.emit({ type: "notice", level: "info", message: `Claude Code: ${summary}.` });
+                    // One an earlier run left behind (stopped with it): Claude Code says so as it resumes the session,
+                    // before the run's first turn. Not a command of this run's that ended (a foreground one stopped by Esc,
+                    // a sub-agent's that failed): its own row says so (#311).
+                    const leftBehind = Boolean(this.t.resumeId) && this.turnCount === 0 && m.owned_by_subagent !== true;
+                    if (leftBehind && summary && (m.status === "stopped" || m.status === "failed")) this.sink.emit({ type: "notice", level: "info", message: `Claude Code: ${summary}.` });
                     break;
                 }
                 const background = this.backgroundAgents.has(id);
@@ -1440,7 +1472,10 @@ class ClaudeTurn {
                 break;
             }
             case "informational":
-                if (typeof m.content === "string" && m.content.trim()) this.sink.emit({ type: "notice", level: m.level === "warning" ? "warn" : m.level === "error" ? "error" : "info", message: m.content });
+                if (typeof m.content === "string" && m.content.trim()) {
+                    const level = m.level === "warning" ? "warn" : m.level === "error" ? "error" : "info";
+                    this.sink.emit({ type: "notice", level, message: m.content, data: cliNotice(this.def.id, level, m.content) });
+                }
                 break;
         }
     }
@@ -1525,6 +1560,8 @@ class ClaudeTurn {
                 this.tools.set(b.id, { name, input, title, started: Date.now() });
                 if (b.name === "Bash" && typeof input.command === "string") this.shellCommands.set(b.id, { command: input.command, timeoutMs: claudeCommandTimeoutMs(input) });
                 if (b.name === "Agent" || b.name === "Task") this.agentLabels.set(b.id, String(input.description ?? input.subagent_type ?? "sub-agent"));
+                // A skill can run as its own agent (/code-review does): one only if its steps come (task_started, its messages).
+                if (b.name === "Skill") this.agentLabels.set(b.id, String(input.skill ?? "skill"));
                 this.sink.emit({ type: "tool_start", call: { type: "tool_call", id: b.id, name, input }, title });
             }
         }
@@ -1536,7 +1573,7 @@ class ClaudeTurn {
             this.failure = `Claude Code isn't signed in, or its sign-in expired. ${signInAdvice(this.def.id, this.t.accountId)}`;
         } else if (error === "rate_limit") {
             this.limitHit = true;
-            if (!this.limits?.reached) this.noteLimits({ provider: this.def.id, accountId: this.t.accountId ?? "default", windows: [], reached: true, at: Date.now() }, true);
+            this.noteLimits(limitStopReport(this.def.id, this.t.accountId ?? "default"), true);
             this.failure = this.limitFailure();
         }
         else if (error === "billing_error") this.failure = "Claude Code reported a billing problem with the account it's signed in to.";
@@ -1573,6 +1610,11 @@ class ClaudeTurn {
                 // Its report came as a handback: the result only says where to find it.
                 content = this.reports.get(b.tool_use_id) || content;
             }
+            // A skill that ran as its own agent: Claude Code says nothing more of it than its call's result, which ends it,
+            // with what it returned; declined while it worked, it was stopped, not failed.
+            // Ended already (Claude Code said so first): what it returned is still its report.
+            if (p.name === "Skill" && this.liveAgents.has(b.tool_use_id)) this.endAgent(b.tool_use_id, b.is_error ? (DECLINED.test(content) ? "aborted" : "error") : "done", b.is_error ? undefined : content);
+            else if (p.name === "Skill" && this.endedAgents.has(b.tool_use_id) && !b.is_error) this.report(b.tool_use_id, content, true);
             // The structured result (for diffs) describes the message's one tool result.
             const structured = blocks.length === 1 && !b.is_error ? resultDisplay(p, m.tool_use_result, this.t.cwd) : undefined;
             this.endTool(b.tool_use_id, p, content, Boolean(b.is_error), structured);
@@ -1707,8 +1749,10 @@ class ClaudeTurn {
             if (this.limitHit) this.failure = this.limitFailure();
             if (this.reachedNoted) return;
             this.reachedNoted = true;
-            this.sink.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: ${which}usage limit reached. ${resetSentence(this.limits?.resetsAt, "Claude Code")}` });
-        } else if (news) this.sink.emit({ type: "notice", level: "info", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: close to the ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}` });
+            // On extra usage it isn't a stop: the turn goes on, and it costs.
+            const credits = creditsNote(this.limits, "extra usage");
+            this.sink.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: ${which}usage limit reached${credits}. ${resetSentence(this.limits?.resetsAt, "Claude Code")}`, data: { source: this.def.id, limit: limitNotice(this.def.id, this.t.accountId, this.limits, { window: w?.label, credits: Boolean(credits) }) } });
+        } else if (news) this.sink.emit({ type: "notice", level: "info", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: close to the ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}`, data: { source: this.def.id } });
     }
 
     /** A result: one answering the run's prompts (`ours`), or one for a turn Claude Code took itself. */
@@ -1782,6 +1826,8 @@ class ClaudeTurn {
         const cb = this.hookCallbacks.get(String(req.callback_id ?? ""));
         if (!cb || !this.cliSession.hookHandler) return {};
         const input: Record<string, unknown> = req.input && typeof req.input === "object" ? req.input : {};
+        // Harness's browser tools run the hooks themselves, as BrowserAct and the rest: this CLI's run would be a second one.
+        if (servedBrowserTool(this.t.orchestrator?.name, input.tool_name)) return {};
         const r = await this.cliSession.hookHandler(cb.event, cb.hook, input, this.t.signal);
         return claudeCodeHookOutput(cb.event, r);
     }
@@ -1867,9 +1913,10 @@ export type ClaudeSpawnSettings = Pick<BackendTurn, "mode" | "model" | "effort" 
  * `claude -p`'s arguments for a turn's settings: the stream-json protocol, the mode, model and effort, the
  * session to resume, and what keeps it within the harness's rules (--settings: permissions, the sandbox,
  * MCP policy, prompt hooks). `append`: the parts of --append-system-prompt (empty ones left out).
- * `mcpWarning`: what the MCP policy says the user should know.
+ * `mcpWarning`: what the MCP policy says the user should know. `accountDenies: false` leaves out the deny
+ * rules for CLI account folders (a live process's fingerprint: accounts added or removed restart nothing).
  */
-export function claudeArgs(defId: string, t: ClaudeSpawnSettings, o: { pluginDir?: string; agentsPath?: string; append: (string | undefined)[] }): { args: string[]; mcpWarning?: string } {
+export function claudeArgs(defId: string, t: ClaudeSpawnSettings, o: { pluginDir?: string; agentsPath?: string; append: (string | undefined)[]; accountDenies?: boolean }): { args: string[]; mcpWarning?: string } {
     const a = [...extraArgs(defId), ...STREAM_ARGS, "--include-partial-messages", "--permission-prompt-tool=stdio", "--permission-mode", MODES[t.mode]];
     if (t.model.id !== "default") a.push("--model", t.model.id);
     if (t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort))) a.push("--effort", t.effort);
@@ -1886,10 +1933,8 @@ export function claudeArgs(defId: string, t: ClaudeSpawnSettings, o: { pluginDir
     // The harness's agents, for its own Agent tool.
     if (o.agentsPath && t.agents && Object.keys(t.agents).length && !t.readOnly) a.push("--agents", o.agentsPath);
     // The harness's deny and ask rules also cover what Claude Code would do without asking.
-    const permissions = claudePermissions(t.rules);
-    const sandbox = claudeAccountSandbox();
-    // Also check excluded commands, which the CLI may run outside its sandbox.
-    if (sandbox && !permissions.ask.includes("Bash")) permissions.ask.push("Bash");
+    // Named accounts add only deny rules for their folders (#375): nothing that changes how Claude Code asks or sandboxes.
+    const permissions = claudePermissions(t.rules, o.accountDenies !== false);
     // Its own schedules would fire only while its process runs (it's stopped at a turn's end, or when idle): Harness's schedule tools keep them instead.
     if (t.orchestrator?.tools.includes("schedule_create")) permissions.deny.push(...CLAUDE_SCHEDULE_TOOLS);
     // Always override external preferences: an unsupported model must not silently switch to Opus.
@@ -1897,12 +1942,12 @@ export function claudeArgs(defId: string, t: ClaudeSpawnSettings, o: { pluginDir
     const mcp = t.trusted && !t.readOnly ? claudeMcpPolicy(t.cwd, t.approvedMcpServers) : { strict: true };
     if (mcp.strict) a.push("--strict-mcp-config");
     if (!t.readOnly) {
-        a.push("--settings", JSON.stringify({ permissions, fastMode, ...(sandbox ? { sandbox } : {}), ...mcp.settings, ...claudePromptHooks(t.hooks) }));
+        a.push("--settings", JSON.stringify({ permissions, fastMode, ...mcp.settings, ...claudePromptHooks(t.hooks) }));
         return { args: a, mcpWarning: mcp.warning };
     }
     // A read-only sub-agent: no edit tools, no MCP servers of its own, and every command asks (the harness lets read-only ones run).
     a.push("--disallowedTools", READ_ONLY_DENY.join(","));
-    const settings = { fastMode, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { ...sandbox, autoAllowBashIfSandboxed: false }, ...claudePromptHooks(t.hooks) };
+    const settings = { fastMode, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { autoAllowBashIfSandboxed: false }, ...claudePromptHooks(t.hooks) };
     a.push("--settings", JSON.stringify(settings));
     return { args: a, mcpWarning: mcp.warning };
 }
@@ -1972,12 +2017,15 @@ export function claudeRule(raw: string, root: string): string[] {
     return [];
 }
 
-/** The harness's deny and ask rules for Claude Code, with its credential store denied outright. */
-export function claudePermissions(r: { deny: string[]; ask: string[]; root: string }): { deny: string[]; ask: string[] } {
+/**
+ * The harness's deny and ask rules for Claude Code, with its credential store denied outright, and with
+ * `accounts`, CLI account folders and sign-in files too.
+ */
+export function claudePermissions(r: { deny: string[]; ask: string[]; root: string }, accounts = true): { deny: string[]; ask: string[] } {
     const store = [paths.credentialsFile(), paths.mcpOAuth(), paths.providers()].flatMap((f) => [`Read(/${f})`, `Edit(/${f})`]);
-    const accounts = accountProtectionFolders().flatMap((folder) => [`Read(/${folder})`, `Read(/${folder}/**)`, `Edit(/${folder})`, `Edit(/${folder}/**)`]);
+    const folders = (accounts ? accountProtectionFolders() : []).flatMap((folder) => [`Read(/${folder})`, `Read(/${folder}/**)`, `Edit(/${folder})`, `Edit(/${folder}/**)`]);
     const map = (rules: string[]) => [...new Set(rules.flatMap((x) => claudeRule(x, r.root)))];
-    return { deny: [...map(r.deny), ...store, ...accounts], ask: map(r.ask) };
+    return { deny: [...map(r.deny), ...store, ...folders], ask: map(r.ask) };
 }
 
 /** Claude Code's tool name and input as the harness's own tool sees them (for rules, titles, previews). */

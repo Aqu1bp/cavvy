@@ -1,6 +1,7 @@
 import { createUniqueId, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { X } from "lucide-solid";
+import { tabWrap } from "../../lib/focus-trap";
 
 export interface DialogProps {
     open: boolean;
@@ -27,8 +28,13 @@ export function Dialog(p: DialogProps) {
     );
 }
 
-/** Open dialogs, the topmost last: only it takes keys. */
-const stack: object[] = [];
+/** Open dialogs' boxes, the topmost last: only it takes keys. */
+const stack: HTMLElement[] = [];
+
+/** Whether `el` is in the dialog on top (keys a dialog handles itself go to it alone). */
+export function inTopDialog(el: Element): boolean {
+    return Boolean(stack[stack.length - 1]?.contains(el));
+}
 const FOCUSABLE = "a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])";
 
 function DialogInner(p: DialogProps) {
@@ -36,7 +42,7 @@ function DialogInner(p: DialogProps) {
     let box: HTMLDivElement | undefined;
     const previous = document.activeElement as HTMLElement | null;
     onMount(() => {
-        const me = {};
+        const me = box!;
         stack.push(me);
         const onKey = (e: KeyboardEvent) => {
             if (stack[stack.length - 1] !== me || !box) return;
@@ -46,18 +52,18 @@ function DialogInner(p: DialogProps) {
                 p.onClose();
             } else if (e.key === "Tab") {
                 // Tab stays in the dialog: what's behind it can't be reached while it's open.
-                const items = [...box.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => el.getClientRects().length > 0);
+                // A roving group's other members (tabIndex -1) aren't Tab stops, so they can't be the ends it wraps at.
+                const items = [...box.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => el.tabIndex >= 0 && el.getClientRects().length > 0);
                 if (!items.length) {
                     e.preventDefault();
                     box.focus();
                     return;
                 }
-                const first = items[0]!;
-                const last = items[items.length - 1]!;
-                const at = document.activeElement;
-                if (!box.contains(at) || (e.shiftKey ? at === first || at === box : at === last)) {
+                const at = document.activeElement as HTMLElement | null;
+                const to = tabWrap(items, at, box.contains(at), e.shiftKey);
+                if (to) {
                     e.preventDefault();
-                    (e.shiftKey ? last : first).focus();
+                    to.focus();
                 }
             }
         };
@@ -79,7 +85,7 @@ function DialogInner(p: DialogProps) {
                 <div
                     ref={box}
                     class={`dialog glass ${p.class ?? ""}`}
-                    style={{ width: `min(${p.width ?? 520}px, calc(100vw - 32px))` }}
+                    style={{ width: `min(calc(${p.width ?? 520} * var(--sp)), calc(100vw - 32px))` }}
                     role="dialog"
                     aria-modal="true"
                     aria-labelledby={p.bare ? p.labelledBy : p.title ? titleId : undefined}

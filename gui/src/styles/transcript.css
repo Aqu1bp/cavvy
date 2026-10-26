@@ -15,7 +15,7 @@
     left: 0;
     right: 0;
     top: 0;
-    height: 28px;
+    height: calc(28 * var(--sp));
     background: linear-gradient(var(--sheet), color-mix(in srgb, var(--sheet) 0%, transparent));
     z-index: 2;
     pointer-events: none;
@@ -41,7 +41,6 @@
     overflow-anchor: none;
     overscroll-behavior: contain;
     scrollbar-width: thin;
-    padding: 0 var(--lane-r) 0 var(--lane-l);
 }
 
 /* The column glides (a translate, Transcript.tsx pin): clipped here, vertically only, so a glide never adds
@@ -55,13 +54,13 @@
 .transcript-col {
     max-width: var(--column-w);
     margin: 0 auto;
-    padding-top: calc(var(--bar-room, 6px) + 14px);
+    padding-top: calc(var(--bar-room, 6px) + 14 * var(--sp));
     display: flex;
     flex-direction: column;
 }
 
 .transcript-end {
-    height: calc(var(--dock-h) + 28px);
+    height: calc(var(--dock-h) + 28 * var(--sp));
     flex: none;
 }
 
@@ -70,9 +69,9 @@
     align-self: center;
     display: inline-flex;
     align-items: center;
-    height: 26px;
-    margin: 0 0 22px;
-    padding: 0 11px;
+    height: calc(26 * var(--sp));
+    margin: 0 0 calc(22 * var(--sp));
+    padding: 0 calc(11 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.857rem;
     font-weight: 600;
@@ -95,11 +94,11 @@
     align-self: flex-start;
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     max-width: 100%;
-    height: 26px;
-    margin: 0 0 14px -4px;
-    padding: 0 8px 0 4px;
+    height: calc(26 * var(--sp));
+    margin: 0 0 calc(14 * var(--sp)) calc(-4 * var(--sp));
+    padding: 0 calc(8 * var(--sp)) 0 calc(4 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.893rem;
     color: var(--fg-3);
@@ -115,14 +114,14 @@
 .jump {
     position: absolute;
     left: 50%;
-    bottom: calc(var(--dock-h) + 12px);
+    bottom: calc(var(--dock-h) + 12 * var(--sp));
     transform: translateX(-50%);
     z-index: 25;
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    height: 30px;
-    padding: 0 12px 0 10px;
+    gap: calc(6 * var(--sp));
+    height: calc(30 * var(--sp));
+    padding: 0 calc(12 * var(--sp)) 0 calc(10 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.929rem;
     font-weight: 500;
@@ -216,9 +215,9 @@
 .turn {
     display: flex;
     flex-direction: column;
-    padding-bottom: 26px;
+    padding-bottom: calc(26 * var(--sp));
     /* Skipped (far, below), it keeps the size it was last drawn at. */
-    contain-intrinsic-size: auto 600px;
+    contain-intrinsic-size: auto calc(600 * var(--sp));
 }
 
 /* A screen or more from the view (Transcript.tsx): no layout or paint until it comes near, so a long
@@ -227,9 +226,15 @@
     content-visibility: auto;
 }
 
+/* Measured tool rows and Markdown blocks, including those inside one large active turn.
+   work-rendering.ts supplies their natural size, preserving their layout and mounted state. */
+[data-work-far] {
+    content-visibility: auto;
+}
+
 /* A turn a steer ended: the next one carries straight on, so they sit close. */
 .turn.chained {
-    padding-bottom: 6px;
+    padding-bottom: calc(6 * var(--sp));
 }
 
 /* De-emphasize archived prompts without fading all their text below AA. */
@@ -246,12 +251,12 @@
 .user-row {
     position: relative;
     align-self: flex-end;
-    max-width: min(82%, 600px);
+    max-width: min(82%, 600 * var(--sp));
     min-width: 0;
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    margin-bottom: 22px;
+    margin-bottom: calc(22 * var(--sp));
 }
 
 /* "Steered in": sent while it worked, it joined the work at its next step. */
@@ -259,8 +264,8 @@
     align-self: flex-end;
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    margin: 0 4px 5px 0;
+    gap: calc(5 * var(--sp));
+    margin: 0 calc(4 * var(--sp)) calc(5 * var(--sp)) 0;
     font-size: 0.821rem;
     font-weight: 600;
     color: var(--steer);
@@ -271,10 +276,10 @@
 .wake-row {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-bottom: 16px;
-    padding: 0 12px 0 10px;
-    height: 30px;
+    gap: calc(8 * var(--sp));
+    margin-bottom: calc(16 * var(--sp));
+    padding: 0 calc(12 * var(--sp)) 0 calc(10 * var(--sp));
+    height: calc(30 * var(--sp));
     width: fit-content;
     max-width: 100%;
     border-radius: var(--pill);
@@ -300,8 +305,8 @@
     min-width: 0;
     max-width: 100%;
     background: var(--bubble);
-    border-radius: 16px;
-    padding: 12px 16px;
+    border-radius: calc(16 * var(--sp));
+    padding: calc(12 * var(--sp)) calc(16 * var(--sp));
     font-size: 1.036rem;
     line-height: 1.55;
     color: var(--fg);
@@ -310,24 +315,24 @@
 }
 
 .user-row > .user-bubble {
-    padding: 9px 15px 10px;
-    border-radius: 20px 20px 6px 20px;
+    padding: calc(9 * var(--sp)) calc(15 * var(--sp)) calc(10 * var(--sp));
+    border-radius: calc(20 * var(--sp)) calc(20 * var(--sp)) calc(6 * var(--sp)) calc(20 * var(--sp));
     line-height: 1.5;
 }
 
 /* One short line: rounder, like a message. */
 .user-row > .user-bubble.short {
-    border-radius: 18px 18px 6px 18px;
+    border-radius: calc(18 * var(--sp)) calc(18 * var(--sp)) calc(6 * var(--sp)) calc(18 * var(--sp));
 }
 
 .user-actions {
     position: absolute;
     top: 100%;
-    right: 2px;
+    right: calc(2 * var(--sp));
     display: flex;
     align-items: center;
-    gap: 2px;
-    padding-top: 2px;
+    gap: calc(2 * var(--sp));
+    padding-top: calc(2 * var(--sp));
     white-space: nowrap;
     color: var(--fg-3);
     font-size: 0.857rem;
@@ -341,9 +346,9 @@
 }
 
 .user-actions .icon-btn {
-    width: 24px;
-    height: 24px;
-    border-radius: 7px;
+    width: calc(24 * var(--sp));
+    height: calc(24 * var(--sp));
+    border-radius: calc(7 * var(--sp));
     color: var(--fg-3);
 }
 
@@ -353,15 +358,15 @@
 }
 
 .user-when {
-    margin-right: 4px;
+    margin-right: calc(4 * var(--sp));
     font-variant-numeric: tabular-nums;
 }
 
 .prompt-scheduled {
     display: flex;
     align-items: center;
-    gap: 5px;
-    margin: 0 4px 5px 0;
+    gap: calc(5 * var(--sp));
+    margin: 0 calc(4 * var(--sp)) calc(5 * var(--sp)) 0;
     font-size: 0.857rem;
     color: var(--fg-3);
 }
@@ -375,7 +380,7 @@
 
 .user-bubble .more {
     display: flex;
-    margin-top: 6px;
+    margin-top: calc(6 * var(--sp));
     color: var(--fg-2);
 }
 
@@ -395,7 +400,7 @@
 .user-bubble .user-text.mono svg {
     color: var(--ok);
     vertical-align: -2px;
-    margin-right: 2px;
+    margin-right: calc(2 * var(--sp));
 }
 
 /* Attachments: above the bubble, at the right. Small pills, and thumbnails for images. */
@@ -404,16 +409,16 @@
     flex-wrap: wrap;
     justify-content: flex-end;
     align-items: center;
-    gap: 6px;
-    margin-bottom: 6px;
+    gap: calc(6 * var(--sp));
+    margin-bottom: calc(6 * var(--sp));
     white-space: normal;
 }
 
 .prompt-attachments .chip {
-    height: 26px;
-    max-width: 280px;
-    gap: 6px;
-    padding: 0 10px 0 8px;
+    height: calc(26 * var(--sp));
+    max-width: calc(280 * var(--sp));
+    gap: calc(6 * var(--sp));
+    padding: 0 calc(10 * var(--sp)) 0 calc(8 * var(--sp));
     border-radius: var(--pill);
     background: var(--bubble);
     box-shadow: none;
@@ -429,15 +434,15 @@
 
 .prompt-attachments .chip .truncate {
     min-width: 0;
-    max-width: 180px;
+    max-width: calc(180 * var(--sp));
 }
 
 .prompt-image {
-    width: 120px;
-    height: 76px;
+    width: calc(120 * var(--sp));
+    height: calc(76 * var(--sp));
     padding: 0;
     border: 0;
-    border-radius: 12px;
+    border-radius: calc(12 * var(--sp));
     overflow: hidden;
     background: var(--bubble);
     box-shadow: inset 0 0 0 0.5px var(--line);
@@ -464,16 +469,16 @@
 .reply {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
     min-width: 0;
 }
 
 .reply > .md {
-    margin: 4px 0;
+    margin: calc(4 * var(--sp)) 0;
 }
 
 .reply > .md + .md {
-    margin-top: 2px;
+    margin-top: calc(2 * var(--sp));
 }
 
 /* A disclosure line: "Read 3 files and searched once", "Worked for 1m 12s", "Thought for 41s". */
@@ -481,11 +486,11 @@
     align-self: flex-start;
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    max-width: calc(100% + 4px);
-    min-height: 26px;
-    margin-left: -4px;
-    padding: 0 8px 0 4px;
+    gap: calc(6 * var(--sp));
+    max-width: calc(100% + 4 * var(--sp));
+    min-height: calc(26 * var(--sp));
+    margin-left: calc(-4 * var(--sp));
+    padding: 0 calc(8 * var(--sp)) 0 calc(4 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.929rem;
     color: var(--fg-3);
@@ -523,8 +528,8 @@
 .acts-h code,
 .wtext code {
     font: 0.857rem var(--font-mono);
-    padding: 1px 5px;
-    border-radius: 5px;
+    padding: 1px calc(5 * var(--sp));
+    border-radius: calc(5 * var(--sp));
     background: var(--sheet-2);
     color: var(--fg-2);
 }
@@ -537,8 +542,8 @@
 .acts-h.worked {
     align-self: stretch;
     max-width: none;
-    gap: 6px;
-    margin: 0 0 4px -4px;
+    gap: calc(6 * var(--sp));
+    margin: 0 0 calc(4 * var(--sp)) calc(-4 * var(--sp));
     padding-right: 0;
     background: none;
     font-size: 0.929rem;
@@ -549,7 +554,7 @@
     content: "";
     flex: 1;
     height: 0.5px;
-    margin-left: 4px;
+    margin-left: calc(4 * var(--sp));
     background: var(--line-strong);
 }
 
@@ -558,8 +563,9 @@
     color: var(--fg-2);
 }
 
-/* The work, fading out before it folds into "Worked for". */
-.worklog.leaving {
+/* The work, fading out before it folds into "Worked for" (and what was said on the way, with it). */
+.worklog.leaving,
+.reply > .md.leaving {
     animation: fade-out 200ms ease-out both;
 }
 
@@ -574,36 +580,71 @@
    states share one grid cell and roll (the old one up and out, the new one up
    from below, clipped to the row), so the row never changes height. Label,
    what it's about (a file, a command, the thought being written), and its own
-   timer at the right. */
+   timer at the right. A running command's line is a button, like its row: it
+   opens to the block its row opens to (.cmd-body), under it. */
 
 .live-line {
     display: flex;
     flex-direction: column;
     min-width: 0;
-    margin-top: 2px;
+    margin-top: calc(2 * var(--sp));
 }
 
 .live-stack {
     display: grid;
-    height: 30px;
+    height: calc(30 * var(--sp));
     overflow: hidden;
+}
+
+/* Hover shows it's a button, as on a command row, and the chevron after the command. */
+.live-stack[role="button"] {
+    border-radius: calc(8 * var(--sp));
+    cursor: default;
+    outline: none;
+    transition: background 140ms;
+}
+
+.live-stack[role="button"]:hover,
+.live-stack[role="button"]:focus-visible {
+    background: var(--hover);
+}
+
+.live-stack[role="button"]:focus-visible {
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.layer .chev {
+    flex: none;
+    color: var(--fg-3);
+    opacity: 0;
+    transition: opacity 120ms, transform var(--dur-panel) var(--ease);
+}
+
+.live-stack:hover .chev,
+.live-stack:focus-visible .chev,
+.layer .chev.open {
+    opacity: 1;
+}
+
+.layer .chev.open {
+    transform: rotate(90deg);
 }
 
 .live-line .layer {
     grid-area: 1 / 1;
     display: flex;
     align-items: center;
-    gap: 9px;
+    gap: calc(9 * var(--sp));
     min-width: 0;
-    padding: 0 2px;
+    padding: 0 calc(2 * var(--sp));
     font-size: 0.964rem;
     color: var(--fg-3);
     white-space: nowrap;
 }
 
 .layer .lic {
-    width: 22px;
-    height: 22px;
+    width: calc(22 * var(--sp));
+    height: calc(22 * var(--sp));
     flex: none;
     display: grid;
     place-items: center;
@@ -638,8 +679,8 @@
     flex: none;
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding-left: 8px;
+    gap: calc(8 * var(--sp));
+    padding-left: calc(8 * var(--sp));
     font-size: 0.857rem;
     font-variant-numeric: tabular-nums;
     color: var(--fg-3);
@@ -647,8 +688,8 @@
 
 /* Thinking: a breathing dot, where the others have a spinner. */
 .orb {
-    width: 8px;
-    height: 8px;
+    width: calc(8 * var(--sp));
+    height: calc(8 * var(--sp));
     border-radius: 50%;
     background: var(--accent);
     animation: orb 1.1s var(--ease) infinite alternate;
@@ -661,65 +702,12 @@
     }
 }
 
-/* A running command's output: always three lines tall, the newest at the bottom; a click opens it to more. */
-.live-out {
-    height: calc(0.857rem * 1.6 * 3 + 14px);
-    margin: 2px 0 4px 33px;
-    padding: 7px 12px;
-    border-radius: 10px;
-    background: var(--sheet-2);
-    font: 0.857rem/1.6 var(--font-mono);
-    color: var(--fg-2);
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-end;
-    -webkit-mask-image: linear-gradient(transparent, #000 40%);
-    mask-image: linear-gradient(transparent, #000 40%);
-    cursor: pointer;
-}
-
-.live-out.open {
-    height: auto;
-    min-height: calc(0.857rem * 1.6 * 3 + 14px);
-    max-height: 240px;
-    overflow-y: auto;
-    justify-content: flex-start;
-    -webkit-mask-image: none;
-    mask-image: none;
-    cursor: auto;
-}
-
-.live-out:focus-visible {
-    outline-offset: 2px;
-}
-
-.live-out > div {
-    flex: none;
-    white-space: pre;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.live-out.open > div {
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-}
-
-.live-out .ok {
-    color: var(--ok);
-}
-
-.live-out .er {
-    color: var(--danger);
-}
-
 /* A sub-agent's view (Agents.tsx): its own one-line status under its log. */
 .live-head {
     display: flex;
     align-items: center;
-    gap: 8px;
-    min-height: 26px;
+    gap: calc(8 * var(--sp));
+    min-height: calc(26 * var(--sp));
     font-size: 0.929rem;
     color: var(--fg-3);
 }
@@ -739,17 +727,17 @@
 .turn-foot {
     display: flex;
     align-items: center;
-    gap: 4px;
-    min-height: 24px;
-    margin-top: -4px;
+    gap: calc(4 * var(--sp));
+    min-height: calc(24 * var(--sp));
+    margin-top: calc(-4 * var(--sp));
     font-size: 0.857rem;
     color: var(--fg-3);
     white-space: nowrap;
 }
 
 .turn-foot .foot-btn {
-    width: 24px;
-    height: 24px;
+    width: calc(24 * var(--sp));
+    height: calc(24 * var(--sp));
     border-radius: var(--pill);
     color: var(--fg-3);
     opacity: 0;
@@ -769,8 +757,8 @@
 .notice {
     display: flex;
     align-items: flex-start;
-    gap: 8px;
-    margin: 2px 0;
+    gap: calc(8 * var(--sp));
+    margin: calc(2 * var(--sp)) 0;
     font-size: 0.893rem;
     line-height: 1.45;
     color: var(--fg-3);
@@ -779,15 +767,11 @@
 
 .notice svg {
     flex: none;
-    margin-top: 2px;
+    margin-top: calc(2 * var(--sp));
 }
 
 .notice > span {
     white-space: pre-line;
-}
-
-.notice.goal-met svg {
-    color: var(--ok);
 }
 
 .notice.warn,
@@ -803,67 +787,405 @@
     color: var(--danger);
 }
 
-/* A notice about several things (the background tasks Harness stopped): one line, their names folded under it. */
-.notice.folds {
-    flex-direction: column;
-    gap: 2px;
+/* ---- Notices (#426): drawn as what they are -----------------------------
+   The UI explains, not words: placement, icon, colour and state carry the meaning. Ported from the approved
+   mockup (harness-chat-mockup notices.css), at the app's 14px root: 13px = 0.929rem, 12.5px = 0.893rem,
+   12px = 0.857rem, 11.5px = 0.821rem, 13.5px = 0.964rem. */
+
+/* Info: one quiet line; the icon in a 22px gutter, the text where a step's verb starts. Cut short, it opens. */
+.nt {
+    align-self: stretch;
+    display: flex;
+    align-items: flex-start;
+    gap: calc(9 * var(--sp));
     min-width: 0;
-}
-
-.notice-h {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    max-width: calc(100% + 4px);
-    min-height: 24px;
-    margin-left: -4px;
-    padding: 0 8px 0 4px;
-    border-radius: var(--pill);
+    margin: 0 0 calc(2 * var(--sp));
+    padding: calc(5 * var(--sp)) calc(8 * var(--sp)) calc(5 * var(--sp)) calc(2 * var(--sp));
+    border-radius: calc(8 * var(--sp));
+    font-size: 0.929rem;
+    line-height: calc(20 * var(--sp));
+    color: var(--fg-3);
     text-align: left;
-    transition: background 140ms;
 }
 
-.notice-h:hover {
+.nt .ic {
+    width: calc(22 * var(--sp));
+    height: calc(20 * var(--sp));
+    flex: none;
+    display: grid;
+    place-items: center;
+    color: var(--fg-3);
+}
+
+.nt.goal-met .ic {
+    color: var(--ok);
+}
+
+.nt .tx {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.nt.open .tx {
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+}
+
+.nt-detail {
+    display: block;
+    font-size: 0.857rem;
+}
+
+.nt .more {
+    height: calc(20 * var(--sp));
+    flex: none;
+    display: grid;
+    place-items: center;
+    color: var(--fg-3);
+    opacity: 0;
+    transition: opacity 140ms, transform 200ms var(--ease);
+}
+
+.nt.long {
+    cursor: default;
+}
+
+.nt.long:hover {
     background: var(--hover);
 }
 
-.notice .notice-h svg {
-    margin-top: 0;
+.nt.long:hover .more,
+.nt.long:focus-visible .more,
+.nt.open .more {
+    opacity: 1;
 }
 
-.notice-h .chev {
-    color: var(--fg-3);
-    transition: transform 220ms var(--ease);
-}
-
-.notice-h[aria-expanded="true"] .chev {
+.nt.open .more {
     transform: rotate(90deg);
 }
 
-.notice-peek {
+.nt code,
+.nw code,
+.ne code {
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    padding: 1px calc(4 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    background: var(--sheet-2);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+    color: var(--fg-2);
+}
+
+/* A warning: a compact amber pill that hugs its title; what the CLI said, and its link, fold under it. Open, it
+   widens to the column. */
+.nw {
+    align-self: flex-start;
+    max-width: 100%;
+    min-width: 0;
+    margin: 0 0 calc(6 * var(--sp));
+    border-radius: calc(12 * var(--sp));
+    background: var(--warn-bg);
+}
+
+.nw.open {
+    align-self: stretch;
+    background: var(--sheet-2);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+}
+
+.nw-h {
+    display: flex;
+    align-items: center;
+    gap: calc(7 * var(--sp));
+    max-width: 100%;
+    min-height: calc(30 * var(--sp));
+    padding: 0 calc(9 * var(--sp)) 0 calc(4 * var(--sp));
+    border-radius: calc(12 * var(--sp));
+    font-size: 0.929rem;
+    color: var(--fg);
+    text-align: left;
+}
+
+.nw-h .ic {
+    width: calc(22 * var(--sp));
+    height: calc(22 * var(--sp));
+    flex: none;
+    display: grid;
+    place-items: center;
+    color: var(--warn);
+}
+
+.nw-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+}
+
+/* A title-only pill cut short: opened, it wraps. */
+.nw.open .nw-title {
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.nw.open .nw-h {
+    padding-top: calc(4 * var(--sp));
+    padding-bottom: calc(4 * var(--sp));
+}
+
+.nw-src {
+    flex: none;
+    display: grid;
+    place-items: center;
     color: var(--fg-3);
 }
 
-.notice-details {
-    display: flex;
-    flex-direction: column;
-    max-width: 100%;
-    min-width: 0;
-    margin: 0 0 4px 6px;
-    padding: 0 0 0 16px;
-    border-left: 1px solid var(--line);
+.nw-src svg {
+    width: calc(13 * var(--sp));
+    height: calc(13 * var(--sp));
+}
+
+.nw-h .chev {
+    flex: none;
+    color: var(--fg-3);
+    transition: transform 200ms var(--ease);
+}
+
+.nw.open .nw-h .chev {
+    transform: rotate(90deg);
+}
+
+/* Drawn only while open (Notices.tsx). */
+.nw-body {
+    padding: 0 calc(14 * var(--sp)) calc(11 * var(--sp)) calc(33 * var(--sp));
+    font-size: 0.929rem;
+    line-height: 1.55;
+    color: var(--fg-2);
+    animation: rise 220ms var(--ease) both;
+}
+
+.nw-body p {
+    margin: 0 0 calc(6 * var(--sp));
+    text-wrap: pretty;
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+}
+
+.nw-details {
+    margin: 0 0 calc(6 * var(--sp));
+    padding: 0;
     list-style: none;
     font-size: 0.857rem;
     line-height: 1.6;
+}
+
+.nw-body .row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: calc(10 * var(--sp));
+    margin-top: calc(8 * var(--sp));
+}
+
+.nlink {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
+    font-size: 0.893rem;
+    font-weight: 500;
+    color: var(--accent);
+    text-decoration: none;
+}
+
+.nlink .host {
     color: var(--fg-3);
+    font-weight: 400;
+}
+
+/* An error: a card, never cut short: its sentence in red, then what to do. It ends the turn, so there's no
+   "Stopped with an error" line under it (TurnView). */
+.ne {
+    display: grid;
+    grid-template-columns: calc(22 * var(--sp)) minmax(0, 1fr);
+    column-gap: calc(7 * var(--sp));
+    margin: calc(2 * var(--sp)) 0 calc(10 * var(--sp));
+    padding: calc(9 * var(--sp)) calc(12 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp));
+    border-radius: calc(12 * var(--sp));
+    background: color-mix(in srgb, var(--danger) 8%, var(--sheet));
+    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--danger) 34%, transparent);
+}
+
+.ne .ic {
+    height: calc(20 * var(--sp));
+    display: grid;
+    place-items: center;
+    color: var(--danger);
+}
+
+.ne-title {
+    font-size: 0.964rem;
+    line-height: calc(20 * var(--sp));
+    font-weight: 600;
+    color: var(--danger);
+    overflow-wrap: anywhere;
+}
+
+.ne-body {
+    grid-column: 2;
+    margin-top: calc(2 * var(--sp));
+    font-size: 0.929rem;
+    line-height: 1.55;
+    color: var(--fg-2);
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+}
+
+.ne-body .mono {
+    font-family: var(--font-mono);
+    font-size: 0.857rem;
+}
+
+.ne-foot {
+    grid-column: 2;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: calc(6 * var(--sp));
+    margin-top: calc(9 * var(--sp));
+}
+
+.ne-foot .cbtn {
+    gap: calc(5 * var(--sp));
+}
+
+/* An account switch, between turns: neither yours (right) nor the reply (left), so one centred line across the
+   column, hairlines either side, like a date in a chat. What its restart stopped is a second line, amber-marked. */
+.ev {
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin: calc(2 * var(--sp)) 0 calc(4 * var(--sp));
+}
+
+.ev-line {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    width: 100%;
+    min-width: 0;
+}
+
+.ev-line::before,
+.ev-line::after {
+    content: "";
+    flex: 1 1 calc(24 * var(--sp));
+    min-width: calc(16 * var(--sp));
+    height: 0.5px;
+    background: var(--line-strong);
+}
+
+.ev-h {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(7 * var(--sp));
+    flex: 0 1 auto;
+    min-width: 0;
+    height: calc(26 * var(--sp));
+    padding: 0 calc(4 * var(--sp));
+    border-radius: calc(6 * var(--sp));
+    font-size: 0.893rem;
+    color: var(--fg-3);
+}
+
+.ev-h .prov {
+    width: calc(14 * var(--sp));
+    height: calc(14 * var(--sp));
+    flex: none;
+    display: grid;
+    place-items: center;
+}
+
+.ev-h .prov svg {
+    width: calc(14 * var(--sp));
+    height: calc(14 * var(--sp));
+}
+
+.ev-t {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ev-t b {
+    font-weight: 600;
+    color: var(--fg-2);
+}
+
+.ev-t .how {
+    margin-left: calc(3 * var(--sp));
+    color: var(--fg-3);
+}
+
+/* What the switch's restart stopped: one line, never wider than a short phrase. */
+.ev-sub {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: calc(5 * var(--sp));
+    max-width: min(calc(420 * var(--sp)), 100%);
+    min-width: 0;
+    margin-top: 1px;
+    border-radius: calc(6 * var(--sp));
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+.ev-sub svg {
+    flex: none;
+    color: var(--warn);
+}
+
+.ev-sub .n {
+    flex: none;
+}
+
+.ev-sub .what {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--fg-2);
+}
+
+.ev-sub .what.mono {
+    font-family: var(--font-mono);
+    font-size: 0.821rem;
 }
 
 /* ---- The work log ---------------------------------------------------- */
 
+/* A grid of one column for most of what's in it; command rows split it into theirs (.cmd-h). */
+.worklog,
+.cmd-row > .cmd-h {
+    /* The label keeps some room; short of room, the tags give way after it. */
+    --cmd-cols: minmax(min(6rem, 30%), 1fr) minmax(0, auto) auto auto auto;
+}
+
 .worklog {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
+    display: grid;
+    grid-template-columns: var(--cmd-cols);
+    row-gap: calc(2 * var(--sp));
+    min-width: 0;
+}
+
+.worklog > * {
+    grid-column: 1 / -1;
     min-width: 0;
 }
 
@@ -875,14 +1197,15 @@
 }
 
 .steps .tool-line {
-    gap: 9px;
-    min-height: 30px;
+    gap: calc(9 * var(--sp));
+    min-height: calc(30 * var(--sp));
     width: 100%;
     margin-left: 0;
-    padding: 0 8px 0 2px;
+    padding: 0 calc(8 * var(--sp)) 0 calc(2 * var(--sp));
     font-size: 0.964rem;
     color: var(--fg-2);
-    animation: step-in 320ms var(--ease);
+    /* Rows that land together come in one after another (lib/live-line.ts enterRow sets --enter). */
+    animation: step-in 320ms var(--ease) var(--enter, 0ms) backwards;
 }
 
 .steps .tool-line:hover,
@@ -892,8 +1215,8 @@
 }
 
 .steps .tool-icon {
-    width: 22px;
-    height: 22px;
+    width: calc(22 * var(--sp));
+    height: calc(22 * var(--sp));
 }
 
 .steps .tool-arg {
@@ -907,22 +1230,27 @@
 .steps .tool-meta {
     flex: none;
     margin-left: auto;
-    padding-left: 8px;
+    padding-left: calc(8 * var(--sp));
     font-variant-numeric: tabular-nums;
 }
 
 .steps .tool-head > .row-open {
-    margin-left: 2px;
+    margin-left: calc(2 * var(--sp));
 }
 
 .steps .tool-detail {
-    padding-left: 33px;
+    padding-left: calc(33 * var(--sp));
 }
 
 /* A finished thought, among the steps: "Thought for 4s". */
 .steps > .wgroup.thinking > .acts-h,
 .worklog > .wgroup.thinking > .acts-h {
-    min-height: 30px;
+    min-height: calc(30 * var(--sp));
+}
+
+.steps > .wgroup.thinking,
+.worklog > .wgroup.thinking {
+    animation: step-in 320ms var(--ease) var(--enter, 0ms) backwards;
 }
 
 .acts,
@@ -935,7 +1263,7 @@
 .wflag {
     display: inline-flex;
     align-items: center;
-    gap: 3px;
+    gap: calc(3 * var(--sp));
     font-size: 0.786rem;
     font-variant-numeric: tabular-nums;
     flex: none;
@@ -954,16 +1282,16 @@
     position: relative;
     display: flex;
     flex-direction: column;
-    margin: 2px 0 2px 10px;
-    padding-left: 18px;
+    margin: calc(2 * var(--sp)) 0 calc(2 * var(--sp)) calc(10 * var(--sp));
+    padding-left: calc(18 * var(--sp));
 }
 
 .activity-steps::before {
     content: "";
     position: absolute;
     left: 0;
-    top: 8px;
-    bottom: 8px;
+    top: calc(8 * var(--sp));
+    bottom: calc(8 * var(--sp));
     width: 1px;
     background: var(--line);
 }
@@ -982,10 +1310,10 @@
 .activity-step::before {
     content: "";
     position: absolute;
-    left: -21px;
-    top: 9.5px;
-    width: 7px;
-    height: 7px;
+    left: calc(-21 * var(--sp));
+    top: calc(9.5 * var(--sp));
+    width: calc(7 * var(--sp));
+    height: calc(7 * var(--sp));
     border-radius: 50%;
     background: var(--sheet);
     box-shadow: inset 0 0 0 1.5px var(--fg-4);
@@ -1010,13 +1338,13 @@
 .wkids {
     display: flex;
     flex-direction: column;
-    margin: 2px 0 6px 10px;
-    padding-left: 18px;
+    margin: calc(2 * var(--sp)) 0 calc(6 * var(--sp)) calc(10 * var(--sp));
+    padding-left: calc(18 * var(--sp));
     border-left: 1px solid var(--line);
 }
 
 .wkids.narration {
-    padding: 4px 0 4px 18px;
+    padding: calc(4 * var(--sp)) 0 calc(4 * var(--sp)) calc(18 * var(--sp));
 }
 
 .wkids .tool-detail {
@@ -1027,7 +1355,7 @@
     font-size: 0.857rem;
     color: var(--fg-3);
     font-style: italic;
-    line-height: 26px;
+    line-height: calc(26 * var(--sp));
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1035,20 +1363,20 @@
 
 /* A running call's last lines, under its row. */
 .activity-tail {
-    margin: 2px 0 6px;
-    padding: 7px 12px;
+    margin: calc(2 * var(--sp)) 0 calc(6 * var(--sp));
+    padding: calc(7 * var(--sp)) calc(12 * var(--sp));
     font: 0.786rem/1.6 var(--font-mono);
     color: var(--fg-2);
     background: var(--sheet-2);
-    border-radius: 10px;
+    border-radius: calc(10 * var(--sp));
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-    max-height: 96px;
+    max-height: calc(96 * var(--sp));
     overflow: hidden;
 }
 
 .activity-tail.nested {
-    margin-left: 22px;
+    margin-left: calc(22 * var(--sp));
 }
 
 .tool {
@@ -1067,12 +1395,12 @@
 .tool-line {
     display: flex;
     align-items: center;
-    gap: 8px;
-    width: calc(100% + 6px);
-    min-height: 26px;
-    margin-left: -6px;
-    padding: 0 6px;
-    border-radius: 8px;
+    gap: calc(8 * var(--sp));
+    width: calc(100% + 6 * var(--sp));
+    min-height: calc(26 * var(--sp));
+    margin-left: calc(-6 * var(--sp));
+    padding: 0 calc(6 * var(--sp));
+    border-radius: calc(8 * var(--sp));
     font-size: 0.929rem;
     color: var(--fg-2);
     min-width: 0;
@@ -1112,7 +1440,7 @@
 .tool-meta {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
     color: var(--fg-3);
     font-size: 0.857rem;
     min-width: 0;
@@ -1150,7 +1478,7 @@
 .tool-tag {
     display: inline-flex;
     align-items: center;
-    gap: 3px;
+    gap: calc(3 * var(--sp));
     flex: none;
 }
 
@@ -1164,8 +1492,8 @@
 
 /* "Open in editor" beside a tool row, a changed file or a card: shown on hover or focus. */
 .icon-btn.row-open {
-    width: 24px;
-    height: 24px;
+    width: calc(24 * var(--sp));
+    height: calc(24 * var(--sp));
     border-radius: var(--pill);
     color: var(--fg-3);
     opacity: 0;
@@ -1180,21 +1508,21 @@
 }
 
 .link-btn.tool-open {
-    margin-bottom: 6px;
+    margin-bottom: calc(6 * var(--sp));
 }
 
 /* Opened: the call's details, under its row. */
 .tool-detail {
-    padding: 4px 0 10px 22px;
+    padding: calc(4 * var(--sp)) 0 calc(10 * var(--sp)) calc(22 * var(--sp));
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: calc(10 * var(--sp));
 }
 
 .detail-section {
     display: flex;
     flex-direction: column;
-    gap: 5px;
+    gap: calc(5 * var(--sp));
 }
 
 .detail-label {
@@ -1221,7 +1549,7 @@
 .diag-chip {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     flex: none;
     font: 500 0.786rem/1 var(--font-mono);
     font-variant-numeric: tabular-nums;
@@ -1230,7 +1558,7 @@
 .diag-chip > span {
     display: inline-flex;
     align-items: center;
-    gap: 3px;
+    gap: calc(3 * var(--sp));
 }
 
 .diag-err {
@@ -1256,16 +1584,16 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: calc(2 * var(--sp));
     font-size: 0.857rem;
 }
 
 .diag-item {
     display: flex;
     align-items: baseline;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     min-width: 0;
-    padding: 3px 8px;
+    padding: calc(3 * var(--sp)) calc(8 * var(--sp));
     border-radius: var(--radius-sm);
 }
 
@@ -1280,7 +1608,7 @@
 .diag-icon {
     flex: none;
     align-self: flex-start;
-    margin-top: 3px;
+    margin-top: calc(3 * var(--sp));
     display: inline-flex;
 }
 
@@ -1328,17 +1656,17 @@
 .approval-note {
     display: flex;
     align-items: flex-start;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     font-size: 0.857rem;
     color: var(--warn);
     background: var(--warn-bg);
-    padding: 6px 10px;
-    border-radius: 10px;
+    padding: calc(6 * var(--sp)) calc(10 * var(--sp));
+    border-radius: calc(10 * var(--sp));
 }
 
 .approval-note svg {
     flex: none;
-    margin-top: 2px;
+    margin-top: calc(2 * var(--sp));
 }
 
 /* ---- Cards: an edit, a command ---------------------------------------- */
@@ -1346,18 +1674,18 @@
 /* An edit is a step like the others: no card, its row (icon, verb, file, +3 −2), and its diff under it. */
 .tcard.edit-card {
     margin: 0;
-    border-radius: 8px;
+    border-radius: calc(8 * var(--sp));
     background: none;
     box-shadow: none;
     overflow: visible;
-    animation: step-in 320ms var(--ease);
+    animation: step-in 320ms var(--ease) var(--enter, 0ms) backwards;
 }
 
 .edit-card > .tcard-h {
-    gap: 9px;
-    min-height: 30px;
-    padding: 0 4px 0 2px;
-    border-radius: 8px;
+    gap: calc(9 * var(--sp));
+    min-height: calc(30 * var(--sp));
+    padding: 0 calc(4 * var(--sp)) 0 calc(2 * var(--sp));
+    border-radius: calc(8 * var(--sp));
     font-size: 0.964rem;
     color: var(--fg-2);
     transition: background 140ms;
@@ -1368,8 +1696,8 @@
 }
 
 .edit-card .tcard-ic {
-    width: 22px;
-    height: 22px;
+    width: calc(22 * var(--sp));
+    height: calc(22 * var(--sp));
     color: var(--fg-3);
 }
 
@@ -1408,30 +1736,30 @@
 }
 
 .edit-card > .tcard-body {
-    margin: 2px 0 6px 33px;
+    margin: calc(2 * var(--sp)) 0 calc(6 * var(--sp)) calc(33 * var(--sp));
     border-top: 0;
-    border-radius: 10px;
+    border-radius: calc(10 * var(--sp));
     overflow: hidden;
     background: var(--sheet-2);
     box-shadow: inset 0 0 0 0.5px var(--line);
 }
 
 .tcard {
-    margin: 2px 0 6px;
+    margin: calc(2 * var(--sp)) 0 calc(6 * var(--sp));
     border-radius: var(--r-card);
     background: var(--sheet);
     box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px var(--hover);
     overflow: hidden;
     min-width: 0;
-    animation: step-in 380ms var(--ease);
+    animation: step-in 380ms var(--ease) var(--enter, 0ms) backwards;
 }
 
 .tcard-h {
     display: flex;
     align-items: center;
-    gap: 8px;
-    min-height: 38px;
-    padding: 0 6px 0 12px;
+    gap: calc(8 * var(--sp));
+    min-height: calc(38 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(12 * var(--sp));
     min-width: 0;
     font-size: 0.929rem;
     white-space: nowrap;
@@ -1457,7 +1785,7 @@
 .tcard-dim {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: calc(4 * var(--sp));
     flex: none;
     max-width: 50%;
     font-size: 0.857rem;
@@ -1472,8 +1800,8 @@
 }
 
 .tcard-btn {
-    width: 26px;
-    height: 26px;
+    width: calc(26 * var(--sp));
+    height: calc(26 * var(--sp));
     border-radius: var(--pill);
     color: var(--fg-3);
 }
@@ -1483,8 +1811,8 @@
 }
 
 .tcard-h .row-open {
-    width: 26px;
-    height: 26px;
+    width: calc(26 * var(--sp));
+    height: calc(26 * var(--sp));
 }
 
 /* ---- A command: a quiet row like any other step, no card; opened, one block on the sheet,
@@ -1492,28 +1820,52 @@
 
 .tcard.cmd-row {
     margin: 0;
-    border-radius: 8px;
+    border-radius: calc(8 * var(--sp));
     background: none;
     box-shadow: none;
     overflow: visible;
-    animation: step-in 320ms var(--ease);
+    animation: step-in 320ms var(--ease) var(--enter, 0ms) backwards;
 }
 
+/* A row's columns: its label (icon, what it's for, Copy on hover), then its tags, its result ("14 pass", "Exit 1"),
+   its time and its chevron. In a work log the rows share them (subgrid), each as wide as its widest: the ends of
+   a run of rows line up, whatever their labels, and a column no row uses takes no room. */
 .cmd-row > .cmd-h {
-    display: flex;
+    display: grid;
+    grid-template-columns: var(--cmd-cols);
     align-items: center;
-    gap: 9px;
     /* One line, always the same height: a glyph from a fallback font (✓) doesn't make one row taller. */
-    height: 30px;
+    height: calc(30 * var(--sp));
     min-width: 0;
-    padding: 0 4px 0 2px;
-    border-radius: 8px;
+    padding: 0 calc(4 * var(--sp)) 0 calc(2 * var(--sp));
+    border-radius: calc(8 * var(--sp));
     font-size: 0.964rem;
     color: var(--fg-2);
     white-space: nowrap;
     cursor: default;
     outline: none;
     transition: background 140ms;
+}
+
+.worklog > .cmd-row {
+    display: grid;
+    grid-template-columns: subgrid;
+}
+
+.worklog > .cmd-row > * {
+    grid-column: 1 / -1;
+}
+
+.worklog > .cmd-row > .cmd-h {
+    grid-template-columns: subgrid;
+}
+
+.cmd-what {
+    display: flex;
+    align-items: center;
+    gap: calc(9 * var(--sp));
+    min-width: 0;
+    padding-right: calc(9 * var(--sp));
 }
 
 .cmd-row > .cmd-h:hover,
@@ -1526,8 +1878,8 @@
 }
 
 .cmd-h .ic {
-    width: 22px;
-    height: 22px;
+    width: calc(22 * var(--sp));
+    height: calc(22 * var(--sp));
     flex: none;
     display: grid;
     place-items: center;
@@ -1538,52 +1890,61 @@
     color: var(--accent);
 }
 
-/* What it's for, in the model's words; then the command, faint. */
+/* What it's for, in the model's words; or the command, shortened. */
 .cmd-l {
-    flex: none;
-    max-width: 60%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    color: var(--fg);
-}
-
-.cmd-c {
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-    font: 0.857rem var(--font-mono);
-    color: var(--fg-3);
-}
-
-/* No description (Codex): the command is the label. */
-.cmd-c.solo {
-    font-size: 0.893rem;
     color: var(--fg);
 }
 
+/* No description (Codex): the command is the label. */
+.cmd-l.solo {
+    font: 0.893rem var(--font-mono);
+}
+
 /* More than one line: the first, and a hint there's more. */
-.cmd-c.more::after {
+.cmd-l.more::after {
     content: " …";
     color: var(--fg-4);
 }
 
-.cmd-h .meta {
-    margin-left: auto;
-    flex: none;
+/* The columns after the label: each part, when there is one, 8px from the one before. */
+.cmd-tags,
+.cmd-res,
+.cmd-time {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding-left: 8px;
+    gap: calc(8 * var(--sp));
     font-size: 0.857rem;
     font-variant-numeric: tabular-nums;
     color: var(--fg-3);
 }
 
-.cmd-h .meta > .tcard-dim {
+.cmd-tags:not(:empty),
+.cmd-res:not(:empty),
+.cmd-time:not(:empty) {
+    padding-left: calc(8 * var(--sp));
+}
+
+/* Numbers to the right, so "5 pass" and "306 pass", "2s" and "325ms" end together. */
+.cmd-res,
+.cmd-time {
+    justify-content: flex-end;
+}
+
+.cmd-tags {
+    min-width: 0;
+    overflow: hidden;
+}
+
+.cmd-tags > .tcard-dim {
     max-width: 14rem;
 }
 
-.cmd-h .sum {
+/* Not .sum: that's the Changes panel's (panel.css), padded, which made a row with a tally taller than the rest. */
+.cmd-sum {
     color: var(--fg-2);
 }
 
@@ -1596,7 +1957,7 @@
 .cmd-tag {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: calc(4 * var(--sp));
 }
 
 /* "In the background", "Finished": said plainly, as the summary is. */
@@ -1613,11 +1974,12 @@
     font-weight: 600;
 }
 
-/* Copy (and Stop) come in on hover or focus; until then they take no room. */
+/* Copy (and Stop) come in on hover or focus, at the end of the label; until then they take no room. */
 .cmd-tools {
     display: none;
     align-items: center;
-    gap: 2px;
+    gap: calc(2 * var(--sp));
+    margin-left: auto;
 }
 
 .cmd-h:hover .cmd-tools,
@@ -1632,14 +1994,16 @@
     }
 }
 
-.cmd-row .icon-btn {
-    width: 26px;
-    height: 26px;
-    border-radius: 7px;
+.cmd-row .icon-btn,
+.live-line .icon-btn {
+    width: calc(26 * var(--sp));
+    height: calc(26 * var(--sp));
+    border-radius: calc(7 * var(--sp));
     color: var(--fg-3);
 }
 
-.cmd-row .icon-btn:hover:not(:disabled) {
+.cmd-row .icon-btn:hover:not(:disabled),
+.live-line .icon-btn:hover:not(:disabled) {
     background: var(--press);
     color: var(--fg);
 }
@@ -1652,8 +2016,12 @@
     display: grid;
     place-items: center;
     flex: none;
-    width: 18px;
+    width: calc(18 * var(--sp));
     color: var(--fg-4);
+}
+
+.cmd-h > .chev-w {
+    margin-left: calc(9 * var(--sp));
 }
 
 .chev-w .chev {
@@ -1666,7 +2034,7 @@
 
 /* Its last line, under the row while it's folded: a failure's (red), or what it's printing. */
 .cmd-tail {
-    margin: -2px 0 4px 33px;
+    margin: calc(-2 * var(--sp)) 0 calc(4 * var(--sp)) calc(33 * var(--sp));
     font: 0.857rem/1.6 var(--font-mono);
     color: var(--fg-3);
     white-space: nowrap;
@@ -1679,8 +2047,8 @@
 }
 
 .cmd-body {
-    margin: 4px 0 8px 33px;
-    border-radius: 12px;
+    margin: calc(4 * var(--sp)) 0 calc(8 * var(--sp)) calc(33 * var(--sp));
+    border-radius: calc(12 * var(--sp));
     background: var(--sheet-2);
     box-shadow: inset 0 0 0 0.5px var(--line);
     overflow: hidden;
@@ -1699,8 +2067,8 @@
 .cmd-out {
     position: relative;
     display: flex;
-    gap: 8px;
-    padding: 10px 40px 10px 14px;
+    gap: calc(8 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(40 * var(--sp)) calc(10 * var(--sp)) calc(14 * var(--sp));
 }
 
 .cmd-in {
@@ -1732,7 +2100,7 @@
 .cmd-in .hd { color: var(--fg-2); }
 
 .cmd-out pre {
-    max-height: 240px;
+    max-height: calc(240 * var(--sp));
     overflow: auto;
     color: var(--fg-2);
 }
@@ -1754,8 +2122,8 @@
 .cmd-in .cp,
 .cmd-out .cp {
     position: absolute;
-    top: 6px;
-    right: 6px;
+    top: calc(6 * var(--sp));
+    right: calc(6 * var(--sp));
     opacity: 0.55;
 }
 
@@ -1768,9 +2136,9 @@
 .cmd-foot {
     display: flex;
     align-items: center;
-    gap: 6px;
-    min-height: 30px;
-    padding: 2px 8px 2px 14px;
+    gap: calc(6 * var(--sp));
+    min-height: calc(30 * var(--sp));
+    padding: calc(2 * var(--sp)) calc(8 * var(--sp)) calc(2 * var(--sp)) calc(14 * var(--sp));
     border-top: 0.5px solid var(--line);
     font: 0.821rem var(--font-ui);
     color: var(--fg-3);
@@ -1793,7 +2161,8 @@
         animation: none;
     }
 
-    .chev-w .chev {
+    .chev-w .chev,
+    .layer .chev {
         transition: none;
     }
 }
@@ -1805,7 +2174,7 @@
     font-weight: 600;
     color: var(--fg-3);
     background: var(--hover);
-    padding: 2px 7px;
+    padding: calc(2 * var(--sp)) calc(7 * var(--sp));
     border-radius: var(--pill);
 }
 
@@ -1817,12 +2186,12 @@
 /* A command's output: wrapped under itself, scrolling past a few lines. */
 .tcard-out {
     margin: 0;
-    padding: 8px 14px;
+    padding: calc(8 * var(--sp)) calc(14 * var(--sp));
     font: 0.857rem/1.7 var(--font-mono);
     color: var(--fg-2);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-    max-height: 180px;
+    max-height: calc(180 * var(--sp));
     overflow: auto;
     tab-size: 4;
 }
@@ -1832,11 +2201,11 @@
 }
 
 .tcard-more {
-    padding: 0 14px 8px;
+    padding: 0 calc(14 * var(--sp)) calc(8 * var(--sp));
 }
 
 .tcard-sec {
-    padding: 10px 12px;
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
     border-top: 0.5px solid var(--line);
 }
 
@@ -1859,9 +2228,9 @@
 .tpill {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    height: 22px;
-    padding: 0 9px 0 7px;
+    gap: calc(5 * var(--sp));
+    height: calc(22 * var(--sp));
+    padding: 0 calc(9 * var(--sp)) 0 calc(7 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.857rem;
     font-weight: 600;
@@ -1896,7 +2265,7 @@
     display: flex;
     flex-direction: column;
     min-width: 0;
-    margin: 4px 0 6px;
+    margin: calc(4 * var(--sp)) 0 calc(6 * var(--sp));
     border-radius: var(--r-card);
     background: var(--sheet);
     box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px var(--hover);
@@ -1905,16 +2274,16 @@
 
 /* In a timeline, the card spans it rather than sitting on its line. */
 .activity-steps > .subagents {
-    margin-left: -28px;
+    margin-left: calc(-28 * var(--sp));
 }
 
 .ag-head {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: calc(10 * var(--sp));
     width: 100%;
-    min-height: 48px;
-    padding: 6px 10px 6px 12px;
+    min-height: calc(48 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp)) calc(12 * var(--sp));
     text-align: left;
     color: var(--fg-3);
     transition: background 140ms;
@@ -1941,8 +2310,8 @@
 
 .av {
     position: relative;
-    width: 24px;
-    height: 24px;
+    width: calc(24 * var(--sp));
+    height: calc(24 * var(--sp));
     border-radius: 50%;
     background: var(--sheet-2);
     box-shadow: 0 0 0 2px var(--sheet), inset 0 0 0 0.5px var(--line);
@@ -1953,12 +2322,23 @@
 }
 
 .stack .av + .av {
-    margin-left: -6px;
+    margin-left: calc(-6 * var(--sp));
+}
+
+/* How many more providers than the stack shows (ui/AgentMark.tsx ProviderStack). */
+.stack .av.more {
+    width: auto;
+    min-width: calc(24 * var(--sp));
+    padding: 0 calc(5 * var(--sp));
+    border-radius: calc(12 * var(--sp));
+    font-size: 0.714rem;
+    font-weight: 600;
+    color: var(--fg-2);
 }
 
 .av .nd {
-    right: -3px;
-    bottom: -3px;
+    right: calc(-3 * var(--sp));
+    bottom: calc(-3 * var(--sp));
     box-shadow: 0 0 0 2px var(--sheet);
 }
 
@@ -1978,12 +2358,12 @@
     font-size: 0.929rem;
     font-weight: 600;
     color: var(--fg);
-    line-height: 17px;
+    line-height: calc(17 * var(--sp));
 }
 
 .ag-sub {
     font-size: 0.857rem;
-    line-height: 16px;
+    line-height: calc(16 * var(--sp));
 }
 
 .ag-sub.tone-info {
@@ -2003,17 +2383,17 @@
 .agl {
     display: flex;
     flex-direction: column;
-    padding: 4px;
+    padding: calc(4 * var(--sp));
     border-top: 0.5px solid var(--line);
 }
 
 .agr {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: calc(10 * var(--sp));
     width: 100%;
-    padding: 7px 8px;
-    border-radius: 8px;
+    padding: calc(7 * var(--sp)) calc(8 * var(--sp));
+    border-radius: calc(8 * var(--sp));
     text-align: left;
     color: var(--fg-3);
     min-width: 0;
@@ -2032,13 +2412,13 @@
     font-size: 0.929rem;
     font-weight: 600;
     color: var(--fg);
-    line-height: 17px;
+    line-height: calc(17 * var(--sp));
 }
 
 .agr-sub {
     font-size: 0.857rem;
     color: var(--fg-2);
-    line-height: 16px;
+    line-height: calc(16 * var(--sp));
 }
 
 /* ---- Thinking ------------------------------------------------------- */
@@ -2049,8 +2429,8 @@
 
 .thinking-peek,
 .thinking-text {
-    margin: 2px 0 6px 10px;
-    padding-left: 18px;
+    margin: calc(2 * var(--sp)) 0 calc(6 * var(--sp)) calc(10 * var(--sp));
+    padding-left: calc(18 * var(--sp));
     font-size: 0.893rem;
     color: var(--fg-3);
     line-height: 1.55;
@@ -2065,7 +2445,7 @@
 
 .thinking-text {
     white-space: pre-wrap;
-    max-height: 340px;
+    max-height: calc(340 * var(--sp));
     overflow-y: auto;
     border-left: 1px solid var(--line);
 }
@@ -2073,13 +2453,13 @@
 /* ---- Compaction and imports: a hairline with its label ---------------- */
 
 .compacted {
-    margin: 10px 0;
+    margin: calc(10 * var(--sp)) 0;
 }
 
 .compacted-rule {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: calc(12 * var(--sp));
 }
 
 .compacted-rule span {
@@ -2109,8 +2489,8 @@
 }
 
 .compacted-summary {
-    margin-top: 10px;
-    padding: 12px 16px;
+    margin-top: calc(10 * var(--sp));
+    padding: calc(12 * var(--sp)) calc(16 * var(--sp));
     border-radius: var(--r-card);
     background: var(--sheet-2);
 }
@@ -2119,13 +2499,13 @@
 
 .term {
     margin: 0;
-    padding: 8px 12px;
+    padding: calc(8 * var(--sp)) calc(12 * var(--sp));
     background: var(--sheet-2);
-    border-radius: 10px;
+    border-radius: calc(10 * var(--sp));
     font: 0.857rem/1.6 var(--font-mono);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-    max-height: 360px;
+    max-height: calc(360 * var(--sp));
     overflow-y: auto;
     color: var(--fg-2);
 }
@@ -2146,20 +2526,20 @@
 }
 
 .code.bare {
-    border-radius: 10px;
+    border-radius: calc(10 * var(--sp));
 }
 
 /* The language and Copy appear on hover, over the code's top right. */
 .code-head {
     position: absolute;
-    top: 6px;
-    right: 6px;
+    top: calc(6 * var(--sp));
+    right: calc(6 * var(--sp));
     z-index: 1;
     display: flex;
     align-items: center;
-    gap: 4px;
-    height: 28px;
-    padding: 0 2px 0 10px;
+    gap: calc(4 * var(--sp));
+    height: calc(28 * var(--sp));
+    padding: 0 calc(2 * var(--sp)) 0 calc(10 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.786rem;
     color: var(--fg-3);
@@ -2176,14 +2556,14 @@
 }
 
 .code-head .icon-btn {
-    width: 24px;
-    height: 24px;
+    width: calc(24 * var(--sp));
+    height: calc(24 * var(--sp));
     border-radius: var(--pill);
 }
 
 .code-body {
     margin: 0;
-    padding: 10px 14px;
+    padding: calc(10 * var(--sp)) calc(14 * var(--sp));
     overflow: auto;
     font: 0.857rem/1.7 var(--font-mono);
     tab-size: 4;
@@ -2191,7 +2571,7 @@
 }
 
 .code.bare .code-body {
-    padding: 8px 12px;
+    padding: calc(8 * var(--sp)) calc(12 * var(--sp));
 }
 
 .code-body code {
@@ -2214,8 +2594,8 @@
 .diff-head {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 7px 12px;
+    gap: calc(8 * var(--sp));
+    padding: calc(7 * var(--sp)) calc(12 * var(--sp));
     border-bottom: 1px solid var(--line);
     font-size: 0.857rem;
     min-width: 0;
@@ -2237,7 +2617,7 @@
 
 .diffstat {
     display: inline-flex;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     font-family: var(--font-mono);
     font-size: 0.8rem;
     font-weight: 600;
@@ -2255,7 +2635,7 @@
 
 .diff-scroll {
     overflow-x: auto;
-    max-height: 520px;
+    max-height: calc(520 * var(--sp));
     overflow-y: auto;
 }
 
@@ -2277,7 +2657,7 @@
     z-index: 1;
     left: 0;
     text-align: right;
-    padding: 0 8px 0 4px;
+    padding: 0 calc(8 * var(--sp)) 0 calc(4 * var(--sp));
     color: var(--fg-3);
     user-select: none;
     -webkit-user-select: none;
@@ -2292,7 +2672,7 @@
 }
 
 .dl .txt {
-    padding: 0 16px 0 22px;
+    padding: 0 calc(16 * var(--sp)) 0 calc(22 * var(--sp));
     white-space: pre;
     position: relative;
     color: var(--shiki-foreground);
@@ -2300,7 +2680,7 @@
 
 .dl .txt::before {
     position: absolute;
-    left: 7px;
+    left: calc(7 * var(--sp));
     color: var(--fg-3);
 }
 
@@ -2335,7 +2715,7 @@
 .dl.sep .txt {
     color: var(--fg-3);
     background: color-mix(in srgb, var(--hover) 50%, transparent);
-    padding: 3px 12px;
+    padding: calc(3 * var(--sp)) calc(12 * var(--sp));
     font-size: 0.92em;
 }
 
@@ -2355,7 +2735,7 @@
 
 .sl .ln {
     text-align: right;
-    padding: 0 8px 0 4px;
+    padding: 0 calc(8 * var(--sp)) 0 calc(4 * var(--sp));
     color: var(--fg-3);
     user-select: none;
     -webkit-user-select: none;
@@ -2368,7 +2748,7 @@
 }
 
 .sl .txt {
-    padding: 0 12px 0 10px;
+    padding: 0 calc(12 * var(--sp)) 0 calc(10 * var(--sp));
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     color: var(--shiki-foreground);
@@ -2403,7 +2783,7 @@
 .sl.sep .txt {
     color: var(--fg-3);
     background: color-mix(in srgb, var(--hover) 50%, transparent);
-    padding: 3px 12px;
+    padding: calc(3 * var(--sp)) calc(12 * var(--sp));
     font-size: 0.92em;
 }
 
@@ -2425,9 +2805,9 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     width: 100%;
-    padding: 6px;
+    padding: calc(6 * var(--sp));
     border-top: 1px solid var(--line);
     color: var(--fg-2);
     font-size: 0.8rem;
@@ -2440,7 +2820,7 @@
 }
 
 .diff-note {
-    padding: 8px 12px;
+    padding: calc(8 * var(--sp)) calc(12 * var(--sp));
     color: var(--fg-3);
     font-size: 0.8rem;
 }
@@ -2463,19 +2843,19 @@
 
 .diff.inline .diff-rows {
     min-width: 0;
-    padding: 6px 0;
+    padding: calc(6 * var(--sp)) 0;
     line-height: 1.7;
 }
 
 .diff.inline .dl {
-    grid-template-columns: 40px minmax(0, 1fr);
+    grid-template-columns: calc(40 * var(--sp)) minmax(0, 1fr);
 }
 
 .diff.inline .dl .ln {
     position: static;
     grid-column: 1;
     grid-row: 1;
-    padding: 0 10px 0 0;
+    padding: 0 calc(10 * var(--sp)) 0 0;
     background: none;
     border-right: 0;
     font-size: 1em;
@@ -2491,13 +2871,13 @@
 .diff.inline .dl .txt {
     grid-column: 2;
     grid-row: 1;
-    padding: 0 12px 0 18px;
+    padding: 0 calc(12 * var(--sp)) 0 calc(18 * var(--sp));
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
 
 .diff.inline .dl .txt::before {
-    left: 2px;
+    left: calc(2 * var(--sp));
     color: var(--fg-4);
 }
 
@@ -2526,13 +2906,13 @@
 }
 
 .diff.inline .dl.sep {
-    margin: 2px 0;
+    margin: calc(2 * var(--sp)) 0;
     background: var(--sheet-2);
 }
 
 .diff.inline .dl.sep .txt {
     grid-column: 1 / -1;
-    padding: 2px 12px 2px 50px;
+    padding: calc(2 * var(--sp)) calc(12 * var(--sp)) calc(2 * var(--sp)) calc(50 * var(--sp));
     background: none;
     font-style: italic;
     color: var(--fg-3);
@@ -2543,7 +2923,7 @@
 }
 
 .diff.inline .diff-more {
-    height: 30px;
+    height: calc(30 * var(--sp));
     padding: 0;
     border-top: 0.5px solid var(--line);
     background: transparent;
@@ -2558,7 +2938,7 @@
 }
 
 .diff.inline .diff-note {
-    padding: 8px 14px;
+    padding: calc(8 * var(--sp)) calc(14 * var(--sp));
     font-size: 0.857rem;
     color: var(--fg-3);
 }
@@ -2571,26 +2951,26 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 5px;
+    gap: calc(5 * var(--sp));
     font-size: 0.9rem;
 }
 
 .todo-list.big {
-    gap: 9px;
+    gap: calc(9 * var(--sp));
     font-size: 0.96rem;
 }
 
 .todo-list li {
     display: flex;
     align-items: flex-start;
-    gap: 9px;
+    gap: calc(9 * var(--sp));
 }
 
 .todo-box {
-    width: 16px;
-    height: 16px;
-    margin-top: 2px;
-    border-radius: 5px;
+    width: calc(16 * var(--sp));
+    height: calc(16 * var(--sp));
+    margin-top: calc(2 * var(--sp));
+    border-radius: calc(5 * var(--sp));
     border: 1.5px solid var(--line-strong);
     display: grid;
     place-items: center;
@@ -2621,7 +3001,7 @@
 /* ---- A turn's result: what it changed, ready to review ---------------- */
 
 .files-card {
-    margin-top: 2px;
+    margin-top: calc(2 * var(--sp));
 }
 
 .files-title {
@@ -2634,9 +3014,9 @@
 .tbtn {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    height: 26px;
-    padding: 0 11px;
+    gap: calc(6 * var(--sp));
+    height: calc(26 * var(--sp));
+    padding: 0 calc(11 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.857rem;
     font-weight: 600;
@@ -2659,23 +3039,172 @@
 .files-rows {
     display: flex;
     flex-direction: column;
-    padding: 4px 6px 6px;
+    padding: calc(4 * var(--sp)) calc(6 * var(--sp)) calc(6 * var(--sp));
     border-top: 0.5px solid var(--line);
 }
 
 .files-card .review-note {
-    padding: 8px 12px;
+    padding: calc(8 * var(--sp)) calc(12 * var(--sp));
     border-top: 0.5px solid var(--line);
     font-size: 0.857rem;
     color: var(--fg-3);
 }
 
+/* What the snapshot left out: one line, its reasons in the tooltip. */
+.files-card .files-note {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    cursor: help;
+}
+
+.files-sub {
+    font-size: 0.857rem;
+    color: var(--fg-3);
+    font-variant-numeric: tabular-nums;
+}
+
+/* One other worktree: its branch in the head, beside Review; where it is in the tooltip. */
+.place-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
+    min-width: 0;
+    max-width: 40%;
+    height: calc(24 * var(--sp));
+    padding: 0 calc(9 * var(--sp)) 0 calc(7 * var(--sp));
+    border-radius: var(--pill);
+    font: 0.821rem var(--font-mono);
+    color: var(--fg-2);
+    background: var(--hover);
+}
+
+.place-chip svg {
+    flex: none;
+    color: var(--fg-3);
+}
+
+/* Several places: a row each, its own folder first, then the busiest, with who worked there. */
+.place-row {
+    display: grid;
+    grid-template-columns: calc(18 * var(--sp)) minmax(0, 1fr) auto calc(52 * var(--sp)) auto auto;
+    align-items: center;
+    column-gap: calc(10 * var(--sp));
+    min-height: calc(44 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(4 * var(--sp)) calc(4 * var(--sp)) calc(8 * var(--sp));
+    border-radius: calc(10 * var(--sp));
+}
+
+.place-row + .place-row {
+    box-shadow: inset 0 0.5px 0 var(--line);
+}
+
+.place-row:hover {
+    background: var(--hover);
+}
+
+.place-ic {
+    display: grid;
+    place-items: center;
+    color: var(--fg-3);
+}
+
+.place-name {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.place-title {
+    font-weight: 500;
+    color: var(--fg);
+}
+
+.place-own {
+    margin-left: calc(7 * var(--sp));
+    font-size: 0.786rem;
+    font-weight: 500;
+    color: var(--fg-3);
+}
+
+.place-branch {
+    font: 0.821rem var(--font-mono);
+    color: var(--fg-3);
+}
+
+.place-who {
+    display: flex;
+    justify-content: flex-end;
+    gap: calc(4 * var(--sp));
+    min-width: 0;
+    max-width: calc(230 * var(--sp));
+}
+
+.place-ag {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
+    min-width: 0;
+    max-width: calc(120 * var(--sp));
+    height: calc(22 * var(--sp));
+    padding: 0 calc(8 * var(--sp)) 0 calc(6 * var(--sp));
+    border-radius: var(--pill);
+    font-size: 0.821rem;
+    color: var(--fg-2);
+    background: var(--hover);
+}
+
+.place-ag svg {
+    flex: none;
+}
+
+.place-ag.more {
+    padding: 0 calc(7 * var(--sp));
+}
+
+.place-files {
+    font-size: 0.857rem;
+    color: var(--fg-3);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.place-row .stat {
+    justify-self: end;
+}
+
+/* Narrow: who worked there by mark only, then not at all; the branch chip by its icon. */
+:where(.main[data-narrow~="640"]) {
+    .place-ag .truncate,
+    .place-files {
+        display: none;
+    }
+
+    .place-ag {
+        padding: 0 calc(5 * var(--sp));
+    }
+
+    .place-chip .truncate {
+        display: none;
+    }
+
+    .place-chip {
+        padding: 0 calc(6 * var(--sp));
+    }
+}
+
+:where(.main[data-narrow~="440"]) {
+    .place-who {
+        display: none;
+    }
+}
+
 .ghost-btn {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    height: 24px;
-    padding: 0 8px;
+    gap: calc(6 * var(--sp));
+    height: calc(24 * var(--sp));
+    padding: 0 calc(8 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.857rem;
     font-weight: 500;
@@ -2696,7 +3225,7 @@
 .frow-line {
     display: flex;
     align-items: center;
-    gap: 2px;
+    gap: calc(2 * var(--sp));
     min-width: 0;
 }
 
@@ -2707,11 +3236,11 @@
 .frow {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
     width: 100%;
-    height: 28px;
-    padding: 0 8px;
-    border-radius: 8px;
+    height: calc(28 * var(--sp));
+    padding: 0 calc(8 * var(--sp));
+    border-radius: calc(8 * var(--sp));
     font-family: var(--font-mono);
     font-size: 0.857rem;
     text-align: left;
@@ -2768,12 +3297,12 @@
 .commentable .ccur > .ln:first-child::before {
     content: "+";
     position: absolute;
-    left: 3px;
+    left: calc(3 * var(--sp));
     top: 50%;
     transform: translateY(-50%);
     width: 1.25em;
     height: 1.25em;
-    border-radius: 4px;
+    border-radius: calc(4 * var(--sp));
     display: grid;
     place-items: center;
     background: var(--accent);
@@ -2819,10 +3348,10 @@
     left: 0;
     width: 100cqi;
     box-sizing: border-box;
-    padding: 6px 10px 8px;
+    padding: calc(6 * var(--sp)) calc(10 * var(--sp)) calc(8 * var(--sp));
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     background: color-mix(in srgb, var(--hover) 50%, transparent);
     border-block: 1px solid var(--line);
     font-family: var(--font-ui);
@@ -2837,8 +3366,8 @@
 .dc-card {
     display: flex;
     align-items: flex-start;
-    gap: 8px;
-    padding: 8px 8px 8px 10px;
+    gap: calc(8 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(8 * var(--sp)) calc(8 * var(--sp)) calc(10 * var(--sp));
     border-radius: var(--radius-md);
     background: var(--sheet);
     box-shadow: inset 0 0 0 1px var(--line), inset 3px 0 0 var(--accent);
@@ -2851,7 +3380,7 @@
 
 .dc-icon {
     flex: none;
-    margin-top: 2px;
+    margin-top: calc(2 * var(--sp));
     color: var(--accent-text);
 }
 
@@ -2864,13 +3393,13 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: calc(3 * var(--sp));
 }
 
 .dc-meta {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
     font-size: 0.8rem;
     color: var(--fg-2);
 }
@@ -2881,8 +3410,8 @@
 }
 
 .dc-tag {
-    padding: 0 6px;
-    border-radius: 999px;
+    padding: 0 calc(6 * var(--sp));
+    border-radius: calc(999 * var(--sp));
     background: var(--warn-soft);
     color: var(--fg);
     font-size: 0.75rem;
@@ -2896,11 +3425,11 @@
 }
 
 .dc-snippet {
-    margin: 4px 0 0;
-    padding: 6px 8px;
+    margin: calc(4 * var(--sp)) 0 0;
+    padding: calc(6 * var(--sp)) calc(8 * var(--sp));
     max-height: 9em;
     overflow: auto;
-    border-radius: 6px;
+    border-radius: calc(6 * var(--sp));
     background: var(--sheet-2);
     color: var(--fg-2);
     font-size: 0.8rem;
@@ -2909,7 +3438,7 @@
 
 .dc-tools {
     display: flex;
-    gap: 2px;
+    gap: calc(2 * var(--sp));
     opacity: 0;
     transition: opacity 0.12s;
 }
@@ -2928,8 +3457,8 @@
 .dc-box {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding: 8px;
+    gap: calc(6 * var(--sp));
+    padding: calc(8 * var(--sp));
     border-radius: var(--radius-md);
     background: var(--sheet);
     box-shadow: inset 0 0 0 1px var(--accent-border);
@@ -2940,9 +3469,9 @@
     box-sizing: border-box;
     min-height: 3.2em;
     resize: none;
-    padding: 6px 8px;
+    padding: calc(6 * var(--sp)) calc(8 * var(--sp));
     border: 1px solid var(--line);
-    border-radius: 6px;
+    border-radius: calc(6 * var(--sp));
     background: var(--sheet);
     color: var(--fg);
     font: inherit;
@@ -2958,7 +3487,7 @@
 .dc-actions {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
 }
 
 .dc-hint {
@@ -2970,8 +3499,8 @@
 .dc-outdated {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding: 8px 10px;
+    gap: calc(6 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
     background: color-mix(in srgb, var(--hover) 50%, transparent);
     border-bottom: 1px solid var(--line);
     font-family: var(--font-ui);
@@ -2986,16 +3515,16 @@
 .prompt-comments {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    margin-top: 8px;
+    gap: calc(6 * var(--sp));
+    margin-top: calc(8 * var(--sp));
 }
 
 .prompt-comment {
     display: flex;
     flex-direction: column;
-    gap: 2px;
-    padding: 6px 10px;
-    border-radius: 10px;
+    gap: calc(2 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(10 * var(--sp));
+    border-radius: calc(10 * var(--sp));
     background: color-mix(in srgb, var(--sheet) 60%, transparent);
     box-shadow: inset 2px 0 0 var(--accent);
     font-size: 0.9rem;
@@ -3004,7 +3533,7 @@
 .prompt-comment-where {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
+    gap: calc(5 * var(--sp));
     align-self: flex-start;
     max-width: 100%;
     padding: 0;

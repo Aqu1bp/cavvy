@@ -70,13 +70,15 @@ export interface LiveTurnResult {
     reason: TurnEndReason;
     error?: string;
     usage?: Usage;
-    limit?: { resetsAt?: number };
+    limit?: { resetsAt?: number; window?: string };
     /** Every prompt the turn answered: its own, and steering messages folded into it. */
     answers?: string[];
     /** The CLI didn't end the turn within interruptMs of the interrupt: it was ended here, and the CLI may still be on it. */
     unanswered?: boolean;
     /** The spawn settings changed while background work ran: this turn ran on the old process, and the new settings wait for it. */
     deferred?: { tasks: number };
+    /** The prompt never reached the CLI: its process couldn't start, or the CLI refused the prompt (BackendResult.refused). */
+    refused?: boolean;
 }
 
 /** A turn the CLI started by itself, waiting to be adopted. */
@@ -168,7 +170,7 @@ export class LiveCliSession {
     get pid(): number | undefined {
         return this.proc?.pid;
     }
-    /** The account the process signed in with: a turn for another runs on it while background work holds the restart back. */
+    /** The account the process signed in with: what it reports stays that account's after the session switches (the backends replace it for the next turn). */
     get account(): string | undefined {
         return this.processAccount;
     }
@@ -235,11 +237,11 @@ export class LiveCliSession {
             try {
                 deferred = await this.prepare(o.spawn, o.settings, signal);
             } catch (e) {
-                if (e instanceof Stopped || (e instanceof StartError && (this.closed || signal.aborted))) return { reason: "aborted" };
-                if (e instanceof StartError) return { reason: "error", error: e.message };
+                if (e instanceof Stopped || (e instanceof StartError && (this.closed || signal.aborted))) return { reason: "aborted", refused: true };
+                if (e instanceof StartError) return { reason: "error", error: e.message, refused: true };
                 throw e;
             }
-            if (signal.aborted) return { reason: "aborted" };
+            if (signal.aborted) return { reason: "aborted", refused: true };
             const r = await this.prompt(input, sink, signal);
             return deferred ? { ...r, deferred } : r;
         } finally {
@@ -320,6 +322,15 @@ export class LiveCliSession {
         // The deadline runs from now, whether or not the CLI has taken the prompt yet.
         turn.timer = this.o.clock.setTimeout(() => {
             if (turn.result) return;
+            // Its prompt went to a process that hasn't said its session yet (a new session's: Claude Code says it with
+            // the turn's system/init). The CLI may have the prompt in a session Harness can't name, so the next prompt
+            // would go there as a new thread's, bringing it again (#435 review): the process goes, and the next prompt
+            // starts a new one. Nothing ran in it before, so nothing is lost but that session.
+            if (turn.origin === "user" && turn.ref !== undefined && !this.cliSessionId && this.proc) {
+                this.finish(turn, { ref: turn.ref, reason: "aborted" });
+                void this.stop();
+                return;
+            }
             // Not taken yet: it's held under a stand-in until its ref comes (prompt()).
             this.abandoned.add(turn.ref ?? (turn.abandonedAs = `?${++this.untaken}`));
             this.finish(turn, { ref: turn.ref, reason: "aborted", unanswered: true });
@@ -468,7 +479,7 @@ export class LiveCliSession {
             if (gen !== this.generation) throw this.closed ? new Stopped() : new StartError(`${this.adapter.def.name} was stopped while starting`);
         };
         try {
-            const conn = await untilAborted(Promise.race([this.adapter.connect(proc, (e) => gen === this.generation && this.route(e), this.hostProxy), exited]), signal);
+            const conn = await untilAborted(Promise.race([this.adapter.connect(proc, (e) => gen === this.generation && this.route(e), this.hostProxy, resume), exited]), signal);
             current();
             this.conn = conn;
             const { sessionId } = await untilAborted(Promise.race([conn.open({ ...resume, settings }), exited]), signal);
@@ -541,7 +552,7 @@ export class LiveCliSession {
     private async prompt(input: TurnInput, sink: TurnSink, signal: AbortSignal): Promise<LiveTurnResult> {
         const conn = this.conn;
         // Stopped since it was readied.
-        if (!conn) return { reason: "aborted" };
+        if (!conn) return { reason: "aborted", refused: true };
         const gen = this.generation;
         const turn: Turn = { origin: "user", sink, held: [] };
         const done = new Promise<LiveTurnResult>((resolve) => (turn.resolve = resolve));
@@ -570,7 +581,7 @@ export class LiveCliSession {
                 (e) => {
                     known(undefined);
                     if (turn.abandonedAs !== undefined && this.abandoned.delete(turn.abandonedAs)) this.changed();
-                    this.finish(turn, { reason: "error", error: e instanceof Error ? e.message : String(e) });
+                    this.finish(turn, { reason: "error", error: e instanceof Error ? e.message : String(e), ...(e instanceof PromptRefused ? { refused: true } : {}) });
                     // Held while it was sent; not taken, so it had none of them: those that named no turn are no turn's.
                     if (gen === this.generation) for (const e of turn.held.splice(0)) e.t === "turn_event" && e.ref === undefined ? this.emitSession(e) : this.route(e);
                 },
@@ -636,7 +647,7 @@ export class LiveCliSession {
             return;
         }
         if (e.t === "turn_event") return void (turn.sink ? turn.sink.emit(e.event) : turn.held.push(e));
-        this.finish(turn, { ref: turn.ref, reason: e.reason, error: e.error, usage: e.usage, limit: e.limit, answers: e.answers });
+        this.finish(turn, { ref: turn.ref, reason: e.reason, error: e.error, usage: e.usage, limit: e.limit, answers: e.answers, refused: e.refused });
     }
 
     /** A turn the CLI started by itself, or an event that names one known here (or one ended here unanswered). */
@@ -710,6 +721,13 @@ export class LiveCliSession {
 
 /** A process that couldn't be started, or exited while starting: the turn ends with it as its error. */
 class StartError extends Error {}
+
+/**
+ * An adapter's prompt() never reached the CLI's session: nothing was written (the process had gone), or the CLI
+ * answered that it won't take it (Codex refusing turn/start). Only this rejection makes the turn's result refused
+ * (BackendResult.refused); any other may come after the CLI took the prompt, and counts as delivered.
+ */
+export class PromptRefused extends Error {}
 
 /** The turn was aborted, or the session closed, before its prompt was sent: the turn ends aborted. */
 class Stopped extends Error {}

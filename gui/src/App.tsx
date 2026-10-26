@@ -2,11 +2,13 @@ import { RenderBoundary } from "./components/ui/ErrorBoundary";
 import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { Toasts } from "./components/Toasts";
+import { ErrorCards } from "./components/ErrorCards";
 import { activate, app, attentionCount, handleFor, restoreActiveSession, rpc, type SessionHandle } from "./state/app";
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
 import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, reviewSplit, setAgentFocus, setDockHeight, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold } from "./state/ui";
-import { isTauri, os } from "./lib/platform";
+import { isTauri, os, windowCommand } from "./lib/platform";
+import { installWindowDrag } from "./lib/window-drag";
 import { canStop } from "./lib/session-status";
 import { actionOf, setEnterSends } from "./state/keybindings";
 import { clampInspectorWidth, closesOnShrink, columnSteps, heldSizes, requestCloses, tracks, COLUMN_NARROW, COLUMN_SHORT, INSPECTOR_DEFAULT, windowLayout } from "./lib/layout";
@@ -95,6 +97,7 @@ function SessionView(p: { handle: SessionHandle }) {
                 <Transcript handle={p.handle} dock={dockH()} />
                 <div class="composer-dock" ref={dock}>
                     <div class="composer-col">
+                        <ErrorCards place="composer" />
                         <Composer sessionId={p.handle.id} />
                     </div>
                 </div>
@@ -232,7 +235,7 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
         });
     }));
 
-    // Shrinking the window past the docking point closes a docked inspector (the diff reader floats instead).
+    // Shrinking the window past the docking point closes a docked inspector (the diff reader fills the sheet instead).
     createEffect(on(() => layout().inspector.mode, (mode, from) => {
         if (closesOnShrink(from, mode, prefs.panel, p.review)) setPrefs("panel", false);
     }));
@@ -309,6 +312,11 @@ export function App() {
         const focused = document.activeElement as HTMLElement | null;
         if (focused?.closest?.("[data-covered], .keep.covered")) focused.blur();
     }, { defer: true }));
+
+    // The window moves from its top strip and its edges (lib/window-drag.ts).
+    onMount(() => {
+        if (isTauri) onCleanup(installWindowDrag({ invoke: windowCommand, mac: os === "macos" }));
+    });
 
     // Global shortcuts.
     onMount(() => {
@@ -430,8 +438,8 @@ export function App() {
         >
             <Show when={app.conn === "open" || app.hello} fallback={<Disconnected />}>
                 <div class="win" style={{ "--rail-w": `${railWidth()}px` }}>
-                    {/* The window's edges drag it, under the rail and the sheet (the rail's top and the title bar drag too). */}
-                    <div class="win-drag" data-tauri-drag-region />
+                    {/* The window's edges move it, under the rail and the sheet (and so does its whole top strip: lib/window-drag.ts). */}
+                    <div class="win-drag" data-window-drag />
                     <div class="rail-scrim" aria-hidden="true" onClick={() => setRailOpen(false)} />
                     {/* The rail sits straight on the window glass; in narrow windows it's a drawer over the sheet. */}
                     <div class="win-rail" inert={!layout().railShown} style={{ "--rail-w": `${railWidth()}px` }}>
@@ -465,6 +473,7 @@ export function App() {
                                     <RenderBoundary>
                                         <SettingsPage />
                                     </RenderBoundary>
+                                    <ErrorCards place="settings" />
                                 </Show>
                             </div>
                             {/* What the settings page covers stays mounted and laid out under it: coming back shows it
@@ -539,6 +548,8 @@ export function App() {
             <CommitDialog />
             <ImageViewer />
             <Toasts />
+            {/* Errors' last resort: shows only when none of the places above is on screen (ErrorCards.tsx). */}
+            <ErrorCards place="window" />
         </div>
     );
 }

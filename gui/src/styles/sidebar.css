@@ -13,7 +13,7 @@
     position: relative;
     min-height: 0;
     min-width: 0;
-    padding: 0 10px 4px 12px;
+    padding: 0 calc(10 * var(--sp)) calc(4 * var(--sp)) calc(12 * var(--sp));
     color: var(--rail-fg);
     background: transparent;
     font-size: 0.929rem;
@@ -24,7 +24,7 @@
 
 /* Narrow windows: the shell floats the rail over the sheet (data-rail="overlay" on an ancestor). */
 [data-rail="overlay"] .sidebar {
-    border-radius: 14px;
+    border-radius: calc(14 * var(--sp));
     background: var(--rail-float);
     -webkit-backdrop-filter: blur(30px) saturate(1.8);
     backdrop-filter: blur(30px) saturate(1.8);
@@ -61,11 +61,40 @@
     flex: none;
 }
 
+/* Its buttons are the frame's: the traffic lights' size at any text size. */
+.side-top .hb {
+    width: 28px;
+    height: 28px;
+}
+
+/* The app's mark (the svg's own 20px, the frame's like the buttons: base.css leaves the
+   row's icons unscaled), at the row's start; on the lights' line with the buttons. */
+.side-top .brand {
+    flex: none;
+    border-radius: 25%;
+    box-shadow: var(--shadow-sm);
+}
+
+/* Beside the traffic lights (macOS): they end 78px from the window's left (header.css), and
+   the mark starts 10px after them, as in the mockup. The rail starts at the window's edge
+   when docked, --win-pad in as a drawer. */
+.sidebar.traffic {
+    --brand-x: 88px;
+}
+
+[data-rail="overlay"] .sidebar.traffic {
+    --brand-x: 80px;
+}
+
+.sidebar.traffic .side-top .brand {
+    margin-left: calc(var(--brand-x) - 12 * var(--sp));
+}
+
 .side-tools {
     display: flex;
     align-items: center;
-    gap: 2px;
-    margin-bottom: 14px;
+    gap: calc(2 * var(--sp));
+    margin-bottom: calc(14 * var(--sp));
     flex: none;
 }
 
@@ -75,10 +104,10 @@
     min-width: 0;
     display: flex;
     align-items: center;
-    gap: 8px;
-    height: 32px;
-    padding: 0 6px 0 10px;
-    margin-right: 2px;
+    gap: calc(8 * var(--sp));
+    height: calc(32 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(10 * var(--sp));
+    margin-right: calc(2 * var(--sp));
     border-radius: var(--pill);
     color: var(--rail-fg-2);
     background: var(--rail-hover);
@@ -104,8 +133,8 @@
     flex: none;
     font: 500 0.786rem/1 var(--font-ui);
     color: var(--fg-3);
-    padding: 3px 5px;
-    border-radius: 5px;
+    padding: calc(3 * var(--sp)) calc(5 * var(--sp));
+    border-radius: calc(5 * var(--sp));
     background: var(--hover);
     white-space: nowrap;
 }
@@ -114,8 +143,8 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    margin: 0 -4px;
-    padding: 0 4px 12px;
+    margin: 0 calc(-4 * var(--sp));
+    padding: 0 calc(4 * var(--sp)) calc(12 * var(--sp));
     display: flex;
     flex-direction: column;
     scrollbar-width: none;
@@ -131,7 +160,7 @@
 }
 
 .side-empty {
-    padding: 20px 8px;
+    padding: calc(20 * var(--sp)) calc(8 * var(--sp));
     color: var(--rail-fg-2);
     line-height: 1.5;
 }
@@ -142,10 +171,10 @@
     position: relative;
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: calc(7 * var(--sp));
     flex: none;
-    padding: 4px 8px 6px;
-    margin-top: 14px;
+    padding: calc(4 * var(--sp)) calc(8 * var(--sp)) calc(6 * var(--sp));
+    margin-top: calc(14 * var(--sp));
     font-size: 0.857rem;
     font-weight: 600;
     color: var(--rail-fg-2);
@@ -171,9 +200,9 @@
     display: inline-flex;
     align-items: center;
     flex: none;
-    height: 22px;
-    padding: 0 8px;
-    margin: -3px -4px -3px 0;
+    height: calc(22 * var(--sp));
+    padding: 0 calc(8 * var(--sp));
+    margin: calc(-3 * var(--sp)) calc(-4 * var(--sp)) calc(-3 * var(--sp)) 0;
     border-radius: var(--pill);
     color: var(--rail-fg-2);
     font-size: 0.857rem;
@@ -188,11 +217,11 @@
 /* A project's New session takes its count's place while you point at the heading. */
 .shelf-btn.add {
     position: absolute;
-    right: 4px;
+    right: calc(4 * var(--sp));
     top: 50%;
-    width: 22px;
+    width: calc(22 * var(--sp));
     padding: 0;
-    margin: -13px 0 0;
+    margin: calc(-13 * var(--sp)) 0 0;
     justify-content: center;
     opacity: 0;
 }
@@ -209,7 +238,7 @@
 
 .settled-head {
     width: 100%;
-    border-radius: 10px;
+    border-radius: calc(10 * var(--sp));
 }
 
 .settled-head:hover {
@@ -233,10 +262,10 @@
     min-width: 0;
     display: flex;
     align-items: center;
-    gap: 7px;
-    margin: -4px -8px -6px;
-    padding: 4px 8px 6px;
-    border-radius: 10px;
+    gap: calc(7 * var(--sp));
+    margin: calc(-4 * var(--sp)) calc(-8 * var(--sp)) calc(-6 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(8 * var(--sp)) calc(6 * var(--sp));
+    border-radius: calc(10 * var(--sp));
     color: inherit;
     font: inherit;
     text-align: left;
@@ -257,16 +286,16 @@
 }
 
 .project-head .shelf-btn.add {
-    right: 25px;
+    right: calc(25 * var(--sp));
 }
 
 .project-head .wait-dot {
-    margin-left: 2px;
+    margin-left: calc(2 * var(--sp));
 }
 
 /* Folded projects one after another read as a list of folders. */
 .project-head.folded + .project-head {
-    margin-top: 2px;
+    margin-top: calc(2 * var(--sp));
 }
 
 /* ---- A session in play: glyph | title, when | branch ------------------- */
@@ -275,7 +304,7 @@
     position: relative;
     flex: none;
     margin-bottom: 1px;
-    border-radius: 11px;
+    border-radius: calc(11 * var(--sp));
     transition: background 140ms;
 }
 
@@ -308,8 +337,8 @@
 }
 
 .sidebar .st.pick {
-    width: 16px;
-    height: 16px;
+    width: calc(16 * var(--sp));
+    height: calc(16 * var(--sp));
     margin: 1px;
     place-content: center;
     justify-self: center;
@@ -320,20 +349,20 @@
 
 .card-hit {
     display: grid;
-    grid-template-columns: 18px minmax(0, 1fr) auto;
-    column-gap: 9px;
+    grid-template-columns: calc(18 * var(--sp)) minmax(0, 1fr) auto;
+    column-gap: calc(9 * var(--sp));
     align-items: center;
     width: 100%;
     min-width: 0;
-    padding: 7px 10px 7px 8px;
-    border-radius: 11px;
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(7 * var(--sp)) calc(8 * var(--sp));
+    border-radius: calc(11 * var(--sp));
     text-align: left;
     color: inherit;
 }
 
 [data-density="compact"] .card-hit {
-    padding-top: 5px;
-    padding-bottom: 5px;
+    padding-top: calc(5 * var(--sp));
+    padding-bottom: calc(5 * var(--sp));
 }
 
 .card-hit:focus-visible,
@@ -346,7 +375,7 @@
 .sidebar .st {
     display: grid;
     place-items: center;
-    height: 18px;
+    height: calc(18 * var(--sp));
     color: var(--rail-fg-2);
 }
 
@@ -370,8 +399,8 @@
 
 .sidebar .spin-ring {
     display: inline-block;
-    width: 14px;
-    height: 14px;
+    width: calc(14 * var(--sp));
+    height: calc(14 * var(--sp));
     border-radius: 50%;
     border: 2px solid color-mix(in srgb, var(--accent) 22%, transparent);
     border-top-color: var(--accent);
@@ -403,7 +432,7 @@
 .slim .t {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     font-size: 0.821rem;
     color: var(--rail-fg-2);
     font-variant-numeric: tabular-nums;
@@ -419,7 +448,7 @@
     grid-column: 2 / span 2;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     min-width: 0;
     margin-top: 1px;
     font-size: 0.821rem;
@@ -446,8 +475,8 @@
 }
 
 .sidebar .unread-dot {
-    width: 7px;
-    height: 7px;
+    width: calc(7 * var(--sp));
+    height: calc(7 * var(--sp));
     border-radius: 50%;
     background: var(--accent);
     flex: none;
@@ -455,9 +484,9 @@
 
 /* Needs you: an amber dot, no words; its row keeps no archive button. */
 .sidebar .wait-dot {
-    width: 8px;
-    height: 8px;
-    margin-right: 2px;
+    width: calc(8 * var(--sp));
+    height: calc(8 * var(--sp));
+    margin-right: calc(2 * var(--sp));
     border-radius: 50%;
     background: var(--warn);
     box-shadow: 0 0 0 3px var(--warn-bg);
@@ -467,8 +496,8 @@
 /* Archive and More take the time's place while you point at the row. */
 .sess-acts {
     position: absolute;
-    top: 6px;
-    right: 6px;
+    top: calc(6 * var(--sp));
+    right: calc(6 * var(--sp));
     display: flex;
     align-items: center;
     opacity: 0;
@@ -491,9 +520,61 @@
 
 .card-rename {
     position: absolute;
-    left: 32px;
-    right: 8px;
-    top: 4px;
+    left: calc(32 * var(--sp));
+    right: calc(8 * var(--sp));
+    top: calc(4 * var(--sp));
+}
+
+/* ---- Needs you: pinned above the list until answered -------------------
+   Every session waiting on you but the open one (its request is in front of
+   you), as amber rows saying what it asks; each keeps its own row below.
+   One answered while the rail holds still is a plain row until it goes. */
+
+.needs-g {
+    flex: none;
+    margin-bottom: calc(14 * var(--sp));
+}
+
+.needs-g + .shelf {
+    margin-top: 0;
+}
+
+.needs-head,
+.needs-head .n {
+    color: var(--warn);
+}
+
+.needs-row {
+    animation: needs-in 420ms var(--spring);
+}
+
+.needs-row.waiting {
+    background: color-mix(in srgb, var(--warn) 9%, transparent);
+}
+
+.needs-row.waiting:hover {
+    background: color-mix(in srgb, var(--warn) 15%, transparent);
+}
+
+.needs-row.waiting .m {
+    color: var(--warn);
+}
+
+/* No actions take the dot's place here. */
+.needs-row:hover .end,
+.needs-row:focus-within .end {
+    visibility: visible;
+}
+
+@keyframes needs-in {
+    from {
+        opacity: 0;
+        transform: translateY(-6px) scale(0.98);
+    }
+}
+
+[data-motion="instant"] .needs-row {
+    animation: none;
 }
 
 /* ---- Everything else (settled, archived): one line --------------------- */
@@ -503,15 +584,15 @@
     display: flex;
     align-items: center;
     flex: none;
-    height: 32px;
+    height: calc(32 * var(--sp));
     margin-bottom: 1px;
-    border-radius: 10px;
+    border-radius: calc(10 * var(--sp));
     color: var(--rail-fg);
     transition: background 140ms;
 }
 
 [data-density="compact"] .slim {
-    height: 28px;
+    height: calc(28 * var(--sp));
 }
 
 .slim:hover,
@@ -530,15 +611,15 @@
     height: 100%;
     display: flex;
     align-items: center;
-    gap: 9px;
-    padding: 0 6px 0 8px;
-    border-radius: 10px;
+    gap: calc(9 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(8 * var(--sp));
+    border-radius: calc(10 * var(--sp));
     text-align: left;
     color: inherit;
 }
 
 .slim .st {
-    width: 18px;
+    width: calc(18 * var(--sp));
     flex: none;
 }
 
@@ -547,14 +628,14 @@
     display: grid;
     place-items: center end;
     flex: none;
-    min-width: 34px;
+    min-width: calc(34 * var(--sp));
     height: 100%;
-    padding-right: 10px;
+    padding-right: calc(10 * var(--sp));
 }
 
 .slim-acts {
     position: absolute;
-    right: 4px;
+    right: calc(4 * var(--sp));
     top: 0;
     bottom: 0;
     display: none;
@@ -574,8 +655,8 @@
 }
 
 .slim.more {
-    gap: 9px;
-    padding: 0 8px;
+    gap: calc(9 * var(--sp));
+    padding: 0 calc(8 * var(--sp));
     color: var(--rail-fg-2);
     font-size: 0.857rem;
 }
@@ -585,24 +666,24 @@
 }
 
 .slim.more > svg {
-    width: 18px;
+    width: calc(18 * var(--sp));
     flex: none;
 }
 
 .slim > .st {
-    margin-left: 8px;
+    margin-left: calc(8 * var(--sp));
 }
 
 .slim > .sess-rename {
-    margin: 0 8px 0 9px;
+    margin: 0 calc(8 * var(--sp)) 0 calc(9 * var(--sp));
 }
 
 .sess-rename {
     flex: 1;
     width: 100%;
     min-width: 0;
-    height: 26px;
-    padding: 0 10px;
+    height: calc(26 * var(--sp));
+    padding: 0 calc(10 * var(--sp));
     border-radius: var(--pill);
     border: 0;
     background: var(--sheet);
@@ -616,106 +697,291 @@
 }
 
 /* ---- Footer: the plans' usage, and Settings ----------------------------
-   One plan: the mockup's ring and two lines. Claude Code and Codex both
-   signed in: a row each, in about the same height. */
+   One row, the gear's height, however many plans are signed in: a gauge per
+   plan, its mark in a thin ring that fills as its fullest window does, then
+   the figure. No fills or pills: near a limit the ring and figure turn amber
+   (75%), then red (90%, and at the limit). Nothing reported yet: an empty
+   ring, no figure. Lean on purpose: four fit beside the gear at the default
+   width. Short of room (a narrow or floating rail), the % signs go first;
+   only what still doesn't fit folds into "+N" (Sidebar.tsx PlanRow, lib/rail.ts
+   planFit). The row opens the detail card. */
 
 .side-foot {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 10px 6px 4px;
+    gap: calc(2 * var(--sp));
+    height: calc(44 * var(--sp));
+    padding: calc(6 * var(--sp)) 0 0;
     border-top: 0.5px solid var(--line);
     flex: none;
 }
 
-.sidebar .meter {
-    --tone: var(--accent);
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
-    flex: none;
-    background: conic-gradient(var(--tone) calc(var(--v) * 1%), color-mix(in srgb, var(--rail-fg) 12%, transparent) 0);
-    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 4px));
-    mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 4px));
-}
-
-.sidebar .meter.tone-warn {
-    --tone: var(--warn);
-}
-
-.sidebar .meter.tone-danger {
-    --tone: var(--danger);
-}
-
-/* Not reported yet: the ring's track alone, with no share implied. */
-.sidebar .meter.unknown {
-    background: color-mix(in srgb, var(--rail-fg) 12%, transparent);
-}
-
-.sidebar .meter.sm {
-    width: 16px;
-    height: 16px;
-    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
-    mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
-}
-
-.side-foot .who {
+.side-foot .plans {
+    position: relative;
     flex: 1;
     min-width: 0;
-    display: flex;
-    flex-direction: column;
-    line-height: 1.25;
-}
-
-.side-foot .who b {
+    height: calc(32 * var(--sp));
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: calc(12 * var(--sp));
+    /* The first gauge is centred under the rows' status glyphs (their 18px column starts 8px in). */
+    padding: 0 calc(4 * var(--sp)) 0 calc(5 * var(--sp));
+    border-radius: calc(10 * var(--sp));
+    overflow: hidden;
+    color: var(--rail-fg-2);
+    text-align: left;
+    transition: background 140ms;
+}
+
+.side-foot .plans:hover,
+.side-foot .plans[aria-expanded="true"] {
+    background: var(--rail-hover);
+}
+
+.side-foot .plans:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: -2px;
+}
+
+.pl {
+    --pl-ink: var(--rail-fg-2);
+    --pl-arc: color-mix(in srgb, var(--rail-fg) 62%, transparent);
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
+    flex: none;
+    height: calc(24 * var(--sp));
+    padding: 0 calc(2 * var(--sp));
+    color: var(--pl-ink);
+    font-size: 0.857rem;
+    font-weight: 500;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.pl[hidden] {
+    display: none;
+}
+
+/* The gauge: the mark centred in its ring. */
+.pl-g {
+    position: relative;
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: calc(20 * var(--sp));
+    height: calc(20 * var(--sp));
+}
+
+.pl-g > svg:first-child {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    fill: none;
+    stroke-width: 1.75;
+}
+
+.pl-track {
+    stroke: color-mix(in srgb, var(--rail-fg) 14%, transparent);
+}
+
+.pl-arc {
+    stroke: var(--pl-arc);
+    stroke-linecap: round;
+    transition: stroke-dasharray 400ms ease, stroke 200ms;
+}
+
+.pl-g > .provider-icon,
+.pl-g > .provider-mono {
+    width: calc(11 * var(--sp));
+    height: calc(11 * var(--sp));
+    /* A one-colour mark (Codex) keeps the rail's ink: only the ring and figure say how near a limit it is. */
+    color: var(--rail-fg);
+}
+
+.pl-v {
+    flex: none;
+}
+
+.pl-v small {
+    margin-left: 0.5px;
+    font-size: 0.714rem;
+    font-weight: 500;
+    opacity: 0.7;
+}
+
+/* Short of room, the % signs go before any plan folds into "+N". */
+.side-foot .plans.tight {
+    gap: calc(7 * var(--sp));
+}
+
+.plans.tight .pl-v small {
+    display: none;
+}
+
+/* A plan on its own adds the window: "62% 5-hour", "100% · resets Mon". */
+.pl-w {
+    font-weight: 400;
+    opacity: 0.8;
+}
+
+.pl.warn {
+    --pl-ink: var(--warn);
+    --pl-arc: var(--warn);
+}
+
+.pl.danger {
+    --pl-ink: var(--danger);
+    --pl-arc: var(--danger);
+}
+
+/* Figures from a while ago (the gauge has no room to say "as of"; its tooltip and the card do). */
+.pl.stale :is(.pl-v, .pl-arc) {
+    opacity: 0.55;
+}
+
+.pl.more {
+    padding: 0 calc(6 * var(--sp));
+    color: var(--rail-fg-2);
+    background: color-mix(in srgb, var(--rail-fg) 7%, transparent);
+}
+
+/* Nothing folded: kept only to be measured, out of the row and unseen. */
+.pl.more.measure {
+    position: absolute;
+    visibility: hidden;
+    pointer-events: none;
+}
+
+/* The detail: every plan, each window as a row with its bar, how full it is and when it resets. */
+.plans-card .menu-head {
+    padding-right: calc(12 * var(--sp));
+}
+
+.pu-rh {
+    font-weight: 500;
+}
+
+.pu-plan {
+    padding: calc(4 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp));
+}
+
+.pu-plan + .pu-plan {
+    padding-top: calc(8 * var(--sp));
+    border-top: 0.5px solid var(--line);
+}
+
+.pu-h {
+    display: flex;
+    align-items: center;
+    gap: calc(7 * var(--sp));
     min-width: 0;
+    margin-bottom: calc(4 * var(--sp));
+    font-size: 0.893rem;
     font-weight: 600;
 }
 
-.side-foot .who b svg {
+.pu-h > svg,
+.pu-h > .provider-mono {
     flex: none;
 }
 
-.side-foot .who > span {
+.pu-asof {
+    margin-left: auto;
+    flex: none;
     font-size: 0.821rem;
-    color: var(--rail-fg-2);
+    font-weight: 400;
+    color: var(--fg-3);
 }
 
-.side-foot .plans {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-}
-
-.side-foot .plan {
-    display: flex;
+.pu-w {
+    display: grid;
+    grid-template-columns: calc(46 * var(--sp)) minmax(0, 1fr) calc(34 * var(--sp)) calc(70 * var(--sp));
     align-items: center;
-    gap: 6px;
-    min-width: 0;
-    line-height: 1.25;
-}
-
-.side-foot .plan .meter {
-    margin-right: 2px;
-}
-
-.side-foot .plan svg {
-    flex: none;
-}
-
-.side-foot .plan > span:last-child {
+    gap: calc(8 * var(--sp));
+    height: calc(20 * var(--sp));
+    padding-left: calc(21 * var(--sp));
     font-size: 0.821rem;
-    color: var(--rail-fg-2);
+    color: var(--fg-3);
 }
 
-/* Figures from a while ago (a row has no room to say "as of"; its tooltip does). */
-.side-foot .plan .meter.stale {
-    opacity: 0.55;
+.pu-w.none {
+    display: block;
+}
+
+.pu-bar {
+    height: calc(4 * var(--sp));
+    border-radius: var(--pill);
+    background: var(--press);
+    overflow: hidden;
+}
+
+.pu-bar i {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: color-mix(in srgb, var(--fg) 38%, transparent);
+}
+
+.pu-w b {
+    text-align: right;
+    font-weight: 600;
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+}
+
+.pu-r {
+    text-align: right;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.pu-w.warn .pu-bar i {
+    background: var(--warn);
+}
+
+.pu-w.warn b {
+    color: var(--warn);
+}
+
+.pu-w.danger .pu-bar i {
+    background: var(--danger);
+}
+
+.pu-w.danger b {
+    color: var(--danger);
+}
+
+.plans-card > .menu-item {
+    margin-top: calc(2 * var(--sp));
+}
+
+/* Beside Settings while the desktop app has an update from main: just an icon,
+   whose look says how it stands. Ready: the accent, on a tint of it. Building or
+   restarting: a spinner, nothing to click. Failed: red, click to try again. */
+.side-foot .upd-btn {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.side-foot .upd-btn:hover {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.side-foot .upd-btn.busy {
+    background: transparent;
+    cursor: default;
+}
+
+.side-foot .upd-btn.failed {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 13%, transparent);
+}
+
+.side-foot .upd-btn.failed:hover {
+    background: color-mix(in srgb, var(--danger) 20%, transparent);
 }
 
 /* ---- Settings: its sections take the list's place ---------------------- */
@@ -727,10 +993,10 @@
 .sidebar.settings-nav .set-back {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     width: 100%;
     height: auto;
-    padding: 4px 8px 12px;
+    padding: calc(4 * var(--sp)) calc(8 * var(--sp)) calc(12 * var(--sp));
     border-radius: 0;
     background: none;
     color: var(--rail-fg-2);
@@ -747,15 +1013,15 @@
     margin-left: auto;
     font: 500 0.786rem/1 var(--font-ui);
     color: var(--fg-3);
-    padding: 3px 5px;
-    border-radius: 5px;
+    padding: calc(3 * var(--sp)) calc(5 * var(--sp));
+    border-radius: calc(5 * var(--sp));
     background: var(--hover);
 }
 
 .sidebar.settings-nav .set-tabs {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: calc(2 * var(--sp));
     padding: 0;
     overflow: visible;
     background: none;
@@ -765,11 +1031,11 @@
 .sidebar.settings-nav .navi {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: calc(10 * var(--sp));
     width: 100%;
     height: auto;
-    padding: 8px 10px;
-    border-radius: 10px;
+    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
+    border-radius: calc(10 * var(--sp));
     background: none;
     color: var(--rail-fg);
     font-size: 0.929rem;
@@ -819,11 +1085,11 @@
 .rail-sel {
     display: flex;
     align-items: center;
-    gap: 2px;
+    gap: calc(2 * var(--sp));
     flex: none;
-    height: 40px;
-    margin: 6px -2px 10px;
-    padding: 0 6px 0 14px;
+    height: calc(40 * var(--sp));
+    margin: calc(6 * var(--sp)) calc(-2 * var(--sp)) calc(10 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(14 * var(--sp));
     border-radius: var(--pill);
     color: var(--fg);
     animation: rail-sel-in 280ms var(--spring);
@@ -860,8 +1126,8 @@
 .rail-sel-sep {
     flex: none;
     width: 0.5px;
-    height: 18px;
-    margin: 0 3px;
+    height: calc(18 * var(--sp));
+    margin: 0 calc(3 * var(--sp));
     background: var(--line);
 }
 

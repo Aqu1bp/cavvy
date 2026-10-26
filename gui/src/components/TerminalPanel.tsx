@@ -7,6 +7,7 @@ import "../styles/terminal.css";
 import { app, refreshProviders, reportError, rpc, toast, trustRequest } from "../state/app";
 import { RpcError } from "../lib/rpc";
 import { prefs, setPrefs } from "../state/prefs";
+import { terminalFontSize } from "../lib/text-size";
 import { terminalActions, terminalOpen, setTerminalOpen, setSettingsTab, setupObscured, terminalMax, setTerminalMax, setTerminalShown, setTerminalDrag, shellLayout, panelHold, type SetupRun } from "../state/ui";
 import { frameDrag } from "../lib/drag";
 import { basename, tildify } from "../lib/format";
@@ -384,7 +385,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
         }
     };
     onMount(() => {
-        term = new Terminal({ fontFamily: '"JetBrains Mono Variable", monospace', fontSize: 12, cursorBlink: true, scrollback: 5000, allowProposedApi: false });
+        term = new Terminal({ fontFamily: '"JetBrains Mono Variable", monospace', fontSize: terminalFontSize(prefs.fontSize), cursorBlink: true, scrollback: 5000, allowProposedApi: false });
         fit = new FitAddon();
         term.loadAddon(fit);
         term.open(container);
@@ -466,6 +467,8 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
         });
     });
     createEffect(() => { if (p.visible) requestAnimationFrame(() => { if (!disposed && term) { fitNow(); term.focus(); } }); });
+    // Settings → Appearance → Text size: the cells follow it, and the shell gets the new size.
+    createEffect(on(() => prefs.fontSize, (size) => { if (term && !disposed) { term.options.fontSize = terminalFontSize(size); fitNow(true); } }, { defer: true }));
     return <div class="terminal-screen" style={{ display: p.visible ? "flex" : "none" }}>
         <div class="terminal-emulator" ref={container} />
         <Show when={loginOutputLost()}><div class="terminal-message">

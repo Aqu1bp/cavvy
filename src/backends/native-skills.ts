@@ -13,7 +13,7 @@
 import { createHash } from "crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { dirname, join, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { harnessHome } from "../config/paths";
 import { formatSkill, mentionNames, skillMentions, withSkills, type Skill } from "../agent/skills";
 
@@ -168,7 +168,7 @@ function isDir(p: string): boolean {
  */
 export function claudeNames(skills: readonly Skill[], plugged: readonly Skill[], cwd: string, trusted: boolean, configDir?: string): Map<string, string> {
     const own = claudeRoots(cwd, trusted, configDir);
-    const names = new Map(skills.filter((s) => s.source !== "plugin" && own.has(resolve(dirname(s.dir)))).map((s) => [s.name, s.name]));
+    const names = new Map(skills.filter((s) => s.source !== "plugin" && readsItself(s, own)).map((s) => [s.name, s.name]));
     for (const s of plugged) names.set(s.name, CLAUDE_PREFIX + folderName(s));
     return names;
 }
@@ -180,7 +180,24 @@ export function claudeNames(skills: readonly Skill[], plugged: readonly Skill[],
  */
 export function forClaudeCode(skills: readonly Skill[], cwd: string, trusted: boolean, configDir?: string): Skill[] {
     const own = claudeRoots(cwd, trusted, configDir);
-    return skills.filter((s) => s.source !== "plugin" && (trusted || s.source !== "project") && !own.has(resolve(dirname(s.dir))));
+    return skills.filter((s) => s.source !== "plugin" && (trusted || s.source !== "project") && !readsItself(s, own));
+}
+
+/**
+ * In one of Claude Code's own skills folders, or linked into one under its name: a
+ * Harness-made account's skills folder links Default's skills (account-layout.ts).
+ */
+function readsItself(s: Skill, own: ReadonlySet<string>): boolean {
+    if (own.has(resolve(dirname(s.dir)))) return true;
+    for (const root of own) {
+        const entry = join(root, basename(s.dir));
+        try {
+            if (lstatSync(entry).isSymbolicLink() && realpathSync(entry) === realpathSync(s.dir)) return true;
+        } catch {
+            // not there
+        }
+    }
+    return false;
 }
 
 function claudeRoots(cwd: string, trusted: boolean, configDir?: string): Set<string> {

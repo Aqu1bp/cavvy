@@ -539,7 +539,19 @@ export function goalClearedNotice(was: string | undefined, dropped: string[]): s
 /** The loop's goal, cleared on a switch to Claude Code or Codex (or a session reopened on one). */
 export function loopGoalDropped(condition: string, provider: string): string {
     const by = NATIVE_NAMES[provider as NativeGoal["provider"]] ?? provider;
-    return `Goal cleared: ${clip(condition, 200)}. ${by} keeps goals of its own: /goal <condition> sets one there.`;
+    return `Goal cleared: ${sentence(clip(condition, 200))} ${by} keeps goals of its own: /goal <condition> sets one there.`;
+}
+
+/** A CLI's goal paused as the session switched to another model (#412), with how many of its background tasks go on. */
+export function nativeGoalLeft(g: NativeGoal, background: number): string {
+    const by = NATIVE_NAMES[g.provider];
+    const tasks = background === 1 ? " Its background task keeps running." : background > 1 ? ` Its ${background} background tasks keep running.` : "";
+    return `${by}'s goal is paused while this session is on another model: ${sentence(clip(g.condition, 200))}${tasks} Switch back to ${by} and send /goal resume to go on with it.`;
+}
+
+/** Back on the CLI whose goal paused when the session left it: how to go on. */
+export function nativeGoalBack(g: NativeGoal): string {
+    return `${NATIVE_NAMES[g.provider]}'s goal is paused: ${sentence(clip(g.condition, 200))} /goal resume goes on with it.`;
 }
 
 /** What's said when a CLI's goal ends (met, or judged impossible); undefined while it goes on. */
@@ -559,6 +571,12 @@ export function nativeGoalStatus(g: NativeGoal | undefined, running: boolean): s
     if (!g) return "No goal set.";
     const v = nativeGoalView(g, running);
     return [`◎ Goal (${v.by}${v.state === "paused" ? ", paused" : ""}): ${g.condition}`, ...(v.note ? [v.note] : []), ...(g.lastReason ? [`Last check: ${g.lastReason}`] : [])].join("\n");
+}
+
+/** Text closed as a sentence: a period added unless it already ends in . ! or ? (a goal condition often does). */
+export function sentence(s: string): string {
+    const t = s.trimEnd();
+    return /[.!?]$/.test(t) ? t : `${t}.`;
 }
 
 function clip(s: string, n: number): string {

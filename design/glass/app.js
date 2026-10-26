@@ -217,6 +217,7 @@ function seed() {
             editB("gui/src/lib/session-order.ts", [["c", 12, "export function sessionOrder(list: Session[]): Session[] {"], ["d", 13, "    return [...list].sort((a, b) => b.updatedAt - a.updatedAt);"], ["a", 13, "    // A finished run sends updatedAt before its status. Sorting on"], ["a", 14, "    // the turn's start time keeps that gap from moving rows."], ["a", 15, "    return [...list].sort((a, b) => b.turnStartedAt - a.turnStartedAt);"], ["c", 16, "}"]]),
             cmdB("bun test ./test/gui-session-order.test.ts", ["✓ keeps order when status lands after updatedAt", "✓ new turn moves its session to the top", "14 pass, 0 fail"], "ok", 1800),
             proseB("Fixed, with a test for the case where the status arrives late. The list no longer moves when a run ends."),
+            B("changes", {}),
             B("meta", { text: "Opus 5.5, high effort", dur: 72000 }),
             userB("Also keep running sessions pinned to the top of their project."),
             actsB([["eye", "Read", "gui/src/components/Sidebar.tsx"], ["list-checks", "Updated the plan", "", "3 steps"]]),
@@ -1248,10 +1249,70 @@ function blockHTML(b) {
         case "prose": { let h = md(b.text || " "); if (b.streaming) h = h.replace(/<\/p>$/, '<span class="caret"></span></p>'); return `<div class="prose">${h}</div>`; }
         case "thinking": return `<div class="thinking">${esc(b.text)}</div>`;
         case "note": return `<div class="note ${b.kind ?? ""}">${I(b.kind === "stop" ? "circle-stop" : "info", 14)}${esc(b.text)}</div>`;
+        case "changes": return changesHTML();
         case "meta": return `<div class="meta"><span>${esc(b.text)}</span><span>${clock(b.dur)}</span><span class="grow"></span><button class="ib" data-copy title="Copy">${I("copy", 14)}</button><button class="ib" data-rewind title="Rewind to here">${I("undo-2", 14)}</button></div>`;
     }
     return "";
 }
+// ---------- A turn's changes, wherever they were made ------------------------
+// One place (the session's folder, or one worktree): the files, as today; a worktree says which, and its commits.
+// Several (sub-agents in worktrees of their own): one row per place, the session's folder first, then the
+// busiest, with who worked there; four shown, the rest folded.
+const TURN_FILES = [["gui/src/lib/session-order.ts", 3, 1], ["gui/src/components/Sidebar.tsx", 3, 1], ["test/gui-session-order.test.ts", 6, 0, "new"]];
+const WT_FILES = [["gui/src/components/Home.tsx", 140, 82], ["gui/src/styles/home.css", 349, 200], ["gui/src/components/CliSessions.tsx", 120, 57], ["gui/src/components/ErrorCards.tsx", 210, 0, "new"], ["gui/src/state/app.ts", 52, 12], ["gui/src/components/Sidebar.tsx", 160, 23]];
+const PLACES = [
+    { name: "my-own-harness", branch: "main", own: true, files: 2, add: 12, del: 2, commits: 0, who: [] },
+    { name: "home-redesign", branch: "design/home-redesign", files: 35, add: 2836, del: 609, commits: 3, who: [{ prov: "claude-code", label: "You" }] },
+    { name: "agent-77de", branch: "agent/home", files: 9, add: 610, del: 210, commits: 0, who: [{ prov: "claude-code", label: "Port Home" }] },
+    { name: "agent-3f2a", branch: "agent/error-cards", files: 7, add: 412, del: 96, commits: 2, who: [{ prov: "claude-code", label: "Error cards" }, { prov: "codex", label: "Review" }, { prov: "gemini", label: "Copy pass" }] },
+    { name: "agent-91c4", branch: "agent/sidebar-foot", files: 6, add: 520, del: 140, commits: 1, who: [{ prov: "codex", label: "Sidebar" }] },
+    { name: "agent-0b19", branch: "agent/skill-row", files: 3, add: 40, del: 6, commits: 1, who: [{ prov: "gemini", label: "Skill row" }] },
+];
+const num = (x) => x.toLocaleString("en-US");
+const tcStat = (a, d) => `<span class="a">+${num(a)}</span><span class="d">−${num(d)}</span>`;
+function tcFiles(files) {
+    return files.map(([p, a, d, tag]) => {
+        const t = tag ? `<span class="tc-tag">${tag}</span>` : "";
+        return `<button class="tc-frow" data-tcfile="${esc(p)}"><span class="trunc"><span class="dir">${esc(dir(p))}/</span>${esc(base(p))}</span>${t}<span class="grow"></span>${tcStat(a, d)}</button>`;
+    }).join("");
+}
+function tcHead(icon, title, add, del, o = {}) {
+    const btn = o.button === false ? "" : `<button class="tc-btn" data-tcreview="${esc(o.place ?? "")}">Review changes</button>`;
+    return `<div class="card-h tc-h">${I(icon, 14)}<b class="tc-title">${title}</b>${o.sub ?? ""}${tcStat(add, del)}${o.after ?? ""}<span class="grow"></span>${o.chip ?? ""}${btn}</div>`;
+}
+function tcWho(p) {
+    if (!p.who.length) return `<span class="tc-who"></span>`;
+    const chips = p.who.slice(0, 2).map((w) => `<span class="tc-ag" title="${esc(w.label)}">${PI(w.prov, 12, `tc${p.name}${w.label}`)}<span class="trunc">${esc(w.label)}</span></span>`).join("");
+    const more = p.who.length > 2 ? `<span class="tc-ag more" title="${esc(p.who.slice(2).map((w) => w.label).join(", "))}">+${p.who.length - 2}</span>` : "";
+    return `<span class="tc-who">${chips}${more}</span>`;
+}
+function tcPlace(p) {
+    const own = p.own ? `<span class="tc-own">this folder</span>` : "";
+    const commits = p.commits ? ` · ${p.commits} commit${p.commits > 1 ? "s" : ""}` : "";
+    return `<div class="tc-place"><span class="tc-pi">${I(p.own ? "folder" : "folder-git-2", 15)}</span><span class="tc-pn"><span class="trunc tc-pname">${esc(p.name)}${own}</span><span class="trunc tc-br">${esc(p.branch)}${commits}</span></span>${tcWho(p)}<span class="tc-pf">${p.files} files</span>${tcStat(p.add, p.del)}<button class="tc-btn" data-tcreview="${esc(p.name)}">Review</button></div>`;
+}
+function changesHTML() {
+    const k = body.dataset.changes || "one";
+    if (k === "one" || k === "incomplete") {
+        const [a, d] = TURN_FILES.reduce((t, [, x, y]) => [t[0] + x, t[1] + y], [0, 0]);
+        const note = k === "incomplete" ? `<div class="tc-note" title="Not captured: vendor/sdk (a nested repository). Ignored files are never captured.">${I("info", 13)}1 folder not captured</div>` : "";
+        return `<div class="card tc">${tcHead("file-diff", "3 changed files", a, d)}<div class="tc-rows">${tcFiles(TURN_FILES)}</div>${note}</div>`;
+    }
+    if (k === "wt") {
+        const w = PLACES[1];
+        // Where they were made sits in the head, by Review: the branch, with the worktree's folder in its tooltip.
+        const chip = `<span class="tc-place-chip" title="Worktree ${esc(w.name)} (.claude/worktrees/${esc(w.name)})">${I("folder-git-2", 13)}<span class="trunc">${esc(w.branch)}</span></span>`;
+        const after = `<span class="tc-sub">· ${w.commits} commits</span>`;
+        return `<div class="card tc">${tcHead("file-diff", `${w.files} changed files`, w.add, w.del, { chip, after, place: w.name })}<div class="tc-rows">${tcFiles(WT_FILES)}<button class="tc-more" data-tcreview="${esc(w.name)}">29 more files</button></div></div>`;
+    }
+    const places = [...PLACES].sort((a, b) => Number(!!b.own) - Number(!!a.own) || b.files - a.files);
+    const shown = state.tcOpen ? places : places.slice(0, 4);
+    const total = places.reduce((t, p) => [t[0] + p.files, t[1] + p.add, t[2] + p.del], [0, 0, 0]);
+    const more = places.length > 4 ? `<button class="tc-more" data-tcmore>${state.tcOpen ? "Show fewer" : `${places.length - 4} more places`}</button>` : "";
+    const head = tcHead("folder-git-2", `Changes in ${places.length} places`, total[1], total[2], { button: false, sub: `<span class="tc-sub">${total[0]} files</span>` });
+    return `<div class="card tc">${head}<div class="tc-rows">${shown.map(tcPlace).join("")}${more}</div></div>`;
+}
+
 function actsSummary(b) {
     // Open, the rows already say what's happening; the header only does when they're folded away.
     if (b.live) { const l = b.items.at(-1); return !l || (b.open ?? prefs.expandActivity) ? "Working" : esc(l.verb === "Read" ? `Reading ${base(l.p)}` : l.verb === "Searched" ? `Searching for ${l.p}` : l.verb); }
@@ -1663,6 +1724,9 @@ function wire() {
         if ((el = q("[data-unatt]"))) { s.attach.splice(+el.dataset.unatt, 1); return paint(); }
         if (q("[data-uncm]")) { state.comments[s.id] = []; return paint(); }
         if ((el = q("[data-wt]"))) { s.worktree = el.dataset.wt === "1"; return paint(); }
+        if (q("[data-tcmore]")) { state.tcOpen = !state.tcOpen; for (const b of s.blocks) if (b.k === "changes") b.v++; return paint(); }
+        if ((el = q("[data-tcreview]"))) return toast(el.dataset.tcreview ? "Opens the review on " + el.dataset.tcreview + ": its branch against its base" : "Opens the review on this turn's changes", { icon: "file-diff" });
+        if ((el = q("[data-tcfile]"))) return toast("Opens the review at " + base(el.dataset.tcfile), { icon: "file-diff" });
         if ((el = q("[data-start]"))) { ta.value = el.dataset.start; autosize(); paint(); ta.focus(); return; }
         if ((el = q("[data-tclose]"))) { e.stopPropagation(); return closeTab(s.project, el.dataset.tclose); }
         if ((el = q("[data-tab]"))) { state.term.active[s.project] = el.dataset.tab; paint(); setTimeout(() => $("#tin")?.focus(), 30); return; }
@@ -1818,6 +1882,15 @@ function wire() {
 for (const el of $$("[data-i]")) el.outerHTML = I(el.dataset.i, +(el.dataset.s || 16), +(el.dataset.w || 1.75), el.className);
 const params = new URLSearchParams(location.search);
 if (params.get("theme")) prefs.scheme = params.get("theme");
+// Mockup: which state the turn's changes card shows.
+document.addEventListener("click", (e) => {
+    const b = e.target.closest("#tcset [data-v]");
+    if (!b) return;
+    body.dataset.changes = b.dataset.v;
+    for (const x of b.parentElement.children) x.classList.toggle("on", x === b);
+    for (const ss of state.sessions) for (const bl of ss.blocks) if (bl.k === "changes") bl.v++;
+    paint();
+});
 for (const [k, v] of params) if (k !== "theme") body.dataset[k] = v;
 for (const g of $$("[data-set]")) for (const b of g.children) b.classList.toggle("on", b.dataset.v === body.dataset[g.dataset.set]);
 const seeds = seed();

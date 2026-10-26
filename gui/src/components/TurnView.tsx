@@ -1,19 +1,25 @@
 import { RenderBoundary } from "./ui/ErrorBoundary";
 import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, Show, Switch, untrack } from "solid-js";
-import { AlertCircle, AlertTriangle, BellRing, Check, CircleCheck, CircleStop, CircleX, ChevronRight, Clock, CornerDownRight, FileDiff, FileText, GitFork, Goal, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-solid";
-import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn } from "@shared/protocol";
-import { firstChangedLine, plural, promptTime, shortPrompt, stripAnsi } from "../lib/format";
-import { liveLine, workedLabel } from "../lib/live-line";
+import { AlertCircle, AlertTriangle, BellRing, Check, CircleStop, ChevronRight, Clock, CornerDownRight, FileDiff, FileText, Folder, FolderGit2, GitFork, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-solid";
+import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn, TurnPlace } from "@shared/protocol";
+import { basename, firstChangedLine, plural, promptTime, shortPrompt, stripAnsi, tildify } from "../lib/format";
+import { cardShape, incompleteLine, PLACES_SHOWN, placeRows, placesTotal, WHO_NAMED, workers, type OwnPlace } from "../lib/turn-places";
+import { agentProvider } from "../lib/agent-marks";
+import { liveLine, workedLabel, workSegments } from "../lib/live-line";
 import { formatSize } from "../lib/attachments";
 import { linesLabel, linesPhrase, splitComments } from "../lib/review-comments";
 import { prefs } from "../state/prefs";
 import { fetchGitChanges, type GitView } from "../state/changes";
-import { openInEditor, openReview } from "../state/actions";
+import { openInEditor, openReview, openWorktreeReview } from "../state/actions";
 import { findReveal, setViewedImage } from "../state/ui";
 import { imagesReady, promptImages, type PromptImage } from "../state/images";
 import { ActivityGroup, groupBlocks, Thinking, type Item } from "./blocks/Activity";
 import { Markdown } from "./blocks/Markdown";
 import { CopyButton, Spinner } from "./ui/bits";
+import { ProviderIcon } from "./ui/ProviderIcon";
+import { app } from "../state/app";
+import { Notice } from "./blocks/Notices";
+import { hasErrorCard, leadingNotices, shownBlocks } from "../lib/notices";
 import { LiveLine, motionMs } from "./LiveLine";
 
 /** A prompt's images as thumbnails; the count alone when they can't be had (asked again after a reconnect). */
@@ -37,7 +43,12 @@ function PromptImages(p: { sessionId?: string; turn: Turn; count: number }) {
         <Show when={images()?.length} fallback={<span class="chip tiny">{label()}</span>}>
             <For each={images()}>
                 {(img, i) => (
-                    <button class="prompt-image" title="View full size" aria-label={`View image ${i() + 1} of ${images()!.length}`} onClick={() => setViewedImage({ src: img.src, alt: `Image ${i() + 1} attached to the prompt` })}>
+                    <button
+                        class="prompt-image"
+                        title="View full size"
+                        aria-label={`View image ${i() + 1} of ${images()!.length}`}
+                        onClick={(e) => setViewedImage({ images: images()!.map((m, k) => ({ name: `Image ${k + 1}`, full: m, preview: m.thumb })), index: i(), from: e.currentTarget })}
+                    >
                         <img src={img.thumb} alt="" />
                     </button>
                 )}
@@ -164,75 +175,6 @@ export function Narration(p: { block: TextBlock }) {
     );
 }
 
-/** A /goal verdict starts with its own mark (src/agent/goal.ts): shown as an icon instead. */
-const GOAL_MARK = /^([◎✓✗]) /;
-
-export function Notice(p: { block: NoticeBlock }) {
-    const mark = () => GOAL_MARK.exec(p.block.text)?.[1];
-    const text = () => (mark() ? p.block.text.slice(2) : p.block.text);
-    const icon = () => (
-        <Switch fallback={<Info size={14} />}>
-            <Match when={mark() === "◎"}>
-                <Goal size={14} />
-            </Match>
-            <Match when={mark() === "✓"}>
-                <CircleCheck size={14} />
-            </Match>
-            <Match when={mark() === "✗"}>
-                <CircleX size={14} />
-            </Match>
-            <Match when={p.block.level === "error"}>
-                <AlertCircle size={14} />
-            </Match>
-            <Match when={p.block.level === "warn"}>
-                <AlertTriangle size={14} />
-            </Match>
-        </Switch>
-    );
-    // What it's about (the background tasks it stopped): one line, the names folded under it.
-    const [open, setOpen] = createSignal(false);
-    createEffect(on(findReveal, (r) => r?.part === p.block.id && p.block.details?.length && setOpen(true)));
-    return (
-        <Show
-            when={p.block.details?.length}
-            fallback={
-                <div class={`notice ${p.block.level}${mark() === "✓" ? " goal-met" : ""}`} data-find={p.block.id}>
-                    {icon()}
-                    <span>{text()}</span>
-                </div>
-            }
-        >
-            <div class={`notice ${p.block.level} folds`} data-find={p.block.id}>
-                <button class="notice-h" aria-expanded={open()} onClick={() => setOpen(!open())}>
-                    {icon()}
-                    <span class="truncate">
-                        {text()}
-                        <Show when={!open()}>
-                            <span class="notice-peek" data-find-skip>
-                                {" · "}
-                                {p.block.details!.join(", ")}
-                            </span>
-                        </Show>
-                    </span>
-                    <ChevronRight size={14} class="chev" />
-                </button>
-                <Show when={open()}>
-                    <ul class="notice-details">
-                        <For each={p.block.details}>
-                            {(d) => (
-                                <li class="truncate" title={d}>
-                                    {/* A line break between them, as find reads them (find.ts): no match runs from one into the next. */}
-                                    <span class="sr-only">{"\n"}</span>
-                                    {d}
-                                </li>
-                            )}
-                        </For>
-                    </ul>
-                </Show>
-            </div>
-        </Show>
-    );
-}
 
 /** Heads a conversation brought in from Claude Code or Codex: shown, but it can't be rewound or edited. */
 function Imported(p: { block: ImportedBlock }) {
@@ -342,7 +284,7 @@ export function SplitPath(p: { path: string; cwd?: string }) {
 const FILES_SHOWN = 6;
 
 /** What a changes card keeps of a turn's recorded diff: the file list, without the hunks. */
-type Recorded = Pick<GitView, "repo" | "turnId" | "error" | "snapshotAvailable" | "incomplete" | "notes" | "more"> & { files: Changed[] };
+type Recorded = Pick<GitView, "repo" | "turnId" | "error" | "snapshotAvailable" | "incomplete" | "notes" | "more" | "places"> & { files: Changed[] };
 /**
  * Turns' recorded diffs, by session and snapshot. A finished turn's never changes, so a card
  * mounted again (switching back to the session) has it at once instead of asking the server to
@@ -352,11 +294,11 @@ const recordedTurns = new Map<string, Recorded>();
 const RECORDED_KEPT = 400;
 
 function summarize(view: GitView): Recorded {
-    const { repo, turnId, error, snapshotAvailable, incomplete, notes, more } = view;
-    return { repo, turnId, error, snapshotAvailable, incomplete, notes, more, files: view.files.map((f) => ({ path: f.path, status: f.status, added: f.added, removed: f.removed, line: firstChangedLine(f), ...(f.pathToken ? { pathToken: f.pathToken } : {}) })) };
+    const { repo, turnId, error, snapshotAvailable, incomplete, notes, more, places } = view;
+    return { repo, turnId, error, snapshotAvailable, incomplete, notes, more, places, files: view.files.map((f) => ({ path: f.path, status: f.status, added: f.added, removed: f.removed, line: firstChangedLine(f), ...(f.pathToken ? { pathToken: f.pathToken } : {}) })) };
 }
 
-function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: boolean }) {
+function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: boolean; agents?: AgentRun[]; provider?: string }) {
     // Load after the closing snapshot is saved. Once ready, a completed turn's
     // key stays stable while later turns run, so its immutable diff is not fetched again.
     const snapshotKey = createMemo<string | undefined>((previous) => {
@@ -384,57 +326,188 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
     const snapshotDiff = () => captured() && recorded()?.snapshotAvailable;
     const files = createMemo<Changed[]>(() => snapshotDiff() ? recorded()!.files : turnChanges(p.turn));
     const reviewChanges = (path?: string, token?: string) => openReview(path, snapshotDiff() ? "turn" : "uncommitted", snapshotDiff() ? p.turn.snapshotId : undefined, token);
+    const reviewTurn = () => captured() ? openReview(undefined, "turn", p.turn.snapshotId) : reviewChanges(files()[0]?.path, files()[0]?.pathToken);
     const total = () => files().reduce((a, f) => ({ added: a.added + f.added, removed: a.removed + f.removed }), { added: 0, removed: 0 });
     const [all, setAll] = createSignal(false);
+    // The other worktrees the turn worked in (sub-agents' own, one it entered): with its own folder, the card's places.
+    const places = () => (captured() ? recorded()?.places ?? [] : []);
+    const own = createMemo<OwnPlace | undefined>(() => (files().length ? { files: files().length + (snapshotDiff() ? recorded()?.more ?? 0 : 0), ...total() } : undefined));
+    const shape = () => cardShape(own(), places());
+    const rows = createMemo(() => placeRows(own(), places()));
+    const who = createMemo(() => workers(places(), { turnId: p.turn.id, agents: p.agents, blocks: p.turn.blocks, home: app.hello?.homeDir, provider: (a) => agentProvider(a, p.provider, p.agents), own: p.provider }));
+    const [allPlaces, setAllPlaces] = createSignal(false);
+    const incomplete = () => (captured() && recorded()?.incomplete ? incompleteLine(recorded()?.notes) : undefined);
+    const one = () => places()[0]!;
+    const commits = (n?: number) => (n ? ` · ${plural(n, "commit")}` : "");
+    const Stat = (s: { added?: number; removed?: number }) => (
+        <span class="stat">
+            <span class="add">+{(s.added ?? 0).toLocaleString()}</span>
+            <span class="del">−{(s.removed ?? 0).toLocaleString()}</span>
+        </span>
+    );
     return (
-        <Show when={files().length || (captured() && recorded()?.incomplete)}>
+        <Show when={files().length || places().length || incomplete()}>
             <div class="tcard files-card" data-find-skip>
-                <div class="tcard-h files-head">
-                    <span class="tcard-ic">
-                        <FileDiff size={14} />
-                    </span>
-                    <span class="files-title">{!snapshotDiff() && !files().length ? "Turn snapshot incomplete" : plural(files().length + (snapshotDiff() ? recorded()?.more ?? 0 : 0), "changed file")}</span>
-                    <Show when={files().length}>
-                        <span class="stat">
-                            <span class="add">+{total().added}</span>
-                            <span class="del">−{total().removed}</span>
-                        </span>
-                    </Show>
-                    <span class="grow" />
-                    {/* Keep recorded changes tied to this turn, even after later edits. */}
-                    <button class="tbtn" onClick={() => captured() ? openReview(undefined, "turn", p.turn.snapshotId) : reviewChanges(files()[0]?.path, files()[0]?.pathToken)}>
-                        Review changes
-                    </button>
-                </div>
-                <div class="files-rows">
-                <Show when={captured() && recorded()?.incomplete}><div class="review-note">{"This turn’s snapshot is incomplete. " + (recorded()?.notes?.join(" ") ?? "")}</div></Show>
-                <For each={all() ? files() : files().slice(0, FILES_SHOWN)}>
-                    {(f) => (
-                        <div class="frow-line">
-                            <button class="frow" onClick={() => reviewChanges(f.path, f.pathToken)}>
-                                <SplitPath path={f.path} cwd={p.cwd} />
-                                <Show when={f.status === "added"}>
-                                    <span class="frow-tag">new</span>
-                                </Show>
-                                <span class="stat">
-                                    <span class="add">+{f.added}</span>
-                                    <span class="del">−{f.removed}</span>
-                                </span>
+                <Switch>
+                    {/* Its own folder: the files, as before. */}
+                    <Match when={shape() === "files"}>
+                        <div class="tcard-h files-head">
+                            <span class="tcard-ic">
+                                <FileDiff size={14} />
+                            </span>
+                            <span class="files-title">{!snapshotDiff() && !files().length ? "Turn snapshot incomplete" : plural(own()?.files ?? 0, "changed file")}</span>
+                            <Show when={files().length}>
+                                <Stat {...total()} />
+                            </Show>
+                            <span class="grow" />
+                            {/* Keep recorded changes tied to this turn, even after later edits. */}
+                            <button class="tbtn" onClick={reviewTurn}>
+                                Review changes
                             </button>
-                            <Show when={f.status !== "deleted"}>
-                                <button class="icon-btn row-open" title="Open in editor" aria-label={`Open ${f.path} in editor`} onClick={() => void openInEditor(f.path, f.line, { sessionId: p.sessionId, gitToken: f.pathToken })}>
-                                    <SquareArrowOutUpRight size={13} />
+                        </div>
+                        <div class="files-rows">
+                            <For each={all() ? files() : files().slice(0, FILES_SHOWN)}>
+                                {(f) => (
+                                    <div class="frow-line">
+                                        <button class="frow" onClick={() => reviewChanges(f.path, f.pathToken)}>
+                                            <SplitPath path={f.path} cwd={p.cwd} />
+                                            <Show when={f.status === "added"}>
+                                                <span class="frow-tag">new</span>
+                                            </Show>
+                                            <Stat {...f} />
+                                        </button>
+                                        <Show when={f.status !== "deleted"}>
+                                            <button class="icon-btn row-open" title="Open in editor" aria-label={`Open ${f.path} in editor`} onClick={() => void openInEditor(f.path, f.line, { sessionId: p.sessionId, gitToken: f.pathToken })}>
+                                                <SquareArrowOutUpRight size={13} />
+                                            </button>
+                                        </Show>
+                                    </div>
+                                )}
+                            </For>
+                            <Show when={files().length > FILES_SHOWN && !all()}>
+                                <button class="frow more" onClick={() => setAll(true)}>
+                                    {plural(files().length - FILES_SHOWN, "more file")}
                                 </button>
                             </Show>
                         </div>
+                    </Match>
+                    {/* One other worktree: its files, with its branch beside Review. */}
+                    <Match when={shape() === "worktree"}>
+                        <div class="tcard-h files-head">
+                            <span class="tcard-ic">
+                                <FileDiff size={14} />
+                            </span>
+                            <span class="files-title">{one().files !== undefined ? plural(one().files!, "changed file") : `Changes in ${basename(one().path)}`}</span>
+                            <Show when={one().files !== undefined}>
+                                <Stat {...one()} />
+                            </Show>
+                            <Show when={one().commits}>
+                                <span class="files-sub">· {plural(one().commits!, "commit")}</span>
+                            </Show>
+                            <span class="grow" />
+                            <span class="place-chip" title={`Worktree ${tildify(one().path, app.hello?.homeDir)}${one().base ? `, against ${one().base}` : ""}`}>
+                                <FolderGit2 size={13} />
+                                <span class="truncate">{one().branch ?? basename(one().path)}</span>
+                            </span>
+                            <button class="tbtn" onClick={() => openWorktreeReview(one().path)}>
+                                Review changes
+                            </button>
+                        </div>
+                        <Show when={one().top?.length}>
+                            <div class="files-rows">
+                                <For each={one().top}>
+                                    {(f) => (
+                                        <div class="frow-line">
+                                            <button class="frow" onClick={() => openWorktreeReview(one().path, f.path, f.pathToken)}>
+                                                <SplitPath path={f.path} />
+                                                <Show when={f.change === "added"}>
+                                                    <span class="frow-tag">new</span>
+                                                </Show>
+                                                <Stat {...f} />
+                                            </button>
+                                        </div>
+                                    )}
+                                </For>
+                                <Show when={(one().files ?? 0) > (one().top?.length ?? 0)}>
+                                    <button class="frow more" onClick={() => openWorktreeReview(one().path)}>
+                                        {plural((one().files ?? 0) - (one().top?.length ?? 0), "more file")}
+                                    </button>
+                                </Show>
+                            </div>
+                        </Show>
+                    </Match>
+                    {/* Several places: a row each, its own folder first, then the busiest, with who worked there. */}
+                    <Match when={shape() === "places"}>
+                        <div class="tcard-h files-head">
+                            <span class="tcard-ic">
+                                <FolderGit2 size={14} />
+                            </span>
+                            <span class="files-title">Changes in {rows().length} places</span>
+                            <span class="files-sub">{plural(placesTotal(rows()).files, "file")}</span>
+                            <Stat {...placesTotal(rows())} />
+                            <span class="grow" />
+                        </div>
+                        <div class="files-rows">
+                            <For each={allPlaces() ? rows() : rows().slice(0, PLACES_SHOWN)}>
+                                {(r) => {
+                                    const folk = () => (r.own ? [] : who().get(r.place.path) ?? []);
+                                    return (
+                                        <div class="place-row">
+                                            <span class="place-ic">{r.own ? <Folder size={15} /> : <FolderGit2 size={15} />}</span>
+                                            <span class="place-name">
+                                                <span class="truncate place-title">
+                                                    {r.own ? basename(p.cwd) : basename(r.place.path)}
+                                                    <Show when={r.own}>
+                                                        <span class="place-own">this folder</span>
+                                                    </Show>
+                                                </span>
+                                                <Show when={!r.own && (r.place as TurnPlace).branch}>
+                                                    <span class="truncate place-branch">{(r.place as TurnPlace).branch}{commits((r.place as TurnPlace).commits)}</span>
+                                                </Show>
+                                            </span>
+                                            <span class="place-who">
+                                                <For each={folk().slice(0, WHO_NAMED)}>
+                                                    {(w) => (
+                                                        <span class="place-ag" title={w.you ? "This session" : w.label}>
+                                                            <Show when={w.provider}>
+                                                                <ProviderIcon id={w.provider!} size={12} />
+                                                            </Show>
+                                                            <span class="truncate">{w.label}</span>
+                                                        </span>
+                                                    )}
+                                                </For>
+                                                <Show when={folk().length > WHO_NAMED}>
+                                                    <span class="place-ag more" title={folk().slice(WHO_NAMED).map((w) => w.label).join(", ")}>+{folk().length - WHO_NAMED}</span>
+                                                </Show>
+                                            </span>
+                                            <span class="place-files">{r.place.files !== undefined ? plural(r.place.files, "file") : ""}</span>
+                                            <Show when={r.place.files !== undefined} fallback={<span class="stat" />}>
+                                                <Stat {...r.place} />
+                                            </Show>
+                                            <button class="tbtn" onClick={() => (r.own ? reviewTurn() : openWorktreeReview((r.place as TurnPlace).path))}>
+                                                Review
+                                            </button>
+                                        </div>
+                                    );
+                                }}
+                            </For>
+                            <Show when={rows().length > PLACES_SHOWN}>
+                                <button class="frow more" onClick={() => setAllPlaces(!allPlaces())}>
+                                    {allPlaces() ? "Show fewer" : plural(rows().length - PLACES_SHOWN, "more place")}
+                                </button>
+                            </Show>
+                        </div>
+                    </Match>
+                </Switch>
+                {/* What the snapshot left out, in a line; why, in its tooltip. */}
+                <Show when={incomplete()}>
+                    {(line) => (
+                        <div class="review-note files-note" title={line().detail}>
+                            <Info size={13} />
+                            {line().text}
+                        </div>
                     )}
-                </For>
-                <Show when={files().length > FILES_SHOWN && !all()}>
-                    <button class="frow more" onClick={() => setAll(true)}>
-                        {plural(files().length - FILES_SHOWN, "more file")}
-                    </button>
                 </Show>
-                </div>
             </div>
         </Show>
     );
@@ -447,27 +520,6 @@ const END_TEXT: Partial<Record<Turn["status"], string>> = {
     max_turns: "Stopped at the turn limit",
     blocked: "Blocked by a hook",
 };
-
-type Seg = { kind: "work"; items: Item[] } | { kind: "item"; item: Item; interim: boolean };
-
-/**
- * Work (tool runs, thinking) vs what's said: the reply, notices. What the
- * model said on its way (more work followed) is prose between the work, and
- * folds away with it once the turn is done.
- */
-function segments(items: Item[]): Seg[] {
-    const isWork = (it: Item) => it.kind === "activity" || (it.kind === "block" && it.block.t === "thinking");
-    const lastWork = items.findLastIndex(isWork);
-    const out: Seg[] = [];
-    items.forEach((it, i) => {
-        if (isWork(it)) {
-            const prev = out[out.length - 1];
-            if (prev?.kind === "work") prev.items.push(it);
-            else out.push({ kind: "work", items: [it] });
-        } else out.push({ kind: "item", item: it, interim: i < lastWork && it.kind === "block" && it.block.t === "text" });
-    });
-    return out;
-}
 
 type TurnViewProps = {
     turn: Turn;
@@ -484,6 +536,8 @@ type TurnViewProps = {
     held?: boolean;
     /** The turn's element, once (Transcript tracks how far it is from the view, and finds it by id). */
     onElement?: (el: HTMLElement, turnId: string) => void;
+    /** The work, faded out, folds away now (`fold`): Transcript keeps what's in sight from jumping as it does. */
+    onFold?: (el: HTMLElement, fold: () => void) => void;
 };
 
 export function TurnView(p: TurnViewProps) {
@@ -491,8 +545,10 @@ export function TurnView(p: TurnViewProps) {
 }
 
 function TurnViewContent(p: TurnViewProps) {
-    const items = createMemo(() => groupBlocks(p.turn.blocks));
-    const segs = createMemo(() => segments(items()));
+    let article: HTMLElement | undefined;
+    // A limit's card takes the place of the turn's earlier "limit reached" (lib/notices.ts).
+    const items = createMemo(() => groupBlocks(shownBlocks(p.turn.blocks)));
+    const segs = createMemo(() => workSegments(items()));
     const running = () => p.turn.status === "running";
     const live = () => running() && p.last && p.state.busy;
     const writing = () => live() && p.state.activity?.label === "Writing";
@@ -517,7 +573,7 @@ function TurnViewContent(p: TurnViewProps) {
         const ms = motionMs(200);
         if (!ms) return;
         setFolding(true);
-        setTimeout(() => setFolding(false), ms);
+        setTimeout(() => (article && p.onFold ? p.onFold(article, () => setFolding(false)) : setFolding(false)), ms);
     }));
     const showWork = () => !foldable() || unfolded() || folding();
     // A match in the work log (or in what was said on the way) opens it.
@@ -545,7 +601,8 @@ function TurnViewContent(p: TurnViewProps) {
     const worked = () => workedLabel(p.turn.startedAt, p.turn.endedAt);
 
     // By position, not by object: the items are rebuilt on every streamed token, the rows mustn't be.
-    const renderItem = (it: () => Item) => (
+    // `leaving`: what was said on the way, fading out with the work it's folding away with.
+    const renderItem = (it: () => Item, leaving?: () => boolean) => (
         <Switch>
             <Match when={it().kind === "activity" && (it() as Extract<Item, { kind: "activity" }>)}>
                 {(g) => <ActivityGroup tools={g().tools} steps={g().steps} card={g().card} turnRunning={running()} agents={p.agents} flat hideLive={live()} />}
@@ -554,10 +611,10 @@ function TurnViewContent(p: TurnViewProps) {
                 {(b) => (
                     <Switch>
                         <Match when={b().t === "text" && (b() as TextBlock)}>
-                            {(t) => <Markdown text={t().text} streaming={writing() && t().id === lastText()} sessionId={p.state.id} find={t().id} />}
+                            {(t) => <Markdown text={t().text} streaming={writing() && t().id === lastText()} sessionId={p.state.id} find={t().id} class={leaving?.() ? "leaving" : undefined} />}
                         </Match>
                         <Match when={b().t === "thinking" && (b() as ThinkingBlock)}>{(t) => <Show when={!liveThought(t())}><Thinking block={t()} live={false} /></Show>}</Match>
-                        <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} />}</Match>
+                        <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} state={p.state} />}</Match>
                         <Match when={b().t === "compact" && (b() as CompactBlock)}>{(c) => <Compacted block={c()} />}</Match>
                         <Match when={b().t === "imported" && (b() as ImportedBlock)}>{(c) => <Imported block={c()} />}</Match>
                         <Match when={b().t === "shell" && (b() as ShellBlock)}>{(s) => <Shell block={s()} />}</Match>
@@ -567,8 +624,27 @@ function TurnViewContent(p: TurnViewProps) {
         </Switch>
     );
 
+    const renderSeg = (seg: () => (typeof segs extends () => (infer S)[] ? S : never)) => (
+        <Show
+            when={seg().kind === "work"}
+            fallback={
+                <Show when={!(seg() as { interim: boolean }).interim || showWork()}>
+                    {renderItem(() => (seg() as { item: Item }).item, () => (seg() as { interim: boolean }).interim && folding())}
+                </Show>
+            }
+        >
+            <Show when={showWork()}>
+                <div class={`worklog ${folding() ? "leaving" : ""}`}>
+                    <Index each={(seg() as { items: Item[] }).items ?? []}>{(it) => renderItem(it)}</Index>
+                </div>
+            </Show>
+        </Show>
+    );
+    // How many of its first rows are notices from before its first step (lib/notices.ts).
+    const lead = createMemo(() => (hasWork() ? leadingNotices(segs()) : 0));
+
     return (
-        <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""} ${p.held ? "chained" : ""} ${foldable() ? "done" : ""}`} data-turn={p.turn.id} aria-busy={running()} ref={(el) => p.onElement?.(el, p.turn.id)}>
+        <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""} ${p.held ? "chained" : ""} ${foldable() ? "done" : ""}`} data-turn={p.turn.id} aria-busy={running()} ref={(el) => (article = el, p.onElement?.(el, p.turn.id))}>
             <Show when={p.turn.prompt}>
                 <h2 class="sr-only" data-find-skip>You said</h2>
                 <UserPrompt turn={p.turn} sessionId={p.state.id} onRewind={p.onRewind} />
@@ -576,6 +652,8 @@ function TurnViewContent(p: TurnViewProps) {
             <Show when={hasOutput()}>
                 <div class="reply">
                     <h2 class="sr-only" data-find-skip>{running() ? "Harness is working" : "Harness replied"}</h2>
+                    {/* Notices from before its first step, where they happened: above "Worked for". */}
+                    <Index each={segs().slice(0, lead())}>{renderSeg}</Index>
                     <Show when={foldable() && hasWork() && !folding()}>
                         <button class="fold acts-h worked" aria-expanded={unfolded()} onClick={(event) => {
                             const toggle = () => unfold(!unfolded());
@@ -586,29 +664,13 @@ function TurnViewContent(p: TurnViewProps) {
                             <span class="num">{worked() ?? "Work log"}</span>
                         </button>
                     </Show>
-                    <Index each={segs()}>
-                        {(seg) => (
-                            <Show
-                                when={seg().kind === "work"}
-                                fallback={
-                                    <Show when={!(seg() as { interim: boolean }).interim || showWork()}>
-                                        {renderItem(() => (seg() as { item: Item }).item)}
-                                    </Show>
-                                }
-                            >
-                                <Show when={showWork()}>
-                                    <div class={`worklog ${folding() ? "leaving" : ""}`}>
-                                        <Index each={(seg() as { items: Item[] }).items ?? []}>{(it) => renderItem(it)}</Index>
-                                    </div>
-                                </Show>
-                            </Show>
-                        )}
-                    </Index>
+                    <Index each={segs().slice(lead())}>{renderSeg}</Index>
                     <Show when={foldable() && !p.turn.archived && !p.turn.imported}>
-                        <ChangesCard turn={p.turn} cwd={p.state.cwd} sessionId={p.state.id} busy={p.state.busy} />
+                        <ChangesCard turn={p.turn} cwd={p.state.cwd} sessionId={p.state.id} busy={p.state.busy} agents={p.agents} provider={p.state.model?.provider} />
                     </Show>
                     <Show when={foldable() && p.turn.prompt}>
-                        <Show when={END_TEXT[p.turn.status]}>
+                        {/* An error's card says how the turn ended: no second line under it. */}
+                        <Show when={END_TEXT[p.turn.status] && !(p.turn.status === "error" && hasErrorCard(p.turn.blocks))}>
                             <div class={`notice end-note end-${p.turn.status}`} data-find-skip>
                                 {p.turn.status === "aborted" ? <CircleStop size={14} /> : p.turn.status === "error" || p.turn.status === "blocked" ? <AlertCircle size={14} /> : <AlertTriangle size={14} />}
                                 <span>{END_TEXT[p.turn.status]}</span>

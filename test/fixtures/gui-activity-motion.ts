@@ -7,8 +7,11 @@ import { boundary } from "../helpers/render-boundary";
 import * as format from "../../gui/src/lib/format";
 import * as toolWords from "../../gui/src/lib/tool-words";
 import * as liveLine from "../../gui/src/lib/live-line";
+import * as notices from "../../gui/src/lib/notices";
 import * as commandRow from "../../gui/src/lib/command-row";
 import { backgroundOf } from "../../gui/src/lib/background";
+import * as turnPlaces from "../../gui/src/lib/turn-places";
+import * as agentMarks from "../../gui/src/lib/agent-marks";
 import { MarkdownRenderer } from "../../gui/src/lib/markdown";
 import { createReveal } from "../../gui/src/lib/reveal";
 import { applyOp } from "../../src/server/timeline";
@@ -32,9 +35,9 @@ function setup(blocks: any[], expanded = true, agents: any[] = [], session?: str
     const stops: [string, string[]][] = [];
     const icon = () => { icons++; return node("icon"); };
     const scope = {
-        ...format, ...toolWords, ...liveLine, ...commandRow, backgroundOf, RenderBoundary: boundary(),
+        ...format, ...toolWords, ...liveLine, ...notices, ...commandRow, ...agentMarks, ...turnPlaces, backgroundOf, app: {}, RenderBoundary: boundary(), AgentMark: icon, ProviderStack: icon, Notice: () => node("notice"),
         // The session the rows are in: its background tasks, and Stop on one (recorded).
-        handleFor: () => ({ view }), stopBackground: (id: string, ids: string[]) => { stops.push([id, ids]); }, now: clock, prefs: { expandActivity: expanded, showThinking: true }, findReveal: reveal,
+        handleFor: () => ({ view }), stopBackground: (id: string, ids: string[]) => { stops.push([id, ids]); }, now: clock, motionMs: () => 0, prefs: { expandActivity: expanded, showThinking: true }, findReveal: reveal,
         CodeBlock: (p: any) => { const n = node("code"); solid.createRenderEffect(() => n.text = p.code); return n; },
         DiffView: (p: any) => { const n = node("diff"); solid.createRenderEffect(() => n.text = `diff ${p.diff.path}`); return n; },
         Markdown: () => node("markdown"), Spinner: icon,
@@ -43,8 +46,9 @@ function setup(blocks: any[], expanded = true, agents: any[] = [], session?: str
         ...Object.fromEntries(["AlertTriangle", "Bot", "Check", "ChevronDown", "ChevronRight", "ClipboardList", "FileDiff", "FilePen", "FilePlus2", "FileText", "FolderTree", "Globe", "Hand", "ListChecks", "MessageCircleQuestion", "Plug", "Radar", "Search", "ShieldCheck", "SquareArrowOutUpRight", "SquareTerminal", "Wrench", "X", "Brain"].map((name) => [name, icon])),
     };
     // One copy of the module, as the app has: its components share its state (the command cards' folds).
-    const { ActivityGroup, CardFoldsProvider, groupBlocks, Thinking } = component(`${activity}\nconst moduleExports = { ActivityGroup, CardFoldsProvider, groupBlocks, Thinking };`, "moduleExports", scope);
-    const { LiveLine, motionMs } = component(`${source("LiveLine")}\nconst both = { LiveLine, motionMs };`, "both", scope);
+    // The live line opens a running command into the rows' block and folds (a historical source may have neither).
+    const { ActivityGroup, CardFoldsProvider, groupBlocks, Thinking, LiveCommandBody, useCardFolds } = component(`${activity}\nconst moduleExports = { ActivityGroup, CardFoldsProvider, groupBlocks, Thinking, LiveCommandBody: typeof LiveCommandBody === "undefined" ? undefined : LiveCommandBody, useCardFolds: typeof useCardFolds === "undefined" ? undefined : useCardFolds };`, "moduleExports", scope);
+    const { LiveLine, motionMs } = component(`${source("LiveLine")}\nconst both = { LiveLine, motionMs };`, "both", { ...scope, LiveCommandBody, useCardFolds });
     const TurnView = component(source("TurnView"), "TurnView", { ...scope, ActivityGroup, Thinking, LiveLine, motionMs, groupBlocks: (b: any) => { groups++; return groupBlocks(b); } });
     /** Draws the turn again, as a session's transcript does when it's opened (in `session`'s folds, when given). */
     const mount = (session?: string) => {
@@ -274,18 +278,52 @@ test("a group's sub-agents card follows its rows", () => {
     } finally { h.dispose(); }
 });
 
-test("commands and edits are cards of their own, kept through output, completion and the next call", () => {
+test("commands and edits are cards of their own, kept through output, completion and the next call", async () => {
     const h = setup([tool("read", "ok"), command("cmd")], false);
     try {
-        // Running, it's the live line's: "Running", the command, and its last three lines under it.
+        // Running, it's the live line's: "Running" and the command, and no box under it until it's opened (#388).
         expect(row(h.root, "cmd")).toBeUndefined();
         for (let i = 0; i < 40; i++) h.op({ op: "append", blockId: "cmd", field: "progress", text: `line ${i}\n` });
-        const line = liveLineOf(h.root)!;
-        expect(text(line)).toContain("Running");
-        expect(text(line)).toContain("echo cmd");
-        expect(all(line).find((n) => has(n, "live-out"))!.children.map(text)).toEqual(["line 37", "line 38", "line 39"]);
+        const line = () => liveLineOf(h.root)!;
+        const stack = () => all(line()).find((n) => has(n, "live-stack"))!;
+        const opened = () => all(line()).find((n) => has(n, "cmd-body"));
+        expect(text(line())).toContain("Running");
+        expect(text(line())).toContain("echo cmd");
+        expect(all(line()).some((n) => has(n, "live-out"))).toBe(false);
+        expect(opened()).toBeUndefined();
+        // The line is a button: it opens to the block its row opens to, the command over its output as it comes.
+        expect(stack().props.role).toBe("button");
+        expect(stack().props.tabindex).toBe(0);
+        expect(stack().props["aria-expanded"]).toBe(false);
+        stack().props.onClick();
+        expect(stack().props["aria-expanded"]).toBe(true);
+        expect(text(all(opened()!).find((n) => has(n, "cmd-in"))!)).toContain("echo cmd");
+        expect(text(opened()!)).toContain("line 39");
+        expect(text(all(opened()!).find((n) => has(n, "cmd-foot"))!)).toContain("Running");
+        // Enter or Space folds it again, and opens it.
+        const key = (k: string) => stack().props.onKeyDown({ key: k, target: stack(), currentTarget: stack(), preventDefault() {} });
+        key("Enter");
+        expect(opened()).toBeUndefined();
+        key(" ");
+        expect(opened()).toBeDefined();
+        // A roll to another state takes it away; back on the command, it's open as it was, and follows the output.
+        h.setView("state", "activity", { label: "Retrying in 5s · Stop to cancel", since: 1000 });
+        expect(text(line())).toContain("Retrying");
+        expect(opened()).toBeUndefined();
+        expect(stack().props.role).toBeUndefined();
+        h.setView("state", "activity", undefined);
+        // (The retry shows at once; the line moves on from it once it's been read: DWELL_MS.)
+        await Bun.sleep(liveLine.DWELL_MS + 50);
+        expect(text(line())).toContain("echo cmd");
+        expect(stack().props["aria-expanded"]).toBe(true);
+        h.op({ op: "append", blockId: "cmd", field: "progress", text: "line 40\n" });
+        expect(text(opened()!)).toContain("line 40");
+        // Done, it commits as its row, open as the reader left it; the line has no block of it any more.
         h.op({ op: "block.patch", blockId: "cmd", patch: { status: "ok", durationMs: 2000, output: "ok\n 14 pass\n 0 fail\n" } });
         const card = row(h.root, "cmd");
+        expect(head(card).props["aria-expanded"]).toBe(true);
+        expect(text(body(card)!)).toContain("14 pass");
+        expect(!liveLineOf(h.root) || !opened()).toBe(true);
         expect(has(card, "tcard")).toBe(true);
         expect(has(card, "cmd-card")).toBe(true);
         // Its group is the command alone: the call before it keeps its own group.
@@ -358,7 +396,7 @@ test("a command is one quiet row by default: no card, no Done pill", () => {
         const multi = row(h.root, "multi");
         expect(text(multi)).toContain("cd app");
         expect(text(multi)).not.toContain("make all");
-        expect(all(multi).some((n) => has(n, "cmd-c") && has(n, "more"))).toBe(true);
+        expect(all(multi).some((n) => has(n, "cmd-l") && has(n, "solo") && has(n, "more"))).toBe(true);
         head(multi).props.onClick();
         expect(text(body(multi)!)).toContain("cd app\nmake all");
         // Even with nothing printed, it opens: the whole command, "No output", and how it ended.
@@ -375,17 +413,51 @@ test("a command is one quiet row by default: no card, no Done pill", () => {
     } finally { h.dispose(); }
 });
 
-test("a command's description is its label, the command faint beside it; without one (Codex) the command is the label", () => {
-    const h = setup([{ ...finished("desc"), input: { command: "bun test ./test/a.test.ts", description: "Run the transcript tests" } }, finished("codex")], false);
+test("folded, a command's row says only its description; without one (Codex) the command is the label, shortened", () => {
+    const h = setup([
+        { ...finished("desc"), input: { command: "bun test ./test/a.test.ts", description: "Run the transcript tests" } },
+        { ...finished("codex"), input: { command: "cd '/Users/me/my repo' && bun run typecheck\nbun test" } },
+    ], false);
     try {
         const desc = row(h.root, "desc");
         expect(text(all(desc).find((n) => has(n, "cmd-l"))!)).toBe("Run the transcript tests");
-        const faint = all(desc).find((n) => has(n, "cmd-c"))!;
-        expect(text(faint)).toBe("bun test ./test/a.test.ts");
-        expect(has(faint, "solo")).toBe(false);
+        // Not the command, faint, beside it: that's in the row opened.
+        expect(text(head(desc))).not.toContain("bun test");
+        head(desc).props.onClick();
+        expect(text(body(desc)!)).toContain("bun test ./test/a.test.ts");
         const codex = row(h.root, "codex");
-        expect(all(codex).some((n) => has(n, "cmd-l"))).toBe(false);
-        expect(has(all(codex).find((n) => has(n, "cmd-c"))!, "solo")).toBe(true);
+        const label = all(codex).find((n) => has(n, "cmd-l"))!;
+        expect(text(label)).toBe("bun run typecheck");
+        expect(has(label, "solo")).toBe(true);
+        expect(has(label, "more")).toBe(true);
+        // The whole of it is in the row opened (and Copy), not a native tooltip: a long one made a wall of one (#389).
+        expect(all(codex).some((n) => typeof n.props.title === "string" && n.props.title.includes("bun test"))).toBe(false);
+        head(codex).props.onClick();
+        expect(text(body(codex)!)).toContain("cd '/Users/me/my repo' && bun run typecheck\nbun test");
+    } finally { h.dispose(); }
+});
+
+test("every command row has the same columns, in order, whatever it shows: so a run of them lines up (transcript.css)", () => {
+    const h = setup([
+        { ...finished("tally"), sandboxed: true },
+        { ...finished("quiet", "ok", ""), summary: "(no output)" },
+        { ...finished("failed", "error", "error: kiwi\nExit code: 1") },
+        { ...command("denied", "denied"), summary: "Declined" },
+        { ...finished("bg"), input: { command: "make serve", run_in_background: true }, summary: "Running in background as bash_1" },
+    ], false, [], undefined, false);
+    try {
+        const cells = (id: string) => head(row(h.root, id)).children.filter((n) => n.tag !== "#text").map((n) => n.props.class?.split(" ")[0]);
+        for (const id of ["tally", "quiet", "failed", "denied", "bg"]) expect(cells(id)).toEqual(["cmd-what", "cmd-tags", "cmd-res", "cmd-time", "chev-w"]);
+        const cell = (id: string, cls: string) => text(all(head(row(h.root, id))).find((n) => has(n, cls))!);
+        expect(cell("tally", "cmd-tags")).toContain("sandbox");
+        expect(cell("tally", "cmd-res")).toBe("14 pass");
+        expect(cell("tally", "cmd-time")).toBe("2s");
+        // What it came to is one column: a summary, an exit, a tally.
+        expect(cell("quiet", "cmd-res")).toBe("(no output)");
+        expect(cell("quiet", "cmd-tags")).toBe("");
+        expect(cell("failed", "cmd-res")).toBe("Exit 1");
+        expect(cell("denied", "cmd-res")).toBe("Declined");
+        expect(cell("bg", "cmd-tags")).toBe("Started in the background");
     } finally { h.dispose(); }
 });
 
@@ -455,6 +527,8 @@ test("a command running in the background says so, with Stop for its task; finis
         const card = row(h.root, "bg");
         expect(has(card, "bg")).toBe(true);
         expect(text(head(card))).toContain("In the background");
+        // Its tag doesn't repeat the command as a tooltip.
+        expect(all(card).some((n) => typeof n.props.title === "string" && n.props.title.includes("npm run dev"))).toBe(false);
         // No tally while it runs, and its time is the task's.
         expect(text(head(card))).toContain("1s");
         const stop = all(card).find((n) => n.tag === "button" && has(n, "stop"))!;

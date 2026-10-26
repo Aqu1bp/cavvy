@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 
 /** Execute the real component handlers without a browser or global module mocks. */
-export function componentCode(name: string, dependencies: Record<string, unknown>, handlers?: string[]) {
-    let source = readFileSync(new URL(`../gui/src/components/${name}.tsx`, import.meta.url), "utf8");
+/** `file`: the component's file in gui/src/components, when it isn't named after it. */
+export function componentCode(name: string, dependencies: Record<string, unknown>, handlers?: string[], file = name) {
+    let source = readFileSync(new URL(`../gui/src/components/${file}.tsx`, import.meta.url), "utf8");
     source = source.replace(/^import .*;\r?\n/gm, "").replace(/^export /gm, "");
     if (handlers) {
         // MCP's JSX needs Solid's DOM compiler. Its request handlers can run without rendering.

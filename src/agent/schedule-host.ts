@@ -69,6 +69,8 @@ export interface ScheduleHostOptions {
     settings: () => Settings;
     /** Nothing in the way of a new turn. */
     idle: () => boolean;
+    /** Which account and model the session is on now: a resume waiting for a limit belongs to the ones that hit it. */
+    identity?: () => string;
     /** Start the prompt as a turn; `label` says it's scheduled ("every 10m"). Settles once it's over (or never started). */
     run: (prompt: string, job: ScheduledJob, label: string) => Promise<unknown> | void;
     notice: (text: string, level?: "info" | "warn") => void;
@@ -89,6 +91,8 @@ export class SessionSchedules {
     private running = false;
     /** Resumes since a turn last finished: they stop after MAX_RESUMES. */
     private resumes = 0;
+    /** The account and model that hit the limit the waiting resume is for. */
+    private resumeFor: string | undefined;
     private clock: Clock;
 
     constructor(private o: ScheduleHostOptions) {
@@ -136,7 +140,16 @@ export class SessionSchedules {
     }
 
     private fire(job: ScheduledJob) {
-        if (job.kind === "resume") this.resumes++;
+        if (job.kind === "resume") {
+            // Switched since the limit (and nothing cancelled it): it would continue on something else.
+            if (this.resumeFor !== undefined && this.o.identity && this.o.identity() !== this.resumeFor) {
+                this.resumeFor = undefined;
+                this.o.notice("The automatic resume is skipped: the account or model is not the one that reached the limit.", "info");
+                return;
+            }
+            this.resumeFor = undefined;
+            this.resumes++;
+        }
         const label = job.kind === "resume" ? "Resuming after the usage limit reset" : `Scheduled (${describeJob(job)})`;
         this.running = true;
         let run: Promise<unknown> | void = undefined;
@@ -167,6 +180,16 @@ export class SessionSchedules {
     }
 
     /**
+     * The session's account or model was just switched: a resume waiting for the limit of the earlier one is
+     * cancelled (and the user told); one that's still on the account and model that hit it stays.
+     */
+    cancelLimitResume(what: "account" | "model") {
+        if (this.resumeFor !== undefined && this.o.identity && this.o.identity() === this.resumeFor) return;
+        if (this.scheduler.clear("resume")) this.o.notice(`The automatic resume is cancelled: you switched the ${what}.`);
+        this.resumeFor = undefined;
+    }
+
+    /**
      * A turn ended. One that stopped on the plan's usage limit with a known
      * reset time picks up again a minute after it (unless that's turned off,
      * or it has already tried MAX_RESUMES times in a row).
@@ -191,6 +214,7 @@ export class SessionSchedules {
         const at = limit.resetsAt + RESUME_DELAY_MS;
         try {
             this.scheduler.add({ kind: "resume", prompt: RESUME_PROMPT, at });
+            this.resumeFor = this.o.identity?.();
             this.o.notice(`It continues by itself ${resetPhrase(at, now)}. /schedules cancels that (or send something before then).`);
         } catch (e) {
             this.o.notice(`It won't continue by itself: ${(e as Error).message}`, "warn");

@@ -23,6 +23,8 @@ export interface StoredQueued {
     attachments?: AttachedPart[];
     /** Sent as a message even though it starts with a /word (the GUI's "Send as message"). */
     literal?: boolean;
+    /** Held because the account the session used for this CLI (its provider id) was removed: sent once one is picked (#410). */
+    account?: string;
 }
 
 /** The setting, or the default: steer (what mid-turn messages always did). */
@@ -48,7 +50,7 @@ export function loadQueue(sessionFile: string, id: string): StoredQueued[] {
         if (!x || typeof x !== "object" || typeof (x as StoredQueued).text !== "string") return [];
         const q = x as StoredQueued;
         const attachments = Array.isArray(q.attachments) ? q.attachments.filter((a) => a && typeof a === "object" && (a.type === "image" || a.type === "file")) : undefined;
-        return [{ text: q.text, mode: q.mode === "queue" ? "queue" : "steer", ...(attachments?.length ? { attachments } : {}), ...(q.literal ? { literal: true } : {}) }];
+        return [{ text: q.text, mode: q.mode === "queue" ? "queue" : "steer", ...(attachments?.length ? { attachments } : {}), ...(q.literal ? { literal: true } : {}), ...(q.account === "claude-code" || q.account === "codex" ? { account: q.account } : {}) }];
     });
 }
 

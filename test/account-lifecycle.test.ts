@@ -15,7 +15,7 @@ const { checkAgentCli, createBackend } = await import("../src/backends/index");
 const { forgetClient } = await import("../src/providers/models");
 const { Engine } = await import("../src/server/engine");
 const log = join(root, "starts.jsonl");
-const touched = ["FAKE_LOG", "FAKE_SCENARIO", "FAKE_ACCOUNT", "FAKE_LATE_TASK"];
+const touched = ["FAKE_LOG", "FAKE_SCENARIO", "FAKE_SECOND_SCENARIO", "FAKE_ACCOUNT", "FAKE_LATE_TASK"];
 const old = Object.fromEntries(touched.map((key) => [key, process.env[key]]));
 const fakes: Record<string, string> = {};
 for (const [provider, fixture] of [["claude-code", "fake-claude.ts"], ["codex", "fake-codex.ts"]] as const) {
@@ -176,9 +176,9 @@ async function tuiApp() {
     const notices: string[] = [];
     a.notice = (text: string) => void notices.push(text);
     app.session = Session.create(root, { persist: false });
-    // Something can start while the questions are being answered: a delegated CLI child, or a turn.
-    const state = { child: false, starts: undefined as (() => void) | undefined };
-    a.agent = { hasCliChild: () => state.child };
+    // Something can start while the questions are being answered: a turn, say.
+    const state = { starts: undefined as (() => void) | undefined };
+    a.agent = {};
     let answers: string[] = [];
     a.showDialog = async () => {
         const answer = answers.shift();
@@ -199,35 +199,30 @@ async function tuiApp() {
     return { app, state, add, ended, started, signIn };
 }
 
-test("the terminal app's /login <cli> add waits for delegated CLI children and running responses, checked once its questions are answered", async () => {
-    const { app, state, add, ended } = await tuiApp();
+test("the terminal app's /login <cli> add doesn't wait for running responses (#375)", async () => {
+    const { app, state, add } = await tuiApp();
     try {
-        state.starts = () => { state.child = true; };
-        expect(await add("while-child")).toContain("Add accounts once running responses and CLI background tasks finish");
-        state.child = false;
         state.starts = () => { app.busy = true; };
-        expect(await add("while-busy")).toContain("Add accounts once running responses and CLI background tasks finish");
+        expect(await add("while-busy")).not.toContain("Add accounts once");
         state.starts = undefined;
-        expect(listAccounts("codex").map((x) => x.id)).toEqual(["default"]);
-        expect(existsSync(ended)).toBe(false);
+        expect(listAccounts("codex").map((x) => x.id)).toEqual(["default", "while-busy"]);
     } finally {
         app.busy = false;
     }
 });
 
-test("the terminal app's account login keeps the event loop running, so a CLI's account watcher sees new protections during it", async () => {
-    const { watchAccountFolders } = await import("../src/backends/account-permissions");
+test("the terminal app's account login keeps the event loop running, so running turns go on during it", async () => {
     const { add, ended } = await tuiApp();
     let loginEndedWhenSeen: boolean | undefined;
-    const stopWatch = watchAccountFolders(() => { loginEndedWhenSeen = existsSync(ended); });
-    try { await add("added"); } finally { stopWatch(); }
+    const tick = setInterval(() => { loginEndedWhenSeen ??= existsSync(ended); }, 50);
+    try { await add("added"); } finally { clearInterval(tick); }
     expect(listAccounts("codex").map((x) => x.id)).toEqual(["default", "added"]);
     expect(existsSync(ended)).toBe(true);
     // Seen while the login still ran, not once it returned.
     expect(loginEndedWhenSeen).toBe(false);
 });
 
-test("removing any account waits for a running CLI turn, which goes on", async () => {
+test("adding an account, or removing one a running CLI turn doesn't use, goes ahead mid-turn and the turn goes on (#375)", async () => {
     const { Session } = await import("../src/agent/session");
     const unrelated = addAccount("codex", { id: "unrelated-fg", name: "Unrelated" });
     // A turn that runs until it's stopped.
@@ -243,14 +238,14 @@ test("removing any account waits for a running CLI turn, which goes on", async (
     try {
         await until(() => launches().length > 0, "the turn's process");
         engine.runtimes.set(session.meta.id, { busy: true, session, agent, ws: { cwd }, toolState: { cwd } } as any);
-        await expect(engine.handle(rpc, "accounts.remove", { provider: "codex", id: unrelated.id, confirmedFolder: unrelated.folder })).rejects.toMatchObject({ code: "busy" });
-        expect(existsSync(unrelated.folder)).toBe(true);
+        await expect(engine.handle(rpc, "accounts.add", { provider: "claude-code", id: "mid-turn", name: "Mid turn" })).resolves.toMatchObject({ id: "mid-turn" });
+        await engine.handle(rpc, "accounts.remove", { provider: "codex", id: unrelated.id, confirmedFolder: unrelated.folder });
+        expect(existsSync(unrelated.folder)).toBe(false);
         await Bun.sleep(400);
         expect(ended).toBeUndefined();
+        expect(launches()).toHaveLength(1);
         stop.abort();
-        await turn;
-        engine.runtimes.clear();
-        await engine.handle(rpc, "accounts.remove", { provider: "codex", id: unrelated.id, confirmedFolder: unrelated.folder });
+        expect(await turn).toBe("aborted");
     } finally {
         stop.abort();
         await turn;
@@ -434,7 +429,6 @@ test("one CLI's task ending doesn't hide another CLI's task of the same id still
         // The list keeps one X, Codex's ended one; Claude Code's goes on.
         expect(agent.backgroundTasks().filter((t) => t.id === "X").map((t) => [t.provider, t.status])).toEqual([["codex", "stopped"]]);
         await expect(engine.handle(rpc, "accounts.remove", { provider: "claude-code", id: claude.id, confirmedFolder: claude.folder })).rejects.toMatchObject({ code: "busy" });
-        await expect(engine.handle(rpc, "accounts.add", { provider: "codex", id: "while-collided", name: "While collided" })).rejects.toMatchObject({ code: "busy" });
         expect(existsSync(claude.folder)).toBe(true);
         // Only once Claude Code's ends.
         hosts[0]!.emitSession!({ type: "background_task", task: task("claude-code", "stopped"), accountId: claude.id });
@@ -509,7 +503,8 @@ test("a Stop the CLI answers after the session moved to another CLI clears only 
     }
 });
 
-test("model lists come from the starting account, and a session switched to another account is told so", async () => {
+test("model lists come from the starting account, and the model picker says so for a session switched to another account (#426)", async () => {
+    const { account, catalogNote } = await import("../src/providers/accounts");
     const alpha = addAccount("codex", { id: "cat-alpha", name: "Alpha" });
     const beta = addAccount("codex", { id: "cat-beta", name: "Beta" });
     // The fake lists one more model, different for each account's folder.
@@ -519,31 +514,133 @@ test("model lists come from the starting account, and a session switched to anot
     const engine = new Engine({ startCwd: root });
     const client = { subs: new Set<string>(), send() {} };
     const listed = async (refresh: boolean) => ((await engine.handle(client, "models.list", { refresh })) as any[]).find((p) => p.provider === "codex")?.models.map((m: any) => m.id) ?? [];
-    const lastNotice = (rt: { session: { notices: { text: string }[] } }) => rt.session.notices.at(-1)?.text ?? "";
+    // Said in the model picker, not the transcript (#426): with no conversation yet, a switch leaves no notice.
+    const caveat = (rt: { session: { accountId(p: string): string } }) => catalogNote("codex", account("codex", rt.session.accountId("codex")), "Codex") ?? "";
     try {
         const fromAlpha = await listed(true);
         expect(fromAlpha).toContain("alpha-only");
         expect(fromAlpha).not.toContain("beta-only");
         const rt = await engine.createSession(root);
         await engine.handle(client, "session.setAccount", { id: rt.session.meta.id, provider: "codex", accountId: beta.id });
-        expect(lastNotice(rt)).toContain("Codex's model list, with each model's effort and speed options, comes from its starting account (Alpha); Beta may not offer all of them.");
+        expect(caveat(rt)).toBe("Codex's model list, with each model's effort and speed options, comes from its starting account (Alpha); Beta may not offer all of them.");
+        expect(rt.session.notices).toHaveLength(0);
         // Refreshing doesn't make it Beta's: the policy is the starting account's list.
         expect(await listed(true)).toEqual(fromAlpha);
         // Switching back to the starting account says nothing more about it.
-        const before = rt.session.notices.length;
         await engine.handle(client, "session.setAccount", { id: rt.session.meta.id, provider: "codex", accountId: alpha.id });
-        expect(rt.session.notices.length).toBe(before);
+        expect(caveat(rt)).toBe("");
         // A new starting account lists its own.
         await engine.handle(client, "accounts.setDefault", { provider: "codex", id: beta.id });
         const fromBeta = await listed(false);
         expect(fromBeta).toContain("beta-only");
         expect(fromBeta).not.toContain("alpha-only");
         await engine.handle(client, "session.setAccount", { id: rt.session.meta.id, provider: "codex", accountId: "default" });
-        expect(lastNotice(rt)).toContain("comes from its starting account (Beta); Default may not offer all of them.");
+        expect(caveat(rt)).toContain("comes from its starting account (Beta); Default may not offer all of them.");
     } finally {
         await engine.stop();
     }
 });
+
+test("a session's account switch says whether the CLI session goes on natively or is handed over, and is refused during a response (#377)", async () => {
+    const { accountPlace } = await import("../src/providers/accounts");
+    const shared = addAccount("codex", { id: "note-shared", name: "Shared" });
+    const own = addAccount("codex", { id: "note-own", name: "Own", folder: join(root, "note-own-home") });
+    const engine = new Engine({ startCwd: root });
+    const client = { subs: new Set<string>(), send() {} };
+    const setAccount = (id: string) => engine.handle(client, "session.setAccount", { id: rt.session.meta.id, provider: "codex", accountId: id });
+    const rt = await engine.createSession(root);
+    const lastSwitch = () => rt.session.notices.at(-1)?.account;
+    try {
+        rt.session.push({ role: "user", content: [{ type: "text", text: "Earlier" }], meta: { kind: "prompt" } });
+        rt.session.setBackendSession("codex", "thread-1", 1, accountPlace("codex"));
+        // Shares Default's sessions/: the same thread goes on there.
+        await setAccount(shared.id);
+        expect(lastSwitch()).toEqual({ provider: "codex", cli: "Codex", name: "Shared", how: "native" });
+        expect(rt.session.notices.at(-1)?.text).toBe("Codex · Shared · resumed");
+        expect(rt.session.backends.get("codex")?.id).toBe("thread-1");
+        // Busy: refused, nothing changes.
+        rt.busy = true;
+        await expect(setAccount(own.id)).rejects.toMatchObject({ code: "busy" });
+        expect(rt.session.accountId("codex")).toBe(shared.id);
+        expect(rt.session.backends.get("codex")?.id).toBe("thread-1");
+        rt.busy = false;
+        // Its own history: a new thread, handed the conversation.
+        await setAccount(own.id);
+        expect(lastSwitch()).toEqual({ provider: "codex", cli: "Codex", name: "Own", how: "handoff", dropped: true });
+        // No message between the switches: one notice, the latest.
+        expect(rt.session.notices).toHaveLength(1);
+        expect(rt.session.backends.has("codex")).toBe(false);
+        // Back where the earlier thread lives (#413): that thread goes on, sent what it missed.
+        await setAccount("default");
+        expect(lastSwitch()).toEqual({ provider: "codex", cli: "Codex", name: "Default", how: "returned" });
+        expect(rt.session.backends.get("codex")?.id).toBe("thread-1");
+        // No native thread to keep or take up: the handoff, without the reason.
+        rt.session.forgetBackendSession("codex");
+        await setAccount(own.id);
+        await setAccount("default");
+        expect(lastSwitch()).toEqual({ provider: "codex", cli: "Codex", name: "Default", how: "handoff" });
+        expect(rt.session.notices).toHaveLength(1);
+        // The live transcript has it as one line between turns.
+        const line = rt.snapshot().turns.at(-1)!;
+        expect(line.prompt).toBeUndefined();
+        expect(line.blocks).toEqual([expect.objectContaining({ t: "notice", level: "info", account: lastSwitch(), text: "Codex · Default · new thread" })]);
+    } finally {
+        await engine.stop();
+        removeAccount("codex", shared.id, shared.folder);
+        removeAccount("codex", own.id, own.folder);
+    }
+});
+
+for (const provider of ["claude-code", "codex"] as const) test(`${provider}: an account switch lets the session's live process go at once, with its background work: nothing it reports later runs under the new account (#377)`, async () => {
+    const shared = addAccount(provider, { id: `release-${provider === "codex" ? "cx" : "cc"}`, name: "Shared" });
+    const env = provider === "claude-code"
+        ? { FAKE_SCENARIO: "agent-background", FAKE_BACKGROUND_MS: "3000", FAKE_SECOND_SCENARIO: "silent" }
+        : { FAKE_CODEX_SCENARIOS: "bg,cmd", FAKE_BG_MS: "3000" };
+    Object.assign(process.env, env);
+    const cwd = realpathSync(tempDir("account-release-"));
+    const engine = new Engine({ startCwd: cwd });
+    const client = { subs: new Set<string>(), send() {} };
+    const rt = await engine.createSession(cwd, { model: `${provider}:default` });
+    // Turns with a prompt: the switch's notices make an entry of their own.
+    const turns = () => rt.snapshot().turns.filter((t) => t.prompt).length;
+    const running = () => rt.agent?.backgroundTasks().filter((t) => t.provider === provider && t.status === "running") ?? [];
+    const send = async (text: string) => {
+        const before = turns();
+        await engine.handle(client, "session.send", { id: rt.id, text });
+        await until(() => !rt.busy && turns() > before && rt.snapshot().turns.filter((t) => t.prompt).at(-1)?.status !== "running", "the turn");
+    };
+    try {
+        await send("start the background work");
+        expect(running()).toHaveLength(1);
+        // The session's process: the last started (the status and model checks before it have ended).
+        const first = (launches() as unknown as { pid: number }[]).at(-1);
+        expect(alive(first!.pid)).toBe(true);
+        const id = rt.session.backends.get(provider)!.id;
+        await engine.handle(client, "session.setAccount", { id: rt.session.meta.id, provider, accountId: shared.id });
+        // Gone with the switch, not at the next turn.
+        expect(alive(first!.pid)).toBe(false);
+        expect(running()).toHaveLength(0);
+        const name = provider === "codex" ? "Codex" : "Claude Code";
+        // Under the switch's line: the task it stopped, by its label (Claude Code's description; Codex's command).
+        const switched = rt.session.notices.at(-1)!;
+        expect(switched.account).toMatchObject({ provider, cli: name, name: "Shared", how: "native", stopped: [{ label: provider === "codex" ? "sleep 1; echo bg 1" : "Map auth" }] });
+        const line = rt.snapshot().turns.at(-1)!;
+        expect(line.prompt).toBeUndefined();
+        expect(line.blocks).toEqual([expect.objectContaining({ t: "notice", account: switched.account })]);
+        // Its work would have ended, and its report turn come, by now: none is taken over under the new account.
+        await Bun.sleep(3500)
+        expect(turns()).toBe(1);
+        await send("on the shared account");
+        const last = launches().at(-1) as unknown as { argv: string[]; claudeConfigDir?: string; codexHome?: string };
+        expect(realpathSync((provider === "codex" ? last.codexHome : last.claudeConfigDir)!)).toBe(realpathSync(shared.folder));
+        expect(rt.session.backends.get(provider)?.id).toBe(id);
+    } finally {
+        for (const key of Object.keys(env)) delete process.env[key];
+        await engine.stop();
+        removeAccount(provider, shared.id, shared.folder);
+        rmSync(cwd, { recursive: true, force: true });
+    }
+}, 30_000);
 
 for (const provider of ["claude-code", "codex"] as const) test(`${provider}: a signed-out named account is pointed to its own sign-in, live and per run; Default keeps the CLI's`, async () => {
     const named = addAccount(provider, { id: "work", name: "Work" });
@@ -593,12 +690,13 @@ async function liveClaudeAgent(cwd: string, session: InstanceType<typeof import(
     return { agent, client, run, running };
 }
 
-test("a session's idle live CLI background work holds its account's removal, and any account's addition, until it's stopped", async () => {
+test("a session's idle live CLI background work holds its account's removal until it's stopped; other account changes go ahead and restart nothing (#375)", async () => {
     const { Session } = await import("../src/agent/session");
     const selected = addAccount("claude-code", { id: "background", name: "Background" });
     const unrelated = addAccount("codex", { id: "unrelated", name: "Unrelated" });
     // Claude Code's background sub-agent goes on after the turn's answer, until it's stopped.
     process.env.FAKE_SCENARIO = "agent-background-stuck";
+    process.env.FAKE_SECOND_SCENARIO = "silent";
     const cwd = realpathSync(tempDir("account-background-"));
     const session = Session.create(cwd, { persist: false });
     session.setAccount("claude-code", selected.id);
@@ -612,31 +710,53 @@ test("a session's idle live CLI background work holds its account's removal, and
         engine.runtimes.set(session.meta.id, { busy: false, session, agent, ws: { cwd }, toolState: { cwd } } as any);
         await expect(engine.handle(rpc, "accounts.remove", { provider: "claude-code", id: selected.id, confirmedFolder: selected.folder })).rejects.toMatchObject({ code: "busy" });
         expect(existsSync(selected.folder)).toBe(true);
+        // Adding an account to either CLI, or removing one it doesn't use, goes ahead (#375): an account only selects
+        // a CLI's folder, so nothing is restarted and the work goes on.
+        for (const provider of ["claude-code", "codex"]) {
+            await expect(engine.handle(rpc, "accounts.add", { provider, id: "while-background", name: "While background" })).resolves.toMatchObject({ id: "while-background" });
+        }
+        await engine.handle(rpc, "accounts.remove", { provider: "codex", id: unrelated.id, confirmedFolder: unrelated.folder });
+        expect(existsSync(unrelated.folder)).toBe(false);
+        await Bun.sleep(400);
+        expect(running()).toHaveLength(1);
+        // The next turn goes to the same process: the new accounts didn't change what it was started with.
+        expect(await run("anything else?")).toBe("done");
+        expect(launches()).toHaveLength(1);
+        expect(running()).toHaveLength(1);
         // Its account stays in use after the session switches: the process signed in with it.
         session.setAccount("claude-code", "default");
         await expect(engine.handle(rpc, "accounts.remove", { provider: "claude-code", id: selected.id, confirmedFolder: selected.folder })).rejects.toMatchObject({ code: "busy" });
-        // Adding an account to either CLI would restart that process to apply new protections, stopping the work.
-        for (const provider of ["claude-code", "codex"]) {
-            await expect(engine.handle(rpc, "accounts.add", { provider, id: "while-background", name: "While background" })).rejects.toMatchObject({ code: "busy" });
-        }
-        // So would removing an account it doesn't use.
-        await expect(engine.handle(rpc, "accounts.remove", { provider: "codex", id: unrelated.id, confirmedFolder: unrelated.folder })).rejects.toMatchObject({ code: "busy" });
-        expect(existsSync(unrelated.folder)).toBe(true);
-        // Past the account-folder watcher's interval: nothing restarted it.
-        await Bun.sleep(400);
-        expect(running()).toHaveLength(1);
-        // Once it's stopped, both go ahead.
+        // Once it's stopped, its account can go.
         await agent.stopBackground();
         await until(() => running().length === 0, "the background task to stop");
         await engine.handle(rpc, "accounts.remove", { provider: "claude-code", id: selected.id, confirmedFolder: selected.folder });
         expect(existsSync(selected.folder)).toBe(false);
-        await expect(engine.handle(rpc, "accounts.add", { provider: "codex", id: "after-background", name: "After background" })).resolves.toMatchObject({ id: "after-background" });
     } finally {
         engine.runtimes.clear();
         await agent.dispose();
         await (client as any).shutdown?.();
         await engine.stop();
         if (listAccounts("codex").some((a) => a.id === unrelated.id)) removeAccount("codex", unrelated.id, unrelated.folder);
+        rmSync(cwd, { recursive: true, force: true });
+    }
+});
+
+test("an idle live Claude Code process isn't restarted for accounts added or removed between turns (#375)", async () => {
+    const { Session } = await import("../src/agent/session");
+    process.env.FAKE_SCENARIO = "silent";
+    const cwd = realpathSync(tempDir("account-idle-"));
+    const session = Session.create(cwd, { persist: false });
+    const { agent, client, run } = await liveClaudeAgent(cwd, session);
+    try {
+        expect(await run("first")).toBe("done");
+        const added = addAccount("claude-code", { id: "between-turns", name: "Between turns" });
+        expect(await run("second")).toBe("done");
+        removeAccount("claude-code", added.id, added.folder);
+        expect(await run("third")).toBe("done");
+        expect(launches()).toHaveLength(1);
+    } finally {
+        await agent.dispose();
+        await (client as any).shutdown?.();
         rmSync(cwd, { recursive: true, force: true });
     }
 });

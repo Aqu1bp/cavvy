@@ -94,6 +94,20 @@ test("an account removed is forgotten, saved too; one removed while the server w
     await second.stop();
 });
 
+test("whether turns go on using credits (#434) is saved as a flag, and nothing else of credits", () => {
+    const window = { id: "codex:primary", label: "5-hour", usedPercent: 100, reached: true };
+    writeFileSync(paths.planLimits(), JSON.stringify({ version: 1, limits: [
+        { provider: "codex", at: 1, reached: true, credits: true, windows: [window, { ...window, id: "spark:primary", credits: false }] },
+        { provider: "claude-code", at: 2, reached: true, credits: { balance: "917" }, windows: [{ ...window, credits: "yes" }] },
+    ] }));
+    const [codex, claude] = loadPlanLimits();
+    expect(codex!.credits).toBe(true);
+    expect(codex!.windows.map((w) => w.credits)).toEqual([undefined, false]);
+    expect(claude!.credits).toBeUndefined();
+    expect(claude!.windows[0]!.credits).toBeUndefined();
+    expect(JSON.stringify(claude)).not.toContain("917");
+});
+
 test("a broken or foreign file is ignored", async () => {
     writeFileSync(paths.planLimits(), "{ not json");
     expect(loadPlanLimits()).toEqual([]);
