@@ -21,7 +21,10 @@ if (args[0] === "api") {
     // GET repos/<owner>/<name>/pulls with head=<owner>:<branch>, as GitHub filters it: by the head repository's owner and branch.
     const field = (name: string) => args.find((arg, i) => args[i - 1] === "-f" && arg.startsWith(`${name}=`))?.slice(name.length + 1);
     const [owner, branch] = [field("head")!.slice(0, field("head")!.indexOf(":")), field("head")!.slice(field("head")!.indexOf(":") + 1)];
-    const pulls = stored().filter((pr) => pr.headRefName === branch && pr.headRepositoryOwner?.login.toLowerCase() === owner.toLowerCase())
+    // And by state (open, or all), newest first (by creation, or by update with sort=updated), as GitHub pages them.
+    const by = field("sort") === "updated" ? (pr: any) => Date.parse(pr.updatedAt) || 0 : (pr: any) => pr.number;
+    const pulls = stored().filter((pr) => pr.headRefName === branch && pr.headRepositoryOwner?.login.toLowerCase() === owner.toLowerCase() && (field("state") !== "open" || pr.state === "OPEN"))
+        .sort((a, b) => by(b) - by(a))
         .map((pr) => ({ number: pr.number, html_url: pr.url, state: pr.state === "OPEN" ? "open" : "closed", merged_at: pr.state === "MERGED" ? pr.updatedAt : null, updated_at: pr.updatedAt, head: { ref: pr.headRefName, repo: pr.headRepository ? { name: pr.headRepository.name, owner: pr.headRepositoryOwner } : null } }));
     console.log(JSON.stringify(pulls.slice(0, Number(field("per_page") ?? 30))));
 } else if (args[1] === "view") {

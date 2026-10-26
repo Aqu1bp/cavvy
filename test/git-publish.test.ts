@@ -1,6 +1,6 @@
 import { afterAll, expect, test, setDefaultTimeout } from "bun:test";
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "fs";
-import { join } from "path";
+import { existsSync, mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "fs";
+import { join, relative } from "path";
 import { isolate } from "./helpers/isolate";
 import { publishFixtures } from "./helpers/git-publish";
 setDefaultTimeout(120_000);
@@ -432,4 +432,69 @@ test("a helper the user's own settings name stays allowed unless it names a file
     } finally { restore(); }
     expect(existsSync(join(cwd, "ssh-ran"))).toBe(false);
     expect(calls(state, ".git-calls")).toHaveLength(0);
+});
+
+test("a helper's shell syntax, or a path into the repository by any form, needs trust; a subcommand named like a folder doesn't (#107)", async () => {
+    const { gitNetworkSkipReason } = await import("../src/util/git");
+    const { cwd } = repo();
+    writeFileSync(join(cwd, "payload.sh"), ": > ssh-ran\nexit 1\n");
+    mkdirSync(join(cwd, "auth"));
+    const saved = { ...process.env };
+    const restore = () => { for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]; Object.assign(process.env, saved); };
+    const helper = (value: string) => Object.assign(process.env, { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "credential.helper", GIT_CONFIG_VALUE_0: value });
+    // A home folder the repository is in.
+    const home = realpathSync(iso.home);
+    const inHome = (command: string) => Object.assign(process.env, { HOME: home, GIT_SSH_COMMAND: command });
+    const rel = relative(home, cwd);
+    expect(rel.startsWith("..")).toBe(false);
+    const needs: [string, () => void][] = [
+        ["a redirection", () => helper("!sh<payload.sh;#")],
+        ["a glob", () => helper("!sh payload*.sh")],
+        ["another expansion", () => helper('!sh "$PWD/payload.sh"')],
+        ["an absolute path into it", () => { process.env.GIT_SSH_COMMAND = `sh ${join(cwd, "payload.sh")}`; }],
+        ["a home-relative path into it", () => inHome(`sh ~/${rel}/payload.sh`)],
+        ["$HOME into it", () => inHome(`sh $HOME/${rel}/payload.sh`)],
+        ["an open quote", () => { process.env.GIT_SSH_COMMAND = "sh 'payload.sh"; }],
+    ];
+    try {
+        for (const [name, set] of needs) {
+            set();
+            expect([name, await gitNetworkSkipReason(cwd)]).toEqual([name, expect.stringContaining("requires explicit user trust")]);
+            restore();
+        }
+        // A subcommand that happens to name a folder here, a quoted installed path with a space, a home-relative key.
+        helper("!gh auth git-credential");
+        Object.assign(process.env, { GIT_SSH_COMMAND: `"/opt/Git Tools/ssh" -i ~/.ssh/id_ed25519 -o "UserKnownHostsFile=$HOME/.ssh/known_hosts"` });
+        expect(await gitNetworkSkipReason(cwd)).toBeUndefined();
+    } finally { restore(); }
+    expect(existsSync(join(cwd, "ssh-ran"))).toBe(false);
+});
+
+test("a push to the confirmed URL moves the tracking refs the remote's fetch refspecs name, as git would (#107)", async () => {
+    const { trackingRefs } = await import("../src/server/git-publish");
+    const ref = "refs/heads/feature";
+    expect(trackingRefs(["+refs/heads/*:refs/remotes/origin/*"], ref)).toEqual(["refs/remotes/origin/feature"]);
+    // A single-branch clone's, a negative one, several, and one for another branch.
+    expect(trackingRefs(["+refs/heads/feature:refs/remotes/origin/feature"], ref)).toEqual(["refs/remotes/origin/feature"]);
+    expect(trackingRefs(["+refs/heads/*:refs/remotes/origin/*", "^refs/heads/feature"], ref)).toEqual([]);
+    expect(trackingRefs(["+refs/heads/*:refs/remotes/origin/*", "refs/heads/feat*:refs/remotes/mirror/feat*"], ref)).toEqual(["refs/remotes/origin/feature", "refs/remotes/mirror/feature"]);
+    expect(trackingRefs(["+refs/heads/main:refs/remotes/origin/main"], ref)).toEqual([]);
+    const { cwd } = repo();
+    git(cwd, "config", "--replace-all", "remote.origin.fetch", "+refs/heads/feature:refs/remotes/origin/feature");
+    const preview = await gitPublishInfo(cwd);
+    await gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" });
+    expect(git(cwd, "rev-parse", "origin/feature")).toBe(git(cwd, "rev-parse", "HEAD"));
+});
+
+test("100 newer closed PRs from this branch to other bases can't hide its open PR (#107)", async () => {
+    const { cwd, state } = repo(true);
+    const record = (number: number, prState: string, updatedAt: string) => ({ number, url: `https://github.com/example/project/pull/${number}`, headRefName: "feature", state: prState, updatedAt, title: `PR ${number}`, isDraft: false, headRepository: { name: "project" }, headRepositoryOwner: { login: "example" } });
+    const closed = Array.from({ length: 100 }, (_, i) => record(100 + i, "CLOSED", "2026-10-20T00:00:00Z"));
+    writeFileSync(state, JSON.stringify([record(7, "OPEN", "2026-10-01T00:00:00Z"), ...closed]));
+    expect(await gitPrState(cwd)).toMatchObject({ number: 7, state: "open" });
+    // On github.com, whatever host gh would pick by default.
+    expect(calls(state).filter((args) => args[0] === "api").every((args) => args[args.indexOf("--hostname") + 1] === "github.com")).toBe(true);
+    // None open: the most recently updated of the rest.
+    writeFileSync(state, JSON.stringify([record(7, "CLOSED", "2026-10-01T00:00:00Z"), record(9, "MERGED", "2026-10-25T00:00:00Z"), record(8, "CLOSED", "2026-10-02T00:00:00Z")]));
+    expect(await gitPrState(cwd)).toMatchObject({ number: 9, state: "merged" });
 });

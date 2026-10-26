@@ -1,6 +1,7 @@
 import { spawnSync } from "bun";
-import { lstatSync } from "fs";
-import { delimiter, isAbsolute, join } from "path";
+import { lstatSync, realpathSync, statSync } from "fs";
+import { homedir } from "os";
+import { delimiter, isAbsolute, join, relative, resolve } from "path";
 import { childEnv } from "./env";
 import { trustedByUser } from "../config/trust";
 
@@ -251,12 +252,18 @@ const HELPER_VARS = ["GIT_SSH_COMMAND", "GIT_SSH", "GIT_ASKPASS", "SSH_ASKPASS",
 
 /**
  * A helper the user's own settings name (global, system, command scope, the environment) may be an installed
- * program, but not one that names a file by a relative path, or a file in cwd: run from the repository, that's
- * the repository's (`sh ./payload.sh`, `sh payload.sh`). Such a helper needs explicit trust too (#107).
+ * program, but not one that names a file in the repository, by any path or as a file in cwd: that's the
+ * repository's (`sh ./payload.sh`, `sh payload.sh`, `sh /abs/repo/payload.sh`). Such a helper needs explicit
+ * trust too, as does one whose shell syntax can't be read for sure (#107).
  */
 async function inheritedHelperReason(cwd: string): Promise<string | undefined> {
     const env = gitEnv();
-    const variable = HELPER_VARS.find((name) => env[name] && namesRepoFile(cwd, env[name]!));
+    const top = (await gitAsync(cwd, ["rev-parse", "--show-toplevel"]))?.trim();
+    const roots = [cwd, ...(top ? [top] : [])];
+    // ~ and $HOME are what the shell git runs the helper with reads them as.
+    const home = env.HOME || homedir();
+    const namesRepoFile = (command: string) => helperNamesRepoFile(cwd, roots, home, command);
+    const variable = HELPER_VARS.find((name) => env[name] && namesRepoFile(env[name]!));
     if (variable) return `inherited ${variable} names a file in this repository and requires explicit user trust`;
     const effective = await gitAsync(cwd, ["config", "--includes", "--show-scope", "-z", "--get-regexp", HELPER_CONFIG]);
     if (effective === undefined) return "repository configuration could not be checked";
@@ -268,7 +275,7 @@ async function inheritedHelperReason(cwd: string): Promise<string | undefined> {
         const entry = fields[i + 1]!;
         const newline = entry.indexOf("\n");
         const name = newline === -1 ? entry : entry.slice(0, newline);
-        if (newline !== -1 && namesRepoFile(cwd, entry.slice(newline + 1))) {
+        if (newline !== -1 && namesRepoFile(entry.slice(newline + 1))) {
             // Only fixed section names enter the message; subsections may hold URLs.
             return `inherited ${name.startsWith("core.") ? name : name.split(".")[0]} configuration names a file in this repository and requires explicit user trust`;
         }
@@ -276,20 +283,81 @@ async function inheritedHelperReason(cwd: string): Promise<string | undefined> {
     return undefined;
 }
 
+/** A word of a helper's shell command, and whether it began quoted (then a leading ~ is the word's own). */
+type Word = { text: string; quoted: boolean };
+
 /**
- * Whether a helper command names a file relative to cwd: a word (or a word's `=` value) that's a relative path,
- * or past the program itself, a file that's there. The program is looked up on PATH, not in cwd. A shell
- * command can't be read for sure, so this errs toward asking for trust.
+ * A helper's shell command as words, `$HOME` read as the home folder; undefined for syntax this
+ * can't follow for sure (redirection, pipes, lists, globs, other expansions, escapes, an open quote), which could
+ * read any file. On Windows a backslash separates a path's parts.
  */
-function namesRepoFile(cwd: string, command: string): boolean {
-    const words = command.replace(/^\s*!/, "").split(/\s+/).filter(Boolean);
-    return words.some((word, i) => word.replace(/["']/g, "").split("=").some((part, j) => {
-        if (!part || part.startsWith("/") || part.startsWith("~") || /^\$\{?HOME\}?(\/|$)/.test(part) || part.includes("://")) return false;
-        if (part.startsWith(".") || part.includes("/")) return true;
+function shellWords(command: string, home: string): Word[] | undefined {
+    const words: Word[] = [];
+    let word: Word | undefined;
+    let quote: "'" | '"' | undefined;
+    const add = (c: string, quoted = false) => {
+        word ??= { text: "", quoted };
+        word.text += c;
+    };
+    for (let i = 0; i < command.length; i++) {
+        const c = command[i]!;
+        if (quote === "'") {
+            if (c === "'") quote = undefined;
+            else add(c);
+            continue;
+        }
+        const variable = /^\$(HOME|\{HOME\})(?=[/"\s]|$)/.exec(command.slice(i));
+        if (variable) {
+            add(home, quote === '"');
+            i += variable[0].length - 1;
+            continue;
+        }
+        if (quote === '"') {
+            if (c === '"') quote = undefined;
+            else if ("$`\\".includes(c)) return undefined;
+            else add(c);
+            continue;
+        }
+        if (c === "'" || c === '"') {
+            quote = c;
+            word ??= { text: "", quoted: true };
+        } else if (/\s/.test(c)) {
+            if (word) words.push(word);
+            word = undefined;
+        } else if ("<>|;&`*?[]{}()$".includes(c) || (c === "\\" && process.platform !== "win32")) return undefined;
+        else add(c);
+    }
+    if (quote) return undefined;
+    if (word) words.push(word);
+    return words;
+}
+
+/**
+ * Whether a helper command names a file in the repository (one of `roots`, cwd among them): a word, or a word's
+ * `=` value, that's a path into it (relative to cwd, absolute, or home-relative and still in it), or, past the
+ * program itself, a file in cwd (`sh payload.sh`). The program is looked up on PATH, not in cwd. True for a
+ * command whose syntax can't be read for sure: it errs toward asking for trust.
+ */
+function helperNamesRepoFile(cwd: string, roots: string[], home: string, command: string): boolean {
+    const words = shellWords(command.replace(/^\s*!/, ""), home);
+    if (!words) return true;
+    const real = (path: string) => {
+        try { return realpathSync(path); } catch { return path; }
+    };
+    const inside = (path: string) => roots.some((root) => [resolve(root), real(root)].some((r) => [path, real(path)].some((p) => {
+        const rel = relative(r, p);
+        return !rel.startsWith("..") && !isAbsolute(rel);
+    })));
+    return words.some((word, i) => word.text.split("=").some((part, j) => {
+        if (!part || part.includes("://")) return false;
+        // A ~ value too (ssh -o IdentityFile=~/.ssh/key): the program reads it as home.
+        const tilde = !(word.quoted && j === 0) && (part === "~" || part.startsWith("~/"));
+        const path = tilde ? join(home, part.slice(1)) : part;
+        const separated = path.includes("/") || (process.platform === "win32" && path.includes("\\"));
+        if (tilde || isAbsolute(path) || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith(".") || separated) return inside(resolve(cwd, path));
         if (i === 0 && j === 0) return false;
         try {
-            lstatSync(join(cwd, part));
-            return true;
+            return statSync(join(cwd, path)).isFile();
         } catch {
             return false;
         }

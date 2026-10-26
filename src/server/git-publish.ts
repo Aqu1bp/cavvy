@@ -168,15 +168,21 @@ async function prView(cwd: string, repo: string, branch: string, signal?: AbortS
     // can't crowd this repository's out of a page before it's filtered (#107). A branch has one open PR per base,
     // so a page holds it. The one picked is then read by its number (`pr view 123` is PR #123, never branch "123").
     const [owner, name] = repo.split("/");
-    const listed = await run(cwd, ["gh", "api", "--method", "GET", `repos/${repo}/pulls`, "-f", `head=${owner}:${branch}`, "-f", "state=all", "-f", "per_page=100"], true, signal);
-    if (listed.code) throw fail(listed.err + listed.out || "Could not read pull request state.", "gh");
-    let values;
-    try { values = JSON.parse(listed.out); } catch { throw fail("gh returned invalid pull request state.", "gh"); }
-    if (!Array.isArray(values)) throw fail("gh returned invalid pull request state.", "gh");
-    const candidates = values.filter((value) => value && Number.isSafeInteger(value.number) && value.head?.ref === branch
+    // Open ones first, then the most recently updated of the rest: a page of 100 newer closed ones can't hide an open one.
+    const list = async (state: "open" | "all") => {
+        const listed = await run(cwd, ["gh", "api", "--hostname", "github.com", "--method", "GET", `repos/${repo}/pulls`, "-f", `head=${owner}:${branch}`, "-f", `state=${state}`, "-f", "sort=updated", "-f", "direction=desc", "-f", "per_page=100"], true, signal);
+        if (listed.code) throw fail(listed.err + listed.out || "Could not read pull request state.", "gh");
+        let values;
+        try { values = JSON.parse(listed.out); } catch { throw fail("gh returned invalid pull request state.", "gh"); }
+        if (!Array.isArray(values)) throw fail("gh returned invalid pull request state.", "gh");
+        return values;
+    };
+    const valid = (values: any[]) => values.filter((value) => value && Number.isSafeInteger(value.number) && value.head?.ref === branch
         && typeof value.head?.repo?.owner?.login === "string" && value.head.repo.owner.login.toLowerCase() === owner!.toLowerCase()
         && typeof value.head?.repo?.name === "string" && value.head.repo.name.toLowerCase() === name!.toLowerCase()
         && ["open", "closed"].includes(value.state));
+    let candidates = valid(await list("open"));
+    if (!candidates.length) candidates = valid(await list("all"));
     candidates.sort((a, b) => Number(b.state === "open") - Number(a.state === "open")
         || (Date.parse(b.updated_at) || 0) - (Date.parse(a.updated_at) || 0) || b.number - a.number);
     if (!candidates[0]) return undefined;
@@ -227,6 +233,31 @@ export async function gitPublishInfo(cwd: string, signal?: AbortSignal): Promise
 }
 
 /**
+ * The refs a remote's fetch refspecs map `ref` to, as git maps them: each positive one whose source matches (a
+ * `*` taking any part), none when a negative one (`^src`) matches it.
+ */
+export function trackingRefs(refspecs: string[], ref: string): string[] {
+    const match = (pattern: string) => {
+        const star = pattern.indexOf("*");
+        if (star === -1) return pattern === ref ? "" : undefined;
+        const [head, tail] = [pattern.slice(0, star), pattern.slice(star + 1)];
+        return ref.length >= head.length + tail.length && ref.startsWith(head) && ref.endsWith(tail) ? ref.slice(head.length, ref.length - tail.length) : undefined;
+    };
+    const specs = refspecs.map((spec) => spec.trim()).filter(Boolean);
+    if (specs.some((spec) => spec.startsWith("^") && match(spec.slice(1)) !== undefined)) return [];
+    const refs: string[] = [];
+    for (const spec of specs) {
+        if (spec.startsWith("^")) continue;
+        const [src, dst] = spec.replace(/^\+/, "").split(":");
+        const part = src ? match(src) : undefined;
+        if (part === undefined || !dst) continue;
+        const target = dst.includes("*") ? dst.replace("*", part) : dst;
+        if (target.startsWith("refs/") && !refs.includes(target)) refs.push(target);
+    }
+    return refs;
+}
+
+/**
  * The push, to the URL checked and confirmed: not by the remote's name, which git would look up again (a URL or
  * push URL changed since). A URL rewrite (insteadOf, pushInsteadOf) added since would still apply to it, so a
  * pre-push hook of Harness's own compares the URL git resolved with that one, and refuses any other before
@@ -238,12 +269,19 @@ async function pushTo(cwd: string, info: { remote: string; target: string; url: 
         const hook = join(hooks, "pre-push");
         writeFileSync(hook, '#!/bin/sh\n# Harness: push only to the destination that was checked and confirmed.\n[ "$2" = "$HARNESS_PUSH_URL" ] && exit 0\necho "The push destination changed after it was checked (a Git URL rewrite?); nothing was pushed. Reopen the dialog." >&2\nexit 1\n');
         chmodSync(hook, 0o700);
+        // Git skips a hook it can't run (a temp folder mounted noexec) and pushes anyway: it must run here first.
+        // Git for Windows runs hooks with its own sh, whatever their mode.
+        const runs = () => {
+            try { return Bun.spawnSync([hook, info.remote, info.url], { env: { PATH: process.env.PATH ?? "", HARNESS_PUSH_URL: info.url }, stdin: "ignore", stdout: "ignore", stderr: "ignore" }).exitCode === 0; }
+            catch { return false; }
+        };
+        if (process.platform !== "win32" && !runs()) throw fail("Harness couldn't run its check of the push destination (is the temporary folder mounted noexec?); nothing was pushed.");
         const result = await run(cwd, ["git", "-c", `core.hooksPath=${hooks}`, "-c", "push.followTags=false", "-c", "push.pushOption=", "push", "--porcelain", "--no-force", "--no-follow-tags", "--recurse-submodules=no", "--", info.url, `${info.sha}:refs/heads/${info.target}`], true, signal, { HARNESS_PUSH_URL: info.url });
-        // Pushed to the URL, git leaves the remote's tracking branch as it was: updated as a push to the remote
-        // would have (by its default fetch refspec), so ahead/behind stay right.
+        // Pushed to the URL, git leaves the remote's tracking branches as they were: updated as a push to the remote
+        // would have (by its fetch refspecs), so ahead/behind stay right.
         if (!result.code) {
             const fetch = await git(cwd, ["config", "--get-all", `remote.${info.remote}.fetch`], signal, false, true);
-            if (fetch.split("\n").includes(`+refs/heads/*:refs/remotes/${info.remote}/*`)) await git(cwd, ["update-ref", `refs/remotes/${info.remote}/${info.target}`, info.sha], signal, false, true);
+            for (const ref of trackingRefs(fetch.split("\n"), `refs/heads/${info.target}`)) await git(cwd, ["update-ref", ref, info.sha], signal, false, true);
         }
         return result;
     } finally {
