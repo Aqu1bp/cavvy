@@ -8,6 +8,7 @@ import type { ToolState } from "../tools/types";
 import { imageMediaType, looksBinary, isInside, canonical } from "../util/files";
 import { fuzzyScore } from "./components";
 import { redact } from "../util/redact";
+import { withoutReviewQuotes } from "../util/review-quotes";
 import { gitArgv, gitEnv } from "../util/git";
 import { isImageFile, lexWords, loadImageFile, normalizePath, resolveUserPath, type PrepareOptions } from "./images";
 
@@ -158,7 +159,7 @@ export async function expandMentions(text: string, state: ToolState, allowedRoot
     const attached: string[] = [];
     const notices: string[] = [];
     const seen = new Set<string>();
-    for (const { raw, abs } of findMentions(text, state.cwd)) {
+    for (const { raw, abs } of findMentions(withoutReviewQuotes(text), state.cwd)) {
         if (seen.has(abs) || !existsSync(abs)) continue;
         seen.add(abs);
         let st;

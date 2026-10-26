@@ -1,0 +1,110 @@
+/* ---- Project scripts (title line) ----------------------------------- */
+
+/* Run the main script | open the menu: one pill in the title bar's capsule, split by a hairline. */
+.script-split {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    border-radius: var(--pill);
+    transition: background 140ms;
+}
+
+.script-split:has(.script-split-main):hover,
+.script-split.open:has(.script-split-main) {
+    background: var(--hover);
+}
+
+.script-split .script-split-main {
+    max-width: calc(160 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(9 * var(--sp));
+    border-radius: var(--pill) 0 0 var(--pill);
+    font-size: 0.893rem;
+    font-weight: 500;
+}
+
+.script-split .script-split-more {
+    position: relative;
+    min-width: calc(22 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(4 * var(--sp));
+    border-radius: 0 var(--pill) var(--pill) 0;
+}
+
+.script-split .script-split-more::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: calc(8 * var(--sp));
+    bottom: calc(8 * var(--sp));
+    width: 1px;
+    background: var(--line);
+}
+
+.script-split .script-split-main:hover:not(:disabled),
+.script-split .script-split-more:hover:not(:disabled),
+.script-split .script-split-more[aria-expanded="true"] {
+    background: var(--press);
+    color: var(--fg);
+}
+
+.script-split-label {
+    min-width: 0;
+}
+
+.scripts-note {
+    white-space: normal;
+    line-height: 1.45;
+    padding: calc(4 * var(--sp)) calc(8 * var(--sp)) calc(8 * var(--sp));
+}
+
+.scripts-note code {
+    font-size: 0.95em;
+}
+
+/* A script: run it by clicking the row; edit, reorder and delete on hover. */
+.script-row {
+    position: relative;
+}
+
+.script-row .menu-desc {
+    margin-top: 1px;
+}
+
+.script-acts {
+    position: absolute;
+    right: calc(4 * var(--sp));
+    top: 50%;
+    transform: translateY(-50%);
+    display: none;
+    align-items: center;
+    gap: calc(2 * var(--sp));
+}
+
+/* Room for the actions: the command truncates sooner while they show. */
+.script-row:hover .script-run,
+.script-row:focus-within .script-run,
+.script-row.confirming .script-run {
+    background: var(--hover);
+    padding-right: calc(84 * var(--sp));
+}
+
+.script-row.confirming .script-run {
+    padding-right: calc(136 * var(--sp));
+}
+
+.script-row:hover .script-acts,
+.script-row:focus-within .script-acts,
+.script-row.confirming .script-acts {
+    display: flex;
+}
+
+/* The name, and a label on the setup script (the one that runs in each new worktree). */
+.script-name {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+.script-badge {
+    flex: none;
+}
+

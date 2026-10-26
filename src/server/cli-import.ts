@@ -12,7 +12,7 @@ import { projectStateDir } from "../config/paths";
 import { cliLinks, Session, type CliLink } from "../agent/session";
 import { defaultModelFrom, type ProviderListing } from "../providers/models";
 import { getProvider } from "../providers/registry";
-import { account, accountRealPath } from "../providers/accounts";
+import { accountPlace } from "../providers/accounts";
 import { modelRef, parseModelRef, type AssistantMessage } from "../providers/types";
 import type { CliSessionEntry, CliSource, CliTranscript } from "./cli-sessions";
 import { UiLog } from "./history";
@@ -133,7 +133,7 @@ export function writeImportedSession(o: { cwd: string; entry: CliSessionEntry; t
             if (content.length) session.push({ role: "assistant", content, provider: entry.source, model: modelId, stopReason: "end_turn" });
         }
         // The CLI has seen all of it: the next turn resumes its session with just the new prompt.
-        session.setBackendSession(entry.source, entry.id, session.messages.length, accountRealPath(account(entry.source).folder));
+        session.setBackendSession(entry.source, entry.id, session.messages.length, accountPlace(entry.source));
         // Dedup must only see the import once all messages and the resume id are saved.
         session.setImported({ source: entry.source, id: entry.id, startedAt: entry.startedAt, importedAt: Date.now(), messages, omitted: transcript.omitted });
     } catch (e) {

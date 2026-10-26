@@ -4,7 +4,7 @@
 // whichever way it's asked to.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -14,6 +14,7 @@ const { McpManager } = await import("../src/mcp/manager");
 const { loadSettings } = await import("../src/config/settings");
 const { paths } = await import("../src/config/paths");
 const { trustFolder } = await import("../src/config/trust");
+const { claudeMcpPolicy } = await import("../src/backends/claude-mcp-policy");
 import type { McpServerConfig } from "../src/config/settings";
 import type { McpManager as McpManagerT } from "../src/mcp/manager";
 
@@ -535,5 +536,216 @@ describe("line breaks in errors", () => {
         expect(info.error).toBe("server is not running\nfixture told to fail⟨U+0007⟩");
         expect(info.command).toBe("a⟨U+000A⟩b");
         expect(info.args).toEqual(["c⟨U+000A⟩d"]);
+    });
+});
+
+describe("settings that can hold approvals and rejections but can't be read", () => {
+    const userFile = () => paths.userSettings();
+    /** The user's blanket approval for this block only, as the issue's user has it. */
+    async function withBlanketApproval(fn: () => Promise<void>) {
+        const before = existsSync(userFile()) ? readFileSync(userFile(), "utf-8") : undefined;
+        writeFileSync(userFile(), JSON.stringify({ enableAllProjectMcpServers: true }));
+        try { await fn(); } finally {
+            if (before === undefined) rmSync(userFile(), { force: true }); else writeFileSync(userFile(), before);
+        }
+    }
+    // What a broken file holds must never be shown: a parser's message can quote it.
+    const BROKEN = '{"disabledMcpjsonServers": ["rejected"], FAKE_SECRET_99_qz7}';
+
+    test("a local rejection that becomes unreadable keeps its server off under a blanket approval, in Harness and for Claude Code; a missing file doesn't", async () => {
+        await withBlanketApproval(async () => {
+            const dir = folder();
+            const marker = join(dir, "started.txt");
+            writeMcp(dir, { rejected: fixture(marker) });
+            const local = paths.localSettings(dir);
+            mkdirSync(join(dir, ".harness"), { recursive: true });
+            writeFileSync(local, JSON.stringify({ disabledMcpjsonServers: ["rejected"] }));
+            const m = manager(dir);
+            await m.load();
+            await m.startAll();
+            expect({ state: m.servers.get("rejected")?.approval?.state, status: m.servers.get("rejected")?.status }).toEqual({ state: "rejected", status: "disabled" });
+            writeFileSync(local, BROKEN);
+            await m.refresh();
+            await m.startAll();
+            const st = m.servers.get("rejected")!;
+            expect({ approval: st.approval?.state, reason: st.approval?.reason, status: st.status }).toEqual({ approval: "needs-approval", reason: "unreadable", status: "needs-approval" });
+            await Bun.sleep(300);
+            expect(existsSync(marker)).toBe(false);
+            const shown = describeServer(st, dir);
+            expect(shown.why).toContain(local);
+            expect(JSON.stringify(shown)).not.toContain("FAKE_SECRET");
+            expect(Object.keys(m.approvedServers().servers)).not.toContain("rejected");
+            const policy = claudeMcpPolicy(dir, m.approvedServers());
+            expect(policy.settings?.enabledMcpjsonServers).not.toContain("rejected");
+            expect(policy.settings?.disabledMcpjsonServers).toContain("rejected");
+            // Missing is no settings, as before: the blanket approval starts it.
+            rmSync(local);
+            await m.refresh();
+            expect(m.servers.get("rejected")?.approval).toMatchObject({ state: "approved", viaAll: true });
+            await m.startAll();
+            expect(await waitFor(() => existsSync(marker))).toBe(true);
+        });
+    });
+
+    test("every way a file that can hold approvals can't be read keeps project servers waiting, an emptied one too", async () => {
+        await withBlanketApproval(async () => {
+            const dir = folder();
+            const marker = join(dir, "started.txt");
+            writeMcp(dir, { server: fixture(marker) });
+            const local = paths.localSettings(dir);
+            mkdirSync(join(dir, ".harness"), { recursive: true });
+            const m = manager(dir);
+            const user = readFileSync(userFile(), "utf-8");
+            const cases: [string, () => void, string][] = [
+                ["not JSON", () => writeFileSync(local, BROKEN), local],
+                ["not an object", () => writeFileSync(local, "[]"), local],
+                ["a rejection list that isn't a list", () => writeFileSync(local, JSON.stringify({ disabledMcpjsonServers: "server" })), local],
+                ["unreadable", () => { writeFileSync(local, JSON.stringify({ disabledMcpjsonServers: ["server"] })); chmodSync(local, 0o000); }, local],
+                ["a folder in its place", () => mkdirSync(local), local],
+                // Cut short: whatever it held is gone.
+                ["empty", () => writeFileSync(local, ""), local],
+                ["only whitespace", () => writeFileSync(local, "  \n"), local],
+                // The user's own file too: a rejection there would lose to a saved approval or the blanket one.
+                ["the user's settings not JSON", () => writeFileSync(userFile(), "{ enableAllProjectMcpServers: true, FAKE_SECRET_99_qz7"), userFile()],
+            ];
+            for (const [what, breakIt, file] of cases) {
+                breakIt();
+                try {
+                    await m.refresh();
+                    await m.startAll();
+                    expect({ what, approval: m.servers.get("server")?.approval }).toMatchObject({ what, approval: { state: "needs-approval", reason: "unreadable", settingsFile: file } });
+                    expect(m.approvedServers().servers).toEqual({});
+                } finally {
+                    if (existsSync(local)) { chmodSync(local, 0o644); rmSync(local, { recursive: true, force: true }); }
+                    writeFileSync(userFile(), user);
+                }
+            }
+            await Bun.sleep(300);
+            expect(existsSync(marker)).toBe(false);
+        });
+    });
+
+    test("settings loaded while a file was unreadable decide nothing, even once the file is repaired", async () => {
+        await withBlanketApproval(async () => {
+            const dir = folder();
+            writeMcp(dir, { rejected: fixture(join(dir, "started.txt")) });
+            const local = paths.localSettings(dir);
+            mkdirSync(join(dir, ".harness"), { recursive: true });
+            writeFileSync(local, BROKEN);
+            // As the terminal app keeps its settings until it reloads them: loaded while the rejection couldn't be read.
+            let s = loadSettings(dir, { trusted: true });
+            const m = new McpManager(dir, () => s, true, () => (s = loadSettings(dir, { trusted: true })));
+            managers.push(m);
+            writeFileSync(local, JSON.stringify({ disabledMcpjsonServers: ["rejected"] }));
+            await m.load();
+            expect(m.servers.get("rejected")?.approval).toMatchObject({ state: "needs-approval", reason: "unreadable", settingsFile: local });
+            await m.refresh();
+            expect(m.servers.get("rejected")?.approval?.state).toBe("rejected");
+            // Loaded while broken, then repaired without the rejection: what was loaded stays blocked until a refresh.
+            writeFileSync(local, BROKEN);
+            await m.refresh();
+            writeFileSync(local, "{}");
+            expect(m.approvedServers().servers).toEqual({});
+            await m.startAll();
+            await Bun.sleep(300);
+            expect(existsSync(join(dir, "started.txt"))).toBe(false);
+            await m.refresh();
+            expect(m.servers.get("rejected")?.approval).toMatchObject({ state: "approved", viaAll: true });
+        });
+    });
+
+    test("a run's own settings on top keep what was unreadable when they were loaded (mergeSettings, as an SDK or -p run builds them)", async () => {
+        const { mergeSettings } = await import("../src/run-setup");
+        await withBlanketApproval(async () => {
+            const dir = folder();
+            const marker = join(dir, "started.txt");
+            writeMcp(dir, { rejected: fixture(marker) });
+            const local = paths.localSettings(dir);
+            mkdirSync(join(dir, ".harness"), { recursive: true });
+            writeFileSync(local, BROKEN);
+            const settings = mergeSettings(loadSettings(dir, { trusted: true }), { model: "anthropic:claude-sonnet-5-5" });
+            // Repaired, with its rejection, while the run resolves its model: the run's settings still lack the rejection.
+            writeFileSync(local, JSON.stringify({ disabledMcpjsonServers: ["rejected"] }));
+            const m = new McpManager(dir, () => settings, true);
+            managers.push(m);
+            await m.load();
+            expect(m.servers.get("rejected")?.approval).toMatchObject({ state: "needs-approval", reason: "unreadable", settingsFile: local });
+            expect(m.approvedServers().servers).toEqual({});
+            expect(claudeMcpPolicy(dir, m.approvedServers()).settings?.enabledMcpjsonServers).not.toContain("rejected");
+            await m.startAll();
+            await Bun.sleep(300);
+            expect(existsSync(marker)).toBe(false);
+        });
+    });
+
+    test("a rejection in an unreadable user file keeps a server off that the folder's settings approve, before any refresh too", async () => {
+        const dir = folder();
+        const marker = join(dir, "started.txt");
+        const config = fixture(marker);
+        writeMcp(dir, { server: config });
+        // Approved for exactly this configuration in the folder's local settings.
+        saveApproval(dir, "server", mcpFingerprint(config, dir));
+        const before = existsSync(userFile()) ? readFileSync(userFile(), "utf-8") : undefined;
+        writeFileSync(userFile(), "{}");
+        try {
+            const m = manager(dir);
+            await m.load();
+            expect(m.servers.get("server")?.approval?.state).toBe("approved");
+            // The user rejects it in their own settings, and that file breaks. Nothing reloads the manager's settings.
+            writeFileSync(userFile(), '{"disabledMcpjsonServers": ["server"], FAKE_SECRET_99_REVIEW_CONTENT}');
+            expect(m.approvedServers().servers).toEqual({});
+            expect(claudeMcpPolicy(dir, m.approvedServers()).settings?.disabledMcpjsonServers).toContain("server");
+            await m.startAll();
+            await Bun.sleep(300);
+            expect(existsSync(marker)).toBe(false);
+            await m.refresh();
+            expect(m.servers.get("server")?.approval).toMatchObject({ state: "needs-approval", reason: "unreadable", settingsFile: userFile() });
+            await m.startAll();
+            await Bun.sleep(300);
+            expect(existsSync(marker)).toBe(false);
+        } finally {
+            if (before === undefined) rmSync(userFile(), { force: true }); else writeFileSync(userFile(), before);
+        }
+    });
+
+    test("a broken settings file is named in warnings and errors, never quoted", async () => {
+        const { onConfigWarning, updateSettings } = await import("../src/config/settings");
+        const warnings: string[] = [];
+        onConfigWarning((msg) => warnings.push(msg));
+        try {
+            const dir = folder();
+            writeMcp(dir, { server: fixture(join(dir, "started.txt")) });
+            const local = paths.localSettings(dir);
+            mkdirSync(join(dir, ".harness"), { recursive: true });
+            writeFileSync(local, "FAKE_SECRET_99_REVIEW_CONTENT");
+            const m = manager(dir);
+            await m.refresh();
+            expect(warnings.some((w) => w.includes(local))).toBe(true);
+            const e = (() => { try { updateSettings("local", dir, (s) => (s.model = "x")); } catch (err) { return err as Error; } })();
+            expect(e?.message).toContain(local);
+            expect({ warnings: warnings.filter((w) => w.includes("FAKE")), error: e?.message.includes("FAKE") }).toEqual({ warnings: [], error: false });
+        } finally {
+            onConfigWarning((msg) => process.stderr.write(`warning: ${msg}\n`));
+        }
+    });
+
+    test("approving or rejecting never writes over a local file that can't be read or was emptied, and says only which file", async () => {
+        const dir = folder();
+        writeMcp(dir, { server: fixture(join(dir, "started.txt")) });
+        const local = paths.localSettings(dir);
+        mkdirSync(join(dir, ".harness"), { recursive: true });
+        const m = manager(dir);
+        // Emptied too: saving another server's rejection there would make the file look whole without what it lost.
+        for (const content of [BROKEN, "[]", "", "  \n"]) {
+            writeFileSync(local, content);
+            await m.refresh();
+            const fp = m.servers.get("server")!.approval!.fingerprint;
+            for (const act of [() => m.approve("server", fp), () => m.reject("server")]) {
+                const e = await act().then(() => undefined, (err: unknown) => err);
+                expect(e).toBeInstanceOf(McpApprovalError);
+                expect({ code: (e as InstanceType<typeof McpApprovalError>).code, names: (e as Error).message.includes(local), quotes: (e as Error).message.includes("FAKE") }).toEqual({ code: "blocked", names: true, quotes: false });
+                expect(readFileSync(local, "utf-8")).toBe(content);
+            }
+        }
     });
 });

@@ -10,6 +10,7 @@ import { childEnv } from "../util/env";
 import { redact } from "../util/redact";
 import { ProviderError } from "../providers/types";
 import { readAgentConfig } from "../providers/registry";
+import { agentCli } from "./defs";
 
 export interface CliInfo {
     /** Program name on PATH. */
@@ -20,19 +21,15 @@ export interface CliInfo {
     signIn: string;
 }
 
-export const CLAUDE_CLI: CliInfo = {
-    command: "claude",
-    product: "Claude Code",
-    install: "Install Claude Code (https://code.claude.com/docs/en/setup)",
-    signIn: "claude auth login",
-};
+export const CLAUDE_CLI: CliInfo = cliOf("claude-code");
 
-export const CODEX_CLI: CliInfo = {
-    command: "codex",
-    product: "Codex",
-    install: "Install the Codex CLI (npm install -g @openai/codex)",
-    signIn: "codex login",
-};
+export const CODEX_CLI: CliInfo = cliOf("codex");
+
+function cliOf(id: string): CliInfo {
+    const def = agentCli(id);
+    if (!def) throw new Error(`No agent CLI ${id}`);
+    return def.cli;
+}
 
 /** The CLI's path: the one saved with /login (`path`), or the first on PATH. */
 export function findCli(providerId: string, cli: CliInfo): string | undefined {
@@ -104,6 +101,9 @@ export const stopTiming = {
     killMs: 2000,
 };
 
+/** How long after a write that waited on the pipe its process's exit, if that's why it settled, is reported (JsonLinesProcess.send). */
+const EXIT_SEEN_MS = 100;
+
 /** A long-running CLI speaking JSON lines on stdin/stdout. */
 export class JsonLinesProcess {
     private proc: Subprocess<"pipe", "pipe", "pipe">;
@@ -113,12 +113,16 @@ export class JsonLinesProcess {
     private killing = false;
     private reader?: { cancel(): Promise<void> };
     readonly exited: Promise<number>;
+    readonly pid: number;
+    /** Settles once its stderr has ended (and been read). */
+    readonly stderrEnded: Promise<void>;
 
     constructor(bin: string, args: string[], opts: { cwd: string; env?: Record<string, string> }) {
         this.proc = Bun.spawn([bin, ...args], { cwd: opts.cwd, env: { ...childEnv(), ...opts.env }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
         this.exited = this.proc.exited;
+        this.pid = this.proc.pid;
         void this.exited.then(() => (this.gone = true));
-        void this.drainStderr();
+        this.stderrEnded = this.drainStderr();
     }
 
     private async drainStderr() {
@@ -135,13 +139,38 @@ export class JsonLinesProcess {
         return redact(this.err);
     }
 
-    send(obj: unknown) {
-        if (this.closed) return;
+    /**
+     * Write one line to its stdin. True once all of it is written; false when it couldn't be: closed, or the
+     * process went away before taking it all. A line the pipe can't take at once (an image) waits on it: Bun's
+     * write hands back a promise, which rejects with EPIPE when the reader is gone, or settles as it exits
+     * (with what went so far), a moment before the exit is reported. So a write that waited counts only if the
+     * process is still there a moment later (EXIT_SEEN_MS). Calls stay in order: each line is buffered whole
+     * when it's called.
+     */
+    async send(obj: unknown): Promise<boolean> {
+        if (this.closed || this.gone) return false;
+        const sink = this.proc.stdin;
+        const written = (async () => {
+            const w = sink.write(JSON.stringify(obj) + "\n");
+            let waited = w instanceof Promise;
+            await w;
+            for (let i = 0; i < 1000; i++) {
+                const f = sink.flush();
+                const n = await f;
+                if (f instanceof Promise) waited = true;
+                else if (!n) break;
+            }
+            if (!waited) return true;
+            return !(await Promise.race([this.exited.then(() => true), Bun.sleep(EXIT_SEEN_MS).then(() => false)]));
+        })();
         try {
-            this.proc.stdin.write(JSON.stringify(obj) + "\n");
-            this.proc.stdin.flush();
+            // Its exit settles it too, should the pipe's promises never.
+            return await Promise.race([written, this.exited.then(() => false)]);
         } catch {
             // it exited; reading its output says why
+            return false;
+        } finally {
+            written.catch(() => {});
         }
     }
 
@@ -156,34 +185,65 @@ export class JsonLinesProcess {
         }
     }
 
-    /** Each line of stdout that is a JSON object; other lines go with stderr. Ends when stdout does, or after kill(). */
-    async *messages(): AsyncGenerator<Record<string, any>> {
+    /**
+     * Each line of stdout that is a JSON object; other lines go with stderr. Ends when stdout does, or after
+     * kill(). With `quietAfterExitMs`: also once the process has exited and nothing more comes for that long
+     * (a child it started may hold stdout open). Only time spent waiting for output counts, so output already
+     * written is all read, however slowly the caller takes it.
+     */
+    async *messages(o: { quietAfterExitMs?: number } = {}): AsyncGenerator<Record<string, any>> {
         const d = new TextDecoder();
         let buf = "";
         const reader = (this.reader = this.proc.stdout.getReader());
-        while (true) {
-            let r: Awaited<ReturnType<typeof reader.read>>;
-            try {
-                r = await reader.read();
-            } catch {
-                break;
-            }
-            if (r.done) break;
-            buf += d.decode(r.value, { stream: true });
-            let i: number;
-            while ((i = buf.indexOf("\n")) >= 0) {
-                const line = buf.slice(0, i).trim();
-                buf = buf.slice(i + 1);
-                if (!line) continue;
-                let msg: unknown;
+        // One watch for the whole read, not one per chunk (that would hold every chunk until the exit).
+        let waitingSince: number | undefined;
+        let finished = false;
+        let quietTimer: ReturnType<typeof setTimeout> | undefined;
+        const quiet = o.quietAfterExitMs;
+        if (quiet !== undefined) {
+            void this.exited.then(() => {
+                const exitedAt = Date.now();
+                const check = () => {
+                    if (finished) return;
+                    const since = waitingSince === undefined ? undefined : Math.max(waitingSince, exitedAt);
+                    // Gone, and nothing more for that long while we waited: what's still held open won't be read.
+                    if (since !== undefined && Date.now() - since >= quiet) return void reader.cancel().catch(() => {});
+                    quietTimer = setTimeout(check, since === undefined ? quiet : quiet - (Date.now() - since)) as ReturnType<typeof setTimeout>;
+                };
+                check();
+            });
+        }
+        try {
+            while (true) {
+                let r: Awaited<ReturnType<typeof reader.read>>;
                 try {
-                    msg = JSON.parse(line);
+                    waitingSince = Date.now();
+                    r = await reader.read();
                 } catch {
-                    this.err = (this.err + line + "\n").slice(-STDERR_TAIL);
-                    continue;
+                    break;
+                } finally {
+                    waitingSince = undefined;
                 }
-                if (msg && typeof msg === "object" && !Array.isArray(msg)) yield msg as Record<string, any>;
+                if (r.done) break;
+                buf += d.decode(r.value, { stream: true });
+                let i: number;
+                while ((i = buf.indexOf("\n")) >= 0) {
+                    const line = buf.slice(0, i).trim();
+                    buf = buf.slice(i + 1);
+                    if (!line) continue;
+                    let msg: unknown;
+                    try {
+                        msg = JSON.parse(line);
+                    } catch {
+                        this.err = (this.err + line + "\n").slice(-STDERR_TAIL);
+                        continue;
+                    }
+                    if (msg && typeof msg === "object" && !Array.isArray(msg)) yield msg as Record<string, any>;
+                }
             }
+        } finally {
+            finished = true;
+            clearTimeout(quietTimer);
         }
     }
 

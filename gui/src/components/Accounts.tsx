@@ -1,18 +1,29 @@
 import "../styles/accounts.css";
-import { createSignal, createUniqueId, For, onMount, Show } from "solid-js";
-import { MoreHorizontal, Plus } from "lucide-solid";
+import { createEffect, createSignal, createUniqueId, For, onMount, Show } from "solid-js";
+import { Check, ExternalLink, MoreHorizontal } from "lucide-solid";
 import type { AccountInfo, ProviderInfo } from "@shared/protocol";
 import { refreshModels, refreshProviders, rpc } from "../state/app";
-import { terminalActions } from "../state/ui";
+import { addAccountFor, setAddAccountFor, terminalActions } from "../state/ui";
+import { openExternal } from "../lib/platform";
 import { Menu } from "./ui/Menu";
 import { Dialog } from "./ui/Dialog";
+import { ProviderIcon } from "./ui/ProviderIcon";
 import { Spinner } from "./ui/bits";
 
 const message = (e: unknown) => e instanceof Error ? e.message : String(e);
 const nameError = (name: string) => /^[a-zA-Z0-9][a-zA-Z0-9 _.-]{0,63}$/.test(name) && name === name.trim() && !name.includes("..") ? undefined : "Use 1–64 plain characters, starting with a letter or number, without '..'.";
+/** The CLIs report plans in lower case ("max", "plus"). */
+const planLabel = (plan?: string) => plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : undefined;
+/** What's wrong with an account, if anything: signed in says nothing. */
+const accountStatus = (a: AccountInfo) => a.invalid ? "Unavailable" : a.signedIn === false ? "Not signed in" : a.signedIn === undefined ? "Status not checked" : undefined;
 
-/** Status is never persisted: identity comes only from the CLI's own command. */
-export function Accounts(p: { provider: ProviderInfo }) {
+/**
+ * A CLI provider (Claude Code, Codex) in Settings → Providers: one row with
+ * its plan and state, and its accounts as indented rows under it (a lone
+ * account folds into the provider's row). The actions are in ••• menus.
+ * Status is never persisted: identity comes only from the CLI's own command.
+ */
+export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onConnect?: () => void; onTurnOff?: () => void }) {
     const uid = createUniqueId();
     const [adding, setAdding] = createSignal(false);
     const [name, setName] = createSignal("");
@@ -21,29 +32,53 @@ export function Accounts(p: { provider: ProviderInfo }) {
     const [error, setError] = createSignal<{ field: "name" | "folder" | "form"; message: string }>();
     const [actionError, setActionError] = createSignal<string>();
     const [busy, setBusy] = createSignal(false);
+    const [refreshing, setRefreshing] = createSignal(false);
+    /** The open menu: "" for the provider's, else an account's id. */
     const [menu, setMenu] = createSignal<string>();
+    const [help, setHelp] = createSignal(false);
     const [editing, setEditing] = createSignal<string>();
     const [newName, setNewName] = createSignal("");
     const [renameError, setRenameError] = createSignal<string>();
     const [removing, setRemoving] = createSignal<AccountInfo>();
     const [removeError, setRemoveError] = createSignal<string>();
-    let addButton: HTMLButtonElement | undefined;
-    const accounts = () => p.provider.agentCli?.accounts ?? [];
+    let providerMenu: HTMLButtonElement | undefined;
+    const cli = () => p.provider.agentCli;
+    const installed = () => cli()?.installed !== false;
+    const accounts = () => cli()?.accounts ?? [];
+    const isDefault = (a: AccountInfo) => a.id === (cli()?.defaultAccount ?? "default");
+    /** The account new sessions use: its plan is the provider's. */
+    const main = () => accounts().find(isDefault) ?? accounts()[0];
+    /** With one account there's no list: it folds into the provider's row. */
+    const single = () => accounts().length === 1 ? accounts()[0] : undefined;
     const refresh = async () => {
         await rpc.call("accounts.list", { provider: p.provider.id, refresh: true });
         await refreshProviders();
     };
-    onMount(() => { if (p.provider.configured || accounts().length > 1) void refresh().catch((e) => setActionError(message(e))); });
+    onMount(() => { if (installed() && (p.provider.configured || accounts().length > 1)) void refresh().catch((e) => setActionError(message(e))); });
+    let section: HTMLElement | undefined;
+    // "Add account…" in the model picker: open the form here, in view.
+    createEffect(() => {
+        if (addAccountFor() !== p.provider.id) return;
+        setAddAccountFor(undefined);
+        if (!installed()) return;
+        setActionError(undefined);
+        setAdding(true);
+        requestAnimationFrame(() => section?.scrollIntoView({ block: "nearest" }));
+    });
     const work = async (fn: () => Promise<void>, fail = setActionError) => {
         if (busy()) return;
         setBusy(true); fail(undefined);
         try { await fn(); } catch (e) { fail(message(e)); } finally { setBusy(false); }
     };
+    const refreshNow = () => void work(async () => {
+        setRefreshing(true);
+        try { await refresh(); } finally { setRefreshing(false); }
+    });
     const login = (a: AccountInfo) => terminalActions.loginAccount?.(p.provider.id, a.id, `${p.provider.name} · ${a.name}`);
     const cancelAdd = () => {
         if (busy()) return;
         setAdding(false); setName(""); setFolder(""); setError(undefined); setAdvanced(false);
-        addButton?.focus();
+        providerMenu?.focus();
     };
     const escape = (e: KeyboardEvent, close: () => void) => {
         if (e.key !== "Escape") return;
@@ -72,22 +107,102 @@ export function Accounts(p: { provider: ProviderInfo }) {
             setError({ field, message: detail });
         } finally { setBusy(false); }
     };
-    return <section class="accounts" aria-label={`${p.provider.name} accounts`}>
-        <div class="account-toolbar">
-            <span class="small muted">Separate sign-ins for personal and work accounts.</span>
-            <button ref={addButton} class="btn secondary sm" disabled={busy() || adding()} aria-expanded={adding()} aria-controls={`${uid}-add`} onClick={() => { setActionError(undefined); setAdding(true); }}><Plus size={12} /> Add account</button>
+    const choose = (fn: () => void) => { setMenu(undefined); fn(); };
+    /** An account's own actions: in its row's menu, or in the provider's when it's the only one. */
+    const accountItems = (a: AccountInfo) => <>
+        <button class="menu-item" role="menuitem" disabled={busy()} onClick={() => choose(() => login(a))}>{a.signedIn ? "Sign in again" : "Sign in"}</button>
+        <Show when={!isDefault(a)}><button class="menu-item" role="menuitem" disabled={busy()} onClick={() => choose(() => void work(async () => { await rpc.call("accounts.setDefault", { provider: p.provider.id, id: a.id }); await refreshProviders(); }))}>Make default</button></Show>
+        <Show when={a.id !== "default"}>
+            <button class="menu-item" role="menuitem" disabled={busy()} onClick={() => choose(() => { setEditing(a.id); setNewName(a.name); setRenameError(undefined); })}>Rename…</button>
+            <button class="menu-item danger" role="menuitem" disabled={busy()} onClick={() => choose(() => { setRemoveError(undefined); setRemoving(a); })}>Remove…</button>
+        </Show>
+    </>;
+    const renameForm = (a: AccountInfo, back: () => HTMLElement | undefined) => <Show when={editing() === a.id}>
+        <form class="account-rename" aria-label={`Rename ${a.name}`} onKeyDown={(e) => escape(e, () => { if (!busy()) { setEditing(undefined); back()?.focus(); } })} onSubmit={(e) => {
+            e.preventDefault();
+            const invalid = nameError(newName());
+            if (invalid) { setRenameError(invalid); return; }
+            void work(async () => { await rpc.call("accounts.rename", { provider: p.provider.id, id: a.id, name: newName() }); setEditing(undefined); await refreshProviders().catch((e) => setActionError(message(e))); }, setRenameError);
+        }}>
+            <input class="input" autofocus ref={(el) => queueMicrotask(() => { if (el.isConnected) el.focus(); })} aria-label="New account name" aria-invalid={!!renameError()} aria-describedby={renameError() ? `${uid}-rename-error` : undefined} maxLength={64} disabled={busy()} value={newName()} onInput={(e) => { setNewName(e.currentTarget.value); setRenameError(undefined); }} />
+            <button class="btn primary sm" disabled={busy()}>Save</button><button type="button" class="btn ghost sm" disabled={busy()} onClick={() => { setEditing(undefined); back()?.focus(); }}>Cancel</button>
+            <Show when={renameError()}><span id={`${uid}-rename-error`} class="account-error" role="alert">{renameError()}</span></Show>
+        </form>
+    </Show>;
+    // Beside the name: a green dot while it's on, or what's wrong with its one account.
+    const problem = () => {
+        const a = single();
+        return a?.invalid ? "Unavailable" : a?.signedIn === false ? "Not signed in" : undefined;
+    };
+    // Under the name: what's missing, or the one account's email.
+    const sub = () => !installed() ? "Not installed" : !p.provider.configured ? "Not set up" : single()?.email;
+    return <section ref={section} class="cli-prov" aria-label={p.provider.name}>
+        <div class="prov-line">
+            <span class="prov-logo"><ProviderIcon id={p.provider.id} name={p.provider.name} size={18} /></span>
+            <div class="prov-lab">
+                <div class="prov-name">
+                    <span class="truncate">{p.provider.name}</span>
+                    <Show when={planLabel(main()?.plan)}>{(plan) => <span class="tag">{plan()}</span>}</Show>
+                    <Show when={p.provider.configured}>
+                        <Show when={problem()} fallback={<span class="cli-dot" role="img" aria-label="Connected" title="Connected" />}>
+                            <span class="cli-problem">{problem()}</span>
+                        </Show>
+                    </Show>
+                </div>
+                <Show when={sub()}><div class="prov-sub truncate" title={single()?.email ? single()?.description : undefined}>{sub()}</div></Show>
+            </div>
+            <span class="prov-end">
+                <Show when={refreshing()}><Spinner size={12} /></Show>
+                <Show when={!installed() && p.provider.keyUrl}>
+                    <button class="link-btn" onClick={() => void openExternal(p.provider.keyUrl!)}>Install <ExternalLink size={11} /></button>
+                </Show>
+                <Show when={installed() && !p.provider.configured && p.onConnect}>
+                    <button class="btn secondary sm" disabled={p.connecting} onClick={() => p.onConnect!()}>{p.connecting ? <Spinner size={12} /> : `Use my ${cli()?.plan ?? "plan"}`}</button>
+                </Show>
+                <Show when={installed()}>
+                    <button ref={providerMenu} class="hb sm" aria-label={`${p.provider.name} actions`} aria-haspopup="menu" aria-expanded={menu() === ""} onClick={() => setMenu(menu() === "" ? undefined : "")}><MoreHorizontal size={16} /></button>
+                    <Menu open={menu() === ""} anchor={() => providerMenu} onClose={() => setMenu(undefined)} label={`${p.provider.name} actions`} width={220} align="end">
+                        <button class="menu-item" role="menuitem" disabled={busy() || adding()} onClick={() => choose(() => { setActionError(undefined); setAdding(true); })}>Add account…</button>
+                        <Show when={single()} keyed>{(a) => accountItems(a)}</Show>
+                        <button class="menu-item" role="menuitem" disabled={busy()} onClick={() => choose(refreshNow)}>Refresh status</button>
+                        <button class="menu-item" role="menuitem" onClick={() => choose(() => setHelp(true))}>Learn more…</button>
+                        <Show when={p.provider.configured && p.onTurnOff}>
+                            <div class="menu-sep" role="separator" />
+                            <button class="menu-item danger" role="menuitem" onClick={() => choose(() => p.onTurnOff!())}>Turn off…</button>
+                        </Show>
+                    </Menu>
+                </Show>
+            </span>
         </div>
-        <details class="account-help small muted"><summary>Learn more</summary><p>Sign in yourself in the CLI terminal. A new folder has separate settings and history. {p.provider.id === "claude-code" ? "Claude Console sign-in without an API key is stored outside this folder and is not isolated per account." : "A new Codex home does not inherit your settings or MCP servers."}</p></details>
+        <Show when={single()}>{(a) => renameForm(a(), () => providerMenu)}</Show>
+        <Show when={installed() && accounts().length > 1}>
+            <div class="account-list" role="list" aria-label={`${p.provider.name} accounts`}>
+                <For each={accounts()}>{(a) => {
+                    let anchor: HTMLButtonElement | undefined;
+                    // The email names an account best; a named account keeps its name beside it.
+                    const meta = () => [a.email && a.id !== "default" ? a.name : undefined, planLabel(a.plan), accountStatus(a), a.sharing ? "Not all shared" : undefined].filter(Boolean).join(" · ");
+                    return <div class="account-row" role="listitem" classList={{ open: menu() === a.id }}>
+                        <div class="account-identity" title={[a.description, a.sharing].filter(Boolean).join("\n") || undefined}>
+                            <span class="account-name truncate">{a.email ?? a.name}</span>
+                            <Show when={meta()}><span class="account-meta truncate">{meta()}</span></Show>
+                        </div>
+                        <Show when={isDefault(a)}><span class="account-default" role="img" aria-label="Default" title="Used for new sessions"><Check size={14} /></span></Show>
+                        <button ref={anchor} class="hb sm account-more" disabled={busy()} aria-label={`Actions for ${a.name}`} aria-haspopup="menu" aria-expanded={menu() === a.id} onClick={() => setMenu(menu() === a.id ? undefined : a.id)}><MoreHorizontal size={16} /></button>
+                        <Menu open={menu() === a.id} anchor={() => anchor} onClose={() => setMenu(undefined)} label={`${a.name} account actions`} width={200} align="end">{accountItems(a)}</Menu>
+                        {renameForm(a, () => anchor)}
+                    </div>;
+                }}</For>
+            </div>
+        </Show>
         <Show when={adding()}>
             <form id={`${uid}-add`} class="account-form" aria-label="Add account" noValidate aria-busy={busy()} onKeyDown={(e) => escape(e, cancelAdd)} onSubmit={(e) => { e.preventDefault(); void add(); }}>
-                <label for={`${uid}-name`}>Name</label>
-                <input id={`${uid}-name`} class="input" autofocus ref={(el) => queueMicrotask(() => { if (el.isConnected) el.focus(); })} aria-label="Account name" aria-invalid={error()?.field === "name"} aria-describedby={error()?.field === "name" ? `${uid}-name-error` : undefined} value={name()} maxLength={64} disabled={busy()} onInput={(e) => { setName(e.currentTarget.value); setError(undefined); }} placeholder="Personal" />
+                <label for={`${uid}-name`}>New account</label>
+                <input id={`${uid}-name`} class="input" autofocus ref={(el) => queueMicrotask(() => { if (el.isConnected) el.focus(); })} aria-label="Account name" aria-invalid={error()?.field === "name"} aria-describedby={error()?.field === "name" ? `${uid}-name-error` : undefined} value={name()} maxLength={64} disabled={busy()} onInput={(e) => { setName(e.currentTarget.value); setError(undefined); }} placeholder="Work" />
                 <Show when={error()?.field === "name"}><span id={`${uid}-name-error`} class="account-error" role="alert">{error()?.message}</span></Show>
                 <details class="account-advanced" open={advanced()} onToggle={(e) => setAdvanced(e.currentTarget.open)}>
-                    <summary>Advanced: use an existing folder</summary>
-                    <label for={`${uid}-folder`}>Existing folder (optional)</label>
+                    <summary>Use an existing folder</summary>
                     <input id={`${uid}-folder`} class="input mono" aria-label="Account folder" aria-invalid={error()?.field === "folder"} aria-describedby={`${uid}-folder-help${error()?.field === "folder" ? ` ${uid}-folder-error` : ""}`} value={folder()} maxLength={1024} disabled={busy()} onInput={(e) => { setFolder(e.currentTarget.value); setError(undefined); }} placeholder="/path/to/cli-home" />
-                    <span id={`${uid}-folder-help`} class="small muted">Leave blank to let Harness create a separate account folder.</span>
+                    <span id={`${uid}-folder-help`} class="account-hint">Leave blank and Harness makes a folder that shares Default's settings and history. An existing folder is used as it is.</span>
                     <Show when={error()?.field === "folder"}><span id={`${uid}-folder-error`} class="account-error" role="alert">{error()?.message}</span></Show>
                 </details>
                 <Show when={error()?.field === "form"}><span class="account-error" role="alert">{error()?.message}</span></Show>
@@ -97,41 +212,14 @@ export function Accounts(p: { provider: ProviderInfo }) {
                 </div>
             </form>
         </Show>
-        <div class="account-list">
-            <For each={accounts()}>{(a) => {
-                let anchor: HTMLButtonElement | undefined;
-                const choose = (fn: () => void) => { setMenu(undefined); fn(); };
-                return <div class="account-row">
-                    <div class="account-identity">
-                        <div class="account-title"><strong>{a.name}</strong><Show when={a.id === (p.provider.agentCli?.defaultAccount ?? "default")}><span class="chip tiny" title="Used for new sessions">Default for new sessions</span></Show></div>
-                        <div class="small muted account-status" title={a.description}>{a.invalid ? "Unavailable" : a.signedIn === true ? "Signed in" : a.signedIn === false ? "Not signed in" : "Status not checked"}{a.email ? ` · ${a.email}` : ""}{a.plan ? ` · ${a.plan}` : ""}</div>
-                    </div>
-                    <button ref={anchor} class="hb sm" disabled={busy()} aria-label={`Actions for ${a.name}`} aria-haspopup="menu" aria-expanded={menu() === a.id} onClick={() => setMenu(menu() === a.id ? undefined : a.id)}><MoreHorizontal size={16} /></button>
-                    <Menu open={menu() === a.id} anchor={() => anchor} onClose={() => setMenu(undefined)} label={`${a.name} account actions`} width={220} align="end">
-                        <button class="menu-item" role="menuitem" disabled={busy()} onClick={() => choose(() => login(a))}>{a.signedIn ? "Re-sign in" : "Sign in"}</button>
-                        <Show when={a.id !== (p.provider.agentCli?.defaultAccount ?? "default")}><button class="menu-item" role="menuitem" disabled={busy()} onClick={() => choose(() => void work(async () => { await rpc.call("accounts.setDefault", { provider: p.provider.id, id: a.id }); await refreshProviders(); }))}>Use for new sessions</button></Show>
-                        <Show when={a.id !== "default"}>
-                            <button class="menu-item" role="menuitem" disabled={busy()} onClick={() => choose(() => { setEditing(a.id); setNewName(a.name); setRenameError(undefined); })}>Rename</button>
-                            <button class="menu-item danger" role="menuitem" disabled={busy()} onClick={() => choose(() => { setRemoveError(undefined); setRemoving(a); })}>Remove</button>
-                        </Show>
-                    </Menu>
-                    <Show when={editing() === a.id}>
-                        <form class="account-rename" aria-label={`Rename ${a.name}`} onKeyDown={(e) => escape(e, () => { if (!busy()) { setEditing(undefined); anchor?.focus(); } })} onSubmit={(e) => {
-                            e.preventDefault();
-                            const invalid = nameError(newName());
-                            if (invalid) { setRenameError(invalid); return; }
-                            void work(async () => { await rpc.call("accounts.rename", { provider: p.provider.id, id: a.id, name: newName() }); setEditing(undefined); await refreshProviders().catch((e) => setActionError(message(e))); }, setRenameError);
-                        }}>
-                            <input class="input" autofocus ref={(el) => queueMicrotask(() => { if (el.isConnected) el.focus(); })} aria-label="New account name" aria-invalid={!!renameError()} aria-describedby={renameError() ? `${uid}-rename-error` : undefined} maxLength={64} disabled={busy()} value={newName()} onInput={(e) => { setNewName(e.currentTarget.value); setRenameError(undefined); }} />
-                            <button class="btn primary sm" disabled={busy()}>Save</button><button type="button" class="btn ghost sm" disabled={busy()} onClick={() => { setEditing(undefined); anchor?.focus(); }}>Cancel</button>
-                            <Show when={renameError()}><span id={`${uid}-rename-error`} class="account-error" role="alert">{renameError()}</span></Show>
-                        </form>
-                    </Show>
-                </div>;
-            }}</For>
-        </div>
-        <div class="account-actions"><button class="link-btn small" disabled={busy()} onClick={() => void work(refresh)}>Refresh status</button></div>
-        <Show when={actionError()}><span class="account-error" role="alert">{actionError()}</span></Show>
+        <Show when={actionError()}><span class="account-error account-note" role="alert">{actionError()}</span></Show>
+        <Dialog open={help()} onClose={() => setHelp(false)} title={`${p.provider.name} accounts`} width={420}>
+            <p>Add an account to keep separate sign-ins, for example personal and work. Each one signs in on its own in the CLI terminal.</p>
+            <p>{p.provider.id === "claude-code"
+                ? "A folder Harness makes links Default's settings, CLAUDE.md, rules, skills, agents, commands, plugins and history, so only the sign-in differs; settings.json isn't shared while it sets a sign-in (an API key, apiKeyHelper or cloud provider). MCP servers added for your user are kept with each sign-in and are not shared. Claude Console sign-in without an API key is stored outside this folder and is not isolated per account."
+                : "A folder Harness makes links everything in Default's Codex home, including config.toml, MCP servers, skills and history, except the sign-in (auth.json and secrets), the model list and .env."}</p>
+            <p>An existing folder you choose is used as it is, with nothing linked.</p>
+        </Dialog>
         <Show when={removing()}>{(a) => <Dialog open onClose={() => { if (!busy()) setRemoving(undefined); }} title={`Remove ${a().name}?`} width={460}>
             <p>{a().managed && !a().invalid ? "Delete the Harness-created folder" : "Forget this account and leave its folder untouched"}: <code class="account-path">{a().folder}</code>?</p>
             <p>Removing an account does not revoke its sign-in. To sign out first, run <code>{p.provider.id === "codex" ? "codex logout" : "claude auth logout"}</code> with this account's folder.</p>

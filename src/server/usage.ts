@@ -63,11 +63,11 @@ export async function usageSummary(days: UsageDays, now = Date.now(), limits: Pl
         v.unknown = r.unknown || (estimate.unknown && !r.cost);
         v.planEquivalent = source === "api" ? 0 : v.cost;
         if (parts && !r.unknown) {
-            const sum = parts.input + parts.output + parts.cacheRead + parts.cacheWrite;
+            const sum = parts.input + parts.output + parts.cacheRead + parts.cacheWrite + parts.webSearch;
             const scale = sum > 0 ? v.cost / sum : 0;
             for (const k of ["input", "output", "cacheRead", "cacheWrite"] as const) v.costByType[k] = parts[k] * scale;
             v.cacheSavings = parts.cacheSavings;
-            if (!sum) v.costByType.unallocated = v.cost;
+            v.costByType.unallocated = sum ? parts.webSearch * scale : v.cost;
         } else v.costByType.unallocated = v.cost;
         return v;
     };
@@ -80,9 +80,10 @@ export async function usageSummary(days: UsageDays, now = Date.now(), limits: Pl
             if (aggregated && aggregated % 2000 === 0) await new Promise<void>(resolve => setImmediate(resolve));
             if (aggregated++ % 1000 === 0 && Date.now() - aggregationStart > 4000) { scan.truncated ??= "Aggregating the sessions took too long; some usage is left out."; break outer; }
             if (r.at < since || r.at > now) continue;
-            const session = JSON.stringify([f.source, f.account, r.session]);
+            // By the folder read (scope), not the account: one thread can be under two accounts sharing it (#428).
+            const session = JSON.stringify([f.source, f.scope, r.session]);
             if (r.dedupe) {
-                const key = JSON.stringify([f.source, f.account, f.source === "codex" ? r.session : "", r.dedupe]);
+                const key = JSON.stringify([f.source, f.scope, f.source === "codex" ? r.session : "", r.dedupe]);
                 if (seen.has(key)) continue;
                 seen.add(key);
             }

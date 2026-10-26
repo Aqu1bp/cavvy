@@ -1,0 +1,955 @@
+/* ---- Settings: a page, with its sections where the sidebar was ----------- */
+
+.set-back-wrap {
+    padding: 0 calc(8 * var(--sp));
+}
+
+.set-back {
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    width: 100%;
+    height: calc(32 * var(--sp));
+    padding: 0 calc(10 * var(--sp));
+    border-radius: calc(8 * var(--sp));
+    font-size: 0.964rem;
+    font-weight: 500;
+    color: var(--fg-2);
+}
+
+.set-back:hover {
+    background: var(--hover);
+    color: var(--fg);
+}
+
+.set-back kbd {
+    margin-left: auto;
+    background: none;
+    color: var(--fg-3);
+}
+
+.set-tabs {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: calc(10 * var(--sp)) calc(8 * var(--sp)) 0;
+}
+
+.navi {
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    width: 100%;
+    height: calc(34 * var(--sp));
+    padding: 0 calc(10 * var(--sp));
+    border-radius: calc(8 * var(--sp));
+    font-size: 0.964rem;
+    font-weight: 500;
+    color: var(--fg-2);
+}
+
+.navi:hover {
+    background: var(--hover);
+    color: var(--fg);
+}
+
+.navi.on {
+    background: var(--sheet-2);
+    color: var(--fg);
+}
+
+/* ---- MCP servers dialog ---- */
+
+/* Lines up with the icon column of the rows above. */
+.prow .mcp-spacer {
+    width: calc(16 * var(--sp));
+    flex: none;
+}
+
+
+/* ---- Settings pages (the mockup's "Settings") -----------------------------
+   A centred column on the sheet; a header that stays while the page scrolls;
+   settings in grouped rounded lists: title and description on the left, the
+   control on the right. */
+
+.settings-page {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    background: var(--sheet);
+}
+
+/* Opening Settings: the page fades and rises in, the mockup's 280ms
+   whatever Settings → Panel animations says. It mounts once per opening,
+   so switching sections doesn't replay it; closing is instant, as in the
+   mockup. (Its content, over the page's own opaque sheet, which hides
+   the session kept under it from the first frame.) */
+.settings-page > .set-in {
+    animation: settings-in 280ms var(--ease);
+}
+
+@keyframes settings-in {
+    from {
+        opacity: 0;
+        transform: translateY(4px);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .settings-page > .set-in {
+        animation: none;
+    }
+}
+
+.set-in {
+    max-width: calc(680 * var(--sp));
+    margin: 0 auto;
+    padding: 0 calc(28 * var(--sp)) calc(60 * var(--sp));
+}
+
+.set-top {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    height: calc(58 * var(--sp));
+    padding-top: calc(12 * var(--sp));
+    margin-bottom: calc(18 * var(--sp));
+    background: var(--sheet);
+    box-shadow: 0 10px 12px -12px var(--sheet);
+}
+
+.set-top h2 {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    font-size: 1.429rem;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.set-close {
+    display: inline-grid;
+    place-items: center;
+    width: calc(28 * var(--sp));
+    height: calc(28 * var(--sp));
+    flex: none;
+    border-radius: var(--pill);
+    color: var(--fg-2);
+    transition: background 140ms, color 140ms, transform 160ms var(--ease);
+}
+
+.set-close:hover {
+    background: var(--hover);
+    color: var(--fg);
+}
+
+.set-close:active {
+    transform: scale(0.94);
+    background: var(--press);
+}
+
+/* Sections as pills, for when there's no sidebar showing their list. */
+.set-pills {
+    display: none;
+    gap: calc(4 * var(--sp));
+    margin: calc(-6 * var(--sp)) 0 calc(16 * var(--sp));
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.set-pills::-webkit-scrollbar {
+    display: none;
+}
+
+.set-pills button {
+    flex: none;
+    height: calc(28 * var(--sp));
+    padding: 0 calc(12 * var(--sp));
+    border-radius: var(--pill);
+    color: var(--fg-3);
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.set-pills button:hover:not(.on) {
+    color: var(--fg-2);
+}
+
+.set-pills button.on {
+    background: var(--sheet-2);
+    color: var(--fg);
+}
+
+/* No sidebar (hidden, or a drawer below 900px): the header drops below the
+   window controls, and the sections show as pills under it. */
+.settings-page.rail-off .set-top {
+    height: calc(96 * var(--sp));
+    padding-top: calc(50 * var(--sp));
+}
+
+.settings-page.rail-off .set-pills {
+    display: flex;
+}
+
+@media (max-width: 899px) {
+    .settings-page .set-top {
+        height: calc(96 * var(--sp));
+        padding-top: calc(50 * var(--sp));
+    }
+
+    .settings-page .set-pills {
+        display: flex;
+    }
+}
+
+.set-h {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    margin: calc(22 * var(--sp)) calc(4 * var(--sp)) calc(8 * var(--sp));
+    font-size: 0.857rem;
+    font-weight: 600;
+    color: var(--fg-3);
+}
+
+.set-pills + .set-h,
+.set-top + .set-pills + .set-h,
+.set-pills + .ap > .set-h:first-child {
+    margin-top: 0;
+}
+
+.set-group {
+    border-radius: var(--r-card);
+    background: var(--group);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+    overflow: hidden;
+}
+
+.set-group + .set-group {
+    margin-top: calc(12 * var(--sp));
+}
+
+.set-row {
+    display: flex;
+    align-items: center;
+    gap: calc(16 * var(--sp));
+    min-height: calc(52 * var(--sp));
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
+}
+
+.set-row + .set-row {
+    border-top: 0.5px solid var(--line);
+}
+
+.set-lab {
+    flex: 1;
+    min-width: 0;
+}
+
+.set-title {
+    font-weight: 500;
+}
+
+.set-desc {
+    margin-top: calc(2 * var(--sp));
+    font-size: 0.857rem;
+    line-height: 1.4;
+    color: var(--fg-3);
+    overflow-wrap: anywhere;
+}
+
+.set-desc code,
+.set-note code {
+    font-size: 0.9em;
+}
+
+.set-ctl {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex: none;
+    max-width: 60%;
+    min-width: 0;
+}
+
+.set-reset {
+    display: grid;
+    place-items: center;
+    width: calc(24 * var(--sp));
+    height: calc(24 * var(--sp));
+    flex: none;
+    margin-left: calc(-8 * var(--sp));
+}
+
+/* With nothing to reset, the control keeps the row's edge like its neighbours.
+   (Appearance keeps the column on every row, so its controls line up.) */
+.set-group:not(.ap-group) .set-reset:empty {
+    display: none;
+}
+
+.set-val {
+    color: var(--fg-3);
+    font: 0.857rem var(--font-mono);
+    text-align: right;
+    overflow-wrap: anywhere;
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+.set-note {
+    margin: calc(10 * var(--sp)) calc(4 * var(--sp)) 0;
+    font-size: 0.857rem;
+    line-height: 1.5;
+    color: var(--fg-3);
+}
+
+/* Reasoning effort: the level's name, then the composer's bars, smaller (mockup .set-effort). */
+.set-effort {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(12 * var(--sp));
+    flex: none;
+}
+
+.set-effort-l {
+    min-width: calc(70 * var(--sp));
+    text-align: right;
+    font-weight: 500;
+    color: var(--fg);
+    white-space: nowrap;
+}
+
+.set-effort .es {
+    width: calc(120 * var(--sp));
+}
+
+/* A native select drawn as a small raised button, with a glyph before its value. */
+.selbtn {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    min-width: 0;
+    max-width: calc(260 * var(--sp));
+}
+
+.selbtn .select {
+    height: calc(28 * var(--sp));
+    max-width: calc(260 * var(--sp));
+    padding: 0 calc(26 * var(--sp)) 0 calc(10 * var(--sp));
+    border: 0;
+    border-radius: calc(8 * var(--sp));
+    background-color: var(--sheet);
+    box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px var(--line);
+    color: var(--fg);
+    font-size: 0.929rem;
+    font-weight: 500;
+    text-overflow: ellipsis;
+    transition: box-shadow 140ms;
+}
+
+.selbtn.has-ic .select {
+    padding-left: calc(32 * var(--sp));
+}
+
+.selbtn .select:hover {
+    box-shadow: 0 0 0 0.5px var(--fg-4), 0 1px 2px var(--line);
+}
+
+.selbtn .select:focus,
+.selbtn .select:focus-visible {
+    border: 0;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.selbtn .select {
+    background-image: none;
+}
+
+.selbtn-chev {
+    position: absolute;
+    right: calc(8 * var(--sp));
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--fg-3);
+    pointer-events: none;
+}
+
+.selbtn-ic {
+    position: absolute;
+    left: calc(10 * var(--sp));
+    top: 50%;
+    display: grid;
+    place-items: center;
+    transform: translateY(-50%);
+    color: var(--fg-2);
+    pointer-events: none;
+}
+
+/* ---- Settings → Providers ------------------------------------------- */
+
+.keyin {
+    display: flex;
+    gap: calc(8 * var(--sp));
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
+}
+
+.settings-page .keyin .input,
+.settings-page .prov-add .input,
+.settings-page .prov-quick .input {
+    flex: 1;
+    min-width: 0;
+    height: calc(30 * var(--sp));
+    border-radius: calc(8 * var(--sp));
+    font: 0.857rem var(--font-mono);
+}
+
+.prov-group {
+    overflow: visible;
+}
+
+.prov + .prov {
+    border-top: 0.5px solid var(--line);
+}
+
+.prov-line {
+    display: flex;
+    align-items: center;
+    gap: calc(12 * var(--sp));
+    min-height: calc(52 * var(--sp));
+    padding: calc(11 * var(--sp)) calc(14 * var(--sp));
+}
+
+.prov-logo {
+    display: grid;
+    place-items: center;
+    width: calc(28 * var(--sp));
+    height: calc(28 * var(--sp));
+    flex: none;
+    border-radius: calc(8 * var(--sp));
+    background: var(--sheet);
+    box-shadow: 0 0 0 0.5px var(--line);
+    color: var(--fg);
+}
+
+.prov-lab {
+    flex: 1;
+    min-width: 0;
+}
+
+.prov-name {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+    font-weight: 500;
+}
+
+.prov-sub {
+    margin-top: 1px;
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+.prov-key {
+    font: 0.821rem var(--font-mono);
+    color: var(--fg-3);
+}
+
+.prov-end {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: calc(8 * var(--sp));
+    flex: none;
+    max-width: 55%;
+}
+
+.tag {
+    padding: calc(2 * var(--sp)) calc(6 * var(--sp));
+    border-radius: var(--pill);
+    background: var(--hover);
+    color: var(--fg-3);
+    font-size: 0.75rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.tag.ok {
+    color: var(--ok);
+    background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+.prov-add {
+    display: flex;
+    gap: calc(8 * var(--sp));
+    padding: 0 calc(14 * var(--sp)) calc(12 * var(--sp)) calc(54 * var(--sp));
+}
+
+/* The marketplace field on the Plugins page: a field in a rounded group. */
+.prov-quick {
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
+    border-radius: calc(12 * var(--sp));
+    background: var(--group);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+}
+
+.prov-quick > svg {
+    flex: none;
+    color: var(--fg-3);
+}
+
+/* ---- Settings → Shortcuts ------------------------------------------- */
+
+/* Several bindings for one action sit apart; a sequence's strokes closer. */
+.sc-keys {
+    display: inline-flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    align-items: center;
+    gap: calc(6 * var(--sp)) calc(12 * var(--sp));
+}
+
+/* Key caps: 12.5px, raised a little off the group. */
+.sc-keys kbd {
+    height: auto;
+    min-width: calc(24 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(8 * var(--sp));
+    border-radius: calc(6 * var(--sp));
+    background: var(--sheet);
+    box-shadow: 0 0 0 0.5px var(--line), 0 1px 0 var(--line);
+    color: var(--fg-2);
+    font-size: 0.893rem;
+    text-align: center;
+}
+
+.sc-seq {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
+}
+
+.sc-then,
+.sc-none {
+    font-size: 0.786rem;
+    color: var(--fg-3);
+}
+
+.sc-custom {
+    padding: calc(2 * var(--sp)) calc(7 * var(--sp));
+    border-radius: var(--pill);
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.sc-action {
+    font-size: 0.786rem;
+    color: var(--fg-3);
+    user-select: all;
+    -webkit-user-select: all;
+}
+
+.sc-file-actions {
+    display: inline-flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: calc(6 * var(--sp));
+}
+
+.sc-issues {
+    margin-top: calc(12 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
+    border-radius: calc(12 * var(--sp));
+    background: var(--warn-bg);
+    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--warn) 40%, transparent);
+    font-size: 0.857rem;
+    line-height: 1.5;
+}
+
+.sc-issues-title {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    font-weight: 600;
+    color: var(--warn);
+}
+
+.sc-issues ul {
+    margin: calc(6 * var(--sp)) 0 0;
+    padding-left: calc(20 * var(--sp));
+}
+
+.sc-issues li {
+    overflow-wrap: anywhere;
+}
+
+.sc-level {
+    font-weight: 600;
+}
+
+.sc-issues li.error .sc-level {
+    color: var(--danger);
+}
+
+/* Narrow: tighter margins; a row's control drops under its text when they don't fit side by side. */
+:where(.main[data-narrow~="520"]) {
+    .set-in {
+        padding: 0 calc(16 * var(--sp)) calc(50 * var(--sp));
+    }
+
+    .set-row,
+    .prov-line {
+        flex-wrap: wrap;
+    }
+
+    .set-ctl,
+    .prov-end {
+        max-width: 100%;
+    }
+
+    .prov-add {
+        padding-left: calc(14 * var(--sp));
+    }
+}
+
+
+/* ---- Appearance ---------------------------------------------------------
+   Settings → Appearance, from the mockup's Settings rules: grouped rounded
+   lists, scheme tiles with a picture of the window, accent swatches,
+   segmented controls, a text-size stepper with a preview. */
+
+.ap > .set-h {
+    margin: calc(24 * var(--sp)) calc(4 * var(--sp)) calc(8 * var(--sp));
+    padding: 0;
+    font-size: 0.857rem;
+    font-weight: 600;
+    color: var(--fg-3);
+}
+
+.ap-group {
+    background: var(--group);
+    border-radius: var(--r-card);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+    overflow: hidden;
+}
+
+.ap-group > .set-row {
+    min-height: calc(52 * var(--sp));
+    padding: calc(12 * var(--sp)) calc(8 * var(--sp)) calc(12 * var(--sp)) calc(14 * var(--sp));
+    gap: calc(12 * var(--sp));
+    border-bottom: 0;
+}
+
+.ap-group > .set-row + .set-row {
+    border-top: 0.5px solid var(--line);
+}
+
+.ap-group .set-title {
+    font-size: 0.929rem;
+    font-weight: 500;
+    color: var(--fg);
+}
+
+.ap-group .set-desc {
+    margin-top: calc(2 * var(--sp));
+    font-size: 0.857rem;
+    line-height: 1.4;
+    color: var(--fg-3);
+}
+
+/* Colour scheme: System, Light, Dark. */
+.ap-tiles {
+    display: flex;
+    gap: calc(12 * var(--sp));
+    padding: calc(14 * var(--sp));
+}
+
+.ap-tile {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    font-size: 0.929rem;
+    font-weight: 500;
+    color: var(--fg-2);
+}
+
+.ap-tile.on {
+    color: var(--fg);
+}
+
+.ap-pv {
+    position: relative;
+    width: calc(112 * var(--sp));
+    height: calc(72 * var(--sp));
+    border-radius: calc(10 * var(--sp));
+    overflow: hidden;
+    box-shadow: 0 0 0 0.5px var(--line);
+    transition: box-shadow 200ms;
+}
+
+.ap-tile:hover:not(.on) .ap-pv {
+    box-shadow: 0 0 0 0.5px var(--fg-4);
+}
+
+.ap-tile.on .ap-pv {
+    box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* One face per scheme, drawn with that scheme's tokens (its own data-theme). */
+.ap-face {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    grid-template-columns: 30% 1fr;
+    gap: calc(4 * var(--sp));
+    padding: calc(5 * var(--sp));
+    background: var(--backdrop);
+}
+
+.ap-face.half {
+    clip-path: inset(0 0 0 50%);
+}
+
+.ap-face i,
+.ap-face u {
+    display: block;
+    border-radius: calc(5 * var(--sp));
+}
+
+.ap-face i {
+    background: var(--rail-sel);
+}
+
+.ap-face u {
+    background: var(--sheet);
+}
+
+/* Window tint: Clear, Ocean, Accent. Each face is the window as tokens.css
+   draws it (the tint over the window tint over the backdrop), smaller tiles
+   than the scheme's as they sit in a row. */
+.ap-tint-tiles {
+    gap: calc(10 * var(--sp));
+    padding: 0;
+}
+
+.ap-tint-tiles .ap-pv {
+    width: calc(76 * var(--sp));
+    height: calc(50 * var(--sp));
+    border-radius: calc(8 * var(--sp));
+}
+
+.ap-face.ap-tint {
+    padding: calc(4 * var(--sp));
+    gap: calc(3 * var(--sp));
+    background: var(--win-wash), linear-gradient(var(--win-tint), var(--win-tint)), var(--tint-backdrop);
+}
+
+.ap-face.ap-tint i,
+.ap-face.ap-tint u {
+    border-radius: calc(4 * var(--sp));
+}
+
+/* The rail is the tint itself, with one selected row on it. */
+.ap-face.ap-tint i {
+    background: linear-gradient(var(--rail-sel), var(--rail-sel)) 0 5px / 100% 7px no-repeat;
+}
+
+/* Accent. */
+.ap-swatches {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: calc(8 * var(--sp));
+}
+
+.ap-swatches button {
+    width: calc(20 * var(--sp));
+    height: calc(20 * var(--sp));
+    border-radius: 50%;
+    flex: none;
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.ap-swatches button.on {
+    outline: 2px solid var(--fg);
+    outline-offset: 2px;
+}
+
+/* Window, Contrast, Density, Chat width, Panel animations. */
+.ap .segmented {
+    display: inline-flex;
+    gap: 0;
+    padding: calc(3 * var(--sp));
+    border-radius: var(--pill);
+    background: var(--sheet-2);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+}
+
+.ap .segmented button,
+.ap .segmented.seg-sm button {
+    height: calc(26 * var(--sp));
+    padding: 0 calc(12 * var(--sp));
+    border-radius: var(--pill);
+    font-size: 0.929rem;
+    font-weight: 500;
+    color: var(--fg-3);
+    transition: background 200ms var(--ease), color 200ms, box-shadow 200ms;
+}
+
+.ap .segmented button.on {
+    background: var(--seg-on);
+    color: var(--fg);
+    box-shadow: 0 0 0 0.5px var(--line), var(--shadow-sm);
+}
+
+.ap .segmented button:hover:not(.on) {
+    color: var(--fg-2);
+}
+
+/* Text size. */
+.ap-stepper {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(2 * var(--sp));
+    padding: calc(2 * var(--sp));
+    border-radius: var(--pill);
+    background: var(--sheet);
+    box-shadow: 0 0 0 0.5px var(--line);
+}
+
+.ap-stepper .hb {
+    border-radius: var(--pill);
+}
+
+.ap-stepper .num {
+    min-width: calc(44 * var(--sp));
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    font-weight: 500;
+}
+
+/* Reads at the chosen size: 1rem is the text size. */
+.ap-preview {
+    padding: calc(14 * var(--sp));
+    font-size: 1rem;
+    line-height: 1.6;
+    color: var(--fg);
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+.ap-preview code {
+    font-family: var(--font-mono);
+    font-size: 0.86em;
+    padding: 1px calc(5 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    background: var(--sheet-2);
+}
+
+:where(.main[data-narrow~="520"]) {
+    .ap-tiles {
+        flex-wrap: wrap;
+    }
+
+    .ap-pv {
+        width: calc(88 * var(--sp));
+        height: calc(58 * var(--sp));
+    }
+}
+
+/* ---- About: updates from main (Settings.tsx Updates) ------------------- */
+
+/* While it builds, the line it last printed: one line, the build's own words. */
+.upd-row.running .set-desc {
+    font-family: var(--font-mono);
+    font-size: 0.786rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.upd-row .btn svg {
+    margin-right: calc(2 * var(--sp));
+}
+
+.upd-spin {
+    color: var(--fg-3);
+}
+
+.upd-warn {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    margin-top: calc(-4 * var(--sp));
+    padding: 0 calc(14 * var(--sp)) calc(12 * var(--sp));
+    font-size: 0.821rem;
+    color: var(--warn);
+}
+
+.upd-changes {
+    margin: 0;
+    padding: calc(10 * var(--sp)) calc(14 * var(--sp)) calc(12 * var(--sp));
+    list-style: none;
+    border-top: 0.5px solid var(--line);
+}
+
+.upd-changes li {
+    display: flex;
+    align-items: baseline;
+    gap: calc(10 * var(--sp));
+    min-width: 0;
+    padding: calc(3 * var(--sp)) 0;
+    font-size: 0.857rem;
+    color: var(--fg-2);
+}
+
+.upd-changes code {
+    flex: none;
+    font: 0.786rem var(--font-mono);
+    color: var(--fg-3);
+}
+
+.upd-changes .upd-more {
+    padding-left: calc(62 * var(--sp));
+    color: var(--fg-3);
+}
+
+.upd-error {
+    display: flex;
+    align-items: flex-start;
+    gap: calc(8 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(14 * var(--sp));
+    border-top: 0.5px solid var(--line);
+    font-size: 0.857rem;
+    line-height: 1.4;
+    color: var(--danger);
+    overflow-wrap: anywhere;
+}
+
+.upd-error > svg {
+    flex: none;
+    margin-top: calc(2 * var(--sp));
+}
+
+.upd-error > span {
+    flex: 1;
+    min-width: 0;
+}
+
+.upd-error .btn {
+    flex: none;
+    margin-top: calc(-3 * var(--sp));
+}

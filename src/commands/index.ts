@@ -5,6 +5,7 @@ import { join, resolve } from "path";
 import { spawnSync } from "bun";
 import type { App, QueuedDraft } from "../ui/app";
 import type { Draft } from "../ui/editor";
+import { describeTask } from "../agent/background";
 import { renderTodos } from "../ui/app";
 import { InputDialog, MessageDialog, SelectDialog } from "../ui/dialogs";
 import { bold, padEnd, termCols, theme, truncate, width } from "../ui/ansi";
@@ -12,7 +13,7 @@ import { formatDuration, type SelectItem } from "../ui/components";
 import { renderMarkdown } from "../ui/markdown";
 import { notificationMode, notifyAfterMs } from "../ui/notify";
 import { APP_TITLE, APP_VERSION, paths } from "../config/paths";
-import { EFFORT_LEVELS, JsonFileError, loadScope, removePermissionRule, addPermissionRule, settingsPath, updateSettings, readJson, readJsonForUpdate, sandboxSwitch, type Effort, type SettingsScope, type Settings } from "../config/settings";
+import { EFFORT_LEVELS, JsonFileError, loadScope, removePermissionRule, addPermissionRule, settingsPath, updateSettings, readJson, readJsonForUpdate, sandboxSwitch, hookConfigWarnings, type Effort, type SettingsScope, type Settings } from "../config/settings";
 import { agentProjectConfig, isTrusted, trustedByUser, trustFolder } from "../config/trust";
 import { MODE_INFO, PERMISSION_MODES, parseMode, type PermissionMode } from "../permissions/modes";
 import { parseRule } from "../permissions/rules";
@@ -40,7 +41,7 @@ import {
 import { GcloudError } from "../providers/vertex";
 import { checkVertex, enableVertexApi, gcloudAccounts, gcloudProjects, type VertexCheck } from "../auth/gcloud";
 import { forgetClient, defaultModelFrom, type ProviderListing } from "../providers/models";
-import { modelRef, parseModelRef, textOf, type ModelInfo } from "../providers/types";
+import { continuationGroups, modelRef, parseModelRef, textOf, type ModelInfo } from "../providers/types";
 import { formatCost, formatPrice, formatTokens, formatUsd } from "../providers/pricing";
 import { attachmentsNote } from "../providers/files";
 import { getKey, removeKey, setKey, storageDescription } from "../auth/credentials";
@@ -49,8 +50,9 @@ import { maskKey, redact } from "../util/redact";
 import { listSessions, findSession, type Session } from "../agent/session";
 import { forkSession, forkTargets } from "../agent/fork";
 import { forkUiLog } from "../server/history";
-import { loadMemory } from "../agent/memory";
+import { budgetNotice, loadMemory } from "../agent/memory";
 import { BUILTIN_AGENTS, loadAgents } from "../agent/agents";
+import { claudeModel } from "../backends/claude-agents";
 import { agentTraits } from "../agent/delegation";
 import { estimateTokens } from "../agent/compact";
 import { BLOCKING_EVENTS, HOOK_EVENTS } from "../agent/hooks";
@@ -58,17 +60,27 @@ import { toSchema } from "../tools/index";
 import { displayPath, expandPath } from "../util/files";
 import { gitRoot } from "../util/git";
 import { childEnv } from "../util/env";
-import { expandCommand, type CustomCommand } from "./custom";
-import { claudeCodeRuns, formatSkill, loadSkills, sameSkills, skillRoots, type Skill } from "../agent/skills";
+import { expandCommand, pluginCommandFor, type CustomCommand } from "./custom";
+import { pluginCommand } from "./plugins";
+import { runsPluginCommand } from "../plugins/native";
+import { formatSkill, loadSkills, sameSkills, skillRoots, type Skill } from "../agent/skills";
+import { cliRunsSkills } from "../backends/native-skills";
 import { rewindCommand } from "./rewind";
+import { GoalController, goalClearedNotice, goalSummary, parseGoalCommand } from "../agent/goal";
 import { checkAgentCli, vendorOf, type AgentCliStatus } from "../backends/index";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
-import { account, addAccount, listAccounts } from "../providers/accounts";
+import { account, accountSharingWarning, addAccount, holdLogin, listAccounts } from "../providers/accounts";
 import { loginCommand as accountLoginCommand } from "../backends/account-login";
 import { clockTime, limitAccountLabel, limitLines } from "../backends/limits";
+import { describeJob, shortTime } from "../agent/schedule";
+import { NO_SCHEDULES } from "../agent/schedule-host";
 import { approvalMeaning, maskConfigValues, McpApprovalError, visible } from "../mcp/approval";
 import type { McpServerInfo } from "../mcp/info";
 import { mayStart } from "../mcp/manager";
+import { ACTIONS, CONTEXTS, KEYBINDINGS_DOCS } from "../keybindings/core";
+import { ensureKeybindingsFile } from "../keybindings/file";
+import { isWebUrl } from "../mcp/oauth";
+import { stoppedMonitorNote } from "../tools/monitor";
 
 export interface Command {
     name: string;
@@ -85,6 +97,8 @@ export interface Command {
     skill?: Skill;
     /** Starts a model turn, which takes the images typed with the command (`draft`). Other commands refuse images. */
     images?: boolean;
+    /** An MCP server's prompt (mcp__server__prompt): fetched, then sent as the prompt. */
+    mcpPrompt?: boolean;
     run(app: App, args: string, draft?: Draft): Promise<void> | void;
 }
 
@@ -125,6 +139,7 @@ function kv(label: string, value: string, w = 18): string {
 async function withProgress<T>(app: App, lines: string[], fn: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> {
     const ac = new AbortController();
     const d = new MessageDialog([...lines, "", theme.subtle("esc to cancel")], theme.permission, () => ac.abort());
+    d.yields = true;
     app.pushDialog(d);
     try {
         return await Promise.race([fn(ac.signal), new Promise<undefined>((r) => ac.signal.addEventListener("abort", () => r(undefined)))]);
@@ -497,11 +512,20 @@ async function agentLogin(app: App, providerId: string) {
 
 /** Launch only the vendor's own flow; credentials never pass through a Harness input dialog. */
 async function signInCliAccount(app: App, provider: string, id: string) {
-    const selected = account(provider, id);
-    const command = accountLoginCommand(provider, selected.id);
-    await app.screen.suspend(() => {
-        spawnSync(command.argv, { cwd: app.cwd, env: command.env, stdio: ["inherit", "inherit", "inherit"] });
-    });
+    // Taken before the account is looked up: a removal in any Harness process then sees it and waits, or is seen
+    // here (this stops), or has saved its change already (the lookup fails).
+    const release = holdLogin(provider, id);
+    let selected: ReturnType<typeof account>;
+    try {
+        selected = account(provider, id);
+        const command = accountLoginCommand(provider, selected.id);
+        // Not spawnSync: running turns and CLI children must keep going while the user signs in.
+        await app.screen.suspend(async () => {
+            await Bun.spawn(command.argv, { cwd: app.cwd, env: command.env, stdio: ["inherit", "inherit", "inherit"] }).exited;
+        });
+    } finally {
+        release();
+    }
     const status = await withProgress(app, [theme.muted("Checking sign-in…")], (signal) => checkAgentCli(provider, signal, selected.id));
     if (status) app.notice(`${getProvider(provider)!.name} · ${selected.name}: ${status.signedIn ? status.description : "not signed in"}`);
     await app.refreshListings();
@@ -512,10 +536,13 @@ async function addCliAccount(app: App, provider: string) {
     if (id === undefined) return;
     const name = await app.showDialog(new InputDialog({ title: "Account name", placeholder: "Personal" }));
     if (name === undefined) return;
-    const folder = await app.showDialog(new InputDialog({ title: "Account folder (optional)", header: [theme.muted("Leave empty for a private folder in Harness's accounts directory."), theme.muted("A new folder starts with separate CLI settings and history.")], placeholder: "/absolute/path" }));
+    const folder = await app.showDialog(new InputDialog({ title: "Account folder (optional)", header: [theme.muted("Leave empty for a folder in Harness's accounts directory that shares Default's settings and history."), theme.muted("An existing folder is used as it is.")], placeholder: "/absolute/path" }));
     if (folder === undefined) return;
+    // An account only selects a CLI's folder (#375): what's running goes on as it is.
     const selected = addAccount(provider, { id: id.trim(), name: name.trim(), ...(folder.trim() ? { folder: folder.trim() } : {}) }, [app.cwd]);
     app.notice(`Created ${selected.name}: ${selected.folder}`);
+    const sharing = accountSharingWarning(provider, selected.id);
+    if (sharing) app.notice(sharing, "warn");
     if (provider === "claude-code") app.notice("Claude Console sign-ins without an API key are stored outside the config folder and are not isolated per account.", "warn");
     await signInCliAccount(app, provider, selected.id);
 }
@@ -537,10 +564,10 @@ async function pickAccount(app: App, providers: string[]) {
         label: a.name, value: `${provider}:${a.id}`, group: getProvider(provider)!.name,
         description: a.folder || "The CLI's normal configuration", detail: app.session.accountId(provider) === a.id ? "current" : undefined,
     })));
-    const choice = await app.showDialog(new SelectDialog<string>({ title: "Session account", items, searchable: true, footer: [theme.muted("A switch starts a new CLI thread with this conversation as context."), theme.muted("Add one: /login claude-code add or /login codex add")] })) as string | undefined;
+    const choice = await app.showDialog(new SelectDialog<string>({ title: "Session account", items, searchable: true, footer: [theme.muted("Harness-made accounts share history: a switch among them and Default resumes the CLI session."), theme.muted("Another account starts a new CLI thread with this conversation as context."), theme.muted("Add one: /login claude-code add or /login codex add")] })) as string | undefined;
     if (choice) {
         const [provider, id] = choice.split(":");
-        app.setAccount(provider!, id!);
+        await app.setAccount(provider!, id!);
     }
 }
 
@@ -1066,25 +1093,59 @@ function costCommand(app: App) {
     app.print(lines);
 }
 
-/** /tasks: what Claude Code or Codex delegated to other models; /tasks stop [id] stops them. */
-function tasksCommand(app: App, args: string) {
+/**
+ * /tasks: the session's background work (src/agent/background.ts): tasks delegated to other models, an agent
+ * CLI's background sub-agents, shells and monitors, and the harness's own background shells. /tasks stop
+ * <id|all> stops them; Esc doesn't (#228).
+ */
+async function tasksCommand(app: App, args: string) {
     const agent = app.agent;
-    const tasks = agent?.delegatedTasks ?? [];
     const [verb, id] = args.trim().split(/\s+/);
     if (verb === "stop") {
-        const n = agent?.stopDelegated(id) ?? 0;
-        return app.notice(n ? `Stopping ${n} task${n === 1 ? "" : "s"}.` : id ? `No running task ${id}.` : "No background or delegated tasks are running.");
+        const running = (agent?.backgroundTasks() ?? []).filter((t) => t.status === "running");
+        if (!id || id === "all") {
+            if (!running.length) return app.notice("No background tasks are running.");
+        } else if (!running.some((t) => t.id === id)) return app.notice(`No running background task ${id}. /tasks lists them.`, "error");
+        // The user's own stop: the ends of those it stops aren't announced.
+        const stop = async () => (await agent?.stopBackground(!id || id === "all" ? undefined : [id])) ?? {};
+        const bg = app.toolState.background;
+        const results = bg ? await bg.userStop(!id || id === "all" ? running.map((t) => t.id) : [id], stop) : await stop();
+        const ok = Object.values(results).filter((r) => r === "stopped").length;
+        const ended = Object.entries(results).filter(([, r]) => r === "ended");
+        const bad = Object.entries(results).filter(([, r]) => r !== "stopped" && r !== "ended");
+        if (ok) app.notice(`Stopping ${ok} background task${ok === 1 ? "" : "s"}.`);
+        // Ended on its own before the stop could: it keeps its own outcome (and its notice).
+        for (const [t] of ended) app.notice(`${t} had already ended.`);
+        for (const [t, r] of bad) app.notice(`Couldn't stop ${t}: ${r === "not_stoppable" ? "it can't be stopped on its own" : r === "timeout" ? "it didn't confirm in time" : r === "failed" ? "the CLI refused" : "no such task"}.`, "warn");
+        return;
     }
-    if (verb) return app.notice("Usage: /tasks, or /tasks stop [task-id]", "error");
-    if (!tasks.length) return app.notice("No background or delegated tasks in this session. Sub-agents run in the background when the model asks (Task with run_in_background) or their definition says background: true; Claude Code and Codex can hand tasks to other providers' models.");
-    const lines = ["", heading("Background and delegated tasks")];
-    for (const t of tasks) {
-        const r = t.result;
-        const state = t.status === "running" ? theme.warning(`running ${formatDuration(Date.now() - t.startedAt)}`) : t.status === "done" ? theme.success("done") : t.status === "failed" ? theme.error("failed") : theme.muted("stopped");
-        const spend = r ? theme.muted(` · ${formatTokens(r.tokens)} tokens${r.cost ? ` · ${formatUsd(r.cost)}` : ""} · ${formatDuration(r.durationMs)}`) : "";
-        lines.push(`  ${bold(t.id)}  ${truncate(t.description, 50)}  ${theme.muted(`${t.agent} on ${t.model}${t.effort ? `, ${t.effort} effort` : ""}`)}  ${state}${spend}`);
+    if (verb === "restart") {
+        if (!(await agent?.restartBackend())) return app.notice("This session has no agent CLI process to restart.", "error");
+        return app.notice("Restarted the agent CLI's process. What it ran in the background was stopped.");
     }
-    if (tasks.some((t) => t.status === "running")) lines.push(theme.subtle("  /tasks stop stops them all; /tasks stop <id> stops one."));
+    if (verb) return app.notice("Usage: /tasks, or /tasks stop <task-id|all>, or /tasks restart", "error");
+    const delegated = agent?.delegatedTasks ?? [];
+    const others = (agent?.backgroundTasks() ?? []).filter((t) => !delegated.some((d) => d.id === t.id));
+    if (!delegated.length && !others.length) return app.notice("No background tasks in this session. Sub-agents run in the background when the model asks (Task with run_in_background) or their definition says background: true; Claude Code and Codex can hand tasks to other providers' models, and run sub-agents and commands in the background.");
+    const lines = [""];
+    if (delegated.length) {
+        lines.push(heading("Background and delegated tasks"));
+        for (const t of delegated) {
+            const r = t.result;
+            const state = t.status === "running" ? theme.warning(`running ${formatDuration(Date.now() - t.startedAt)}`) : t.status === "done" ? theme.success("done") : t.status === "failed" ? theme.error("failed") : theme.muted("stopped");
+            const spend = r ? theme.muted(` · ${formatTokens(r.tokens)} tokens${r.cost ? ` · ${formatUsd(r.cost)}` : ""} · ${formatDuration(r.durationMs)}`) : "";
+            lines.push(`  ${bold(t.id)}  ${truncate(t.description, 50)}  ${theme.muted(`${t.agent} on ${t.model}${t.effort ? `, ${t.effort} effort` : ""}`)}  ${state}${spend}`);
+        }
+    }
+    const shown = others.filter((t) => t.status === "running").slice(-20);
+    if (shown.length) {
+        lines.push(heading("Running in the background"));
+        for (const t of shown) {
+            const by = getProvider(t.provider)?.name ?? (t.provider === "harness" ? "" : t.provider);
+            lines.push(`  ${bold(t.id)}  ${truncate(describeTask(t), 60)}  ${theme.muted(by)}  ${theme.warning(`running ${formatDuration(Date.now() - t.startedAt)}`)}${t.stoppable ? "" : theme.muted(" · can't be stopped on its own")}`);
+        }
+    }
+    if ((agent?.backgroundTasks() ?? []).some((t) => t.status === "running")) lines.push(theme.subtle("  /tasks stop all stops them all; /tasks stop <id> stops one. Esc stops only the current turn."));
     app.print(lines);
 }
 
@@ -1145,6 +1206,8 @@ function contextCommand(app: App) {
         for (const p of parts) lines.push(`  ${p.c("█")} ${padEnd(p.label, 18)}${formatTokens(p.n)}`);
         const threshold = app.settings.autoCompactThreshold ?? 0.92;
         lines.push(theme.muted(`  Auto-compact ${app.settings.autoCompact === false ? "off" : `at ~${Math.round(threshold * 100)}%`} · /compact to summarize now`));
+        const due = app.idleCompact.due;
+        if (due !== undefined) lines.push(theme.muted(`  Left idle, it compacts in ${Math.max(1, Math.ceil((due - Date.now()) / 60_000))}m, before the prompt cache expires`));
     } else lines.push(kv("Estimated", formatTokens(total)), theme.muted("  (this model's context window is unknown)"));
     if (!measured) lines.push(theme.subtle("  Estimates (≈3.5 chars/token) until the first response reports real usage."));
     if (!app.session.meta.system) lines.push(theme.subtle("  The system prompt is built when you send the first message."));
@@ -1153,7 +1216,8 @@ function contextCommand(app: App) {
 
 async function exportCommand(app: App, args: string) {
     const out: string[] = [`# ${APP_TITLE} session ${app.session.meta.id}`, "", `- Directory: ${app.cwd}`, `- Model: ${app.session.model ?? "?"}`, `- Exported: ${new Date().toISOString()}`, ""];
-    for (const msg of app.session.messages) {
+    for (const group of continuationGroups(app.session.messages)) {
+        const msg = group[0]!;
         if (msg.role === "user") {
             const kind = msg.meta?.kind ?? "prompt";
             if (kind === "tool_results") {
@@ -1164,9 +1228,9 @@ async function exportCommand(app: App, args: string) {
             const note = attachmentsNote(msg.content);
             if (t || note) out.push(kind === "summary" ? "## Summary of earlier conversation" : "## User", "", ...(t ? [t] : []), ...(note ? [`*${note}*`] : []), "");
         } else {
-            const t = textOf(msg).trim();
+            const t = group.map(textOf).join("").trim();
             if (t) out.push("## Assistant", "", t, "");
-            for (const p of msg.content) if (p.type === "tool_call") out.push(`**${p.name}** \`${truncate(JSON.stringify(p.input), 300)}\``, "");
+            for (const part of group) for (const p of part.content) if (p.type === "tool_call") out.push(`**${p.name}** \`${truncate(JSON.stringify(p.input), 300)}\``, "");
         }
     }
     const text = redact(out.join("\n"));
@@ -1301,12 +1365,18 @@ async function queueCommand(app: App) {
 async function configCommand(app: App) {
     let index = 0;
     for (;;) {
-        type K = "showThinking" | "autoCompact" | "webSearch" | "notifications" | "followUpBehavior" | "defaultMode" | "allowBypass" | "smallModel" | "reviewModel" | "verbose";
+        type K = "showThinking" | "autoCompact" | "idleCompaction" | "webSearch" | "notifications" | "followUpBehavior" | "defaultMode" | "allowBypass" | "smallModel" | "reviewModel" | "verbose";
         const s = app.settings;
         const onOff = (b: boolean | undefined) => (b ? theme.success("on") : theme.muted("off"));
         const items: SelectItem<K>[] = [
             { label: "Show thinking text", value: "showThinking", detail: onOff(s.showThinking), description: "full reasoning text when the provider returns it" },
             { label: "Auto-compact", value: "autoCompact", detail: onOff(s.autoCompact !== false), description: "summarize the conversation near the context limit" },
+            {
+                label: "Compact while idle",
+                value: "idleCompaction",
+                detail: s.autoCompact === false || s.idleCompaction === false ? theme.muted("off") : s.idleCompaction === "always" ? theme.success("after 5 min too") : theme.success("after an hour"),
+                description: "summarize a long conversation before its prompt cache expires (needs auto-compact)",
+            },
             { label: "Web search backend", value: "webSearch", detail: s.webSearch ?? "auto", description: "auto · anthropic · brave · tavily · duckduckgo · off" },
             { label: "Notifications", value: "notifications", detail: notificationMode(s), description: `auto · terminal · bell · system · off (prompts, turns over ${notifyAfterMs(s) / 1000}s)` },
             { label: "Messages sent while working", value: "followUpBehavior", detail: s.followUpBehavior === "queue" ? "queue" : "steer", description: "steer joins the turn at its next step · queue waits for it to end (tab does the other)" },
@@ -1331,6 +1401,12 @@ async function configCommand(app: App) {
             case "autoCompact":
                 save((x) => (x.autoCompact = s.autoCompact === false));
                 break;
+            case "idleCompaction": {
+                // On (one-hour caches) → five-minute ones too → off → on.
+                const next = s.idleCompaction === false ? undefined : s.idleCompaction === "always" ? false : "always";
+                save((x) => (x.idleCompaction = next));
+                break;
+            }
             case "webSearch": {
                 const order = ["auto", "anthropic", "brave", "tavily", "duckduckgo", "off"] as const;
                 const next = order[(order.indexOf(s.webSearch ?? "auto") + 1) % order.length]!;
@@ -1384,8 +1460,8 @@ function mcpCardLines(app: App, info: McpServerInfo): string[] {
     const out: string[] = [theme.warning("MCP servers run with your user permissions. Only approve servers you trust.")];
     if (info.why) out.push(theme.warning(info.why));
     out.push("");
-    if (info.transport === "http") {
-        out.push(row("URL", info.url ?? ""));
+    if (info.transport !== "stdio") {
+        out.push(row("URL", `${info.url ?? ""}${info.transport !== "http" ? theme.muted(` (${info.transport === "sse" ? "SSE" : "WebSocket"})`) : ""}`));
         out.push(row("Headers", info.headerNames?.length ? `${info.headerNames.join(", ")} ${theme.muted("(values not shown)")}` : theme.muted("none")));
     } else {
         out.push(row("Command", info.command ?? ""));
@@ -1425,6 +1501,24 @@ async function trustForApproval(app: App): Promise<boolean> {
     return trustedByUser(app.cwd);
 }
 
+/** /trust: trust the folder yourself, which a folder trusted for this session only (nothing to protect when opened) isn't. */
+async function trustCommand(app: App) {
+    if (trustedByUser(app.cwd)) return app.notice(`You've trusted ${app.cwd}.`);
+    const header = [
+        theme.muted(app.cwd),
+        "",
+        theme.muted("Trusting it is saved. It lets you approve its .mcp.json servers, and turns on diagnostics after edits: language servers run the project's own code (its TypeScript, build scripts)."),
+    ];
+    if (!(await confirm(app, "Trust this folder?", header, "Trust this folder", "Cancel"))) return;
+    try {
+        trustFolder(app.cwd);
+    } catch (e) {
+        return app.notice(redact((e as Error).message), "warn");
+    }
+    const late = app.projectTrusted();
+    app.notice(`Trusted ${app.cwd}.${late ? " Its settings, language servers, commands and skills apply now; its MCP servers load when you next start here." : ""}`);
+}
+
 /** Shown the card, and approved if the user says yes; false if they didn't (or it changed meanwhile). */
 async function approveMcp(app: App, name: string): Promise<boolean> {
     for (;;) {
@@ -1442,6 +1536,28 @@ async function approveMcp(app: App, name: string): Promise<boolean> {
             // Changed while the card was open (or trust was taken back): look again.
             if (e.code !== "changed" && e.code !== "needs_trust") return false;
         }
+    }
+}
+
+/** What a connected server offers, in a few words. */
+function offered(s: { tools: unknown[]; resources?: unknown[]; templates?: unknown[]; prompts?: unknown[] }): string {
+    const n = (k: number, one: string) => `${k} ${one}${k === 1 ? "" : "s"}`;
+    const parts = [n(s.tools.length, "tool")];
+    const res = (s.resources?.length ?? 0) + (s.templates?.length ?? 0);
+    if (res) parts.push(n(res, "resource"));
+    if (s.prompts?.length) parts.push(n(s.prompts.length, "prompt"));
+    return parts.join(" · ");
+}
+
+/** Open a link in the user's browser; the link is printed too, for when this can't. */
+function openInBrowser(url: string) {
+    if (!isWebUrl(url)) return;
+    // Not cmd /c start: cmd would take the URL's & as a command separator.
+    const argv = process.platform === "darwin" ? ["open", url] : process.platform === "win32" ? ["rundll32", "url.dll,FileProtocolHandler", url] : ["xdg-open", url];
+    try {
+        Bun.spawn(argv, { stdout: "ignore", stderr: "ignore", stdin: "ignore", env: childEnv() }).exited.catch(() => undefined);
+    } catch {
+        // printed above
     }
 }
 
@@ -1480,7 +1596,9 @@ async function mcpCommand(app: App, args: string) {
         const statusText = (s: (typeof servers)[number]) => {
             switch (s.status) {
                 case "connected":
-                    return theme.success(`✔ connected · ${s.tools.length} tools${s.era ? ` · ${s.era}` : ""}`);
+                    return theme.success(`✔ connected · ${offered(s)}${s.era ? ` · ${s.era}` : ""}`);
+                case "needs-auth":
+                    return theme.warning("needs sign-in");
                 case "failed":
                     return theme.error(`✘ failed: ${truncate(visible((s.error ?? "").split("\n")[0]!).text, 60)}`);
                 case "needs-approval":
@@ -1497,7 +1615,7 @@ async function mcpCommand(app: App, args: string) {
         const pick = (await app.showDialog(
             new SelectDialog<string>({
                 title: "MCP servers",
-                items: servers.map((s) => ({ label: bold(visible(s.name).text), value: s.name, description: statusText(s), detail: s.source === "project" ? ".mcp.json" : "settings" })),
+                items: servers.map((s) => ({ label: bold(visible(s.name).text), value: s.name, description: statusText(s), detail: s.source === "project" ? ".mcp.json" : s.config.plugin ? `plugin ${s.config.plugin.split("@")[0]}` : "settings" })),
                 numbers: true,
             }),
         )) as string | undefined;
@@ -1505,21 +1623,29 @@ async function mcpCommand(app: App, args: string) {
         const st = app.mcp.servers.get(pick);
         const info = app.mcp.describe(pick);
         if (!st || !info) continue;
-        type A = "approve" | "reject" | "revoke" | "reconnect" | "tools" | "error" | "disable" | "enable";
+        type A = "approve" | "reject" | "revoke" | "reconnect" | "tools" | "resources" | "prompts" | "error" | "disable" | "enable" | "signin" | "signout";
         const actions: SelectItem<A>[] = [];
         const project = st.source === "project";
         const approval = st.approval?.state;
         const offInFile = st.config.disabled === true;
         if (project && !offInFile && (approval === "needs-approval" || approval === "rejected")) actions.push({ label: approval === "rejected" ? "Enable (review and approve)…" : "Review and approve…", value: "approve", description: "saved to this folder's local settings" });
         if (project && (approval === "needs-approval" || approval === "approved")) actions.push({ label: "Reject", value: "reject", description: "keeps it off until you approve it again" });
-        if (st.status === "connected") actions.push({ label: "Show tools", value: "tools" }, { label: "Reconnect", value: "reconnect" }, { label: "Disable for this session", value: "disable" });
+        if (st.status === "needs-auth") actions.push({ label: "Sign in…", value: "signin", description: "opens your browser" });
+        if (st.status === "connected") {
+            actions.push({ label: "Show tools", value: "tools" });
+            if (st.resources?.length || st.templates?.length) actions.push({ label: "Show resources", value: "resources", description: "attach one with @" });
+            if (st.prompts?.length) actions.push({ label: "Show prompts", value: "prompts", description: "run one as /mcp__…" });
+            actions.push({ label: "Reconnect", value: "reconnect" }, { label: "Disable for this session", value: "disable" });
+        }
+        if (info.transport !== "stdio" && app.mcp.signedIn(st.name)) actions.push({ label: "Sign out", value: "signout", description: "forgets the stored token" });
         if (st.status === "failed") actions.push({ label: "Show error", value: "error" }, { label: "Reconnect", value: "reconnect" });
         // A rejected project server is enabled through the card above, never straight away.
         if (st.status === "disabled" && (!project || mayStart(st))) actions.push({ label: "Enable", value: "enable", description: "for this session" });
         if (project && approval === "approved" && !st.approval?.viaAll) actions.push({ label: "Revoke approval", value: "revoke", description: "stops it; it asks again" });
         const header = project
             ? mcpCardLines(app, info)
-            : [theme.muted(info.transport === "http" ? (info.url ?? "") : [info.command, ...(info.args ?? []).map((a) => `‹${a}›`)].join(" ")), theme.muted("source: settings")];
+            : [theme.muted(info.transport !== "stdio" ? `${info.url ?? ""}${info.transport !== "http" ? ` (${info.transport === "sse" ? "SSE" : "WebSocket"})` : ""}` : [info.command, ...(info.args ?? []).map((a) => `‹${a}›`)].join(" ")), theme.muted(st.config.plugin ? `source: plugin ${st.config.plugin}` : "source: settings")];
+        if (st.status === "needs-auth") header.unshift(theme.warning("This server needs you to sign in. Choose Sign in to open the sign-in page in your browser."));
         if (project && offInFile) header.unshift(theme.muted('Turned off in .mcp.json ("disabled": true).'));
         if (approval === "rejected") header.unshift(theme.muted("You rejected this server."));
         const a = (await app.showDialog(new SelectDialog<A>({ title: info.label, header, items: actions, numbers: true }))) as A | undefined;
@@ -1538,6 +1664,33 @@ async function mcpCommand(app: App, args: string) {
             await st.client?.close();
             st.client = undefined;
             st.status = "disabled";
+        } else if (a === "signin") {
+            const shown = { url: "" };
+            const r = await withProgress(
+                app,
+                [theme.permission(bold(`Signing in to ${info.label}…`)), "", theme.muted("Finish signing in in your browser. If it didn't open, open the link printed above.")],
+                (signal) =>
+                    app.mcp.signIn(st.name, (url) => {
+                        shown.url = url;
+                        app.print(["", theme.muted(`  Sign-in link for ${info.label}:`), `  ${url}`]);
+                        openInBrowser(url);
+                    }, signal),
+            ).catch((e: Error) => {
+                app.notice(`Sign-in to ${info.label} didn't finish: ${redact(e.message)}`, "error");
+                return null;
+            });
+            if (r === undefined) app.notice(`Sign-in to ${info.label} cancelled.`, "warn");
+            else if (r) app.notice(r.status === "connected" ? `Signed in to ${info.label}: connected.` : `Signed in to ${info.label}, but it didn't connect: ${redact((r.error ?? r.status).split("\n")[0]!)}`, r.status === "connected" ? "info" : "warn");
+        } else if (a === "signout") {
+            await app.mcp.signOut(st.name);
+            app.notice(`Signed out of ${info.label}.`);
+        } else if (a === "resources") {
+            app.print(["", heading(`${info.label} resources`), ...(st.resources ?? []).slice(0, 200).map((r) => `  ${bold(`@${visible(st.name).text}:${visible(maskConfigValues(r.uri, st.config)).text}`)} ${theme.muted(truncate(visible(maskConfigValues(r.title ?? r.description ?? r.name ?? "", st.config).split("\n")[0]!).text, Math.max(10, termCols() - r.uri.length - st.name.length - 10)))}`), ...((st.resources?.length ?? 0) > 200 ? [theme.muted(`  … and ${st.resources!.length - 200} more (type @${visible(st.name).text}: to search them)`)] : []), ...(st.templates ?? []).map((t) => `  ${theme.muted("template")} ${bold(visible(maskConfigValues(t.uriTemplate, st.config)).text)} ${theme.muted(truncate(visible(maskConfigValues(t.description ?? t.name ?? "", st.config).split("\n")[0]!).text, 60))}`)]);
+            return;
+        } else if (a === "prompts") {
+            const cmds = app.mcp.promptCommands().filter((p) => p.server === st.name);
+            app.print(["", heading(`${info.label} prompts`), ...cmds.map((p) => `  ${bold(`/${p.command}`)}${p.args ? " " + theme.subtle(p.args) : ""} ${theme.muted(truncate(visible(p.description).text, 70))}`)]);
+            return;
         } else if (a === "tools") {
             app.print(["", heading(`${info.label} tools`), ...st.tools.map((t) => `  ${bold(visible(t.name).text)}${t.annotations?.readOnlyHint ? theme.muted(" (read-only)") : ""} ${theme.muted(truncate(visible(maskConfigValues((t.description ?? "").split("\n")[0]!, st.config)).text, termCols() - t.name.length - 20))}`)]);
             return;
@@ -1561,7 +1714,7 @@ async function memoryCommand(app: App) {
     ] as const) {
         if (!files.some((f) => f.path === p)) candidates.push({ label: theme.muted(`+ ${label}`), value: p, description: "create" });
     }
-    const pick = (await app.showDialog(new SelectDialog<string>({ title: "Memory files", header: [theme.muted("Loaded into the system prompt at the start of a session. Select one to edit in $EDITOR.")], items: candidates, numbers: true }))) as string | undefined;
+    const pick = (await app.showDialog(new SelectDialog<string>({ title: "Memory files", header: [theme.muted("Loaded into the system prompt at the start of a session. Select one to edit in $EDITOR."), ...(files.budget ? [theme.warning(budgetNotice(files, (p) => displayPath(p, app.cwd)))] : [])], items: candidates, numbers: true }))) as string | undefined;
     if (!pick) return;
     const before = existsSync(pick) ? readFileSync(pick, "utf-8") : "";
     const editor = process.env.VISUAL || process.env.EDITOR || "vi";
@@ -1578,9 +1731,12 @@ async function memoryCommand(app: App) {
 
 function agentsCommand(app: App) {
     const agents = loadAgents(app.cwd);
-    const lines = ["", heading("Sub-agents"), theme.muted("  The model starts these with the Task tool.")];
+    // On Claude Code its own Agent tool runs them, except those on another provider's model (the delegate tool's).
+    const claude = app.model?.provider === "claude-code";
+    const lines = ["", heading("Sub-agents"), theme.muted(claude ? "  Claude Code runs these with its own Agent tool (built-in ones are its own)." : "  The model starts these with the Task tool.")];
     for (const a of agents) {
-        lines.push(`  ${bold(a.name)} ${theme.muted(`(${[a.source, ...agentTraits(a)].join(", ")})`)}`);
+        const where = claude && a.source !== "builtin" && !claudeModel(a.model) ? "through delegate on Claude Code" : "";
+        lines.push(`  ${bold(a.name)} ${theme.muted(`(${[a.source, ...agentTraits(a), where].filter(Boolean).join(", ")})`)}`);
         lines.push(theme.muted(`    ${truncate(a.description, termCols() - 8)}`));
         const more = [
             a.tools?.length ? `tools: ${a.tools.join(", ")}` : "",
@@ -1622,6 +1778,65 @@ function skillsCommand(app: App, args: string) {
     });
 }
 
+/** The keys and what they do now, after the keybindings file. */
+function keyHelp(app: App, cols: number): string[] {
+    const items: string[] = [];
+    for (const a of ACTIONS) {
+        const keys = app.keys.all(a.id);
+        if (!a.defaults.tui) continue;
+        const shown = keys.length ? keys.map((k) => (k === "escape" ? "esc" : k)).join("/") : theme.subtle("unbound");
+        items.push(`${bold(shown)} ${a.description.toLowerCase()}${app.keys.keymap.customized.has(a.id) ? theme.accent(" *") : ""}`);
+    }
+    items.push(`${bold("ctrl+c ×2")} exit`);
+    const lines: string[] = [];
+    let line = " ";
+    for (const it of items) {
+        if (width(line) + width(it) + 4 > cols - 1 && line.trim()) {
+            lines.push(line);
+            line = " ";
+        }
+        line += `   ${it}`;
+    }
+    if (line.trim()) lines.push(line);
+    lines.push(theme.subtle(`  Change them in ${displayPath(app.keys.path, app.cwd)} (/keybindings)${app.keys.keymap.customized.size ? "; * is a custom key" : ""}.`));
+    return lines;
+}
+
+async function keybindingsCommand(app: App, args: string) {
+    const path = app.keys.path;
+    if (args.trim() === "edit") {
+        ensureKeybindingsFile(path);
+        const editor = process.env.VISUAL || process.env.EDITOR || "vi";
+        await app.screen.suspend(() => {
+            spawnSync(["sh", "-c", `${editor} "$1"`, "sh", path], { stdio: ["inherit", "inherit", "inherit"], env: childEnv() });
+        });
+        app.renderLive();
+        return;
+    }
+    const km = app.keys.keymap;
+    const lines = ["", heading("Keybindings")];
+    lines.push(theme.muted(`  File: ${displayPath(path, app.cwd)}${existsSync(path) ? "" : " (not created yet: /keybindings edit creates it)"}`));
+    lines.push(theme.muted("  Changes apply when you save. /keybindings edit opens it in $EDITOR. Same format as Claude Code's."));
+    lines.push(theme.subtle(`  e.g. { "bindings": [{ "context": "Chat", "bindings": { "ctrl+e": "chat:externalEditor", "ctrl+g": null } }] }`));
+    const keyW = Math.min(36, Math.max(16, ...ACTIONS.filter((a) => a.defaults.tui).map((a) => width(app.keys.all(a.id).join(", ")) + 2)));
+    for (const ctx of CONTEXTS) {
+        const actions = ACTIONS.filter((a) => a.context === ctx && a.defaults.tui);
+        if (!actions.length) continue;
+        lines.push("", `  ${bold(ctx)}`);
+        for (const a of actions) {
+            const keys = app.keys.all(a.id);
+            const shown = keys.length ? keys.join(", ") : theme.subtle("not bound");
+            lines.push(truncate(`    ${padEnd(km.customized.has(a.id) ? theme.accent(shown) : shown, keyW)}${padEnd(theme.muted(a.id), 24)}${theme.subtle(a.description)}`, termCols() - 1));
+        }
+    }
+    if (km.issues.length) {
+        lines.push("", `  ${bold("Problems")}`);
+        for (const i of km.issues) lines.push(`    ${i.level === "error" ? theme.error("✘") : theme.warning("!")} ${i.message}`);
+    }
+    lines.push("", theme.subtle(`  Modifiers: ctrl, alt (opt, meta), shift, mod (ctrl in the terminal). Chords: "ctrl+x ctrl+e".`), theme.subtle(`  Docs: ${KEYBINDINGS_DOCS}`));
+    app.print(lines);
+}
+
 function hooksCommand(app: App) {
     const h = app.settings.hooks ?? {};
     const lines = ["", heading("Hooks")];
@@ -1630,12 +1845,17 @@ function hooksCommand(app: App) {
         const list = h[event] ?? [];
         if (!list.length) continue;
         any = true;
-        lines.push(`  ${bold(event)}${BLOCKING_EVENTS.has(event) ? "" : theme.subtle(" (informational)")}`);
-        for (const x of list) lines.push(`    ${theme.muted(x.matcher ? `[${x.matcher}]` : "[*]")} ${x.command}${x.timeout ? theme.subtle(` (timeout ${x.timeout}s)`) : ""}`);
+        lines.push(`  ${bold(event)}${BLOCKING_EVENTS.has(event) || event === "PermissionRequest" ? "" : theme.subtle(" (informational)")}`);
+        for (const x of list) {
+            const what = x.type === "http" ? `POST ${x.url}` : x.type === "prompt" ? `prompt: ${truncate(x.prompt ?? "", 60)}` : x.type === "mcp_tool" ? `mcp__${x.server}__${x.tool}` : [x.command, ...(x.args ?? [])].join(" ");
+            const notes = [x.if ? `if ${x.if}` : "", x.async ? "async" : "", x.timeout ? `timeout ${x.timeout}s` : ""].filter(Boolean).join(", ");
+            lines.push(`    ${theme.muted(x.matcher ? `[${x.matcher}]` : "[*]")} ${what}${notes ? theme.subtle(` (${notes})`) : ""}${x.plugin ? theme.subtle(` (plugin ${x.plugin})`) : ""}`);
+        }
     }
     if (!any) lines.push(theme.muted("  None configured."));
+    for (const w of hookConfigWarnings(app.settings)) lines.push(theme.warning(`  Skipped: ${w.replace(/^hooks: /, "")}`));
     lines.push(
-        theme.muted(`  Configure under "hooks" in settings. A hook gets JSON on stdin; exit code 2 blocks the action and shows stderr to the model (informational events can't block).`),
+        theme.muted(`  Configure under "hooks" in settings (Claude Code's format works too). A command hook gets JSON on stdin; exit code 2 blocks the action and shows stderr to the model (informational events can't block). Hooks can also be http, prompt or mcp_tool.`),
         ...(app.init.trusted ? [] : [theme.warning("  This folder isn't trusted, so project hooks are ignored.")]),
     );
     app.print(lines);
@@ -1664,7 +1884,8 @@ async function doctorCommand(app: App) {
             readJsonForUpdate(f);
             lines.push(ok(`${displayPath(f, app.cwd)} parses`));
         } catch (e) {
-            lines.push(bad(`${displayPath(f, app.cwd)}: ${e instanceof JsonFileError ? e.reason : (e as Error).message}`));
+            // Not the parser's message: it can quote what's in the file.
+            lines.push(bad(`${displayPath(f, app.cwd)}: ${e instanceof JsonFileError ? "isn't valid JSON" : (e as Error).message}`));
         }
     }
     if (existsSync(paths.credentialsFile())) {
@@ -1688,13 +1909,18 @@ async function doctorCommand(app: App) {
 async function bashesCommand(app: App) {
     const shells = [...app.toolState.shells.values()];
     if (!shells.length) {
-        app.notice("No background shells.");
+        app.notice("No background shells or monitors.");
         return;
     }
     const pick = (await app.showDialog(
         new SelectDialog<string>({
-            title: "Background shells",
-            items: shells.map((s) => ({ label: truncate(s.command, 60), value: s.id, description: s.exitCode === null ? theme.success("running") : theme.muted(`exited ${s.exitCode}`), detail: formatDuration(Date.now() - s.startedAt) })),
+            title: "Background shells and monitors",
+            items: shells.map((s) => ({
+                label: s.monitor ? `Monitor · ${truncate(redact(s.monitor.description), 50)}` : truncate(s.command, 60),
+                value: s.id,
+                description: s.exitCode === null ? theme.success(s.monitor ? "watching" : "running") : theme.muted(`exited ${s.exitCode}`),
+                detail: s.monitor && s.exitCode === null ? `${s.monitor.events} event${s.monitor.events === 1 ? "" : "s"} · ${formatDuration(Math.max(0, s.monitor.expiresAt - Date.now()))} left` : formatDuration(Date.now() - s.startedAt),
+            })),
             numbers: true,
         }),
     )) as string | undefined;
@@ -1702,11 +1928,67 @@ async function bashesCommand(app: App) {
     const sh = app.toolState.shells.get(pick);
     if (!sh) return;
     const tail = redact(sh.output).split("\n").slice(-20);
-    app.print(["", heading(`${sh.id}: ${truncate(sh.command, 80)}`), ...tail.map((l) => theme.muted("  " + l))]);
+    app.print(["", heading(`${sh.id}: ${truncate(sh.monitor ? redact(sh.monitor.description) : sh.command, 80)}`), ...tail.map((l) => theme.muted("  " + l))]);
     if (sh.exitCode === null && (await confirm(app, `Stop ${sh.id}?`))) {
+        if (sh.monitor) app.agent?.addReminder(stoppedMonitorNote(sh));
         const how = await sh.kill();
         app.toolState.shells.delete(sh.id);
         app.notice(how === "killed" ? `Stopped ${sh.id} (it ignored SIGTERM, so it was force-killed)` : `Stopped ${sh.id}`);
+    }
+}
+
+/** /loop [interval] <prompt>, /loop stop, /loop (what's looping). */
+function loopCommand(app: App, args: string) {
+    const r = app.schedules.loop(args);
+    app.notice(r.text, r.level ?? "info");
+}
+
+type ScheduleAction = { do: "pause" | "run" | "delete"; id: string; index: number };
+
+/** /schedules: this session's schedules, to pause, resume, run now or delete. With arguments, does one of those. */
+async function schedulesCommand(app: App, args: string) {
+    const direct = app.schedules.manage(args);
+    if (direct) return app.notice(direct.text, direct.level ?? "info");
+    let index = 0;
+    while (true) {
+        const jobs = app.schedules.scheduler.list();
+        if (!jobs.length) {
+            app.notice(NO_SCHEDULES);
+            return;
+        }
+        const now = Date.now();
+        const dialog = new SelectDialog<ScheduleAction>({
+            title: "Schedules",
+            header: [theme.muted("They run in this session while it's idle. Recurring ones stop after 7 days.")],
+            items: jobs.map((j, i) => ({
+                label: truncate(j.prompt.replace(/\s+/g, " "), 48),
+                value: { do: "pause", id: j.id, index: i },
+                description: describeJob(j) + (j.durable ? theme.subtle(" · saved") : ""),
+                detail: j.paused ? theme.warning("paused") : j.due ? theme.accent("due") : j.nextAt ? `next ${shortTime(j.nextAt, now)}` : "",
+            })),
+            initial: Math.min(index, jobs.length - 1),
+            numbers: false,
+            hint: "enter pause or resume · r run now · d delete · esc close",
+            onExtraKey: (k, d) => {
+                const cur = d.list.current();
+                if (!cur) return false;
+                const i = jobs.findIndex((j) => j.id === cur.value.id);
+                if (k.name === "text" && k.text === " ") return (d.choose({ do: "pause", id: cur.value.id, index: i }), true);
+                if (k.name === "text" && (k.text === "r" || k.text === "R")) return (d.choose({ do: "run", id: cur.value.id, index: i }), true);
+                if ((k.name === "text" && (k.text === "d" || k.text === "D")) || k.name === "delete") return (d.choose({ do: "delete", id: cur.value.id, index: i }), true);
+                return false;
+            },
+        });
+        const pick = (await app.showDialog(dialog)) as ScheduleAction | undefined;
+        if (!pick) return;
+        index = pick.index;
+        const job = jobs.find((j) => j.id === pick.id);
+        if (!job) continue;
+        const verb = pick.do === "pause" ? (job.paused ? "resume" : "pause") : pick.do;
+        const r = app.schedules.manage(`${verb} ${job.id}`);
+        if (r) app.notice(r.text, r.level ?? "info");
+        // Running one closes the list: its turn starts.
+        if (pick.do === "run") return;
     }
 }
 
@@ -1726,6 +2008,7 @@ async function addDirCommand(app: App, args: string) {
     if (remember) updateSettings("local", app.cwd, (s) => ((s.permissions ??= {}).additionalDirectories = [...new Set([...(s.permissions?.additionalDirectories ?? []), dir])]));
     app.agent?.addReminder(`The user added ${dir} as an additional working directory; you may read and edit files there.`);
     app.notice(`${APP_TITLE} can now read and edit files in ${dir}`);
+    void app.agent?.hooks("DirectoryAdded", { directory: dir, source: "slash_command" });
 }
 
 // ---------------------------------------------------------------------------
@@ -1814,7 +2097,7 @@ const BUILTIN: Command[] = [
     },
     { name: "cost", description: "Token usage and cost for this session", whileBusy: true, run: (app) => costCommand(app) },
     { name: "queue", description: "Messages waiting for the turn: send one now, reorder, edit or remove", whileBusy: true, run: (app) => queueCommand(app) },
-    { name: "tasks", description: "Background sub-agents, and tasks Claude Code or Codex delegated to other models (stop them with /tasks stop)", args: "[stop [task-id]]", whileBusy: true, run: (app, args) => tasksCommand(app, args) },
+    { name: "tasks", description: "Background work: sub-agents, shells and monitors, and tasks delegated to other models (stop them with /tasks stop)", args: "[stop <task-id|all> | restart]", whileBusy: true, run: (app, args) => tasksCommand(app, args) },
     { name: "context", description: "How much of the context window is used", whileBusy: true, run: (app) => contextCommand(app) },
     { name: "status", description: "Version, model, key source, mode, MCP, memory", whileBusy: true, run: (app) => statusCommand(app) },
     { name: "resume", aliases: ["continue"], description: "Resume an earlier conversation", args: "[session-id]", run: resumeCommand },
@@ -1828,6 +2111,7 @@ const BUILTIN: Command[] = [
         whileBusy: true,
         run: async (app) => (app.lastResponse ? app.notice(`Copied the last response to the ${await copyToClipboard(app.lastResponse)}.`) : app.notice("Nothing to copy yet.")),
     },
+    { name: "goal", description: "Keep working until a condition holds (/goal clear stops)", args: "[condition]", whileBusy: true, noEcho: true, images: true, run: goalCommand },
     { name: "init", description: "Create a HARNESS.md with notes about this codebase", noEcho: true, images: true, run: (app, _args, draft) => app.startTurn(INIT_PROMPT, { display: "/init", kind: "command", draft }) },
     { name: "review", description: "Review the current changes (or a PR number) for bugs", args: "[pr-number|focus]", noEcho: true, images: true, run: (app, args, draft) => app.startTurn(reviewPrompt(args), { display: `/review${args ? " " + args : ""}`, kind: "command", draft }) },
     { name: "memory", description: "Edit memory files (HARNESS.md)", run: memoryCommand },
@@ -1838,15 +2122,20 @@ const BUILTIN: Command[] = [
         app.notice(`Thinking text ${app.settings.showThinking ? "shown" : "hidden"}`);
     } },
     { name: "mcp", description: "MCP servers: status, approval, tools, reconnect", run: mcpCommand },
+    { name: "plugin", aliases: ["plugins"], description: "Browse, install and manage plugins and marketplaces", args: "[install|uninstall|enable|disable|update|marketplace …]", run: pluginCommand },
     { name: "agents", description: "List sub-agents", whileBusy: true, run: (app) => agentsCommand(app) },
     { name: "skills", description: "List skills (and pick up new ones)", args: "[filter]", whileBusy: true, run: skillsCommand },
+    { name: "keybindings", description: "Customize keyboard shortcuts (keybindings.json)", args: "[edit]", whileBusy: true, run: keybindingsCommand },
     { name: "hooks", description: "List configured hooks", whileBusy: true, run: (app) => hooksCommand(app) },
+    { name: "trust", description: "Trust this folder (MCP approvals, diagnostics after edits)", run: (app) => trustCommand(app) },
     { name: "todos", description: "Show the current todo list", whileBusy: true, run: (app) => {
             const todos = app.toolState.todos.map((t) => ({ ...t }));
             if (!todos.length) return app.notice("No todos.");
             app.print((cols) => ["", heading("Todos"), ...renderTodos(todos, cols)]);
         } },
-    { name: "bashes", description: "List and stop background shells", run: bashesCommand },
+    { name: "bashes", aliases: ["monitors"], description: "List and stop background shells and monitors", run: bashesCommand },
+    { name: "loop", description: "Run a prompt now and then every interval (default 10m); /loop stop stops it", args: "[interval] <prompt>", whileBusy: true, run: (app, args) => loopCommand(app, args) },
+    { name: "schedules", description: "This session's schedules: pause, resume, run now or delete", args: "[pause|resume|delete|run <id>]", run: schedulesCommand },
     { name: "secrets", description: "List the secrets this session holds (names only), or forget one", args: "[forget NAME]", whileBusy: true, run: secretsCommand },
     { name: "add-dir", description: "Allow working in another directory", args: "<path>", run: addDirCommand },
     { name: "doctor", description: "Check the installation and providers", run: doctorCommand },
@@ -1861,7 +2150,13 @@ function customToCommand(c: CustomCommand): Command {
         noEcho: true,
         custom: c,
         images: true,
-        run: (app, args, draft) => app.startTurn(expandCommand(c.body, args), { display: `/${c.name}${args ? " " + args : ""}`, kind: "command", draft }),
+        run: (app, args, draft) => {
+            const display = `/${c.name}${args ? " " + args : ""}`;
+            // Claude Code loads the plugins itself, so it runs their commands with its own handling.
+            const listed = app.cliCommands?.provider === app.model?.provider ? app.cliCommands?.names : undefined;
+            if (c.source === "plugin" && runsPluginCommand(app.model?.provider, c.name, listed)) return app.startTurn(display, { draft });
+            return app.startTurn(expandCommand(c.body, args), { display, kind: "command", draft });
+        },
     };
 }
 
@@ -1875,9 +2170,8 @@ function skillToCommand(s: Skill): Command {
         images: true,
         run: (app, args, draft) => {
             const display = `/${s.name}${args ? " " + args : ""}`;
-            // Claude Code runs a skill it lists itself, with its own handling (allowed-tools and the rest).
-            const listed = app.cliCommands?.provider === app.model?.provider ? app.cliCommands?.names : undefined;
-            if (app.model?.provider === "claude-code" && claudeCodeRuns(s.name, s, listed)) return app.startTurn(display, { draft });
+            // Claude Code and Codex run skills themselves, with their own handling (allowed-tools and the rest): they're sent the /name.
+            if (cliRunsSkills(app.model?.provider)) return app.startTurn(display, { draft });
             const text = formatSkill(s, args);
             if (text === undefined) {
                 app.notice(`The ${s.name} skill is gone: ${displayPath(s.file, app.cwd)} can't be read. Run /skills to read them again.`, "error");
@@ -1889,13 +2183,44 @@ function skillToCommand(s: Skill): Command {
     };
 }
 
-/** Built-ins, then custom commands, then skills: a name the one before has is taken. */
+/** An MCP prompt as a command: its arguments in order, fetched when run, then sent like a typed prompt. */
+function promptToCommand(p: ReturnType<App["mcp"]["promptCommands"]>[number]): Command {
+    return {
+        name: p.command,
+        description: p.description,
+        args: p.args,
+        noEcho: true,
+        images: true,
+        mcpPrompt: true,
+        run: async (app, args, draft) => {
+            const display = `/${p.command}${args ? " " + args : ""}`;
+            let r: Awaited<ReturnType<App["mcp"]["runPrompt"]>> | undefined;
+            try {
+                r = await withProgress(app, [theme.permission(bold(`Getting ${visible(p.prompt.name).text} from ${visible(p.server).text}…`))], (signal) => app.mcp.runPrompt(p.command, args, app.mcpAsker(), signal));
+            } catch (e) {
+                app.notice(redact((e as Error).message), "error");
+                if (draft) app.editor.restore([draft]);
+                return;
+            }
+            if (!r) {
+                if (draft) app.editor.restore([draft]);
+                return;
+            }
+            // What the server wrote isn't the user's: only the arguments they typed attach files or resources.
+            await app.startTurn(r.text, { display, kind: "command", draft, extra: r.images, mentionsIn: args });
+        },
+    };
+}
+
+/** Built-ins, then custom commands, then skills, then MCP prompts: a name the one before has is taken. */
 function allCommands(app: App): Command[] {
     const names = new Set(BUILTIN.flatMap((c) => [c.name, ...(c.aliases ?? [])]));
     const custom = app.customCommands.filter((c) => !names.has(c.name));
     for (const c of custom) names.add(c.name);
     const skills = (app.skills ?? []).filter((s) => s.userInvocable && !names.has(s.name));
-    return [...BUILTIN, ...custom.map(customToCommand), ...skills.map(skillToCommand)];
+    for (const sk of skills) names.add(sk.name);
+    const prompts = (app.mcp?.promptCommands() ?? []).filter((p) => !names.has(p.command));
+    return [...BUILTIN, ...custom.map(customToCommand), ...skills.map(skillToCommand), ...prompts.map(promptToCommand)];
 }
 
 export function commandList(app: App): Command[] {
@@ -1904,7 +2229,10 @@ export function commandList(app: App): Command[] {
 
 function findCommand(app: App, name: string): Command | undefined {
     const all = allCommands(app);
-    return all.find((c) => c.name === name) ?? all.find((c) => c.aliases?.includes(name));
+    // A bare name finds a plugin's command only when nothing else has it, the agent CLI's own commands included.
+    const cli = app.cliCommands?.provider === app.model?.provider ? app.cliCommands?.names : undefined;
+    const plugin = () => (cli?.has(name) ? undefined : pluginCommandFor(app.customCommands, name));
+    return all.find((c) => c.name === name) ?? all.find((c) => c.aliases?.includes(name)) ?? (plugin() && customToCommand(plugin()!));
 }
 
 function parseCommand(text: string): { name: string; args: string } | undefined {
@@ -1950,9 +2278,15 @@ export async function runCommand(app: App, text: string, draft?: Draft): Promise
         app.editor.restore([draft]);
         return true;
     }
+    // A command means the user is back: an idle compaction gives way to it (and to /goal, which may start or steer a turn).
+    if (app.busy && (!cmd.whileBusy || cmd.name === "goal")) await app.yieldIdleCompaction?.();
+    // On Claude Code and Codex, /goal is theirs: it goes to them (src/ui/app.ts nativeGoalCommand).
+    if (cmd.name === "goal" && app.nativeGoals()) return app.nativeGoalCommand(text.trim(), args);
+    // A new goal waits its turn in the queue like a prompt (with its images); the rest of /goal answers at once.
+    if (app.busy && cmd.name === "goal" && parseGoalCommand(args).kind === "set") return false;
     if (app.busy && !cmd.whileBusy) {
         // Turn-starting commands queue like a prompt (by the caller); a bare /plan only switches mode, so it can't wait.
-        if (cmd.custom || cmd.skill || cmd.name === "init" || cmd.name === "review" || (cmd.name === "plan" && args)) return false;
+        if (cmd.custom || cmd.skill || cmd.mcpPrompt || cmd.name === "init" || cmd.name === "review" || (cmd.name === "plan" && args)) return false;
         app.notice(`/${cmd.name} isn't available while ${APP_TITLE} is working. Press esc to interrupt first.`, "warn");
         if (draft) app.editor.restore([draft]);
         return true;
@@ -1965,6 +2299,69 @@ export async function runCommand(app: App, text: string, draft?: Draft): Promise
     }
     app.renderLive();
     return true;
+}
+
+/** /goal: set, show, pause, resume or clear the session's goal (src/agent/goal.ts). */
+async function goalCommand(app: App, args: string, draft?: Draft) {
+    const goal = app.goal;
+    if (!goal) return app.notice("No session yet.", "error");
+    const c = parseGoalCommand(args);
+    if (c.kind !== "set") app.print(["", theme.muted(`> /goal${args.trim() ? " " + args.trim() : ""}`)]);
+    if (draft?.attachments.size && c.kind !== "set") {
+        app.editor.restore([draft]);
+        return app.notice("Only /goal <condition> takes images.", "warn");
+    }
+    switch (c.kind) {
+        case "invalid":
+            return app.notice(c.message, "error");
+        case "status":
+            return app.print(() => goalStatusLines(goal));
+        case "clear": {
+            const was = goal.clear();
+            // A new goal sent mid-turn waits in the queue: cleared with it, not set after.
+            return app.notice(goalClearedNotice(was, app.dropQueuedGoals()));
+        }
+        case "pause":
+            if (!goal.active) return app.notice("No goal set");
+            goal.pause("Paused with /goal pause. /goal resume continues it.");
+            return app.notice(app.busy ? "Goal paused: the current turn finishes, then it waits for you. /goal resume continues it." : "Goal paused. /goal resume continues it.");
+        case "resume":
+            if (!goal.active) return app.notice("No goal set. /goal <condition> sets one.");
+            goal.resume();
+            if (app.busy) app.notice("Goal resumed: it's checked when the current turn ends.");
+            return;
+        case "set": {
+            if (!app.agent) return app.notice("No model is selected. Pick one with /model (or add an API key with /login).", "error");
+            const { prompt, display } = goal.set(c.condition);
+            if (!app.helperAnswers()) app.notice(`No model besides ${app.model?.name ?? "this one"} can check the goal, so it reports for itself each turn. Set smallModel (/config) to another provider's model for an independent check.`, "info");
+            await app.startTurn(prompt, { display, kind: "command", draft, goal: true });
+            return;
+        }
+    }
+}
+
+function goalStatusLines(goal: GoalController): string[] {
+    const v = goal.view();
+    if (!v) {
+        const last = goal.last;
+        if (last && last.result !== "cleared") {
+            return ["", heading(last.result === "met" ? "Goal achieved" : "Goal stopped (judged impossible)"), kv("Condition", last.condition), kv("Took", goalSummary(last.turns, last.ms, last.tokens)), ...(last.reason ? [kv("Reason", last.reason)] : []), ""];
+        }
+        return ["", "No goal set.", theme.muted("  /goal <condition> keeps working, turn after turn, until the condition holds. A check after each turn decides."), theme.muted("  Example: /goal all tests in test/auth pass and the linter is clean"), ""];
+    }
+    const state = { active: "active", checking: "checking…", waiting: "waiting", paused: "paused" }[v.state];
+    return [
+        "",
+        heading("Goal"),
+        kv("Condition", v.condition),
+        kv("State", v.note ? `${state} · ${v.note}` : state),
+        kv("Running", `${formatDuration(Date.now() - v.since)}${v.tokens ? ` · ${formatTokens(v.tokens)} tokens` : ""}`),
+        kv("Turns checked", String(v.turns)),
+        kv("Checked by", v.judge === "model" ? "a separate model, after each turn" : "the working model's own report (no other model can answer one-off requests)"),
+        ...(v.lastReason ? [kv("Last check", v.lastReason)] : []),
+        theme.muted("  /goal clear removes it · /goal pause · /goal resume"),
+        "",
+    ];
 }
 
 function helpCommand(app: App) {
@@ -1984,8 +2381,7 @@ function helpLines(app: App, cmds: ReturnType<typeof commandList>, custom: numbe
         `  ${theme.bashMode("!")} run a shell command    ${theme.memoryMode("#")} save a memory    ${bold("@")} attach a file    ${bold("$")} skills    ${bold("/")} commands    ${bold("\\⏎")} or ${bold("shift+⏎")} newline`,
         "",
         heading("Keys"),
-        `  ${bold("shift+tab")} cycle permission modes    ${bold("esc")} interrupt    ${bold("esc esc")} clear or rewind    ${bold("ctrl+c ×2")} exit`,
-        `  ${bold("ctrl+o")} verbose output    ${bold("ctrl+t")} todos    ${bold("ctrl+g")} edit in $EDITOR    ${bold("ctrl+l")} clear screen    ${bold("↑/↓")} history`,
+        ...keyHelp(app, cols),
         "",
         heading("Permission modes"),
         ...PERMISSION_MODES.map((m) => `  ${padEnd(MODE_INFO[m].color(MODE_INFO[m].label), 22)}${theme.muted(truncate(MODE_INFO[m].description, cols - 26))}`),

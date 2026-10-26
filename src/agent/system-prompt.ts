@@ -2,7 +2,7 @@ import { platform, release } from "os";
 import { APP_TITLE } from "../config/paths";
 import { gitSnapshot, gitRoot } from "../util/git";
 import { formatMemory, loadMemory } from "./memory";
-import type { ModelInfo } from "../providers/types";
+import { SESSION_CONTEXT_HEADING, type ModelInfo } from "../providers/types";
 import { pickShell } from "../tools/bash";
 
 const CORE = `You are ${APP_TITLE}, an interactive command-line coding agent. You help the user with software engineering work in their terminal: fixing bugs, adding features, refactoring, explaining code, running commands and more. Use the instructions below and the tools available to you.
@@ -31,6 +31,7 @@ Help with defensive security work, security research and authorized testing. Ref
 
 # Using tools
 - Prefer the dedicated tools over shell equivalents: Read (not cat/head/tail), Edit/MultiEdit (not sed/awk), Write (not echo/heredoc redirection), Glob (not find/ls for file search), Grep (not grep/rg). Use Bash for running programs, tests, builds, git and package managers.
+- When you have the Browser tools (BrowserNavigate, BrowserSnapshot, BrowserAct, BrowserScreenshot, BrowserEval, BrowserLogs), use them to check web UI work: start the dev server with Bash in the background, open its localhost address, and act on elements by the refs a snapshot lists rather than by coordinates. Take a screenshot only when how the page looks matters.
 - Read a file before editing it. Edits must match the file's exact text and indentation.
 - When several tool calls don't depend on each other, make them in the same response so they run in parallel.
 - Use the Task tool with the "explore" agent for broad searches across a large codebase, and to run independent investigations in parallel. Give sub-agents complete, self-contained instructions.
@@ -39,7 +40,8 @@ Help with defensive security work, security research and authorized testing. Ref
 - Messages may contain <system-reminder> tags. They carry information from the harness (mode changes, context), not from the user's request text.
 
 # Git
-- When asked to commit: review \`git status\` and \`git diff\`, follow the repository's commit message style, stage only the relevant files, and never commit secrets (.env files, credentials, keys).
+- When asked to commit: review \`git status\` and \`git diff\`, follow the repository's commit message style, commit only the relevant files, and never commit secrets (.env files, credentials, keys).
+- Commit, push and open pull requests with GitCommit, GitPush and CreatePullRequest. To follow a pull request's checks and reviews, call WatchPullRequest and end your turn: you're woken when there's news. Don't poll or sleep in Bash.
 - Never use destructive git commands (force push, reset --hard, clean -f, rewriting published history) unless the user explicitly asks.
 - Don't change git config. Don't skip hooks (--no-verify) unless asked.`;
 
@@ -52,33 +54,56 @@ export interface SystemPromptOptions {
     replaceCore?: string;
     includeGit?: boolean;
     includeMemory?: boolean;
+    /** The run's decision about the folder, for its memory files (see loadMemory). Left out, the folder's trust decides. */
+    projectFiles?: boolean;
+    /**
+     * `cwd` is a checkout of its own (a sub-agent's worktree), new each time: the part every
+     * session shares names `project`, the folder it's a checkout of, and the session context
+     * says where it works, with `note`.
+     */
+    checkout?: { project: string; note: string };
+    /** Aborted, the git snapshot's calls are stopped (the prompt is no longer wanted). */
+    signal?: AbortSignal;
 }
 
-export function environmentBlock(cwd: string, model: ModelInfo, includeGit = true): string {
+/**
+ * What the prompt says of the machine and project: the same for every session
+ * in the folder (on one model). `checkout`: the session works in a worktree of
+ * `cwd`, which the session context names.
+ */
+export function environmentBlock(cwd: string, model: ModelInfo, checkout = false): string {
     const root = gitRoot(cwd);
-    const lines = [
+    return [
         "# Environment",
-        `Working directory: ${cwd}`,
+        checkout ? `Project: ${cwd} (you work in a git worktree of it, under "Session context" below)` : `Working directory: ${cwd}`,
         `Is a git repository: ${root ? "yes" : "no"}${root && root !== cwd ? ` (root: ${root})` : ""}`,
         `Platform: ${platform()} ${release()}`,
         `Shell: ${pickShell()}`,
         ...shellNotes(platform(), pickShell()),
-        `Today's date: ${new Date().toISOString().slice(0, 10)}`,
         `Model: ${model.name ?? model.id} (${model.provider}:${model.id})`,
-    ];
-    if (includeGit && root) {
-        const g = gitSnapshot(cwd);
-        if (g) {
-            lines.push(
-                "",
-                "Git status at the start of this session (a snapshot; it won't update):",
-                `Current branch: ${g.branch ?? "(detached)"}`,
-                ...(g.mainBranch ? [`Main branch (usually the PR target): ${g.mainBranch}`] : []),
-                "",
-                ...(g.status === undefined ? [`Git status was not read: ${g.statusSkipped}.`] : ["Status:", g.status]),
-                ...(g.recentCommits ? ["", "Recent commits:", g.recentCommits] : []),
-            );
-        }
+    ].join("\n");
+}
+
+/**
+ * What the prompt says of this session only: the date, `extra` (where a
+ * worktree is), and the git status at its start. It goes last, under
+ * SESSION_CONTEXT_HEADING, so that everything before it is the same in every
+ * session and providers can cache it once.
+ */
+export async function sessionContextBlock(cwd: string, includeGit = true, extra?: string, signal?: AbortSignal): Promise<string> {
+    const lines = [SESSION_CONTEXT_HEADING, `Today's date: ${new Date().toISOString().slice(0, 10)}`];
+    if (extra) lines.push("", extra);
+    const g = includeGit && gitRoot(cwd) ? await gitSnapshot(cwd, signal) : undefined;
+    if (g) {
+        lines.push(
+            "",
+            "Git status at the start of this session (a snapshot; it won't update):",
+            `Current branch: ${g.branch ?? "(detached)"}`,
+            ...(g.mainBranch ? [`Main branch (usually the PR target): ${g.mainBranch}`] : []),
+            "",
+            ...(g.status === undefined ? [`Git status was not read: ${g.statusSkipped}.`] : ["Status:", g.status]),
+            ...(g.recentCommits ? ["", "Recent commits:", g.recentCommits] : []),
+        );
     }
     return lines.join("\n");
 }
@@ -97,13 +122,14 @@ export function shellNotes(os: string, shell: string, which: (prog: string) => s
     return notes;
 }
 
-export function buildSystemPrompt(o: SystemPromptOptions): string {
-    const parts = [o.replaceCore ?? CORE, environmentBlock(o.cwd, o.model, o.includeGit ?? true)];
+export async function buildSystemPrompt(o: SystemPromptOptions): Promise<string> {
+    const parts = [o.replaceCore ?? CORE, environmentBlock(o.checkout?.project ?? o.cwd, o.model, Boolean(o.checkout))];
     if (o.includeMemory ?? true) {
-        const mem = formatMemory(loadMemory(o.cwd), o.cwd);
+        const mem = formatMemory(loadMemory(o.cwd, o.projectFiles), o.cwd);
         if (mem) parts.push(mem);
     }
     if (o.append) parts.push(o.append);
+    parts.push(await sessionContextBlock(o.cwd, o.includeGit ?? true, o.checkout && `Working directory: ${o.cwd}\n\n${o.checkout.note}`, o.signal));
     return parts.join("\n\n");
 }
 

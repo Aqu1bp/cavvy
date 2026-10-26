@@ -1,0 +1,402 @@
+/* ---- Title bar ----------------------------------------------------------
+   Plain title on the sheet, the tools in one glass capsule at the far end.
+   The conversation scrolls under a soft blurred edge, like macOS's scroll
+   edge effect. (Where the bar sits in the sheet is the shell's.) */
+
+/* Its content sits on the window's top line (--top-line, tokens.css), level
+   with the traffic lights and the rail's buttons. The bar starts --win-pad
+   down the window, so its centre is on the line at the default height; a
+   shorter bar (compact density) pads its top by the difference instead. */
+.header {
+    position: relative;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    height: var(--header-h);
+    padding: max(0px, 2 * (var(--top-line) - var(--win-pad, 8px)) - var(--header-h)) 9px 0 20px;
+    flex: none;
+    min-width: 0;
+    user-select: none;
+    -webkit-user-select: none;
+    transition: padding var(--dur) var(--ease);
+}
+
+.header::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 -18px 0;
+    z-index: -1;
+    pointer-events: none;
+    background: linear-gradient(var(--sheet) 45%, color-mix(in srgb, var(--sheet) 0%, transparent));
+    -webkit-backdrop-filter: blur(6px);
+    backdrop-filter: blur(6px);
+    -webkit-mask-image: linear-gradient(#000 55%, transparent);
+    mask-image: linear-gradient(#000 55%, transparent);
+}
+
+/* The rail's two buttons, here while it's hidden or floating: on the lights'
+   line, a fixed gap after them (macOS), then a hairline before the title. */
+.bar-rail {
+    display: none;
+    align-items: center;
+    gap: 2px;
+    flex: none;
+}
+
+.bar-rail::after {
+    content: "";
+    width: 1px;
+    height: 16px;
+    margin: 0 6px;
+    background: var(--line-strong);
+    flex: none;
+}
+
+.header.rail-off,
+[data-rail="overlay"] .header {
+    padding-left: 12px;
+}
+
+/* The lights end 78px from the window's left (x 18, three 14px buttons 23px apart, measured in
+   the app); the sheet starts 8px in, so the buttons start 14px after them, as in the mockup. */
+.header.traffic.rail-off,
+[data-rail="overlay"] .header.traffic {
+    padding-left: 84px;
+}
+
+.header.rail-off .bar-rail,
+[data-rail="overlay"] .header .bar-rail {
+    display: flex;
+}
+
+/* A session needs you (Header.tsx NeedsYou): an amber dot on Show sidebar. */
+.bar-rail .has-wait {
+    position: relative;
+}
+
+.bar-rail .has-wait::after {
+    content: "";
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--warn);
+    box-shadow: 0 0 0 2px var(--sheet);
+}
+
+.header .hb {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: auto;
+    min-width: 28px;
+    height: 28px;
+    padding: 0 8px;
+    border-radius: var(--pill);
+    color: var(--fg-2);
+    transition: background 140ms, transform 160ms var(--ease), color 140ms;
+}
+
+.header .hb:hover:not(:disabled),
+.header .hb[aria-expanded="true"] {
+    background: var(--hover);
+    color: var(--fg);
+}
+
+.header .hb:active:not(:disabled) {
+    transform: scale(0.94);
+    background: var(--press);
+}
+
+.header .hb.on,
+.header .hb[aria-pressed="true"] {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.header .hb:disabled {
+    opacity: 0.4;
+}
+
+/* ---- Title: project (rail hidden), name, branch ------------------------ */
+
+.crumbs {
+    display: flex;
+    align-items: baseline;
+    gap: calc(10 * var(--sp));
+    min-width: 0;
+    flex: 0 1 auto;
+}
+
+.proj {
+    display: none;
+    align-items: baseline;
+    min-width: 0;
+    max-width: calc(200 * var(--sp));
+    flex: none;
+    margin-right: calc(-6 * var(--sp));
+    color: var(--fg-3);
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.proj:hover {
+    color: var(--fg);
+}
+
+.proj .proj-sep {
+    margin: 0 calc(6 * var(--sp));
+    color: var(--fg-4);
+}
+
+.header.rail-off .proj,
+[data-rail="overlay"] .header .proj {
+    display: inline-flex;
+}
+
+.ttl-h {
+    margin: 0 0 0 calc(-4 * var(--sp));
+    min-width: 0;
+    padding: calc(2 * var(--sp)) calc(4 * var(--sp));
+    border-radius: calc(6 * var(--sp));
+    font-size: 1rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.title-input {
+    min-width: calc(200 * var(--sp));
+    max-width: calc(460 * var(--sp));
+    height: calc(26 * var(--sp));
+    margin-left: calc(-4 * var(--sp));
+    padding: 0 calc(4 * var(--sp));
+    border: 0;
+    border-radius: calc(6 * var(--sp));
+    background: var(--hover);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+    color: var(--fg);
+    font-size: 1rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+}
+
+.title-input:focus {
+    outline: none;
+}
+
+.br {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
+    min-width: 0;
+    max-width: calc(240 * var(--sp));
+    flex: 0 1 auto;
+    color: var(--fg-3);
+    font-size: 0.893rem;
+    white-space: nowrap;
+    align-self: center;
+}
+
+.br svg {
+    flex: none;
+}
+
+.crumbs .pill {
+    align-self: center;
+}
+
+/* Settings and a sub-agent's view: crumbs in the same voice. */
+.bc {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    min-width: 0;
+    max-width: calc(260 * var(--sp));
+    color: var(--fg-3);
+    font-weight: 500;
+    white-space: nowrap;
+    align-self: center;
+    transition: color var(--dur-fast);
+}
+
+button.bc:hover {
+    color: var(--fg);
+}
+
+.bc.static {
+    cursor: default;
+}
+
+.bc.current {
+    color: var(--fg);
+    font-weight: 650;
+    letter-spacing: -0.01em;
+}
+
+.bc-sep {
+    margin: 0 calc(-4 * var(--sp));
+    color: var(--fg-4);
+    flex: none;
+    align-self: center;
+}
+
+/* ---- Tools: one glass capsule (a run's models get their own) ---------- */
+
+.bar-end {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+    flex: none;
+}
+
+/* ---- Needs you, while the rail is hidden --------------------------------
+   An amber glass pill just before the tools, as tall as the capsule beside
+   it: one session by name, or how many. Narrow, the words go. */
+
+.needs {
+    display: inline-flex;
+    align-items: center;
+    align-self: stretch;
+    gap: calc(7 * var(--sp));
+    min-width: 0;
+    max-width: calc(340 * var(--sp));
+    /* The capsule's height beside it (stretched); on its own (a sub-agent's view), a button's. */
+    min-height: calc(28 * var(--sp));
+    padding: 0 calc(14 * var(--sp)) 0 calc(12 * var(--sp));
+    margin-right: calc(4 * var(--sp));
+    border-radius: var(--pill);
+    flex: 0 1 auto;
+    color: var(--warn);
+    font-weight: 500;
+    white-space: nowrap;
+    animation: needs-pill-in 520ms var(--spring);
+    transition: filter 140ms;
+}
+
+:is(.header, .set-top) .needs.glass {
+    background-image: linear-gradient(color-mix(in srgb, var(--warn) 10%, transparent), color-mix(in srgb, var(--warn) 5%, transparent));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--warn) 34%, transparent), inset 0 1px 0 var(--ctl-hi), var(--ctl-shadow);
+}
+
+.needs:hover,
+.needs[aria-expanded="true"] {
+    filter: brightness(1.04);
+}
+
+.needs:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: 2px;
+}
+
+.needs > svg {
+    flex: none;
+}
+
+.needs-t {
+    min-width: 0;
+    color: var(--fg);
+}
+
+.needs-w {
+    flex: none;
+}
+
+.needs b {
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+}
+
+.needs-chev {
+    margin-left: calc(-2 * var(--sp));
+}
+
+/* In Settings' top line (it covers the rail and the title bar): a button's height, beside Close. */
+.set-top .needs {
+    align-self: center;
+}
+
+/* Getting narrow: the title gives up room first, so the session's own title keeps some. */
+:where(.main[data-narrow~="700"]) .needs {
+    max-width: calc(220 * var(--sp));
+}
+
+/* Under 600px: just the hand and how many. */
+:where(.main[data-narrow~="600"]) .needs :is(.needs-t, .needs-w) {
+    display: none;
+}
+
+:where(.main[data-narrow~="600"]) .needs {
+    padding: 0 calc(11 * var(--sp));
+}
+
+/* One session: its count shows only when its name doesn't. */
+.needs-one {
+    display: none;
+}
+
+:where(.main[data-narrow~="600"]) .needs .needs-one {
+    display: inline;
+}
+
+@keyframes needs-pill-in {
+    from {
+        opacity: 0;
+        transform: translateY(-6px) scale(0.96);
+    }
+}
+
+[data-motion="instant"] .needs {
+    animation: none;
+}
+
+.cap {
+    display: inline-flex;
+    align-items: center;
+    gap: 1px;
+    height: 34px;
+    padding: 0 3px;
+    border-radius: var(--pill);
+    flex: none;
+}
+
+.cap .sep {
+    width: 1px;
+    height: 16px;
+    margin: 0 3px;
+    background: var(--line);
+    flex: none;
+}
+
+.diffchip .a {
+    color: var(--add-fg);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.diffchip .d {
+    color: var(--del-fg);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.header .hb.diffchip {
+    gap: 5px;
+    color: var(--fg-2);
+}
+
+.header .hb.diffchip.on {
+    color: var(--fg);
+}
+
+/* A shortcut at the end of a menu row (the session menu's Find). */
+.menu-kbd {
+    margin-left: auto;
+}

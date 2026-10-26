@@ -8,7 +8,7 @@ import { readFileSync } from "fs";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { applyOp, coalesce, tail, wireReplacer, AGENT_BLOCKS, PROGRESS_LIMIT } = await import("../src/server/timeline");
+const { applyOp, coalesce, fromWireState, tail, wireReplacer, AGENT_BLOCKS, PROGRESS_LIMIT } = await import("../src/server/timeline");
 const { fileDiff, trimInput, truncateText } = await import("../src/server/diffs");
 const { agentHead, agentStep, agentsFromTurns, cutOffPrompt, promptKey, replay, runsAgent, shownStep, toolBlockFromCall, UiLog, withoutActionsNote } = await import("../src/server/history");
 const { registerSecret, unregisterSecret } = await import("../src/util/redact");
@@ -176,6 +176,21 @@ describe("timeline ops", () => {
         applyOp(v, wire);
         expect(v.state.activity).toBeUndefined();
         expect("activity" in v.state).toBe(true);
+    });
+
+    // Issue #190: a snapshot's unset fields arrive as null too, and the GUI's Stop check read `.judge` of a null goal.
+    test("a snapshot's unset fields are unset in the GUI, so a session without a goal can be read (#190)", async () => {
+        const { canStop } = await import("../gui/src/lib/session-status");
+        const snap = { state: { id: "s", busy: false, goal: undefined, activity: undefined, queued: [] } as unknown as SessionState, turns: [] as Turn[], agents: [] as AgentRun[], seq: 1 };
+        const wire = JSON.parse(JSON.stringify(snap, wireReplacer));
+        expect(wire.state.goal).toBeNull();
+        const state = fromWireState(wire.state);
+        expect(state.goal).toBeUndefined();
+        expect(state.activity).toBeUndefined();
+        expect(state.queued).toEqual([]);
+        expect(canStop(state)).toBe(false);
+        expect(canStop({ ...state, busy: true })).toBe(true);
+        expect(canStop({ ...state, goal: { condition: "c", state: "active", since: 1, turns: 0, tokens: 0, judge: "model" } })).toBe(true);
     });
 
     test("live output keeps only its tail", () => {
@@ -386,6 +401,30 @@ describe("replay", () => {
         ]);
         expect(cutOffPrompt(ui, 0, messages)).toBeUndefined();
         ui.close();
+    });
+
+    test("a notice's details are kept with it and shown under it when the session is opened again (#300)", () => {
+        const session = Session.create(join(tempDir(), "proj-notice-details"));
+        try {
+            session.push(user("wait for checks"));
+            session.recordNotice("warn", "Stopped 2 background tasks", { details: ["Wait for checks", "bun test ./test/a.test.ts…"] });
+            session.recordNotice("info", "Plain");
+            session.release();
+            const reopened = Session.load(session.file);
+            try {
+                expect(reopened.notices.map((n) => [n.text, n.details])).toEqual([
+                    ["Stopped 2 background tasks", ["Wait for checks", "bun test ./test/a.test.ts…"]],
+                    ["Plain", undefined],
+                ]);
+                let n = 0;
+                const turns = replay({ segments: [{ messages: reopened.messages }], current: reopened.messages, currentNotices: reopened.notices, ui: new UiLog(join(tempDir(), "notice-details.jsonl"), "notice-details", false), meta: (c) => ({ title: c.name }), newId: () => `nd${++n}` });
+                const notices = turns.flatMap((t) => t.blocks).filter((b) => b.t === "notice");
+                expect(notices).toEqual([
+                    { t: "notice", id: expect.any(String), level: "warn", text: "Stopped 2 background tasks", details: ["Wait for checks", "bun test ./test/a.test.ts…"] },
+                    { t: "notice", id: expect.any(String), level: "info", text: "Plain" },
+                ]);
+            } finally { reopened.release(); }
+        } finally { session.release(); }
     });
 
     test("a backend's note of what it did stays in history but not in the transcript", () => {
@@ -619,6 +658,32 @@ describe("replay", () => {
             ["new prompt", false, 1],
         ]);
     });
+
+    test("a prompt a compaction kept is shown once, where it went on: rewindable, with its snapshot and times", () => {
+        const kept = user("look at this", "prompt", { meta: { kind: "prompt", checkpoint: 7 } } as Partial<Message>);
+        const summary = user("Summary.", "prompt", { meta: { kind: "summary" } } as Partial<Message>);
+        const answer: Message = { role: "assistant", content: [{ type: "text", text: "Looked." }] };
+        const segs = [{ messages: [user("old prompt"), { role: "assistant", content: [{ type: "text", text: "old answer" }] } as Message, kept] }, { summary: "Summary.", kept: true, messages: [summary, kept, answer] }];
+        // A log written before the prompt moved: its turn's record is where it was sent.
+        const ui = new UiLog(join(tempDir(), "kept.jsonl"), "kept", false);
+        ui.write({ t: "turn", seg: 0, index: 2, at: 10 });
+        ui.write({ t: "turn", seg: 0, index: 2, at: 10, end: 20, status: "done" });
+        let n = 0;
+        const show = (current: Message[]) => replay({ segments: segs, current, ui, meta: (c) => ({ title: c.name }), newId: () => `k${++n}` });
+        const turns = show(segs[1]!.messages);
+        expect(turns.map((t) => [t.prompt?.text ?? t.blocks[0]?.t, Boolean(t.archived), t.prompt?.index, t.snapshotId, t.startedAt, t.endedAt])).toEqual([
+            ["old prompt", true, undefined, undefined, undefined, undefined],
+            ["compact", false, undefined, undefined, undefined, undefined],
+            ["look at this", false, 1, 7, 10, 20],
+        ]);
+        expect(turns.at(-1)!.pos).toEqual({ seg: 1, index: 1 });
+        expect(turns.at(-1)!.blocks.map((b) => (b.t === "text" ? b.text : b.t))).toEqual(["Looked."]);
+        // Its record where it went on (the server writes one when it moves) comes first.
+        ui.write({ t: "turn", seg: 1, index: 1, at: 11 });
+        expect(show(segs[1]!.messages).at(-1)!.startedAt).toBe(11);
+        // Rewound to it: it's gone, not left behind in the archive.
+        expect(show([summary]).filter((t) => t.prompt?.text === "look at this")).toEqual([]);
+    });
 });
 
 describe("sessions across projects", () => {
@@ -761,6 +826,7 @@ test("a delegated task's effective effort is set once and survives agent-head re
         model: { provider: "codex", id: "test" },
         agent: {
             delegatedTasks: [task],
+            backgroundTasks: () => [],
             dispose: async () => {},
             run: async () => {
                 session.push({ role: "user", content: [{ type: "text", text: "Delegate a review" }] });

@@ -1,0 +1,418 @@
+/* ---- Window ----------------------------------------------------------
+   design/glass: the window is glass. The rail sits straight on it; one
+   opaque sheet, inset 8px, holds the work: the conversation | the
+   inspector, and the terminal as a bottom row under both. Controls float
+   over the sheet as small glass pieces.
+
+   Containers other areas build in (lib/layout.ts keeps their sizes):
+     .app      the window. data-rail: docked (beside the sheet) or overlay
+               (a drawer over it, below 900px), always set; .rail-off while
+               the sidebar preference hides a docked rail; data-railopen
+               (the drawer), data-insp, data-inspmode (dock|float|fill),
+               data-inspshort, data-term, data-tmax, data-settings
+     .win-rail the rail column (Sidebar, or SettingsNav in Settings)
+     .sheet    the sheet's grid
+     .main     the conversation column. data-narrow, data-short: the widths
+               and heights it's within (lib/layout.ts, COLUMN_NARROW/SHORT)
+     .insp     the inspector column (RightPanel, or ReviewPane)
+     .terminal-panel  the bottom row
+   Variables: --rail-w, --bar-h, --insp-w, --insp-col, --insp-bottom, --term-h.
+   The title bar (Header) clears the traffic lights itself. */
+
+/* The sizes App.tsx keeps (lib/layout.ts) change on every frame of dragging
+   an edge, so they're not inherited: each is set on the element that uses it
+   (--rail-w on .win and .win-rail, --insp-col and --term-h on .sheet, --insp-w
+   and --insp-bottom on .insp). An inherited custom property changing restyles
+   every element under the one it's on.
+   Nothing takes one with `--x: inherit` either: WebKit (the app's WKWebView)
+   doesn't recompute an explicitly inherited value when only the parent's
+   inline value changes, so the child keeps a stale size (Chrome does). What's
+   under .win-rail and .insp fills a grid track sized by the element's own value. */
+@property --rail-w {
+    syntax: "<length>";
+    inherits: false;
+    initial-value: 260px;
+}
+
+@property --insp-w {
+    syntax: "<length>";
+    inherits: false;
+    initial-value: 360px;
+}
+
+@property --insp-col {
+    syntax: "<length>";
+    inherits: false;
+    initial-value: 0px;
+}
+
+@property --insp-bottom {
+    syntax: "<length>";
+    inherits: false;
+    initial-value: 8px;
+}
+
+@property --term-h {
+    syntax: "<length>";
+    inherits: false;
+    initial-value: 0px;
+}
+
+.app {
+    --win-pad: 8px;
+    position: relative;
+    display: flex;
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+}
+
+.win {
+    --rail-w: var(--sidebar-w);
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: var(--rail-w) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    padding: var(--win-pad) var(--win-pad) var(--win-pad) 0;
+    transition: grid-template-columns var(--dur-panel) var(--ease), padding var(--dur-panel) var(--ease);
+}
+
+.rail-off .win,
+[data-rail="overlay"] .win {
+    grid-template-columns: 0 minmax(0, 1fr);
+    padding-left: var(--win-pad);
+}
+
+/* The window moves by its edges: this lies under the rail and the sheet, so
+   only the gaps around them take the drag (data-window-drag). The whole top
+   strip moves it too, whatever is on it (lib/window-drag.ts). */
+.win-drag {
+    position: absolute;
+    inset: 0;
+}
+
+/* ---- Rail ------------------------------------------------------------ */
+
+/* Its one track keeps the rail's width (its own --rail-w) while the column opens and closes;
+   the sidebar, and the settings sections over it, fill that track. */
+.win-rail {
+    grid-column: 1;
+    grid-row: 1;
+    position: relative;
+    display: grid;
+    grid-template-columns: var(--rail-w);
+    grid-template-rows: minmax(0, 1fr);
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    color: var(--rail-fg);
+    transition: opacity 240ms, transform var(--dur-panel) var(--ease);
+}
+
+.win-rail > * {
+    grid-area: 1 / 1;
+    min-width: 0;
+}
+
+.win-rail > .keep > * {
+    flex: 1;
+    min-width: 0;
+}
+
+/* What Settings covers, kept mounted and laid out under it (App.tsx), so coming back is a repaint:
+   the rail under the settings sections, the session under the settings page. Not positioned, so
+   what's absolutely placed in it (the stage, Home) still fills the column it's in. */
+.keep {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+}
+
+/* Its own stacking context, so nothing in the session (the composer dock at z-index 30, the
+   "Latest" pill at 25) paints over the settings page (z-index 6) while it's covered. */
+.main > .keep {
+    isolation: isolate;
+}
+
+/* The rail shows through the settings sections (both are on the window's glass): hidden outright. It's small. */
+.win-rail > .keep.covered {
+    visibility: hidden;
+}
+
+/* Settings over what it covers, each in a box that's always there: WebKit restyles every element
+   of a sibling when a child comes or goes (for :first-child and the like), which for the session
+   is all of it. Clicks go through while it's empty. */
+.settings-host {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    pointer-events: none;
+}
+
+.settings-host > * {
+    flex: 1;
+    min-width: 0;
+    pointer-events: auto;
+}
+
+/* The settings page is opaque: the session needs no restyling under it (lib/cover.ts). Under the
+   reconnecting banners (z-index 7), over the session's own layers. */
+.main > .settings-host {
+    z-index: 6;
+}
+
+[data-rail="docked"].rail-off .win-rail {
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* Narrow windows: the rail is a drawer over the sheet when you open it.
+   (The rail's own look floats it: [data-rail="overlay"] .sidebar.) */
+[data-rail="overlay"] .win-rail {
+    position: absolute;
+    z-index: 40;
+    left: var(--win-pad);
+    top: var(--win-pad);
+    bottom: var(--win-pad);
+    width: var(--rail-w);
+    border-radius: calc(14 * var(--sp));
+    transform: translateX(calc(-100% - 16px));
+}
+
+[data-rail="overlay"][data-railopen="on"] .win-rail {
+    transform: none;
+}
+
+/* Over the window while the drawer is open, dimming it: a click anywhere else closes it.
+   (The mockup's black at 18%, from the window's stroke: 22% black in light, 60% in dark.) */
+.rail-scrim {
+    position: absolute;
+    inset: 0;
+    z-index: 39;
+    background: color-mix(in srgb, var(--win-stroke) 82%, transparent);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--dur) var(--ease);
+}
+
+[data-theme="dark"] .rail-scrim {
+    background: color-mix(in srgb, var(--win-stroke) 30%, transparent);
+}
+
+[data-rail="overlay"][data-railopen="on"] .rail-scrim {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* ---- Sheet ----------------------------------------------------------- */
+
+.sheet {
+    grid-column: 2;
+    grid-row: 1;
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--insp-col);
+    grid-template-rows: minmax(0, 1fr) var(--term-h);
+    background: var(--sheet);
+    border-radius: var(--r-sheet);
+    box-shadow: var(--sheet-shadow);
+    overflow: hidden;
+    transition: grid-template-columns var(--dur-panel) var(--ease), grid-template-rows var(--dur-panel) var(--ease);
+}
+
+/* The conversation column. Not a query container: WebKit restyles everything in one each time its size
+   changes, which with a long conversation took 300ms or more (a panel opening, a window resize). Other
+   areas size their parts by the steps its size is within, which App.tsx sets from lib/layout.ts:
+   `:where(.main[data-narrow~="600"]) { .x {…} }` is what `@container main (max-width: 600px)` was, and
+   adds no specificity either. Its height, which `cqh` measured, is --column-h on the boxes that use it
+   (state/ui.ts columnHeight). */
+.main {
+    grid-row: 1;
+    grid-column: 1;
+    --bar-h: var(--header-h);
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+    contain: size;
+    /* Its layers (title bar, dock, pills) stay under a floating inspector and the terminal. */
+    isolation: isolate;
+}
+
+/* The title bar: the top row of the conversation column, over what scrolls under it. */
+.main > .header,
+.main > .keep > .header {
+    position: relative;
+    z-index: 5;
+    flex: none;
+    height: var(--bar-h);
+}
+
+/* Maximized, the terminal is the whole sheet; the conversation and inspector wait behind it. */
+[data-tmax="on"] .main,
+[data-tmax="on"] .insp {
+    visibility: hidden;
+}
+
+/* ---- Inspector ------------------------------------------------------- */
+
+/* Its content fills its one track: the inspector's width (its own --insp-w) less the hairline, which
+   it keeps while the column opens and closes. */
+.insp {
+    grid-row: 1;
+    grid-column: 2;
+    position: relative;
+    display: grid;
+    grid-template-columns: calc(var(--insp-w) - 0.5px);
+    grid-template-rows: minmax(0, 1fr);
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--insp-bg);
+    border-left: 0.5px solid var(--line);
+}
+
+[data-insp="off"][data-inspmode="dock"] .insp {
+    border-left-color: transparent;
+}
+
+.insp > :not(.insp-resizer) {
+    min-width: 0;
+    min-height: 0;
+}
+
+/* Narrow sheets: the inspector floats over the conversation, ending above the composer. */
+[data-inspmode="float"] .insp {
+    grid-area: auto;
+    position: absolute;
+    z-index: 9;
+    top: 54px;
+    right: 8px;
+    bottom: var(--insp-bottom);
+    width: min(var(--insp-w), calc(100% - 16 * var(--sp)));
+    grid-template-columns: minmax(0, 1fr);
+    border-left: 0;
+    border-radius: calc(12 * var(--sp));
+    box-shadow: var(--pop-shadow);
+    transform: translateX(calc(100% + 16px));
+    transition: transform var(--dur-panel) var(--ease), bottom var(--dur-panel) var(--ease);
+}
+
+[data-inspmode="float"][data-insp="on"] .insp {
+    transform: none;
+}
+
+/* A diff reader too wide to dock fills the sheet under the title bar, ending above the composer like a
+   floating one. The conversation behind it would show only as a cut-off strip under the title bar, so it's hidden;
+   Find and a jump to a message close the reader first (lib/layout.ts coversConversation). */
+[data-inspmode="fill"] .insp {
+    grid-area: auto;
+    position: absolute;
+    z-index: 9;
+    top: 54px;
+    left: 8px;
+    right: 8px;
+    bottom: var(--insp-bottom);
+    grid-template-columns: minmax(0, 1fr);
+    border-left: 0;
+    border-radius: calc(12 * var(--sp));
+    box-shadow: var(--pop-shadow);
+    transition: bottom var(--dur-panel) var(--ease);
+    animation: rise var(--dur-panel) var(--ease);
+}
+
+[data-inspmode="fill"] .main .transcript-wrap {
+    visibility: hidden;
+}
+
+.insp-resizer {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 8px;
+    cursor: col-resize;
+    z-index: 8;
+    touch-action: none;
+}
+
+.insp-resizer::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--accent);
+    opacity: 0;
+    transition: opacity 150ms;
+}
+
+.insp-resizer:hover::after,
+.insp-resizer:focus-visible::after,
+.insp-resizer.drag::after {
+    opacity: 1;
+}
+
+.insp-resizer:focus-visible {
+    outline: none;
+}
+
+/* ---- Bits of the window ---------------------------------------------- */
+
+/* Not connected: a small note under the title bar. */
+.main > .banner {
+    position: absolute;
+    top: calc(var(--bar-h) + 6 * var(--sp));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 7;
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    height: calc(30 * var(--sp));
+    padding: 0 calc(14 * var(--sp));
+    border-radius: var(--pill);
+    font-size: 0.857rem;
+    font-weight: 500;
+    white-space: nowrap;
+    color: var(--warn);
+    background: color-mix(in srgb, var(--warn) 12%, var(--sheet));
+    box-shadow: 0 0 0 0.5px var(--line), var(--ctl-shadow);
+}
+
+.main > .banner + .banner {
+    top: calc(var(--bar-h) + 42 * var(--sp));
+}
+
+.hb:active:not(:disabled),
+.btn:active:not(:disabled),
+.send:active:not(:disabled) {
+    transform: scale(0.97);
+}
+
+/* Dragging an edge: no easing behind the pointer. */
+body.resizing .win,
+body.resizing .sheet,
+body.resizing .insp,
+.sheet:has(> .terminal-panel.dragging) {
+    transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .win,
+    .win-rail,
+    .rail-scrim,
+    .sheet,
+    .insp {
+        transition: none;
+    }
+}

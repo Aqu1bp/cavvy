@@ -8,10 +8,13 @@ import { join, resolve } from "path";
 import { randomBytes } from "crypto";
 import { ensureDir, paths, projectStateDir, APP_TITLE, APP_VERSION } from "../config/paths";
 import type { Message, Usage } from "../providers/types";
-import type { PlanLink } from "../server/protocol";
+import { accountNoticeText, stoppedText, type NoticeAccount, type NoticeData, type NoticeLimit, type NoticeStopped, type PlanLink, type StoppedTask } from "../server/protocol";
+import type { GoalRecord } from "./goal";
+import type { BackgroundTaskInfo } from "../backends/live/info";
 import { textOf } from "../providers/types";
 import { redact, redactedJson } from "../util/redact";
-import { defaultAccount, validAccountId } from "../providers/accounts";
+import { accountPlace, defaultAccount, historyFolder, validAccountId, type AccountPlace } from "../providers/accounts";
+import { validJob, type ScheduledJob } from "./schedule";
 
 export { redactedJson };
 
@@ -64,6 +67,14 @@ export function redactMessage(m: Message): Message {
             changed = true;
             return { ...p, content: c };
         }
+        // Checked (and redacted) when it was attached: a value registered since, while it waited in the queue, too.
+        if (p.type === "file") {
+            const name = redact(p.name);
+            const text = p.kind === "text" ? redact(p.text) : undefined;
+            if (name === p.name && (text === undefined || text === (p as { text: string }).text)) return p;
+            changed = true;
+            return { ...p, name, ...(text !== undefined ? { text } : {}) };
+        }
         return p;
     });
     return changed ? { ...m, content } : m;
@@ -75,11 +86,13 @@ export function redactMessage(m: Message): Message {
  * sent to a model. `index` is how many messages there were when it happened,
  * so it belongs to the turn of the prompt before it.
  */
-export interface TurnNotice {
+export interface TurnNotice extends NoticeData {
     index: number;
     level: "info" | "warn" | "error";
     text: string;
     at: number;
+    /** What it's about, one short line each (the background tasks Harness stopped): shown folded under the text. */
+    details?: string[];
 }
 
 export type Line =
@@ -89,13 +102,19 @@ export type Line =
     | { t: "account"; provider: string; id: string }
     | { t: "fastMode"; enabled: boolean }
     | { t: "title"; title: string }
-    | { t: "compact"; summary: string }
+    /** kept: the last message before it goes on after the summary, the same message moved (the GUI shows it once, where it went). */
+    | { t: "compact"; summary: string; /** Compacted while idle, before the prompt cache expired. */ idle?: true; kept?: true }
     | { t: "rewind"; count: number }
     /** unknown: no price was known; at: when spent (ms), absent in older records. */
     | { t: "usage"; usage: Usage; cost: number; model: string; unknown?: true; at?: number }
     | ({ t: "notice" } & TurnNotice)
     /** An agent backend's own session (Claude Code) or thread (Codex); id null forgets it. */
-    | { t: "backend"; provider: string; id: string | null; synced?: number; fork?: boolean; folder?: string }
+    | { t: "backend"; provider: string; id: string | null; synced?: number; fork?: boolean; folder?: string; history?: string; unsent?: string }
+    /**
+     * A native thread set aside for its place (ParkedBackend), by its home: id null, none kept there any longer. Older
+     * versions skip these lines: they had forgotten the thread (the backend line with id null written with it).
+     */
+    | { t: "parked"; provider: string; id: string | null; synced?: number; fork?: boolean; folder: string; history?: string; unsent?: string }
     /** A plan the agent presented (ExitPlanMode), kept so it can be saved or taken elsewhere later: Claude Code's never reach the messages. */
     | { t: "plan"; id: string; text: string; at: number }
     /** A plan taken to a new worktree: where it came from, or where it went. Older versions skip these lines. */
@@ -103,7 +122,15 @@ export type Line =
     /** This session was brought in from a Claude Code or Codex session (the first messages). */
     | ({ t: "import" } & ImportRecord)
     /** A backend session or thread one of this session's sub-agents (Task, delegate) ran on. */
-    | { t: "subagent"; provider: string; id: string };
+    | { t: "subagent"; provider: string; id: string }
+    /** Its durable schedules as they are now (the last line wins). */
+    | { t: "schedules"; jobs: ScheduledJob[] }
+    /** The /goal set in this session; null when it ended. Older versions skip these lines. */
+    | { t: "goal"; goal: GoalRecord | null }
+    /** A background task as it is now (the last line for its id wins): started, or ended. Older versions skip these lines. */
+    | { t: "bgtask"; task: BackgroundTaskInfo }
+    /** `model` refused a request for the images of the messages at `indexes` (see refuseImages). Older versions skip these lines. */
+    | { t: "imagesRefused"; model: string; indexes: number[] };
 
 /**
  * Where an imported session came from. It stays in the file for good, so the
@@ -137,9 +164,33 @@ export interface PresentedPlan {
     at: number;
 }
 
+function validGoal(g: unknown): GoalRecord | undefined {
+    const x = g as Record<string, unknown> | null;
+    if (!x || typeof x.condition !== "string" || !x.condition.trim()) return undefined;
+    return { condition: x.condition, setAt: typeof x.setAt === "number" ? x.setAt : 0 };
+}
+
+/** A backend line's record of where its native thread lives (AccountPlace). */
+export function placeFields(place: AccountPlace | undefined): { folder?: string; history?: string } {
+    return place ? { folder: place.folder, ...(place.history ? { history: place.history } : {}) } : {};
+}
+function samePlace(a: AccountPlace | undefined, b: AccountPlace | undefined): boolean {
+    return a?.folder === b?.folder && a?.history === b?.history;
+}
+/**
+ * Whether a CLI in `place` finds a native thread that lives in `bound`: the same home, or another whose history is
+ * the same folder. A place saved before histories were recorded has only its home: that home's history now stands for it.
+ */
+function findsIn(provider: string, bound: AccountPlace, place: AccountPlace | undefined): boolean {
+    if (!place) return false;
+    if (bound.folder === place.folder) return true;
+    const history = bound.history ?? historyFolder(provider, bound.folder);
+    return Boolean(history && place.history && history === place.history);
+}
+
 function validLink(l: unknown): l is PlanLink {
     const x = l as Record<string, unknown> | null;
-    return Boolean(x) && (x!.role === "from" || x!.role === "to") && ["session", "folder", "path", "branch"].every((k) => typeof x![k] === "string") && typeof x!.at === "number";
+    return Boolean(x) && (x!.role === "from" || x!.role === "to") && ["session", "folder", "path", "branch"].every((k) => typeof x![k] === "string") && typeof x!.at === "number" && (x!.plan === undefined || typeof x!.plan === "string");
 }
 
 /**
@@ -152,6 +203,22 @@ export interface BackendSession {
     synced: number;
     /** Shared with a fork: never continued in place, only forked (the next turn gets a new id). */
     fork?: boolean;
+    /**
+     * What it wasn't sent of the conversation before its place: a turn its CLI started by itself (adopted, a wake)
+     * moved its place past messages it never saw. Goes with its next prompt; never part of the history other models see.
+     */
+    unsent?: string;
+}
+
+/**
+ * A native thread the session isn't on now (#413): it switched to an account whose CLI can't find it. Kept for its
+ * place, with its own cursor, so a switch back to an account whose CLI finds it again goes on with it, sent only what
+ * it missed. One per place: of two that one CLI would find, only the later is kept.
+ */
+export interface ParkedBackend {
+    provider: string;
+    place: AccountPlace;
+    session: BackendSession;
 }
 
 export interface SessionSummary {
@@ -194,18 +261,35 @@ export class Session {
     /** Plans presented, oldest first (the last few). */
     plans: PresentedPlan[] = [];
     planLinks: PlanLink[] = [];
-    /** The home that owns each native thread, separate from the public resume map. */
-    private backendFolders = new Map<string, string>();
+    /** Where each native thread lives (its home, and that home's history), separate from the public resume map. */
+    private backendPlaces = new Map<string, AccountPlace>();
+    /** Native threads set aside for their places (ParkedBackend). */
+    private parked: ParkedBackend[] = [];
     /** How turns of the current history ended, where the messages don't say (see TurnNotice). */
     notices: TurnNotice[] = [];
+    /** Each switch notice recordSwitch wrote, to its run: the switches merged into one line (in memory only). */
+    private switchRuns = new WeakMap<TurnNotice, object>();
     /** The Claude Code or Codex session this one was imported from. */
     imported?: ImportRecord;
+    /** Durable schedules as last saved (src/agent/schedule.ts), for restoring when it's opened again. */
+    schedules: ScheduledJob[] = [];
+    private savedSchedules = "[]";
+    /** Its background tasks as the log has them, by id (src/agent/background.ts). A fork doesn't take them. */
+    readonly backgroundTasks = new Map<string, BackgroundTaskInfo>();
+    /** The /goal still set when the session was last written (src/agent/goal.ts). */
+    goal?: GoalRecord;
     /**
      * The session a sub-agent runs for. Its own isn't saved, so the backend
      * sessions it starts are recorded in that one: they're Harness's, not
      * conversations to pick up from the CLI.
      */
     runsFor?: Session;
+    /** Context from SessionStart hooks, sent with the next prompt (never saved). */
+    hookContext: string[] = [];
+    /** Files SessionStart hooks asked FileChanged to watch (never saved). */
+    hookWatchPaths?: string[];
+    /** SessionStart hooks still running: a turn waits for them, for their context and watch paths. */
+    hooksStarting?: Promise<void>;
     private subagentRuns = new Set<string>();
     private file: string;
     private persist: boolean;
@@ -224,8 +308,13 @@ export class Session {
         return s;
     }
 
-    /** A separate conversation keeps its selected homes, but cannot share a mutable native thread. */
-    fork(opts: { persist?: boolean } = {}): Session {
+    /**
+     * A separate conversation keeps its selected homes, but cannot share a mutable native thread.
+     * `shareBackends`: its agent backends' sessions are forked natively (--fork-session, thread/fork) on
+     * their next turn instead, never continued in place; the caller holds the original for as long as the
+     * copy may fork from it, so the native sessions don't move on under it.
+     */
+    fork(opts: { persist?: boolean; shareBackends?: boolean } = {}): Session {
         const copy = Session.create(this.meta.cwd, { persist: opts.persist, system: this.meta.system });
         for (const provider of ["claude-code", "codex"]) copy.setAccount(provider, this.accountId(provider));
         if (this.model) copy.setModel(this.model);
@@ -233,6 +322,14 @@ export class Session {
         if (this.title) copy.setTitle(this.title);
         if (this.summary !== undefined) copy.compact(this.summary, []);
         for (const message of this.messages) copy.push(structuredClone(message));
+        if (opts.shareBackends) for (const [provider, b] of this.backends) {
+            const place = this.backendPlaces.get(provider);
+            const unsent = b.unsent ? { unsent: b.unsent } : {};
+            copy.backends.set(provider, { id: b.id, synced: b.synced, fork: true, ...unsent });
+            if (place) copy.backendPlaces.set(provider, place);
+            copy.write({ t: "backend", provider, id: b.id, synced: b.synced, fork: true, ...unsent, ...placeFields(place) });
+        }
+        if (opts.shareBackends) for (const p of this.parked) copy.park(p.provider, p.place, { ...p.session, fork: true });
         for (const notice of this.notices) {
             copy.notices.push({ ...notice });
             copy.write({ t: "notice", ...notice });
@@ -306,6 +403,23 @@ export class Session {
         }
     }
 
+    /** Saves the durable ones of these jobs, when they changed. */
+    setSchedules(jobs: ScheduledJob[]) {
+        // What it is, not how it's going: a line per change, not per run (a recurring job's next run comes from its cron).
+        const durable = jobs.filter((j) => j.durable).map(({ due: _due, dueAt: _dueAt, runs: _runs, lastRunAt: _last, nextAt, ...j }) => ({ ...j, runs: 0, ...(j.recurring ? {} : { nextAt }) }));
+        const text = JSON.stringify(durable);
+        if (text === this.savedSchedules) return;
+        this.savedSchedules = text;
+        this.schedules = durable;
+        this.write({ t: "schedules", jobs: durable });
+    }
+
+    /** Keep a background task's state in the log (SessionBackground.persist decides when). */
+    recordBackgroundTask(task: BackgroundTaskInfo) {
+        this.backgroundTasks.set(task.id, { ...task });
+        this.write({ t: "bgtask", task });
+    }
+
     setSystem(system: string) {
         this.meta.system = system;
     }
@@ -336,13 +450,27 @@ export class Session {
         return this.accounts[provider] ?? "default";
     }
 
-    /** A native thread belongs to one CLI home; never resume it after a home switch. */
+    /**
+     * Switch the CLI account. The native thread stays only when the new account's CLI can resume it (its home
+     * shares the thread's history: continuesIn); otherwise it's parked for its place (ParkedBackend), and the one
+     * parked for the new account's place, if any, is taken up again. With none, the next turn starts a new one with
+     * the conversation as context. False when it's the account already.
+     */
     setAccount(provider: string, id: string): boolean {
         if (this.accountId(provider) === id) return false;
-        this.forgetBackendSession(provider);
+        let place: AccountPlace | undefined;
+        try { place = accountPlace(provider, id); } catch { /* not resolvable now: a new thread */ }
+        if (this.backends.has(provider) && !this.continuesIn(provider, place, id)) this.parkBackend(provider);
+        this.unpark(provider, place);
         this.accounts[provider] = id;
         this.write({ t: "account", provider, id });
         return true;
+    }
+
+    setGoal(goal: GoalRecord | null) {
+        if (!goal && !this.goal) return;
+        this.goal = goal ?? undefined;
+        this.write({ t: "goal", goal });
     }
 
     setTitle(title: string) {
@@ -350,11 +478,48 @@ export class Session {
         this.write({ t: "title", title });
     }
 
-    /** Keep a note of how the current turn ended (redacted, like everything written). */
-    recordNotice(level: TurnNotice["level"], text: string) {
-        const n: TurnNotice = { index: this.messages.length, level, text: redact(text), at: Date.now() };
-        this.notices.push(n);
+    /** Keep a note of how the current turn ended (redacted, like everything written), with what it is (NoticeData). */
+    recordNotice(level: TurnNotice["level"], text: string, extra: { details?: string[] } & NoticeData = {}): TurnNotice {
+        // What it shows: the data's text, if it has one (as a live notice: history.liveNotice).
+        const { details, text: shown, ...data } = extra;
+        const n: TurnNotice = { index: this.messages.length, level, text: redact(shown ?? text), at: Date.now(), ...(details?.length ? { details: details.map((d) => redact(d)) } : {}), ...redactedData(data) };
+        addNotice(this.notices, n);
         this.write({ t: "notice", ...n });
+        return n;
+    }
+
+    /**
+     * An account switch (#426). With no message since a switch on the same CLI, it's one notice with that one, the
+     * latest: who and how are this switch's, and every task the run stopped stays said. `merged`: it took that
+     * notice's place (as reading the file back does).
+     */
+    recordSwitch(a: NoticeAccount): { notice: TurnNotice; merged: boolean } {
+        const last = this.notices.at(-1);
+        const prev = last && mergesWith(last, a.provider, this.messages.length) ? last : undefined;
+        const all = [...(prev?.account?.stopped ?? []), ...(a.stopped ?? [])];
+        const { stopped: _had, ...who } = a;
+        const account: NoticeAccount = { ...who, ...(all.length ? { stopped: all } : {}) };
+        const notice = this.recordNotice("info", accountNoticeText(account), { account });
+        this.switchRuns.set(notice, (prev && this.switchRuns.get(prev)) || {});
+        return { notice, merged: Boolean(prev) };
+    }
+
+    /**
+     * The background tasks a switch's restart stopped, said once the restart is done. Under the switch's line while
+     * it's still the latest with no message since (`origin`, or a switch merged into it): that line, with them. Else
+     * (a message came since, another notice, or no line: `origin` undefined) a line of their own, which switches
+     * nothing: the tasks never say a switch that isn't the latest, and a reopened session reads them the same.
+     */
+    recordStopped(origin: TurnNotice | undefined, stopped: NoticeStopped): { notice: TurnNotice; merged: boolean } {
+        const last = this.notices.at(-1);
+        const run = origin && this.switchRuns.get(origin);
+        if (run && last?.account && this.switchRuns.get(last) === run && mergesWith(last, stopped.provider, this.messages.length)) {
+            const account: NoticeAccount = { ...last.account, stopped: [...(last.account.stopped ?? []), ...stopped.tasks] };
+            const notice = this.recordNotice("info", accountNoticeText(account), { account });
+            this.switchRuns.set(notice, run);
+            return { notice, merged: true };
+        }
+        return { notice: this.recordNotice("info", stoppedText(stopped.tasks), { stopped }), merged: false };
     }
 
     /** `unknown`: no price is known for it (`cost` is then 0, which doesn't mean free). */
@@ -373,6 +538,7 @@ export class Session {
         cur.usage.outputTokens += usage.outputTokens;
         cur.usage.cacheReadTokens = (cur.usage.cacheReadTokens ?? 0) + (usage.cacheReadTokens ?? 0);
         cur.usage.cacheWriteTokens = (cur.usage.cacheWriteTokens ?? 0) + (usage.cacheWriteTokens ?? 0);
+        if (usage.webSearchRequests) cur.usage.webSearchRequests = (cur.usage.webSearchRequests ?? 0) + usage.webSearchRequests;
         cur.cost += cost;
         this.usageByModel.set(model, cur);
     }
@@ -383,31 +549,128 @@ export class Session {
         this.write({ t: "import", ...rec });
     }
 
-    /** The stored owner of a native thread, even if the account's configured folder has changed. */
-    backendFolder(provider: string): string | undefined {
-        return this.backendFolders.get(provider);
+    /** Where the native thread was stored as living, even if the account's configured folder has changed. */
+    backendPlace(provider: string): AccountPlace | undefined {
+        return this.backendPlaces.get(provider);
     }
 
-    /** A removed/re-added account or a changed Default home cannot inherit the previous home's thread. */
-    backendSession(provider: string, folder: string | undefined): BackendSession | undefined {
-        const current = this.backends.get(provider);
-        const bound = this.backendFolders.get(provider);
-        if (current && (bound ? bound !== folder : this.accountId(provider) !== "default")) {
-            this.forgetBackendSession(provider);
-            return undefined;
-        }
-        return current;
+    /**
+     * Whether the native thread can go on in `place` (the AccountPlace of `account`): the home it was made or last
+     * run in, or another whose CLI finds the same transcripts (the same history folder). A line from before
+     * histories were recorded has only its home: that home's history now stands for it. One with no home at all
+     * predates accounts, so it's Default's.
+     */
+    private continuesIn(provider: string, place: AccountPlace | undefined, account: string): boolean {
+        const bound = this.backendPlaces.get(provider);
+        if (!bound) return account === "default";
+        return findsIn(provider, bound, place);
     }
 
-    setBackendSession(provider: string, id: string, synced: number, folder = this.backendFolders.get(provider)) {
+    /**
+     * The native thread to resume in `place` (the session's account's now). A removed/re-added account, or a changed
+     * Default home, whose CLI can't find the thread doesn't inherit it: it's parked for its own place, and the one
+     * parked for `place`, if any, is taken up instead.
+     */
+    backendSession(provider: string, place: AccountPlace | undefined): BackendSession | undefined {
+        if (this.backends.has(provider) && !this.continuesIn(provider, place, this.accountId(provider))) this.parkBackend(provider);
+        this.unpark(provider, place);
+        return this.backends.get(provider);
+    }
+
+    /** The native threads parked for their places (all providers' when none is given), oldest first. */
+    parkedBackends(provider?: string): readonly ParkedBackend[] {
+        return this.parked.filter((p) => provider === undefined || p.provider === provider);
+    }
+
+    /**
+     * Set the session's native thread aside, parked for its place. One with no place saved is Default's (it predates
+     * accounts): parked for Default's home now, while the session is on Default; otherwise it's forgotten, as it was
+     * before threads were parked. Written before the thread is let go, so a torn write can't lose it (read keeps one).
+     */
+    private parkBackend(provider: string) {
         const cur = this.backends.get(provider);
-        if (cur?.id === id && cur.synced === synced && folder === this.backendFolders.get(provider)) return;
+        if (!cur) return;
+        let place = this.backendPlaces.get(provider);
+        if (!place && this.accountId(provider) === "default") {
+            try { place = accountPlace(provider, "default"); } catch { /* not resolvable now: forgotten */ }
+        }
+        if (place) this.park(provider, place, cur);
+        this.forgetBackendSession(provider);
+    }
+
+    /** Keep `session` parked for `place`, in place of one parked where the same CLI history is (it's the later). */
+    private park(provider: string, place: AccountPlace, session: BackendSession) {
+        for (const p of this.parked.filter((p) => p.provider === provider && (findsIn(provider, p.place, place) || findsIn(provider, place, p.place)))) this.dropParked(p);
+        const kept: ParkedBackend = { provider, place, session: { ...session } };
+        this.parked.push(kept);
+        this.writeParked(kept);
+    }
+
+    private writeParked(p: ParkedBackend): boolean {
+        return this.write({ t: "parked", provider: p.provider, ...p.session, folder: p.place.folder, ...(p.place.history ? { history: p.place.history } : {}) });
+    }
+
+    private dropParked(p: ParkedBackend) {
+        this.parked = this.parked.filter((x) => x !== p);
+        this.write({ t: "parked", provider: p.provider, id: null, folder: p.place.folder });
+    }
+
+    /**
+     * With no native thread for `provider`, take up the one parked for a place whose CLI finds it from `place`: as it
+     * was, its cursor where it was (the next prompt carries what it missed since), its place where it lives (a turn
+     * records the home it then runs in). Written before the parked one is dropped, as parkBackend.
+     */
+    private unpark(provider: string, place: AccountPlace | undefined) {
+        if (this.backends.has(provider)) return;
+        const found = this.parked.find((p) => p.provider === provider && findsIn(provider, p.place, place));
+        if (!found) return;
+        this.backends.set(provider, { ...found.session });
+        this.backendPlaces.set(provider, found.place);
+        this.write({ t: "backend", provider, ...found.session, ...placeFields(found.place) });
+        this.dropParked(found);
+    }
+
+    /** A fork is to share this parked thread too (markBackendForked). False if that couldn't be saved. */
+    markParkedForked(p: ParkedBackend): boolean {
+        if (!this.parked.includes(p)) return false;
+        p.session = { ...p.session, fork: true };
+        return this.writeParked(p);
+    }
+
+    /**
+     * The backend session's id and place. `unsent` (BackendSession.unsent) is written with the place when given
+     * (an adopted turn moving it, in one line); otherwise what it wasn't sent stays, whatever the id: a native fork
+     * or a compaction continues a session that never saw it either. Only a prompt that carried it takes it away
+     * (consumeBackendUnsent); forgetting the session (a fresh one is sent everything) drops it.
+     */
+    setBackendSession(provider: string, id: string, synced: number, place = this.backendPlaces.get(provider), unsent?: string) {
+        const cur = this.backends.get(provider);
+        const kept = unsent ?? cur?.unsent;
+        if (cur?.id === id && cur.synced === synced && samePlace(place, this.backendPlaces.get(provider)) && (cur.unsent ?? "") === (kept ?? "")) return;
         if (cur?.id !== id) this.runsFor?.recordSubagentRun(provider, id);
         // Still the shared one (the backend never answered with its fork): it stays shared.
         const fork = cur?.id === id && cur.fork ? { fork: true } : {};
-        this.backends.set(provider, { id, synced, ...fork });
-        if (folder) this.backendFolders.set(provider, folder);
-        this.write({ t: "backend", provider, id, synced, ...fork, ...(folder ? { folder } : {}) });
+        const carried = kept ? { unsent: kept } : {};
+        this.backends.set(provider, { id, synced, ...fork, ...carried });
+        if (place) this.backendPlaces.set(provider, place);
+        this.write({ t: "backend", provider, id, synced, ...fork, ...carried, ...placeFields(this.backendPlaces.get(provider)) });
+        // As a load reads that line: the session's thread isn't also parked.
+        this.parked = this.parked.filter((p) => p.provider !== provider || p.session.id !== id);
+    }
+
+    /** What the backend session wasn't sent of the conversation before its place (BackendSession.unsent); none: nothing. */
+    setBackendUnsent(provider: string, unsent: string | undefined) {
+        const cur = this.backends.get(provider);
+        if (!cur || (cur.unsent ?? "") === (unsent ?? "")) return;
+        const { unsent: _, ...rest } = cur;
+        const next = unsent ? { ...rest, unsent } : rest;
+        this.backends.set(provider, next);
+        this.write({ t: "backend", provider, ...next, ...placeFields(this.backendPlaces.get(provider)) });
+    }
+
+    /** A prompt carrying `sent` (what was waiting) reached the backend: it's sent, unless something newer waits now. */
+    consumeBackendUnsent(provider: string, sent: string) {
+        if (this.backends.get(provider)?.unsent === sent) this.setBackendUnsent(provider, undefined);
     }
 
     /** A fork is to share this backend session: from now on it's only forked, never continued in place. False if that couldn't be saved. */
@@ -415,8 +678,7 @@ export class Session {
         const cur = this.backends.get(provider);
         if (!cur) return false;
         this.backends.set(provider, { ...cur, fork: true });
-        const folder = this.backendFolders.get(provider);
-        return this.write({ t: "backend", provider, id: cur.id, synced: cur.synced, fork: true, ...(folder ? { folder } : {}) });
+        return this.write({ t: "backend", provider, id: cur.id, synced: cur.synced, fork: true, ...(cur.unsent ? { unsent: cur.unsent } : {}), ...placeFields(this.backendPlaces.get(provider)) });
     }
 
     addPlan(id: string, text: string): PresentedPlan {
@@ -442,17 +704,21 @@ export class Session {
     }
 
     forgetBackendSession(provider: string) {
-        this.backendFolders.delete(provider);
+        this.backendPlaces.delete(provider);
         if (!this.backends.delete(provider)) return;
         this.write({ t: "backend", provider, id: null });
     }
 
-    /** A backend session that saw messages from `count` on can't continue a history cut back to `count`. */
+    /**
+     * A backend session that saw messages from `count` on can't continue a history cut back to `count`, parked or not.
+     * One that saw no further keeps its cursor: the next prompt carries what it missed of what's left.
+     */
     private dropBackendsAfter(count: number) {
         for (const [p, b] of this.backends) if (b.synced > count) {
             this.backends.delete(p);
-            this.backendFolders.delete(p);
+            this.backendPlaces.delete(p);
         }
+        this.parked = this.parked.filter((p) => p.session.synced <= count);
     }
 
     /**
@@ -469,23 +735,36 @@ export class Session {
         this.write({ t: "rewind", count });
     }
 
-    /** Replace history with a compacted version. Backend sessions start over from the summary. */
-    compact(summary: string, messages: Message[]) {
+    /**
+     * `model` refused a request for these messages' images: from now on it's
+     * sent them without, here and in a resumed or forked copy (the mark is on
+     * the message). Another model is still sent them, and the images stay.
+     */
+    refuseImages(messages: Message[], model: string) {
+        const indexes = messages.map((m) => this.messages.indexOf(m)).filter((i) => i >= 0);
+        for (const i of indexes) markRefused(this.messages[i]!, model);
+        if (indexes.length) this.write({ t: "imagesRefused", model, indexes });
+    }
+
+    /** Replace history with a compacted version. Backend sessions start over from the summary. `kept`: `messages` ends with the last message before. */
+    compact(summary: string, messages: Message[], idle = false, kept = false) {
         this.messages = [];
         this.notices = [];
         this.backends.clear();
-        this.backendFolders.clear();
+        this.backendPlaces.clear();
+        this.parked = [];
         this.summary = summary;
-        this.write({ t: "compact", summary });
+        this.write({ t: "compact", summary, ...(idle ? { idle: true as const } : {}), ...(kept ? { kept: true as const } : {}) });
         for (const m of messages) this.push(m);
     }
 
-    static load(file: string): Session {
+    /** `persist: false`: read only; nothing is written to the file, not even the repair of a crash's dangling tool call. */
+    static load(file: string, opts: { persist?: boolean } = {}): Session {
         // Claimed before it's read, so what's read has everything the process
         // that had it open wrote (and nothing is written under that process).
         hold(file);
         try {
-            const s = Session.read(file);
+            const s = Session.read(file, opts.persist ?? true);
             s.holding = true;
             return s;
         } catch (e) {
@@ -494,7 +773,7 @@ export class Session {
         }
     }
 
-    private static read(file: string): Session {
+    private static read(file: string, persist = true): Session {
         const text = readFileSync(file, "utf-8");
         let meta: SessionMeta | undefined;
         const lines: Line[] = [];
@@ -509,10 +788,10 @@ export class Session {
             }
         }
         if (!meta) throw new Error(`Not a session file: ${file}`);
-        const s = new Session(meta, { file });
+        const s = new Session(meta, { file, persist });
         // End a torn last line, or the next record appended would join it and
         // both would be unreadable on the following load.
-        if (text && !text.endsWith("\n")) {
+        if (persist && text && !text.endsWith("\n")) {
             try {
                 appendFileSync(file, "\n");
             } catch {
@@ -526,7 +805,8 @@ export class Session {
                 s.messages = [];
                 s.notices = [];
                 s.backends.clear();
-                s.backendFolders.clear();
+                s.backendPlaces.clear();
+                s.parked = [];
                 s.summary = l.summary;
             }
             else if (l.t === "rewind") {
@@ -536,41 +816,158 @@ export class Session {
             }
             else if (l.t === "notice") {
                 const n = turnNotice(l);
-                if (n) s.notices.push(n);
+                if (n) addNotice(s.notices, n);
             }
             else if (l.t === "backend") {
                 if (typeof l.provider !== "string") continue;
-                if (typeof l.id === "string" && l.id) s.backends.set(l.provider, { id: l.id, synced: typeof l.synced === "number" ? l.synced : s.messages.length, ...(l.fork === true ? { fork: true } : {}) });
+                if (typeof l.id === "string" && l.id) s.backends.set(l.provider, { id: l.id, synced: typeof l.synced === "number" ? l.synced : s.messages.length, ...(l.fork === true ? { fork: true } : {}), ...(typeof l.unsent === "string" && l.unsent ? { unsent: l.unsent } : {}) });
                 else s.backends.delete(l.provider);
-                if (l.id && typeof l.folder === "string") s.backendFolders.set(l.provider, l.folder);
-                else s.backendFolders.delete(l.provider);
+                if (l.id && typeof l.folder === "string") s.backendPlaces.set(l.provider, { folder: l.folder, ...(typeof l.history === "string" && l.history ? { history: l.history } : {}) });
+                else s.backendPlaces.delete(l.provider);
+                // The thread is the session's again (taken up, or going on after a torn switch away): not parked.
+                if (typeof l.id === "string" && l.id) s.parked = s.parked.filter((p) => p.provider !== l.provider || p.session.id !== l.id);
+            }
+            else if (l.t === "parked") {
+                if (typeof l.provider !== "string" || typeof l.folder !== "string" || !l.folder) continue;
+                // By its home: a later line there (the same thread moved, or none any longer) takes its place.
+                s.parked = s.parked.filter((p) => p.provider !== l.provider || p.place.folder !== l.folder);
+                if (typeof l.id === "string" && l.id) s.parked.push({
+                    provider: l.provider,
+                    place: { folder: l.folder, ...(typeof l.history === "string" && l.history ? { history: l.history } : {}) },
+                    session: { id: l.id, synced: typeof l.synced === "number" ? l.synced : s.messages.length, ...(l.fork === true ? { fork: true } : {}), ...(typeof l.unsent === "string" && l.unsent ? { unsent: l.unsent } : {}) },
+                });
             }
             else if (l.t === "account" && (l.provider === "claude-code" || l.provider === "codex") && validAccountId(l.id)) {
-                // Also invalidate here: a torn write must never bind an old resume id to a different home.
-                if (s.accountId(l.provider) !== l.id) {
+                // A thread with no home recorded is Default's (it predates accounts): another account's can't be it. One
+                // with its home recorded stays: a switch that couldn't keep it wrote that first (setAccount), and the
+                // next turn resumes it only where its CLI finds it (backendSession), so a torn write can't bind it to
+                // another home's history.
+                if (s.accountId(l.provider) !== l.id && !s.backendPlaces.has(l.provider)) {
                     s.backends.delete(l.provider);
-                    s.backendFolders.delete(l.provider);
+                    s.backendPlaces.delete(l.provider);
                 }
                 s.accounts[l.provider] = l.id;
             }
             else if (l.t === "model") s.model = l.model;
             else if (l.t === "fastMode" && typeof l.enabled === "boolean") s.fastMode = s.savedFastMode = l.enabled;
             else if (l.t === "title") s.title = l.title;
+            else if (l.t === "goal") s.goal = validGoal(l.goal);
+            else if (l.t === "imagesRefused" && typeof l.model === "string" && Array.isArray(l.indexes)) {
+                for (const i of l.indexes) if (typeof i === "number" && s.messages[i]) markRefused(s.messages[i]!, l.model);
+            }
             else if (l.t === "plan" && typeof l.id === "string" && typeof l.text === "string") s.plans = [...s.plans.filter((p) => p.id !== l.id), { id: l.id, text: l.text, at: typeof l.at === "number" ? l.at : 0 }].slice(-PLANS_KEPT);
             else if (l.t === "planLink" && validLink(l.link)) s.planLinks = [...s.planLinks, l.link].slice(-PLANS_KEPT);
             else if (l.t === "import" && typeof l.source === "string" && typeof l.id === "string") s.imported = { source: l.source, id: l.id, startedAt: l.startedAt, importedAt: l.importedAt, messages: l.messages, omitted: l.omitted };
             else if (l.t === "usage") s.accumulate(l.model, l.usage, l.cost, l.unknown === true);
+            else if (l.t === "bgtask") {
+                const task = validTask(l.task);
+                if (task) s.backgroundTasks.set(task.id, task);
+            }
+            else if (l.t === "schedules" && Array.isArray(l.jobs)) {
+                s.schedules = l.jobs.map(validJob).filter((j): j is ScheduledJob => Boolean(j));
+                s.savedSchedules = JSON.stringify(s.schedules);
+            }
         }
+        // A switch away torn between parking the thread and letting it go (parkBackend): it's the session's, once. Its
+        // parked line is dropped in the file too (not when read only), or a forget or a rewind that ends the session's
+        // copy, with nothing written about the thread in between, would leave that line to bring the thread back.
+        for (const p of s.parked.filter((p) => s.backends.get(p.provider)?.id === p.session.id)) s.dropParked(p);
         repairTail(s);
         return s;
     }
+}
+
+const TASK_KINDS = ["agent", "shell", "monitor", "workflow", "other"];
+const TASK_STATUSES = ["running", "done", "failed", "stopped"];
+
+/** A background task as read from disk, or undefined if it isn't one. */
+function validTask(t: unknown): BackgroundTaskInfo | undefined {
+    const v = t as Partial<BackgroundTaskInfo> | undefined;
+    if (!v || typeof v.id !== "string" || !v.id || typeof v.provider !== "string" || typeof v.label !== "string" || typeof v.startedAt !== "number") return undefined;
+    if (!TASK_KINDS.includes(v.kind as string) || !TASK_STATUSES.includes(v.status as string)) return undefined;
+    return {
+        id: v.id,
+        provider: v.provider,
+        kind: v.kind!,
+        label: v.label,
+        ...(typeof v.toolUseId === "string" ? { toolUseId: v.toolUseId } : {}),
+        ...(typeof v.turnId === "string" ? { turnId: v.turnId } : {}),
+        startedAt: v.startedAt,
+        status: v.status!,
+        ...(typeof v.endedAt === "number" ? { endedAt: v.endedAt } : {}),
+        stoppable: v.stoppable === true,
+        ...(v.lost === true ? { lost: true } : {}),
+        ...(v.withProcess === true ? { withProcess: true } : {}),
+        ...(v.byUser === true ? { byUser: true } : {}),
+    };
+}
+
+/** Marks a user message's images as refused by `model` (see Session.refuseImages). */
+function markRefused(m: Message, model: string) {
+    if (m.role !== "user" || m.meta?.imagesRefused?.includes(model)) return;
+    m.meta = { ...m.meta, imagesRefused: [...(m.meta?.imagesRefused ?? []), model] };
 }
 
 /** A notice line as read from disk, or undefined if it isn't one. */
 export function turnNotice(l: Partial<TurnNotice>): TurnNotice | undefined {
     if (typeof l.text !== "string" || typeof l.index !== "number") return undefined;
     const level = l.level === "error" || l.level === "warn" ? l.level : "info";
-    return { index: l.index, level, text: l.text, at: typeof l.at === "number" ? l.at : 0 };
+    const details = Array.isArray(l.details) ? l.details.filter((d): d is string => typeof d === "string") : [];
+    return { index: l.index, level, text: l.text, at: typeof l.at === "number" ? l.at : 0, ...(details.length ? { details } : {}), ...noticeData(l) };
+}
+
+const str = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+
+/** A notice's NoticeData as read from disk: what isn't well formed is left out (it's then drawn by its level). */
+export function noticeData(l: Partial<NoticeData>): NoticeData {
+    const out: NoticeData = {};
+    if (str(l.source)) out.source = l.source;
+    if (str(l.title)) out.title = l.title;
+    if (str(l.link) && /^https?:\/\//.test(l.link)) out.link = l.link;
+    const a = l.account as Partial<NoticeAccount> | undefined;
+    if (a && str(a.provider) && str(a.cli) && str(a.name) && (a.how === "native" || a.how === "returned" || a.how === "handoff")) {
+        const stopped = Array.isArray(a.stopped) ? stoppedTasks(a.stopped) : [];
+        out.account = { provider: a.provider, cli: a.cli, name: a.name, how: a.how, ...(a.dropped === true ? { dropped: true as const } : {}), ...(stopped.length ? { stopped } : {}) };
+    }
+    const s = l.stopped as Partial<NoticeStopped> | undefined;
+    const tasks = s && Array.isArray(s.tasks) ? stoppedTasks(s.tasks) : [];
+    if (s && str(s.provider) && str(s.cli) && tasks.length) out.stopped = { provider: s.provider, cli: s.cli, tasks };
+    const m = l.limit as Partial<NoticeLimit> | undefined;
+    if (m && str(m.provider) && str(m.accountId) && str(m.name)) {
+        out.limit = { provider: m.provider, accountId: m.accountId, name: m.name, ...(str(m.window) ? { window: m.window } : {}), ...(typeof m.resetsAt === "number" ? { resetsAt: m.resetsAt } : {}), ...(m.credits === true ? { credits: true as const } : {}) };
+    }
+    return out;
+}
+
+/** NoticeData redacted as a notice's text is: what a CLI said, and the commands of tasks a switch stopped. */
+function redactedData(d: NoticeData): NoticeData {
+    const out: NoticeData = { ...d };
+    const tasks = (l: StoppedTask[]) => l.map((t) => ({ label: redact(t.label), ...(t.command ? { command: redact(t.command) } : {}) }));
+    if (d.title) out.title = redact(d.title);
+    if (d.link) out.link = redact(d.link);
+    if (d.account?.stopped) out.account = { ...d.account, stopped: tasks(d.account.stopped) };
+    if (d.stopped) out.stopped = { ...d.stopped, tasks: tasks(d.stopped.tasks) };
+    return out;
+}
+
+function stoppedTasks(l: unknown[]): StoppedTask[] {
+    return l.filter((t): t is StoppedTask => Boolean(t) && str((t as StoppedTask).label)).map((t) => ({ label: t.label, ...(str(t.command) ? { command: t.command } : {}) }));
+}
+
+/** The last notice is a switch on `provider` with no message since (at `index`): the next switch there is one with it. */
+function mergesWith(last: TurnNotice, provider: string, index: number): boolean {
+    return last.account?.provider === provider && last.index === index;
+}
+
+/**
+ * Adds a notice as it's kept: a switch on the CLI the last one switched, with no message between them, takes that
+ * one's place (Session.recordSwitch wrote it merged). Reading the file back does the same, so a reopened session
+ * shows what the live one did.
+ */
+export function addNotice(notices: TurnNotice[], n: TurnNotice) {
+    const last = notices.at(-1);
+    if (n.account && last && mergesWith(last, n.account.provider, n.index)) notices[notices.length - 1] = n;
+    else notices.push(n);
 }
 
 /** The notices of the turns a rewind to `count` messages keeps. */

@@ -3,10 +3,15 @@
 // and picks a script from keywords in the prompt:
 //
 //   "sso" / "demo"   explore, read, edit (asks permission), run tests, summarize
+//   "diagnostics"    an edit with a type error, then its fix (shows the language server's report)
 //   "question"       asks a multiple-choice question
+//   "mcpform" / "mcpsample" / "mcpresources"   an MCP server named "docs" asks for a form, for sampling; its resources
 //   "plan"           presents a plan for approval
 //   "todo"           keeps a todo list while working
 //   "slow"           streams a long answer slowly
+//   "streamdemo"     a long markdown reply (headings, lists, code, a table) at a model's pace: uneven chunks, uneven gaps
+//   "fastdemo N"     a turn of quick steps and a long markdown reply at N tokens a second ("fastdemo burst": a paragraph at a
+//                    time; "fastdemo N short": a two-line reply)
 //   "agents"         hands two reviews to sub-agents on other models (Task), then sums up
 //   "note"           a sub-agent that writes a file (asks permission in Manual mode)
 //   "background"     a sub-agent in the background (Task run_in_background), and a turn that goes on meanwhile
@@ -17,8 +22,17 @@
 //   "emptyreply"     a response with no text and no tool calls
 //   "untitled"       the request for the session's title is refused (HTTP 400)
 //   "stubborn"       runs a command that ignores being told to stop (SIGTERM)
+//   "livecmd"        runs a command that prints a line every half second for 6s (the live line opens to it)
+//   "cmdrows"        commands as rows: a passing test run, one without a description, a heredoc, a failure, one in the background
 //   "waitcheck"      starts a background command, then waits and checks it in one response
 //   "use the x skill" loads skill x (Skill tool), then quotes the start of its instructions
+//   "schedule"       schedules the test suite for weekday mornings (CronCreate)
+//   "goaldemo"       runs the tests (for /goal); the goal check answers "not met" on its first check and
+//                    "met" after, or "impossible" when the goal says so
+//   "ship"           commits, opens a pull request and watches it (GitCommit, CreatePullRequest)
+//   (a wake)         answers a watched pull request's news: failed checks, comments, passing checks
+//   "monitor"        watches a build log with Monitor; its lines wake the agent later
+//   "browser"        opens the demo site (or the address in the prompt) in the browser, clicks its first button, and says what happened
 //   anything else    a short markdown answer
 //
 //   bun scripts/mock-llm.ts [--port 4010] [--delay 12]
@@ -31,11 +45,17 @@ type Json = Record<string, any>;
 interface Step {
     reasoning?: string;
     text?: string;
+    /** Stream the text the way a model does: a few characters to a few words at a time, at uneven gaps (same every run). */
+    paced?: boolean;
+    /** Stream reasoning and text at this many tokens a second (about 4 characters each), or "burst": a paragraph at a time. */
+    rate?: number | "burst";
     calls?: { name: string; args: Json }[];
 }
 
 export interface MockOptions {
     port?: number;
+    /** The address the "browser" script opens when the prompt names none (scripts/demo-site.ts). */
+    site?: string;
     /** Milliseconds between streamed chunks. */
     delayMs?: number;
 }
@@ -78,8 +98,83 @@ const TESTS_REPORT = `Only email sign-in is tested (\`test/auth.test.ts\`, one c
 2. The order of \`strategies\`
 3. Anything for SSO: assertion checks and the \`requireSso\` gate`;
 
+/** Where the "browser" script goes when the prompt doesn't say. */
+let demoSite: string | undefined;
+
 function scenario(prompt: string, toolRounds: number, lastResult: string): Step | undefined {
     const p = prompt.toLowerCase();
+    // A turn of a long, realistic session (scripts/perf-seed.ts): looks around, writes a file, then a long answer.
+    if (/\bperfturn\b/.test(p)) {
+        const n = Number(/perfturn (\d+)/.exec(p)?.[1] ?? 0);
+        const body = Array.from({ length: 40 }, (_, i) => `export function step${n}_${i}(x: number): number {\n    return x * ${i + 1} + ${n};\n}\n`).join("\n");
+        const steps: Step[] = [
+            {
+                reasoning: `Turn ${n}: find where this lives before changing it. `.repeat(8),
+                text: `I'll look around first (turn ${n}).`,
+                calls: [
+                    { name: "Glob", args: { pattern: "src/**/*.ts" } },
+                    { name: "Read", args: { file_path: "src/auth/index.ts" } },
+                    { name: "Grep", args: { pattern: "strategy", path: "src" } },
+                ],
+            },
+            {
+                text: "Now the change, and a quick check.",
+                calls: [
+                    { name: "Write", args: { file_path: `src/perf/module${n % 12}.ts`, content: `// turn ${n}\n${body}` } },
+                    { name: "Bash", args: { command: `ls src && echo turn ${n}`, description: "List the sources" } },
+                ],
+            },
+            { text: `${STREAM_DEMO}\n\n${SUMMARY}\n\nTurn ${n} is done.` },
+        ];
+        return steps[toolRounds];
+    }
+    // A turn that changes hundreds of files at once (scripts/perf-seed.ts): the "322 changed files" card.
+    if (/\bbulkchange\b/.test(p)) {
+        const steps: Step[] = [
+            {
+                text: "Generating the client for every endpoint.",
+                calls: [{ name: "Bash", args: { command: `mkdir -p gen && for i in $(seq 1 322); do seq 1 168 | sed "s/.*/export const x$i""n& = 1;/" > gen/endpoint$i.ts; done && echo done`, description: "Generate the endpoint clients" } }],
+            },
+            { text: "Generated **322** endpoint clients under `gen/`." },
+        ];
+        return steps[toolRounds];
+    }
+    if (/\bbrowser\b/.test(p)) {
+        const url = /https?:\/\/\S+/.exec(prompt)?.[0] ?? demoSite ?? "http://localhost:3000/";
+        if (toolRounds === 0) return { text: "I'll open the app in the browser and look at it.", calls: [{ name: "BrowserNavigate", args: { url } }] };
+        if (toolRounds === 1) {
+            const button = /button "([^"]+)" \[(e\d+)\]/.exec(lastResult);
+            if (!button) return { text: `I couldn't open the page: ${lastResult.split("\n")[0]}` };
+            return { text: `The page is up. I'll try its "${button[1]}" button.`, calls: [{ name: "BrowserAct", args: { action: "click", ref: button[2] } }] };
+        }
+        return { text: `The page loads and the button works. What I saw after clicking it:\n\n\`\`\`\n${lastResult.split("\n").slice(0, 8).join("\n")}\n\`\`\`` };
+    }
+    // A monitor's lines woke the agent: say what they were.
+    if (/<event source="monitor"/.test(prompt)) {
+        const lines = [...prompt.matchAll(/<monitor-output[^>]*>\n([\s\S]*?)<\/monitor-output>/g)].flatMap((m) => m[1]!.trim().split("\n"));
+        const ended = /ended: its command exited with code (\d+)/.exec(prompt);
+        if (ended) return { text: `The build watch ended (exit code ${ended[1]}).` };
+        const failed = lines.find((l) => /error|fail/i.test(l));
+        return { text: failed ? `The build reported a failure: \`${failed}\`. I'll look into \`test/auth.test.ts\` next.` : `Progress: ${lines.join("; ")}.` };
+    }
+    // News from a watched pull request (the harness woke the agent).
+    if (/events? you asked to be told about arrived/.test(p)) {
+        if (/checks failed/.test(p)) return { text: "CI's **test** job failed on the latest commit. The log shows the SAML assertion test expects an issuer check; I'll fix it and push again." };
+        if (/new comments?:/.test(p)) return { text: "A reviewer asked for a test of the rejected-assertion path. I'll add it and reply once it's pushed." };
+        if (/passed/.test(p)) return { text: "All checks passed. The pull request is ready for your review." };
+        return { text: "Noted." };
+    }
+    if (/\bship\b/.test(p) && !/\bgoaldemo\b/.test(p)) {
+        const steps: Step[] = [
+            { text: "I'll commit the SSO work first.", calls: [{ name: "GitCommit", args: { message: "Add SAML SSO sign-in\n\nRegisters a SamlProvider strategy next to email sign-in." } }] },
+            {
+                text: "Now the pull request, and I'll watch it.",
+                calls: [{ name: "CreatePullRequest", args: { title: "Add SAML SSO sign-in", body: "Adds a SAML strategy next to email sign-in.\n\nTested with `bun test`.", watch: true } }],
+            },
+            { text: "The pull request is open and I'm watching it: I'll be back when CI finishes or someone comments." },
+        ];
+        return steps[toolRounds];
+    }
     // A sub-agent's task (from "agents"): look around, then report.
     if (/^subtask:/.test(p)) {
         // One that changes something (asks permission in Manual mode).
@@ -126,6 +221,21 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
                 ],
             };
         return { text: "Both reviews are back.\n\n- **Auth:** strategies live in one list in `src/auth/index.ts`, so SSO can be appended there.\n- **Tests:** only the happy path of email sign-in is covered; SSO and failures need tests." };
+    }
+    // An edit with a type error the language server catches, then the fix (needs typescript-language-server installed).
+    if (/\bdiagnostics\b/.test(p)) {
+        const line = "        return email ? { id: email, email } : null;";
+        const typo = "        return email ? { id: email, mail: email } : null;";
+        const steps: Step[] = [
+            { text: "I'll rename the field in the email strategy.", calls: [{ name: "Read", args: { file_path: "src/auth/email.ts" } }] },
+            { calls: [{ name: "Edit", args: { file_path: "src/auth/email.ts", old_string: line, new_string: typo } }] },
+            {
+                text: lastResult.includes("<new-diagnostics>") ? "The language server caught it: `User` has no `mail` field. Putting it back." : "Checking it again.",
+                calls: [{ name: "Edit", args: { file_path: "src/auth/email.ts", old_string: typo, new_string: line } }],
+            },
+            { text: "Done. `src/auth/email.ts` type-checks again." },
+        ];
+        return steps[toolRounds];
     }
     if (/\b(sso|demo)\b/.test(p)) {
         const steps: Step[] = [
@@ -181,6 +291,20 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         }
         return { text: `Done. The command printed:\n${lastResult}` };
     }
+    // MCP, with a server named "docs" (test/fixtures/mcp-stdio-server.ts): a form it asks for, sampling, and its resources.
+    if (/\bmcpform\b/.test(p)) {
+        if (toolRounds === 0) return { text: "I'll ask the docs server, which needs your name first.", calls: [{ name: "mcp__docs__ask_name", args: {} }] };
+        return { text: `The server got: \`${lastResult}\`` };
+    }
+    if (/\bmcpsample\b/.test(p)) {
+        if (toolRounds === 0) return { text: "The docs server wants to ask a model something.", calls: [{ name: "mcp__docs__sample", args: { q: "In one word: what colour is the sky?" } }] };
+        return { text: `The server got back: \`${lastResult.slice(0, 300)}\`` };
+    }
+    if (/\bmcpresources\b/.test(p)) {
+        if (toolRounds === 0) return { text: "Let me see what the MCP servers offer.", calls: [{ name: "ListMcpResources", args: {} }] };
+        if (toolRounds === 1) return { calls: [{ name: "ReadMcpResource", args: { server: "docs", uri: "fixture://readme" } }] };
+        return { text: `The readme says:\n\n${lastResult}` };
+    }
     if (/\bquestion\b/.test(p)) {
         if (toolRounds === 0) return { text: "Before I start, one decision:", calls: [{ name: "AskUserQuestion", args: { question: "Which identity protocol should we support first?", options: [{ label: "SAML 2.0", description: "Most enterprise IdPs (Okta, Azure AD)" }, { label: "OpenID Connect", description: "Simpler, modern, JSON-based" }, { label: "Both", description: "More work up front" }] } }] };
         return { text: `Great, going with that. (${lastResult.replace(/^The user answered: /, "")})` };
@@ -195,6 +319,18 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         if (toolRounds < 3) return { text: toolRounds === 0 ? "I'll track this as a short list." : undefined, calls: [{ name: "TodoWrite", args: { todos: todos(toolRounds) } }] };
         return { text: "All three steps are done." };
     }
+    if (/\bschedule\b/.test(p)) {
+        if (toolRounds === 0) return { text: "I'll set that up.", calls: [{ name: "CronCreate", args: { cron: "57 8 * * 1-5", prompt: "Run the test suite and summarize any failures", durable: true } }] };
+        return { text: `Done: the test suite runs on weekday mornings at 8:57. ${lastResult.match(/Next run: [^.]*/)?.[0] ?? ""}. It's saved with this session, and recurring schedules stop after 7 days.` };
+    }
+    if (/\bmonitor\b/.test(p)) {
+        if (toolRounds === 0)
+            return {
+                text: "I'll watch the build and react when it reports something.",
+                calls: [{ name: "Monitor", args: { command: 'for i in 1 2 3; do sleep 2; echo "build step $i/3 ok"; done; sleep 1; echo "ERROR test/auth.test.ts: 1 failed"; sleep 2', description: "build progress and errors", timeout_ms: 120000 } }],
+            };
+        return { text: "Watching the build. Each step it reports will come back to me, so you don't need to check on it." };
+    }
     // Starts a background command, then waits a moment and checks it in one response (the check queues behind the wait).
     if (/\bwaitcheck\b/.test(p)) {
         if (toolRounds === 0) return { text: "Starting it.", calls: [{ name: "Bash", args: { command: "sleep 2", description: "Run the slow suite", run_in_background: true } }] };
@@ -208,8 +344,76 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         if (toolRounds === 0) return { text: `Loading the ${skill[1]} skill.`, calls: [{ name: "Skill", args: { skill: skill[1] } }] };
         if (toolRounds === 1) return { text: `Following the skill. It starts: ${lastResult.split("\n").find((l) => l.trim() && !l.startsWith("<") && !l.startsWith("Base directory")) ?? lastResult.slice(0, 80)}` };
     }
+    if (/\bgoaldemo\b/.test(p)) {
+        if (toolRounds === 0) return { text: "Running the auth tests.", calls: [{ name: "Bash", args: { command: "echo 'test/auth: 12 pass, 0 fail'", description: "Run the auth tests" } }] };
+        return { text: `The auth tests pass: ${lastResult.trim() || "12 pass, 0 fail"}.` };
+    }
+    // Command rows: a test run that passes, one without a description (as Codex's are), a heredoc, a failure, then one left in the background.
+    if (/\bcmdrows\b/.test(p)) {
+        const steps: Step[] = [
+            {
+                text: "Checking the auth module.",
+                calls: [
+                    { name: "Bash", args: { command: "printf '✓ signs in with email\\n✓ rejects a bad password\\n✓ locks after 5 tries\\n\\n 14 pass\\n 0 fail\\nRan 14 tests across 3 files.\\n'", description: "Run the auth tests" } },
+                    { name: "Bash", args: { command: "ls src/auth" } },
+                ],
+            },
+            {
+                calls: [
+                    { name: "Bash", args: { command: "cat <<'EOF' > notes.txt\nSSO: SAML first, then OIDC\nGate enforcement on verified domains\nEOF\nwc -l notes.txt", description: "Write the rollout notes" } },
+                    { name: "Bash", args: { command: "printf 'Checking 12 files\\nsrc/auth/sso.ts(14,3): error TS2304: Cannot find name loadSamlConfig.\\n' && exit 2", description: "Typecheck the auth module" } },
+                ],
+            },
+            { text: "Starting the dev server to try it.", calls: [{ name: "Bash", args: { command: "for i in $(seq 1 600); do echo \"tick $i\"; sleep 1; done", description: "Start the dev server", run_in_background: true } }] },
+            { text: "The tests pass, the typecheck has one error to fix in `src/auth/sso.ts`, and the dev server is running in the background." },
+        ];
+        return steps[toolRounds];
+    }
+    if (/\blivecmd\b/.test(p)) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: 'for i in $(seq 1 12); do echo "✓ check $i of 12"; sleep 0.5; done', description: "Run the checks" } }] } : { text: "All 12 checks pass." };
     if (/\bstubborn\b/.test(p)) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: "trap '' TERM; sleep 3", description: "Wait, ignoring SIGTERM" } }] } : { text: "Done." };
+    // A fast model's turn: quick steps in three rounds, then a long reply, all at one rate.
+    const fast = /\bfastdemo (\d+|burst)\b/.exec(p);
+    if (fast) {
+        const rate = fast[1] === "burst" ? "burst" : Number(fast[1]);
+        const steps: Step[] = [
+            {
+                reasoning: "They want to know how a session is stored and streamed. I'll find the auth module and the session code first, then check the tests.",
+                text: "I'll look at how sign-in is wired first.",
+                calls: [
+                    { name: "Glob", args: { pattern: "src/**/*.ts" } },
+                    { name: "Read", args: { file_path: "src/auth/index.ts" } },
+                    { name: "Read", args: { file_path: "src/auth/email.ts" } },
+                    { name: "Grep", args: { pattern: "strategy", path: "src" } },
+                    { name: "Read", args: { file_path: "src/auth/types.ts" } },
+                ],
+            },
+            {
+                reasoning: "The strategies are a plain list. Now the settings and the tests.",
+                text: "Strategies are one list in `src/auth/index.ts`. Checking the settings and the tests.",
+                calls: [
+                    { name: "Read", args: { file_path: "src/settings/org.ts" } },
+                    { name: "Bash", args: { command: "ls src test", description: "List the sources" } },
+                    { name: "Grep", args: { pattern: "sso", path: "src" } },
+                ],
+            },
+            {
+                calls: [
+                    { name: "Bash", args: { command: "printf '✓ email sign-in\\n\\n 1 pass\\n 0 fail\\n'", description: "Run the auth tests" } },
+                    { name: "Read", args: { file_path: "test/auth.test.ts" } },
+                ],
+            },
+            { reasoning: "Enough to explain it.", text: /\bshort\b/.test(p) ? "Sign-in strategies are one list in `src/auth/index.ts`; SSO can be appended to it.\n\nThe one auth test passes." : `${STREAM_DEMO}\n\n${SUMMARY}` },
+        ];
+        const step = steps[toolRounds];
+        return step && { ...step, rate };
+    }
+    if (/\bstreamdemo\b/.test(p)) return { reasoning: "They want the session flow explained with an example.", text: STREAM_DEMO, paced: true };
     if (/\bslow\b/.test(p)) return { reasoning: "Let me think about this carefully. ".repeat(6), text: Array.from({ length: 12 }, (_, i) => `Paragraph ${i + 1}: streaming text arrives a few words at a time so the interface can be checked for smooth rendering and stable scrolling.`).join("\n\n") };
+    // "imagedemo shot.png icon.png": a reply that shows those files of the project as images (the image viewer).
+    if (/\bimagedemo\b/.test(p)) {
+        const files = prompt.match(/[\w./-]+\.(?:png|jpe?g|gif|webp)\b/gi) ?? [];
+        return { text: files.length ? `Here they are.\n\n${files.map((f) => `![${f}](${f})`).join("\n\n")}` : "Name some image files to show." };
+    }
     if (toolRounds > 0) return { text: "Done." };
     return {
         reasoning: "A short, direct answer will do.",
@@ -217,9 +421,22 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
     };
 }
 
+/** The /goal check (src/agent/goal.ts): not met on the first check, met after; impossible when the goal asks for it. */
+function goalVerdict(prompt: string): string {
+    const goal = /<goal>\n([\s\S]*?)\n<\/goal>/.exec(prompt)?.[1] ?? "";
+    const check = Number(/Check (\d+) of this goal/.exec(prompt)?.[1] ?? 1);
+    if (/\bimpossible\b/i.test(goal)) return JSON.stringify({ verdict: "impossible", reason: "The goal asks for something that contradicts itself, so it can never hold." });
+    if (check < 2) return JSON.stringify({ verdict: "not_met", reason: "The conversation shows no linter run yet; run it and show that it's clean." });
+    return JSON.stringify({ verdict: "met", reason: "The output shows 12 auth tests passing with 0 failures, and the linter is clean." });
+}
+
 function titleFor(prompt: string): string {
     const p = prompt.toLowerCase();
+    if (/\bperfturn 9\d\d\b/.test(p)) return "Short session";
+    if (/\bperfturn 7\d\d\b/.test(p)) return `Older session ${/perfturn (\d+)/.exec(p)![1]}`;
+    if (/\bperfturn\b/.test(p)) return "Long session";
     if (/\bsso\b|\bdemo\b/.test(p)) return "Add enterprise SSO";
+    if (/\bdiagnostics\b/.test(p)) return "Rename the email field";
     if (/\bplan\b/.test(p)) return "Plan the SSO rollout";
     if (/\bquestion\b/.test(p)) return "Choose an identity protocol";
     if (/\bsecret\b/.test(p)) return "Use a demo token";
@@ -227,6 +444,8 @@ function titleFor(prompt: string): string {
     if (/\bagents?\b/.test(p)) return "Review auth with agents";
     if (/\bnote\b/.test(p)) return "Write a release note";
     if (/\bbackground\b/.test(p)) return "Review tests in the background";
+    if (/\bmonitor\b/.test(p)) return "Watch the build";
+    if (/\bbrowser\b/.test(p)) return "Check the app in the browser";
     return prompt.split(/\s+/).slice(0, 4).join(" ").replace(/^\w/, (c) => c.toUpperCase());
 }
 
@@ -239,6 +458,70 @@ function recall(messages: Json[]): string {
     return `Your first message was "${said[0] ?? ""}". You've said: ${said.map((s) => `"${s}"`).join(", ")}.`;
 }
 
+const STREAM_DEMO = `Sessions keep running when the window closes: the server owns them, and the GUI is only a view onto its state. Here's how a turn moves through it.
+
+## How a turn runs
+
+The engine takes the prompt, calls the model, and streams **every event** back over the socket as it happens. Each session has its own queue, so a slow tool in one never holds up another.
+
+1. **Prompt** — \`Composer\` sends it with \`sendPrompt()\`
+2. **Model call** — the engine opens a stream to the provider
+   - text deltas append to the last text block
+   - tool calls become cards, each with its own status
+3. **Tools** — run in the session's folder, asking first when the mode says so
+
+### The append path
+
+Text deltas are merged into the turn in place, so the transcript only re-renders what changed:
+
+\`\`\`ts
+function onDelta(turn: Turn, delta: string) {
+    const last = turn.blocks.at(-1);
+    if (last?.t === "text") last.text += delta;
+    else turn.blocks.push({ t: "text", id: nextId(), text: delta });
+}
+\`\`\`
+
+## What each side owns
+
+| Part | Owns | Survives a restart |
+| --- | --- | --- |
+| Server | sessions, turns, tool runs | yes |
+| GUI | scroll position, open panels | no |
+| Provider | the model's context | per request |
+
+The short version: the GUI can come and go, and nothing in \`~/.harness/sessions\` is lost when it does. If a reply is cut off, *resume* picks it up from the last saved turn.`;
+
+/** A model's pace: 1 to 5 tokens a chunk (about 4 characters each), 15 to 90ms apart. Seeded, so every run is the same. */
+function pacedChunks(text: string): [string, number][] {
+    let seed = 7;
+    const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    const out: [string, number][] = [];
+    for (let i = 0; i < text.length; ) {
+        const n = Math.max(1, Math.round((1 + rand() * 4) * 4 * (0.6 + rand() * 0.8)));
+        out.push([text.slice(i, i + n), Math.round(15 + rand() * rand() * 75)]);
+        i += n;
+    }
+    return out;
+}
+
+/**
+ * A fast model's stream: `rate` tokens a second (about 4 characters each), sent every 20ms as a provider batches
+ * them; or "burst", a paragraph at a time, 250 to 700ms apart (seeded).
+ */
+function ratedChunks(text: string, rate: number | "burst"): [string, number][] {
+    const out: [string, number][] = [];
+    if (rate === "burst") {
+        let seed = 11;
+        const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+        for (const part of text.split(/(?<=\n\n)/)) out.push([part, Math.round(250 + rand() * 450)]);
+        return out;
+    }
+    const n = Math.max(1, Math.round((rate * 4 * 20) / 1000));
+    for (let i = 0; i < text.length; i += n) out.push([text.slice(i, i + n), 20]);
+    return out;
+}
+
 /** Split text into small chunks the way a model streams it. */
 function chunks(text: string): string[] {
     return text.match(/\S+\s*|\s+/g) ?? [];
@@ -246,6 +529,7 @@ function chunks(text: string): string[] {
 
 export function startMockLlm(o: MockOptions = {}) {
     const delay = o.delayMs ?? 12;
+    if (o.site) demoSite = o.site;
     let calls = 0;
     /** Each completion asked for, including the prompt/attachments and raw body sent. */
     const requests: { model: string; kind: "title" | "summary" | "turn"; body: string; prompt: string; images: number }[] = [];
@@ -279,7 +563,8 @@ export function startMockLlm(o: MockOptions = {}) {
             }
             const promptMsg = messages[promptIdx] ?? {};
             // The harness's own notes ride along with prompts; only the user's words pick the script.
-            const prompt = (typeof promptMsg.content === "string" ? promptMsg.content : (promptMsg.content ?? []).map((c: Json) => c.text ?? "").join("\n")).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+            // A prompt after an interrupt arrives joined to the interrupted one (one user message): only what follows counts.
+            const prompt = (typeof promptMsg.content === "string" ? promptMsg.content : (promptMsg.content ?? []).map((c: Json) => c.text ?? "").join("\n")).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").split("[Request interrupted by user]").pop()!.trim();
             const images = Array.isArray(promptMsg.content) ? promptMsg.content.filter((c: Json) => c.type === "image_url").length : 0;
             const after = messages.slice(promptIdx + 1);
             const toolRounds = after.filter((m) => m.role === "assistant").length;
@@ -304,6 +589,11 @@ export function startMockLlm(o: MockOptions = {}) {
 
             let step: Step;
             if (/name coding-assistant sessions/.test(system)) step = { text: titleFor(prompt) };
+            else if (/check whether a coding agent has reached a goal/.test(system)) {
+                // A real check takes a moment: long enough to see it (not in tests, which run with no delay).
+                if (delay) await Bun.sleep(delay * 100);
+                step = { text: goalVerdict(prompt) };
+            }
             else if (!body.tools?.length) step = { text: "Summary: the user asked for help; the work is in progress." };
             else if (/what was my first message/i.test(prompt)) step = { text: recall(messages) };
             else if (/\bpause\b/i.test(prompt)) {
@@ -322,13 +612,24 @@ export function startMockLlm(o: MockOptions = {}) {
                     const delta = (d: Json, finish: string | null = null) => send({ id, object: "chat.completion.chunk", model, choices: [{ index: 0, delta: d, finish_reason: finish }] });
                     const wait = () => (delay ? Bun.sleep(delay) : Promise.resolve());
                     try {
-                        if (step.reasoning) for (const c of chunks(step.reasoning)) {
-                            delta({ reasoning_content: c });
-                            await wait();
+                        // At a set rate: reasoning, then text.
+                        if (step.rate !== undefined) for (const [d, ms] of [...ratedChunks(step.reasoning ?? "", step.rate).map(([c, ms]) => [{ reasoning_content: c }, ms] as const), ...ratedChunks(step.text ?? "", step.rate).map(([c, ms]) => [{ content: c }, ms] as const)]) {
+                            delta(d);
+                            await Bun.sleep(delay ? ms : 0);
                         }
-                        if (step.text) for (const c of chunks(step.text)) {
-                            delta({ content: c });
-                            await wait();
+                        else {
+                            if (step.reasoning) for (const c of chunks(step.reasoning)) {
+                                delta({ reasoning_content: c });
+                                await wait();
+                            }
+                            if (step.text && step.paced) for (const [c, ms] of pacedChunks(step.text)) {
+                                delta({ content: c });
+                                await Bun.sleep(delay ? ms : 0);
+                            }
+                            else if (step.text) for (const c of chunks(step.text)) {
+                                delta({ content: c });
+                                await wait();
+                            }
                         }
                         (step.calls ?? []).forEach((c, i) => {
                             const args = JSON.stringify(c.args);

@@ -13,14 +13,14 @@ const clean = (s: string, limit = 4000) => redact(s
 const fail = (message: string, code = "git") => new RpcError(clean(message), code);
 export const gitPublishTiming = { commandMs: 120_000, killGraceMs: 1000 };
 
-function checkNetworkTrust(cwd: string) {
-    const reason = gitNetworkSkipReason(cwd);
+async function checkNetworkTrust(cwd: string) {
+    const reason = await gitNetworkSkipReason(cwd);
     if (reason) throw new RpcError(`Trust this folder explicitly before publishing or reading remote state: ${reason}.`, "needs_trust", cwd);
 }
 
 async function run(cwd: string, args: string[], network = false, signal?: AbortSignal) {
     if (signal?.aborted) throw fail("Publishing cancelled; check the remote before retrying.", "git_cancelled");
-    if (network) checkNetworkTrust(cwd);
+    if (network) await checkNetworkTrust(cwd);
     const env = gitEnv();
     delete env.GIT_CONFIG;
     for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE"]) delete env[key];
@@ -66,6 +66,16 @@ async function run(cwd: string, args: string[], network = false, signal?: AbortS
         signal?.removeEventListener("abort", stop);
     }
 }
+/** One `gh` call with the publish rules: inherited credentials only, no prompts, the folder's network trust checked. */
+export function runGh(cwd: string, args: string[], signal?: AbortSignal): Promise<{ out: string; err: string; code: number }> {
+    return run(cwd, ["gh", ...args], true, signal);
+}
+
+/** The GitHub repository ("owner/name") the current branch pushes to. */
+export async function currentGithubRepo(cwd: string, signal?: AbortSignal): Promise<string | undefined> {
+    return githubRepo((await local(cwd, signal)).url);
+}
+
 async function git(cwd: string, args: string[], signal?: AbortSignal, network = false, optional = false) {
     const result = await run(cwd, ["git", ...args], network, signal);
     if (result.code && (!optional || (args[0] === "config" && result.code !== 1))) throw fail(result.err + result.out || "Git command failed.");
@@ -86,7 +96,7 @@ export function githubRepo(url: string): string | undefined {
 }
 
 async function local(cwd: string, signal?: AbortSignal) {
-    checkNetworkTrust(cwd);
+    await checkNetworkTrust(cwd);
     const [branch, sha, remoteNames] = await Promise.all([
         git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"], signal, false, true),
         git(cwd, ["rev-parse", "--verify", "HEAD"], signal),
@@ -135,6 +145,12 @@ async function local(cwd: string, signal?: AbortSignal) {
     const fingerprint = createHash("sha256").update(JSON.stringify({ branch, sha, remote, target, url, hasUpstream })).digest("hex");
     return { branch, sha, remote, target, url, hasUpstream, ahead, behind, fingerprint };
 }
+/** Where a push would go now (git only, no network), with the fingerprint gitPublish checks. */
+export async function gitPushTarget(cwd: string, signal?: AbortSignal) {
+    const t = await local(cwd, signal);
+    return { branch: clean(t.branch), sha: t.sha, remote: clean(t.remote), target: clean(t.target), url: clean(t.url), fingerprint: t.fingerprint };
+}
+
 async function defaultBranch(cwd: string, url: string, signal?: AbortSignal) {
     // Query the actual push destination, not a potentially stale origin/HEAD.
     const refs = await git(cwd, ["ls-remote", "--symref", "--", url, "HEAD"], signal, true);

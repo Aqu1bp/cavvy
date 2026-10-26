@@ -8,12 +8,12 @@
 import { createHash } from "crypto";
 import { existsSync } from "fs";
 import { AnthropicProvider } from "./anthropic";
-import { OpenAICompatProvider } from "./openai-compat";
+import { OpenAICompatProvider, compatModelInfo } from "./openai-compat";
 import { apiFastModeInfo } from "./fast-mode";
 import { OpenAIResponsesProvider, responsesModelInfo } from "./openai-responses";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, resolveBaseUrl, type ProviderDef } from "./registry";
 import { VertexProvider, forgetTokens } from "./vertex";
-import { anthropicTraits } from "./anthropic-models";
+import { anthropicPricing, anthropicTraits, ANTHROPIC_BUDGET_EFFORTS } from "./anthropic-models";
 import { ProviderError, parseModelRef, type ModelInfo, type ProviderClient } from "./types";
 import { getKey } from "../auth/credentials";
 import { createBackend } from "../backends/index";
@@ -55,7 +55,11 @@ async function credentialFingerprint(def: ProviderDef): Promise<{ fp: string; ke
     }
     const key = def.requiresKey ? await getKey(def.id) : undefined;
     if (def.requiresKey && !key) return undefined;
-    return { fp: fingerprint(key?.value) + "|" + def.baseUrl, key: key?.value };
+    return { fp: fingerprint(key?.value) + "|" + (def.kind === "openai" ? providerConfiguration(def) : def.baseUrl), key: key?.value };
+}
+
+function providerConfiguration(def: ProviderDef): string {
+    return JSON.stringify([resolveBaseUrl(def), def.deepseekCompat, def.modelEffortLevels]);
 }
 
 /** A client for a provider, with its stored key. Throws if a key is required but missing. */
@@ -97,6 +101,7 @@ interface CacheEntry {
     fetchedAt: number;
     fp: string;
     models: ModelInfo[];
+    configuration?: string;
 }
 
 interface CacheFile {
@@ -107,6 +112,40 @@ interface CacheFile {
 function readCache(): CacheFile {
     const c = readJson<CacheFile>(paths.modelCache());
     if (!c || c.version !== CACHE_VERSION || typeof c.providers !== "object") return { version: CACHE_VERSION, providers: {} };
+    // Chat Completions capabilities depend on dialect/model configuration. Also
+    // refresh old listings made before these capabilities were discovered.
+    for (const def of allProviders()) {
+        if (def.kind === "openai" && c.providers[def.id]?.configuration !== providerConfiguration(def)) delete c.providers[def.id];
+    }
+    // Anthropic prices come from our catalog, not the API's cached metadata.
+    for (const [provider, entry] of Object.entries(c.providers)) {
+        if (getProvider(provider)?.kind !== "anthropic") continue;
+        for (const model of entry.models) {
+            if (!anthropicPricing(model.id)) continue;
+            const t = anthropicTraits(model.id);
+            Object.assign(model, { pricing: t.pricing, pricingLong: t.pricingLong, longContextThreshold: t.longContextThreshold });
+        }
+    }
+    // Older Anthropic cache entries stored only native API effort levels.
+    // Upgrade those controls without discarding other providers' cached models.
+    for (const [provider, entry] of Object.entries(c.providers)) {
+        if (getProvider(provider)?.kind !== "anthropic") continue;
+        for (const model of entry.models) {
+            const t = anthropicTraits(model.id);
+            model.nativeEffortLevels ??= model.effortLevels ?? t.effort;
+            // Before budget support was explicit, unknown ids were marked true.
+            // Never promote that guess into a thinking control, even if a newer
+            // table now recognizes the id as adaptive.
+            if (!t.budget && model.budgetThinking && !(model.adaptiveThinking ?? t.adaptive)) {
+                model.effortLevels = model.nativeEffortLevels;
+                model.supportsReasoning = false;
+            }
+            model.budgetThinking = !!t.budget && model.budgetThinking !== false;
+            if ((model.adaptiveThinking ?? t.adaptive) || !model.budgetThinking) continue;
+            model.effortLevels = ANTHROPIC_BUDGET_EFFORTS;
+            model.supportsReasoning = true;
+        }
+    }
     return c;
 }
 
@@ -164,7 +203,7 @@ export async function listAllModels(opts: ListOptions = {}): Promise<ProviderLis
                 const listed = await client.listModels(signal);
                 const models = def.sorted ? listed : sortModels(listed);
                 if (!def.local) {
-                    cache.providers[def.id] = { fetchedAt: Date.now(), fp, models };
+                    cache.providers[def.id] = { fetchedAt: Date.now(), fp, models, configuration: providerConfiguration(def) };
                     dirty = true;
                 }
                 const l: ProviderListing = { provider: def, models, status: "ok", fetchedAt: Date.now() };
@@ -269,16 +308,19 @@ export function resolveModelInfo(ref: string): ModelInfo | undefined {
             contextWindow: t.contextWindow,
             maxOutput: t.maxOutput,
             pricing: t.pricing,
+            pricingLong: t.pricingLong,
+            longContextThreshold: t.longContextThreshold,
             ...apiFastModeInfo(def.id, parsed.id, resolveBaseUrl(def)),
             supportsTools: true,
             supportsImages: true,
-            supportsReasoning: t.adaptive,
+            supportsReasoning: t.adaptive || !!t.budget,
             adaptiveThinking: t.adaptive,
-            budgetThinking: !t.adaptive,
-            effortLevels: t.effort,
+            budgetThinking: !!t.budget,
+            effortLevels: t.budget ? ANTHROPIC_BUDGET_EFFORTS : t.effort,
+            nativeEffortLevels: t.effort,
         };
     }
-    return { provider: def.id, id: parsed.id };
+    return compatModelInfo(def, parsed.id);
 }
 
 /** Look up a model live if it isn't cached (used when switching to a model typed by hand). */
@@ -351,7 +393,7 @@ export const DEFAULT_REVIEW_MODEL = "anthropic:claude-sonnet-5-5";
 /**
  * Who reviews auto-mode actions: the reviewModel setting, else Claude Sonnet
  * 5.5 when there's an Anthropic key. Undefined: the session's own model does.
- * Never Claude Code or Codex, which can't answer one-off requests. A reviewer
+ * Never Claude Code or Codex, which review with their own auto modes. A reviewer
  * the user chose that can't be used throws, so its actions go to the user
  * rather than quietly to another model.
  */

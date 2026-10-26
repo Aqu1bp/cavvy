@@ -55,7 +55,7 @@ test("shell find searches displayed text without ANSI escapes", () => {
     // Isolate the unused tool renderer so shell matching can run without a browser.
     const result = Bun.spawnSync([process.execPath, "--no-env-file", "-e", String.raw`
         import { expect, mock } from "bun:test";
-        mock.module("./src/components/blocks/Activity", () => ({ toolLabel: () => { throw new Error("unexpected tool"); } }));
+        mock.module("./src/components/blocks/Activity", () => ({ toolLabel: () => { throw new Error("unexpected tool"); }, cardOf: () => { throw new Error("unexpected tool"); } }));
         const { findParts, findMatches } = await import("./src/lib/find");
         const turn = { id: "turn", status: "done", blocks: [
             { t: "shell", id: "shell", command: "printf colors", output: "foo\x1b[31mbar\x1b[0m foobar", running: false, exitCode: 0 },
@@ -65,6 +65,22 @@ test("shell find searches displayed text without ANSI escapes", () => {
             { turnId: "turn", part: "shell", n: 0 }, { turnId: "turn", part: "shell", n: 1 },
         ]);
         expect(findMatches([turn], "31")).toEqual([]);
+    `], { cwd: resolve(import.meta.dir, "../gui"), stdout: "pipe", stderr: "pipe" });
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+});
+
+test("find counts a plan's card by its title, not the faded glimpse under it", () => {
+    const result = Bun.spawnSync([process.execPath, "--no-env-file", "-e", String.raw`
+        import { expect, mock } from "bun:test";
+        mock.module("./src/components/blocks/Activity", () => ({ cardOf: (b) => b.name === "ExitPlanMode" ? "plan" : undefined }));
+        const { findParts } = await import("./src/lib/find");
+        const plan = (status) => ({ id: "turn", status: "done", blocks: [
+            { t: "tool", id: "p", name: "ExitPlanMode", title: "ExitPlanMode", status, input: { plan: "## Plan: add SSO\n\n1. Add the provider" } },
+        ] });
+        expect(findParts(plan("ok"))).toEqual([{ part: "p", text: "add SSO" }]);
+        expect(findParts(plan("awaiting"))).toEqual([{ part: "p", text: "add SSO" }]);
+        // Still being written: the live line has it, not a card.
+        expect(findParts(plan("streaming"))).toEqual([]);
     `], { cwd: resolve(import.meta.dir, "../gui"), stdout: "pipe", stderr: "pipe" });
     expect(result.exitCode, result.stderr.toString()).toBe(0);
 });

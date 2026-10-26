@@ -76,6 +76,24 @@ function expectPrivate(root: string) {
 }
 
 describe("per-turn snapshots", () => {
+    test("prepare captures without cutting the open turn; beginWith starts the next turn from that capture, after an end that was asked first", async () => {
+        const { snapshots } = setup({ "a.txt": "a" });
+        await snapshots.begin(1, "first");
+        const captured = await snapshots.prepare();
+        expect(captured).toBeDefined();
+        // Nothing started or ended: the first turn is still the open one.
+        expect(snapshots.list().map((t) => [t.id, Boolean(t.end)])).toEqual([[1, false]]);
+        // Dropped (the prompt didn't go): still nothing changes.
+        await snapshots.prepare();
+        expect(snapshots.list().map((t) => [t.id, Boolean(t.end)])).toEqual([[1, false]]);
+        const started = snapshots.beginWith(2, "second", captured);
+        const ended = snapshots.end();
+        await Promise.all([started, ended]);
+        // In the order asked: the first ends at the capture, the second starts from it, then ends.
+        expect(snapshots.list().map((t) => [t.id, Boolean(t.end)])).toEqual([[1, true], [2, true]]);
+        expect(snapshots.list()[1]!.start).toEqual(captured!);
+    });
+
     test("the object quota degrades capture gracefully and survives reopening", async () => {
         const { cwd, dir, snapshots } = setup({ "a.txt": "before\n" });
         await snapshots.begin(1, "saved");

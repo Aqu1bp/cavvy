@@ -92,8 +92,14 @@ function* exactSpans(text: string, secret: string, label: string, prefix?: Uint3
     if (span) yield span;
 }
 
+/** A copy of each pattern to match with: redaction never runs inside itself, so each is in use once at a time. */
+const matchers = new Map<RegExp, RegExp>();
+
 function* patternSpans(text: string, pattern: RegExp, label: string): Generator<SecretSpan> {
-    const re = new RegExp(pattern.source, pattern.flags);
+    // Made once, not per call: building a RegExp from source and flags costs more than matching a short line.
+    let re = matchers.get(pattern);
+    if (!re) matchers.set(pattern, (re = new RegExp(pattern.source, pattern.flags)));
+    re.lastIndex = 0;
     for (let match; (match = re.exec(text)); ) {
         yield { start: match.index, end: match.index + match[0].length, length: match[0].length, label };
     }

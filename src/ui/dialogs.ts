@@ -12,6 +12,8 @@ export interface Dialog {
     onKey(k: Key): void;
     /** Called when the dialog is dismissed from outside (Ctrl+C). */
     cancel(): void;
+    /** A passive "working…" box: a dialog the work it waits on opens goes on top of it, not behind it. */
+    yields?: boolean;
 }
 
 export interface SelectDialogOptions<T> {
@@ -228,6 +230,7 @@ export function frame(lines: string[], cols: number, color: (s: string) => strin
 
 /** A dialog that only shows progress text (e.g. "Checking key…"). */
 export class MessageDialog implements Dialog {
+    yields?: boolean;
     constructor(
         public lines: string[],
         private color: (s: string) => string = theme.permission,

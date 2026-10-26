@@ -70,6 +70,8 @@ describe("Claude Code's rate_limit_event", () => {
             ],
             reached: false,
             resetsAt: undefined,
+            // overageStatus "rejected": no extra usage to go on with.
+            credits: false,
             at,
         });
     });
@@ -159,6 +161,28 @@ describe("Claude Code's rate_limit_event", () => {
         expect(parseCodexRateLimits({ rateLimits: { primary: { usedPercent: 99.7 } } }, { at })!.limits.windows[0]).toMatchObject({ usedPercent: 99, reached: undefined });
     });
 
+    test("rejected on extra usage (#434): reached, and turns go on using credits", () => {
+        const r = parseClaudeRateLimit(fixture("claude-overage.json"), at)!;
+        expect(r.limits.reached).toBe(true);
+        expect(r.limits.credits).toBe(true);
+        expect(r.limits.windows.find((w) => w.id === "five_hour")).toMatchObject({ usedPercent: 100, reached: true });
+        expect(meterOf(r.limits, at)).toMatchObject({ reached: true, usingCredits: true });
+    });
+
+    test("extra usage is read only from isUsingOverage and overageStatus", () => {
+        const credits = (info: object) => parseClaudeRateLimit(info, at)?.limits.credits;
+        expect(credits(fixture("claude-rejected.json"))).toBe(false);
+        expect(credits(fixture("claude-normal.json"))).toBe(false);
+        expect(credits(fixture("claude-missing.json"))).toBeUndefined();
+        // Available, not needed yet: the meter says nothing of it.
+        const allowed = parseClaudeRateLimit({ status: "allowed", overageStatus: "allowed", unifiedWindows: { five_hour: { utilization: 0.3 } } }, at)!.limits;
+        expect(allowed.credits).toBe(true);
+        expect(meterOf(allowed, at)!.usingCredits).toBe(false);
+        // A refusal's record: rejected and not on extra usage, whatever its overage status.
+        expect(credits({ status: "rejected", overageStatus: "allowed", isUsingOverage: false })).toBe(false);
+        expect(credits({ status: "rejected", isUsingOverage: "yes" })).toBeUndefined();
+    });
+
     test("keeps nothing else, and its strings are bounded and redacted", () => {
         const key = "sk-ant-api03-" + "x".repeat(40);
         const r = parseClaudeRateLimit({ status: "allowed", email: "me@example.com", organizationUuid: "org-1", unifiedWindows: { [`some_${key}_${"y".repeat(80)}`]: { utilization: 0.1 } } }, at)!;
@@ -175,7 +199,7 @@ describe("Codex's account/rateLimits", () => {
 
     test("read (normal, as captured from 0.163.0): the weekly window", () => {
         const r = parseCodexRateLimits(fixture("codex-read.json"), { at })!;
-        expect(r).toEqual({ limits: { provider: "codex", accountId: "default", windows: [{ id: "codex:primary", label: "Weekly", usedPercent: 14, resetsAt: 1792652703_000, reached: undefined }], reached: false, resetsAt: undefined, at }, partial: false });
+        expect(r).toEqual({ limits: { provider: "codex", accountId: "default", windows: [{ id: "codex:primary", label: "Weekly", usedPercent: 14, resetsAt: 1792652703_000, reached: undefined }], reached: false, resetsAt: undefined, credits: false, at }, partial: false });
     });
 
     test("read at the limit: reached, resetting when its window does", () => {
@@ -288,6 +312,65 @@ describe("Codex's account/rateLimits", () => {
         expect(JSON.stringify(r)).not.toMatch(/acct-123|"pro"|balance/);
     });
 
+    test("read at the limit with credits (#434): reached, using credits; the balance is never kept", () => {
+        for (const [name, update] of [["codex-read-credits.json", false], ["codex-update-credits.json", true]] as const) {
+            const r = parseCodexRateLimits(fixture(name), { at, update })!;
+            expect(r.limits).toMatchObject({ reached: true, credits: true, resetsAt: 1792160400_000 });
+            expect(meterOf(r.limits, at)).toMatchObject({ reached: true, usingCredits: true });
+            expect(JSON.stringify(r)).not.toMatch(/917|balance|hasCredits|unlimited/);
+        }
+    });
+
+    test("credits as Codex's own TUI decides: hasCredits or unlimited, unless a workspace cap or spend control stopped it", () => {
+        const credits = (extra: object, update = false) => parseCodexRateLimits({ rateLimits: { limitId: "codex", primary: { usedPercent: 100, windowDurationMins: 300 }, rateLimitReachedType: "rate_limit_reached", ...extra } }, { at, update })!.limits.credits;
+        expect(credits({ credits: { hasCredits: false, unlimited: true, balance: null } })).toBe(true);
+        expect(credits({ credits: { hasCredits: true, unlimited: false, balance: "0" } })).toBe(true);
+        expect(credits({ credits: { hasCredits: false, unlimited: false, balance: null } })).toBe(false);
+        expect(credits({ credits: { hasCredits: "true" } })).toBe(false);
+        expect(credits({ credits: { hasCredits: true, unlimited: false }, spendControlReached: true })).toBe(false);
+        for (const t of ["workspace_owner_credits_depleted", "workspace_member_credits_depleted", "workspace_owner_usage_limit_reached", "workspace_member_usage_limit_reached"]) {
+            expect(credits({ credits: { hasCredits: true, unlimited: true }, rateLimitReachedType: t })).toBe(false);
+        }
+        // A read without credits has none; an update without them didn't say.
+        expect(parseCodexRateLimits(fixture("codex-read-reached.json"), { at })!.limits.credits).toBe(false);
+        expect(credits({ credits: null })).toBe(false);
+        expect(credits({ credits: null }, true)).toBeUndefined();
+        expect(credits({ credits: null, spendControlReached: true }, true)).toBe(false);
+    });
+
+    test("a model's own limit with no credits stops there, whatever Codex's own limit has", () => {
+        const snapshot = (limitId: string, used: number, hasCredits: boolean) => ({ limitId, limitName: limitId === "codex" ? null : "Spark", primary: { usedPercent: used, windowDurationMins: 300, resetsAt: 1792160400 }, credits: { hasCredits, unlimited: false, balance: "5" } });
+        const read = parseCodexRateLimits({ rateLimits: snapshot("codex", 30, true), rateLimitsByLimitId: { codex: snapshot("codex", 30, true), spark: snapshot("spark", 100, false) } }, { at })!.limits;
+        expect(read.credits).toBe(true);
+        expect(read.windows.find((w) => w.id === "spark:primary")).toMatchObject({ reached: true, credits: false });
+        expect(read.windows.find((w) => w.id === "codex:primary")?.credits).toBeUndefined();
+        expect(meterOf(read, at)).toMatchObject({ reached: true, usingCredits: false });
+        // A sparse update about that limit doesn't forget it has none.
+        const update = parseCodexRateLimits({ rateLimits: { ...snapshot("spark", 100, false), credits: null } }, { at: at + 1, update: true })!;
+        const merged = mergeLimits(read, update.limits, update.partial);
+        expect(merged.windows.find((w) => w.id === "spark:primary")?.credits).toBe(false);
+        expect(meterOf(merged, at + 1)!.usingCredits).toBe(false);
+    });
+
+    test("merging: an update silent on credits keeps them; a read or a hard stop says otherwise", () => {
+        const read = parseCodexRateLimits(fixture("codex-read-credits.json"), { at })!.limits;
+        const update = parseCodexRateLimits(fixture("codex-update-reached.json"), { update: true, at: at + 1 })!;
+        expect(update.limits.credits).toBeUndefined();
+        const kept = mergeLimits(read, update.limits, update.partial);
+        expect(kept).toMatchObject({ reached: true, credits: true });
+        expect(meterOf(kept, at + 1)!.usingCredits).toBe(true);
+        // The turn then stops on the limit anyway (the credits ran out): the backend reports a hard stop.
+        const stopped = mergeLimits(kept, { provider: "codex", accountId: "default", windows: [], reached: true, credits: false, at: at + 2 }, true);
+        expect(stopped).toMatchObject({ reached: true, credits: false });
+        expect(meterOf(stopped, at + 2)!.usingCredits).toBe(false);
+        // A full read replaces it all.
+        expect(mergeLimits(kept, parseCodexRateLimits(fixture("codex-read-reached.json"), { at: at + 3 })!.limits, false).credits).toBe(false);
+        // Another account's report carries nothing over.
+        expect(mergeLimits(kept, { ...update.limits, accountId: "work" }, true).credits).toBeUndefined();
+        // Past the reset, no longer reached: nothing to say about credits on the meter.
+        expect(meterOf(kept, 1792652703_000 + 1)!.usingCredits).toBe(false);
+    });
+
     function windowShape(w: PlanLimits["windows"][number]) {
         return [w.label, w.usedPercent, w.resetsAt];
     }
@@ -312,6 +395,14 @@ describe("reset times in words", () => {
         expect(lines[0]).toMatch(/^5-hour 100% reached · resets (?:at|on) .* \(in 2h 5m\)$/);
         expect(lines[1]).toMatch(/^Weekly 41% · resets on .* \(in 3d\)$/);
         expect(limitLines({ provider: "claude-code", windows: [], reached: true, at: now }, now)).toEqual(["Limit reached"]);
+        // On credits (#434): said first, the windows as before.
+        const credits = parseCodexRateLimits(fixture("codex-update-credits.json"), { update: true, at: now })!.limits;
+        const onCredits = limitLines({ ...credits, windows: credits.windows.map((w, i) => ({ ...w, resetsAt: now + (i ? 3 * 86_400_000 : 125 * 60_000) })) }, now);
+        expect(onCredits[0]).toBe("Limit reached · using credits");
+        expect(onCredits[1]).toMatch(/^5-hour 100% reached · resets (?:at|on) .* \(in 2h 5m\)$/);
+        expect(limitLines({ provider: "claude-code", windows: [], reached: true, credits: true, at: now }, now)).toEqual(["Limit reached · using credits"]);
+        // Credits that aren't needed yet aren't mentioned.
+        expect(limitLines({ ...credits, reached: false, windows: [] }, now)).toEqual([]);
     });
 
     test("no time: says so", () => {
@@ -354,7 +445,7 @@ async function runTurn(provider: "claude-code" | "codex") {
     const reason = await agent.run([{ type: "text", text: "hello" }], { signal: new AbortController().signal });
     const notices = events.flatMap((e) => (e.type === "notice" ? [`${e.level}: ${e.message}`] : []));
     const limits = events.flatMap((e) => (e.type === "limits" ? [e.limits] : []));
-    return { reason, notices, limits };
+    return { reason, notices, limits, limitStop: agent.limitStop };
 }
 
 const received = () =>
@@ -381,8 +472,9 @@ describe("a turn that hits the plan's limit says when it resets", () => {
             process.env.FAKE_RATE_LIMIT_LATE = late;
             const r = await runTurn("claude-code");
             expect(r.reason).toBe("error");
-            // An error arriving first also reports the reached account before its window details.
-            expect(r.limits).toHaveLength(2 + Number(late === "1"));
+            // Its two window reports, and the hard stop (reached, no credits), wherever the error comes.
+            expect(r.limits).toHaveLength(3);
+            expect(r.limits.filter((l) => l.credits === false && !l.windows.length)).toHaveLength(1);
             expect(r.notices.find((n) => n.startsWith("error:"))).toContain(resetSentence(reset * 1000, "Claude Code"));
         }
     });
@@ -428,8 +520,9 @@ describe("a turn that hits the plan's limit says when it resets", () => {
             process.env.FAKE_RATE_LIMIT_LATE = late;
             const r = await runTurn("claude-code");
             expect(r.reason).toBe("error");
-            // An error arriving first also reports the reached account before its window details.
-            expect(r.limits).toHaveLength(2 + Number(late === "1"));
+            // Its two window reports, and the hard stop (reached, no credits), wherever the error comes.
+            expect(r.limits).toHaveLength(3);
+            expect(r.limits.filter((l) => l.credits === false && !l.windows.length)).toHaveLength(1);
             expect(r.notices.find((n) => n.startsWith("error:"))).toContain(resetSentence(weekly * 1000, "Claude Code"));
         }
     });
@@ -442,8 +535,9 @@ describe("a turn that hits the plan's limit says when it resets", () => {
             process.env.FAKE_RATE_LIMIT_LATE = late;
             const r = await runTurn("claude-code");
             expect(r.reason).toBe("error");
-            // An error arriving first also reports the reached account before its window details.
-            expect(r.limits).toHaveLength(2 + Number(late === "1"));
+            // Its two window reports, and the hard stop (reached, no credits), wherever the error comes.
+            expect(r.limits).toHaveLength(3);
+            expect(r.limits.filter((l) => l.credits === false && !l.windows.length)).toHaveLength(1);
             expect(r.notices.find((n) => n.startsWith("error:"))).toMatch(/It resets (?:at|on) .*\(in 2h 5m\)/);
         }
     });
@@ -456,9 +550,10 @@ describe("a turn that hits the plan's limit says when it resets", () => {
         const r = await runTurn("codex");
         expect(r.reason).toBe("error");
         expect(received().filter((m) => m.method === "account/rateLimits/read")).toHaveLength(1);
-        // No stale event reaches the engine; the local turn also keeps its reset.
-        expect(r.limits).toHaveLength(1);
+        // No stale event reaches the engine (only the update, then the hard stop); the local turn also keeps its reset.
+        expect(r.limits).toHaveLength(2);
         expect(r.limits[0]!.windows[0]).toMatchObject({ usedPercent: 100, reached: true });
+        expect(r.limits[1]).toMatchObject({ windows: [], reached: true, credits: false });
         expect(r.notices.find((n) => n.startsWith("error:"))).toMatch(/It resets (?:at|on) .*\(in 2h 5m\)/);
     });
 
@@ -495,7 +590,8 @@ describe("a turn that hits the plan's limit says when it resets", () => {
         delete process.env.FAKE_RATE_LIMIT;
         const none = await runTurn("claude-code");
         expect(none.notices.find((n) => n.startsWith("error:"))).toContain("Claude Code didn't say when it resets.");
-        expect(none.limits).toEqual([{ provider: "claude-code", accountId: "default", windows: [], reached: true, at: expect.any(Number) }]);
+        // A hard stop: whatever credits there were didn't carry the turn.
+        expect(none.limits).toEqual([{ provider: "claude-code", accountId: "default", windows: [], reached: true, credits: false, at: expect.any(Number) }]);
     });
 
     test("Claude Code: a normal turn reports its windows to the meter, with no notice", async () => {
@@ -858,8 +954,13 @@ describe("/context", () => {
         const fresh = { contextTokens: 0, model: { providerName: "Claude Code" } };
         // Nothing drawn until asked for, then the ring and a card that says why there's no number.
         expect(contextView(fresh, false).ring).toBe(false);
-        expect(contextView(fresh, true)).toEqual({ ring: true, line: "Not known yet: Claude Code reports the window's size after its first reply." });
-        expect(contextView({ contextTokens: 50_000, model: { contextWindow: 200_000 } }, false)).toEqual({ ring: true, pct: 0.25, line: "50k of 200k tokens" });
+        expect(contextView(fresh, true)).toEqual({ ring: true, line: "Known after Claude Code's first reply" });
+        expect(contextView({ contextTokens: 50_000, model: { contextWindow: 200_000 } }, false)).toEqual({ ring: true, pct: 0.25, full: 200_000, window: 200_000, early: false, line: "50k of 200k" });
+        // Measured to where it compacts, when that's before the window is full; never past the window.
+        expect(contextView({ contextTokens: 50_000, compactAt: 100_000, model: { contextWindow: 200_000 } }, false)).toEqual({ ring: true, pct: 0.5, full: 100_000, window: 200_000, early: true, line: "50k of 100k" });
+        expect(contextView({ contextTokens: 50_000, compactAt: 500_000, model: { contextWindow: 200_000 } }, false)).toMatchObject({ pct: 0.25, full: 200_000, early: false });
+        // Where it compacts is known before the window is (a CLI's setting).
+        expect(contextView({ contextTokens: 50_000, compactAt: 100_000, model: { providerName: "Codex" } }, false)).toMatchObject({ pct: 0.5, full: 100_000, early: false });
         expect(contextView(undefined, true).ring).toBe(false);
     });
 });
@@ -868,5 +969,99 @@ describe("Claude Code's listed commands", () => {
     test("names only, bounded and checked", () => {
         expect(cliCommandNames(["code-review", "/Simplify", "design:ux-copy", "__remote-workflow", "bad name", "x".repeat(101), 3, "../etc"])).toEqual(["code-review", "simplify", "design:ux-copy", "__remote-workflow"]);
         expect(cliCommandNames(undefined)).toBeUndefined();
+    });
+});
+
+describe("a turn stopped by the limit tells the host, so it can resume after the reset", () => {
+    test("Claude Code: with the reset time", async () => {
+        const at = soon();
+        process.env.FAKE_SCENARIO = "rate-limit";
+        process.env.FAKE_RATE_LIMIT = shifted("claude-rejected.json", at);
+        const r = await runTurn("claude-code");
+        expect(r.limitStop?.resetsAt).toBe(Math.round(at / 1000) * 1000);
+    });
+
+    test("Claude Code: without one", async () => {
+        process.env.FAKE_SCENARIO = "rate-limit";
+        process.env.FAKE_RATE_LIMIT = join(FIX, "claude-missing.json");
+        const r = await runTurn("claude-code");
+        expect(r.limitStop).toEqual({ resetsAt: undefined });
+    });
+
+    test("Codex: with the reset time", async () => {
+        process.env.FAKE_SCENARIO = "usage-limit";
+        process.env.FAKE_LIMIT_UPDATE = shifted("codex-update-reached.json", soon());
+        const r = await runTurn("codex");
+        expect(r.limitStop?.resetsAt).toBeGreaterThan(Date.now() + 2 * 3_600_000);
+    });
+
+    test("a normal turn: nothing", async () => {
+        process.env.FAKE_RATE_LIMIT = join(FIX, "claude-normal.json");
+        const r = await runTurn("claude-code");
+        expect(r.reason).toBe("done");
+        expect(r.limitStop).toBeUndefined();
+    });
+});
+
+describe("past a reached limit on credits (#434), the turn goes on and nothing waits for the reset", () => {
+    const hardStop = /Choose another account|won't continue|resume/;
+
+    test("Codex: the meter hears of the credits, the notice says so, and it's no limit stop", async () => {
+        process.env.FAKE_LIMIT_UPDATE = shifted("codex-update-credits.json", soon());
+        const r = await runTurn("codex");
+        expect(r.reason).toBe("done");
+        expect(r.limitStop).toBeUndefined();
+        expect(r.limits.at(-1)).toMatchObject({ reached: true, credits: true });
+        expect(r.notices).toContainEqual(expect.stringMatching(/^warn: Codex · Default: usage limit reached \(rate limit reached\) · using credits\. Turns go on, billed to credits\. It resets (?:at|on) .*\(in 2h 5m\)\.$/));
+        expect(r.notices.join("\n")).not.toMatch(hardStop);
+        expect(r.notices.join("\n")).not.toContain("917");
+    });
+
+    test("Codex: when the credits run out the turn stops on the limit, as before, and the meter stops saying credits", async () => {
+        process.env.FAKE_SCENARIO = "usage-limit";
+        process.env.FAKE_LIMIT_UPDATE = shifted("codex-update-credits.json", soon());
+        const r = await runTurn("codex");
+        expect(r.reason).toBe("error");
+        expect(r.limitStop?.resetsAt).toBeGreaterThan(Date.now() + 2 * 3_600_000);
+        expect(r.limits.at(-1)).toMatchObject({ reached: true, credits: false });
+        expect(r.notices.find((n) => n.startsWith("error:"))).toMatch(/usage limit reached\. It resets .* Choose another account/);
+    });
+
+    test("Claude Code: on extra usage", async () => {
+        process.env.FAKE_RATE_LIMIT = shifted("claude-overage.json", soon());
+        const r = await runTurn("claude-code");
+        expect(r.reason).toBe("done");
+        expect(r.limitStop).toBeUndefined();
+        expect(r.limits.at(-1)).toMatchObject({ reached: true, credits: true });
+        expect(r.notices).toContainEqual(expect.stringMatching(/^warn: Claude Code · Default: 5-hour usage limit reached · using credits\. Turns go on, billed to extra usage\. It resets (?:at|on) .*\(in 2h 5m\)\.$/));
+        expect(r.notices.join("\n")).not.toMatch(hardStop);
+    });
+
+    test("a hard stop always tells the host credits didn't carry it, whatever the backend knew of them", async () => {
+        // The host may hold credits from an earlier turn; this backend only saw a reached update silent on them.
+        process.env.FAKE_SCENARIO = "usage-limit";
+        process.env.FAKE_LIMIT_UPDATE = shifted("codex-update-reached.json", soon());
+        const codex = await runTurn("codex");
+        expect(codex.reason).toBe("error");
+        expect(codex.limits.at(-1)).toMatchObject({ reached: true, credits: false });
+        const host = codex.limits.reduce<PlanLimits | undefined>((prev, l, i) => mergeLimits(prev, l, i > 0), { provider: "codex", accountId: "default", windows: [], reached: true, credits: true, at: 0 });
+        expect(meterOf(host, Date.now())!.usingCredits).toBe(false);
+
+        delete process.env.FAKE_LIMIT_UPDATE;
+        process.env.FAKE_SCENARIO = "rate-limit";
+        process.env.FAKE_RATE_LIMIT = join(FIX, "claude-missing.json");
+        const claude = await runTurn("claude-code");
+        expect(claude.reason).toBe("error");
+        expect(claude.limits.at(-1)).toMatchObject({ reached: true, credits: false });
+    });
+
+    test("Claude Code: extra usage that runs out stops the turn on the limit, as before", async () => {
+        process.env.FAKE_SCENARIO = "rate-limit";
+        process.env.FAKE_RATE_LIMIT = shifted("claude-overage.json", soon());
+        process.env.FAKE_RATE_LIMIT_FOLLOWUP = shifted("claude-rejected.json", soon());
+        const r = await runTurn("claude-code");
+        expect(r.reason).toBe("error");
+        expect(r.limitStop?.resetsAt).toBeGreaterThan(Date.now());
+        expect(r.limits.at(-1)).toMatchObject({ reached: true, credits: false });
     });
 });

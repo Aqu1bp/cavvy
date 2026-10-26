@@ -70,9 +70,22 @@ async function pidOf(c: McpClientT): Promise<number> {
     return Number(textOf(await c.callTool("pid", {})));
 }
 
-const ALL_TOOLS = ["echo", "image", "fail", "pid", "ping_client", "server_request", "get_log", "crash", "slow", "needs_input", "list_changed"];
+const ALL_TOOLS = ["echo", "image", "fail", "pid", "ping_client", "server_request", "get_log", "crash", "slow", "needs_input", "list_changed", "ask_name", "sample", "roots", "notify_lists"];
+/** tools/list pages the fixture serves (4 tools a page). */
+const TOOL_PAGES = Math.ceil(ALL_TOOLS.length / 4);
 
 // ---------------------------------------------------------------------------
+
+describe("approval fingerprint", () => {
+    test("type and oauth count once set; a config without them keeps its fingerprint", () => {
+        const base = { url: "https://mcp.example.com/mcp" };
+        const fp = mcpFingerprint(base, WORK);
+        expect(mcpFingerprint({ ...base }, WORK)).toBe(fp);
+        expect(mcpFingerprint({ ...base, type: "sse" }, WORK)).not.toBe(fp);
+        expect(mcpFingerprint({ ...base, oauth: { clientId: "other", scopes: ["admin"] } }, WORK)).not.toBe(fp);
+        expect(mcpFingerprint({ ...base, oauth: { clientId: "a" } }, WORK)).not.toBe(mcpFingerprint({ ...base, oauth: { clientId: "b" } }, WORK));
+    });
+});
 
 describe("stdio, legacy server (2025-06-18)", () => {
     let c: McpClientT;
@@ -94,10 +107,11 @@ describe("stdio, legacy server (2025-06-18)", () => {
 
     test("handshake order, initialize params, and no _meta on legacy requests", async () => {
         const { log } = await serverLog(c);
-        expect(log.map((l) => l.method)).toEqual(["server/discover", "initialize", "notifications/initialized", "tools/list", "tools/list", "tools/list", "tools/call"]);
+        expect(log.map((l) => l.method)).toEqual(["server/discover", "initialize", "notifications/initialized", ...Array(TOOL_PAGES).fill("tools/list"), "tools/call"]);
         const init = log[1]!;
         expect(init.params.protocolVersion).toBe("2025-11-25");
-        expect(init.params.capabilities).toEqual({});
+        // Not interactive: only roots, which needs nobody to answer.
+        expect(init.params.capabilities).toEqual({ roots: {} });
         expect(init.params.clientInfo.name).toBe("harness");
         // notifications/initialized is a notification: no id
         expect(log[2]!.id).toBeNull();
@@ -131,7 +145,7 @@ describe("stdio, legacy server (2025-06-18)", () => {
     });
 
     test("client refuses other server requests with -32601", async () => {
-        const r = JSON.parse(textOf(await c.callTool("server_request", { method: "roots/list" })));
+        const r = JSON.parse(textOf(await c.callTool("server_request", { method: "tasks/list" })));
         expect(r.error.code).toBe(-32601);
         expect(r.result).toBeUndefined();
     });
@@ -183,17 +197,17 @@ describe("stdio, modern server (2026-07-28)", () => {
         expect(tools.map((t) => t.name)).toEqual(ALL_TOOLS);
         const { log } = await serverLog(c);
         const methods = log.map((l) => l.method);
-        expect(methods).toEqual(["server/discover", "tools/list", "tools/list", "tools/list", "tools/call"]);
+        expect(methods).toEqual(["server/discover", ...Array(TOOL_PAGES).fill("tools/list"), "tools/call"]);
         expect(methods).not.toContain("initialize");
         expect(methods).not.toContain("notifications/initialized");
         for (const l of log) {
             expect(l.params._meta["io.modelcontextprotocol/protocolVersion"]).toBe("2026-07-28");
-            expect(l.params._meta["io.modelcontextprotocol/clientCapabilities"]).toEqual({});
+            expect(l.params._meta["io.modelcontextprotocol/clientCapabilities"]).toEqual({ roots: {} });
             expect(l.params._meta["io.modelcontextprotocol/clientInfo"].name).toBe("harness");
         }
         expect(log[2]!.params.cursor).toBe("4");
-        expect(log[4]!.params.name).toBe("get_log");
-        expect(log[4]!.params.arguments).toEqual({});
+        expect(log.at(-1)!.params.name).toBe("get_log");
+        expect(log.at(-1)!.params.arguments).toEqual({});
     });
 
     test("tools/call with resultType complete", async () => {
@@ -203,8 +217,8 @@ describe("stdio, modern server (2026-07-28)", () => {
         expect((await c.callTool("fail", {})).isError).toBe(true);
     });
 
-    test("resultType input_required is rejected (no sampling/elicitation support)", async () => {
-        await expect(c.callTool("needs_input", {})).rejects.toThrow(/extra input/);
+    test("a server that keeps answering input_required is given up on", async () => {
+        await expect(c.callTool("needs_input", {})).rejects.toThrow(/asked for input 8 times/);
     });
 
     test("server-to-client requests are ignored in the modern era", async () => {
@@ -649,7 +663,10 @@ describe("McpManager start, tools and shutdown", () => {
         const names = tools.map((t) => t.name);
         expect(names).toContain("mcp__leg__echo");
         expect(names).toContain("mcp__mod__echo");
-        expect(names).toHaveLength(ALL_TOOLS.length * 2);
+        expect(names.filter((n) => n.startsWith("mcp__"))).toHaveLength(ALL_TOOLS.length * 2);
+        // The fixture offers resources, so the model can list and read them.
+        expect(names).toContain("ListMcpResources");
+        expect(names).toContain("ReadMcpResource");
         const echo = tools.find((t) => t.name === "mcp__leg__echo")!;
         expect(echo.category).toBe("mcp");
         expect(echo.readOnly).toBe(true);
@@ -729,9 +746,21 @@ describe("McpManager start, tools and shutdown", () => {
         expect(m2.tools()).toEqual([]);
     });
 
-    test("a server that fails to connect is marked failed and its client dropped", async () => {
+    test("a server that answers 401 asks to sign in, and its client is dropped", async () => {
         const f = http("auth");
         const m3 = new McpManager(proj, () => ({ mcpServers: { locked: { url: f.url } } }), false);
+        m3.load();
+        await m3.startAll();
+        const st = m3.servers.get("locked")!;
+        expect(st.status).toBe("needs-auth");
+        expect(st.error).toContain("sign in");
+        expect(st.challenge).toContain("Bearer");
+        expect(st.client).toBeUndefined();
+    });
+
+    test("with an Authorization header configured, a 401 is a failure (the header is the user's choice, no OAuth)", async () => {
+        const f = http("auth");
+        const m3 = new McpManager(proj, () => ({ mcpServers: { locked: { url: f.url, headers: { Authorization: "Bearer wrong" } } } }), false);
         m3.load();
         await m3.startAll();
         const st = m3.servers.get("locked")!;

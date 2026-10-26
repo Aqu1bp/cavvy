@@ -1,10 +1,12 @@
 import { spawn, spawnSync } from "bun";
 import { createHash } from "crypto";
-import { appendFileSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from "fs";
-import { basename, dirname, isAbsolute, join, resolve } from "path";
-import { gitArgv, gitEnv } from "../util/git";
+import { appendFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
+import { cwdGitEnv, gitArgv } from "../util/git";
 import { isInside } from "../util/files";
-import { trustedByUser } from "../config/trust";
+import { isTrusted, trustedByUser } from "../config/trust";
+import { loadSettings, type Settings } from "../config/settings";
+import { runHooks } from "../agent/hooks";
 import { redact } from "../util/redact";
 import { RpcError } from "./rpc-error";
 import type { CreateWorktreeParams, RemoveWorktreeResult, WorktreeInfo } from "./protocol";
@@ -35,9 +37,10 @@ export function parseWorktrees(output: string): WorktreeRecord[] {
 /**
  * In a partial clone, a missing object makes Git fetch it through the
  * promisor remote, which can run that remote's configured commands. None of
- * the checks and reads here need one.
+ * the checks and reads here need one. And the repository is cwd's: a GIT_DIR or
+ * GIT_WORK_TREE the server inherited would list (or add to) another one.
  */
-const noLazyFetch = () => ({ ...gitEnv(), GIT_NO_LAZY_FETCH: "1" });
+const noLazyFetch = () => ({ ...cwdGitEnv(), GIT_NO_LAZY_FETCH: "1" });
 
 function runGit(cwd: string, args: string[]): string | undefined {
     const result = spawnSync(gitArgv(args), { cwd, env: noLazyFetch(), stdout: "pipe", stderr: "pipe", timeout: 3000 });
@@ -117,7 +120,7 @@ export function mainCheckoutOf(cwd: string): string {
 const CONTROL = /[\x00-\x1f\x7f]/;
 
 /** Git decides (check-ref-format); the hints only say why in words. */
-function checkBranch(cwd: string, branch: string): string {
+function checkBranch(cwd: string, branch: string, o: { existing?: boolean } = {}): string {
     const invalid = (why: string) => new RpcError(`Not a valid branch name: ${why}`, "invalid_branch");
     if (!branch) throw new RpcError("Enter a branch name.", "invalid_branch");
     if (CONTROL.test(branch)) throw invalid("it can't contain control characters.");
@@ -128,7 +131,12 @@ function checkBranch(cwd: string, branch: string): string {
     const checked = runGit(cwd, ["check-ref-format", "--branch", branch])?.replace(/\n$/, "");
     // --branch expands @{-1} and the like; only the name as typed is wanted.
     if (checked !== branch) throw invalid(branchHint(branch));
-    if (runGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]) !== undefined) {
+    const exists = runGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]) !== undefined;
+    if (o.existing) {
+        if (!exists) throw new RpcError(`There's no branch named ${branch}.`, "bad_base");
+        return branch;
+    }
+    if (exists) {
         throw new RpcError(`A branch named ${branch} already exists. Pick a new name (a worktree for an existing branch isn't supported yet).`, "branch_exists");
     }
     return branch;
@@ -229,33 +237,47 @@ interface GitRun {
     stdout: string;
     stderr: string;
     timedOut: boolean;
+    /** Output past `maxBytes` wasn't read (Git was stopped there). */
+    cut?: boolean;
 }
 
-/** Waits for Git itself (killed at the timeout), not for its pipes to close. `lazyFetch` only for the checkout itself. Exported for tests. */
-export async function runGitAsync(cwd: string, args: string[], timeoutMs: number, o: { lazyFetch?: boolean } = {}): Promise<GitRun> {
-    const proc = spawn(gitArgv(args), { cwd, env: o.lazyFetch ? gitEnv() : noLazyFetch(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+/**
+ * Waits for Git itself (killed at the timeout), not for its pipes to close. `lazyFetch` only for the checkout itself.
+ * `maxBytes`: at most that much of its output is kept, and Git is stopped once it writes more (`cut`). Exported for tests.
+ */
+export async function runGitAsync(cwd: string, args: string[], timeoutMs: number, o: { lazyFetch?: boolean; maxBytes?: number } = {}): Promise<GitRun> {
+    const proc = spawn(gitArgv(args), { cwd, env: o.lazyFetch ? cwdGitEnv() : noLazyFetch(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     let timedOut = false;
     const timer = setTimeout(() => {
         timedOut = true;
         proc.kill();
     }, timeoutMs);
     const readers: { cancel(): Promise<void> }[] = [];
-    const collect = async (stream: ReadableStream<Uint8Array>) => {
+    let cut = false;
+    const collect = async (stream: ReadableStream<Uint8Array>, max = Infinity) => {
         const reader = stream.getReader();
         readers.push(reader);
         const chunks: Uint8Array[] = [];
+        let kept = 0;
         try {
             for (;;) {
                 const { done, value } = await reader.read();
                 if (done) break;
+                if (kept + value.length > max) {
+                    chunks.push(value.subarray(0, max - kept));
+                    cut = true;
+                    proc.kill();
+                    break;
+                }
                 chunks.push(value);
+                kept += value.length;
             }
         } catch {
             // cancelled below
         }
         return chunks;
     };
-    const out = collect(proc.stdout);
+    const out = collect(proc.stdout, o.maxBytes);
     const err = collect(proc.stderr);
     let code: number | null;
     try {
@@ -269,7 +291,7 @@ export async function runGitAsync(cwd: string, args: string[], timeoutMs: number
     clearTimeout(drained);
     for (const reader of readers) reader.cancel().catch(() => undefined);
     const text = async (p: Promise<Uint8Array[]>) => Buffer.concat(await p).toString();
-    return { code, stdout: await text(out), stderr: await text(err), timedOut };
+    return { code, stdout: await text(out), stderr: await text(err), timedOut, ...(cut ? { cut } : {}) };
 }
 
 function logFailure(log: Log | undefined, what: string, stderr: string) {
@@ -429,17 +451,21 @@ function excludeManagedWorktrees(main: string, log?: Log) {
     }
 }
 
-/** `git worktree add -b <branch> <path> <commit>`; the new branch starts at the base's commit, with no upstream. */
-export async function createWorktree(o: CreateWorktreeParams, log?: Log): Promise<{ path: string; branch: string; commit: string }> {
+/**
+ * `git worktree add -b <branch> <path> <commit>`; the new branch starts at the base's commit, with no upstream.
+ * `existingBranch`: checks out a branch that's already there instead (`base` is ignored).
+ */
+export async function createWorktree(o: CreateWorktreeParams, log?: Log, x: { existingBranch?: boolean } = {}): Promise<{ path: string; branch: string; commit: string }> {
     const cwd = resolve(o.path);
     const main = checkCreate(cwd);
-    const branch = checkBranch(cwd, o.branch);
+    const branch = checkBranch(cwd, o.branch, { existing: x.existingBranch });
     // The commit, not the name: a remote branch as base doesn't become the new branch's upstream.
-    const commit = resolveBase(cwd, o.base);
+    const commit = resolveBase(cwd, x.existingBranch ? `refs/heads/${branch}` : o.base);
     const target = o.location ? chosenTarget(o.location) : managedTarget(main, o.folder || defaultFolder(branch));
     target.prepare();
     // A partial clone fetches the files it checks out (its config is trusted, or it would have been refused above).
-    const r = await runGitAsync(main, [...NO_HOOKS, "worktree", "add", "-b", branch, target.path, commit], CREATE_TIMEOUT_MS, { lazyFetch: true });
+    const add = x.existingBranch ? [target.path, branch] : ["-b", branch, target.path, commit];
+    const r = await runGitAsync(main, [...NO_HOOKS, "worktree", "add", ...add], CREATE_TIMEOUT_MS, { lazyFetch: true });
     if (r.timedOut) {
         logFailure(log, "git worktree add timed out", r.stderr);
         throw new RpcError(`Git took too long to create the worktree. If ${target.path} was left half made, remove it with git worktree remove --force.`, "timeout");
@@ -454,6 +480,42 @@ export async function createWorktree(o: CreateWorktreeParams, log?: Log): Promis
     }
     if (isManaged(main, target.path, true)) excludeManagedWorktrees(main, log);
     return { path: target.path, branch, commit };
+}
+
+/** The repository's settings, as a session in it would have them (project hooks only once it's trusted). */
+function repoSettings(dir: string): Settings {
+    return loadSettings(dir, { trusted: isTrusted(dir) });
+}
+
+/** The hook's answer as a folder to work in: an existing directory, a plain path, and not through a symlink inside the repository. */
+function hookWorktreePath(main: string, given: string): string {
+    if (given.split(/[\\/]/).some((s) => s === "." || s === "..")) throw new RpcError(`The WorktreeCreate hook gave ${given}: use a path without . or .. in it.`, "hook_failed");
+    const path = resolve(main, given);
+    if (!isDir(path)) throw new RpcError(`The WorktreeCreate hook gave ${path}, which isn't a folder.`, "hook_failed");
+    // A symlink committed to the repository could point the worktree anywhere.
+    if (isInside(path, main) && realpathSync(path) !== path) throw new RpcError(`The WorktreeCreate hook gave ${path}, which goes through a symlink inside the repository.`, "hook_failed");
+    return path;
+}
+
+/**
+ * A worktree, as createWorktree makes it, unless the repository's settings
+ * have WorktreeCreate hooks: then they make it instead of Git (as in Claude
+ * Code), printing the folder's path, and it's checked like any folder.
+ */
+export async function createWorktreeWithHooks(o: CreateWorktreeParams, log?: Log, settings?: Settings): Promise<{ path: string; branch: string; commit: string }> {
+    const cwd = resolve(o.path);
+    const s = settings ?? repoSettings(cwd);
+    // Awaited, so its errors reject this call (handed back unawaited, Bun reported them as unhandled and the server stopped).
+    if (!s.hooks?.WorktreeCreate?.length) return await createWorktree(o, log);
+    const main = checkCreate(cwd);
+    const name = o.folder || defaultFolder(o.branch);
+    const h = await runHooks(s, "WorktreeCreate", { name, branch: o.branch, base: o.base ?? null, ...(o.location ? { location: o.location } : {}) }, main);
+    if (h.blocked) throw new RpcError(`A WorktreeCreate hook refused: ${redact(h.blocked)}`, "hook_failed");
+    if (h.errors.length) throw new RpcError(`The WorktreeCreate hook failed: ${redact(h.errors[0]!)}`, "hook_failed");
+    if (!h.worktreePath) throw new RpcError("The WorktreeCreate hook didn't print the new worktree's path.", "hook_failed");
+    const path = hookWorktreePath(main, h.worktreePath);
+    const head = await runGitAsync(path, ["rev-parse", "--verify", "HEAD"], CREATE_TIMEOUT_MS);
+    return { path, branch: o.branch, commit: head.code === 0 ? head.stdout.trim() : "" };
 }
 
 /** `wanted`, or wanted-2, -3, … when a branch has that name already (only a suggestion: checkBranch decides). */
@@ -531,24 +593,29 @@ export function planRemoval(o: { path: string; worktree: string; inUse: (path: s
 /** At most this many ignored entries are named; the token covers them all. */
 const IGNORED_SHOWN = 12;
 
-/** Ignored files and folders (collapsed to the folder) in the worktree, read without reading any contents. */
-async function ignoredEntries(path: string, log?: Log): Promise<string[]> {
-    const r = await runGitAsync(path, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], REMOVE_TIMEOUT_MS);
-    if (r.code !== 0 || r.timedOut) {
-        logFailure(log, "git ls-files for ignored files failed", r.stderr);
-        throw new RpcError("Git couldn't list the worktree's ignored files, so nothing was removed.", "git_failed");
+/** Ignored files and folders in the worktree, read without reading any contents: `shown` collapsed to the folder, `all` every file. */
+async function ignoredEntries(path: string, log?: Log): Promise<{ shown: string[]; all: string[] }> {
+    const list = (more: string[]) => runGitAsync(path, ["ls-files", "--others", "--ignored", "--exclude-standard", ...more, "-z"], REMOVE_TIMEOUT_MS);
+    const [shown, all] = await Promise.all([list(["--directory"]), list([])]);
+    for (const r of [shown, all]) {
+        if (r.code !== 0 || r.timedOut) {
+            logFailure(log, "git ls-files for ignored files failed", r.stderr);
+            throw new RpcError("Git couldn't list the worktree's ignored files, so nothing was removed.", "git_failed");
+        }
     }
-    return r.stdout.split("\0").filter(Boolean).sort();
+    const split = (out: string) => out.split("\0").filter(Boolean).sort();
+    return { shown: split(shown.stdout), all: split(all.stdout) };
 }
 
+/** Covers every ignored file, so one added inside a folder the user saw listed (node_modules/late.js) changes it. */
 const ignoredToken = (path: string, entries: string[]) => createHash("sha256").update([path, ...entries].join("\0")).digest("hex");
 
 /** The ignored files removal would delete, unless `deleteIgnored` is the token for exactly them (or there are none). */
 export async function ignoredWaiting(plan: Removal, deleteIgnored: string | undefined, log?: Log): Promise<Extract<RemoveWorktreeResult, { removed: false }> | undefined> {
     if (!plan.exists) return undefined;
-    const entries = await ignoredEntries(plan.path, log);
-    const confirm = ignoredToken(plan.path, entries);
-    if (entries.length && deleteIgnored !== confirm) return { removed: false, ignored: entries.slice(0, IGNORED_SHOWN), total: entries.length, confirm };
+    const { shown, all } = await ignoredEntries(plan.path, log);
+    const confirm = ignoredToken(plan.path, [...shown, "", ...all]);
+    if (shown.length && deleteIgnored !== confirm) return { removed: false, ignored: shown.slice(0, IGNORED_SHOWN), total: shown.length, confirm };
     return undefined;
 }
 
@@ -589,9 +656,27 @@ export async function unpushedReason(o: { path: string; worktree: string }): Pro
  * deleted when `deleteIgnored` is the token for exactly the list the user saw.
  * A folder that's already gone loses only its own record.
  */
-export async function runRemoval(plan: Removal, o: { deleteIgnored?: string } = {}, log?: Log): Promise<RemoveWorktreeResult> {
+export async function runRemoval(plan: Removal, o: { deleteIgnored?: string; settings?: Settings; inUse?: (path: string) => boolean } = {}, log?: Log): Promise<RemoveWorktreeResult> {
     const waiting = await ignoredWaiting(plan, o.deleteIgnored, log);
     if (waiting) return waiting;
+    // Asked again after the awaits above: a session may have opened there since the plan.
+    if (plan.exists && o.inUse?.(plan.path)) throw new RpcError(`A Harness session is open in ${plan.path} (in this app, or in another process such as a terminal). Close it first.`, "in_use");
+    // WorktreeRemove hooks run first (after the same checks). One that deleted the folder
+    // removed it (a worktree a WorktreeCreate hook made); otherwise Git removes it as usual.
+    const settings = o.settings ?? repoSettings(plan.main);
+    if (settings.hooks?.WorktreeRemove?.length) {
+        const h = await runHooks(settings, "WorktreeRemove", { worktree_path: plan.path }, plan.main);
+        const stays = isDir(plan.path);
+        if (h.errors.length && stays) {
+            logFailure(log, "WorktreeRemove hook failed", h.errors.join("\n"));
+            throw new RpcError(`The WorktreeRemove hook failed, so ${plan.path} stays: ${redact(h.errors[0]!)}`, "hook_failed");
+        }
+        if (!stays) {
+            // Git's record of a folder the hook deleted.
+            await runGitAsync(plan.main, [...NO_HOOKS, "worktree", "prune"], REMOVE_TIMEOUT_MS);
+            return { removed: true };
+        }
+    }
     // Untracked files count even where the user's config hides them from status.
     const r = await runGitAsync(plan.main, [...NO_HOOKS, "-c", "status.showUntrackedFiles=normal", "worktree", "remove", plan.exists ? canonical(plan.path) : plan.path], REMOVE_TIMEOUT_MS);
     if (r.timedOut) {
@@ -610,4 +695,329 @@ export async function runRemoval(plan: Removal, o: { deleteIgnored?: string } = 
 
 export async function removeWorktree(o: { path: string; worktree: string; inUse: (path: string) => boolean; deleteIgnored?: string }, log?: Log): Promise<RemoveWorktreeResult> {
     return runRemoval(planRemoval(o), o, log);
+}
+
+// ---------------------------------------------------------------------------
+// Session worktrees: `harness --worktree [name]` (and anything else that wants
+// a throwaway checkout). Harness marks the ones it makes so cleanup knows the
+// commit each started from; it only ever removes a marked one, and never one
+// with uncommitted or untracked changes (Git refuses those, without --force).
+
+export type BaseRef = "head" | "fresh";
+export type CleanupMode = "auto" | "ask" | "keep";
+
+/** Written in the worktree's own Git dir, so it's never part of the checkout and goes with it. */
+const MARKER = "harness-worktree.json";
+
+export interface WorktreeMarker {
+    /** The name it was asked for by (`harness -w <name>`). */
+    name: string;
+    branch: string;
+    /** The commit the branch started at. */
+    base: string;
+    createdAt: number;
+    /** False when it checked out a branch that was already there: cleanup never deletes that one. */
+    ownBranch?: boolean;
+}
+
+function gitDirOf(worktree: string): string | undefined {
+    return runGit(worktree, ["rev-parse", "--absolute-git-dir"])?.replace(/\n$/, "") || undefined;
+}
+
+/** One empty file per process working in a session worktree, named by its pid, in the worktree's Git dir. */
+const PRESENT = "harness-present";
+
+/**
+ * Marks this process as working in the worktree until it exits, so another
+ * session's cleanup leaves it alone, also before this session takes its lock
+ * (with its first message). Best effort: returns whether it was marked.
+ */
+export function markPresent(worktree: string): boolean {
+    const dir = gitDirOf(worktree);
+    if (!dir) return false;
+    const file = join(dir, PRESENT, String(process.pid));
+    try {
+        mkdirSync(join(dir, PRESENT), { recursive: true });
+        writeFileSync(file, "");
+    } catch {
+        return false;
+    }
+    process.once("exit", () => {
+        try {
+            rmSync(file, { force: true });
+        } catch {
+            // the worktree went first
+        }
+    });
+    return true;
+}
+
+/** Whether another running process marked itself present in the worktree. A stale mark (its process gone) doesn't count. */
+export function othersPresent(worktree: string): boolean {
+    const dir = gitDirOf(worktree);
+    if (!dir) return false;
+    let names: string[];
+    try {
+        names = readdirSync(join(dir, PRESENT));
+    } catch {
+        return false;
+    }
+    return names.some((n) => {
+        const pid = Number(n);
+        if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+        try {
+            process.kill(pid, 0);
+            return true;
+        } catch (e) {
+            return (e as NodeJS.ErrnoException).code === "EPERM";
+        }
+    });
+}
+
+export function writeMarker(worktree: string, marker: WorktreeMarker) {
+    const dir = gitDirOf(worktree);
+    if (!dir) throw new Error(`Couldn't find ${worktree}'s Git directory.`);
+    writeFileSync(join(dir, MARKER), JSON.stringify(marker) + "\n");
+}
+
+export function readMarker(worktree: string): WorktreeMarker | undefined {
+    const dir = gitDirOf(worktree);
+    if (!dir) return undefined;
+    try {
+        const m = JSON.parse(readFileSync(join(dir, MARKER), "utf8")) as Partial<WorktreeMarker>;
+        if (typeof m.name !== "string" || typeof m.branch !== "string" || typeof m.base !== "string" || !/^[0-9a-f]{40,64}$/.test(m.base)) return undefined;
+        return { name: m.name, branch: m.branch, base: m.base, createdAt: typeof m.createdAt === "number" ? m.createdAt : 0, ownBranch: m.ownBranch !== false };
+    } catch {
+        return undefined;
+    }
+}
+
+const ADJECTIVES = ["amber", "brave", "bright", "calm", "clever", "cosmic", "crisp", "eager", "gentle", "golden", "happy", "humble", "jolly", "keen", "lively", "lucky", "mellow", "nimble", "proud", "quick", "quiet", "rapid", "shiny", "silent", "steady", "sunny", "swift", "tidy", "witty", "zesty"];
+const NOUNS = ["badger", "beacon", "cedar", "comet", "falcon", "fern", "harbor", "heron", "lantern", "maple", "meadow", "otter", "panda", "pebble", "pine", "puffin", "quartz", "raven", "river", "robin", "sparrow", "spruce", "summit", "tiger", "tulip", "walrus", "willow", "wren", "yak", "zebra"];
+
+/** adjective-noun, like swift-otter. */
+export function randomName(random: () => number = Math.random): string {
+    const pick = (list: string[]) => list[Math.floor(random() * list.length) % list.length]!;
+    return `${pick(ADJECTIVES)}-${pick(NOUNS)}`;
+}
+
+/** Something a worktree name can be: what a user would type, no spaces or leading "-". */
+export function looksLikeWorktreeName(s: string): boolean {
+    return /^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/.test(s) && !s.includes("..");
+}
+
+export interface SessionWorktree {
+    name: string;
+    /** The worktree's root. */
+    path: string;
+    /** Where the session starts: the folder it was launched from, at the same place in the worktree (when it's there). */
+    cwd: string;
+    /** Whether `cwd` is that same place, not the root it fell back to. */
+    sameFolder: boolean;
+    main: string;
+    /** Undefined when it's on a detached HEAD (a reopened one). */
+    branch?: string;
+    /** The commit it started from, when Harness made it. */
+    base?: string;
+    /** What the base was, in words: a branch, origin/main, or a commit. */
+    baseLabel?: string;
+    /** False when an existing worktree of that name was reopened. */
+    created: boolean;
+    /** Made again on the branch an earlier one of that name left behind. */
+    fromBranch?: boolean;
+    /** How long getting it ready took. */
+    ms: number;
+    /** Something the user should know (a fresh base that fell back to HEAD). */
+    note?: string;
+}
+
+/** The base commit and how to name it: HEAD, or `origin/HEAD` as last fetched (nothing is fetched). */
+function pickBase(cwd: string, baseRef: BaseRef): { ref?: string; label?: string; note?: string } {
+    if (baseRef === "fresh") {
+        const commit = runGit(cwd, ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/HEAD^{commit}"])?.trim();
+        if (commit && /^[0-9a-f]{40,64}$/.test(commit)) {
+            const label = runGit(cwd, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])?.trim() || "origin/HEAD";
+            return { ref: commit, label };
+        }
+        return { label: currentBase(cwd), note: "worktree.baseRef is “fresh”, but this repository has no origin/HEAD (run git remote set-head origin --auto), so the worktree starts from HEAD." };
+    }
+    return { label: currentBase(cwd) };
+}
+
+/** The same place in `worktree` as `cwd` is in its own worktree, if that folder is there. */
+function sameSubfolder(cwd: string, worktree: string): { cwd: string; matched: boolean } {
+    const top = runGit(cwd, ["rev-parse", "--show-toplevel"])?.replace(/\n$/, "");
+    if (!top) return { cwd: worktree, matched: false };
+    const rel = relative(canonical(top), canonical(cwd));
+    if (!rel) return { cwd: worktree, matched: true };
+    if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return { cwd: worktree, matched: false };
+    const there = join(worktree, rel);
+    if (!isDir(there)) return { cwd: worktree, matched: false };
+    // Still inside the worktree once links are followed: a linked src/ could lead back into the main checkout.
+    const real = canonical(worktree);
+    const resolved = canonical(there);
+    if (!isInside(resolved, real)) return { cwd: worktree, matched: false };
+    // The same folder only when no link is on the way: a link could stand for the root, or any folder above.
+    return { cwd: there, matched: resolved === join(real, rel) };
+}
+
+/**
+ * Creates `<main>/.claude/worktrees/<name>` on branch `<prefix><name>`, or
+ * reopens it when Git already has a managed worktree there. Without a name,
+ * one is made up that's free as both folder and branch. Throws RpcError with
+ * a message for the user when it can't.
+ */
+export async function enterSessionWorktree(o: { cwd: string; name?: string; branchPrefix?: string; baseRef?: BaseRef }, log?: Log): Promise<SessionWorktree> {
+    const started = performance.now();
+    const cwd = resolve(o.cwd);
+    // Only where things are, for now: creating (or reopening) checks the rest, once.
+    const repo = repoOf(cwd);
+    const main = repo.main;
+    const prefix = o.branchPrefix ?? "harness/";
+    const done = (w: Omit<SessionWorktree, "ms" | "main">): SessionWorktree => ({ ...w, main, ms: Math.round(performance.now() - started) });
+
+    let name = o.name;
+    if (name !== undefined) {
+        if (!looksLikeWorktreeName(name)) throw new RpcError(`“${name}” can't be a worktree name: use letters, digits, “.”, “_”, “-” and “/”, starting with a letter or digit.`, "bad_folder");
+        const folder = checkFolder(defaultFolder(name));
+        const path = join(main, WORKTREES_DIR, folder);
+        // Only a real folder under .claude/worktrees: a link there (it can be committed) could point at the main checkout.
+        const linked = lexists(path) && lstatSync(path).isSymbolicLink();
+        const record = linked ? undefined : repo.records.find((r) => !r.bare && (resolve(r.path) === path || canonical(r.path) === canonical(path)) && isManaged(main, r.path, isDir(r.path)));
+        if (record) {
+            const existing = { ...record, exists: isDir(record.path) };
+            if (!existing.exists) throw new RpcError(`Git still lists the worktree ${existing.path}, but its folder is gone. Run git worktree prune, then try again.`, "path_missing");
+            // Git will run there: its metadata must be this repository's, and its config trusted.
+            checkCreate(existing.path);
+            const marker = readMarker(existing.path);
+            // feat/login and feat-login share a folder name, not a worktree.
+            if (marker && marker.name !== name) throw new RpcError(`The folder ${folder} is already the worktree for “${marker.name}”. Use that name to reopen it, or pick another.`, "path_exists");
+            const at = sameSubfolder(cwd, existing.path);
+            return done({ name, path: existing.path, cwd: at.cwd, sameFolder: at.matched, branch: existing.branch, base: marker?.base, created: false });
+        }
+        if (lexists(path)) throw new RpcError(`${path} exists but isn't one of this repository's worktrees. Move it, or pick another name.`, "path_exists");
+    } else {
+        const taken = (n: string) => lexists(join(main, WORKTREES_DIR, n)) || runGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${prefix}${n}`]) !== undefined;
+        name = randomName();
+        for (let i = 2; taken(name) && i < 50; i++) name = `${randomName()}${i > 10 ? `-${i}` : ""}`;
+    }
+
+    // A worktree removed earlier with its branch kept comes back on that branch.
+    const branch = `${prefix}${name}`;
+    const kept = o.name !== undefined && runGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]) !== undefined;
+    const base = kept ? { label: branch } : pickBase(cwd, o.baseRef ?? "head");
+    let made;
+    try {
+        made = await createWorktree({ path: cwd, branch, folder: defaultFolder(name), base: base.ref }, log, { existingBranch: kept });
+    } catch (e) {
+        if (e instanceof RpcError && e.code === "branch_in_use") throw new RpcError(`${branch} is checked out in another worktree. Pick another name, or work there.`, "branch_in_use");
+        if (e instanceof RpcError && e.code === "bad_base" && !base.ref && !kept) throw new RpcError("This repository has no commits yet, so there's nothing to check out. Make a first commit, then try again.", "bad_base");
+        throw e;
+    }
+    try {
+        writeMarker(made.path, { name, branch: made.branch, base: made.commit, createdAt: Date.now(), ownBranch: !kept });
+    } catch (e) {
+        // Without it the worktree is never cleaned up automatically, which is the safe side.
+        logFailure(log, "couldn't mark the worktree", String(e));
+    }
+    const at = sameSubfolder(cwd, made.path);
+    return done({ name, path: made.path, cwd: at.cwd, sameFolder: at.matched, branch: made.branch, base: made.commit, baseLabel: base.label, created: true, fromBranch: kept, note: base.note });
+}
+
+/** What removing a worktree would lose. Nothing here changes anything. */
+export interface WorktreeWork {
+    /** Changed, staged, deleted or untracked paths (git status). */
+    changes: number;
+    /** Commits at HEAD that the base doesn't have. */
+    commits: number;
+    /** HEAD is still the base commit, on the branch it was made with. */
+    atBase: boolean;
+    /** HEAD's commit and branch (undefined when detached) as they were seen: removal goes ahead only if they still are. */
+    head: string;
+    branch?: string;
+    /** Ignored files and folders removal would delete (at most a dozen named). */
+    ignored: string[];
+    ignoredTotal: number;
+    /** Hands the user's go-ahead for exactly those ignored files to runRemoval. */
+    confirm?: string;
+}
+
+/** The checks removal makes (a managed worktree, not locked, no other session in it, trusted config), then what's in it. */
+export async function worktreeWork(o: { main: string; path: string; marker: WorktreeMarker; inUse: (path: string) => boolean }, log?: Log): Promise<{ plan: Removal; work: WorktreeWork }> {
+    const plan = planRemoval({ path: o.main, worktree: o.path, inUse: o.inUse });
+    if (!plan.exists) return { plan, work: { changes: 0, commits: 0, atBase: true, ignored: [], ignoredTotal: 0, head: o.marker.base, branch: o.marker.branch } };
+    const status = await runGitAsync(plan.path, ["status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignore-submodules=none"], REMOVE_TIMEOUT_MS);
+    if (status.code !== 0 || status.timedOut) {
+        logFailure(log, "git status failed", status.stderr);
+        throw new RpcError("Git couldn't check the worktree for changes.", "git_failed");
+    }
+    // -z: one NUL per entry, and a rename's old path as one more field.
+    const fields = status.stdout.split("\0").filter(Boolean);
+    let changes = 0;
+    for (let i = 0; i < fields.length; i++) {
+        changes++;
+        if (/^[RC]/.test(fields[i]!)) i++;
+    }
+    const head = runGit(plan.path, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])?.trim();
+    const branch = runGit(plan.path, ["symbolic-ref", "--quiet", "--short", "HEAD"])?.trim();
+    const counted = head ? runGit(plan.main, ["rev-list", "--count", head, "--not", o.marker.base]) : undefined;
+    const commits = counted === undefined ? NaN : Number(counted.trim());
+    if (!head || !Number.isInteger(commits)) throw new RpcError("Git couldn't count the worktree's commits.", "git_failed");
+    const waiting = await ignoredWaiting(plan, undefined, log);
+    return {
+        plan,
+        work: { changes, commits, atBase: head === o.marker.base && branch === o.marker.branch, head, branch: branch || undefined, ignored: waiting?.ignored ?? [], ignoredTotal: waiting?.total ?? 0, confirm: waiting?.confirm },
+    };
+}
+
+/** Nothing would be lost: no changes, no commits of its own, and (unless they don't count) no ignored files. */
+export function isPristine(work: WorktreeWork, o: { ignoredIsWork?: boolean } = {}): boolean {
+    return work.changes === 0 && work.commits === 0 && work.atBase && (o.ignoredIsWork === false || work.ignoredTotal === 0);
+}
+
+/**
+ * Deletes the branch a removed worktree was made with, only while it still
+ * points at its base commit (compare-and-delete, so a commit made meanwhile
+ * keeps it) and some other ref has that commit: nothing can be lost.
+ */
+export function deleteBranchAtBase(main: string, branch: string, base: string): boolean {
+    if (!/^[0-9a-f]{40,64}$/.test(base) || branch.startsWith("-") || CONTROL.test(branch)) return false;
+    const others = runGit(main, ["for-each-ref", "--format=%(refname)", "--contains", base])?.split("\n").filter((r) => r && r !== `refs/heads/${branch}`);
+    if (!others?.length) return false;
+    return runGit(main, [...NO_HOOKS, "update-ref", "-d", `refs/heads/${branch}`, base]) !== undefined;
+}
+
+/** Removes the worktree (Git refuses if anything uncommitted is there) and, when it was never moved, its branch. */
+export async function removeSessionWorktree(o: { plan: Removal; marker: WorktreeMarker; work: WorktreeWork; inUse?: (path: string) => boolean }, log?: Log): Promise<{ removed: boolean; branchDeleted: boolean; changed?: boolean }> {
+    // A commit made since it was looked at (by a SessionEnd hook, another terminal) keeps it: on a
+    // detached HEAD nothing else would hold that commit once the worktree's HEAD and reflog are gone.
+    // So does a session opened in it meanwhile: asked again, not taken from the plan.
+    if (o.plan.exists) {
+        if (o.inUse?.(o.plan.path)) throw new RpcError(`A Harness session is open in ${o.plan.path} (in this app, or in another process such as a terminal). Close it first.`, "in_use");
+        const head = runGit(o.plan.path, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])?.trim();
+        const branch = runGit(o.plan.path, ["symbolic-ref", "--quiet", "--short", "HEAD"])?.trim() || undefined;
+        if (head !== o.work.head || branch !== o.work.branch) return { removed: false, branchDeleted: false, changed: true };
+        if (!branch && !reachable(o.plan.main, head)) return { removed: false, branchDeleted: false, changed: true };
+    }
+    const r = await runRemoval(o.plan, { deleteIgnored: o.work.confirm }, log);
+    if (!r.removed) return { removed: false, branchDeleted: false };
+    const branchDeleted = o.marker.ownBranch !== false && o.work.atBase && o.work.commits === 0 && deleteBranchAtBase(o.plan.main, o.marker.branch, o.marker.base);
+    return { removed: true, branchDeleted };
+}
+
+/**
+ * A throwaway worktree's whole cleanup for callers with nobody to ask (a
+ * sub-agent's): removed with its branch when nothing would be lost, else
+ * kept. `ignoredIsWork: false` lets ignored files (build output) go too.
+ */
+export async function removeIfPristine(o: { main: string; path: string; inUse?: (path: string) => boolean; ignoredIsWork?: boolean }, log?: Log): Promise<{ removed: boolean; branchDeleted: boolean; kept?: string }> {
+    const marker = readMarker(o.path);
+    if (!marker) return { removed: false, branchDeleted: false, kept: "Harness didn't make this worktree." };
+    try {
+        const { plan, work } = await worktreeWork({ main: o.main, path: o.path, marker, inUse: o.inUse ?? (() => false) }, log);
+        if (!isPristine(work, o)) return { removed: false, branchDeleted: false, kept: "It has work in it." };
+        return await removeSessionWorktree({ plan, marker, work, inUse: o.inUse }, log);
+    } catch (e) {
+        return { removed: false, branchDeleted: false, kept: (e as Error).message };
+    }
 }

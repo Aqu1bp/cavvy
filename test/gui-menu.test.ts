@@ -38,8 +38,11 @@ function fixture(kind: "menu" | "dialog" = "menu") {
     });
     const trigger = node("Trigger");
     const items = [node("Alpha"), node("Disabled", { disabled: true }), node("Bravo", { checked: true }), node("Beta"), node("Hidden", { hidden: true })];
+    let clickListener: ((e: any) => void) | undefined;
     const panel = Object.assign(node("Panel"), {
         ownerDocument: doc,
+        addEventListener(_name: string, handler: any) { clickListener = handler; },
+        removeEventListener(_name: string, handler: any) { if (clickListener === handler) clickListener = undefined; },
         querySelectorAll: () => items,
         contains: (el: any) => el === panel || items.includes(el),
     });
@@ -62,7 +65,16 @@ function fixture(kind: "menu" | "dialog" = "menu") {
         listener?.(e);
         return e;
     };
-    return { doc, trigger, panel, items, key, dispose, node,
+    const click = (target: any) => {
+        const e = {
+            target, defaultPrevented: false, stopped: false,
+            preventDefault() { this.defaultPrevented = true; },
+            stopPropagation() { this.stopped = true; },
+        };
+        clickListener?.(e);
+        return e;
+    };
+    return { doc, trigger, panel, items, key, click, dispose, node,
         tick: () => frame?.(), get closes() { return closes; }, get handled() { return handled; },
     };
 }
@@ -109,6 +121,21 @@ for (const activation of ["Enter", " "]) test(`${JSON.stringify(activation)} act
     expect(f.items.map((i) => i.clicks)).toEqual([0, 0, 1, 0, 0]);
 });
 
+test("a click on a row marked aria-disabled is stopped before it can pick the row; enabled rows click through", () => {
+    const f = fixture(); f.tick();
+    const off = { closest: (sel: string) => (sel === '[aria-disabled="true"]' ? off : null) };
+    const on = { closest: () => null };
+    const blocked = f.click(off);
+    expect(blocked.defaultPrevented).toBe(true);
+    expect(blocked.stopped).toBe(true);
+    const allowed = f.click(on);
+    expect(allowed.defaultPrevented).toBe(false);
+    expect(allowed.stopped).toBe(false);
+    f.dispose();
+    // Unmounted, the panel no longer filters clicks.
+    expect(f.click(off).stopped).toBe(false);
+});
+
 test("Escape closes, returns focus and cannot reach a global interrupt handler", () => {
     const f = fixture(); f.tick();
     const e = f.key("Escape");
@@ -138,7 +165,14 @@ test("searchable picker traps Tab in both directions and delegates search keys",
     expect(f.closes).toBe(0);
 });
 
-test("global shortcuts stay inside the menu except the command palette", () => {
+test("find goes through to App, which decides what it does (nothing under Settings): the menu closes", () => {
+    const f = fixture(); f.tick();
+    const find = f.key("f", paletteModifier);
+    expect(find.stopped).toBe(false);
+    expect(f.closes).toBe(1);
+});
+
+test("global shortcuts stay inside the menu except the command palette and find", () => {
     const f = fixture(); f.tick();
     expect(f.key("n", { metaKey: true }).stopped).toBe(true);
     const composing = f.key("Escape", { isComposing: true });

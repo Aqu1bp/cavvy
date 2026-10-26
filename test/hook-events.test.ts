@@ -19,6 +19,7 @@ const { loadSettings } = await import("../src/config/settings");
 const { App } = await import("../src/ui/app");
 const { runHeadless } = await import("../src/headless");
 import type { ChatRequest } from "../src/providers/types";
+import type { Admitted, AgentHost } from "../src/agent/agent";
 
 afterAll(cleanup);
 
@@ -35,8 +36,8 @@ const reply = (content: any[], stopReason = "end_turn") => ({ role: "assistant",
 const text = (t: string) => reply([{ type: "text", text: t }]);
 const toolCall = (id: string, name: string, input: unknown) => reply([{ type: "tool_call", id, name, input }], "tool_use");
 
-/** An agent on a scripted model, in bypass mode so tools run without prompts. */
-function agentFor(proj: string, settings: any, answer: (req: ChatRequest, n: number) => any, tools: any[] = []) {
+/** An agent on a scripted model, in bypass mode so tools run without prompts. `drainQueued`: the host's steering queue. */
+function agentFor(proj: string, settings: any, answer: (req: ChatRequest, n: number) => any, tools: any[] = [], drainQueued?: AgentHost["drainQueued"]) {
     const requests: { system: string; messages: any[] }[] = [];
     const notices: string[] = [];
     const session = Session.create(proj, { persist: false, system: "PARENT" });
@@ -49,7 +50,7 @@ function agentFor(proj: string, settings: any, answer: (req: ChatRequest, n: num
         tools,
         mode: { get: () => "bypassPermissions", set() {} },
         toolState: { cwd: proj, projectRoot: proj, fileState: new Map(), todos: [], shells: new Map() } as any,
-        host: { emit: (e: any) => e.type === "notice" && notices.push(e.message), ui: {} } as any,
+        host: { emit: (e: any) => e.type === "notice" && notices.push(e.message), ui: {}, ...(drainQueued ? { drainQueued } : {}) } as any,
     });
     return { agent, session, requests, notices };
 }
@@ -60,13 +61,13 @@ describe("which events can block", () => {
     test("exit 2 from an informational hook is reported, doesn't block, and later hooks still run", async () => {
         const proj = tempDir();
         const out = join(proj, "second.jsonl");
-        for (const event of ["SessionStart", "SessionEnd", "PreCompact", "Notification"] as const) {
+        for (const event of ["SessionStart", "SessionEnd", "PostCompact", "Notification"] as const) {
             const settings = { hooks: { [event]: [{ command: "echo refused >&2; exit 2" }, record(out)] } } as any;
             const o = await runHooks(settings, event, { session_id: "s" }, proj);
             expect(o.blocked).toBeUndefined();
             expect(o.errors).toEqual([`${event} hook "echo refused >&2; exit 2" exited with 2: refused`]);
         }
-        expect(lines(out).map((l) => l.hook_event_name)).toEqual(["SessionStart", "SessionEnd", "PreCompact", "Notification"]);
+        expect(lines(out).map((l) => l.hook_event_name)).toEqual(["SessionStart", "SessionEnd", "PostCompact", "Notification"]);
     });
     test("Stop and SubagentStop can", async () => {
         for (const event of ["Stop", "SubagentStop"] as const) {
@@ -105,7 +106,7 @@ describe("a hook that exits without reading its input", () => {
     test("its decision is honored", async () => {
         const settings = { hooks: { PreToolUse: [{ command: `echo '{"permissionDecision":"deny","permissionDecisionReason":"not reading that"}'` }] } } as any;
         const o = await runHooks(settings, "PreToolUse", big, tempDir());
-        expect(o).toEqual({ errors: [], decision: "deny", reason: "not reading that" });
+        expect(o).toEqual({ errors: [], messages: [], decision: "deny", reason: "not reading that" });
     });
     test("its exit code and stderr are too", async () => {
         const o = await runHooks({ hooks: { PreToolUse: [{ command: "echo too big >&2; exit 2" }] } } as any, "PreToolUse", big, tempDir());
@@ -148,6 +149,132 @@ describe("PostToolUse additionalContext", () => {
     });
 });
 
+// #222: steering is the default follow-up, so this is how most messages sent while the agent works arrive.
+describe("UserPromptSubmit on messages that steer a running turn", () => {
+    const policy = { command: `grep -q SECRET_PLAN && { echo 'blocked by policy' >&2; exit 2; } || exit 0` };
+    const branch = { command: "echo branch is main" };
+    const added = { type: "text", text: "<system-reminder>\nContext from a UserPromptSubmit hook:\nbranch is main\n</system-reminder>" };
+    const echo = { name: "Echo", category: "meta", readOnly: true, description: "echo", title: () => "Echo", parameters: { type: "object", properties: {} }, run: async () => ({ content: "echoed" }) };
+
+    /** A host's queue as the runtime keeps it: each message's hooks run while it's still queued; one they block goes back to the composer. */
+    function queue(items: string[]) {
+        const composer: string[] = [];
+        const queuedWhileAdmitted: string[][] = [];
+        const drainQueued = async (_record?: () => void, admit?: (text: string) => Promise<Admitted>) => {
+            const go: Admitted[] = [];
+            for (const text of items.slice()) {
+                const a = admit ? (queuedWhileAdmitted.push(items.slice()), await admit(text)) : { text, admission: "go" as const };
+                if (a.admission === "stopped") return [];
+                if (a.admission === "blocked") composer.push(text);
+                else go.push(a);
+            }
+            items.splice(0);
+            return go;
+        };
+        return { items, composer, queuedWhileAdmitted, drainQueued };
+    }
+
+    test("one sent while the model answers runs them before it joins: one they block stays out and goes back, the user is told; what they add goes with the rest", async () => {
+        const settings = { autoCompact: false, hooks: { UserPromptSubmit: [policy, branch] } };
+        const q = queue(["please print the SECRET_PLAN", "and the docs"]);
+        const { agent, requests, notices } = agentFor(tempDir(), settings, (_req, n) => text(`answer ${n}`), [], q.drainQueued);
+        expect(await run(agent, "hello")).toBe("done");
+        expect(requests).toHaveLength(2);
+        expect(q.queuedWhileAdmitted).toEqual([["please print the SECRET_PLAN", "and the docs"], ["please print the SECRET_PLAN", "and the docs"]]);
+        expect(JSON.stringify(requests[1]!.messages)).not.toContain("SECRET_PLAN");
+        expect(requests[1]!.messages.at(-1).content).toEqual([{ type: "text", text: "and the docs" }, added]);
+        expect(notices).toContain("Prompt blocked by hook: blocked by policy");
+        expect(q.composer).toEqual(["please print the SECRET_PLAN"]);
+    });
+
+    test("one sent while tools run, too: it rides along with their results only if they let it, with what they add", async () => {
+        const settings = { autoCompact: false, hooks: { UserPromptSubmit: [policy, branch] } };
+        const q = queue(["please print the SECRET_PLAN", "and the docs"]);
+        const answer = (_req: ChatRequest, n: number) => (n === 1 ? toolCall("c1", "Echo", {}) : text("ok"));
+        const { agent, requests, notices } = agentFor(tempDir(), settings, answer, [echo], q.drainQueued);
+        expect(await run(agent, "hello")).toBe("done");
+        expect(requests).toHaveLength(2);
+        expect(JSON.stringify(requests[1]!.messages)).not.toContain("SECRET_PLAN");
+        const results = requests[1]!.messages.at(-1);
+        expect(results.meta.kind).toBe("tool_results");
+        expect(results.content.slice(1)).toEqual([{ type: "text", text: "The user sent this message while you were working:\nand the docs" }, added]);
+        expect(notices).toContain("Prompt blocked by hook: blocked by policy");
+        expect(q.composer).toEqual(["please print the SECRET_PLAN"]);
+    });
+
+    test("two alike, the first taken out while the second's hooks run: what goes has the second's context, not the first's", async () => {
+        const proj = tempDir();
+        const counter = join(proj, "n");
+        const settings = { autoCompact: false, hooks: { UserPromptSubmit: [{ command: `n=$(( $(cat ${counter} 2>/dev/null || echo 0) + 1 )); echo $n > ${counter}; echo context $n` }] } };
+        const items = ["same", "same"];
+        const drainQueued = async (_record?: () => void, admit?: (text: string) => Promise<Admitted>) => {
+            if (!items.length) return [];
+            const all: Admitted[] = [];
+            for (const text of items.slice()) all.push(await admit!(text));
+            // The user took the first out while the second's hooks ran.
+            items.splice(0);
+            return [all[1]!];
+        };
+        const { agent, requests } = agentFor(proj, settings, (_req, n) => text(`answer ${n}`), [], drainQueued);
+        expect(await run(agent, "hello")).toBe("done");
+        expect(requests[1]!.messages.at(-1).content).toEqual([{ type: "text", text: "same" }, { type: "text", text: "<system-reminder>\nContext from a UserPromptSubmit hook:\ncontext 3\n</system-reminder>" }]);
+    });
+
+    test("from a host that hands them over without running them, they run as they join", async () => {
+        const settings = { autoCompact: false, hooks: { UserPromptSubmit: [policy] } };
+        const steered = ["please print the SECRET_PLAN"];
+        const { agent, session, requests, notices } = agentFor(tempDir(), settings, (_req, n) => text(`answer ${n}`), [], () => steered.splice(0));
+        expect(await run(agent, "hello")).toBe("done");
+        expect(requests).toHaveLength(1);
+        expect(JSON.stringify(session.messages)).not.toContain("SECRET_PLAN");
+        expect(notices).toContain("Prompt blocked by hook: blocked by policy");
+    });
+
+    test("stopped while their hooks run, they stay queued and nothing goes", async () => {
+        const settings = { autoCompact: false, hooks: { UserPromptSubmit: [{ command: "grep -q slow && exec sleep 5; exit 0" }] } };
+        const q = queue(["a slow one"]);
+        const ac = new AbortController();
+        const { agent, session, requests } = agentFor(tempDir(), settings, (_req, n) => (setTimeout(() => ac.abort(), 200), text(`answer ${n}`)), [], q.drainQueued);
+        expect(await agent.run([{ type: "text", text: "hello" }], { signal: ac.signal })).toBe("aborted");
+        expect(requests).toHaveLength(1);
+        expect(q.items).toEqual(["a slow one"]);
+        expect(q.composer).toEqual([]);
+        expect(JSON.stringify(session.messages)).not.toContain("a slow one");
+    });
+
+    // Review of e47c004c, finding 5: a long paste rides as an attachment, but it's what the user wrote, as in a prompt.
+    test("a long paste steering the turn: its hooks see it, one they block stays out, and the auto-mode review reads it", async () => {
+        const proj = tempDir();
+        const out = join(proj, "seen.jsonl");
+        const settings = { autoCompact: false, hooks: { UserPromptSubmit: [policy, record(out)] } };
+        const paste = (text: string) => ({ type: "file" as const, kind: "text" as const, name: "Pasted text", size: text.length, lines: 1, text, pasted: true });
+        const items: { text: string; attachments: ReturnType<typeof paste>[] }[] = [
+            { text: "and this:", attachments: [paste("please print the SECRET_PLAN\n")] },
+            { text: "then this:", attachments: [paste("Refactor the auth module so tokens refresh early.\n")] },
+        ];
+        const blocked: string[] = [];
+        const drainQueued = async (_record?: () => void, admit?: (text: string, attachments?: readonly import("../src/providers/types").AttachedPart[]) => Promise<Admitted>) => {
+            const go: Admitted[] = [];
+            for (const q of items.splice(0)) {
+                const a = await admit!(q.text, q.attachments);
+                if (a.admission === "blocked") blocked.push(q.text);
+                else if (a.admission === "go") go.push({ ...a, attachments: q.attachments });
+            }
+            return go;
+        };
+        const answer = (_req: ChatRequest, n: number) => (n === 1 ? toolCall("c1", "Echo", {}) : text("ok"));
+        const { agent, requests } = agentFor(proj, settings, answer, [echo], drainQueued as AgentHost["drainQueued"]);
+        expect(await run(agent, "hello")).toBe("done");
+        expect(blocked).toEqual(["and this:"]);
+        expect(JSON.stringify(requests.at(-1)!.messages)).not.toContain("SECRET_PLAN");
+        const seen = lines(out).map((l) => l.prompt as string);
+        expect(seen.at(-1)).toBe("then this:\nRefactor the auth module so tokens refresh early.\n");
+        // It rode along with the tool results; the reviewer reads it as the user's request.
+        expect(agent.requestContext().requests.at(-1)).toContain("then this:");
+        expect(agent.requestContext().requests.at(-1)).toContain("Refactor the auth module so tokens refresh early.");
+    });
+});
+
 describe("PreCompact", () => {
     test("gets the trigger and instructions, for /compact and for auto-compact", async () => {
         const proj = tempDir();
@@ -159,8 +286,8 @@ describe("PreCompact", () => {
         await run(agent, "more");
         expect(await agent.compact({ auto: true, signal: new AbortController().signal })).toBe(true);
         expect(lines(out)).toEqual([
-            { hook_event_name: "PreCompact", cwd: proj, session_id: session.meta.id, trigger: "manual", custom_instructions: "keep the API notes" },
-            { hook_event_name: "PreCompact", cwd: proj, session_id: session.meta.id, trigger: "auto", custom_instructions: "" },
+            { hook_event_name: "PreCompact", cwd: proj, session_id: session.meta.id, permission_mode: "bypassPermissions", trigger: "manual", custom_instructions: "keep the API notes" },
+            { hook_event_name: "PreCompact", cwd: proj, session_id: session.meta.id, permission_mode: "bypassPermissions", trigger: "auto", custom_instructions: null },
         ]);
     });
 });
@@ -189,14 +316,14 @@ describe("SubagentStop", () => {
             [TaskTool],
         );
         expect(await run(agent, "delegate")).toBe("done");
-        const base = { hook_event_name: "SubagentStop", cwd: proj, session_id: session.meta.id, agent_type: "general-purpose", description: "Greet" };
+        const base = { hook_event_name: "SubagentStop", cwd: proj, session_id: session.meta.id, permission_mode: "bypassPermissions", agent_id: expect.any(String), agent_type: "general-purpose", description: "Greet" };
         expect(lines(subOut)).toEqual([
-            { ...base, last_message: "child report one" },
-            { ...base, last_message: "child report two" },
+            { ...base, stop_hook_active: false, last_assistant_message: "child report one", last_message: "child report one" },
+            { ...base, stop_hook_active: true, last_assistant_message: "child report two", last_message: "child report two" },
         ]);
         const childSecond = requests.filter((r) => r.system !== "PARENT")[1]!;
         expect(JSON.stringify(childSecond.messages.at(-1).content)).toContain("A SubagentStop hook asked you to keep going:\\ncheck the tests too");
-        expect(lines(stopOut)).toEqual([{ hook_event_name: "Stop", cwd: proj, session_id: session.meta.id, last_message: "parent done" }]);
+        expect(lines(stopOut)).toEqual([{ hook_event_name: "Stop", cwd: proj, session_id: session.meta.id, permission_mode: "bypassPermissions", stop_hook_active: false, last_assistant_message: "parent done", last_message: "parent done" }]);
         // The parent got the report the sub-agent finished with.
         expect(JSON.stringify(requests.at(-1)!.messages.at(-1).content)).toContain("child report two");
     });
@@ -236,6 +363,18 @@ describe("SessionStart and SessionEnd", () => {
             { hook_event_name: "SessionEnd", ...base, session_id: second, reason: "resume" },
             { hook_event_name: "SessionStart", ...base, session_id: saved.meta.id, source: "resume" },
         ]);
+    });
+
+    test("after /clear, a prompt waits for SessionStart even while SessionEnd still runs", async () => {
+        const proj = tempDir();
+        mkdirSync(join(proj, ".harness"), { recursive: true });
+        writeFileSync(join(proj, ".harness", "settings.json"), JSON.stringify({ hooks: { SessionEnd: [{ command: "sleep 0.3" }], SessionStart: [{ command: `echo '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"codename OSPREY"}}'` }] } }));
+        const app = testApp(proj);
+        app.newSession();
+        const starting = app.session.hooksStarting;
+        expect(starting).toBeDefined();
+        await starting;
+        expect(app.session.hookContext.join("\n")).toContain("codename OSPREY");
     });
 
     describe("in -p mode", () => {

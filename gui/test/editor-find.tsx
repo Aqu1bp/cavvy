@@ -54,7 +54,7 @@ export async function checkEditorFind(root: HTMLElement) {
     let col!: HTMLDivElement;
     const dispose = render(() => <>
         <Show when={findOpen()}>
-            <FindBar turns={() => [turn]} scroller={() => scroller} col={() => col} show={() => {}} anchor={() => undefined} clearAnchor={() => {}} />
+            <FindBar turns={() => [turn]} scroller={() => scroller} col={() => col} dock={() => 0} show={() => {}} anchor={() => undefined} clearAnchor={() => {}} />
         </Show>
         <div ref={scroller} style={{ height: "460px", overflow: "auto" }}>
             <div ref={col}><TurnView turn={turn} state={state} last /></div>
@@ -73,7 +73,8 @@ export async function checkEditorFind(root: HTMLElement) {
         // File lookups are batched on a timer; two animation frames can finish
         // before that timer runs (especially on a fast display or a busy suite).
         for (let i = 0; i < 100 && !finishLookup; i++) await new Promise((r) => setTimeout(r, 20));
-        check(scope("prompt").querySelectorAll(".prompt-attachments .chip").length === 3, "prompt displays image, text and PDF attachment chips");
+        // Above the bubble, in its row (the bubble is what find searches; the chips are skipped).
+        check(scope("prompt").closest(".user-row")!.querySelectorAll(".prompt-attachments .chip").length === 3, "prompt displays image, text and PDF attachment chips");
         check(findMatches([turn], "files").length === 1 && textRanges(scope("prompt"), "files").length === 1, "attachment names do not duplicate a prompt match");
         for (const label of ["files.pdf", "1 KB", "1 image"]) {
             check(findMatches([turn], label).length === 0 && textRanges(col, label).length === 0, "attachment-only labels have no counted or painted matches");
@@ -169,7 +170,7 @@ export async function checkEditorFind(root: HTMLElement) {
 
         setFindQuery("exit");
         await settle(350);
-        const output = scope("shell-exit").querySelector(".term")!;
+        const output = scope("shell-exit").querySelector(".tcard-out")!;
         check(findMatches([turn], "exit").length === 1 && textRanges(col, "exit").length === 1, "shell status badges do not add output matches");
         check(count() === "1 of 1" && current().toString() === "exit" && current().startContainer.parentElement === output, "find selects shell output instead of its exit-status badge");
         key(input, "Enter");
@@ -178,7 +179,7 @@ export async function checkEditorFind(root: HTMLElement) {
 
         setFindQuery("foobar");
         await settle(350);
-        const ansiOutput = scope("shell-ansi").querySelector(".term")!;
+        const ansiOutput = scope("shell-ansi").querySelector(".tcard-out")!;
         const ansiMatches = findMatches([turn], "foobar");
         const ansiRanges = textRanges(scope("shell-ansi"), "foobar");
         check(ansiMatches.length === 2 && ansiMatches.every((m, i) => m.part === "shell-ansi" && m.n === i), "ANSI escapes do not split displayed matches");

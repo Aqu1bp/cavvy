@@ -11,13 +11,14 @@
 // files are read from disk and compared in-process, by blob id. Nothing
 // writes the index, refs or objects.
 
+import { AsyncLocalStorage } from "async_hooks";
 import { constants, type Stats } from "fs";
 import type { BigIntStats } from "fs";
 import { lstat, open, readlink } from "fs/promises";
-import { basename, dirname, isAbsolute, join, relative } from "path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "path";
 import type { TurnSnapshots } from "../agent/turn-snapshots";
 import { canonical } from "../agent/checkpoints";
-import { gitArgv, gitEnv } from "../util/git";
+import { gitArgv, gitEnv, REPO_VARS } from "../util/git";
 import { redact } from "../util/redact";
 import { coalesce, type Slot } from "./coalesce";
 import { fileDiff, MAX_DIFF_INPUT, textOf } from "./diffs";
@@ -46,8 +47,6 @@ const SYMLINK = "120000";
 
 // ---------------------------------------------------------------------------
 // Running git
-
-const REPO_VARS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE"];
 
 export interface GitOut {
     code: number;
@@ -106,10 +105,28 @@ export function gitEnvironment(o: { env?: Record<string, string>; privateEnv?: R
     return env;
 }
 
+/**
+ * A read pinned to one work tree and Git dir (gitChanges' `pin`): every git call in that folder
+ * gets them as GIT_WORK_TREE and GIT_DIR, so its config (core.worktree) can't move the read
+ * elsewhere between the check and the read. Calls in other folders (a submodule's) are left alone.
+ */
+const pinned = new AsyncLocalStorage<{ workTree: string; gitDir: string }>();
+
+/**
+ * One folder, however it's spelled: separators (Windows takes / and \ alike, and git writes /),
+ * `.`, `..` and a trailing separator don't count. Case does: a folder whose name differs only in
+ * case can be another one (a case-sensitive folder), so that's refused rather than taken. `p` is
+ * the platform's path module (path.win32 in tests).
+ */
+export function samePath(a: string, b: string, p: { resolve: typeof resolve } = { resolve }): boolean {
+    return p.resolve(a) === p.resolve(b);
+}
+
 export async function git(cwd: string, args: string[], o: { input?: string; maxBytes?: number; env?: Record<string, string>; privateEnv?: Record<string, string>; deadline?: number } = {}): Promise<GitOut> {
     const left = Math.min(GIT_TIMEOUT_MS, (o.deadline ?? Infinity) - Date.now());
     if (left <= 0) throw tooLong();
-    const env = gitEnvironment(o);
+    const pin = pinned.getStore();
+    const env = gitEnvironment(pin && samePath(cwd, pin.workTree) ? { ...o, privateEnv: { ...o.privateEnv, GIT_WORK_TREE: pin.workTree, GIT_DIR: pin.gitDir } } : o);
     const proc = Bun.spawn(gitArgv(args), {
         cwd,
         env,
@@ -148,6 +165,12 @@ interface Refs {
     /** Short name → full refname. */
     full: Map<string, string>;
     default?: string;
+}
+
+/** What the Branch view compares with when no base is picked: Harness's main branch, as a short name and its full ref. */
+export async function defaultBase(root: string): Promise<{ name: string; ref: string } | undefined> {
+    const refs = await listRefs(root, Date.now() + DEADLINE_MS);
+    return refs.default ? { name: refs.default, ref: refs.full.get(refs.default)! } : undefined;
 }
 
 async function listRefs(root: string, deadline: number): Promise<Refs> {
@@ -612,7 +635,12 @@ function boolConfig(v: string | undefined, fallback: boolean): boolean {
 /** Walks under way, so a pane and a panel asking at once share one, and one asking mid-walk gets the next. */
 const inflight = new Map<string, Slot<GitChangesInfo>>();
 
-export function gitChanges(cwd: string, req: { scope: GitScope; base?: string; path?: string; turnId?: number }, snapshots?: TurnSnapshots): Promise<GitChangesInfo> {
+/**
+ * `pin`: read `cwd` (a work tree's root, links resolved) with this Git dir and as this work tree,
+ * whatever its config says (another worktree, checked by session-worktrees.ts).
+ */
+export function gitChanges(cwd: string, req: { scope: GitScope; base?: string; path?: string; turnId?: number }, snapshots?: TurnSnapshots, pin?: { gitDir: string }): Promise<GitChangesInfo> {
+    if (pin) return coalesce(inflight, JSON.stringify([cwd, pin.gitDir, req.scope, req.base, req.path]), () => pinned.run({ workTree: cwd, gitDir: pin.gitDir }, () => collect(cwd, req)));
     return coalesce(inflight, JSON.stringify([cwd, snapshots?.dir, req.scope, req.base, req.path, req.turnId]), async () => {
         if (req.scope === "turn" || req.scope === "last-turn") {
             if (snapshots) return snapshots.changes(req);
@@ -645,7 +673,14 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
         return notRepo(req.scope, reason);
     }
     // A folder's name can end in a newline; only git's own is taken off.
-    const root = trimNl(top.out);
+    let root = trimNl(top.out);
+    // Pinned, git can only answer the pinned work tree; anything else and the calls below wouldn't be pinned.
+    // Git spells it its own way (C:/wt for C:\wt); from here on it's the pin's spelling.
+    const pin = pinned.getStore();
+    if (pin) {
+        if (!samePath(root, pin.workTree)) throw new RpcError("Git doesn't see this worktree where it was checked.", "not_found");
+        root = pin.workTree;
+    }
     const [head, branch, format, config, refs] = await Promise.all([
         git(root, ["rev-parse", "-q", "--verify", "HEAD^{commit}"], { deadline }),
         git(root, ["symbolic-ref", "-q", "HEAD"], { deadline }),

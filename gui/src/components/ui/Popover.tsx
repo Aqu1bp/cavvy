@@ -1,6 +1,9 @@
 import { createEffect, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { mountMenu, type MenuBehavior } from "../../lib/menu";
+import { placePopover, type PopoverPlace } from "../../lib/popover";
+import { sp } from "../../state/prefs";
+import { settingsTab } from "../../state/ui";
 
 export interface PopoverProps {
     open: boolean;
@@ -13,43 +16,58 @@ export interface PopoverProps {
     /** Preferred side; flips when there's no room. */
     placement?: "top" | "bottom";
     align?: "start" | "end";
-    /** Opens beyond this element's edge instead of the anchor's (the composer's menus clear the whole card). */
-    edge?: () => HTMLElement | undefined;
+    /** Its width (default 320), and the heights below, in px at text size 14: they follow the text (`sp`). */
     width?: number;
     /** Its tallest (default 560); a longer list scrolls inside. */
     maxHeight?: number;
     /** How short it can get, scrolling, and still stay on the preferred side (default: its full height). */
     minHeight?: number;
     class?: string;
+    /** Fade out on close: a still copy of the panel, which no one can focus or click, goes after the real one has. */
+    exit?: boolean;
     children: JSX.Element;
+}
+
+/**
+ * The closing copy: the real panel is gone already (focus is back on the anchor, its keys
+ * are off), so the copy is only a picture of it. Scrolled lists keep their place; a detached
+ * element reads 0, so the positions come from its scroll events.
+ */
+function fadeOut(el: HTMLElement, scrolled: Map<Element, number>) {
+    const doc = el.ownerDocument;
+    if (doc.documentElement.dataset.motion === "instant" || doc.defaultView?.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const ghost = el.cloneNode(true) as HTMLElement;
+    for (const n of [ghost, ...ghost.querySelectorAll("[id]")]) n.removeAttribute("id");
+    ghost.removeAttribute("role");
+    ghost.setAttribute("aria-hidden", "true");
+    ghost.inert = true;
+    ghost.classList.add("closing");
+    doc.body.append(ghost);
+    if (scrolled.size) {
+        const from = [...el.querySelectorAll("*")];
+        const to = ghost.querySelectorAll("*");
+        for (const [n, top] of scrolled) {
+            const copy = n === el ? ghost : to[from.indexOf(n)];
+            if (copy) copy.scrollTop = top;
+        }
+    }
+    const done = () => ghost.remove();
+    ghost.addEventListener("animationend", (e) => e.target === ghost && done());
+    setTimeout(done, 400);
 }
 
 /** A floating panel next to an anchor, in a portal so no overflow clips it. */
 export function Popover(p: PopoverProps) {
-    const [pos, setPos] = createSignal<{ left: number; top?: number; bottom?: number; maxHeight: number }>();
+    const [pos, setPos] = createSignal<PopoverPlace>();
     let el: HTMLDivElement | undefined;
 
     const place = () => {
         const a = p.anchor();
         if (!a) return;
         const r = p.point ? { top: p.point.y, bottom: p.point.y, left: p.point.x, right: p.point.x } : a.getBoundingClientRect();
-        const e = p.edge?.()?.getBoundingClientRect();
-        const top = e ? Math.min(e.top, r.top) : r.top;
-        const bottom = e ? Math.max(e.bottom, r.bottom) : r.bottom;
-        const width = p.width ?? 320;
-        const vw = window.innerWidth;
-        const vh = window.innerHeight;
-        let left = !p.point && p.align === "end" ? r.right - width : r.left;
-        left = Math.max(8, Math.min(left, vw - width - 8));
-        const below = vh - bottom - 12;
-        const above = top - 12;
         // Its own height once rendered, so a tall menu opens on the side it fits.
-        const need = Math.min(el?.scrollHeight || 220, p.maxHeight ?? 560);
-        const least = Math.min(need, p.minHeight ?? need);
-        const wantTop = (p.placement ?? "bottom") === "top";
-        const useTop = wantTop ? above >= least || above > below : below < least && above > below;
-        if (useTop) setPos({ left, bottom: vh - top + 6, maxHeight: Math.max(160, above) });
-        else setPos({ left, top: bottom + 6, maxHeight: Math.max(160, below) });
+        const need = Math.min(el?.scrollHeight || 220, sp(p.maxHeight ?? 560));
+        setPos(placePopover(r, { width: sp(p.width ?? 320), least: Math.min(need, p.minHeight === undefined ? need : sp(p.minHeight)), placement: p.placement ?? "bottom", align: p.point ? "start" : p.align, vw: window.innerWidth, vh: window.innerHeight }));
     };
 
     createEffect(() => {
@@ -58,6 +76,12 @@ export function Popover(p: PopoverProps) {
 
     createEffect(() => {
         if (p.open && el && p.behavior) onCleanup(mountMenu(el, p.behavior));
+    });
+
+    // Settings hides what it covers without unmounting it (App.tsx): a menu there closes as Settings opens, as it did
+    // when that went, and one opened while it's covered (a shortcut, say) closes at once.
+    createEffect(() => {
+        if (settingsTab() && p.open && !p.anchor()?.closest(".settings-page, .settings-nav")) p.onClose();
     });
 
     onMount(() => {
@@ -84,11 +108,26 @@ export function Popover(p: PopoverProps) {
         });
     });
 
+    // Tracked while open, for fadeOut.
+    const scrolled = new Map<Element, number>();
+    const onScroll = (e: Event) => scrolled.set(e.target as Element, (e.target as Element).scrollTop);
+
     return (
         <Show when={p.open}>
+            {(() => {
+                if (p.exit) {
+                    scrolled.clear();
+                    onCleanup(() => el && fadeOut(el, scrolled));
+                }
+                return null;
+            })()}
             <Portal>
                 <div
-                    ref={el}
+                    ref={(e) => {
+                        el = e;
+                        // Scroll doesn't bubble: the lists inside are heard in the capture phase.
+                        if (p.exit) e.addEventListener("scroll", onScroll, true);
+                    }}
                     role={p.role}
                     aria-label={p.label}
                     tabIndex={p.behavior ? -1 : undefined}
@@ -97,10 +136,11 @@ export function Popover(p: PopoverProps) {
                         left: `${pos()?.left ?? -9999}px`,
                         top: pos()?.top !== undefined ? `${pos()!.top}px` : undefined,
                         bottom: pos()?.bottom !== undefined ? `${pos()!.bottom}px` : undefined,
-                        width: `${p.width ?? 320}px`,
-                        "max-height": `${Math.min(pos()?.maxHeight ?? 480, p.maxHeight ?? 560)}px`,
+                        width: `${pos()?.width ?? sp(p.width ?? 320)}px`,
+                        "max-height": `${Math.min(pos()?.maxHeight ?? 480, sp(p.maxHeight ?? 560))}px`,
                     }}
                     data-side={pos()?.bottom !== undefined ? "top" : "bottom"}
+                    data-align={!p.point && p.align === "end" ? "end" : "start"}
                 >
                     {p.children}
                 </div>

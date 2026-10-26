@@ -8,11 +8,14 @@
 import { createHash, randomBytes, randomUUID } from "crypto";
 import type { Server } from "bun";
 import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
+import type { ImagePart } from "../providers/types";
 import { redact, registerSecret } from "../util/redact";
 
 export interface ServerToolResult {
     text: string;
     isError?: boolean;
+    /** Sent after the text as image content. The tool fits them to what providers take (fitToolImages) first. */
+    images?: ImagePart[];
 }
 
 export interface ServerTool {
@@ -21,6 +24,8 @@ export interface ServerTool {
     description: string;
     inputSchema: Record<string, unknown>;
     annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean; openWorldHint?: boolean };
+    /** Listed as the tool's _meta (`{ ui: { visibility: ["app"] } }` keeps it from the model). */
+    meta?: Record<string, unknown>;
     /** The signal ends when the client goes away or cancels the call. `meta` is the request's _meta. */
     call(args: Record<string, unknown>, ctx: { signal: AbortSignal; meta: Record<string, unknown> }): Promise<ServerToolResult>;
 }
@@ -140,7 +145,7 @@ async function handle(req: Request, srv: Server<undefined>): Promise<Response> {
             return json({
                 jsonrpc: "2.0",
                 id,
-                result: { tools: entry.tools().map((t) => ({ name: t.name, ...(t.title ? { title: t.title } : {}), description: t.description, inputSchema: t.inputSchema, ...(t.annotations ? { annotations: t.annotations } : {}) })) },
+                result: { tools: entry.tools().map((t) => ({ name: t.name, ...(t.title ? { title: t.title } : {}), description: t.description, inputSchema: t.inputSchema, ...(t.annotations ? { annotations: t.annotations } : {}), ...(t.meta ? { _meta: t.meta } : {}) })) },
             });
         case "tools/call":
             return callTool(req, srv, entry, id, params);
@@ -162,7 +167,7 @@ function callTool(req: Request, srv: Server<undefined>, entry: Entry, id: unknow
     const result = tool
         .call(args, { signal: ac.signal, meta })
         .then(
-            (r) => ({ content: [{ type: "text", text: r.text }], isError: Boolean(r.isError) }),
+            (r) => ({ content: [{ type: "text", text: r.text }, ...(r.images ?? []).map((i) => ({ type: "image", data: i.data, mimeType: i.mediaType }))], isError: Boolean(r.isError) }),
             (e) => ({ content: [{ type: "text", text: `${name} failed: ${redact((e as Error).message ?? String(e))}` }], isError: true }),
         )
         .finally(() => {

@@ -37,7 +37,10 @@ if (!process.env.HARNESS_TEST_ACCOUNT_HOME) {
                 for (const root of [process.cwd(), ...roots]) {
                     expect(() => addAccount("claude-code", { id: "relative", name: "Relative", folder: join(root, "profile") }, roots)).toThrow(/default CLI folder/);
                 }
-                expect(() => accountEnv("claude-code")).toThrow(new RegExp(`relative ${key}.*absolute path`));
+                // Only the selector's own CLI refuses it; the other launches without it.
+                const owner = key === "CODEX_HOME" ? "codex" : "claude-code";
+                expect(() => accountEnv(owner)).toThrow(new RegExp(`relative ${key}.*absolute path`));
+                expect(accountEnv(owner === "codex" ? "claude-code" : "codex")).not.toHaveProperty(key);
             } finally { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; }
         }
     });

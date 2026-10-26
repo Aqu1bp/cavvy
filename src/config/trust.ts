@@ -16,6 +16,7 @@ import { readJson, readJsonForUpdate, writeJson } from "./settings";
 import { harnessHome, paths } from "./paths";
 import { isInside } from "../util/files";
 import { readAgentConfig } from "../providers/registry";
+import { externalImports } from "../agent/memory";
 
 const file = () => join(harnessHome(), "trusted.json");
 /** Trusted by the user for this session only (home, "/", or the list couldn't be saved); folders inside it too. */
@@ -62,6 +63,24 @@ export function trustFolder(dir: string) {
     writeJson(file(), { dirs: [...dirs].sort() }, 0o600);
 }
 
+/**
+ * Forget saved trust for `dir` and folders inside it (a removed worktree: a
+ * new checkout at the same path may hold anything). Trust saved for a folder
+ * containing it is untouched.
+ */
+export function forgetTrustInside(dir: string) {
+    const d = resolve(dir);
+    for (const t of [...userTrusted]) if (isInside(t, d)) userTrusted.delete(t);
+    const cur = readJsonForUpdate<{ dirs?: string[] }>(file()) ?? {};
+    const dirs = (cur.dirs ?? []).filter((t) => !isInside(resolve(t), d));
+    if (dirs.length !== (cur.dirs ?? []).length) writeJson(file(), { dirs }, 0o600);
+}
+
+/** The user's own trust in this folder (and the ones inside it), for this session only: not saved. */
+export function trustUntilExit(dir: string) {
+    userTrusted.add(resolve(dir));
+}
+
 /** Trust this folder (not the ones inside it) for this session because there's nothing to protect yet (not the user's say-so). */
 export function trustForSession(dir: string) {
     emptyTrusted.add(resolve(dir));
@@ -94,5 +113,10 @@ export function projectConfigSummary(cwd: string, has: (path: string) => boolean
     // Skills are instructions for the model, read natively from both folders whatever the model (src/agent/skills.ts).
     if (has(join(cwd, ".harness", "skills"))) found.push(".harness/skills/");
     if (has(join(cwd, ".claude", "skills"))) found.push(".claude/skills/");
+    // Memory files load in a folder with nothing to protect, but their imports stay inside the project
+    // until the user trusts it (src/agent/memory.ts): one that imports from outside has something to unlock.
+    // Only on disk: `has` for a commit's tree can't read what the files say, so a caller checking
+    // a commit reads its memory files itself (committedExternalImports, in src/server/runs.ts).
+    if (has === existsSync) found.push(...externalImports(cwd));
     return [...new Set(found)];
 }

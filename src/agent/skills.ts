@@ -22,6 +22,8 @@ import { homedir } from "os";
 import { basename, dirname, join } from "path";
 import { harnessHome } from "../config/paths";
 import { expandCommand } from "../commands/custom";
+import { loadPlugins } from "../plugins/loader";
+import { withoutReviewQuotes } from "../util/review-quotes";
 
 export interface Skill {
     name: string;
@@ -37,7 +39,7 @@ export interface Skill {
     file: string;
     /** Its folder: scripts and references next to it resolve against this. */
     dir: string;
-    /** In one of Claude Code's skill folders, so Claude Code runs it itself. */
+    /** In one of Claude Code's skill folders, or a plugin's (Claude Code loads plugins itself: src/plugins/native.ts), so Claude Code runs it itself. */
     claudeCode?: boolean;
 }
 
@@ -71,13 +73,13 @@ export function skillRoots(cwd: string, trusted: boolean): SkillRoot[] {
 /** Skill folders installed plugins bring (see the plugins loader). */
 export type ExtraSkillRoot = { dir: string; namespace: string; single?: boolean };
 
-export function pluginSkillRoots(_cwd: string, _trusted: boolean): ExtraSkillRoot[] {
-    return [];
+export function pluginSkillRoots(cwd: string, trusted: boolean): ExtraSkillRoot[] {
+    return loadPlugins(cwd, trusted).flatMap((p) => [...p.skillDirs.map((dir) => ({ dir, namespace: p.name })), ...p.skillFolders.map((dir) => ({ dir, namespace: p.name, single: true }))]);
 }
 
 export function loadSkills(cwd: string, trusted: boolean, extra: ExtraSkillRoot[] = pluginSkillRoots(cwd, trusted)): Skill[] {
     const byName = new Map<string, Skill>();
-    const roots: SkillRoot[] = [...skillRoots(cwd, trusted), ...extra.map((r) => ({ dir: r.dir, source: "plugin" as const, namespace: r.namespace, single: r.single }))];
+    const roots: SkillRoot[] = [...skillRoots(cwd, trusted), ...extra.map((r) => ({ dir: r.dir, source: "plugin" as const, namespace: r.namespace, single: r.single, claudeCode: true }))];
     for (const root of roots) for (const s of scanRoot(root)) byName.set(s.name, s);
     return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -231,14 +233,22 @@ export function skillMentions(text: string, skills: readonly Skill[]): Skill[] {
     if (!text.includes("$") || !skills.length) return [];
     const byName = new Map(skills.filter((s) => s.userInvocable).map((s) => [s.name, s]));
     const out = new Map<string, Skill>();
-    for (const m of text.matchAll(/(^|[\s(])\$([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=[\s.,;:!?)]|$)/g)) {
-        const raw = m[2]!.replace(/:+$/, "");
-        // $HOME and $5 are a shell variable and a price.
-        if (!/[a-z]/.test(raw)) continue;
-        const s = byName.get(raw.toLowerCase());
+    for (const name of mentionNames(text)) {
+        const s = byName.get(name);
         if (s) out.set(s.name, s);
     }
     return [...out.values()];
+}
+
+/** The names `text` mentions as $name, lowercased, in order. */
+export function mentionNames(text: string): string[] {
+    const out: string[] = [];
+    for (const m of withoutReviewQuotes(text).matchAll(/(^|[\s(])\$([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=[\s.,;:!?)]|$)/g)) {
+        const raw = m[2]!.replace(/:+$/, "");
+        // $HOME and $5 are a shell variable and a price.
+        if (/[a-z]/.test(raw)) out.push(raw.toLowerCase());
+    }
+    return out;
 }
 
 /** The prompt with the instructions of `mentioned` (its $mentions) after it, for the model; `text` itself is what the transcript shows. */
@@ -247,10 +257,3 @@ export function withSkills(text: string, mentioned: readonly Skill[]): string {
     return blocks.length ? `${text}\n\n${blocks.join("\n\n")}` : text;
 }
 
-/**
- * Should Claude Code run this /name itself? Those it listed, yes; before it
- * has listed any (the first turn), the skills it reads from its own folders.
- */
-export function claudeCodeRuns(name: string, skill: Skill | undefined, listed: ReadonlySet<string> | undefined): boolean {
-    return listed ? listed.has(name) : !!skill?.claudeCode;
-}

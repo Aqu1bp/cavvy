@@ -1,4 +1,4 @@
-import { isMod } from "./platform";
+import { actionOf } from "../state/keybindings";
 
 /** Shared navigation for action menus and searchable picker panels. */
 export function menuIndex(length: number, current: number, key: string): number {
@@ -42,6 +42,8 @@ export interface MenuBehavior {
     returnFocus: () => HTMLElement | undefined;
     initialFocus?: () => HTMLElement | undefined;
     onKeyDown?: (e: KeyboardEvent) => void;
+    /** Escape, before it closes the panel: true when the panel took it (closing a list open inside it). */
+    onEscape?: () => boolean;
 }
 
 const ITEMS = '[role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"]';
@@ -68,15 +70,18 @@ export function mountMenu(panel: HTMLElement, behavior: MenuBehavior): () => voi
             e.stopPropagation();
             return;
         }
-        // The palette is the one global shortcut allowed through. Close first so
-        // its focus restoration cannot later land in a stale menu.
-        if (isMod(e) && !e.altKey && e.key.toLowerCase() === "k") {
+        // The palette and find are the global shortcuts allowed through: App decides what they do (find does
+        // nothing under Settings, where the page's own find would search the conversation it covers). Close
+        // first so focus restoration cannot later land in a stale menu.
+        const global = actionOf(e, ["Global"]);
+        if (global === "app:commandPalette" || global === "app:find") {
             behavior.close();
             return;
         }
         e.stopPropagation();
         if (e.key === "Escape") {
             e.preventDefault();
+            if (behavior.onEscape?.()) return;
             behavior.close();
             return;
         }
@@ -108,10 +113,18 @@ export function mountMenu(panel: HTMLElement, behavior: MenuBehavior): () => voi
             if (next >= 0) focus(items[next]);
         }
     };
+    // A row marked aria-disabled can't be picked by pointer either (a disabled button already isn't).
+    const onClick = (e: MouseEvent) => {
+        if (!(e.target as HTMLElement | null)?.closest?.('[aria-disabled="true"]')) return;
+        e.preventDefault();
+        e.stopPropagation();
+    };
     doc.addEventListener("keydown", onKey, true);
+    panel.addEventListener("click", onClick, true);
     return () => {
         cancelAnimationFrame(frame);
         doc.removeEventListener("keydown", onKey, true);
+        panel.removeEventListener("click", onClick, true);
         // Actions can open dialogs or focus a rename field. Never steal that focus,
         // nor the destination of an outside click.
         if (trigger?.isConnected && (panel.contains(doc.activeElement) || doc.activeElement === doc.body)) trigger.focus({ preventScroll: true });

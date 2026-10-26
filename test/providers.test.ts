@@ -4,12 +4,14 @@ import { isolate, FAKE } from "./helpers/isolate";
 const iso = isolate();
 const { OpenAICompatProvider, toOpenAIMessages, httpError } = await import("../src/providers/openai-compat");
 const { OpenAIResponsesProvider, toResponsesInput } = await import("../src/providers/openai-responses");
-const { toAnthropicMessages, sanitizeToolId } = await import("../src/providers/anthropic");
-const { BUILTIN_PROVIDERS } = await import("../src/providers/registry");
+const { AnthropicProvider, toAnthropicMessages, sanitizeToolId } = await import("../src/providers/anthropic");
+const { BUILTIN_PROVIDERS, customProviders, writeProvidersFile } = await import("../src/providers/registry");
 const { ProviderError } = await import("../src/providers/types");
 const { stall } = await import("../src/providers/sse");
+const { costOf, promptTokens, usageCostParts } = await import("../src/providers/pricing");
 import type { ProviderDef } from "../src/providers/registry";
 import type { AssistantMessage, ChatRequest, Message, ModelInfo, StreamEvent } from "../src/providers/types";
+import { SESSION_CONTEXT_HEADING } from "../src/providers/types";
 
 type Json = Record<string, any>;
 
@@ -159,8 +161,8 @@ describe("Chat Completions: message conversion", () => {
             },
             { role: "tool", tool_call_id: "toolu_01", content: "file body\n[1 image(s) attached in the next message]" },
             { role: "tool", tool_call_id: "toolu_02", content: "Error: not found" },
-            { role: "user", content: [{ type: "text", text: "Images returned by the tool calls above:" }, { type: "image_url", image_url: { url: `data:image/png;base64,${PNG}` } }] },
-            { role: "user", content: "Thanks" },
+            // The message after them joins the tool calls' images: roles alternate, as strict chat templates want.
+            { role: "user", content: [{ type: "text", text: "Images returned by the tool calls above:" }, { type: "image_url", image_url: { url: `data:image/png;base64,${PNG}` } }, { type: "text", text: "Thanks" }] },
         ]);
     });
 
@@ -213,6 +215,70 @@ describe("Chat Completions: message conversion", () => {
 
 describe("Chat Completions: streaming", () => {
     const model: ModelInfo = { provider: "custom-x", id: "test-model", maxOutput: 8000, supportsTools: true };
+
+    test("custom DeepSeek: reasoning survives storage and the next tool turn, but stays out of other dialects", async () => {
+        writeProvidersFile({ custom: [{ id: CUSTOM.id, name: CUSTOM.name, baseUrl: BASE, deepseekCompat: true }] });
+        try {
+            const def = customProviders()[0]!;
+            respond = () => sse([
+                { choices: [{ delta: { reasoning_content: "Check " } }] },
+                { choices: [{ delta: { reasoning_content: "the file.", tool_calls: [{ index: 0, id: "c1", type: "function", function: { name: "read_file", arguments: "{}" } }] }, finish_reason: "tool_calls" }] },
+            ]);
+            const { events, on } = collect();
+            const first = await new OpenAICompatProvider(def, undefined).stream(req(model, []), on);
+            const stored: AssistantMessage = JSON.parse(JSON.stringify(first));
+            expect(stored.raw?.openai?.reasoning_content).toBe("Check the file.");
+            expect(events.filter((e) => e.type === "thinking").map((e) => e.text).join("")).toBe("Check the file.");
+            const result: Message = { role: "user", content: [{ type: "tool_result", toolCallId: "c1", toolName: "read_file", content: "body" }] };
+            respond = () => sse([{ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }]);
+            await new OpenAICompatProvider(def, undefined).stream(req(model, [stored, result]), () => {});
+            expect(seen.at(-1)!.body.messages.find((m: Json) => m.role === "assistant").reasoning_content).toBe("Check the file.");
+            expect(toOpenAIMessages("", [{ ...stored, raw: undefined }], def)[0]!.reasoning_content).toBe("Check the file.");
+            for (const target of [CUSTOM, builtin("groq"), builtin("gemini")]) {
+                expect(toOpenAIMessages("", [stored], target)[0]).not.toHaveProperty("reasoning_content");
+            }
+            expect(stored.raw?.openai?.reasoning_content).toBe("Check the file.");
+        } finally {
+            writeProvidersFile({});
+        }
+    });
+
+    test("reasoning_content is retained even for unknown dialects, including empty values", async () => {
+        for (const reasoning of ["received", ""]) {
+            respond = () => sse([{ choices: [{ delta: { reasoning_content: reasoning, content: "answer" }, finish_reason: "stop" }] }]);
+            const msg = await new OpenAICompatProvider(CUSTOM, undefined).stream(req(model, []), () => {});
+            expect(msg.raw?.openai?.reasoning_content).toBe(reasoning);
+            expect(toOpenAIMessages("", [msg], CUSTOM)[0]).not.toHaveProperty("reasoning_content");
+        }
+    });
+
+    test("DeepSeek host detection is exact and explicit configuration overrides it", () => {
+        const msg: AssistantMessage = { role: "assistant", provider: CUSTOM.id, model: "m", content: [{ type: "thinking", text: "thought" }, { type: "text", text: "answer" }], raw: { openai: { role: "assistant", content: "answer" } } };
+        const direct = { ...CUSTOM, baseUrl: "https://api.deepseek.com/v1" };
+        expect(toOpenAIMessages("", [msg], direct)[0]!.reasoning_content).toBe("thought");
+        for (const def of [{ ...direct, deepseekCompat: false }, { ...direct, baseUrl: "https://api.deepseek.com.example/v1" }]) {
+            expect(toOpenAIMessages("", [msg], def)[0]).not.toHaveProperty("reasoning_content");
+        }
+    });
+
+    test("DeepSeek detection uses the effective constructor base URL", async () => {
+        const previousFetch = globalThis.fetch;
+        const bodies: Json[] = [];
+        globalThis.fetch = (async (_url, init) => {
+            bodies.push(JSON.parse(String(init?.body)));
+            return sse([{ choices: [{ delta: { content: "answer" }, finish_reason: "stop" }] }]);
+        }) as typeof fetch;
+        try {
+            const prior: AssistantMessage = { role: "assistant", provider: CUSTOM.id, model: "m", content: [{ type: "text", text: "previous" }] };
+            await new OpenAICompatProvider(CUSTOM, undefined, "https://api.deepseek.com/v1").stream(req(model, [prior]), () => {});
+            expect(bodies[0]!.messages.find((m: Json) => m.role === "assistant").reasoning_content).toBe("");
+            await new OpenAICompatProvider({ ...CUSTOM, baseUrl: "https://api.deepseek.com/v1" }, undefined, BASE).stream(req(model, [prior]), () => {});
+            expect(bodies[1]!.messages.find((m: Json) => m.role === "assistant")).not.toHaveProperty("reasoning_content");
+        } finally {
+            globalThis.fetch = previousFetch;
+        }
+    });
+
 
     test("text deltas, a chunked tool call, finish_reason and usage", async () => {
         respond = () =>
@@ -322,6 +388,104 @@ describe("Chat Completions: streaming", () => {
         expect(msg.raw?.openai?.reasoning_details).toEqual([{ type: "reasoning.text", index: 0, text: "thinking..." }]);
     });
 
+    test.each(["anthropic/claude-sonnet-4.6", "anthropic/claude-sonnet-4.6:thinking", "~anthropic/claude-sonnet-latest"])("openrouter: Claude caching preserves the prefix across turns (%s)", async (id) => {
+        respond = () => sse([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]);
+        const def = builtin("openrouter");
+        const m: ModelInfo = { provider: def.id, id };
+        const p = new OpenAICompatProvider(def, FAKE.openrouter);
+        const request = req(m, HISTORY, { cacheSystem: true });
+        const original = JSON.stringify(request);
+        const first = await p.stream(request, () => {});
+        await p.stream({ ...request, messages: [...HISTORY, first, { role: "user", content: [{ type: "text", text: "Continue" }] }] }, () => {});
+        const a = seen[0]!.body;
+        const b = seen[1]!.body;
+        expect(a.cache_control).toEqual({ type: "ephemeral" });
+        expect(b.cache_control).toEqual(a.cache_control);
+        expect(a.messages[0]).toEqual({ role: "system", content: [{ type: "text", text: request.system, cache_control: { type: "ephemeral" } }] });
+        expect(JSON.stringify(b.messages.slice(0, a.messages.length))).toBe(JSON.stringify(a.messages));
+        expect(JSON.stringify(b.tools)).toBe(JSON.stringify(a.tools));
+        expect(a.tools).toEqual(request.tools.map((t) => ({ type: "function", function: t })));
+        expect(a.messages.slice(1)).toEqual(toOpenAIMessages("", HISTORY, def));
+        expect(b.messages.slice(a.messages.length)).toEqual([first.raw!.openai, { role: "user", content: "Continue" }]);
+        // One system breakpoint plus the automatic breakpoint, with no TTL override.
+        expect(JSON.stringify(b).match(/"cache_control"/g)).toHaveLength(2);
+        expect(JSON.stringify(request)).toBe(original);
+    });
+
+    test.each([
+        { lightweight: false, cacheSystem: false },
+        { lightweight: false, cacheSystem: true },
+        { lightweight: true, cacheSystem: false },
+        { lightweight: true, cacheSystem: true },
+    ])("openrouter: Claude honors lightweight and cacheSystem (%j)", async (flags) => {
+        respond = () => sse([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]);
+        const m: ModelInfo = { provider: "openrouter", id: "anthropic/claude-sonnet-4.6" };
+        const p = new OpenAICompatProvider(builtin("openrouter"), FAKE.openrouter);
+        await p.stream(req(m, HISTORY, flags), () => {});
+        const b = seen[0]!.body;
+        expect(b.cache_control).toEqual(flags.lightweight ? undefined : { type: "ephemeral" });
+        expect(b.messages[0].content).toEqual(flags.cacheSystem ? [{ type: "text", text: "You are a test.", cache_control: { type: "ephemeral" } }] : "You are a test.");
+        await p.stream(req(m, HISTORY, { ...flags, system: "", tools: [] }), () => {});
+        expect(seen[1]!.body.messages).toEqual(toOpenAIMessages("", HISTORY, builtin("openrouter")));
+        expect(seen[1]!.body.tools).toBeUndefined();
+    });
+
+    test("openrouter: the Claude system breakpoint stops before the session context, so sessions share the prefix", async () => {
+        respond = () => sse([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]);
+        const m: ModelInfo = { provider: "openrouter", id: "anthropic/claude-sonnet-4.6" };
+        const system = (date: string) => `You are a test.\n\n${SESSION_CONTEXT_HEADING}\nToday's date: ${date}`;
+        const p = new OpenAICompatProvider(builtin("openrouter"), FAKE.openrouter);
+        for (const date of ["2026-10-21", "2026-10-22"]) await p.stream(req(m, HISTORY, { cacheSystem: true, system: system(date) }), () => {});
+        const [a, b] = [seen[0]!.body.messages[0].content, seen[1]!.body.messages[0].content];
+        expect(a[0]).toEqual({ type: "text", text: "You are a test.", cache_control: { type: "ephemeral" } });
+        expect(b[0]).toEqual(a[0]);
+        expect(a[1].text).toContain("2026-10-21");
+        expect(b[1].text).toContain("2026-10-22");
+        expect(a[1].cache_control).toBeUndefined();
+    });
+
+    test.each([
+        ["openrouter", "openai/gpt-5"],
+        ["openrouter", "google/gemini-2.5-pro"],
+        ["openrouter", "google/gemini-3-pro-preview"],
+        ["openrouter", "google/gemini-2.0-flash-001"],
+        ["openrouter", "vendor/claude-sonnet-4.6"],
+        ["openrouter", "openrouter/auto"],
+        ["groq", "anthropic/claude-sonnet-4.6"],
+        ["custom-x", "anthropic/claude-sonnet-4.6"],
+    ])("cache_control is absent for %s / %s", async (provider, id) => {
+        respond = () => sse([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]);
+        const def = provider === "custom-x" ? CUSTOM : builtin(provider);
+        await new OpenAICompatProvider(def, FAKE.openrouter).stream(req({ provider, id }, HISTORY, { cacheSystem: true }), () => {});
+        expect(JSON.stringify(seen[0]!.body)).not.toContain('"cache_control"');
+        expect(seen[0]!.body.messages).toEqual(toOpenAIMessages("You are a test.", HISTORY, def));
+    });
+
+    test.each([
+        { details: { cached_tokens: 6000, cache_write_tokens: 2000 }, reportedCost: 0.0123 },
+        { details: { cached_tokens: 6000, cache_write_tokens: 2000 }, reportedCost: undefined },
+        { details: { cached_tokens: 6000 }, reportedCost: undefined },
+        { details: { cache_write_tokens: 2000 }, reportedCost: undefined },
+        { details: undefined, reportedCost: 0 },
+    ])("openrouter: cache usage and cost are accounted for without assuming a one-hour TTL (%j)", async ({ details, reportedCost }) => {
+        respond = () => sse([
+            { choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] },
+            { choices: [], usage: { prompt_tokens: 10000, completion_tokens: 100, prompt_tokens_details: details, cost: reportedCost } },
+        ]);
+        const m: ModelInfo = { provider: "openrouter", id: "anthropic/claude-sonnet-4.6", pricing: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } };
+        const msg = await new OpenAICompatProvider(builtin("openrouter"), FAKE.openrouter).stream(req(m, HISTORY), () => {});
+        const reads = details?.cached_tokens ?? 0;
+        const writes = details?.cache_write_tokens ?? 0;
+        expect(msg.usage).toEqual({ inputTokens: 10000 - reads - writes, outputTokens: 100, cacheReadTokens: reads, cacheWriteTokens: writes, reasoningTokens: undefined, cost: reportedCost });
+        expect(msg.usage!.cacheWrite1hTokens).toBeUndefined();
+        expect(promptTokens(msg.usage!)).toBe(10000);
+        expect(usageCostParts(msg.usage!, m)).toMatchObject({ cacheRead: reads * 0.3 / 1e6, cacheWrite: writes * 3.75 / 1e6 });
+        const cost = costOf(msg.usage!, m);
+        expect(cost.estimated).toBe(reportedCost === undefined);
+        expect(cost.unknown).toBe(false);
+        expect(cost.usd).toBeCloseTo(reportedCost ?? ((10000 - reads - writes) * 3 + 100 * 15 + reads * 0.3 + writes * 3.75) / 1e6, 10);
+    });
+
     test("deepseek: reasoning_content streamed, stored, and sent back on the next turn", async () => {
         const def = builtin("deepseek");
         const m: ModelInfo = { provider: "deepseek", id: "deepseek-reasoner", maxOutput: 32_000, supportsReasoning: true };
@@ -367,6 +531,21 @@ describe("Chat Completions: streaming", () => {
         const msg = await new OpenAICompatProvider(CUSTOM, FAKE.openai).stream(req(model, []), () => {});
         expect(msg.content).toEqual([{ type: "tool_call", id: "c9", name: "read_file", input: { __invalid_json: '{"path": ' } }]);
         expect(msg.stopReason).toBe("tool_use");
+
+        const { validateInput } = await import("../src/tools");
+        const { ReadTool } = await import("../src/tools/file-tools");
+        const call = msg.content[0]!;
+        if (call.type !== "tool_call") throw new Error("expected a tool call");
+        const error = validateInput(ReadTool, call.input)!;
+        expect(error).toContain("The tool arguments were not valid JSON");
+        respond = () => sse([{ choices: [{ index: 0, delta: { content: "retry" }, finish_reason: "stop" }] }]);
+        await new OpenAICompatProvider(CUSTOM, FAKE.openai).stream(req(model, [msg, {
+            role: "user", content: [{ type: "tool_result", toolCallId: call.id, toolName: call.name, content: error, isError: true }],
+        }]), () => {});
+        const replay = seen[1]!.body.messages;
+        expect(replay[1].tool_calls[0].function.arguments).toBe("{}");
+        expect(replay[2]).toEqual({ role: "tool", tool_call_id: "c9", content: `Error: ${error}` });
+        expect((msg.raw!.openai!.tool_calls as Json[])[0]!.function.arguments).toBe('{"path": ');
     });
 
     test("finish_reason length maps to max_tokens", async () => {
@@ -553,6 +732,112 @@ describe("Chat Completions: streaming", () => {
 });
 
 // ---------------------------------------------------------------------------
+
+describe("Chat Completions: effort discovery", () => {
+    for (const [provider, id] of [
+        ["groq", "openai/gpt-oss-120b"], ["groq", "openai/gpt-oss-20b"],
+        ["together", "openai/gpt-oss-120b"],
+        ["fireworks", "accounts/fireworks/models/gpt-oss-120b"], ["fireworks", "accounts/fireworks/models/gpt-oss-20b"],
+        ["cerebras", "gpt-oss-120b"], ["ollama", "gpt-oss:20b"], ["ollama", "gpt-oss:120b"],
+    ] as const) {
+        test(`${provider} ${id}: discovered levels control the wire request`, async () => {
+            respond = () => Response.json({ data: [{ id }, { id: "llama-plain" }, { id: `${id}-unknown` }] });
+            const client = new OpenAICompatProvider(builtin(provider), undefined);
+            const models = await client.listModels();
+            expect(models[0]).toMatchObject({ supportsReasoning: true, effortLevels: ["low", "medium", "high"] });
+            respond = () => sse([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]);
+            for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
+                await client.stream(req(models[0]!, [], { effort }), () => {});
+                expect(seen.at(-1)!.body.reasoning_effort).toBe(effort === "max" || effort === "xhigh" ? "high" : effort);
+            }
+            for (const model of models.slice(1)) {
+                expect(model.supportsReasoning).not.toBe(true);
+                await client.stream(req(model, [], { effort: "high" }), () => {});
+                expect(seen.at(-1)!.body).not.toHaveProperty("reasoning_effort");
+            }
+        });
+    }
+
+    test("xAI uses advertised levels rather than forwarding max", async () => {
+        respond = () => Response.json({ data: [
+            { id: "grok-4.7", capabilities: { reasoning_effort: ["low", "medium", "high", "xhigh"] } },
+            { id: "grok-4.5", capabilities: { reasoning_effort: ["low", "medium", "high"] } },
+            { id: "no-effort" },
+        ] });
+        const client = new OpenAICompatProvider(builtin("xai"), undefined);
+        const models = await client.listModels();
+        expect(models[0]!.effortLevels).toEqual(["low", "medium", "high", "xhigh"]);
+        expect(models[1]!.effortLevels).toEqual(["low", "medium", "high"]);
+        respond = () => sse([{ choices: [{ delta: {}, finish_reason: "stop" }] }]);
+        for (const [i, expected] of [[0, "xhigh"], [1, "high"], [2, undefined]] as const) {
+            await client.stream(req(models[i]!, [], { effort: "max" }), () => {});
+            expect(seen.at(-1)!.body.reasoning_effort).toBe(expected);
+        }
+    });
+
+    test("custom per-model effort configuration works with listings, appended models and a missing listing", async () => {
+        writeProvidersFile({ custom: [{ id: CUSTOM.id, name: CUSTOM.name, baseUrl: BASE, models: ["configured", "plain"], modelEffortLevels: { configured: ["low", "high"], listed: ["medium", "high"] } }] });
+        try {
+            const def = customProviders()[0]!;
+            for (const status of [200, 404]) {
+                respond = () => status === 200 ? Response.json({ data: [{ id: "listed" }, { id: "openai/gpt-oss-120b" }] }) : new Response("no models", { status });
+                const client = new OpenAICompatProvider(def, undefined);
+                const models = await client.listModels();
+                expect(models.find((m) => m.id === "configured")).toMatchObject({ supportsReasoning: true, effortLevels: ["low", "high"] });
+                respond = () => sse([{ choices: [{ delta: {}, finish_reason: "stop" }] }]);
+                for (const model of models) {
+                    await client.stream(req(model, [], { effort: "max" }), () => {});
+                    expect(seen.at(-1)!.body.reasoning_effort).toBe(["configured", "listed"].includes(model.id) ? "high" : undefined);
+                }
+            }
+        } finally {
+            writeProvidersFile({});
+        }
+    });
+
+    test("LM Studio and arbitrary custom endpoints do not infer effort from model names", async () => {
+        respond = () => Response.json({ data: [{ id: "openai/gpt-oss-20b" }, { id: "deepseek-reasoner" }] });
+        for (const def of [builtin("lmstudio"), CUSTOM]) {
+            expect((await new OpenAICompatProvider(def, undefined).listModels()).some((m) => m.supportsReasoning)).toBe(false);
+        }
+    });
+
+    test("custom configuration changes invalidate clients and every cached model lookup", async () => {
+        const { listAllModels, cachedListings, resolveModelInfo, lookupModel, clientFor, forgetClient } = await import("../src/providers/models");
+        const previousFetch = globalThis.fetch;
+        const bodies: Json[] = [];
+        globalThis.fetch = (async (url, init) => {
+            if (String(url) === "https://gateway.example/v1/models") return Response.json({ data: [{ id: "configured" }] });
+            if (String(url) === "https://gateway.example/v1/chat/completions") {
+                bodies.push(JSON.parse(String(init?.body)));
+                return sse([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]);
+            }
+            return new Response("not configured", { status: 404 });
+        }) as typeof fetch;
+        try {
+            writeProvidersFile({ custom: [{ id: CUSTOM.id, name: CUSTOM.name, baseUrl: "https://gateway.example/v1", requiresKey: false, deepseekCompat: true, modelEffortLevels: { configured: ["low", "high"] } }] });
+            expect(resolveModelInfo(`${CUSTOM.id}:configured`)).toMatchObject({ supportsReasoning: true, effortLevels: ["low", "high"] });
+            await listAllModels({ refresh: true });
+            expect(cachedListings().find((l) => l.provider.id === CUSTOM.id)?.models[0]?.supportsReasoning).toBe(true);
+            const oldClient = await clientFor(CUSTOM.id);
+            writeProvidersFile({ custom: [{ id: CUSTOM.id, name: CUSTOM.name, baseUrl: "https://gateway.example/v1", requiresKey: false }] });
+            expect(cachedListings().find((l) => l.provider.id === CUSTOM.id)).toBeUndefined();
+            expect(resolveModelInfo(`${CUSTOM.id}:configured`)?.supportsReasoning).toBeUndefined();
+            expect((await lookupModel(`${CUSTOM.id}:configured`))?.supportsReasoning).toBeUndefined();
+            const client = await clientFor(CUSTOM.id);
+            expect(client).not.toBe(oldClient);
+            const m = resolveModelInfo(`${CUSTOM.id}:configured`)!;
+            const prior: AssistantMessage = { role: "assistant", provider: CUSTOM.id, model: m.id, content: [{ type: "text", text: "previous" }], raw: { openai: { role: "assistant", content: "previous", reasoning_content: "thought" } } };
+            await client.stream(req(m, [prior], { effort: "high" }), () => {});
+            expect(bodies[0]).not.toHaveProperty("reasoning_effort");
+            expect(bodies[0]!.messages.find((m: Json) => m.role === "assistant")).not.toHaveProperty("reasoning_content");
+        } finally {
+            globalThis.fetch = previousFetch;
+            forgetClient(CUSTOM.id);
+            writeProvidersFile({});
+        }
+    });
+});
 
 describe("Responses API", () => {
     const def = builtin("openai");
@@ -947,6 +1232,24 @@ describe("Anthropic message conversion", () => {
 });
 
 describe("Anthropic streaming", () => {
+    test("context-window exhaustion preserves partial output and usage with a distinct stop reason", async () => {
+        const { AnthropicProvider } = await import("../src/providers/anthropic");
+        const ev = (type: string, data: Json) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+        respond = () => new Response([
+            ev("message_start", { message: { id: "msg_context", type: "message", role: "assistant", model: "claude-haiku-5-5", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 100, output_tokens: 1 } } }),
+            ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } }),
+            ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: "partial answer" } }),
+            ev("content_block_stop", { index: 0 }),
+            ev("message_delta", { delta: { stop_reason: "model_context_window_exceeded", stop_sequence: null }, usage: { output_tokens: 12 } }),
+            ev("message_stop", {}),
+        ].join(""), { headers: { "content-type": "text/event-stream" } });
+        const m: ModelInfo = { provider: "anthropic", id: "claude-haiku-5-5" };
+        const msg = await new AnthropicProvider(builtin("anthropic", { baseUrl: `http://127.0.0.1:${server.port}` }), FAKE.anthropic).stream(req(m, [{ role: "user", content: [{ type: "text", text: "q" }] }]), () => {});
+        expect(msg.stopReason).toBe("context_window_exceeded");
+        expect(msg.content).toEqual([{ type: "text", text: "partial answer" }]);
+        expect(msg.usage).toMatchObject({ inputTokens: 100, outputTokens: 12 });
+    });
+
     test("thinking that isn't streamed still says it started", async () => {
         const { AnthropicProvider } = await import("../src/providers/anthropic");
         const ev = (type: string, data: Json) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
@@ -978,6 +1281,245 @@ describe("Anthropic streaming", () => {
             { type: "thinking", text: "", signature: "sig" },
             { type: "text", text: "Done." },
         ]);
+    });
+});
+
+describe("Anthropic budget thinking", () => {
+    const models = ["claude-haiku-4-5", "claude-sonnet-4-5", "claude-opus-4-5", "claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-opus-4-1-20250805"];
+    const budgets = { low: 1024, medium: 4096, high: 8192, xhigh: 16384, max: 24576 } as const;
+    const levels = Object.keys(budgets) as (keyof typeof budgets)[];
+    const provider = () => new AnthropicProvider(builtin("anthropic", { baseUrl: `http://127.0.0.1:${server.port}` }), FAKE.anthropic);
+    const prompt: Message = { role: "user", content: [{ type: "text", text: "q" }] };
+    const ask = async (model: ModelInfo, extra: Partial<ChatRequest> = {}) => {
+        const ev = (type: string, data: Json) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+        respond = () => new Response([
+            ev("message_start", { message: { id: "msg_1", type: "message", role: "assistant", model: model.id, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } } }),
+            ev("content_block_start", { index: 0, content_block: { type: "text", text: "OK" } }),
+            ev("content_block_stop", { index: 0 }),
+            ev("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 2 } }),
+            ev("message_stop", {}),
+        ].join(""), { headers: { "content-type": "text/event-stream" } });
+        await provider().stream(req(model, [prompt], extra), () => {});
+        return seen.at(-1)!;
+    };
+
+    for (const id of models) {
+        test(`${id}: each effort enables a budget and only supported wire parameters`, async () => {
+            const model = provider().staticInfo(id);
+            expect(model.supportsReasoning).toBe(true);
+            expect(model.effortLevels).toEqual(levels);
+            for (const effort of levels) {
+                const { body, headers } = await ask(model, { effort });
+                expect(body.thinking).toEqual({ type: "enabled", budget_tokens: budgets[effort] });
+                expect(body.thinking.budget_tokens).toBeLessThan(body.max_tokens);
+                expect(body.temperature).toBeUndefined();
+                expect(body.top_k).toBeUndefined();
+                // Omitted tool_choice defaults to auto; forced tool use is incompatible.
+                expect(body.tool_choice).toBeUndefined();
+                expect(body.output_config).toEqual(id === "claude-opus-4-5" ? { effort: effort === "xhigh" || effort === "max" ? "high" : effort } : undefined);
+                expect(headers["anthropic-beta"]?.includes("interleaved-thinking-2025-05-14") ?? false).toBe(!id.includes("haiku"));
+            }
+        });
+
+        test(`${id}: unset/off keeps thinking disabled`, async () => {
+            const model = provider().staticInfo(id);
+            for (const extra of [{}, { effort: "high" as const, noThinking: true }]) {
+                const { body, headers } = await ask(model, extra);
+                expect(body.thinking).toBeUndefined();
+                expect(headers["anthropic-beta"] ?? "").not.toContain("interleaved-thinking");
+            }
+        });
+    }
+
+    test("cached requests replay signed thinking blocks byte-identically across tool turns", async () => {
+        for (const id of ["claude-sonnet-4-5", "claude-opus-5-5"]) {
+            const model = provider().staticInfo(id);
+            const raw = [
+                { type: "thinking", thinking: "  Keep spacing\n\tand unicode: λ  ", signature: "signed+/opaque==" },
+                { type: "redacted_thinking", data: "redacted+/opaque==" },
+                { type: "tool_use", id: "toolu_read", name: "read_file", input: { path: "a.txt" } },
+            ];
+            const serialized = JSON.stringify(raw);
+            const turn: AssistantMessage = { role: "assistant", provider: "anthropic", model: id, content: [{ type: "text", text: "neutral content must not replace raw blocks" }], raw: { anthropic: raw } };
+            const messages: Message[] = [prompt, turn, { role: "user", content: [{ type: "tool_result", toolCallId: "toolu_read", toolName: "read_file", content: "file body" }] }];
+            const options: Partial<ChatRequest> = { effort: "high", cacheSystem: true, system: "Shared instructions\n\n" + SESSION_CONTEXT_HEADING + "\nSession-specific context" };
+            const first = (await ask(model, { ...options, messages })).body;
+            const next = (await ask(model, { ...options, messages: [...messages, prompt] })).body;
+            for (const body of [first, next]) {
+                expect(JSON.stringify(body.messages[1].content)).toBe(serialized);
+                expect(body.system[0].cache_control).toEqual({ type: "ephemeral" });
+                expect(body.system[1].cache_control).toBeUndefined();
+                expect(body.cache_control).toEqual({ type: "ephemeral" });
+            }
+            expect(next.system).toEqual(first.system);
+            expect(next.tools).toEqual(first.tools);
+            expect(JSON.stringify(turn.raw!.anthropic)).toBe(serialized);
+        }
+    });
+
+    test("lightweight helpers preserve their full output cap without budget thinking", async () => {
+        for (const id of models) {
+            for (const maxTokens of [100, 500, 1024, 1100, 2048]) {
+                const { body, headers } = await ask(provider().staticInfo(id), { effort: "low", lightweight: true, maxTokens, tools: [] });
+                expect(body.max_tokens).toBe(maxTokens);
+                expect(body.thinking).toBeUndefined();
+                expect(headers["anthropic-beta"] ?? "").not.toContain("interleaved-thinking");
+            }
+        }
+    });
+
+    test("budget respects request and model output caps, including the minimum boundary", async () => {
+        const model = provider().staticInfo("claude-opus-4-5");
+        for (const [cap, budget] of [[4096, 3072], [4000, 2976], [1025, 1024]] as const) {
+            expect((await ask(model, { effort: "max", maxTokens: cap })).body.thinking.budget_tokens).toBe(budget);
+            expect((await ask({ ...model, maxOutput: cap }, { effort: "max" })).body.thinking.budget_tokens).toBe(budget);
+        }
+        for (const maxTokens of [1024, 100]) {
+            const before = seen.length;
+            await expect(ask(model, { effort: "low", maxTokens })).rejects.toThrow("requires max_tokens of at least 1025");
+            expect(seen.length).toBe(before);
+        }
+    });
+
+    test("interleaving is only requested with tools, including server web search", async () => {
+        const model = provider().staticInfo("claude-sonnet-4-5");
+        expect((await ask(model, { effort: "high", tools: [] })).headers["anthropic-beta"] ?? "").not.toContain("interleaved-thinking");
+        expect((await ask(model, { effort: "high", tools: [], webSearch: true })).headers["anthropic-beta"]).toContain("interleaved-thinking-2025-05-14");
+    });
+
+    test("explicit capabilities override static budget support; unknown models stay conservative", async () => {
+        expect((await ask({ ...provider().staticInfo("claude-haiku-4-5"), budgetThinking: false }, { effort: "high" })).body.thinking).toBeUndefined();
+        expect((await ask(provider().staticInfo("unknown"), { effort: "high" })).body.thinking).toBeUndefined();
+        for (const id of ["custom", "claude-3-5-haiku-20241022", "claude-haiku-5-5"]) {
+            // Old metadata guessed enabled support for every then-unknown model.
+            const { body } = await ask({ provider: "anthropic", id, adaptiveThinking: false, budgetThinking: true, effortLevels: levels, nativeEffortLevels: [] }, { effort: "high" });
+            expect(body.thinking).toBeUndefined();
+            expect(body.output_config).toBeUndefined();
+        }
+    });
+
+    test("unknown discovered models do not advertise manual thinking controls", async () => {
+        respond = () => Response.json({ data: [{
+            id: "custom", display_name: "Custom", type: "model", created_at: "2025-01-01T00:00:00Z",
+            capabilities: {
+                image_input: { supported: true },
+                thinking: { supported: true, types: { adaptive: { supported: false }, enabled: { supported: true } } },
+                effort: { supported: false },
+            },
+        }], has_more: false });
+        const [model] = await provider().listModels();
+        expect(model!.budgetThinking).toBe(false);
+        expect(model!.supportsReasoning).toBe(false);
+        expect(model!.effortLevels).toEqual([]);
+        expect((await ask(model!, { effort: "high" })).body.thinking).toBeUndefined();
+    });
+
+    test("discovered native effort support stays separate from the budget controls", async () => {
+        respond = () => Response.json({ data: [{
+            id: "claude-opus-4-5", display_name: "Opus", type: "model", created_at: "2025-01-01T00:00:00Z",
+            capabilities: {
+                image_input: { supported: true },
+                thinking: { supported: true, types: { adaptive: { supported: false }, enabled: { supported: true } } },
+                effort: { supported: false },
+            },
+        }], has_more: false });
+        const [model] = await provider().listModels();
+        expect(model!.effortLevels).toEqual(levels);
+        const { body } = await ask(model!, { effort: "max" });
+        expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 24576 });
+        expect(body.output_config).toBeUndefined();
+    });
+
+    test("adaptive models retain adaptive thinking and native effort", async () => {
+        for (const id of ["claude-sonnet-4-6", "claude-opus-4-6", "claude-opus-4-8", "claude-haiku-5-5", "claude-sonnet-5-5"]) {
+            const model = provider().staticInfo(id);
+            for (const effort of model.effortLevels!) {
+                const { body, headers } = await ask(model, { effort, lightweight: true, showThinking: true });
+                expect(body.thinking).toEqual({ type: "adaptive", display: "summarized" });
+                expect(body.output_config).toEqual({ effort });
+                expect(headers["anthropic-beta"] ?? "").not.toContain("interleaved-thinking");
+            }
+        }
+    });
+
+    test("existing cached budget models gain controls without losing native effort or other providers", async () => {
+        const { resolveModelInfo } = await import("../src/providers/models");
+        const { paths } = await import("../src/config/paths");
+        const { mkdirSync, rmSync } = await import("fs");
+        const { dirname } = await import("path");
+        const path = paths.modelCache();
+        mkdirSync(dirname(path), { recursive: true });
+        const oldModels: ModelInfo[] = models.map((id) => ({
+            provider: "anthropic", id, supportsReasoning: false, adaptiveThinking: false, budgetThinking: true,
+            effortLevels: id === "claude-opus-4-5" ? ["low", "medium", "high"] : [],
+            pricing: { input: 999, output: 999 },
+        }));
+        const unsupported: ModelInfo[] = ["custom", "claude-3-5-haiku-20241022", "claude-haiku-5-5"].map((id) => ({
+            provider: "anthropic", id, supportsReasoning: false, adaptiveThinking: false, budgetThinking: true, effortLevels: [],
+        }));
+        // PR #279 may already have rewritten a guessed flag into mapped controls.
+        unsupported.push({ provider: "anthropic", id: "custom-promoted", supportsReasoning: true, adaptiveThinking: false, budgetThinking: true, effortLevels: levels, nativeEffortLevels: [] });
+        unsupported.push({ provider: "anthropic", id: "claude-opus-4-5-20251101", supportsReasoning: false, adaptiveThinking: false, budgetThinking: false, effortLevels: [] });
+        const nativeOnly: ModelInfo = { provider: "anthropic", id: "custom-native-effort", adaptiveThinking: false, budgetThinking: true, effortLevels: ["low", "high"] };
+        const unrelated = { provider: "openai", id: "cached-fixture", supportsReasoning: true, effortLevels: ["low"] };
+        await Bun.write(path, JSON.stringify({ version: 3, providers: {
+            anthropic: { fetchedAt: Date.now(), fp: "fixture", models: [...oldModels, ...unsupported, nativeOnly] },
+            openai: { fetchedAt: Date.now(), fp: "fixture", models: [unrelated] },
+        } }));
+        try {
+            for (const old of oldModels) {
+                const model = resolveModelInfo(`anthropic:${old.id}`)!;
+                expect(model.supportsReasoning).toBe(true);
+                expect(model.effortLevels).toEqual(levels);
+                expect(model.nativeEffortLevels).toEqual(old.effortLevels);
+                expect(model.pricing).toEqual(provider().staticInfo(old.id).pricing);
+                const { body } = await ask(model, { effort: "max" });
+                expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 24576 });
+                expect(body.output_config).toEqual(old.id === "claude-opus-4-5" ? { effort: "high" } : undefined);
+            }
+            for (const old of unsupported) {
+                const model = resolveModelInfo(`anthropic:${old.id}`)!;
+                expect(model.budgetThinking).toBe(false);
+                expect(model.supportsReasoning).toBe(false);
+                expect(model.effortLevels).toEqual([]);
+                const { body } = await ask(model, { effort: "max" });
+                expect(body.thinking).toBeUndefined();
+                expect(body.output_config).toBeUndefined();
+            }
+            const native = resolveModelInfo("anthropic:custom-native-effort")!;
+            expect(native.effortLevels).toEqual(["low", "high"]);
+            const { body } = await ask(native, { effort: "high" });
+            expect(body.thinking).toBeUndefined();
+            expect(body.output_config).toEqual({ effort: "high" });
+            expect(resolveModelInfo("openai:cached-fixture")).toEqual(unrelated);
+        } finally {
+            rmSync(path, { force: true });
+        }
+    });
+
+    test("discovery and static resolution expose the mapped effort levels to GUI/TUI", async () => {
+        const { resolveModelInfo } = await import("../src/providers/models");
+        for (const withCaps of [false, true]) {
+            respond = () => Response.json({ data: models.map((id) => ({
+                id, display_name: id, type: "model", created_at: "2025-01-01T00:00:00Z",
+                ...(withCaps ? { capabilities: {
+                    image_input: { supported: true },
+                    thinking: { supported: true, types: { adaptive: { supported: false }, enabled: { supported: true } } },
+                    effort: { supported: id === "claude-opus-4-5", low: { supported: true }, medium: { supported: true }, high: { supported: true } },
+                } } : {}),
+            })), has_more: false });
+            const listed = await provider().listModels();
+            expect(listed).toHaveLength(models.length);
+            for (const model of listed) {
+                expect(model.supportsReasoning).toBe(true);
+                expect(model.budgetThinking).toBe(true);
+                expect(model.effortLevels).toEqual(levels);
+                const resolved = resolveModelInfo(`anthropic:${model.id}`)!;
+                expect(resolved.supportsReasoning).toBe(true);
+                expect(resolved.effortLevels).toEqual(levels);
+                expect((await ask(model, { effort: "max" })).body.thinking).toEqual({ type: "enabled", budget_tokens: 24576 });
+            }
+        }
     });
 });
 
@@ -1023,6 +1565,22 @@ describe("quick requests (the auto-mode reviewer's first step)", () => {
         const plain = await ask("claude-sonnet-5-5", {});
         expect(plain.system).toEqual([{ type: "text", text: "You are a test." }]);
         expect(plain.cache_control).toBeUndefined();
+    });
+
+    test("an agent request caches the system prompt up to its session context, and the conversation after it", async () => {
+        const system = "You are a test.\n\n# Notes\nShared.\n\n# Session context\nToday's date: 2026-10-22\n\nAppended.";
+        const agent = await ask("claude-sonnet-5-5", { system, cacheSystem: true, lightweight: false });
+        expect(agent.system).toEqual([
+            { type: "text", text: "You are a test.\n\n# Notes\nShared.", cache_control: { type: "ephemeral" } },
+            { type: "text", text: "# Session context\nToday's date: 2026-10-22\n\nAppended." },
+        ]);
+        expect(agent.cache_control).toEqual({ type: "ephemeral" });
+        // A prompt frozen before it had the section: cached whole.
+        const older = await ask("claude-sonnet-5-5", { system: "You are a test.\n\n# Environment\nToday's date: 2026-10-22", cacheSystem: true, lightweight: false });
+        expect(older.system).toEqual([{ type: "text", text: "You are a test.\n\n# Environment\nToday's date: 2026-10-22", cache_control: { type: "ephemeral" } }]);
+        // Not cached on its own: sent as it is.
+        const uncached = await ask("claude-sonnet-5-5", { system, lightweight: false });
+        expect(uncached.system).toEqual([{ type: "text", text: system }]);
     });
 });
 

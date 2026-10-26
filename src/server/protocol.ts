@@ -5,7 +5,18 @@
 // Requests:  client -> { id, method, params }      server -> { id, result } | { id, error }
 // Events:    server -> { event }                   (session timelines, sidebar updates, notifications)
 
+import type { DiagnosticReport } from "../lsp/diagnostics";
+import type { BackgroundTaskInfo } from "../backends/live/info";
+
+export type { BackgroundTaskInfo } from "../backends/live/info";
+
+/**
+ * How a request to stop a background task went: stopped by it, not confirmed in time, refused, can't be stopped
+ * alone, no such task, or it had already ended on its own (it keeps its own outcome).
+ */
+export type BackgroundStopResult = "stopped" | "timeout" | "failed" | "not_stoppable" | "unknown" | "ended";
 import type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus } from "../mcp/info";
+import type { PluginListing, PluginScope } from "../plugins/info";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -132,6 +143,8 @@ export interface ToolBlock {
     output?: string;
     outputTruncated?: boolean;
     diff?: FileDiff;
+    /** What the language server found after an edit. */
+    diagnostics?: DiagnosticReport;
     images?: number;
     /** Live output while it runs (a shell command's tail). */
     progress?: string;
@@ -189,11 +202,131 @@ export interface AgentRun {
     replayed?: boolean;
 }
 
-export interface NoticeBlock {
+export interface NoticeBlock extends NoticeData {
     t: "notice";
     id: string;
     level: "info" | "warn" | "error";
+    /** What it says (under `title`, when it has one). Plain text; `code` in backticks reads as code. */
     text: string;
+    /** One short line each, folded under the text (TurnNotice.details). */
+    details?: string[];
+}
+
+/**
+ * What a notice is, beyond its text (#426), so it's drawn as what it is rather than as a sentence. Every field is
+ * optional: a notice from before these (a plain string) is an info line, a warning or an error by its level.
+ */
+export interface NoticeData {
+    /** What the notice shows, where it isn't the message as said (a titled warning's body; Codex's words, without "Codex: "). */
+    text?: string;
+    /** The agent CLI that said it ("claude-code", "codex"): its logo is the icon, in place of a "Codex:" prefix. */
+    source?: string;
+    /** A short title (a warning's pill, an error card's sentence): `text` is then what folds under it. */
+    title?: string;
+    /** A link the CLI gave with it (its docs). */
+    link?: string;
+    /** An account switch: one line between turns. */
+    account?: NoticeAccount;
+    /**
+     * Tasks a switch's restart stopped, said after its line was no longer the latest (a message came since): a line
+     * of their own, which switches nothing.
+     */
+    stopped?: NoticeStopped;
+    /** A plan limit: reached (warn), on credits (warn, `credits`), or stopping the turn (error). */
+    limit?: NoticeLimit;
+}
+
+/** A background task an account switch's restart stopped. */
+export interface StoppedTask {
+    /** Its description (Claude Code's Bash `description`), or its command, cut short (Codex's have no description). */
+    label: string;
+    /** The whole command, when it isn't the label. */
+    command?: string;
+}
+
+/**
+ * A session's switch to another account of an agent CLI. Switches with no message between them are one notice,
+ * the latest (Session.recordSwitch), with every task they stopped.
+ */
+export interface NoticeAccount {
+    provider: string;
+    /** The CLI's name ("Claude Code"). */
+    cli: string;
+    /** The account's display name. */
+    name: string;
+    /**
+     * native: the same CLI session goes on, resumed natively (the account shares its history). returned: the earlier
+     * thread this account finds is picked up again. handoff: a new thread is handed the conversation.
+     */
+    how: "native" | "returned" | "handoff";
+    /** A handoff from a native session the new account can't resume. */
+    dropped?: true;
+    stopped?: StoppedTask[];
+}
+
+/** Background tasks an account switch's restart stopped, on a line of their own (NoticeData.stopped). */
+export interface NoticeStopped {
+    provider: string;
+    /** The CLI's name ("Claude Code"). */
+    cli: string;
+    tasks: StoppedTask[];
+}
+
+/** A plan limit an account of an agent CLI reached. */
+export interface NoticeLimit {
+    provider: string;
+    accountId: string;
+    /** The account's display name. */
+    name: string;
+    /** The window that's reached ("5-hour", "Weekly"), when known. */
+    window?: string;
+    /** When it resets (ms), when known. */
+    resetsAt?: number;
+    /** Past it, turns go on, billed to credits. */
+    credits?: true;
+}
+
+/** "resumed", "new thread": how a switch's conversation goes on, in a word. */
+export function switchWord(how: NoticeAccount["how"]): string {
+    return how === "handoff" ? "new thread" : "resumed";
+}
+
+/** What a switch's word means, for its tooltip and a screen reader. */
+export function switchMeaning(a: NoticeAccount): string {
+    const said =
+        a.how === "native"
+            ? "Same session, resumed: this account shares its history."
+            : a.how === "returned"
+              ? "Its earlier thread on this account is picked up again, with what happened since."
+              : `New thread: this conversation was handed over${a.dropped ? " (this account doesn't share the earlier thread)" : ""}.`;
+    return `Switched to ${a.cli} · ${a.name}. ${said}`;
+}
+
+/** The tasks a switch stopped, for a tooltip: each by its description, then its command (Codex's are their command). */
+export function stoppedTasksTip(provider: string, tasks: StoppedTask[]): string {
+    const line = (t: StoppedTask) => (provider === "codex" ? `$ ${t.command ?? t.label}` : t.command ? `${t.label}\n  $ ${t.command}` : t.label);
+    return ["Stopped by the switch's restart:", ...tasks.map(line)].join("\n");
+}
+
+/** A switch as one line of text (the terminal, a copy, find): "Codex · Second · resumed", then what it stopped. */
+export function accountNoticeText(a: NoticeAccount): string {
+    const line = `${a.cli} · ${a.name} · ${switchWord(a.how)}`;
+    const stopped = a.stopped ?? [];
+    if (!stopped.length) return line;
+    return `${line}\n${stoppedText(stopped)}`;
+}
+
+/** What a switch stopped, in a line: "Stopped: <its description>", or "3 tasks stopped". */
+export function stoppedText(tasks: StoppedTask[]): string {
+    return tasks.length === 1 ? `Stopped: ${tasks[0]!.label}` : `${tasks.length} tasks stopped`;
+}
+
+/**
+ * A CLI's model catalog (its models, and their effort and speed options) is listed by its starting account only:
+ * said where a session on another account picks a model.
+ */
+export function catalogSentence(cli: string, source: string, selected: string): string {
+    return `${cli}'s model list, with each model's effort and speed options, comes from its starting account (${source}); ${selected} may not offer all of them.`;
 }
 
 export interface CompactBlock {
@@ -201,6 +334,8 @@ export interface CompactBlock {
     id: string;
     summary: string;
     auto: boolean;
+    /** Compacted while idle, before the prompt cache expired. */
+    idle?: boolean;
 }
 
 /** Heads a conversation brought in from a Claude Code or Codex session. */
@@ -236,8 +371,17 @@ export interface TurnPrompt {
     files?: FileChip[];
     /** Started by a slash command (/init, /review, custom commands). */
     command?: boolean;
+    /** Started by a schedule, not the user: what it is ("Scheduled (every 10m)"). */
+    scheduled?: string;
+    /** Started by an event the agent asked to be woken for (a watched pull request, a monitor), not by the user. */
+    wake?: boolean;
     /** Position of the prompt in the session's messages, when it can be rewound to. */
     index?: number;
+    /**
+     * Sent while a turn ran and joined it at its next step: the turn before ended for it, and this one carries
+     * on its work (the GUI keeps their work open together until the last of them ends).
+     */
+    steered?: boolean;
 }
 
 export interface Turn {
@@ -366,10 +510,23 @@ export interface TodoEntry {
 
 export type SessionStatus = "idle" | "running" | "waiting" | "error";
 
+/** One MCP resource as the composer's @ menu shows it; `mention` is what goes after the @. */
+export interface McpResourceInfo {
+    server: string;
+    uri: string;
+    name: string;
+    title?: string;
+    description?: string;
+    mention: string;
+}
+
 export interface McpStatus {
     name: string;
     status: McpServerStatus;
     tools: number;
+    /** Resources (and templates) and prompts it offers, when it offers any. */
+    resources?: number;
+    prompts?: number;
     error?: string;
     source: "settings" | "project";
     /** A project server's approval (no fingerprint: session.mcp has that). */
@@ -401,20 +558,69 @@ export interface PlanLink {
     /** What the branch started from, as the user named it (the commit when they didn't). */
     base?: string;
     at: number;
+    /** The plan it carried out: the planning session's ExitPlanMode call (PlanRef.id). Missing from older links. */
+    plan?: string;
 }
 export type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus };
 
 /**
  * A queued message: "steer" joins the running turn at its next step, "queue" waits for it to end,
- * "turn" must wait (images, files, commands), "held" came back after a restart and waits for the user.
+ * "turn" must wait (images, files, commands), "held" waits for the user: it came back after a restart, or the
+ * session's CLI account was removed (queuedWhy says so; picking an account sends it).
  */
 export type QueuedMode = "steer" | "queue" | "turn" | "held";
 
 /** What a message sent while a turn runs does (the followUpBehavior setting, or the opposite key). */
 export type FollowUpMode = "steer" | "queue";
+/** A schedule as a list shows it (src/agent/schedule.ts keeps the jobs). */
+export interface ScheduleInfo {
+    id: string;
+    kind: "loop" | "cron" | "resume";
+    prompt: string;
+    /** "every 10m", "weekdays at 9:00 AM", "once, Tue 21 Oct, 2:30 PM". */
+    when: string;
+    recurring: boolean;
+    durable: boolean;
+    paused: boolean;
+    nextAt?: number;
+    expiresAt?: number;
+    lastRunAt?: number;
+    runs: number;
+    /** Came due while the session was busy: runs as soon as it isn't. */
+    due: boolean;
+}
+
+/** A /goal set in the session (src/agent/goal.ts): it keeps working, turn after turn, until a check finds the condition holds. */
+export interface GoalState {
+    condition: string;
+    /** active: working or about to; checking: the check is running; waiting: on background tasks or a retry; paused: until the user's next message. */
+    state: "active" | "checking" | "waiting" | "paused";
+    /** When it was set (or restored), ms. */
+    since: number;
+    /** Turns checked so far. */
+    turns: number;
+    /** Tokens spent since it was set. */
+    tokens: number;
+    /** The last check's reason. */
+    lastReason?: string;
+    /** Why it's paused or waiting. */
+    note?: string;
+    /** When a retry is due (waiting), ms. */
+    retryAt?: number;
+    /** Who checks: a separate model, the working model's own report, or the agent CLI's own /goal (Claude Code, Codex). */
+    judge: "model" | "self" | "native";
+    /** judge "native": the CLI that keeps the goal ("Claude Code"), and whether it can be paused (Codex's can). */
+    by?: string;
+    canPause?: boolean;
+}
 
 export interface SessionState {
     accounts?: Record<string, string>;
+    /**
+     * The CLI (its provider id) whose account this session used was removed, and messages wait for the user to pick
+     * another (#410): the model picker opens on its accounts. Unset once one is picked, or nothing waits.
+     */
+    accountNeeded?: string;
     id: string;
     cwd: string;
     projectName: string;
@@ -432,8 +638,14 @@ export interface SessionState {
     status: SessionStatus;
     busy: boolean;
     /** The spinner line: what it's doing right now. */
-    activity?: { label: string; since: number; detail?: string };
+    activity?: { label: string; since: number; detail?: string; /** An idle compaction: what the user does next takes over from it. */ idle?: boolean };
     contextTokens: number;
+    /**
+     * Context, in tokens, at which this session compacts on its own: an agent CLI's auto-compact setting for
+     * this model and account (Claude Code's /autocompact window, Codex's model_auto_compact_token_limit), or
+     * Harness's own threshold. Absent when compaction is off here, or the CLI decides.
+     */
+    compactAt?: number;
     cost: number;
     /** Some usage had no known price: `cost` leaves it out (it isn't free). */
     costUnknown?: boolean;
@@ -447,18 +659,32 @@ export interface SessionState {
     queuedAttached?: string[];
     /** What each queued message will do (missing from older servers: all "steer"). */
     queuedModes?: QueuedMode[];
+    /** Why each queued message can't join a running turn ("" when it can): a command, or what it carries. */
+    queuedWhy?: string[];
     interactions: Interaction[];
     mcp: McpStatus[];
     /** Files this session's edit tools changed (the Changes panel). */
     filesChanged: number;
     /** Background shells started by the agent. */
-    shells: { id: string; command: string; running: boolean; exitCode: number | null; startedAt: number }[];
+    shells: { id: string; command: string; running: boolean; exitCode: number | null; startedAt: number; /** Started by Monitor: its lines wake the agent. */ monitor?: { description: string; events: number; expiresAt: number } }[];
+    /** What the agent is watching in the background (pull requests): each wakes it when there's news. */
+    watches?: WatchInfo[];
+    /**
+     * The session's background work, whoever runs it: an agent CLI's background sub-agents, shells and monitors,
+     * the tasks it delegated to other models, and the harness's own background shells and monitors. Running ones,
+     * and those that stopped when Harness quit (lost) until the agent is told. Missing from older servers.
+     */
+    backgroundTasks?: BackgroundTaskInfo[];
     plan?: PlanRef;
     planLinks?: PlanLink[];
     /** Forked from this session (its title then). */
     forkOf?: { id: string; title: string };
     /** The names of the secrets the user gave this session (never their values). */
     secrets: string[];
+    /** Its schedules (/loop, cron jobs, the resume after a usage limit), soonest first as the server keeps them. */
+    schedules: ScheduleInfo[];
+    /** The session's /goal, while one is set. */
+    goal?: GoalState;
 }
 
 export interface SessionSnapshot {
@@ -660,6 +886,28 @@ export interface WorktreeInfo {
     managed: boolean;
 }
 
+/** A sub-agent working in a worktree, by the paths its recent tool calls name. */
+export interface WorktreeAgent {
+    id: string;
+    /** The session whose sub-agent it is. */
+    sessionId: string;
+    description: string;
+    /** Waiting for an answer (a permission), not running. */
+    waiting: boolean;
+}
+
+/** One of a session's repository's worktrees, as the diff reader lists them to look at. */
+export interface SessionWorktreeInfo extends WorktreeInfo {
+    /** The running sub-agents of the sessions loaded in the server that work in it. */
+    agents?: WorktreeAgent[];
+    /** What `ahead` counts from: the branch the Branch view compares with by default. */
+    base?: string;
+    /** Commits on its HEAD that `base` doesn't have. */
+    ahead?: number;
+    /** When its HEAD commit was made (ms since the epoch). */
+    committedAt?: number;
+}
+
 /** Removed, or not yet: these ignored files (the first few of `total`) would be deleted with it. */
 export type RemoveWorktreeResult = { removed: true } | { removed: false; ignored: string[]; total: number; confirm: string };
 
@@ -777,6 +1025,10 @@ export interface AccountInfo {
     description?: string;
     email?: string;
     plan?: string;
+    /** Signed in with an API key: usage is billed to that key, so there's no plan to show. */
+    apiKey?: boolean;
+    /** A Harness-made account's folder keeps some entries of its own instead of linking Default's. */
+    sharing?: string;
 }
 
 export interface ProviderInfo {
@@ -824,6 +1076,8 @@ export interface CommandInfo {
     custom?: boolean;
     /** A skill (SKILL.md): runs as /name, and $name mentions it in a prompt. */
     skill?: boolean;
+    /** Answered without the model (/compact, /loop): a message with attachments is refused, as they'd be lost. */
+    noAttachments?: boolean;
 }
 
 /** One window of a plan's usage limits (five hours, a week), as an agent CLI reported it. */
@@ -837,6 +1091,12 @@ export interface LimitWindow {
     /** When it resets (ms since the epoch), when known. */
     resetsAt?: number;
     reached?: boolean;
+    /**
+     * Only on a window of another metered limit than the plan's own (a Codex model's): whether
+     * that limit's credits carry turns past it (PlanLimits.credits is the plan's own). False
+     * stops there, whatever the plan's credits.
+     */
+    credits?: boolean;
 }
 
 /** Where the user's plan stands with an agent CLI (Claude Code, Codex): per account, not per session. */
@@ -849,8 +1109,23 @@ export interface PlanLimits {
     reached?: boolean;
     /** When the reached limit resets (ms), when known. */
     resetsAt?: number;
+    /**
+     * Past a reached limit, turns go on, billed to credits: Codex's credits, Claude Code's extra
+     * usage. False when the CLI said they won't (none, or a turn stopped on the limit anyway);
+     * absent when it didn't say. A flag only: no balance or amount is ever kept.
+     */
+    credits?: boolean;
     /** When it was reported (ms). */
     at: number;
+}
+
+/**
+ * A reached limit that turns go on past, using credits: the plan's credits
+ * carry them, and no reached window (`reachedNow`, by index: the meter's own
+ * view of which still are) is another limit's that has none.
+ */
+export function usingCredits(l: PlanLimits, reached: boolean, reachedNow: (i: number) => boolean = (i) => Boolean(l.windows[i]?.reached)): boolean {
+    return reached && l.credits === true && !l.windows.some((w, i) => w.credits === false && reachedNow(i));
 }
 
 /** The ranges the Usage view offers, in days. */
@@ -918,6 +1193,39 @@ export interface UsageSummary {
     truncated?: string;
 }
 
+/** A commit on main the installed desktop app doesn't have yet. */
+export interface AppUpdateChange {
+    hash: string;
+    subject: string;
+}
+
+/** Whether the desktop app, built from a checkout (scripts/update-desktop.ts), is behind origin/main, and its update if one is running. */
+export interface AppUpdateInfo {
+    /** Why this copy can't update itself (not the installed desktop app, no record of the checkout it came from); nothing else is set. */
+    unavailable?: string;
+    /** The installed build's commit, short. */
+    installed?: string;
+    /** main's latest commit when last checked, short. */
+    latest?: string;
+    /** main has something the installed build doesn't. */
+    available: boolean;
+    /** Changes on main since the installed build, newest first: the first 20 of `behind`. */
+    changes: AppUpdateChange[];
+    behind: number;
+    /** What's odd about the installed build, when there's no plain list: built with uncommitted changes, or from a branch. */
+    note?: string;
+    checkedAt?: number;
+    checking: boolean;
+    /** An update running: since when, and the last line it printed. `restarting`: built and installed, Harness restarts next. */
+    updating?: { startedAt: number; line: string; restarting: boolean };
+    /** The last check failed (couldn't fetch main, say): the rest is as of the fetch before. */
+    error?: string;
+    /** The last update failed, or installed without the app restarting: what happened. Cleared when one starts. */
+    failed?: string;
+    /** The last update's output. */
+    log?: string;
+}
+
 export interface RewindTargetInfo {
     index: number;
     text: string;
@@ -964,6 +1272,8 @@ export interface GitFileDiff extends FileDiff {
     deferred?: boolean;
     /** Git runs this filter driver on the file; its diff, if any, is of the form stored in git. */
     filter?: string;
+    /** `path` hides a registered value: send this instead of it to act on the file. */
+    pathToken?: string;
 }
 
 /** What git says changed in a session's folder, whoever changed it. */
@@ -979,16 +1289,42 @@ export interface GitChangesInfo extends ChangesInfo {
     snapshotAvailable?: boolean;
     incomplete?: boolean;
     notes?: string[];
-    head?: { branch?: string; sha?: string };
+    /** `branchToken`: the branch's name hides a registered value; send it (GitCommitHead) instead of the name. */
+    head?: { branch?: string; sha?: string; branchToken?: string };
     /** Branch scope: the base branch and the commit this branch left it at. */
-    base?: { ref: string; sha: string };
+    base?: { ref: string; sha: string; refToken?: string };
     /** Branches to compare with, most recently changed first (local and remote, capped). */
     bases: string[];
+    /** Beside `bases`, when a name there hides a registered value: its handle (send it as `baseToken`), else null. */
+    baseTokens?: (string | null)[];
     /** What Harness treats as the main branch. */
     defaultBase?: string;
+    defaultBaseToken?: string;
     /** Changed files not listed; `moreAtLeast` when even the count was cut short. */
     more: number;
     moreAtLeast?: boolean;
+    /** A turn's: the other worktrees of the repository it worked in (TurnPlace), as they were when it ended. */
+    places?: TurnPlace[];
+}
+
+/**
+ * Another worktree of the session's repository that a turn worked in (it changed, or appeared, during the
+ * turn): its branch against the main branch, committed or not, as the diff reader shows it there, when the
+ * turn ended. Counts are missing when they couldn't be read in time.
+ */
+export interface TurnPlace {
+    /** The worktree's folder, as `git worktree list` gives it. */
+    path: string;
+    branch?: string;
+    /** The branch it's compared with. */
+    base?: string;
+    files?: number;
+    added?: number;
+    removed?: number;
+    /** Commits on it since it left the base. */
+    commits?: number;
+    /** The files with the most lines changed, the most first. `pathToken`: the name hides a registered value (GitFileDiff.pathToken). */
+    top?: { path: string; change: "added" | "modified" | "deleted"; added: number; removed: number; pathToken?: string }[];
 }
 
 /** A confirmation snapshot; the server rechecks the destination and HEAD before publishing. */
@@ -1020,6 +1356,15 @@ export interface GitPublishRequest {
     body?: string;
     draft?: boolean;
 }
+export interface WatchInfo {
+    id: string;
+    /** "pull-request". */
+    kind: string;
+    label: string;
+    url?: string;
+    detail?: string;
+}
+
 export interface GitPrInfo {
     number: number;
     url: string;
@@ -1030,6 +1375,8 @@ export interface GitPrInfo {
 
 export interface GitCommitHead {
     branch?: string;
+    /** Instead of `branch`, when its name was shown redacted (GitChangesInfo.head.branchToken). */
+    branchToken?: string;
     detached: boolean;
     /** Full commit SHA, required for a detached HEAD snapshot. */
     sha?: string;
@@ -1056,7 +1403,11 @@ export interface GuiSettings {
     defaultMode?: PermissionModeId;
     showThinking?: boolean;
     autoCompact?: boolean;
+    /** Compact long conversations left idle (true, the default: one-hour caches; "always": five-minute ones too). */
+    idleCompaction?: boolean | "always";
     webSearch?: string;
+    /** The Browser tools and pane (false turns them off; true, the default, is stored as unset). */
+    browser?: boolean;
     allowBypass?: boolean;
     /** A message sent while a turn runs: steer it (default) or wait for it to end. */
     followUpBehavior?: FollowUpMode;
@@ -1102,9 +1453,62 @@ export interface ProjectScripts {
 }
 
 // ---------------------------------------------------------------------------
+// The browser (src/browser): a session's tabs, seen and driven from the GUI's Browser pane.
+
+/** The modifier keys held during an input, as the bits of a BrowserInput's `modifiers` (Input.dispatchKeyEvent's). */
+export const BROWSER_MODIFIERS = { Alt: 1, Control: 2, Meta: 4, Shift: 8 } as const;
+
+/** What a person did in the pane, in the page's CSS pixels. */
+export type BrowserInput =
+    /** `buttons`: MouseEvent.buttons (left 1, right 2, middle 4) held after the event. */
+    | { kind: "mouse"; type: "move" | "down" | "up"; x: number; y: number; button?: "left" | "middle" | "right"; buttons?: number; clickCount?: number; modifiers?: number }
+    | { kind: "wheel"; x: number; y: number; deltaX: number; deltaY: number; modifiers?: number }
+    | { kind: "key"; type: "down" | "up"; key: string; code: string; modifiers?: number }
+    /** Text as it is (a paste, an input method's result), not keys. */
+    | { kind: "text"; text: string };
+
+/** Who is driving a tab: the agent, the person watching, or neither yet. */
+export type BrowserOwner = "agent" | "human" | "none";
+
+export interface BrowserTabInfo {
+    id: number;
+    title: string;
+    url: string;
+    loading: boolean;
+    owner: BrowserOwner;
+    canGoBack: boolean;
+    canGoForward: boolean;
+    crashed: boolean;
+    /** A confirm or prompt waiting for an answer. */
+    dialog?: { type: string; message: string; defaultPrompt?: string };
+}
+
+/**
+ * Where a session's browser stands. `idle`: nothing started yet (it starts with the first page).
+ * `unavailable`: there's no browser to start, and `error` says how to fix that. `crashed`: it ended unexpectedly;
+ * the next page starts a new one.
+ */
+export interface BrowserState {
+    status: "idle" | "starting" | "ready" | "unavailable" | "crashed";
+    error?: string;
+    tabs: BrowserTabInfo[];
+    active?: number;
+}
+
+/** What the pane's address bar and tab strip can ask for. */
+export type BrowserCommand = "goto" | "back" | "forward" | "reload" | "new_tab" | "switch_tab" | "close_tab";
+
+// ---------------------------------------------------------------------------
 // Events
 
 export type ServerEvent =
+    /** A session's browser changed: its tabs, who drives them, or whether it runs (sent to the windows that have the session open). */
+    | { type: "browser.state"; sessionId: string; state: BrowserState }
+    /**
+     * A frame of the current tab, for a window watching it (browser.watch), sent after it acknowledges receipt of the last (browser.ack).
+     * `data`: a JPEG frame, base64 on the legacy RPC connection; `width` and `height`: the page's size in CSS pixels, which a click's coordinates are in.
+     */
+    | { type: "browser.frame"; sessionId: string; frameId: string; tab: number; data: string; width: number; height: number }
     /**
      * `pos`: where in the shell's output this ends (the window gives it back to
      * terminal.attach). `reset`: the window's screen is to be reset before `data`,
@@ -1119,7 +1523,17 @@ export type ServerEvent =
     | { type: "sessions.remove"; id: string }
     /** Its runtime was closed under the window (a delete that failed): open it again for a fresh snapshot, keeping the draft and view. */
     | { type: "session.reload"; sessionId: string }
-    | { type: "notify"; sessionId: string; kind: "done" | "permission" | "question" | "plan" | "error"; title: string; body: string }
+    | {
+          type: "notify";
+          sessionId: string;
+          /** background: a background task ended on its own (task says which, and how). */
+          kind: "done" | "permission" | "question" | "plan" | "error" | "background";
+          title: string;
+          body: string;
+          /** Names what it's about: one notification per tag (a background task's). */
+          tag?: string;
+          task?: { id: string; outcome: "done" | "failed" | "stopped" };
+      }
     | { type: "toast"; level: "info" | "warn" | "error"; message: string }
     /** What goes back into the session's input box (unsent messages after an interrupt, a rewound prompt). */
     | { type: "draft"; sessionId: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] }
@@ -1127,7 +1541,11 @@ export type ServerEvent =
     /** A project's scripts changed (in any window); `project` is ProjectScripts.project. */
     | { type: "scripts.changed"; project: string }
     /** An agent CLI reported where the user's plan stands. */
-    | { type: "limits"; limits: PlanLimits };
+    | { type: "limits"; limits: PlanLimits }
+    /** The keybindings file was saved, created or deleted. */
+    | { type: "keybindings.changed"; keybindings: KeybindingsFile }
+    /** The desktop app's update state changed: a check finished, an update started, moved on or ended. */
+    | { type: "app.update"; info: AppUpdateInfo };
 
 // ---------------------------------------------------------------------------
 // Requests
@@ -1154,6 +1572,18 @@ export interface TerminalInfo {
     exitCode?: number;
 }
 
+/**
+ * The keybindings file as it is on disk (`text` undefined: there's none).
+ * Each window builds its own keymap from it: what `mod` means depends on the
+ * computer the window runs on.
+ */
+export interface KeybindingsFile {
+    path: string;
+    text?: string;
+    /** It exists but couldn't be read. */
+    error?: string;
+}
+
 export interface HelloResult {
     version: string;
     protocol: number;
@@ -1174,6 +1604,24 @@ export interface Methods {
     "terminal.ack": { params: { id: string; chars: number }; result: null };
     "terminal.resize": { params: { id: string; cols: number; rows: number }; result: null };
     "terminal.close": { params: { id: string }; result: null };
+    /** The session's browser: where it stands, with its tabs. It starts with the first page, not with this. */
+    "browser.state": { params: { id: string }; result: BrowserState };
+    /**
+     * The window shows the session's current tab, in a pane of this size (CSS pixels; `scale`: device pixels per CSS pixel):
+     * the page takes that size, and frames come as browser.frame until browser.unwatch. Another call with a new size resizes.
+     */
+    "browser.watch": { params: { id: string; width: number; height: number; scale: number }; result: BrowserState };
+    "browser.unwatch": { params: { id: string }; result: null };
+    /** The window has received this frame; decoding independently retains only the latest waiting picture. */
+    "browser.ack": { params: { id: string; frameId: string }; result: null };
+    /** What the person did in the pane; it takes the tab from the agent (a pointer only moving doesn't). */
+    "browser.input": { params: { id: string; tab?: number; input: BrowserInput }; result: null };
+    /** The address bar and the tab strip: the person opening or leaving a page takes the tab. */
+    "browser.command": { params: { id: string; command: BrowserCommand; url?: string; tab?: number }; result: BrowserState };
+    /** The person gives the tab back to the agent. */
+    "browser.handBack": { params: { id: string; tab?: number }; result: null };
+    /** The person answers a confirm or prompt the page is showing. */
+    "browser.dialog": { params: { id: string; accept: boolean; text?: string; tab?: number }; result: null };
     /** After scripts.run, once the window has sent what was typed while it opened: the script's command may be typed now. */
     "terminal.arm": { params: { id: string }; result: null };
     /**
@@ -1191,6 +1639,9 @@ export interface Methods {
     /** Login terminals clear the screen and never replay output, regardless of `have`. */
     "terminal.attach": { params: { id: string; have?: number }; result: TerminalInfo };
     hello: { params: { client?: string }; result: HelloResult };
+    "keybindings.get": { params: Record<string, never>; result: KeybindingsFile };
+    /** Creates the keybindings file from the template when there's none; true when it did. */
+    "keybindings.create": { params: Record<string, never>; result: { created: boolean; path: string } };
     "scripts.list": { params: { cwd: string }; result: ProjectScripts };
     /** Creates a script, or updates the one with `id`. */
     "scripts.save": { params: { cwd: string; id?: string; name: string; command: string; icon?: ScriptIcon | null; runOnWorktreeCreate?: boolean }; result: ProjectScript };
@@ -1218,6 +1669,8 @@ export interface Methods {
     "session.setModel": { params: { id: string; ref: string; persist?: boolean }; result: null };
     "session.setMode": { params: { id: string; mode: PermissionModeId }; result: null };
     "session.setFastMode": { params: { id: string; enabled: boolean }; result: null };
+    /** The window's input box for the session has an unsent message (`present`), or no longer has: one being written holds off compacting while idle. */
+    "session.draft": { params: { id: string; present: boolean; /** The Rewind dialog open on it, rather than a message being written. */ dialog?: boolean }; result: null };
     "session.setEffort": { params: { id: string; effort: EffortLevel }; result: null };
     "session.rename": { params: { id: string; title: string }; result: null };
     "session.compact": { params: { id: string; instructions?: string }; result: null };
@@ -1228,12 +1681,20 @@ export interface Methods {
     /** A new session with the conversation up to the end of the turn of the prompt at `index` (TurnPrompt.index, or Turn.pos.index for imported prompts), which the window showed as turn `turn` with `text`. */
     "session.fork": { params: { id: string; index: number; text: string; turn: string }; result: SessionSnapshot };
     "session.changes": { params: { id: string }; result: ChangesInfo };
-    "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; path?: string; turnId?: number }; result: GitChangesInfo };
+    /**
+     * `worktree`: another worktree of the session's repository to look at (a path `session.worktrees` lists);
+     * any other folder is refused. Turn scopes are the session's own folder's only.
+     */
+    /** `pathToken` / `baseToken`: handles from an earlier listing (GitFileDiff.pathToken, baseTokens), instead of `path` / `base`. */
+    "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; baseToken?: string; path?: string; pathToken?: string; turnId?: number; worktree?: string }; result: GitChangesInfo };
+    /** The worktrees of the repository the session's folder is in (none outside one), with their branch's lead on the main branch. */
+    "session.worktrees": { params: { id: string }; result: SessionWorktreeInfo[] };
     "session.gitPublishInfo": { params: { id: string }; result: GitPublishInfo };
     "session.gitPublish": { params: { id: string } & GitPublishRequest; result: { pr?: GitPrInfo } };
     "session.gitPrState": { params: { id: string }; result: { pr?: GitPrInfo } };
-    "session.gitCommit": { params: { id: string; paths: string[]; message: string; expectedHead?: GitCommitHead }; result: GitCommitInfo };
-    "session.gitCommitMessage": { params: { id: string; paths: string[] }; result: GitCommitMessageInfo };
+    /** `pathTokens`: files whose names were shown redacted (GitFileDiff.pathToken), with `paths` for the rest. */
+    "session.gitCommit": { params: { id: string; paths: string[]; pathTokens?: string[]; message: string; expectedHead?: GitCommitHead }; result: GitCommitInfo };
+    "session.gitCommitMessage": { params: { id: string; paths: string[]; pathTokens?: string[] }; result: GitCommitMessageInfo };
     "session.pin": { params: { id: string; pinned: boolean }; result: null };
     /**
      * With `removeWorktree`, the managed worktree the session works in goes too (its branch stays), when nothing
@@ -1252,6 +1713,13 @@ export interface Methods {
     "session.delete": { params: { id: string }; result: null };
     "session.restore": { params: { id: string }; result: null };
     "session.killShell": { params: { id: string; shellId: string }; result: null };
+    /** Stop background tasks (SessionState.backgroundTasks) by id, or every one running: how each went. */
+    "session.stopBackground": { params: { id: string; ids?: string[] }; result: { results: Record<string, BackgroundStopResult> } };
+    /** Clear the finished tasks from the Background panel. */
+    "session.clearBackground": { params: { id: string }; result: null };
+    /** Restart the session's agent CLI process (/tasks restart): what it runs in the background stops. */
+    "session.restartCli": { params: { id: string }; result: null };
+    "session.stopWatch": { params: { id: string; watchId: string }; result: null };
     /** New shells no longer get this secret. */
     "session.forgetSecret": { params: { id: string; name: string }; result: null };
     /** Stop a delegated task (by its sub-agent's id), or every one still running. Task sub-agents stop with the turn. */
@@ -1260,6 +1728,8 @@ export interface Methods {
     "session.toolOutput": { params: { id: string; toolId: string }; result: { output: string } };
     /** The images a prompt carried, by its turn's `pos` (TurnPrompt only says how many). */
     "session.promptImages": { params: { id: string; seg: number; index: number }; result: { images: { mediaType: string; data: string }[] } };
+    /** One of the session's schedules: pause, resume, run now, or delete. `found` false: it's gone already. */
+    "session.schedule": { params: { id: string; scheduleId: string; action: "pause" | "resume" | "run" | "delete" }; result: { found: boolean } };
     /** By the message's id (queueIds). With `edit`, the message comes back to put in the input box, images and files too. */
     "session.dequeue": { params: { id: string; queueId: number; edit?: boolean }; result: { removed: boolean; text?: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } };
     /** "Send now": steer the running turn with it, or run it now if none is running. `sent` false: it had already gone. */
@@ -1310,19 +1780,32 @@ export interface Methods {
      * server's machine. The path is resolved against the session's folder (or
      * `cwd`, a project open in Harness) and must be inside its workspace roots.
      */
-    "fs.open": { params: { sessionId?: string; cwd?: string; path: string; line?: number; col?: number; folder?: boolean }; result: { editor: string } };
+    /** `gitToken`: a file a Git listing showed redacted (GitFileDiff.pathToken), instead of `path`. */
+    "fs.open": { params: { sessionId?: string; cwd?: string; path?: string; gitToken?: string; line?: number; col?: number; folder?: boolean }; result: { editor: string } };
     /** Which of these paths (from agent text) are files inside the session's roots: each one's absolute path, or null. At most 200. */
     "fs.exists": { params: { sessionId?: string; cwd?: string; paths: string[] }; result: (string | null)[] };
     /** A PNG, JPEG, GIF or WebP file anywhere on this machine (judged by its bytes; a relative path is the session's), for showing an image the model's reply names. */
     "fs.image": { params: { sessionId?: string; cwd?: string; path: string }; result: { mediaType: string; data: string } };
     /** Uses the cwd's default provider unless given; an optional command name is checked before creating a session. */
     "commands.list": { params: { cwd: string; provider?: string; command?: string }; result: CommandInfo[] };
+    /** Plugins and marketplaces, with each plugin's state for `cwd`'s folder (without one: the user's own settings only). */
+    "plugins.list": { params: { cwd?: string }; result: PluginsInfo };
+    /** Change plugins or marketplaces. Fetching (git, npm) happens before it answers; every open folder reloads after. */
+    "plugins.action": { params: PluginActionParams; result: PluginsInfo & { message: string } };
+    /** A plugin maker's logo: their GitHub account's avatar (fetched by the server, as the GUI loads no outside images), or null. */
+    "plugins.logo": { params: { owner: string }; result: { mediaType: string; data: string } | null };
     "settings.get": { params: { cwd?: string }; result: GuiSettings };
     "settings.update": { params: { patch: GuiSettings }; result: GuiSettings };
-    /** The agent CLIs' plan limits known so far (since the server started). */
+    /** The agent CLIs' plan limits known so far: the last ones saved before the server started, then any newer report. */
     "limits.get": { params: Record<string, never>; result: PlanLimits[] };
     /** Tokens and cost per provider and model, from the session transcripts. */
     "usage.summary": { params: { days: UsageDays }; result: UsageSummary };
+    /** Whether the desktop app is behind origin/main, as of the last check. */
+    "app.update.get": { params: Record<string, never>; result: AppUpdateInfo };
+    /** Fetch origin/main now and compare it with the installed build. */
+    "app.update.check": { params: Record<string, never>; result: AppUpdateInfo };
+    /** Build and install main (scripts/update-desktop.ts), then restart the app. It runs on its own: progress comes as app.update events. */
+    "app.update.start": { params: Record<string, never>; result: AppUpdateInfo };
     /**
      * The session's folder's MCP servers, read again from settings and
      * .mcp.json (so what the terminal's /mcp did shows), each with what it
@@ -1335,9 +1818,34 @@ export interface Methods {
     "session.mcpRevoke": { params: { id: string; name: string }; result: McpListInfo };
     /** Read its configuration again and start it afresh, if it may run (a changed .mcp.json server asks again instead). */
     "session.mcpReconnect": { params: { id: string; name: string }; result: McpListInfo };
+    /**
+     * Start signing in to a remote server (OAuth): answers with the link to
+     * open once it's ready. The sign-in finishes in the browser; the server's
+     * status follows in session events, and a failure comes as a notice.
+     */
+    "session.mcpSignIn": { params: { id: string; name: string }; result: { url: string } };
+    /** Forget a remote server's stored sign-in; it asks to sign in again. */
+    "session.mcpSignOut": { params: { id: string; name: string }; result: McpListInfo };
+    /** Connected servers' resources matching `query`, for the composer's @ menu. */
+    "session.mcpResources": { params: { id: string; query: string }; result: McpResourceInfo[] };
 }
 
 export type Method = keyof Methods;
+
+export type { PluginInfo, PluginListing, PluginScope, MarketplaceInfo as PluginMarketplaceInfo } from "../plugins/info";
+
+export interface PluginsInfo extends PluginListing {
+    /** The folder the states are for, and whether its project settings count. */
+    cwd?: string;
+    trusted: boolean;
+}
+
+export type PluginActionParams =
+    | { action: "install"; id: string; scope: PluginScope; cwd?: string }
+    | { action: "uninstall" | "enable" | "disable"; id: string; scope?: PluginScope; cwd?: string }
+    | { action: "update"; id?: string; cwd?: string }
+    | { action: "marketplaceAdd"; source: string; cwd?: string }
+    | { action: "marketplaceRemove" | "marketplaceUpdate"; name: string; cwd?: string };
 export type ParamsOf<M extends Method> = Methods[M]["params"];
 export type ResultOf<M extends Method> = Methods[M]["result"];
 

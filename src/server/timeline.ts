@@ -63,6 +63,16 @@ export function wireReplacer(_key: string, value: unknown): unknown {
     return value === undefined ? null : value;
 }
 
+/**
+ * A session state as it arrives in a snapshot: its unset fields are null on the wire (wireReplacer),
+ * and unset (undefined) for everything that reads them, as in `assign`.
+ */
+export function fromWireState(state: SessionState): SessionState {
+    const out = { ...state } as Record<string, unknown>;
+    for (const [k, v] of Object.entries(out)) if (v === null) out[k] = undefined;
+    return out as unknown as SessionState;
+}
+
 export function applyOp(view: SessionView, op: SessionOp): void {
     switch (op.op) {
         case "state":

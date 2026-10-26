@@ -16,9 +16,6 @@ export const os: Os = (() => {
 
 export const mod = os === "macos" ? "⌘" : "Ctrl";
 export const isMod = (e: KeyboardEvent | MouseEvent) => (os === "macos" ? e.metaKey : e.ctrlKey);
-/** Ctrl+` everywhere (macOS keeps ⌘` for cycling windows; it works too where the system leaves it alone). */
-export const isTerminalToggle = (e: KeyboardEvent) => (e.code === "Backquote" || e.key === "`") && !e.altKey && (e.ctrlKey || isMod(e));
-export const terminalShortcut = "Ctrl+`";
 
 const TOKEN_KEY = "harness.token";
 const WINDOW_KEY = "harness.window";
@@ -51,6 +48,28 @@ async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<T>(cmd, args);
 }
+
+/**
+ * Runs a window command at once, inside the event that asks for it: moving the window needs the
+ * press still current, so it can't wait for the API module to load (tauriInvoke's import).
+ */
+export function windowCommand(cmd: string): Promise<unknown> {
+    return (window as unknown as { __TAURI_INTERNALS__: { invoke(cmd: string): Promise<unknown> } }).__TAURI_INTERNALS__.invoke(cmd);
+}
+
+let windowShown = !isTauri;
+/**
+ * The desktop window is created hidden, so its glass never shows only the desktop behind it:
+ * the app shows it once the first screen is drawn (or after a while, whatever there is).
+ */
+export function showWindow() {
+    if (windowShown) return;
+    windowShown = true;
+    void tauriInvoke("window_ready").catch(() => undefined);
+}
+
+/** Whether the window is on screen yet (in a browser, it always is). */
+export const isWindowShown = () => windowShown;
 
 /** How to reach the server: ask the desktop app, use the dev server's settings, or trade the link's code. */
 export async function credentials(): Promise<Credentials | undefined> {
@@ -148,12 +167,17 @@ export async function copyText(text: string): Promise<boolean> {
 let notifyAllowed: boolean | undefined;
 
 /** A system notification, if the user allows them. */
-export async function notify(title: string, body: string, onClick?: () => void) {
+/**
+ * A desktop notification. `tag` names what it's about: a browser replaces an earlier one with the same tag
+ * rather than adding another. The desktop app passes it on as the notification's id and thread, which only
+ * Linux uses (tauri-plugin-notification 2.7 ignores both on macOS and Windows): callers gather bursts instead.
+ */
+export async function notify(title: string, body: string, onClick?: () => void, opts: { tag?: string } = {}) {
     if (isTauri) {
         try {
             const n = await import("@tauri-apps/plugin-notification");
             if (notifyAllowed === undefined) notifyAllowed = (await n.isPermissionGranted()) || (await n.requestPermission()) === "granted";
-            if (notifyAllowed) n.sendNotification({ title, body });
+            if (notifyAllowed) n.sendNotification({ title, body, ...(opts.tag ? { id: tagId(opts.tag), group: opts.tag } : {}) });
         } catch {
             // notifications unavailable
         }
@@ -162,12 +186,19 @@ export async function notify(title: string, body: string, onClick?: () => void) 
     if (typeof Notification === "undefined") return;
     if (Notification.permission === "default") await Notification.requestPermission().catch(() => undefined);
     if (Notification.permission !== "granted") return;
-    const note = new Notification(title, { body, silent: false });
+    const note = new Notification(title, { body, silent: false, ...(opts.tag ? { tag: opts.tag } : {}) });
     note.onclick = () => {
         window.focus();
         onClick?.();
         note.close();
     };
+}
+
+/** A tag as a notification id (a 32-bit integer). */
+export function tagId(tag: string): number {
+    let h = 0;
+    for (let i = 0; i < tag.length; i++) h = (Math.imul(h, 31) + tag.charCodeAt(i)) | 0;
+    return h;
 }
 
 /** Match the native window chrome (title bar, traffic lights) to the app's light or dark theme. */

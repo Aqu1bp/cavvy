@@ -8,16 +8,21 @@ import { ArrowLeft, Bot, ChevronRight, CornerDownLeft, CornerLeftDown } from "lu
 import type { AgentRun, Block, NoticeBlock, TextBlock, ThinkingBlock } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { newSession, stopAgent } from "../state/actions";
-import { setAgentFocus } from "../state/ui";
+import { setAgentFocus, setDockHeight } from "../state/ui";
 import { clock, duration, plural } from "../lib/format";
 import { now } from "../lib/clock";
-import { ActivityGroup, groupBlocks, shortModelRef, type Item } from "./blocks/Activity";
+import { ActivityGroup, CardFoldsProvider, groupBlocks, Thinking, type Item } from "./blocks/Activity";
+import { shortModelRef } from "../lib/tool-words";
 import { Markdown } from "./blocks/Markdown";
 import { Crumb, CrumbSep, sessionTitle, TitleBar } from "./Header";
 import { Monogram } from "./Sidebar";
-import { Narration, Notice, Thinking } from "./TurnView";
+import { Narration } from "./TurnView";
+import { Notice } from "./blocks/Notices";
 import { InteractionTab } from "./InteractionDock";
+import { ErrorCards } from "./ErrorCards";
 import { ProviderIcon } from "./ui/ProviderIcon";
+import { AgentMark } from "./ui/AgentMark";
+import { agentProvider, agentStep } from "../lib/agent-marks";
 
 const live = (a: AgentRun) => a.status === "running" || a.status === "waiting";
 
@@ -59,7 +64,7 @@ function Log(p: { agent: AgentRun; agents: AgentRun[]; items: Item[]; lastText?:
         <Index each={p.items}>
             {(it) => (
                 <Switch>
-                    <Match when={it().kind === "activity" && (it() as Extract<Item, { kind: "activity" }>)}>{(g) => <ActivityGroup tools={g().tools} steps={g().steps} turnRunning={running()} agents={own()} />}</Match>
+                    <Match when={it().kind === "activity" && (it() as Extract<Item, { kind: "activity" }>)}>{(g) => <ActivityGroup tools={g().tools} steps={g().steps} card={g().card} turnRunning={running()} agents={own()} />}</Match>
                     <Match when={it().kind === "block" && (it() as { block: Block }).block}>
                         {(b) => (
                             <Switch>
@@ -101,16 +106,27 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
     const items = createMemo(() => groupBlocks(!live(a()) && lastText() && result() === lastText()!.text.trim() ? a().blocks.filter((b) => b.id !== lastText()!.id) : a().blocks));
     const showWork = () => live(a()) || unfolded();
     const model = () => (a().model ? shortModelRef(a().model) : (st().model?.name ?? "Session model"));
-    const provider = () => (a().model ?? st().model?.ref)?.split(":")[0];
+    const provider = () => agentProvider(a(), st().model?.provider, p.handle.view.agents);
+    /** What it's doing, in a few words; the whole call in the tooltip. */
+    const step = () => agentStep(a());
     /** What it's waiting on you for (its own sub-agents' requests too): answered here as in the session. */
     const asks = () => st().interactions.filter((i) => i.kind === "permission" && i.agentId !== undefined && within(p.handle.view.agents, i.agentId, a().id));
-    // The transcript keeps room at its end for the dock, which grows while it asks.
-    let stage: HTMLDivElement | undefined;
+    // The transcript keeps room at its end for the dock, which grows while it asks. (--dock-h goes on
+    // the box that reads it: not inherited, and not passed down with `inherit`; stage.css.) A floating
+    // inspector or diff reader ends above it, as in the session (App.tsx SessionView).
     let dock: HTMLDivElement | undefined;
+    const [dockH, setDockH] = createSignal(72);
     onMount(() => {
-        const ro = new ResizeObserver(() => stage?.style.setProperty("--dock-h", `${dock?.offsetHeight ?? 0}px`));
+        const ro = new ResizeObserver(() => {
+            const h = dock?.offsetHeight ?? 0;
+            setDockH(h);
+            setDockHeight(h);
+        });
         if (dock) ro.observe(dock);
-        onCleanup(() => ro.disconnect());
+        onCleanup(() => {
+            ro.disconnect();
+            setDockHeight(0);
+        });
     });
 
     return (
@@ -141,7 +157,7 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                     <span class="truncate">{a().description || "Sub-agent"}</span>
                 </span>
             </TitleBar>
-            <div ref={stage} class="stage" style={{ "--dock-h": "72px" }}>
+            <div class="stage">
                 <div class="transcript-wrap">
                     <div class="transcript-fade" />
                     <section class="transcript" aria-label="Sub-agent transcript">
@@ -166,27 +182,29 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                                     when={live(a())}
                                     fallback={
                                         <Show when={items().length}>
-                                            <button class="fold" aria-expanded={unfolded()} onClick={() => setUnfolded(!unfolded())}>
-                                                Worked for <span class="num">{elapsed(a())}</span>
+                                            <button class="fold acts-h" aria-expanded={unfolded()} onClick={() => setUnfolded(!unfolded())}>
                                                 <ChevronRight size={14} class="chev" />
+                                                <span>
+                                                    Worked for <span class="num">{elapsed(a())}</span>
+                                                </span>
                                             </button>
-                                            <div class="rule" />
                                         </Show>
                                     }
                                 >
                                     <div class="live-head">
-                                        <Show when={a().status === "waiting"} fallback={<span class="shimmer num live-label">{a().activity && a().activity !== "Working" ? a().activity : `Working for ${elapsed(a())}`}</span>}>
+                                        <Show when={a().status === "waiting"} fallback={<span class="shimmer num live-label" title={step()?.full}>{step() && step()!.text !== "Working" ? step()!.text : `Working for ${elapsed(a())}`}</span>}>
                                             <span class="tone-warn live-label">{asks().length ? "Waiting for you" : "Waiting for you. Answer in the parent session."}</span>
                                         </Show>
                                     </div>
-                                    <div class="rule" />
                                 </Show>
                                 <Show when={a().dropped && showWork()}>
                                     <div class="agent-dropped">{plural(a().dropped!, "earlier step")} not shown</div>
                                 </Show>
                                 <Show when={showWork()}>
                                     <div class="worklog">
-                                        <Log agent={a()} agents={p.handle.view.agents} items={items()} lastText={lastText()?.id} />
+                                        <CardFoldsProvider sessionId={p.handle.id}>
+                                            <Log agent={a()} agents={p.handle.view.agents} items={items()} lastText={lastText()?.id} />
+                                        </CardFoldsProvider>
                                     </div>
                                 </Show>
                                 <Show when={a().replayed && !a().blocks.length}>
@@ -199,18 +217,19 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                                     </button>
                                 </Show>
                             </div>
-                            <div class="transcript-end" />
+                            <div class="transcript-end" style={{ "--dock-h": `${dockH()}px` }} />
                         </div>
                     </section>
                 </div>
                 <div class="composer-dock" ref={dock}>
                     <div class="composer-col">
+                        <ErrorCards place="composer" />
                         <Show when={asks().length}>
                             <InteractionTab sessionId={p.handle.id} items={asks()} />
                         </Show>
-                        <div class="agent-bar" role="status">
+                        <div class="agent-bar glass" role="status">
                             <span class="av">
-                                <Bot size={14} />
+                                <AgentMark provider={provider()} />
                                 <span class={`nd st-${a().status}`} />
                             </span>
                             <span class="agent-bar-text">
@@ -221,9 +240,9 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                             <span class="agent-bar-model truncate" title={a().model ?? st().model?.ref}>
                                 <Show when={provider()}>{(id) => <ProviderIcon id={id()} size={14} />}</Show> {model()}<Show when={a().effort}>{(effort) => ` · ${effort()} effort`}</Show>
                             </span>
-                            <span class="vs" aria-hidden="true" />
-                            <button class="ctl back" onClick={back} title={parent() ? `Back to ${parentName()} (Esc)` : "Back to session (Esc)"}>
-                                <ArrowLeft size={16} /> {parent() ? "Back" : "Back to session"}
+                            <span class="agent-sep" aria-hidden="true" />
+                            <button class="agent-back" onClick={back} title={parent() ? `Back to ${parentName()} (Esc)` : "Back to session (Esc)"}>
+                                <ArrowLeft size={15} /> {parent() ? "Back" : "Back to session"}
                             </button>
                             <Show when={live(a()) && a().taskId}>
                                 <button class="stop-btn" title="Stop this agent" aria-label="Stop this agent" onClick={() => void stopAgent(p.handle.id, a().id)}>

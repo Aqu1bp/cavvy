@@ -7,6 +7,7 @@
 //   harness auth add|list|remove manage API keys
 //   harness models               combined model list from every provider
 //   harness mcp list|add|remove  manage MCP servers
+//   harness plugin …             install and manage plugins and marketplaces
 //   harness gui | serve          the desktop/browser GUI (see src/server/)
 
 import { basename, dirname, join, resolve } from "path";
@@ -14,9 +15,9 @@ import { existsSync, readFileSync } from "fs";
 import { APP_NAME, APP_TITLE, APP_VERSION, harnessHome, paths } from "./config/paths";
 import { loadHarnessEnv, preloadKeys, getKey, setKey, removeKey, storageDescription } from "./auth/credentials";
 import { detectKeyProvider, validateKey } from "./auth/detect";
-import { EFFORT_LEVELS, loadScope, loadSettings, readJson, readJsonForUpdate, settingsPath, updateSettings, writeJson, type Effort, type McpServerConfig, type SettingsScope } from "./config/settings";
+import { EFFORT_LEVELS, loadScope, loadSettings, worktreeSettings, readJson, readJsonForUpdate, settingsPath, updateSettings, writeJson, type Effort, type McpServerConfig, type SettingsScope } from "./config/settings";
 import { isTrusted, projectConfigSummary, trustFolder, trustForSession } from "./config/trust";
-import { MODE_INFO, parseMode, type PermissionMode } from "./permissions/modes";
+import { MODE_INFO, parseMode, startMode, type PermissionMode } from "./permissions/modes";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, removeVertexConfig, saveAgentConfig, saveVertexConfig, SEARCH_PROVIDERS, validGoogleAccount, validVertexLocation, validVertexProject } from "./providers/registry";
 import { checkAgentCli, vendorOf } from "./backends/index";
 import { checkVertex, gcloudAccounts } from "./auth/gcloud";
@@ -30,6 +31,7 @@ import { mcpFingerprint, saveApproval, visible } from "./mcp/approval";
 import { maskKey, redact } from "./util/redact";
 import { bold, padEnd, theme, truncate } from "./ui/ansi";
 import type { OutputFormat } from "./headless";
+import { looksLikeWorktreeName } from "./server/worktrees";
 
 const HELP = `${bold(`${APP_TITLE} v${APP_VERSION}`)} — a coding agent for your terminal that works with any model provider.
 
@@ -45,8 +47,11 @@ ${bold("Usage")}
   ${APP_NAME} models [--refresh] [--json]  list every model you can use, across providers
   ${APP_NAME} mcp list                     show MCP servers and connect to each
   ${APP_NAME} mcp add [opts] <name> -- <command> [args…]
-  ${APP_NAME} mcp add --transport http [opts] <name> <url>
+  ${APP_NAME} mcp add --transport http|sse|ws [opts] <name> <url>
   ${APP_NAME} mcp remove <name> [--scope s]
+  ${APP_NAME} plugin install <name>[@marketplace] [--scope user|project|local]
+  ${APP_NAME} plugin list | uninstall | enable | disable | update | validate   (plugin help)
+  ${APP_NAME} plugin marketplace add <owner/repo | git URL | folder>
   ${APP_NAME} gui                          open the GUI in your browser (${APP_NAME} gui --help)
   ${APP_NAME} serve                        run the GUI server without opening a browser
 
@@ -61,6 +66,9 @@ ${bold("Options")}
       --disallowedTools <rules>  extra deny rules
   -c, --continue                 continue the most recent session in this directory
   -r, --resume [id]              resume a session (picker when no id)
+  -w, --worktree [name]          work in a new Git worktree, .claude/worktrees/<name> on branch
+                                 harness/<name> (a name is made up when none is given); the same
+                                 name again reopens it. On exit it's removed if nothing was done in it
       --add-dir <path>           allow access to another directory (repeatable)
       --append-system-prompt <t> extra instructions appended to the system prompt
       --output-format <f>        with -p: text (default) | json | stream-json
@@ -82,6 +90,8 @@ interface Flags {
     skipPermissions: boolean;
     continue: boolean;
     resume?: string | true;
+    /** --worktree, with its name if one was given. */
+    worktree?: string | true;
     addDirs: string[];
     append?: string;
     outputFormat: OutputFormat;
@@ -168,6 +178,17 @@ function parseFlags(argv: string[]): Flags {
                     f.resume = next;
                     if (inline === undefined) i++;
                 } else f.resume = true;
+                break;
+            }
+            case "-w":
+            case "--worktree": {
+                // The next word is the name only when it looks like one: `-w "fix the tests"` is a prompt.
+                const next = inline ?? argv[i + 1];
+                if (inline !== undefined) f.worktree = inline || true;
+                else if (next !== undefined && looksLikeWorktreeName(next)) {
+                    f.worktree = next;
+                    i++;
+                } else f.worktree = true;
                 break;
             }
             case "--add-dir":
@@ -477,6 +498,14 @@ async function modelsCommand(args: string[]): Promise<number> {
     return 0;
 }
 
+async function pluginCli(args: string[], cwd: string): Promise<number> {
+    const { runPluginCli } = await import("./plugins/cli");
+    const tty = Boolean(process.stderr.isTTY);
+    const r = await runPluginCli(args, cwd, isTrusted(cwd), { bold, muted: theme.muted, success: theme.success, warning: theme.warning, error: theme.error }, (m) => tty && process.stderr.write(theme.muted(m) + "\n"));
+    process[r.ok ? "stdout" : "stderr"].write(r.lines.join("\n") + (r.lines.length ? "\n" : ""));
+    return r.ok ? 0 : 1;
+}
+
 async function mcpCli(args: string[], cwd: string): Promise<number> {
     const sub = args[0];
     if (sub === "list" || !sub) {
@@ -501,7 +530,7 @@ async function mcpCli(args: string[], cwd: string): Promise<number> {
     }
     if (sub === "add") {
         let scope: SettingsScope = "user";
-        let transport: "stdio" | "http" = "stdio";
+        let transport: "stdio" | "http" | "sse" | "ws" = "stdio";
         const env: Record<string, string> = {};
         const headers: Record<string, string> = {};
         const pos: string[] = [];
@@ -513,7 +542,11 @@ async function mcpCli(args: string[], cwd: string): Promise<number> {
                 break;
             }
             if (a === "--scope" || a === "-s") scope = (args[++i] ?? "user") as SettingsScope;
-            else if (a === "--transport" || a === "-t") transport = (args[++i] ?? "stdio") === "http" ? "http" : "stdio";
+            else if (a === "--transport" || a === "-t") {
+                const t = args[++i] ?? "stdio";
+                if (!["stdio", "http", "sse", "ws"].includes(t)) die("--transport must be stdio, http, sse or ws");
+                transport = t as typeof transport;
+            }
             else if (a === "-e" || a === "--env") {
                 const kv = args[++i] ?? "";
                 const idx = kv.indexOf("=");
@@ -530,10 +563,12 @@ async function mcpCli(args: string[], cwd: string): Promise<number> {
         const name = pos[0];
         if (!name || !/^[A-Za-z0-9_-]+$/.test(name)) die("give the server a name (letters, digits, _ and -)");
         let cfg: McpServerConfig;
-        if (transport === "http") {
+        if (transport !== "stdio") {
             const url = pos[1];
-            if (!url) die(`usage: ${APP_NAME} mcp add --transport http <name> <url>`);
-            cfg = { url, ...(Object.keys(headers).length ? { headers } : {}) };
+            if (!url) die(`usage: ${APP_NAME} mcp add --transport ${transport} <name> <url>`);
+            if (transport === "ws" ? !/^wss?:\/\//i.test(url) : !/^https?:\/\//i.test(url)) die(transport === "ws" ? "a WebSocket URL starts with ws:// or wss://" : "the URL must start with http:// or https://");
+            // The URL says HTTP or WebSocket on its own; only SSE needs saying.
+            cfg = { ...(transport === "sse" ? { type: "sse" as const } : {}), url, ...(Object.keys(headers).length ? { headers } : {}) };
         } else {
             const cmd = tail.length ? tail : pos.slice(1);
             if (!cmd.length) die(`usage: ${APP_NAME} mcp add <name> -- <command> [args…]`);
@@ -598,10 +633,8 @@ async function mcpCli(args: string[], cwd: string): Promise<number> {
 // Trust prompt (only when the folder has project config that could run code).
 
 async function askTrust(cwd: string, found: string[]): Promise<boolean> {
-    const { Screen } = await import("./ui/screen");
-    const { SelectDialog } = await import("./ui/dialogs");
-    const screen = new Screen();
-    const d = new SelectDialog<"yes" | "no">({
+    const { askOnce } = await import("./ui/ask");
+    const v = await askOnce<"yes" | "no">({
         title: "Do you trust the files in this folder?",
         header: [
             bold(cwd),
@@ -617,31 +650,30 @@ async function askTrust(cwd: string, found: string[]): Promise<boolean> {
             { label: "Yes, trust this folder", value: "yes" },
             { label: "No, ignore its configuration", value: "no" },
         ],
-        numbers: true,
         color: theme.warning,
     });
-    const render = () => screen.setLive(["", ...d.render(Math.min(process.stdout.columns || 100, 100), process.stdout.rows || 40)]);
-    screen.start(
-        (k) => {
-            if (k.ctrl && k.name === "c") d.cancel();
-            else d.onKey(k);
-            render();
-        },
-        render,
-    );
-    render();
-    const v = await d.done;
-    screen.setLive([]);
-    screen.flushNow();
-    screen.stop();
     return v === "yes";
+}
+
+/** What the TUI needs for --worktree: its line in the welcome box, and what to do with it on exit. */
+async function worktreeHooks(wt: import("./server/worktrees").SessionWorktree, cleanup: import("./server/worktrees").CleanupMode) {
+    const { decideWorktree, endingLines, resumeCommand, worktreeLine } = await import("./ui/worktree");
+    return {
+        line: worktreeLine(wt),
+        resume: resumeCommand(wt.name),
+        kept: () => endingLines(wt, { kind: "kept" }),
+        decide: async (ask?: import("./ui/worktree").Ask) => {
+            const finish = await decideWorktree(wt, { cleanup, ask });
+            return async () => endingLines(wt, await finish());
+        },
+    };
 }
 
 // ---------------------------------------------------------------------------
 
 async function main() {
     const argv = process.argv.slice(2);
-    const cwd = process.cwd();
+    let cwd = process.cwd();
 
     // Only the harness's own env files (never the project's .env; Bun's auto-load is off).
     const installDir = dirname(import.meta.dir);
@@ -652,6 +684,7 @@ async function main() {
     if (sub === "auth") process.exit(await authCommand(argv.slice(1)));
     if (sub === "models") process.exit(await modelsCommand(argv.slice(1)));
     if (sub === "mcp") process.exit(await mcpCli(argv.slice(1), cwd));
+    if (sub === "plugin" || sub === "plugins") process.exit(await pluginCli(argv.slice(1), cwd));
     if (sub === "gui" || sub === "serve") {
         const { serveCommand } = await import("./server/cli");
         return serveCommand(sub, argv.slice(1), { fallbackModel: env.legacyModel, notes: env.notes });
@@ -668,34 +701,55 @@ async function main() {
     if (!interactive && !prompt) die('no prompt given. Use -p "your prompt" (or pipe text on stdin) for non-interactive runs.');
 
     // Trust
-    let trusted = isTrusted(cwd);
-    const found = projectConfigSummary(cwd);
-    if (!trusted && found.length) {
-        if (interactive) {
-            trusted = await askTrust(cwd, found);
-            if (trusted) {
-                try {
-                    trustFolder(cwd);
-                } catch (e) {
-                    env.notes.push(`Trusted for this session only. ${(e as Error).message}`);
-                }
-            }
-        } else process.stderr.write(`warning: this folder isn't trusted, so ${found.join(", ")} and its memory files are ignored (except deny/ask rules). Run ${APP_NAME} interactively once to trust it.\n`);
-    } else if (!trusted) {
-        // Nothing to protect yet. Anything created later this session (like a
-        // "don't ask again" rule) comes from the user, so honor it.
-        trustForSession(cwd);
-        trusted = true;
+    const decideTrust = async (dir: string): Promise<boolean> => {
+        const found = projectConfigSummary(dir);
+        if (isTrusted(dir)) return true;
+        if (!found.length) {
+            // Nothing to protect yet. Anything created later this session (like a
+            // "don't ask again" rule) comes from the user, so honor it.
+            trustForSession(dir);
+            return true;
+        }
+        if (!interactive) {
+            process.stderr.write(`warning: this folder isn't trusted, so ${found.join(", ")} and its memory files are ignored (except deny/ask rules). Run ${APP_NAME} interactively once to trust it.\n`);
+            return false;
+        }
+        if (!(await askTrust(dir, found))) return false;
+        try {
+            trustFolder(dir);
+        } catch (e) {
+            env.notes.push(`Trusted for this session only. ${(e as Error).message}`);
+        }
+        return true;
+    };
+    // --worktree: the session moves into it before anything reads the folder's settings or sessions,
+    // so trust is decided (and asked about) there, once; here only the user's own word counts.
+    let trusted = f.worktree ? isTrusted(cwd) : await decideTrust(cwd);
+    let worktree: import("./server/worktrees").SessionWorktree | undefined;
+    // From where it was started (local settings aren't in the new checkout), for both ends of its life.
+    let cleanup: import("./server/worktrees").CleanupMode = "auto";
+    if (f.worktree) {
+        const { carryTrust, startWorktree, worktreeLine } = await import("./ui/worktree");
+        const ws = worktreeSettings(loadSettings(cwd, { trusted }));
+        cleanup = ws.cleanup;
+        try {
+            worktree = await startWorktree({ cwd, name: f.worktree === true ? undefined : f.worktree, branchPrefix: ws.branchPrefix, baseRef: ws.baseRef, interactive });
+        } catch (e) {
+            die(redact((e as Error).message));
+        }
+        carryTrust(cwd, worktree, ws.baseRef);
+        cwd = worktree.cwd;
+        process.chdir(cwd);
+        trusted = await decideTrust(cwd);
+        if (worktree.note) env.notes.push(worktree.note);
+        if (!interactive) process.stderr.write(`${APP_NAME}: ${worktreeLine(worktree)} (${worktree.path})\n`);
     }
 
     // Permission mode: flags > settings. Bypass from settings only counts from the user's own file.
     const settings = loadSettings(cwd, { trusted });
     const notes = [...env.notes];
-    let mode: PermissionMode = f.mode ?? settings.permissions?.defaultMode ?? "default";
-    if (!f.mode && mode === "bypassPermissions" && loadScope("user", cwd).permissions?.defaultMode !== "bypassPermissions") {
-        notes.push("Ignored defaultMode bypassPermissions from project settings; only your user settings or --dangerously-skip-permissions can enable it.");
-        mode = "default";
-    }
+    let { mode, ignoredBypass } = startMode(f.mode, settings, cwd);
+    if (ignoredBypass) notes.push("Ignored defaultMode bypassPermissions from project settings; only your user settings or --dangerously-skip-permissions can enable it.");
     if (f.skipPermissions) mode = "bypassPermissions";
     const allowBypass = f.skipPermissions || f.mode === "bypassPermissions" || Boolean(loadScope("user", cwd).permissions?.allowBypass) || mode === "bypassPermissions";
 
@@ -733,6 +787,13 @@ async function main() {
             fastMode: f.fastMode,
             fallbackModel: env.legacyModel,
         });
+        if (worktree) {
+            // Nobody to ask: one nothing was done in goes, anything else stays (and says where).
+            const { decideWorktree, endingLines } = await import("./ui/worktree");
+            const { stripAnsi } = await import("./ui/ansi");
+            const end = await (await decideWorktree(worktree, { cleanup: cleanup === "ask" ? "keep" : cleanup }))();
+            for (const line of endingLines(worktree, end)) process.stderr.write(`${APP_NAME}: ${stripAnsi(line)}\n`);
+        }
         process.exit(code);
     }
 
@@ -756,6 +817,7 @@ async function main() {
         effort: f.effort,
         fastMode: f.fastMode,
         fallbackModel: env.legacyModel,
+        worktree: worktree && (await worktreeHooks(worktree, cleanup)),
     });
     process.on("uncaughtException", (e) => {
         app.screen.stop();

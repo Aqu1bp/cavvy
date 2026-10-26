@@ -7,6 +7,7 @@ import { basename, resolve, isAbsolute } from "path";
 import { userInfo } from "os";
 import { childEnv } from "../util/env";
 import { RpcError } from "./rpc-error";
+import { disarmGuard, parentGuard } from "../util/parent-guard";
 import { isTerminalReply } from "./terminal-reply";
 export { isTerminalReply } from "./terminal-reply";
 import type { ServerEvent, TerminalInfo, TerminalLogin, TerminalScript } from "./protocol";
@@ -266,28 +267,17 @@ async function childProcesses(pid: number): Promise<number[]> {
     } catch { return []; } // Restricted sandboxes can deny process enumeration.
 }
 
-/** A private pipe closes even if the server is SIGKILLed; the interactive shell never inherits it. */
-function parentGuard(pid: number) {
-    return Bun.spawn(["/bin/sh", "-c", `
-        if IFS= read -r action && [ "$action" = done ]; then exit 0; fi
-        kill -HUP -- "-$1" 2>/dev/null
-        sleep 1
-        kill -KILL -- "-$1" 2>/dev/null
-        exit 0
-    `, "terminal-parent-guard", String(pid)], { stdin: "pipe", stdout: "ignore", stderr: "ignore", detached: true });
-}
-
-async function disarmGuard(guard: ReturnType<typeof parentGuard>) {
-    try { guard.stdin.write("done\n"); guard.stdin.end(); } catch {}
-    await guard.exited;
-}
-
 const notOpen = () => new RpcError("That terminal is not open in this window", "terminal_not_open");
 const windowOf = (owner: Owner): string | Owner => owner.window ?? owner;
 
 export class Terminals {
     /** Cwds of user shells, including disconnected windows, for account safety. */
     projectRoots(): string[] { return [...this.shells.values(), ...this.stoppingShells].map((shell) => shell.cwd); }
+
+    /** Is an account's sign-in still running: attached, in a window that went away, or closing until its process exits? */
+    signingIn(provider: string, accountId: string): boolean {
+        return [...this.shells.values(), ...this.stoppingShells].some((s) => s.login?.provider === provider && s.login.accountId === accountId && s.exitCode === undefined);
+    }
 
     private shells = new Map<string, Shell>();
     private stopping = new Set<Promise<void>>();
@@ -360,7 +350,7 @@ export class Terminals {
         const proc = Bun.spawn(opts.command?.argv ?? [shell, "-il"], { cwd, env: opts.command ? { ...terminalEnv(false), ...opts.command.env } : terminalEnv(), terminal: ptyOptions, detached: true });
         const terminal = proc.terminal!;
         let guard: ReturnType<typeof parentGuard>;
-        try { guard = parentGuard(proc.pid); }
+        try { guard = parentGuard(proc.pid, "terminal-parent-guard"); }
         catch (e) { terminal.close(); proc.kill("SIGKILL"); throw e; }
         const shellEntry: Shell = { window, sink: owner, cwd, script: opts.script, login: opts.login ? { ...opts.login } : undefined, forgetOutput: opts.command ? () => { decoder = new TextDecoder(); } : undefined, process: proc, terminal, guard, size, out: "", outState: "ground", discard: false, total: 0, sent: 0, unacked: 0, holding: false, alt: false, tail: "", typist };
         entry = shellEntry;

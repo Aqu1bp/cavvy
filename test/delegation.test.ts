@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
+import { stopLiveCodex } from "./helpers/fake-env";
 
 const { cleanup } = isolate();
 const registry = await import("../src/providers/registry");
@@ -22,8 +23,10 @@ const { McpManager } = await import("../src/mcp/manager");
 const { mcpFingerprint, saveApproval } = await import("../src/mcp/approval");
 const { loadSettings } = await import("../src/config/settings");
 const { redact } = await import("../src/util/redact");
-const { DELEGATE_TOOL, DELEGATION_LIMITS, Delegations, delegationAvailable, nativeModel, orchestratorTools } = await import("../src/agent/delegation");
+const { DELEGATE_TOOL, DELEGATION_LIMITS, Delegations, MCP_SERVER_NAME, delegationAvailable, nativeModel, orchestratorTools } = await import("../src/agent/delegation");
 const { App } = await import("../src/ui/app");
+const { runCommand } = await import("../src/commands/index");
+const { stripAnsi } = await import("../src/ui/ansi");
 const { attachTiming } = await import("../src/backends/claude-code");
 const { SecretStore } = await import("../src/agent/secrets");
 
@@ -124,7 +127,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_PROJECT_MCP", "FAKE_NO_CONFIG_LAYERS", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_SCENARIO", "FAKE_CODEX_SCENARIO", "FAKE_MCP_CALLS", "FAKE_MCP_REFUSE", "FAKE_DECLINE", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_REJECT_CONFIG", "FAKE_USER_MCP", "FAKE_NO_CONFIG_READ", "FAKE_LOG_ENV"]) delete process.env[k];
+    for (const k of ["FAKE_PROJECT_MCP", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_SCENARIO", "FAKE_CODEX_SCENARIO", "FAKE_MCP_CALLS", "FAKE_MCP_REFUSE", "FAKE_DECLINE", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_REJECT_CONFIG", "FAKE_USER_MCP", "FAKE_NO_CONFIG_READ", "FAKE_LOG_ENV"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -135,6 +138,7 @@ beforeEach(() => {
 });
 afterEach(async () => {
     await Promise.all(agents.splice(0).map((a) => a.dispose(1000)));
+    await stopLiveCodex();
 });
 
 function logLines(): any[] {
@@ -146,9 +150,14 @@ const mcpResults = () => logLines().flatMap((l) => (l.mcpResult ? [l.mcpResult] 
 const setServers = () => received().filter((m) => m.type === "control_request" && m.request?.subtype === "mcp_set_servers");
 const userTexts = () => received().flatMap((m) => (m.type === "user" ? m.message.content.filter((c: any) => c.type === "text").map((c: any) => c.text as string) : []));
 const notices = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "notice" ? [`${e.level}: ${e.message}`] : []));
+const { WakeQueue, WatcherMap, stopWatchers } = await import("../src/agent/wakes");
+const { MonitorTool } = await import("../src/tools/monitor");
+const { gitToolDeps } = await import("../src/tools/git-tools");
 const calls = (list: { server?: string; tool: string; args: Record<string, unknown> }[]) => (process.env.FAKE_MCP_CALLS = JSON.stringify(list));
 
 interface Opts {
+    /** The host says when a background task ends (the GUI). */
+    announces?: boolean;
     approvedMcpServers?: () => import("../src/mcp/manager").ApprovedMcpServers;
     provider: string;
     model?: Partial<ModelInfo>;
@@ -161,6 +170,9 @@ interface Opts {
     persist?: boolean;
     ui?: import("../src/tools/types").UiBridge;
     secrets?: import("../src/agent/secrets").SecretStore;
+    scheduler?: import("../src/agent/schedule").Scheduler;
+    /** Give the session a wake queue and watch list, as the TUI and the app do. */
+    wakes?: boolean;
 }
 
 async function makeAgent(o: Opts) {
@@ -180,11 +192,12 @@ async function makeAgent(o: Opts) {
         checker: new PermissionChecker(() => settings, cwd),
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
-        toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: o.secrets },
+        toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: o.secrets, scheduler: o.scheduler, ...(o.wakes ? { wakes: new WakeQueue({ coalesceMs: 60_000 }), watchers: new WatcherMap() } : {}) },
         helpers: { resolveModel },
         listings: () => listings,
         host: {
             emit: (e) => events.push(e),
+            ...(o.announces ? { announcesBackgroundEnds: true } : {}),
             ui: o.ui ?? {},
             askPermission: o.headless
                 ? undefined
@@ -293,6 +306,26 @@ describe("the harness's MCP server", () => {
             serverTiming.keepAliveMs = old;
             reg.close();
         }
+    });
+
+    test("a tool's images follow its text as image content", async () => {
+        const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+        const reg = registerTools([
+            { name: "shot", description: "", inputSchema: { type: "object" }, call: async () => ({ text: "A page", images: [{ type: "image", mediaType: "image/png", data: png }, { type: "image", mediaType: "image/jpeg", data: "/9j/" }] }) },
+            { name: "plain", description: "", inputSchema: { type: "object" }, call: async () => ({ text: "No picture", images: [] }) },
+        ]);
+        const auth = { Authorization: reg.authorization };
+        const shot = (await message(await post(reg.url, call(1, "shot"), auth))).result;
+        expect(shot).toEqual({
+            content: [
+                { type: "text", text: "A page" },
+                { type: "image", data: png, mimeType: "image/png" },
+                { type: "image", data: "/9j/", mimeType: "image/jpeg" },
+            ],
+            isError: false,
+        });
+        expect((await message(await post(reg.url, call(2, "plain"), auth))).result.content).toEqual([{ type: "text", text: "No picture" }]);
+        reg.close();
     });
 
     test("a tool that throws gives an error result, with secrets redacted", async () => {
@@ -678,6 +711,14 @@ describe("Claude Code as the main agent", () => {
         expect(text).not.toContain("claude-code:default");
     });
 
+    test("only the harness's own tools are approved by their server's name: another tool under that name is asked about", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ server: MCP_SERVER_NAME, tool: "erase", args: {} }]);
+        const { run, asked } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
+        await run("erase it");
+        expect(asked.map((r) => r.tool.name)).toEqual([`mcp__${MCP_SERVER_NAME}__erase`]);
+    });
+
     test("a background task follows the session's speed when it changes", async () => {
         process.env.FAKE_SCENARIO = "mcp";
         calls([{ tool: "delegate", args: { task: "Look around", description: "Look", model: "gemini:gemini-fast", agent: "explore", wait: false } }]);
@@ -698,6 +739,25 @@ describe("Claude Code as the main agent", () => {
         await agent.delegatedTasks[0]!.settled;
         expect(agent.delegatedTasks[0]!.status).toBe("done");
         expect(childRequests.map((r) => r.fastMode)).toEqual([true, false]);
+    });
+
+    test("where the host says when a background task ends (the GUI), the agent doesn't say it again: one notice, not two (#282)", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "delegate", args: { task: "Review the code", description: "Review", model: "gemini:gemini-test", agent: "explore", wait: false } }]);
+        const g = gate();
+        script = async (req) => {
+            await g.wait(req.signal);
+            return say("Looks fine.");
+        };
+        const { run, events, agent } = await makeAgent({ provider: "claude-code", announces: true });
+        expect(await run("start a review")).toBe("done");
+        g.open();
+        await agent.delegatedTasks[0]!.settled;
+        expect(notices(events).filter((n) => n.includes("finished"))).toEqual([]);
+        // Its result still goes with the next prompt.
+        calls([]);
+        expect(await run("anything back?")).toBe("done");
+        expect(userTexts().at(-1)).toContain("Looks fine.");
     });
 
     test("a background task's result comes with the next prompt", async () => {
@@ -764,7 +824,7 @@ describe("Claude Code as the main agent", () => {
         expect(notices(events)).toContain("info: Stopped 1 delegated task.");
     });
 
-    test("after a switch to a harness model, esc still stops the tasks running in the background", async () => {
+    test("after a switch to a harness model, esc leaves the tasks running in the background, and an explicit stop ends them (#228)", async () => {
         process.env.FAKE_SCENARIO = "mcp";
         calls([{ tool: "delegate", args: { task: "Review", description: "Review", model: "gemini:gemini-test", agent: "explore", wait: false } }]);
         script = async (req) => {
@@ -782,9 +842,16 @@ describe("Claude Code as the main agent", () => {
         await Bun.sleep(50);
         ac.abort();
         expect(await done).toBe("aborted");
+        await Bun.sleep(30);
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["running"]);
+        expect(notices(events)).not.toContain("info: Stopped 1 delegated task.");
+        expect(notices(events)).toContain("info: 1 background task keeps running (/tasks stop stops it).");
+        // It's in the session's background list, and stops when asked to.
+        expect(agent.backgroundTasks()).toMatchObject([{ id: "task-1", provider: "gemini", kind: "agent", label: "Review", status: "running", stoppable: true }]);
+        expect(await agent.stopBackground(["task-1"])).toEqual({ "task-1": "stopped" });
         await agent.delegatedTasks[0]!.settled;
         expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["cancelled"]);
-        expect(notices(events)).toContain("info: Stopped 1 delegated task.");
+        expect(agent.backgroundTasks()[0]!.status).toBe("stopped");
     });
 
     test("stopping a task withdraws its permission prompt, and stops the shells it started", async () => {
@@ -1006,6 +1073,62 @@ describe("Claude Code as the main agent", () => {
         expect(JSON.parse(argv[argv.indexOf("--settings") + 1]).disabledMcpjsonServers).toContain("harness");
     });
 
+    test("with a scheduler, Claude Code gets the schedule tools, and its own (which can't outlive the turn) are denied", async () => {
+        const { Scheduler } = await import("../src/agent/schedule");
+        const scheduler = new Scheduler({ idle: () => false, fire: () => {} });
+        const { run } = await makeAgent({ provider: "claude-code", scheduler });
+        expect(await run("hi")).toBe("done");
+        const tools = setServers()[0].request.servers.harness.tools.map((t: { name: string }) => t.name);
+        expect(tools).toEqual(expect.arrayContaining(["schedule_create", "schedule_list", "schedule_delete"]));
+        const argv = starts()[0].argv;
+        const settings = JSON.parse(argv[argv.indexOf("--settings") + 1]!);
+        expect(settings.permissions.deny).toEqual(expect.arrayContaining(["CronCreate", "CronDelete", "CronList", "ScheduleWakeup"]));
+        scheduler.dispose();
+    });
+
+    test("a session that can be woken gives Claude Code watch_pull_request, and a call to it starts a watch", async () => {
+        const realGh = gitToolDeps.gh;
+        const asked: string[][] = [];
+        gitToolDeps.gh = () => async (args) => {
+            asked.push(args);
+            const pr = { number: 12, url: "https://github.com/acme/app/pull/12", title: "Fix it", state: "OPEN", isDraft: false, headRefOid: "abc1234", headRefName: "fix", baseRefName: "main", mergeable: "MERGEABLE", commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "CheckRun", name: "ci", status: "IN_PROGRESS" }] } } } }] }, comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [] } };
+            return { out: JSON.stringify({ data: { viewer: { login: "me" }, rateLimit: { remaining: 4990, resetAt: "2026-10-21T11:00:00Z" }, repository: { pullRequest: pr } } }), err: "", code: 0 };
+        };
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "watch_pull_request", args: { pr: "https://github.com/acme/app/pull/12" } }]);
+        try {
+            const { run, agent } = await makeAgent({ provider: "claude-code", wakes: true });
+            expect(await run("watch my PR")).toBe("done");
+            const tools = setServers()[0].request.servers.harness.tools.map((t: { name: string }) => t.name);
+            expect(tools).toEqual(expect.arrayContaining(["watch_pull_request", "unwatch_pull_request"]));
+            // Committing and pushing stay with the CLI's own shell, under the harness's prompts.
+            expect(tools).not.toContain("GitCommit");
+            expect(mcpResults()[0]).toMatchObject({ tool: "watch_pull_request" });
+            expect(JSON.stringify(mcpResults()[0])).toContain("Watching it now");
+            expect([...agent.state.watchers!.keys()]).toEqual(["pr:acme/app#12"]);
+            expect(asked[0]).toEqual(expect.arrayContaining(["api", "graphql"]));
+            stopWatchers(agent.state);
+        } finally {
+            gitToolDeps.gh = realGh;
+        }
+    });
+
+    test("-p has nowhere to wake, so no watch tools", async () => {
+        const { run } = await makeAgent({ provider: "claude-code", wakes: true, headless: true });
+        expect(await run("hi")).toBe("done");
+        const tools = (setServers()[0]?.request.servers.harness.tools ?? []).map((t: { name: string }) => t.name);
+        expect(tools).not.toContain("watch_pull_request");
+    });
+
+    test("without one (-p, a sub-agent), no schedule tools and Claude Code's own aren't touched", async () => {
+        const { run } = await makeAgent({ provider: "claude-code" });
+        expect(await run("hi")).toBe("done");
+        const servers = setServers()[0]?.request.servers.harness;
+        expect((servers?.tools ?? []).map((t: { name: string }) => t.name)).not.toContain("schedule_create");
+        const argv = starts()[0].argv;
+        expect(JSON.parse(argv[argv.indexOf("--settings") + 1]!).permissions.deny).not.toContain("CronCreate");
+    });
+
     for (const response of ["hang", "1", "exit"]) test(`delegation attachment distinguishes timeout from refusal or exit (${response})`, async () => {
         const previousTimeout = attachTiming.timeoutMs;
         attachTiming.timeoutMs = response === "hang" ? 50 : 5000;
@@ -1224,6 +1347,8 @@ describe("Codex as the main agent", () => {
         expect(session.backends.get("codex")?.id).toBe("thr-new");
         process.env.FAKE_REJECT_CONFIG = "1";
         rmSync(LOG, { force: true });
+        // A new app-server resumes the thread (the live one keeps it loaded, #219).
+        await stopLiveCodex();
         expect(await run("second")).toBe("done");
         const resumes = received().filter((m) => m.method === "thread/resume").map((m) => m.params);
         expect(resumes).toHaveLength(2);
@@ -1233,7 +1358,7 @@ describe("Codex as the main agent", () => {
         expect(resumes[1].developerInstructions).not.toContain("delegate");
         expect(resumes[1].threadId).toBe("thr-new");
         expect(received().some((m) => m.method === "thread/start")).toBe(false);
-        expect(notices(events)).toContain("warn: Codex didn't accept Harness's delegation tools (invalid config: unknown field `default_tools_approval_mode`); this turn runs without them, preserving MCP restrictions.");
+        expect(notices(events)).toContain("warn: Codex didn't accept Harness's delegation tools (invalid config: unknown field `default_tools_approval_mode`); this session runs without them, preserving MCP restrictions.");
         expect(notices(events).join("\n")).not.toContain("Starting a new one");
 
         const fresh = await makeAgent({ provider: "codex" });
@@ -1247,6 +1372,7 @@ describe("Codex as the main agent", () => {
         process.env.FAKE_REJECT_CONFIG = "1";
         const { run } = await makeAgent({ provider: "codex" });
         expect(await run("first")).toBe("done");
+        await stopLiveCodex();
         expect(await run("second")).toBe("done");
         for (const method of ["thread/start", "thread/resume"]) {
             const threads = received().filter((m) => m.method === method).map((m) => m.params);
@@ -1254,6 +1380,15 @@ describe("Codex as the main agent", () => {
             expect(threads[0].config.mcp_servers.project).toEqual({ enabled: false });
             expect(threads[1].config).toEqual({ mcp_servers: { project: { enabled: false } } });
         }
+    });
+
+    test("a project's plugin stays off alongside the delegation server", async () => {
+        process.env.FAKE_PROJECT_PLUGINS = JSON.stringify({ "theirs@local": { enabled: true } });
+        const { run } = await makeAgent({ provider: "codex" });
+        expect(await run("hello")).toBe("done");
+        const config = received().find((m) => m.method === "thread/start").params.config;
+        expect(config.plugins).toEqual({ "theirs@local": { enabled: false } });
+        expect(config.mcp_servers.harness.url).toBeString();
     });
 
     test("a project harness server stays disabled instead of merging with delegation", async () => {
@@ -1276,7 +1411,434 @@ describe("Codex as the main agent", () => {
 
 // ---------------------------------------------------------------------------
 
+describe("Monitor for Codex (it has none of its own)", () => {
+    const MONITOR_TOOLS = ["monitor", "monitor_output", "monitor_stop"];
+    const harnessTools = () => (logLines().find((l) => l.mcpConnected)?.tools ?? []) as string[];
+    const monitors = (agent: InstanceType<typeof Agent>) => [...agent.state.shells.values()].filter((s) => s.monitor);
+
+    test("a session that can be woken gives Codex the monitor tools; a call is asked about as Monitor and starts one", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        // Not read-only, so it is asked about (a read-only one runs unasked, as Harness's own Monitor does).
+        calls([{ tool: "monitor", args: { command: "touch started; echo ready; sleep 30", description: "server readiness" } }]);
+        const { run, agent, asked, events } = await makeAgent({ provider: "codex", wakes: true });
+        try {
+            expect(await run("watch the server")).toBe("done");
+            expect(harnessTools()).toEqual(expect.arrayContaining(MONITOR_TOOLS));
+            const thread = received().find((m) => m.method === "thread/start")!.params;
+            expect(thread.developerInstructions).toContain("use monitor");
+            // The CLI approves Harness's tools without asking: Harness asks, as for its own Monitor.
+            expect(asked.map((r) => [r.tool.name, r.input.command])).toEqual([["Monitor", "touch started; echo ready; sleep 30"]]);
+            expect(asked[0]!.callId).toMatch(/^mcp-/);
+            const [r] = mcpResults();
+            expect(r).toMatchObject({ tool: "monitor", isError: false });
+            expect(r.text).toMatch(/Started monitor monitor_\d+/);
+            // It names the tools Codex has.
+            expect(r.text).toContain("monitor_stop id");
+            expect(r.text).not.toContain("KillShell");
+            expect(r.text).not.toContain("BashOutput");
+            // Shown once, as Harness's Monitor (not as an MCP call, nor twice).
+            const startsOf = events.flatMap((e) => (e.type === "tool_start" ? [e.call.name] : []));
+            expect(startsOf).toEqual(["Monitor"]);
+            const m = monitors(agent);
+            expect(m).toHaveLength(1);
+            expect(agent.state.watchers!.has(m[0]!.id)).toBe(true);
+            await until(() => agent.state.wakes!.pending().some((w) => w.text.includes("ready")));
+        } finally {
+            stopWatchers(agent.state);
+        }
+    });
+
+    test("declined, or refused by a Bash rule, it starts nothing", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "monitor", args: { command: "touch started; tail -f app.log", description: "errors" } }]);
+        const declined = await makeAgent({ provider: "codex", wakes: true, ask: () => ({ allow: false }) });
+        // The user said no: the turn ends there, as when they decline one of Codex's own commands.
+        expect(await declined.run("watch")).toBe("denied");
+        expect(mcpResults()[0]).toMatchObject({ tool: "monitor", isError: true });
+        expect(mcpResults()[0].text).toContain("declined");
+        expect(monitors(declined.agent)).toHaveLength(0);
+
+        rmSync(LOG, { force: true });
+        calls([{ tool: "monitor", args: { command: "rm -rf build", description: "cleanup" } }]);
+        const denied = await makeAgent({ provider: "codex", wakes: true, settings: { permissions: { deny: ["Bash(rm:*)"] } } });
+        expect(await denied.run("watch")).toBe("done");
+        expect(mcpResults()[0]).toMatchObject({ tool: "monitor", isError: true });
+        expect(denied.asked).toHaveLength(0);
+        expect(monitors(denied.agent)).toHaveLength(0);
+    });
+
+    test("a call cancelled while its checks run starts nothing", async () => {
+        // A read-only command (no prompt), held up by a slow PreToolUse hook; the call is cancelled meanwhile.
+        const { agent } = await makeAgent({ provider: "codex", wakes: true, settings: { hooks: { PreToolUse: [{ matcher: "Bash", command: "sleep 1" }] } } });
+        const ac = new AbortController();
+        setTimeout(() => ac.abort(), 200);
+        const r = await (agent as any).runServed(MonitorTool, { command: "tail -f /dev/null", description: "quiet" }, ac.signal);
+        expect(r.isError).toBe(true);
+        await Bun.sleep(300);
+        expect(monitors(agent)).toHaveLength(0);
+        stopWatchers(agent.state);
+    });
+
+    test("a call cancelled while the user is asked withdraws the prompt", async () => {
+        let prompt: PermissionRequest | undefined;
+        const { agent } = await makeAgent({ provider: "codex", wakes: true, ask: (req) => ((prompt = req), new Promise(() => {})) });
+        const ac = new AbortController();
+        const r = (agent as any).runServed(MonitorTool, { command: "touch started; tail -f /dev/null", description: "quiet" }, ac.signal);
+        await until(() => prompt !== undefined);
+        ac.abort();
+        expect(prompt!.signal?.aborted).toBe(true);
+        void r;
+    });
+
+    test("context a PostToolUse hook adds reaches Codex with the result", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "monitor", args: { command: "tail -f /dev/null", description: "quiet" } }]);
+        const { run, agent } = await makeAgent({ provider: "codex", wakes: true, settings: { hooks: { PostToolUse: [{ matcher: "Monitor", command: `echo '{"hookSpecificOutput":{"additionalContext":"watch budget: 2 left"}}'` }] } } });
+        try {
+            expect(await run("watch")).toBe("done");
+            expect(mcpResults()[0].text).toContain("watch budget: 2 left");
+        } finally {
+            stopWatchers(agent.state);
+        }
+    });
+
+    test("hooks run once for a call, as Monitor, though Codex runs them before its MCP calls too", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "monitor", args: { command: "tail -f /dev/null", description: "quiet" } }]);
+        const pre = join(cwd, "pre.log");
+        const post = join(cwd, "post.log");
+        const record = (file: string) => `cat >> ${file}; echo >> ${file}`;
+        const { run, agent } = await makeAgent({ provider: "codex", wakes: true, settings: { hooks: { PreToolUse: [{ matcher: "*", command: record(pre) }], PostToolUse: [{ matcher: "*", command: record(post) }] } } });
+        try {
+            expect(await run("watch")).toBe("done");
+            // Codex took the PreToolUse hook as its own, so it called it before the monitor call.
+            expect(logLines().some((l) => l.hookCalled)).toBe(true);
+            const names = (file: string) => readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l).tool_name);
+            expect(names(pre)).toEqual(["Monitor"]);
+            expect(names(post)).toEqual(["Monitor"]);
+            expect(monitors(agent)).toHaveLength(1);
+        } finally {
+            stopWatchers(agent.state);
+        }
+    });
+
+    test("a stop from a hook on Codex's call ends Codex's turn, as on its own calls", async () => {
+        const say = (o: unknown) => `echo '${JSON.stringify(o)}'`;
+        const cases: [Record<string, unknown>, string][] = [
+            [{ PermissionRequest: [{ matcher: "Monitor", command: say({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "deny", message: "not now", interrupt: true } } }) }] }, "denied"],
+            [{ PreToolUse: [{ matcher: "Monitor", command: say({ continue: false, stopReason: "budget spent" }) }] }, "blocked"],
+            [{ PostToolUse: [{ matcher: "Monitor", command: say({ continue: false, stopReason: "budget spent" }) }] }, "blocked"],
+        ];
+        for (const [hooks, reason] of cases) {
+            process.env.FAKE_SCENARIO = "mcp";
+            rmSync(LOG, { force: true });
+            calls([
+                { tool: "monitor", args: { command: "touch started; sleep 30", description: "first" } },
+                { tool: "monitor", args: { command: "touch again; sleep 30", description: "second" } },
+            ]);
+            const { run, agent } = await makeAgent({ provider: "codex", wakes: true, settings: { hooks } });
+            try {
+                expect(await run("watch")).toBe(reason);
+                expect(received().some((m) => m.method === "turn/interrupt")).toBe(true);
+                // Codex made no second call.
+                expect(mcpResults()).toHaveLength(1);
+            } finally {
+                stopWatchers(agent.state);
+            }
+        }
+    });
+
+    test("a Codex sub-agent gets no Monitor, and its call can't end the main turn", async () => {
+        process.env.FAKE_SCENARIO = "subagent";
+        process.env.FAKE_CHILD_MCP = JSON.stringify({ tool: "monitor", args: { command: "touch started; sleep 30", description: "child's" } });
+        try {
+            const { run, agent, asked } = await makeAgent({ provider: "codex", wakes: true });
+            try {
+                expect(await run("count files")).toBe("done");
+                const [r] = mcpResults();
+                expect(r).toMatchObject({ tool: "monitor", isError: true });
+                expect(r.text).toContain("isn't available to sub-agents");
+                // Refused before any check: not asked about (the sub-agent's own command is).
+                expect(asked.map((a) => a.tool.name)).not.toContain("Monitor");
+                expect(monitors(agent)).toHaveLength(0);
+            } finally {
+                stopWatchers(agent.state);
+            }
+        } finally {
+            delete process.env.FAKE_CHILD_MCP;
+        }
+    });
+
+    test("monitor_output and monitor_stop act on monitors only", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([
+            { tool: "monitor_output", args: { id: "bash_1" } },
+            { tool: "monitor_stop", args: { id: "bash_1" } },
+        ]);
+        const { run, agent } = await makeAgent({ provider: "codex", wakes: true });
+        let killed = false;
+        agent.state.shells.set("bash_1", { id: "bash_1", command: "sleep 30", startedAt: Date.now(), output: "", readOffset: 0, exitCode: null, sandboxed: false, kill: async () => ((killed = true), "stopped") });
+        expect(await run("stop it")).toBe("done");
+        for (const r of mcpResults()) {
+            expect(r.isError).toBe(true);
+            expect(r.text).toContain("No monitor with id bash_1");
+        }
+        expect(killed).toBe(false);
+        expect(agent.state.shells.has("bash_1")).toBe(true);
+    });
+
+    test("Claude Code keeps its own Monitor: none offered; nor in -p, which has nowhere to wake", async () => {
+        const cc = await makeAgent({ provider: "claude-code", wakes: true });
+        expect(await cc.run("hi")).toBe("done");
+        const ccTools = (setServers()[0]?.request.servers.harness.tools ?? []).map((t: { name: string }) => t.name);
+        expect(ccTools).not.toContain("monitor");
+
+        rmSync(LOG, { force: true });
+        const headless = await makeAgent({ provider: "codex", wakes: true, headless: true });
+        expect(await headless.run("hi")).toBe("done");
+        expect(harnessTools()).not.toContain("monitor");
+    });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("a served tool's images", () => {
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const shot = (images: { type: "image"; mediaType: string; data: string }[]): import("../src/tools/types").Tool<any> => ({
+        name: "Shot",
+        description: "",
+        parameters: { type: "object", properties: {} },
+        category: "read",
+        readOnly: true,
+        title: () => "Shot",
+        run: async () => ({ content: "A page", images }),
+    });
+
+    test("go to the CLI with the result, fitted like a model's tool images", async () => {
+        const { agent } = await makeAgent({ provider: "codex" });
+        const ok = await (agent as any).runServed(shot([{ type: "image", mediaType: "image/png", data: png }]), {}, new AbortController().signal);
+        expect(ok).toEqual({ text: "A page", isError: undefined, images: [{ type: "image", mediaType: "image/png", data: png }] });
+        // One that can't be fitted is taken out, and the text says so.
+        const broken = await (agent as any).runServed(shot([{ type: "image", mediaType: "image/png", data: "bm90IGEgcGljdHVyZQ==" }]), {}, new AbortController().signal);
+        expect(broken.images).toBeUndefined();
+        expect(broken.text).toContain("A page");
+        expect(broken.text.length).toBeGreaterThan("A page".length);
+    });
+
+    test("a result without images stays text", async () => {
+        const { agent } = await makeAgent({ provider: "codex" });
+        const r = await (agent as any).runServed(shot([]), {}, new AbortController().signal);
+        expect(r).toEqual({ text: "A page", isError: undefined });
+    });
+});
+
+describe("Browser tools for Codex and Claude Code", () => {
+    const BROWSER_TOOLS = ["browser_navigate", "browser_snapshot", "browser_act", "browser_screenshot", "browser_eval", "browser_logs"];
+    const harnessTools = () => (logLines().find((l) => l.mcpConnected)?.tools ?? []) as string[];
+    const { fakeChromeAt, fakeChromeProgram } = require("./helpers/fake-chrome") as typeof import("./helpers/fake-chrome");
+    const { forgetChromeLookup } = require("../src/browser/chrome") as typeof import("../src/browser/chrome");
+    const { projectStateDir } = require("../src/config/paths") as typeof import("../src/config/paths");
+    const savedBrowser = process.env.HARNESS_BROWSER;
+    const program = fakeChromeProgram();
+    const SHOT_PAGE = "http://localhost:4000/";
+    const agentsMade: InstanceType<typeof Agent>[] = [];
+
+    beforeEach(() => {
+        process.env.HARNESS_BROWSER = program;
+        forgetChromeLookup();
+    });
+    afterEach(async () => {
+        for (const a of agentsMade.splice(0)) await a.state.browser?.dispose();
+        process.env.HARNESS_BROWSER = savedBrowser;
+        forgetChromeLookup();
+    });
+
+    /** What the fake Chrome the agent's tabs are in was sent. */
+    const chromeLog = async (method: string) => (await fakeChromeAt(join(projectStateDir(cwd), "browser"))).sent(method);
+    async function codex(o: Partial<Opts> = {}) {
+        const made = await makeAgent({ provider: "codex", ...o });
+        agentsMade.push(made.agent);
+        return made;
+    }
+    const open = { tool: "browser_navigate", args: { url: SHOT_PAGE } };
+
+    test("are served when a browser is found, and not when the setting turns them off or none is installed", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        const on = await codex();
+        expect(await on.run("hi")).toBe("done");
+        expect(harnessTools()).toEqual(expect.arrayContaining(BROWSER_TOOLS));
+        expect(received().find((m) => m.method === "thread/start")!.params.developerInstructions).toContain("browser_snapshot");
+
+        for (const [name, settings, env] of [["the setting", { browser: { enabled: false } }, program], ["no browser", {}, join(cwd, "none")]] as const) {
+            rmSync(LOG, { force: true });
+            process.env.HARNESS_BROWSER = env;
+            forgetChromeLookup();
+            const off = await codex({ settings });
+            expect(await off.run("hi")).toBe("done");
+            expect(harnessTools().filter((t) => BROWSER_TOOLS.includes(t)), name).toEqual([]);
+        }
+    });
+
+    test("reading runs unasked, a screenshot comes back as an image, and acting is asked about as BrowserAct", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([open, { tool: "browser_snapshot", args: {} }, { tool: "browser_screenshot", args: {} }, { tool: "browser_act", args: { action: "click", ref: "e5" } }, { tool: "browser_act", args: { action: "hover", ref: "e5" } }]);
+        const { run, asked, events } = await codex();
+        expect(await run("look at the app")).toBe("done");
+        const [opened, snapshot, shot, click, hover] = mcpResults();
+        expect(opened).toMatchObject({ tool: "browser_navigate", isError: false });
+        expect(opened.text).toContain('- button "Click me" [e5]');
+        expect(snapshot.text).toContain('- button "Click me" [e5]');
+        expect(shot).toMatchObject({ isError: false, images: ["image/png"] });
+        expect(snapshot.images).toBeUndefined();
+        expect(click.text).toMatch(/^Clicked button "Click me" \[e5\]/);
+        expect(hover.isError).toBe(false);
+        // only the click: localhost, reading and hovering don't ask
+        expect(asked.map((r) => [r.tool.name, r.input.action])).toEqual([["BrowserAct", "click"]]);
+        // shown once each, as the Harness tool
+        expect(events.flatMap((e) => (e.type === "tool_start" ? [e.call.name] : []))).toEqual(["BrowserNavigate", "BrowserSnapshot", "BrowserScreenshot", "BrowserAct", "BrowserAct"]);
+        expect((await chromeLog("Input.dispatchMouseEvent")).map((c) => c.params.type)).toEqual(["mouseMoved", "mousePressed", "mouseReleased", "mouseMoved"]);
+    });
+
+    test("a rule naming the tool as it is served is enforced before anything runs, whatever the CLI itself approves", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        for (const rule of ["mcp__harness__browser_act", "mcp__harness__*", "mcp__harness"]) {
+            rmSync(LOG, { force: true });
+            calls([open, { tool: "browser_act", args: { action: "click", ref: "e5" } }]);
+            const { run, asked, agent } = await codex({ settings: { permissions: { deny: [rule] } } });
+            await run("click it");
+            const [opened, click] = mcpResults();
+            // a rule for browser_act alone leaves browser_navigate alone
+            expect(opened.isError, rule).toBe(rule === "mcp__harness__browser_act" ? false : true);
+            expect(click, rule).toMatchObject({ tool: "browser_act", isError: true });
+            expect(click.text, rule).toContain(`Denied by permission rule ${rule}`);
+            expect(asked, rule).toEqual([]);
+            expect(await chromeLog("Input.dispatchMouseEvent").catch(() => []), rule).toEqual([]);
+            await agent.state.browser?.dispose();
+        }
+    });
+
+    test("an ask rule for the served name asks the user, and a no stops the call", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([open, { tool: "browser_snapshot", args: {} }]);
+        const { run, asked } = await codex({ settings: { permissions: { ask: ["mcp__harness__browser_snapshot"] } }, ask: () => ({ allow: false }) });
+        await run("read it");
+        const [, snapshot] = mcpResults();
+        expect(snapshot).toMatchObject({ tool: "browser_snapshot", isError: true });
+        expect(snapshot.text).toContain("declined");
+        expect(asked.map((r) => r.tool.name)).toEqual(["mcp__harness__browser_snapshot"]);
+    });
+
+    test("the rules that cover the tool by its own name hold on this path too: a host, a file, plan mode", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        mkdirSync(join(cwd, "private"), { recursive: true });
+        writeFileSync(join(cwd, "private", "x.html"), "<p>secret</p>");
+        writeFileSync(join(cwd, "public.html"), "<p>fine</p>");
+        calls([
+            { tool: "browser_navigate", args: { url: "https://evil.example/x" } },
+            { tool: "browser_navigate", args: { url: `file://${join(cwd, "private", "x.html")}` } },
+            { tool: "browser_navigate", args: { url: `file://${join(cwd, "public.html")}` } },
+        ]);
+        const { run, asked } = await codex({ settings: { permissions: { deny: ["WebFetch(domain:evil.example)", "Read(private/**)"] } } });
+        await run("open them");
+        const [host, file, fine] = mcpResults();
+        expect(host).toMatchObject({ isError: true });
+        expect(host.text).toContain("Denied by permission rule WebFetch(domain:evil.example)");
+        expect(file).toMatchObject({ isError: true });
+        expect(file.text).toContain("Denied by permission rule Read(private/**)");
+        expect(fine.isError).toBe(false);
+        expect(asked).toEqual([]);
+
+        rmSync(LOG, { force: true });
+        calls([open, { tool: "browser_act", args: { action: "click", ref: "e5" } }, { tool: "browser_act", args: { action: "hover", ref: "e5" } }, { tool: "browser_act", args: { action: "scroll", deltaY: 200 } }]);
+        const planned = await codex();
+        planned.switchMode("plan");
+        await planned.run("click it");
+        const [, click, hover, scroll] = mcpResults();
+        expect(click.isError).toBe(true);
+        expect(click.text).toContain("Plan mode is active");
+        expect(hover.isError).toBe(true);
+        expect(hover.text).toContain("Plan mode is active");
+        // reading more of the page is research
+        expect(scroll.isError).toBe(false);
+    });
+
+    test("a call the user already has the tab for is refused as the Harness tool is, and the page stays theirs", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([open]);
+        const { run, agent } = await codex();
+        await run("open it");
+        await agent.state.browser!.input({ kind: "key", type: "down", key: "a", code: "KeyA" });
+        const r = await (agent as any).runServed((await import("../src/tools/browser-tools")).BrowserActTool, { action: "scroll", deltaY: 100 }, new AbortController().signal);
+        expect(r.isError).toBe(true);
+        expect(r.text).toContain("taken control");
+    });
+});
+
 describe("harness models", () => {
+    test("esc in an API session ends the turn, not a background Task started on an earlier turn: it still reports back (#228)", async () => {
+        const main = (content: unknown[], stopReason = "end_turn") => ({ role: "assistant", provider: "anthropic", model: "claude-main", stopReason, content, usage: { inputTokens: 10, outputTokens: 5 } });
+        const g = gate();
+        let n = 0;
+        const requests: ChatRequest[] = [];
+        const client = {
+            stream: async (req: ChatRequest) => {
+                requests.push(req);
+                n++;
+                if (n === 1) return main([{ type: "tool_call", id: "t1", name: "Task", input: { description: "Long review", prompt: "Review everything", model: "gemini:gemini-test", subagent_type: "explore", run_in_background: true } }], "tool_use");
+                if (n === 2) return main([{ type: "text", text: "Started it." }]);
+                // Turn 2 works until it's stopped; turn 3 answers.
+                if (n === 3) return gate().wait(req.signal).then(() => main([{ type: "text", text: "never" }]));
+                return main([{ type: "text", text: "Got the review." }]);
+            },
+            listModels: async () => [],
+        };
+        script = async () => (await g.wait(), say("All good."));
+        const { run, agent } = await makeAgent({ provider: "anthropic", model: { id: "claude-main" }, client });
+        expect(await run("start a background review")).toBe("done");
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["running"]);
+        const ac = new AbortController();
+        const turn2 = run("meanwhile, a quick question", ac.signal);
+        await until(() => n >= 3);
+        ac.abort();
+        expect(await turn2).toBe("aborted");
+        await Bun.sleep(30);
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["running"]);
+        // It finishes, and its result goes with the next prompt.
+        g.open();
+        await agent.delegatedTasks[0]!.settled;
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["done"]);
+        expect(await run("anything back?")).toBe("done");
+        expect(JSON.stringify(requests.at(-1)!.messages)).toContain("All good.");
+    });
+
+    test("the kill switch (agentCli.liveSessions false): Esc stops a background Task started on an earlier turn, as before #228", async () => {
+        const main = (content: unknown[], stopReason = "end_turn") => ({ role: "assistant", provider: "anthropic", model: "claude-main", stopReason, content, usage: { inputTokens: 10, outputTokens: 5 } });
+        const g = gate();
+        let n = 0;
+        const client = {
+            stream: async (req: ChatRequest) => {
+                n++;
+                if (n === 1) return main([{ type: "tool_call", id: "t1", name: "Task", input: { description: "Long review", prompt: "Review everything", model: "gemini:gemini-test", subagent_type: "explore", run_in_background: true } }], "tool_use");
+                if (n === 2) return main([{ type: "text", text: "Started it." }]);
+                return gate().wait(req.signal).then(() => main([{ type: "text", text: "never" }]));
+            },
+            listModels: async () => [],
+        };
+        script = async (req) => (await g.wait(req.signal), say("All good."));
+        const { run, agent, events } = await makeAgent({ provider: "anthropic", model: { id: "claude-main" }, client, settings: { agentCli: { liveSessions: false } } });
+        expect(await run("start a background review")).toBe("done");
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["running"]);
+        const ac = new AbortController();
+        const turn2 = run("meanwhile, a quick question", ac.signal);
+        await until(() => n >= 3);
+        ac.abort();
+        expect(await turn2).toBe("aborted");
+        await agent.delegatedTasks[0]!.settled;
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["cancelled"]);
+        expect(notices(events)).toContain("info: Stopped 1 delegated task.");
+        expect(notices(events).join("\n")).not.toContain("keeps running");
+    });
+
     test("Task runs a sub-agent on the model asked for, and ListModels shows what can run", async () => {
         const mainRequests: ChatRequest[] = [];
         const main = (content: unknown[], stopReason = "end_turn") => ({ role: "assistant", provider: "anthropic", model: "claude-main", stopReason, content, usage: { inputTokens: 10, outputTokens: 5 } });
@@ -1350,7 +1912,7 @@ describe("harness models", () => {
         const steps = [main([{ type: "tool_call", id: "t1", name: "Task", input: { description: "On Codex", prompt: "a", model: "codex:gpt-fast" } }], "tool_use"), main([{ type: "text", text: "ok" }])];
         let n = 0;
         const client = { stream: async () => steps[n++], listModels: async () => [] };
-        // A sub-agent's turn ends with SubagentStop, on a backend as on the harness's own loop.
+        // A sub-agent's turn ends with SubagentStop (Stop is the main agent's), on its own models and on the CLIs alike.
         const settings = { hooks: { SubagentStop: [{ command: `[ -f '${flag}' ] || { touch '${flag}'; sleep 1; echo "keep going" >&2; exit 2; }` }] } };
         const { run, session } = await makeAgent({ provider: "anthropic", model: { id: "claude-main", supportsFastMode: true }, client, settings });
         session.setFastMode(true);
@@ -1386,7 +1948,132 @@ describe("harness models", () => {
     });
 });
 
+describe("tasks that stopped when Harness quit", () => {
+    test("a /goal doesn't take the reminder of them (it leaves reminders for later): the next prompt does, and only then are they kept stopped (#282 review 6)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const prompts: string[] = [];
+        const backend = {
+            agentBackend: true as const,
+            setMode() {},
+            listModels: async () => [],
+            stream: async () => say(""),
+            compact: async () => ({ reason: "done" as const, text: "", actions: [] }),
+            runTurn: async (t: { prompt: string }) => (prompts.push(t.prompt), { reason: "done" as const, text: "ok", actions: [] }),
+        };
+        const { run, agent } = await makeAgent({ provider: "fake-cli", client: backend });
+        const logged = new Map([["bash_1", { id: "bash_1", provider: "harness", kind: "shell" as const, label: "npm run dev", startedAt: 5, status: "running" as const, stoppable: true }]]);
+        const log = { backgroundTasks: logged, recordBackgroundTask: (t: any) => void logged.set(t.id, t) };
+        agent.state.background = new SessionBackground(log);
+        expect(await run("/goal ship the release")).toBe("done");
+        expect(prompts[0]).not.toContain("stopped when Harness quit");
+        // Not taken: the log still has it running, so a reopen now would still tell.
+        expect(logged.get("bash_1")!.status).toBe("running");
+        expect(agent.state.background.shown().map((t) => t.lost)).toEqual([true]);
+        expect(await run("how's it going?")).toBe("done");
+        expect(prompts[1]).toContain("These background tasks stopped when Harness quit: background command: npm run dev (bash_1)");
+        expect(logged.get("bash_1")).toMatchObject({ status: "stopped", lost: true });
+    });
+});
+
 describe("the app", () => {
+    function tuiApp() {
+        const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
+        (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true, columns: 100, rows: 30 };
+        app.session = Session.create(cwd, { persist: false, system: "sys" });
+        const notes: string[] = [];
+        app.notice = (m: string, level = "info") => void notes.push(`${level}: ${m}`);
+        return { app, notes };
+    }
+
+    test("in the terminal, a background shell that ends while nothing else happens is kept in the log and said (#282 review 5)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const { backgroundPoll } = await import("../src/ui/app");
+        const saved = backgroundPoll.ms;
+        backgroundPoll.ms = 20;
+        const { app, notes } = tuiApp();
+        try {
+            const logged = new Map<string, any>();
+            app.toolState.background = new SessionBackground({ backgroundTasks: logged, recordBackgroundTask: (t) => void logged.set(t.id, t) });
+            const sh = { id: "bash_1", command: "npm run build", startedAt: Date.now() - 1000, output: "", readOffset: 0, exitCode: null as number | null, kill: async () => "stopped" as const };
+            app.toolState.shells.set(sh.id, sh);
+            // As a turn's end does.
+            (app as any).persistBackground();
+            expect(logged.get("bash_1")?.status).toBe("running");
+            // It ends with no turn going.
+            sh.exitCode = 0;
+            await until(() => logged.get("bash_1")?.status === "done", 2000);
+            expect(notes).toContain("info: Background command finished: npm run build (1s)");
+            // Nothing runs: it stops looking.
+            await until(() => (app as any).backgroundTimer === undefined, 2000);
+        } finally {
+            backgroundPoll.ms = saved;
+            if ((app as any).backgroundTimer) clearInterval((app as any).backgroundTimer);
+        }
+    });
+
+    test("in the terminal, a CLI's own turn that arrives during a model switch is adopted once it's over (#282 review 7)", async () => {
+        const { app } = tuiApp();
+        const turns: any[] = [];
+        const backend = {
+            agentBackend: true as const,
+            adoptsTurns: true,
+            setMode() {},
+            listModels: async () => [],
+            stream: async () => say(""),
+            compact: async () => ({ reason: "done" as const, text: "", actions: [] }),
+            runTurn: async (t: any) => (turns.push(t), { reason: "done" as const, text: "Auth is mapped.", actions: [] }),
+        };
+        const { agent } = await makeAgent({ provider: "fake-cli", client: backend });
+        app.agent = agent;
+        (app as any).switching = true;
+        app.adoptWake({ provider: "fake-cli", ref: "turn-3", label: "Background task finished: Map auth" });
+        await Bun.sleep(200);
+        expect(turns).toEqual([]);
+        (app as any).switching = false;
+        await until(() => turns.length === 1 && !app.busy, 5000);
+        expect(turns[0].adopt).toBe("turn-3");
+        expect(agent.session.messages.find((m) => m.role === "user")?.meta).toMatchObject({ kind: "wake", display: "Background task finished: Map auth" });
+    });
+
+    test("/tasks lists the session's background work beside its delegated tasks, and /tasks stop <id|all> stops it", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "delegate", args: { task: "Review", description: "Review the diff", model: "gemini:gemini-test", agent: "explore", wait: false } }]);
+        script = async (req) => {
+            await gate().wait(req.signal);
+            return say("never");
+        };
+        const { run, agent } = await makeAgent({ provider: "claude-code" });
+        expect(await run("start it")).toBe("done");
+        let killed = 0;
+        const sh = { id: "bash_1", command: "npm run dev", startedAt: Date.now(), output: "", readOffset: 0, exitCode: null as number | null, kill: async () => ((killed++, (sh.exitCode = 143)), "stopped" as const) };
+        agent.state.shells.set(sh.id, sh);
+        const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
+        const printed: string[] = [];
+        const notes: string[] = [];
+        (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true };
+        app.session = Session.create(cwd, { persist: false });
+        app.agent = agent;
+        app.print = (lines: any) => void printed.push(...(Array.isArray(lines) ? lines : [lines]).map((l: unknown) => stripAnsi(String(l))));
+        app.notice = (m: string, level = "info") => void notes.push(`${level}: ${m}`);
+        await runCommand(app, "/tasks");
+        const listing = printed.join("\n");
+        expect(listing).toContain("task-1");
+        expect(listing).toContain("Review the diff");
+        expect(listing).toContain("bash_1");
+        expect(listing).toContain("background command: npm run dev");
+        expect(listing).toContain("/tasks stop all stops them all");
+        await runCommand(app, "/tasks stop bash_1");
+        expect(killed).toBe(1);
+        expect(notes.at(-1)).toBe("info: Stopping 1 background task.");
+        await runCommand(app, "/tasks stop nope");
+        expect(notes.at(-1)).toBe("error: No running background task nope. /tasks lists them.");
+        await runCommand(app, "/tasks stop all");
+        await agent.delegatedTasks[0]!.settled;
+        expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["cancelled"]);
+        await runCommand(app, "/tasks stop");
+        expect(notes.at(-1)).toBe("info: No background tasks are running.");
+    });
+
     test("a stopped sub-agent's prompt is withdrawn, and one still queued isn't shown", async () => {
         const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
         (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true };
@@ -1658,6 +2345,276 @@ describe("a read-only agent on Claude Code or Codex", () => {
             expect(readOnlyBackendMode("default", p)).toBe("default");
             expect(readOnlyBackendMode("acceptEdits", p)).toBe("default");
             expect(readOnlyBackendMode("bypassPermissions", p)).toBe("default");
+        }
+    });
+});
+
+describe("the terminal's background list across sessions and turns: #282 review round 2", () => {
+    function tui() {
+        const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
+        (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true, columns: 100, rows: 30 };
+        const notes: string[] = [];
+        app.notice = (m: string, level = "info") => void notes.push(`${level}: ${m}`);
+        (app as any).makeAgent = () => {};
+        (app as any).replayTranscript = () => {};
+        (app as any).sessionSwitched = () => {};
+        return { app, notes };
+    }
+    const shell = (id: string, command: string) => ({ id, command, startedAt: Date.now() - 1000, output: "", readOffset: 0, exitCode: null as number | null, kill: async () => "stopped" as const });
+    const stopTimer = (app: App) => (app as any).backgroundTimer && clearInterval((app as any).backgroundTimer);
+
+    test("a shell left running by /new that then finishes isn't 'stopped when Harness quit' when its session is reopened (A3)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const { app } = tui();
+        try {
+            app.session = Session.create(cwd, { system: "sys" });
+            app.session.push({ role: "user", content: [{ type: "text", text: "start the build" }], meta: { kind: "prompt" } });
+            (app as any).bindBackground();
+            const sh = shell("bash_1", "npm run build");
+            app.toolState.shells.set(sh.id, sh);
+            (app as any).persistBackground();
+            const pathA = app.session.path;
+            app.newSession();
+            sh.exitCode = 0;
+            (app as any).persistBackground();
+            // Not the new session's either.
+            expect(app.toolState.background!.shown().map((t) => t.id)).toEqual([]);
+            const reopened = new SessionBackground(Session.load(pathA));
+            expect(reopened.shown().filter((t) => t.lost)).toEqual([]);
+        } finally {
+            stopTimer(app);
+        }
+    });
+
+    test("back in the session (/resume) while its shell still runs: the agent isn't told it stopped, and it's listed running (A3)", async () => {
+        const { app } = tui();
+        try {
+            app.session = Session.create(cwd, { system: "sys" });
+            app.session.push({ role: "user", content: [{ type: "text", text: "start the dev server" }], meta: { kind: "prompt" } });
+            (app as any).bindBackground();
+            const sh = shell("bash_7", "npm run dev");
+            app.toolState.shells.set(sh.id, sh);
+            (app as any).persistBackground();
+            const pathA = app.session.path;
+            app.newSession();
+            app.resume(pathA);
+            // What the next prompt's run() takes (agent.ts runInner: takeLost, then lostNote).
+            expect(app.toolState.background!.takeLost().map((t) => t.id)).toEqual([]);
+            expect(app.toolState.background!.shown({ shells: app.toolState.shells }).map((t) => [t.id, t.status])).toEqual([["bash_7", "running"]]);
+        } finally {
+            stopTimer(app);
+        }
+    });
+
+    test("another conversation (/new, /resume) doesn't get the browser tabs of the last; a new agent in the same one keeps them", async () => {
+        const { app } = tui();
+        const stub = () => {
+            const b = { disposed: 0, dispose: async () => void b.disposed++ };
+            return b;
+        };
+        try {
+            app.session = Session.create(cwd, { system: "sys" });
+            app.session.push({ role: "user", content: [{ type: "text", text: "open the app" }], meta: { kind: "prompt" } });
+            (app as any).bindBackground();
+            (app as any).persistBackground();
+            const first = stub();
+            app.toolState.browser = first as never;
+            const pathA = app.session.path;
+            // a model switch makes another agent over the same state
+            (app as any).makeAgent();
+            expect(app.toolState.browser).toBe(first as never);
+            expect(first.disposed).toBe(0);
+            app.newSession();
+            expect(first.disposed).toBe(1);
+            expect(app.toolState.browser).not.toBe(first as never);
+            const second = stub();
+            app.toolState.browser = second as never;
+            app.resume(pathA);
+            expect(second.disposed).toBe(1);
+            expect(app.toolState.browser).not.toBe(second as never);
+            expect(first.disposed).toBe(1);
+        } finally {
+            stopTimer(app);
+            await app.toolState.browser?.dispose();
+        }
+    });
+
+    test("the first shell a turn starts is looked at from its launch: one that ends before the turn does is kept and said (B6)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const { backgroundPoll } = await import("../src/ui/app");
+        const saved = backgroundPoll.ms;
+        backgroundPoll.ms = 20;
+        const { app, notes } = tui();
+        try {
+            const logged = new Map<string, any>();
+            app.toolState.background = new SessionBackground({ backgroundTasks: logged, recordBackgroundTask: (t) => void logged.set(t.id, t) });
+            (app as any).boundBackground = app.session;
+            (app as any).busy = true;
+            const sh = shell("bash_1", "npm run build");
+            app.toolState.shells.set(sh.id, sh);
+            // Its Bash call ends (the shell runs on); the turn goes on.
+            const call = { type: "tool_call", id: "b1", name: "Bash", input: { command: "npm run build", run_in_background: true } };
+            (app as any).onAgentEvent({ type: "tool_end", call, result: { content: "Started bash_1" }, durationMs: 5 });
+            expect(logged.get("bash_1")?.status).toBe("running");
+            sh.exitCode = 0;
+            await until(() => logged.get("bash_1")?.status === "done", 2000);
+            expect(notes).toContain("info: Background command finished: npm run build (1s)");
+        } finally {
+            backgroundPoll.ms = saved;
+            stopTimer(app);
+        }
+    });
+});
+
+describe("the background list across sessions, and the delegate tool's own tasks: #282 review round 3", () => {
+    function tui() {
+        const app = new App({ cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
+        (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true, columns: 100, rows: 30 };
+        app.notice = () => {};
+        (app as any).makeAgent = () => {};
+        (app as any).replayTranscript = () => {};
+        (app as any).sessionSwitched = () => {};
+        return app;
+    }
+    const stopTimer = (app: InstanceType<typeof App>) => (app as any).backgroundTimer && clearInterval((app as any).backgroundTimer);
+
+    test("/new while a delegated task runs: the Agent it ran under goes, and the old session's log has it stopped then, not 'stopped when Harness quit'", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const app = tui();
+        try {
+            app.session = Session.create(cwd, { system: "sys" });
+            app.session.push({ role: "user", content: [{ type: "text", text: "review it in the background" }], meta: { kind: "prompt" } });
+            const task = { id: "task-1", description: "Review a.ts", model: "gemini:gemini-test", status: "running", startedAt: Date.now() - 1000, controller: new AbortController() };
+            // An Agent (model and client set): makeAgent replaces it, and its delegated tasks stop with it.
+            (app as any).agent = { delegatedTasks: [task], backgroundTasks: () => [] };
+            (app as any).model = GEMINI;
+            (app as any).client = {};
+            (app as any).bindBackground();
+            (app as any).persistBackground();
+            const pathA = app.session.path;
+            expect(Session.load(pathA).backgroundTasks.get("task-1")?.status).toBe("running");
+            app.newSession();
+            expect(Session.load(pathA).backgroundTasks.get("task-1")?.status).toBe("stopped");
+            expect(new SessionBackground(Session.load(pathA)).shown().filter((t) => t.lost)).toEqual([]);
+        } finally {
+            stopTimer(app);
+        }
+    });
+
+    for (const live of [true, false]) {
+        test(`a shell that ends on its own is a line in the terminal${live ? "" : ", except with the kill switch off (agentCli.liveSessions false, P2)"}`, async () => {
+            const app = tui();
+            const notes: string[] = [];
+            app.notice = (m: string, level = "info") => void notes.push(`${level}: ${m}`);
+            try {
+                if (!live) app.settings = { ...app.settings, agentCli: { liveSessions: false } };
+                app.session = Session.create(cwd, { system: "sys" });
+                (app as any).bindBackground();
+                const sh = { id: "bash_1", command: "npm run lint", startedAt: Date.now() - 1000, output: "", readOffset: 0, exitCode: null as number | null, kill: async () => "stopped" as const };
+                app.toolState.shells.set(sh.id, sh as never);
+                (app as any).persistBackground();
+                sh.exitCode = 1;
+                (app as any).persistBackground();
+                expect(notes.filter((n) => n.includes("npm run lint"))).toHaveLength(live ? 1 : 0);
+            } finally {
+                stopTimer(app);
+            }
+        });
+    }
+
+    test("/tasks stop on a task that had already ended says so, not that it couldn't be stopped (K1)", async () => {
+        const app = tui();
+        const notes: string[] = [];
+        app.notice = (m: string, level = "info") => void notes.push(`${level}: ${m}`);
+        app.session = Session.create(cwd, { persist: false });
+        app.toolState.background = undefined;
+        (app as any).agent = {
+            delegatedTasks: [],
+            backgroundTasks: () => [{ id: "bash_9", provider: "harness", kind: "shell", label: "npm test", startedAt: 1, status: "running", stoppable: true }],
+            stopBackground: async () => ({ bash_9: "ended" }),
+        };
+        await runCommand(app, "/tasks stop bash_9");
+        expect(notes).toEqual(["info: bash_9 had already ended."]);
+    });
+
+    test("after /new, a shell the old session started isn't listed in, or logged to, the new session (A3, its shells passed)", async () => {
+        const app = tui();
+        try {
+            app.session = Session.create(cwd, { system: "sys" });
+            app.session.push({ role: "user", content: [{ type: "text", text: "start the build" }], meta: { kind: "prompt" } });
+            (app as any).bindBackground();
+            const sh = { id: "bash_1", command: "npm run build", startedAt: Date.now() - 1000, output: "", readOffset: 0, exitCode: null as number | null, kill: async () => "stopped" as const };
+            app.toolState.shells.set(sh.id, sh as never);
+            (app as any).persistBackground();
+            app.newSession();
+            app.session.push({ role: "user", content: [{ type: "text", text: "something else" }], meta: { kind: "prompt" } });
+            (app as any).persistBackground();
+            expect(app.toolState.background!.shown({ shells: app.toolState.shells }).map((t) => `${t.id}:${t.status}`)).toEqual([]);
+            expect([...app.session.backgroundTasks.keys()]).toEqual([]);
+        } finally {
+            stopTimer(app);
+        }
+    });
+
+    test("the delegate tool's waited-on task is never listed, logged, or announced (A4/B5, through the tool)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        let finish!: (r: any) => void;
+        const logged = new Map<string, any>();
+        const recorded: string[] = [];
+        const bg = new SessionBackground({ backgroundTasks: logged, recordBackgroundTask: (t) => (recorded.push(`${t.id}:${t.status}`), void logged.set(t.id, t)) });
+        const listed: string[] = [];
+        const news: string[] = [];
+        let tasks!: InstanceType<typeof Delegations>;
+        const look = () => {
+            for (const n of bg.sync({ delegated: tasks.list() })) news.push(n.id);
+            for (const t of bg.shown({ delegated: tasks.list() })) listed.push(`${t.id}:${t.status}`);
+        };
+        tasks = new Delegations(() => new Promise((r) => (finish = r)), undefined, look);
+        const tools = orchestratorTools({
+            caller: () => "claude-code",
+            listings: () => [listing("claude-code", ["default"]), listing("gemini", ["gemini-test"])],
+            projectRoot: () => cwd,
+            checkModel: async () => ({}),
+            claimCall: async () => "call-1",
+            tasks,
+        } as never);
+        const call = tools.find((t) => t.name === "delegate")!.call({ task: "Review", description: "Review a.ts", model: "gemini:gemini-test", agent: "explore" }, { signal: new AbortController().signal, meta: {} } as never);
+        for (let i = 0; i < 100 && !finish; i++) await Bun.sleep(10);
+        expect(finish).toBeDefined();
+        look();
+        finish({ status: "done", report: "LGTM", model: "gemini:gemini-test", tokens: 1, durationMs: 5 });
+        await call;
+        look();
+        expect(listed).toEqual([]);
+        expect(recorded).toEqual([]);
+        expect(news).toEqual([]);
+    });
+
+    test("a delegate call whose wait runs out leaves its task in the background: listed running, and its end is news (A4/B5, through the tool)", async () => {
+        const { SessionBackground } = await import("../src/agent/background");
+        const saved = DELEGATION_LIMITS.defaultWaitMs;
+        DELEGATION_LIMITS.defaultWaitMs = 30;
+        try {
+            let finish!: (r: any) => void;
+            const bg = new SessionBackground();
+            const tasks = new Delegations(() => new Promise((r) => (finish = r)));
+            const tools = orchestratorTools({
+                caller: () => "claude-code",
+                listings: () => [listing("claude-code", ["default"]), listing("gemini", ["gemini-test"])],
+                projectRoot: () => cwd,
+                checkModel: async () => ({}),
+                claimCall: async () => "call-1",
+                tasks,
+            } as never);
+            const r = await tools.find((t) => t.name === "delegate")!.call({ task: "Review", description: "Review a.ts", model: "gemini:gemini-test", agent: "explore" }, { signal: new AbortController().signal, meta: {} } as never);
+            expect(r.text).toContain("It keeps running");
+            expect(bg.shown({ delegated: tasks.list() }).map((t) => t.status)).toEqual(["running"]);
+            bg.sync({ delegated: tasks.list() });
+            finish({ status: "done", report: "LGTM", model: "gemini:gemini-test", tokens: 1, durationMs: 5 });
+            for (let i = 0; i < 100 && tasks.list()[0]!.status === "running"; i++) await Bun.sleep(5);
+            expect(bg.sync({ delegated: tasks.list() }).map((t) => t.status)).toEqual(["done"]);
+        } finally {
+            DELEGATION_LIMITS.defaultWaitMs = saved;
         }
     });
 });

@@ -11,7 +11,7 @@ export function slashName(text: string): string | undefined {
 }
 
 /** What the GUI does itself for a slash command; the rest go to the server. */
-export type ClientAction = "model" | "mode" | "new" | "rewind" | "fork" | "mcp" | "settings" | "usage" | "context" | "rename" | "export" | "tasks";
+export type ClientAction = "model" | "mode" | "new" | "rewind" | "fork" | "mcp" | "settings" | "plugins" | "usage" | "context" | "rename" | "export" | "tasks";
 
 const CLIENT: Record<string, ClientAction> = {
     model: "model",
@@ -23,6 +23,8 @@ const CLIENT: Record<string, ClientAction> = {
     mcp: "mcp",
     settings: "settings",
     config: "settings",
+    plugin: "plugins",
+    plugins: "plugins",
     // What the session and the plan have used: shown, not asked of the model.
     cost: "usage",
     usage: "usage",

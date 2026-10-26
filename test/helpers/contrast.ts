@@ -21,6 +21,12 @@ export interface Root {
     theme: string;
     scheme: "light" | "dark";
     accent?: string;
+    /** Settings → Appearance → Window: "glass" | "tinted" | "solid". */
+    glass?: string;
+    /** Settings → Appearance → Contrast: "standard" | "high". */
+    contrast?: string;
+    /** Settings → Appearance → Window tint: "clear" | "ocean" | "accent". */
+    tint?: string;
 }
 
 export function parseRules(css: string): Rule[] {
@@ -43,7 +49,7 @@ function match(sel: string, root: Root): number | null {
     if (sel === ":root") return 1;
     const attrs = [...sel.matchAll(/\[data-([a-z]+)(?:="([^"]*)")?\]/g)];
     if (attrs.length === 0 || attrs.map((a) => a[0]).join("") !== sel) return null;
-    const values: Record<string, string | undefined> = { theme: root.theme, scheme: root.scheme, accent: root.accent };
+    const values: Record<string, string | undefined> = { theme: root.theme, scheme: root.scheme, accent: root.accent, glass: root.glass, contrast: root.contrast, tint: root.tint };
     for (const [, name, value] of attrs) {
         const have = values[name!];
         if (have === undefined || (value !== undefined && value !== have)) return null;

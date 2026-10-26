@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Harness, glass redesign mockup</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body data-theme="light" data-wall="dune" data-accent="blue" data-insp="on" data-rail="on" data-railmode="dock" data-inspmode="dock" data-glass="glass" data-motion="quick" data-density="comfortable">
+<div class="desktop">
+<div class="window" id="win">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <div class="rail-top">
+        <button class="ib" title="Toggle the sidebar (⌘B)" data-act="rail"><span data-i="panel-left"></span></button>
+        <button class="ib" title="New session (⌘N)" data-act="new"><span data-i="square-pen"></span></button>
+    </div>
+
+    <div class="rail-scrim" id="rail-scrim"></div>
+    <!-- Rail: sessions straight on the window glass; Settings nav when Settings is open -->
+    <aside class="rail" id="rail">
+        <div class="rail-main">
+            <label class="search"><span data-i="search" data-s="14"></span><input id="search" placeholder="Search" spellcheck="false" autocomplete="off" /><button class="kbd" data-act="palette" title="Search everything (⌘K)">⌘K</button></label>
+            <div class="rail-list" id="rail-list"></div>
+            <div class="rail-foot">
+                <span class="meter" id="usage" style="--v: 62"></span>
+                <span class="who"><b id="plan-name"></b><span id="usage-t"></span></span>
+                <button class="ib" title="Settings (⌘,)" data-act="settings"><span data-i="settings"></span></button>
+            </div>
+        </div>
+        <nav class="rail-set" id="rail-set"></nav>
+    </aside>
+
+    <main class="sheet" id="sheet">
+        <section class="main" id="main">
+            <header class="bar">
+                <div class="ttl"><span class="proj" id="proj"></span><h1 id="ttl" title="Double-click to rename"></h1><span class="br" id="branch"></span></div>
+                <div class="cap glass">
+                    <button class="ib diffchip" id="diffchip" title="Changes" data-act="changes"></button>
+                    <span class="sep" id="diffsep"></span>
+                    <button class="ib" id="term-btn" title="Terminal (⌃`)" data-act="term"><span data-i="panel-bottom"></span></button>
+                    <button class="ib" id="insp-btn" title="Side panel (⌘.)" data-act="insp"><span data-i="panel-right"></span></button>
+                    <button class="ib" title="More" data-act="more"><span data-i="ellipsis"></span></button>
+                </div>
+            </header>
+
+            <div class="find glass" id="find"><span data-i="search" data-s="14"></span><input id="find-in" placeholder="Find in conversation" spellcheck="false" /><span class="dim" id="find-n"></span><button class="ib sm" data-act="find-prev" title="Previous (⇧↵)"><span data-i="chevron-left" data-s="14"></span></button><button class="ib sm" data-act="find-next" title="Next (↵)"><span data-i="chevron-right" data-s="14"></span></button><button class="ib sm" data-act="find-close" title="Close (Esc)"><span data-i="x" data-s="14"></span></button></div>
+
+            <div class="scroll" id="scroll"><div class="col" id="col"></div></div>
+
+            <div class="home">
+                <svg class="logo" width="44" height="44" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="16" fill="var(--fg)" /><path d="M21 19v26M43 19v26M21 32h22" stroke="var(--sheet)" stroke-width="6.5" stroke-linecap="round" fill="none" /><circle cx="43" cy="19" r="5.5" fill="var(--accent)" /></svg>
+                <h2>What should we work on?</h2>
+                <div class="where" id="home-where"></div>
+                <div class="starts">
+                    <button data-start="How do sessions resume after a restart?"><span data-i="message-square-text" data-s="14"></span>How do sessions resume?</button>
+                    <button data-start="Add ⌘J as a shortcut to toggle the terminal"><span data-i="terminal" data-s="14"></span>Add a terminal shortcut</button>
+                    <button data-start="Balance the CI test shards by recorded file times"><span data-i="list-checks" data-s="14"></span>Balance the CI shards</button>
+                </div>
+            </div>
+
+            <button class="jump glass" id="jump" data-act="jump"><span data-i="arrow-down" data-s="14"></span>Latest</button>
+
+            <div class="dock">
+                <div class="dock-in" id="dock-in">
+                    <div id="ask"></div>
+                    <div class="composer glass" id="composer">
+                        <div class="status" id="status"></div>
+                        <div class="queue" id="queue"></div>
+                        <div class="chips" id="chips"></div>
+                        <textarea id="input" rows="1" spellcheck="false"></textarea>
+                        <div class="comp-row">
+                            <button class="ib" title="Attach a file" data-act="attach"><span data-i="paperclip"></span></button>
+                            <button class="ib" title="Mention a file (@)" data-act="mention"><span data-i="at-sign"></span></button>
+                            <span class="vsep"></span>
+                            <button class="pick" id="pick-model" data-act="model" title="Model (⌘/)"></button>
+                            <button class="pick" id="pick-effort" data-act="effort" title="Reasoning effort"></button>
+                            <button class="pick" id="pick-mode" data-act="mode" title="Permission mode (⇧Tab cycles)"></button>
+                            <span class="grow"></span>
+                            <button class="ctx" id="ctx" data-act="ctx"></button>
+                            <button class="send" id="send"></button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <aside class="insp" id="insp">
+            <div class="resizer" id="resizer" title="Drag to resize"></div>
+            <div class="insp-in" id="insp-in"></div>
+        </aside>
+
+        <section class="termp" id="termp">
+            <div class="tresize" id="tresize"></div>
+            <div class="tbar">
+                <div class="ttabs" id="ttabs"></div>
+                <button class="ib sm" title="New terminal" data-act="tnew"><span data-i="plus" data-s="15"></span></button>
+                <span class="grow"></span>
+                <button class="ib sm" title="Maximize" data-act="tmax" id="tmax"><span data-i="maximize-2" data-s="14"></span></button>
+                <button class="ib sm" title="Hide (⌃`)" data-act="term"><span data-i="chevron-down" data-s="15"></span></button>
+            </div>
+            <div class="term-out" id="term-out"></div>
+        </section>
+
+        <section class="settings" id="settings"></section>
+    </main>
+
+    <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+    <div class="rh r" data-rh="r"></div><div class="rh b" data-rh="b"></div><div class="rh br" data-rh="br"></div>
+    <div class="sizebadge glass" id="sizebadge"></div>
+</div>
+</div>
+
+<!-- Mockup controls, not part of the design -->
+<div class="mock glass">
+    <span class="lab">Mockup</span>
+    <div class="grp" data-set="theme"><button data-v="light">Light</button><button data-v="dark">Dark</button></div>
+    <div class="grp" data-set="wall"><button data-v="dune">Dune</button><button data-v="ocean">Ocean</button><button data-v="photo">Photo</button></div>
+    <div class="grp" id="sizes"><button data-size="fit">Fit</button><button data-size="1360x880">1360×880</button><button data-size="1024x700">1024×700</button><button data-size="720x480">720×480</button></div>
+    <div class="grp" id="tcset" title="The turn's changes card"><button data-v="one" class="on">One folder</button><button data-v="wt">One worktree</button><button data-v="many">Many places</button><button data-v="incomplete">Not captured</button></div>
+    <div class="grp"><button data-speed>1× speed</button><button data-reset>Reset</button></div>
+</div>
+
+<script src="icons.js"></script>
+<script src="providers.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

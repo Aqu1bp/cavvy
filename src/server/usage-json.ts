@@ -3,12 +3,14 @@
  * arbitrarily large; only whitelisted scalar fields and a bounded stack survive. */
 type Fields = { [key: string]: true | Fields };
 const counters: Fields = Object.fromEntries([
-    "inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "cacheWrite1hTokens", "cost", "costEstimated", "fastMode", "resolvedModel", "billing",
+    "inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "cacheWrite1hTokens", "webSearchRequests", "cost", "costEstimated", "fastMode", "resolvedModel", "billing",
     "input_tokens", "output_tokens", "cached_input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "cache_write_input_tokens", "total_tokens", "speed",
 ].map(k => [k, true]));
 counters.cache_creation = { ephemeral_5m_input_tokens: true, ephemeral_1h_input_tokens: true };
 const fields: Fields = {
     t: true, type: true, at: true, timestamp: true, model: true, cost: true, unknown: true, accountId: true,
+    // A Harness session's account, backend, parked and subagent lines (usage-reader.ts ran()).
+    provider: true, id: true, fork: true, createdAt: true,
     sessionId: true, requestId: true, usage: counters,
     message: { id: true, model: true, usage: counters },
     payload: { type: true, id: true, session_id: true, model: true,

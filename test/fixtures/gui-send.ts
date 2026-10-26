@@ -51,7 +51,7 @@ mock.module("../../gui/src/state/app", () => ({
         }
     },
     activate: noop, dropHandle: noop, forkSession: noop, handleFor: noop, importCliSession: noop, markSeen: noop, refreshModels: noop, refreshProjects: noop,
-    refreshProviders: noop, refreshSessions: noop, refreshSettings: noop, requestTrust: noop,
+    refreshProviders: noop, refreshSessions: noop, refreshSettings: noop, requestTrust: noop, revealBackground: noop,
 }));
 mock.module("../../gui/src/lib/platform", () => ({ copyText: noop, pickFolder: noop }));
 mock.module("../../gui/src/state/prefs", () => ({ prefs: {}, setPrefs: noop }));
@@ -59,16 +59,17 @@ mock.module("../../gui/src/state/ui", () => ({
     setContextCardOpen: (open: boolean) => contextOpenings.push(open),
     setMcpOpen: (value: { focus?: string }) => mcpOpenings.push(value),
     ...Object.fromEntries([
-        "requestComposerFocus", "setAgentFocus", "setArchiveRequest", "setFolderPickerOpen", "setModePickerOpen",
-        "setModelPickerOpen", "setReview", "setRewindOpen", "setSettingsTab",
+        "requestComposerFocus", "setAgentFocus", "setArchiveRequest", "setDeleteRequest", "setFolderPickerOpen", "setModePickerOpen",
+        "setModelPickerOpen", "setReview", "setRewindOpen", "setSettingsTab", "railOpen", "setRailOpen",
     ].map((name) => [name, noop])),
+    shellLayout: () => ({ railMode: "dock" }),
 }));
 const { send } = await import("../../gui/src/state/actions");
 const textFile = "# attached notes\n";
 const pdf = "%PDF-1.4\n%%EOF\n";
 const longPaste = "pasted line\n".repeat(101);
 const attachments: Attachment[] = [
-    { kind: "image", size: 10, name: "image", mediaType: "image/png", data: "image-data", preview: "preview" },
+    { kind: "image", size: 10, name: "image", mediaType: "image/png", data: "image-data" },
     await readAttachment(new File([textFile], "notes.md"), []),
     await readAttachment(new File([pdf], "report.pdf"), []),
     pastedText(longPaste, []),

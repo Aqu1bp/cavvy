@@ -9,12 +9,53 @@ const { usageSummary, usageDays, usageBounds, clearUsageCache } = await import("
 const { scanUsage } = await import("../src/server/usage-reader");
 const { UsageJson } = await import("../src/server/usage-json");
 const { saveAgentConfig } = await import("../src/providers/registry");
+const { accountPlace } = await import("../src/providers/accounts");
 const { costOf, usageCostParts } = await import("../src/providers/pricing");
 const bounds = { ...usageBounds };
 const now = Date.parse("2026-10-15T16:30:00Z");
 const fixture = (name: string) => readFileSync(join(import.meta.dir, "fixtures/usage", name), "utf8");
 function write(file: string, data: string) { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, data); return file; }
 const harnessLine = (model = "anthropic:claude-opus-5-5", cost = 1) => JSON.stringify({ t: "usage", at: now - 1000, model, cost, usage: { inputTokens: 100, outputTokens: 10 } }) + "\n";
+
+test("Anthropic search fees survive session reload and dashboard cost breakdown", async () => {
+    const { Session } = await import("../src/agent/session");
+    const { resolveModelInfo } = await import("../src/providers/models");
+    const session = Session.create(iso.home);
+    session.push({ role: "user", content: [{ type: "text", text: "search" }] });
+    const usage = { inputTokens: 100, outputTokens: 100, webSearchRequests: 8 };
+    const model = "anthropic:claude-sonnet-5-5";
+    const cost = costOf(usage, resolveModelInfo(model)).usd;
+    expect(cost).toBeCloseTo(.0812, 10);
+    session.recordUsage(model, usage, cost);
+    const loaded = Session.load(session.path);
+    expect(loaded.cost).toBeCloseTo(.0812, 10);
+    expect(loaded.usageByModel.get(model)!.usage.webSearchRequests).toBe(8);
+    const summary = await usageSummary(1);
+    expect(summary.totals.cost).toBeCloseTo(.0812, 10);
+    expect(summary.totals.costByType.input).toBeCloseTo(.0002, 10);
+    expect(summary.totals.costByType.output).toBeCloseTo(.001, 10);
+    expect(summary.totals.costByType.unallocated).toBeCloseTo(.08, 10);
+    expect((await scanUsage()).files[0]!.records[0]!.usage.webSearchRequests).toBe(8);
+});
+
+test("offline Anthropic pricing includes Haiku's full-prompt long tier", async () => {
+    const { resolveModelInfo } = await import("../src/providers/models");
+    const usage = { inputTokens: 1, cacheReadTokens: 100_000, outputTokens: 1000 };
+    expect(costOf(usage, resolveModelInfo("anthropic:claude-haiku-5-5")).usd).toBeCloseTo(.0075005, 10);
+    write(join(iso.home, "projects/p/haiku.jsonl"), JSON.stringify({ t: "usage", at: now - 1000, model: "anthropic:claude-haiku-5-5", usage }) + "\n");
+    expect((await usageSummary(1, now)).totals.cost).toBeCloseTo(.0075005, 10);
+});
+
+test("cached Anthropic metadata cannot retain stale static prices", async () => {
+    const { resolveModelInfo, cachedListings } = await import("../src/providers/models");
+    write(join(iso.home, "cache/models.json"), JSON.stringify({ version: 3, providers: { anthropic: { fetchedAt: now, fp: "test", models: [
+        { provider: "anthropic", id: "claude-sonnet-5-5", pricing: { input: 2, output: 10, cacheRead: .2, cacheWrite: 2.5 } },
+        { provider: "anthropic", id: "claude-haiku-5-5", pricing: { input: .1, output: .5, cacheRead: .01, cacheWrite: .125 } },
+    ] } } }));
+    expect(costOf({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 1_000_000 }, resolveModelInfo("anthropic:claude-sonnet-5-5")).usd).toBe(.1);
+    const haiku = cachedListings().find(l => l.provider.id === "anthropic")!.models.find(m => m.id === "claude-haiku-5-5")!;
+    expect(costOf({ inputTokens: 150_000, outputTokens: 10_000 }, haiku).usd).toBeCloseTo(.1, 10);
+});
 beforeEach(() => {
     for (const root of [iso.home, claude, codex]) { rmSync(root, { recursive: true, force: true }); mkdirSync(root, { recursive: true }); }
     process.env.HARNESS_HOME = iso.home; process.env.CLAUDE_CONFIG_DIR = claude; process.env.CODEX_HOME = codex;
@@ -70,6 +111,188 @@ test("default selectors and named account folders contribute separate account/ti
     expect(s.accounts.map(a => `${a.source}/${a.accountId}`).sort()).toEqual(["claude-code/default", "claude-code/team", "codex/team"]);
     expect(s.buckets.some(b => b.source === "codex" && b.accountId === "team")).toBe(true);
     expect(usageDays(90)).toBe(90);
+});
+
+// A Harness-made account that shares Default's history (account-layout.ts): its history folders link Default's.
+function sharedAccount(id: string) {
+    const folders = { claude: join(iso.home, "accounts/claude", id), codex: join(iso.home, "accounts/codex", id) };
+    for (const [folder, from, subs] of [[folders.claude, claude, ["projects"]], [folders.codex, codex, ["sessions", "archived_sessions"]]] as const) {
+        for (const sub of subs) { mkdirSync(join(from, sub), { recursive: true }); mkdirSync(folder, { recursive: true }); symlinkSync(join(from, sub), join(folder, sub)); }
+    }
+    saveAgentConfig("claude-code", { accounts: [{ id, name: id, folder: folders.claude, managed: true }] });
+    saveAgentConfig("codex", { accounts: [{ id, name: id, folder: folders.codex, managed: true }] });
+}
+// The Harness session that ran native threads, through Session's own API; `steps` run with the clock at `at`.
+async function harnessSession(steps: [at: string, step: (s: any) => void][]) {
+    const { Session } = await import("../src/agent/session");
+    const clock = spyOn(Date, "now");
+    try {
+        clock.mockReturnValue(Date.parse(steps[0]![0]));
+        const session = Session.create(join(iso.home, "work"));
+        // Nothing is written before the first message.
+        session.push({ role: "user", content: [{ type: "text", text: "hello" }] });
+        for (const [at, step] of steps) { clock.mockReturnValue(Date.parse(at)); step(session); }
+        return session;
+    } finally { clock.mockRestore(); }
+}
+const cliUsage = (model: string) => (s: any) => s.recordUsage(model, { inputTokens: 1, outputTokens: 1 }, 0);
+// Input tokens by account (its rows are by model too).
+function byAccount(s: Awaited<ReturnType<typeof usageSummary>>, source: string) {
+    const out: Record<string, number> = {};
+    for (const a of s.accounts) if (a.source === source) out[a.accountId] = (out[a.accountId] ?? 0) + a.inputTokens;
+    return out;
+}
+
+test("a Harness-made account sharing Default's history gets its own usage rows (#428)", async () => {
+    sharedAccount("second");
+    try {
+        await harnessSession([
+            ["2026-10-15T11:00:00Z", s => { s.setAccount("claude-code", "second"); s.setAccount("codex", "second"); }],
+            ["2026-10-15T11:00:01Z", s => { s.setBackendSession("claude-code", "claude-session", 1); s.setBackendSession("codex", "codex-session", 1); }],
+            ["2026-10-15T13:00:02Z", cliUsage("claude-code:claude-opus-5-5")],
+            ["2026-10-15T14:01:02Z", cliUsage("codex:gpt-6-astra")],
+        ]);
+        write(join(claude, "projects/p/a.jsonl"), fixture("claude-current.jsonl"));
+        write(join(codex, "sessions/rollout-a.jsonl"), fixture("codex-current.jsonl"));
+        // A Codex sub-agent or fork of the thread Harness ran goes with it.
+        write(join(codex, "sessions/rollout-child.jsonl"), fixture("codex-fork.jsonl"));
+        // A plain terminal `claude` in the shared folder: no Harness session ran it, so it stays Default's.
+        write(join(claude, "projects/p/terminal.jsonl"), fixture("claude-current.jsonl").replaceAll("claude-session", "terminal-session").replaceAll("msg-1", "msg-9"));
+        const s = await usageSummary(1, now);
+        expect(byAccount(s, "claude-code")).toEqual({ second: 150, default: 150 });
+        expect(byAccount(s, "codex")).toEqual({ second: 1950 });
+        // Each transcript is still read and counted once.
+        expect(s.sources.find(s => s.source === "claude-code")).toMatchObject({ sessions: 2, inputTokens: 300 });
+        expect(s.sources.find(s => s.source === "codex")).toMatchObject({ sessions: 2, inputTokens: 1950 });
+    } finally { saveAgentConfig("claude-code", { accounts: [] }); saveAgentConfig("codex", { accounts: [] }); }
+});
+
+test("a native thread moved to a sharing account (#399) splits its usage at the switch (#428)", async () => {
+    sharedAccount("second");
+    try {
+        const session = await harnessSession([
+            ["2026-10-15T11:00:00Z", s => { for (const p of ["claude-code", "codex"]) s.setBackendSession(p, p === "codex" ? "codex-session" : "claude-session", 1, accountPlace(p)); }],
+            ["2026-10-15T12:00:01Z", cliUsage("claude-code:claude-opus-5-5")],
+            ["2026-10-15T12:01:01Z", cliUsage("codex:gpt-6-astra")],
+            ["2026-10-15T12:30:00Z", s => { s.setAccount("claude-code", "second"); s.setAccount("codex", "second"); }],
+            ["2026-10-15T13:00:01Z", cliUsage("claude-code:claude-opus-5-5")],
+            ["2026-10-15T13:00:02Z", cliUsage("codex:gpt-6-astra")],
+        ]);
+        // The switch kept the thread: both accounts' CLIs find it.
+        expect(session.backends.get("claude-code")?.id).toBe("claude-session");
+        expect(session.backends.get("codex")?.id).toBe("codex-session");
+        write(join(claude, "projects/p/a.jsonl"), fixture("claude-current.jsonl"));
+        write(join(codex, "sessions/rollout-a.jsonl"), fixture("codex-current.jsonl"));
+        const s = await usageSummary(1, now);
+        expect(byAccount(s, "claude-code")).toEqual({ default: 100, second: 50 });
+        // A turn after the last one Harness recorded (still running, say) is the account's the session is on now.
+        expect(byAccount(s, "codex")).toEqual({ default: 800, second: 1000 });
+        expect(s.sources.find(s => s.source === "claude-code")).toMatchObject({ sessions: 1, inputTokens: 150 });
+        expect(s.sources.find(s => s.source === "codex")).toMatchObject({ sessions: 1, inputTokens: 1800 });
+    } finally { saveAgentConfig("claude-code", { accounts: [] }); saveAgentConfig("codex", { accounts: [] }); }
+});
+
+test("a fork on another sharing account keeps the history its native fork copied under the original's account (#428)", async () => {
+    sharedAccount("second");
+    try {
+        let fork: any;
+        await harnessSession([
+            ["2026-10-15T11:00:00Z", s => s.setBackendSession("claude-code", "claude-session", 1, accountPlace("claude-code"))],
+            ["2026-10-15T13:00:01Z", cliUsage("claude-code:claude-opus-5-5")],
+            ["2026-10-15T14:00:00Z", s => { fork = s.fork({ shareBackends: true }); fork.setAccount("claude-code", "second"); }],
+            // Its first turn forked the thread natively (--fork-session): a new one, with the history copied.
+            ["2026-10-15T15:00:01Z", () => { fork.setBackendSession("claude-code", "fork-session", 2); cliUsage("claude-code:claude-opus-5-5")(fork); }],
+        ]);
+        const original = write(join(claude, "projects/p/a.jsonl"), fixture("claude-current.jsonl"));
+        const old = Date.now() / 1000 - 60;
+        utimesSync(original, old, old);
+        // Read first (newest): its copies of the original's replies are the ones counted.
+        write(join(claude, "projects/p/fork.jsonl"), fixture("claude-current.jsonl").replaceAll("claude-session", "fork-session")
+            + JSON.stringify({ type: "assistant", timestamp: "2026-10-15T15:00:00Z", sessionId: "fork-session", requestId: "req-3", message: { id: "msg-3", model: "claude-opus-5-5", usage: { input_tokens: 7, output_tokens: 1 } } }) + "\n");
+        const s = await usageSummary(1, now);
+        expect(byAccount(s, "claude-code")).toEqual({ default: 150, second: 7 });
+        expect(s.sources.find(s => s.source === "claude-code")).toMatchObject({ inputTokens: 157 });
+    } finally { saveAgentConfig("claude-code", { accounts: [] }); saveAgentConfig("codex", { accounts: [] }); }
+});
+
+const claudeReply = (at: string, session: string, id: string, input: number) =>
+    JSON.stringify({ type: "assistant", timestamp: at, sessionId: session, requestId: `req-${id}`, message: { id: `msg-${id}`, model: "claude-opus-5-5", usage: { input_tokens: input, output_tokens: 1 } } }) + "\n";
+const resetAccounts = () => { saveAgentConfig("claude-code", { accounts: [] }); saveAgentConfig("codex", { accounts: [] }); };
+
+test("a Harness session file read only in part never moves usage already counted (#428)", async () => {
+    sharedAccount("second");
+    try {
+        const session = await harnessSession([
+            ["2026-10-15T11:00:00Z", s => s.setBackendSession("claude-code", "claude-session", 1, accountPlace("claude-code"))],
+            ["2026-10-15T12:00:01Z", cliUsage("claude-code:claude-opus-5-5")],
+            ["2026-10-15T12:30:00Z", s => s.setAccount("claude-code", "second")],
+            ["2026-10-15T13:00:01Z", cliUsage("claude-code:claude-opus-5-5")],
+        ]);
+        const old = Date.now() / 1000 - 60;
+        utimesSync(session.path, old, old);
+        write(join(claude, "projects/p/a.jsonl"), fixture("claude-current.jsonl"));
+        usageBounds.maxBytes = 600;
+        let s: Awaited<ReturnType<typeof usageSummary>> | undefined;
+        for (let refresh = 0; refresh < 60 && (!s || s.truncated); refresh++) {
+            s = await usageSummary(1, now);
+            const counted = byAccount(s, "claude-code");
+            expect(counted.default ?? 0).toBeLessThanOrEqual(100);
+            expect(counted.second ?? 0).toBeLessThanOrEqual(50);
+        }
+        expect(s!.truncated).toBeUndefined();
+        expect(byAccount(s!, "claude-code")).toEqual({ default: 100, second: 50 });
+    } finally { resetAccounts(); }
+});
+
+test("nested native Codex agents go with the thread Harness ran (#428)", async () => {
+    sharedAccount("second");
+    const rollout = (id: string, parent: string, minute: number, input: number) => [
+        { timestamp: `2026-10-15T15:${minute}:00Z`, type: "session_meta", payload: { id, source: { subagent: { thread_spawn: { parent_thread_id: parent } } } } },
+        { timestamp: `2026-10-15T15:${minute}:01Z`, type: "turn_context", payload: { model: "gpt-6-astra" } },
+        { timestamp: `2026-10-15T15:${minute}:10Z`, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: { input_tokens: input, output_tokens: 1 } } } },
+    ].map(l => JSON.stringify(l)).join("\n") + "\n";
+    try {
+        await harnessSession([
+            ["2026-10-15T11:00:00Z", s => { s.setAccount("codex", "second"); s.setBackendSession("codex", "codex-root", 1); }],
+            ["2026-10-15T15:30:00Z", cliUsage("codex:gpt-6-astra")],
+        ]);
+        write(join(codex, "sessions/rollout-root.jsonl"), rollout("codex-root", "", 10, 300).replace(',"source":{"subagent":{"thread_spawn":{"parent_thread_id":""}}}', ""));
+        write(join(codex, "sessions/rollout-child.jsonl"), rollout("codex-child", "codex-root", 11, 200));
+        write(join(codex, "sessions/rollout-grandchild.jsonl"), rollout("codex-grandchild", "codex-child", 12, 100));
+        expect(byAccount(await usageSummary(1, now), "codex")).toEqual({ second: 600 });
+    } finally { resetAccounts(); }
+});
+
+test("a reply right after a switch is the new account's, though within the slack of the old one's last (#428)", async () => {
+    sharedAccount("second");
+    try {
+        await harnessSession([
+            ["2026-10-15T11:00:00Z", s => s.setBackendSession("claude-code", "claude-session", 1, accountPlace("claude-code"))],
+            ["2026-10-15T12:01:40Z", cliUsage("claude-code:claude-opus-5-5")],
+            ["2026-10-15T12:01:41Z", s => s.setAccount("claude-code", "second")],
+            ["2026-10-15T12:01:44Z", cliUsage("claude-code:claude-opus-5-5")],
+        ]);
+        write(join(claude, "projects/p/a.jsonl"), claudeReply("2026-10-15T12:01:39Z", "claude-session", "1", 100) + claudeReply("2026-10-15T12:01:43Z", "claude-session", "2", 200));
+        expect(byAccount(await usageSummary(1, now), "claude-code")).toEqual({ default: 100, second: 200 });
+    } finally { resetAccounts(); }
+});
+
+test.each([true, false])("a quick fork's copied history stays the original's, read first: %s (#428)", async (forkFirst) => {
+    sharedAccount("second");
+    try {
+        let fork: any;
+        await harnessSession([
+            ["2026-10-15T12:00:00Z", s => s.setBackendSession("claude-code", "claude-session", 1, accountPlace("claude-code"))],
+            ["2026-10-15T12:01:41Z", cliUsage("claude-code:claude-opus-5-5")],
+            ["2026-10-15T12:01:42Z", s => { fork = s.fork({ shareBackends: true }); fork.setAccount("claude-code", "second"); }],
+            ["2026-10-15T12:01:50Z", () => { fork.setBackendSession("claude-code", "fork-session", 2); cliUsage("claude-code:claude-opus-5-5")(fork); }],
+        ]);
+        const original = write(join(claude, "projects/p/a.jsonl"), claudeReply("2026-10-15T12:01:40Z", "claude-session", "1", 100));
+        const copy = write(join(claude, "projects/p/fork.jsonl"), claudeReply("2026-10-15T12:01:40Z", "fork-session", "1", 100) + claudeReply("2026-10-15T12:01:49Z", "fork-session", "2", 200));
+        const old = Date.now() / 1000 - 60;
+        utimesSync(forkFirst ? original : copy, old, old);
+        expect(byAccount(await usageSummary(1, now), "claude-code")).toEqual({ default: 100, second: 200 });
+    } finally { resetAccounts(); }
 });
 
 test("an invalid saved account folder is skipped, never resolved against the server's folder", async () => {

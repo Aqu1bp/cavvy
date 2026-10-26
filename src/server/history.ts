@@ -10,12 +10,12 @@ import { dirname, join } from "path";
 import { EFFORT_LEVELS, type Effort } from "../config/settings";
 import type { Message, ToolCallPart, ToolResultPart, UserMessage } from "../providers/types";
 import { textOf, toolCallsOf } from "../providers/types";
-import { redactedJson } from "../util/redact";
+import { redact, redactedJson } from "../util/redact";
 import { attachedPrompt } from "./attachments";
 import { fileDiff, trimInput, truncateText } from "./diffs";
-import type { AgentRun, Block, EffortLevel, FileDiff, PermissionModeId, ToolBlock, ToolCategoryId, Turn, TurnStatus } from "./protocol";
+import type { AgentRun, Block, EffortLevel, FileDiff, NoticeBlock, NoticeData, PermissionModeId, ToolBlock, ToolCategoryId, Turn, TurnStatus } from "./protocol";
 import { DELEGATE_TOOL } from "../agent/delegation";
-import { noticesUpTo, turnNotice, type TurnNotice } from "../agent/session";
+import { addNotice, noticesUpTo, turnNotice, type TurnNotice } from "../agent/session";
 import { allProviders, getProvider } from "../providers/registry";
 
 /** Tool output sent inline; longer output is fetched when the row is opened. */
@@ -42,6 +42,10 @@ export function promptText(m: UserMessage): string {
 export interface Segment {
     /** The summary that started this segment (none for the first). */
     summary?: string;
+    /** That summary was written while the conversation was idle, before its prompt cache expired. */
+    idle?: boolean;
+    /** Its message after the summary is the last one before it (a prompt waiting for its answer), moved here. */
+    kept?: boolean;
     messages: Message[];
     /** How its turns ended, where the messages don't say (errors, limits). */
     notices?: TurnNotice[];
@@ -60,7 +64,7 @@ export function readSegments(file: string): Segment[] {
     }
     for (const raw of text.split("\n")) {
         if (!raw) continue;
-        let l: { t: string; m?: Message; summary?: string; count?: number; source?: unknown; startedAt?: unknown; omitted?: unknown } & Partial<TurnNotice>;
+        let l: { t: string; m?: Message; summary?: string; idle?: boolean; kept?: boolean; count?: number; source?: unknown; startedAt?: unknown; omitted?: unknown } & Partial<TurnNotice>;
         try {
             l = JSON.parse(raw);
         } catch {
@@ -68,13 +72,13 @@ export function readSegments(file: string): Segment[] {
         }
         const cur = segments[segments.length - 1]!;
         if (l.t === "msg" && l.m) cur.messages.push(l.m);
-        else if (l.t === "compact") segments.push({ summary: l.summary ?? "", messages: [] });
+        else if (l.t === "compact") segments.push({ summary: l.summary ?? "", ...(l.idle === true ? { idle: true } : {}), ...(l.kept === true ? { kept: true } : {}), messages: [] });
         else if (l.t === "rewind" && typeof l.count === "number") {
             cur.messages = cur.messages.slice(0, l.count);
             if (cur.notices) cur.notices = noticesUpTo(cur.notices, l.count);
         } else if (l.t === "notice") {
             const n = turnNotice(l);
-            if (n) (cur.notices ??= []).push(n);
+            if (n) addNotice((cur.notices ??= []), n);
         }
         else if (l.t === "import" && typeof l.source === "string") cur.imported = { source: l.source, startedAt: typeof l.startedAt === "number" ? l.startedAt : undefined, omitted: typeof l.omitted === "number" ? l.omitted : 0 };
     }
@@ -96,7 +100,7 @@ export interface UiState {
 export type AgentHead = { [K in keyof Omit<AgentRun, "blocks">]?: AgentRun[K] | null };
 
 export type UiRecord =
-    | { t: "tool"; id: string; summary?: string; diff?: FileDiff; durationMs?: number; approval?: string; sandboxed?: boolean; images?: number; job?: ToolBlock["job"]; at?: number }
+    | { t: "tool"; id: string; summary?: string; diff?: FileDiff; diagnostics?: ToolBlock["diagnostics"]; durationMs?: number; approval?: string; sandboxed?: boolean; images?: number; job?: ToolBlock["job"]; at?: number }
     /** A turn's start (no `end`) begins its record afresh; its end adds to it, and so does its prompt's promptKey once that's in the history. */
     | { t: "turn"; seg: number; index: number; at: number; end?: number; status?: TurnStatus; prompt?: string }
     | { t: "pending-turn"; text: string; at: number }
@@ -356,7 +360,8 @@ export function agentFromCall(b: ToolBlock, turnId: string, ownModel?: string): 
     return {
         id: b.id,
         turnId,
-        description: text(i.description) ?? b.title,
+        // A skill that runs as its own agent is named by the skill ("code-review"), not its call ("Skill(code-review)").
+        description: text(i.description) ?? (b.name === "Skill" ? text(i.skill) : undefined) ?? b.title,
         agentType: text(i.subagent_type) ?? text(i.agent) ?? "general-purpose",
         model: model && model !== ownModel ? model : undefined,
         effort: EFFORT_LEVELS.includes(i.effort as Effort) ? i.effort as Effort : undefined,
@@ -438,7 +443,8 @@ function restoredAgent(rec: AgentRun, t: Turn): AgentRun {
 /** How an interrupted turn ends in the history (as Agent writes it when a turn is stopped). */
 export const INTERRUPTED = "[Request interrupted by user]";
 
-const isPrompt = (m: Message) => m.role === "user" && (m.meta?.kind === undefined || m.meta.kind === "prompt" || m.meta.kind === "command");
+/** A message the user sent that starts a turn of its own: a prompt, a command, a wake. */
+export const isPrompt = (m: Message) => m.role === "user" && (m.meta?.kind === undefined || m.meta.kind === "prompt" || m.meta.kind === "command" || m.meta.kind === "wake");
 /** Where a turn starts: a prompt, or tool results a message sent meanwhile rides along with. */
 const startsTurn = (m: Message) => isPrompt(m) || (m.role === "user" && m.meta?.kind === "tool_results" && m.content.some((p) => p.type === "text" && p.text.startsWith(STEERING)));
 
@@ -457,7 +463,7 @@ export function cutOffPrompt(ui: UiLog, seg: number, messages: Message[], notice
     // Another prompt there (that one was rewound in a terminal, this one sent there).
     if (rec.prompt !== undefined && rec.prompt !== promptKey(prompt as UserMessage)) return undefined;
     // A note of how it ended (an error), unless it went on after that (a Stop hook kept it going after a warning).
-    const wentOn = (from: number) => messages.slice(from).some((m) => m.role === "assistant" || m.meta?.kind === "reminder");
+    const wentOn = (from: number) => messages.slice(from).some((m) => m.role === "assistant" || m.meta?.kind === "reminder" || m.meta?.kind === "continuation");
     if (notices.some((n) => n.index > rec.index && !wentOn(n.index))) return undefined;
     const last = messages[messages.length - 1]!;
     if (last.role === "assistant" && !toolCallsOf(last).length) return undefined;
@@ -516,10 +522,22 @@ export interface ReplayInput {
     newId: () => string;
 }
 
+/** A kept notice as the transcript shows it (a live one is built the same way: Runtime.notice). */
+export function noticeBlock(n: Omit<TurnNotice, "index" | "at">, id: string): NoticeBlock {
+    const { level, text, details, source, title, link, account, stopped, limit } = n;
+    return { t: "notice", id, level, text, ...(details ? { details } : {}), ...(source ? { source } : {}), ...(title ? { title } : {}), ...(link ? { link } : {}), ...(account ? { account } : {}), ...(stopped ? { stopped } : {}), ...(limit ? { limit } : {}) };
+}
+
+/** A notice as it happens (an agent's event): its text the data's, if it has one, else the message; redacted. */
+export function liveNotice(id: string, level: NoticeBlock["level"], message: string, data: NoticeData = {}): NoticeBlock {
+    const { text, title, link, ...rest } = data;
+    return noticeBlock({ level, text: redact(text ?? message), ...rest, ...(title ? { title: redact(title) } : {}), ...(link ? { link: redact(link) } : {}) }, id);
+}
+
 export function replay(o: ReplayInput): Turn[] {
     const turns: Turn[] = [];
     const last = o.segments[o.segments.length - 1];
-    const segs: Segment[] = [...o.segments.slice(0, -1), { summary: last?.summary, imported: last?.imported, messages: o.current, notices: o.currentNotices ?? last?.notices }];
+    const segs: Segment[] = [...o.segments.slice(0, -1), { summary: last?.summary, idle: last?.idle, kept: last?.kept, imported: last?.imported, messages: o.current, notices: o.currentNotices ?? last?.notices }];
     segs.forEach((seg, si) => {
         const archived = si < segs.length - 1;
         let turn: Turn | undefined;
@@ -535,7 +553,7 @@ export function replay(o: ReplayInput): Turn[] {
         if (si > 0) {
             // Before any prompt of its segment: what a search finds there leads here.
             const t = start(undefined, undefined, -1);
-            t.blocks.push({ t: "compact", id: o.newId(), summary: seg.summary ?? "", auto: false });
+            t.blocks.push({ t: "compact", id: o.newId(), summary: seg.summary ?? "", auto: false, ...(seg.idle ? { idle: true } : {}) });
             turn = undefined;
         }
         if (seg.imported) {
@@ -549,20 +567,32 @@ export function replay(o: ReplayInput): Turn[] {
         const noticesBefore = (index: number) => {
             while (notices.length && notices[0]!.index <= index) {
                 const n = notices.shift()!;
+                // An account switch is between turns: a turn of its own with no prompt, as the live session shows it
+                // (Runtime.currentTurn), never the end of the turn before.
+                if (n.account) {
+                    if (!turn || turn.prompt || turn.blocks.some((b) => b.t !== "notice")) start(undefined, n.at || undefined);
+                    turn!.blocks.push(noticeBlock(n, o.newId()));
+                    continue;
+                }
                 // A notice can be the first block after compaction; it still needs a
                 // position for search, even when flushed after the last message.
                 const t = ensure(n.index);
-                t.blocks.push({ t: "notice", id: o.newId(), level: n.level, text: n.text });
+                t.blocks.push(noticeBlock(n, o.newId()));
                 if (n.level === "error" && t.status === "done") t.status = "error";
             }
         };
         // Turns whose steps came from the log: the transcript's text of them isn't shown again.
         const shown = new Set<Turn>();
+        let answerBlock: Extract<Block, { t: "text" }> | undefined;
+        // A prompt the next compaction kept is shown once, where it went on (after the summary).
+        const moved = segs[si + 1]?.kept ? seg.messages.length - 1 : -1;
+        const before = si > 0 && seg.kept ? segs[si - 1]!.messages.length - 1 : -1;
         seg.messages.forEach((m, index) => {
             noticesBefore(index);
+            if (index === moved && m.role === "user") return;
             if (m.role === "user") {
                 const kind = m.meta?.kind ?? "prompt";
-                if (kind === "summary" || kind === "reminder") return;
+                if (kind === "summary" || kind === "reminder" || kind === "continuation") return;
                 if (kind === "interrupt") {
                     const t = ensure(index);
                     t.status = "aborted";
@@ -579,7 +609,8 @@ export function replay(o: ReplayInput): Turn[] {
                         if (p.type === "tool_result") applyResult(tools.get(p.toolCallId), p, o.ui);
                         else if (p.type === "text" && p.text.startsWith(STEERING)) {
                             const rec = o.ui.turn(si, index);
-                            const t = start({ text: p.text.slice(STEERING.length).trim() }, rec?.at, index);
+                            // With what was attached to it (beside the results, not inside one).
+                            const t = start({ text: p.text.slice(STEERING.length).trim(), ...attachedPrompt(m.content), steered: true }, rec?.at, index);
                             t.snapshotId = m.meta?.checkpoint;
                             if (rec?.end) t.endedAt = rec.end;
                             if (rec?.status && rec.status !== "running") t.status = rec.status;
@@ -587,9 +618,11 @@ export function replay(o: ReplayInput): Turn[] {
                     }
                     return;
                 }
-                const rec = o.ui.turn(si, index);
+                // Its record from where it was sent, if the log has none here (written before it was moved).
+                const rec = o.ui.turn(si, index) ?? (index === 1 && before >= 0 ? o.ui.turn(si - 1, before) : undefined);
                 const imported = Boolean(m.meta?.imported);
-                const t = start({ text: promptText(m), ...attachedPrompt(m.content), ...(kind === "command" ? { command: true } : {}), ...(archived || imported ? {} : { index }) }, rec?.at, index);
+                // A wake (a watched PR, a monitor) isn't a prompt to rewind to.
+                const t = start({ text: promptText(m), ...attachedPrompt(m.content), ...(kind === "command" ? { command: true } : {}), ...(kind === "wake" ? { wake: true } : archived || imported ? {} : { index }) }, rec?.at, index);
                 t.snapshotId = m.meta?.checkpoint;
                 if (imported) t.imported = true;
                 if (rec?.end) t.endedAt = rec.end;
@@ -604,12 +637,26 @@ export function replay(o: ReplayInput): Turn[] {
             const t = ensure(index);
             const backend = getProvider(m.provider ?? "")?.kind === "agent";
             if (backend && shown.has(t)) return;
+            const previous = seg.messages[index - 1];
+            const continuing = previous?.role === "user" && previous.meta?.kind === "continuation";
+            if (!continuing) answerBlock = undefined;
+            const joinText = continuing || (m.stopReason === "max_tokens" && !toolCallsOf(m).length);
             for (const p of m.content) {
                 if (p.type === "thinking") {
-                    if (p.text.trim()) t.blocks.push({ t: "thinking", id: o.newId(), text: p.text });
+                    if (p.text.trim()) {
+                        t.blocks.push({ t: "thinking", id: o.newId(), text: p.text });
+                        if (answerBlock && joinText) {
+                            t.blocks.splice(t.blocks.indexOf(answerBlock), 1);
+                            t.blocks.push(answerBlock);
+                        }
+                    }
                 } else if (p.type === "text") {
                     const text = backend ? withoutActionsNote(p.text) : p.text;
-                    if (text.trim()) t.blocks.push({ t: "text", id: o.newId(), text });
+                    if (answerBlock && joinText) answerBlock.text += text;
+                    else if (text.trim() || (text && joinText)) {
+                        answerBlock = { t: "text", id: o.newId(), text };
+                        t.blocks.push(answerBlock);
+                    }
                     // An imported turn has no steps to show: its note says what was used.
                     else if (backend && t.imported) for (const used of actionsInNote(p.text)) t.blocks.push({ t: "notice", id: o.newId(), level: "info", text: `Used: ${used}` });
                 } else if (p.type === "tool_call") {
@@ -653,6 +700,7 @@ function applyResult(b: ToolBlock | undefined, p: ToolResultPart, ui: UiLog) {
     if (rec?.sandboxed !== undefined) b.sandboxed = rec.sandboxed;
     if (p.images?.length || rec?.images) b.images = p.images?.length ?? rec?.images;
     if (rec?.job) b.job = rec.job;
+    if (rec?.diagnostics) b.diagnostics = rec.diagnostics;
 }
 
 /** A one-line summary for a result the GUI didn't see happen (sessions from the terminal). */

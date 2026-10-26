@@ -9,7 +9,7 @@ const prevHarnessHome = process.env.HARNESS_HOME;
 const HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-test-"));
 process.env.HARNESS_HOME = HARNESS_HOME;
 
-const { parseVerdict, parseFast, AutoClassifier, MAX_ACTION_CHARS, REVIEW_REQUEST, ReviewRefused, reviewText, reviewTimeout } = await import("../src/permissions/classifier");
+const { cleanSummary, parseVerdict, parseFast, AutoClassifier, MAX_ACTION_CHARS, REVIEW_REQUEST, ReviewRefused, reviewText, reviewTimeout } = await import("../src/permissions/classifier");
 
 afterAll(() => {
     if (prevHarnessHome === undefined) delete process.env.HARNESS_HOME;
@@ -50,6 +50,34 @@ describe("parseVerdict", () => {
         ["two objects", '{"decision":"block"} {"decision":"allow"}'],
     ])("rejects %s", (_label, text) => {
         expect(parseVerdict(text)).toBeUndefined();
+    });
+});
+
+describe("the popup's summary line (#448)", () => {
+    test.each([
+        ["Summary: Writes notes.txt, then counts its lines", "Writes notes.txt, then counts its lines"],
+        ["summary:Writes notes.txt", "Writes notes.txt"],
+        ["SUMMARY : Writes notes.txt", "Writes notes.txt"],
+        ["**Summary:** Writes notes.txt", "Writes notes.txt"],
+        ['"Summary: Writes notes.txt"', "Writes notes.txt"],
+        ["  Summary:\n  Writes notes.txt  ", "Writes notes.txt"],
+        ["Writes notes.txt", "Writes notes.txt"],
+        // Only a leading label: the word elsewhere stays.
+        ["Prints the summary: line counts", "Prints the summary: line counts"],
+        ["Summarizes: the logs", "Summarizes: the logs"],
+    ])("%p shows as %p", (text, want) => {
+        expect(cleanSummary(text)).toBe(want);
+    });
+
+    test("the summary model's line and the reviewer's verdict both lose it", async () => {
+        const { fn } = fakeComplete("Summary: Writes notes.txt, then counts its lines");
+        expect(await new AutoClassifier(fn).summarize({ toolName: "Bash", input: { command: "cat <<EOF > notes.txt\nx\nEOF\nwc -l notes.txt" }, cwd: "/w" })).toBe("Writes notes.txt, then counts its lines");
+        expect(parseVerdict('{"decision":"block","reason":"r","summary":"Summary: Pushes main"}')).toEqual({ decision: "block", reason: "r", summary: "Pushes main" });
+    });
+
+    test("a summary that's only the label is none", async () => {
+        const { fn } = fakeComplete("Summary:");
+        expect(await new AutoClassifier(fn).summarize({ toolName: "Bash", input: { command: "ls\nls" }, cwd: "/w" })).toBeUndefined();
     });
 });
 

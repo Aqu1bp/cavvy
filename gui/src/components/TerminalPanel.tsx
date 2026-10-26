@@ -1,5 +1,5 @@
-import { createEffect, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
-import { Play, Plus, RotateCw, SquareTerminal, X } from "lucide-solid";
+import { batch, createEffect, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
+import { ChevronDown, Maximize2, Minimize2, Play, Plus, RotateCw, TerminalIcon, X } from "lucide-solid";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -7,11 +7,14 @@ import "../styles/terminal.css";
 import { app, refreshProviders, reportError, rpc, toast, trustRequest } from "../state/app";
 import { RpcError } from "../lib/rpc";
 import { prefs, setPrefs } from "../state/prefs";
-import { terminalActions, terminalOpen, setTerminalOpen, setSettingsTab, setupObscured, type SetupRun } from "../state/ui";
+import { terminalFontSize } from "../lib/text-size";
+import { terminalActions, terminalOpen, setTerminalOpen, setSettingsTab, setupObscured, terminalMax, setTerminalMax, setTerminalShown, setTerminalDrag, shellLayout, panelHold, type SetupRun } from "../state/ui";
+import { frameDrag } from "../lib/drag";
 import { basename, tildify } from "../lib/format";
 import { EarlyInput, loadTabs, restoreTabs, saveTabs, TerminalClosures, terminalInputChunks, type SavedTab } from "../lib/terminal";
 import { isTerminalReply } from "@shared/terminal-reply";
-import { copyText, isMod, isTerminalToggle, terminalShortcut } from "../lib/platform";
+import { copyText, isMod } from "../lib/platform";
+import { terminalKey, withShortcut } from "../state/keybindings";
 
 /**
  * `script`: the project script the tab was opened to run (once: restarting it gives a plain shell), and is named after.
@@ -35,6 +38,8 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
     const currentTabs = () => tabs().filter((t) => t.login || t.cwd === p.cwd);
     const active = () => currentTabs().find((t) => t.id === selected()) ?? currentTabs().at(-1);
     const visible = () => terminalOpen() && !p.hidden && (!!p.cwd || currentTabs().some((t) => t.login));
+    // The sheet gives the panel its row while it shows.
+    createEffect(() => setTerminalShown(visible()));
     let next = saved.next;
     // Not saved until the saved tabs are back, which would lose them to a reload meanwhile.
     const [restored, setRestored] = createSignal(false);
@@ -122,33 +127,53 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
         setTabs((all) => all.filter((t) => t !== tab));
     };
     let panel: HTMLElement | undefined;
+    // The conversation keeps its room above the terminal (lib/layout.ts); dragging ends a maximized terminal.
+    const clampHeight = (h: number) => Math.round(Math.max(120, Math.min(shellLayout().terminal.most, h)));
+    const setHeight = (h: number) => setPrefs("terminalHeight", clampHeight(h));
+    const [dragging, setDragging] = createSignal(false);
+    /** Ends the drag under way, if any: on release, and when the panel goes away in the middle of one. */
+    let stopDrag: (() => void) | undefined;
+    onCleanup(() => stopDrag?.());
     const resize = (e: PointerEvent) => {
         if (e.button !== 0) return;
         e.preventDefault();
+        stopDrag?.();
         const target = e.currentTarget as HTMLElement;
         target.setPointerCapture(e.pointerId);
         const y = e.clientY;
         const height = panel?.offsetHeight ?? 260;
-        const move = (event: PointerEvent) => setPrefs("terminalHeight", Math.min(window.innerHeight * 0.7, Math.max(120, height + y - event.clientY)));
-        const end = () => { target.removeEventListener("pointermove", move); target.removeEventListener("lostpointercapture", end); };
+        setTerminalMax(false);
+        setDragging(true);
+        // Shown once a frame, saved to the preferences on release.
+        const drag = frameDrag({
+            show: setTerminalDrag,
+            commit: (h) => batch(() => {
+                if (h !== undefined) setPrefs("terminalHeight", h);
+                setTerminalDrag(undefined);
+            }),
+        });
+        const move = (event: PointerEvent) => drag.move(clampHeight(height + y - event.clientY));
+        const end = () => { stopDrag = undefined; drag.end(); setDragging(false); target.removeEventListener("pointermove", move); target.removeEventListener("lostpointercapture", end); };
+        stopDrag = end;
         target.addEventListener("pointermove", move);
         target.addEventListener("lostpointercapture", end);
     };
     return (
-        <section ref={panel} class="terminal-panel" aria-label="Terminal panel" style={{ display: visible() ? "flex" : "none", height: `${prefs.terminalHeight}px` }}>
+        <section ref={panel} class={`terminal-panel ${terminalMax() ? "max" : ""} ${dragging() ? "dragging" : ""}`} classList={{ held: !!panelHold() }} aria-label="Terminal panel"
+            style={{ display: visible() ? "flex" : "none", width: panelHold() && `${panelHold()!.sheetWidth}px`, height: panelHold() && `${panelHold()!.terminal}px` }}>
             <div class="terminal-resize" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" tabIndex={0} onPointerDown={resize}
-                onKeyDown={(e) => { if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); setPrefs("terminalHeight", Math.min(window.innerHeight * .7, Math.max(120, prefs.terminalHeight + (e.key === "ArrowUp" ? 24 : -24)))); } }} />
+                onKeyDown={(e) => { if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); setTerminalMax(false); setHeight((panel?.offsetHeight ?? prefs.terminalHeight) + (e.key === "ArrowUp" ? 24 : -24)); } }} />
             <div class="terminal-toolbar">
-                <SquareTerminal size={14} /><span class="terminal-label">Terminal</span>
                 <div class="terminal-tabs" role="tablist" aria-label="Terminals">
                     <For each={currentTabs()}>{(tab) => <div class={`terminal-tab ${active()?.id === tab.id ? "on" : ""}`}>
-                        <button role="tab" aria-selected={active()?.id === tab.id} onClick={() => setSelected(tab.id)} title={tab.script?.setup ? `Setup script “${tab.script.name}” in ${tab.cwd}: ${tab.script.setup.command}` : tab.script ? `Script “${tab.script.name}” in ${tab.cwd}` : tab.cwd}>{tab.login ? `Sign in · ${tab.login.name}` : tab.script ? <><Play size={10} class="terminal-tab-icon" /> {tab.script.setup?.label ?? tab.script.name}</> : `${basename(tab.cwd)} ${tab.number}`}</button>
-                        <button class="hb sm" title="Close terminal and stop its shell" aria-label={tab.script ? `Close terminal ${tab.script.setup?.label ?? tab.script.name}` : `Close terminal ${tab.number}`} onClick={() => close(tab)}><X size={12} /></button>
+                        <button role="tab" aria-selected={active()?.id === tab.id} onClick={() => setSelected(tab.id)} title={tab.script?.setup ? `Setup script “${tab.script.name}” in ${tab.cwd}: ${tab.script.setup.command}` : tab.script ? `Script “${tab.script.name}” in ${tab.cwd}` : tab.cwd}>{tab.script ? <Play size={11} class="terminal-tab-icon" /> : <TerminalIcon size={13} class="terminal-tab-icon" />}{tab.login ? `Sign in · ${tab.login.name}` : tab.script ? (tab.script.setup?.label ?? tab.script.name) : `${basename(tab.cwd)} ${tab.number}`}</button>
+                        <button class="hb sm terminal-tab-x" title="Close terminal and stop its shell" aria-label={tab.script ? `Close terminal ${tab.script.setup?.label ?? tab.script.name}` : `Close terminal ${tab.number}`} onClick={() => close(tab)}><X size={12} /></button>
                     </div>}</For>
                 </div>
                 <button class="hb sm" title={full() ? `${MAX_TABS} terminals are open in this window` : "New terminal"} aria-label="New terminal" disabled={!restored() || app.conn !== "open" || full()} onClick={add}><Plus size={15} /></button>
                 <span class="terminal-cwd truncate" title={p.cwd}>{tildify(p.cwd ?? "", app.hello?.homeDir)}</span>
-                <button class="hb sm" title={`Hide terminal (${terminalShortcut})`} aria-label="Hide terminal" onClick={() => setTerminalOpen(false)}><X size={15} /></button>
+                <button class="hb sm" title={terminalMax() ? "Restore" : "Maximize"} aria-label={terminalMax() ? "Restore terminal size" : "Maximize terminal"} aria-pressed={terminalMax()} onClick={() => setTerminalMax(!terminalMax())}>{terminalMax() ? <Minimize2 size={14} /> : <Maximize2 size={14} />}</button>
+                <button class="hb sm" title={withShortcut("Hide terminal", "app:toggleTerminal")} aria-label="Hide terminal" onClick={() => setTerminalOpen(false)}><ChevronDown size={15} /></button>
             </div>
             <Show when={!currentTabs().length}>
                 <div class="terminal-message">
@@ -253,10 +278,18 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
             if (!disposed) void start();
         });
     };
-    const fitNow = () => {
+    /** The size last sent to the shell: a resize that leaves it the same isn't sent again. */
+    let sent = "";
+    /** `changed`: send the size only if it changed (a resize); otherwise always (a full-screen program draws itself again). */
+    const fitNow = (changed = false) => {
         if (disposed || !p.visible || !container?.clientHeight || !term) return;
         fit.fit();
-        if (opened && !ended() && app.conn === "open") void rpc.call("terminal.resize", { id, cols: Math.min(500, term.cols), rows: Math.min(300, term.rows) }).catch(() => {});
+        const size = `${term.cols}x${term.rows}`;
+        if (changed && size === sent) return;
+        if (opened && !ended() && app.conn === "open") {
+            sent = size;
+            void rpc.call("terminal.resize", { id, cols: Math.min(500, term.cols), rows: Math.min(300, term.rows) }).catch(() => {});
+        }
     };
     const lost = (e: unknown) => e instanceof RpcError && e.code === "disconnected";
     /** Back to the shell the server kept: what it printed meanwhile comes first (as terminal.data, ahead of the reply). */
@@ -352,20 +385,20 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
         }
     };
     onMount(() => {
-        term = new Terminal({ fontFamily: '"JetBrains Mono Variable", monospace', fontSize: 12, cursorBlink: true, scrollback: 5000, allowProposedApi: false });
+        term = new Terminal({ fontFamily: '"JetBrains Mono Variable", monospace', fontSize: terminalFontSize(prefs.fontSize), cursorBlink: true, scrollback: 5000, allowProposedApi: false });
         fit = new FitAddon();
         term.loadAddon(fit);
         term.open(container);
         const theme = () => {
             const style = getComputedStyle(container);
-            term.options.theme = { background: style.getPropertyValue("--bg").trim(), foreground: style.getPropertyValue("--fg").trim(), cursor: style.getPropertyValue("--fg").trim(), selectionBackground: "#80808060" };
+            term.options.theme = { background: style.getPropertyValue("--term-bg").trim(), foreground: style.getPropertyValue("--fg").trim(), cursor: style.getPropertyValue("--fg").trim(), selectionBackground: "#80808060" };
         };
         theme();
         const themeObserver = new MutationObserver(theme);
         themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
         term.attachCustomKeyEventHandler((e) => {
-            // Leave the app's toggle and clipboard shortcuts to their owners.
-            if (isTerminalToggle(e)) return false;
+            // Leave the app's toggle (and its chords) and clipboard shortcuts to their owners.
+            if (terminalKey(e) === "app") return false;
             if (isMod(e) && e.key.toLowerCase() === "c" && term.hasSelection()) {
                 if (e.type === "keydown") void copyText(term.getSelection());
                 return false;
@@ -417,7 +450,8 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
                 }
             } else if (away()) void reattach();
         });
-        const observer = new ResizeObserver(() => { cancelAnimationFrame(fitting); fitting = requestAnimationFrame(fitNow); });
+        // While the panels slide, the panel keeps one size (lib/layout.ts heldSizes): this fits once as it opens.
+        const observer = new ResizeObserver(() => { cancelAnimationFrame(fitting); fitting = requestAnimationFrame(() => fitNow(true)); });
         observer.observe(container);
         void start();
         onCleanup(() => {
@@ -433,6 +467,8 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
         });
     });
     createEffect(() => { if (p.visible) requestAnimationFrame(() => { if (!disposed && term) { fitNow(); term.focus(); } }); });
+    // Settings → Appearance → Text size: the cells follow it, and the shell gets the new size.
+    createEffect(on(() => prefs.fontSize, (size) => { if (term && !disposed) { term.options.fontSize = terminalFontSize(size); fitNow(true); } }, { defer: true }));
     return <div class="terminal-screen" style={{ display: p.visible ? "flex" : "none" }}>
         <div class="terminal-emulator" ref={container} />
         <Show when={loginOutputLost()}><div class="terminal-message">

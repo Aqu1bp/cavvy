@@ -1,4 +1,5 @@
 import { theme } from "../ui/ansi";
+import { loadScope, type Settings } from "../config/settings";
 
 export type PermissionMode = "default" | "acceptEdits" | "plan" | "auto" | "bypassPermissions";
 
@@ -71,4 +72,16 @@ export function nextMode(current: PermissionMode, allowBypass: boolean): Permiss
     if (allowBypass) cycle.push("bypassPermissions");
     const idx = cycle.indexOf(current);
     return cycle[(idx + 1) % cycle.length]!;
+}
+
+/**
+ * The mode a run starts in: the one asked for, else settings' defaultMode.
+ * bypassPermissions from settings counts only from the user's own file (or
+ * `bypassAllowed`, settings the caller gave): a project can't turn it on.
+ */
+export function startMode(asked: PermissionMode | undefined, settings: Settings, cwd: string, bypassAllowed = false): { mode: PermissionMode; ignoredBypass: boolean } {
+    if (asked) return { mode: asked, ignoredBypass: false };
+    const mode = settings.permissions?.defaultMode ?? "default";
+    if (mode === "bypassPermissions" && !bypassAllowed && loadScope("user", cwd).permissions?.defaultMode !== "bypassPermissions") return { mode: "default", ignoredBypass: true };
+    return { mode, ignoredBypass: false };
 }

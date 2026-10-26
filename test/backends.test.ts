@@ -2,12 +2,13 @@
 // `claude` and `codex` programs that speak the same protocols (test/fixtures).
 // Nothing here runs the real CLIs or touches the network.
 
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { join } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
 import { secretsSnapshot } from "./helpers/secrets";
+import type { Admitted } from "../src/agent/agent";
 
 const { cleanup } = isolate();
 const restoreSecrets = await secretsSnapshot();
@@ -27,11 +28,14 @@ const { claudeRule, claudePermissions } = await import("../src/backends/claude-c
 const { untrustedArgs, requestedPaths, elicitationForm } = await import("../src/backends/codex");
 const { deniedWithin } = await import("../src/permissions/rules");
 const { stopTiming } = await import("../src/backends/cli");
-const { backendActionsNote } = await import("../src/agent/agent");
+const { backendActionsNote, stoppedTasksNotice } = await import("../src/agent/agent");
 const { withoutActionsNote } = await import("../src/server/history");
 const { backgroundTiming } = await import("../src/backends/claude-code");
 const { forkSession, forkCut } = await import("../src/agent/fork");
 const { framedText, pdfPlaceholder } = await import("../src/providers/files");
+const { WakeQueue } = await import("../src/agent/wakes");
+const { SessionBackground } = await import("../src/agent/background");
+type BackgroundTaskInfo = import("../src/backends/live/info").BackgroundTaskInfo;
 
 type AgentEvent = import("../src/agent/agent").AgentEvent;
 type PermissionRequest = import("../src/agent/agent").PermissionRequest;
@@ -50,6 +54,20 @@ function wrapper(name: string, fixture: string): string {
 }
 const claudeBin = wrapper("claude", "fake-claude.ts");
 const codexBin = wrapper("codex", "fake-codex.ts");
+/** The fakes' FAKE_* settings as this process has them: a live Codex app-server reads them again with every message. */
+const ENV_FILE = join(bin, "fake-env.json");
+/** Stop the live Codex app-servers (as Harness quitting does): the next turn starts one that resumes the thread. */
+async function newAppServer() {
+    await (await import("../src/backends/codex-live")).shutdownCodexLive();
+}
+function writeFakeEnv() {
+    writeFileSync(ENV_FILE, JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("FAKE_") && k !== "FAKE_ENV_FILE" && k !== "FAKE_LOG"))));
+}
+
+// Each test's live Codex app-servers stop with it (one with background work would outlive it otherwise).
+afterEach(async () => {
+    await (await import("../src/backends/codex-live")).shutdownCodexLive();
+});
 
 afterAll(() => {
     restoreSecrets();
@@ -69,11 +87,13 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK"]) delete process.env[k];
+    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_IGNORE_INTERRUPT", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_MS", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_FG_TASK", "FAKE_SUB_COMMANDS", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS", "FAKE_SHELL_STATUS", "FAKE_STOP_ANSWER", "FAKE_STOP_MS", "FAKE_FOLLOWUP_MS", "FAKE_RESULT_DELAY_MS", "FAKE_EXIT_AFTER_MS", "FAKE_STOP_STATUS", "FAKE_STOP_TURN_AT", "FAKE_STOP_NOTIFY_AT", "FAKE_STOP_RESULT_AT", "FAKE_SHELL_NOTIFY_MS"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
     forgetClient("codex");
+    process.env.FAKE_ENV_FILE = ENV_FILE;
+    writeFakeEnv();
 });
 
 function logLines(): any[] {
@@ -96,7 +116,12 @@ interface Opts {
     session?: InstanceType<typeof Session>;
     queued?: string[][];
     /** In place of queued: the messages waiting when the turn ends. */
-    drainQueued?: () => string[];
+    drainQueued?: import("../src/agent/agent").AgentHost["drainQueued"];
+    /** What the runtime hands over while a CLI only waits on background work (AgentHost.drainWaiting). */
+    drainWaiting?: import("../src/agent/agent").AgentHost["drainWaiting"];
+    /** A wake queue, as the TUI and the app give a session. */
+    wakes?: InstanceType<typeof WakeQueue>;
+    skills?: () => import("../src/agent/skills").Skill[];
 }
 
 async function makeAgent(o: Opts) {
@@ -117,12 +142,14 @@ async function makeAgent(o: Opts) {
         settings: () => settings,
         approvedMcpServers: o.approvedMcpServers,
         readOnly: o.readOnly,
+        ...(o.skills ? { skills: o.skills } : {}),
         checker,
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
-        toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() },
+        toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map(), ...(o.wakes ? { wakes: o.wakes, watchers: new Map() } : {}) },
         host: {
             drainQueued: o.drainQueued ?? (() => queued.shift() ?? []),
+            drainWaiting: o.drainWaiting,
             emit: (e) => events.push(e),
             ui: o.ui ?? {},
             askPermission: o.ask
@@ -133,7 +160,10 @@ async function makeAgent(o: Opts) {
                 : undefined,
         },
     });
-    const run = (text: string, signal = new AbortController().signal) => agent.run([{ type: "text", text }], { signal });
+    const run = (text: string, signal = new AbortController().signal) => {
+        writeFakeEnv();
+        return agent.run([{ type: "text", text }], { signal });
+    };
     /** The user changing the mode (shift+tab): the agent hears about it. */
     const switchMode = (m: PermissionMode) => {
         const from = mode;
@@ -145,18 +175,62 @@ async function makeAgent(o: Opts) {
 
 const notices = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "notice" ? [`${e.level}: ${e.message}`] : []));
 const toolEnds = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "tool_end" ? [e] : []));
-const userTexts = () => received().flatMap((m) => (m.type === "user" ? m.message.content.filter((c: any) => c.type === "text").map((c: any) => c.text as string) : []));
+/** Each user message's text: its text blocks (Harness's catch-up in one of its own, then the user's words) joined. */
+const userTexts = () => received().flatMap((m) => (m.type === "user" && Array.isArray(m.message.content) && m.message.content.some((c: any) => c.type === "text") ? [m.message.content.filter((c: any) => c.type === "text").map((c: any) => c.text as string).join("\n\n")] : []));
 const permissionReplies = () => received().filter((m) => m.type === "control_response").map((m) => m.response.response);
 
 describe("agent providers", () => {
-    test("are off until turned on, and can't answer one-off requests", async () => {
+    test("are off until turned on, and can't answer a request that offers the harness's tools", async () => {
         registry.removeAgentConfig("claude-code");
         forgetClient("claude-code");
         await expect(clientFor("claude-code")).rejects.toThrow(/isn't turned on. Run \/login claude-code/);
         registry.saveAgentConfig("claude-code", { path: claudeBin });
         const c = await clientFor("claude-code");
         expect(isAgentBackend(c)).toBe(true);
-        await expect(c.stream({} as any, () => {})).rejects.toThrow(/can't answer one-off requests/);
+        await expect(c.stream({ tools: [{ name: "Read", description: "", parameters: {} }] } as any, () => {})).rejects.toThrow(/can't answer a request that offers tools/);
+    });
+
+    // One-off requests (MCP sampling, prompt hooks) go to the session's own CLI when it's Claude Code or Codex.
+    const oneOff = (provider: "claude-code" | "codex", tools: any[] = []) =>
+        clientFor(provider).then((c) => c.stream({ model: { provider, id: "default" } as any, system: "Answer briefly.", messages: [{ role: "user", content: [{ type: "text", text: "capital of France?" }] }], tools, maxTokens: 50, lightweight: true }, () => {}));
+
+    test("Claude Code answers a one-off in a session with no tools, settings, MCP servers or session file", async () => {
+        process.env.FAKE_ONEOFF_ANSWER = "Paris";
+        const r = await oneOff("claude-code");
+        expect(r.content).toEqual([{ type: "text", text: "Paris" }]);
+        expect(r.stopReason).toBe("end_turn");
+        expect(logLines().find((l) => l.oneOff)?.oneOff).toEqual({ system: "Answer briefly.", prompt: "capital of France?" });
+        const argv = starts()[0].argv as string[];
+        for (const f of ["--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands"]) expect(argv).toContain(f);
+        expect(argv[argv.indexOf("--setting-sources") + 1]).toBe("");
+    });
+
+    test("Codex answers a one-off in an ephemeral read-only thread with no shell", async () => {
+        process.env.FAKE_ONEOFF_ANSWER = "Paris";
+        const r = await oneOff("codex");
+        expect(r.content).toEqual([{ type: "text", text: "Paris" }]);
+        expect(logLines().find((l) => l.oneOffThread)?.oneOffThread).toMatchObject({ baseInstructions: "Answer briefly.", approvalPolicy: "never", sandbox: "read-only", config: { "features.shell_tool": false, "features.unified_exec": false } });
+    });
+
+    test("a Codex one-off turns off every MCP server Codex is configured with, and won't run when it can't list them", async () => {
+        process.env.FAKE_USER_MCP = JSON.stringify({ github: { command: "gh-mcp", default_tools_approval_mode: "approve" } });
+        await oneOff("codex");
+        expect(logLines().find((l) => l.oneOffThread)?.oneOffThread.config).toMatchObject({ mcp_servers: { github: { enabled: false } }, "features.shell_tool": false });
+        rmSync(LOG, { force: true });
+        process.env.FAKE_NO_CONFIG_READ = "1";
+        await expect(oneOff("codex")).rejects.toThrow(/couldn't be turned off/);
+        expect(logLines().some((l) => l.oneOffThread)).toBe(false);
+        delete process.env.FAKE_NO_CONFIG_READ;
+        delete process.env.FAKE_USER_MCP;
+    });
+
+    test("a one-off that fails is an error, on both CLIs", async () => {
+        for (const provider of ["codex", "claude-code"] as const) {
+            process.env.FAKE_ONEOFF_FAIL = "overloaded";
+            await expect(oneOff(provider)).rejects.toThrow("overloaded");
+            delete process.env.FAKE_ONEOFF_FAIL;
+            await expect(oneOff(provider, [{ name: "t", description: "", parameters: {} }])).rejects.toThrow("offers tools");
+        }
     });
 
     test("a missing CLI says how to install and sign in", async () => {
@@ -420,6 +494,58 @@ describe("Claude Code backend", () => {
         expect(userTexts().at(-1)).toBe("/compact keep the plan");
         expect(events.some((e) => e.type === "compact_end")).toBe(true);
     });
+
+    test("idle compaction: a subscription's one-hour cache plans one at 54 minutes; it runs Claude Code's /compact, once", async () => {
+        process.env.FAKE_CACHE_1H = "250000";
+        const { run, agent, events } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
+        const before = Date.now();
+        await run("go");
+        const plan = agent.idleCompactPlan()!;
+        expect(plan).not.toBeNull();
+        expect(plan.expiresAt - plan.fireAt).toBe(6 * 60_000);
+        expect(plan.expiresAt - 60 * 60_000).toBeGreaterThanOrEqual(before);
+        expect(plan.expiresAt - 60 * 60_000).toBeLessThanOrEqual(Date.now());
+        expect(await agent.compact({ auto: true, idle: true, signal: new AbortController().signal })).toBe(true);
+        expect(userTexts().at(-1)).toBe("/compact");
+        expect(events.filter((e) => e.type === "compact_start" || e.type === "compact_end").map((e) => ("idle" in e ? e.idle : undefined))).toEqual([true, true]);
+        expect(agent.idleCompactPlan()).toBeNull();
+    });
+
+    test("idle compaction: the cache dates from the last request, not from when a long reply ended", async () => {
+        process.env.FAKE_CACHE_1H = "250000";
+        process.env.FAKE_GROWING_CONTEXT = "1";
+        const { run, agent, events } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
+        const realNow = Date.now;
+        let shift = 0;
+        let sent = Date.now();
+        // Each reply takes ten minutes to stream; tool results go back (a new request) at once.
+        const push = events.push.bind(events);
+        events.push = (...es: AgentEvent[]) => {
+            for (const e of es) {
+                if (e.type === "text") shift += 10 * 60_000;
+                if (e.type === "tool_end") sent = Date.now();
+            }
+            return push(...es);
+        };
+        Date.now = () => realNow() + shift;
+        try {
+            await run("go");
+            const plan = agent.idleCompactPlan(sent)!;
+            expect(shift).toBeGreaterThan(0);
+            expect(plan).not.toBeNull();
+            // From the request: 54 minutes after it, not 54 after the reply ended (past the cache's life).
+            expect(plan.expiresAt - 60 * 60_000).toBeLessThanOrEqual(sent);
+            expect(plan.expiresAt - 60 * 60_000).toBeGreaterThan(sent - 60_000);
+        } finally {
+            Date.now = realNow;
+        }
+    });
+
+    test("idle compaction: with no one-hour cache reported, nothing is planned by default", async () => {
+        const { run, agent } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
+        await run("go");
+        expect(agent.idleCompactPlan()).toBeNull();
+    });
 });
 
 describe("Claude Code's background work (live test findings)", () => {
@@ -445,6 +571,19 @@ describe("Claude Code's background work (live test findings)", () => {
         expect(session.messages.at(-1)!.content.map((p) => (p as any).text).join("\n")).toContain("The explorer reported back");
     });
 
+    test("a skill that runs as its own agent (as /code-review does) ends with its Skill call: done, or stopped when declined, whether or not Claude Code says it ended", async () => {
+        for (const [scenario, ended] of [["skill-agent", "done"], ["skill-agent-quiet", "done"], ["skill-agent-declined", "aborted"]] as const) {
+            process.env.FAKE_SCENARIO = scenario;
+            const { run, events } = await makeAgent({ provider: "claude-code" });
+            await run("review the diff");
+            // Once: not left running after its call is over, and not ended twice when Claude Code does say.
+            expect({ scenario, ends: subEnds(events) }).toEqual({ scenario, ends: [ended] });
+            // What the skill returned is its report, also when Claude Code said it ended first.
+            const reported = events.some((e) => e.type === "subagent" && e.event.type === "text" && e.event.text === "No findings.");
+            if (ended === "done") expect({ scenario, reported }).toEqual({ scenario, reported: true });
+        }
+    });
+
     test("...and its usage is what Claude Code reports for it", async () => {
         process.env.FAKE_SCENARIO = "agent-background";
         const { run, events } = await makeAgent({ provider: "claude-code" });
@@ -453,6 +592,52 @@ describe("Claude Code's background work (live test findings)", () => {
         // Its total so far (task_progress), then what it came to (task_notification): counted once.
         expect(used.reduce((a, b) => a + b, 0)).toBe(4321);
     });
+
+    test("by default a background sub-agent isn't stopped however long it runs, as in Claude Code: only the user stops it", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
+        const saved = { ...backgroundTiming };
+        const realNow = Date.now;
+        let skew = 0;
+        Date.now = () => realNow() + skew;
+        backgroundTiming.pollMs = 10;
+        const ac = new AbortController();
+        try {
+            expect(saved.maxWaitMs).toBe(Number.POSITIVE_INFINITY);
+            const { run, events } = await makeAgent({ provider: "claude-code" });
+            const done = run("map the auth module", ac.signal);
+            while (!notices(events).some((n) => n.includes("Waiting for"))) await Bun.sleep(10);
+            // Three hours on: still waited for.
+            skew = 3 * 60 * 60_000;
+            await Bun.sleep(300);
+            expect(subEnds(events)).toEqual([]);
+            expect(notices(events).join("\n")).not.toMatch(/Stopped/);
+            ac.abort();
+            expect(await done).toBe("aborted");
+        } finally {
+            Date.now = realNow;
+            ac.abort();
+            Object.assign(backgroundTiming, saved);
+        }
+    }, 20_000);
+
+    test("with no cap, a run whose Claude Code crashed while something it started holds its output open still ends", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
+        process.env.FAKE_HOLD_STDOUT = "1";
+        process.env.FAKE_EXIT_AFTER_MS = "800";
+        const saved = { ...backgroundTiming };
+        backgroundTiming.exitDrainMs = 100;
+        try {
+            const { run } = await makeAgent({ provider: "claude-code" });
+            const started = Date.now();
+            await run("map the auth module");
+            // Its output is held for 8 s (FAKE_HOLD_STDOUT): it ended well before that.
+            expect(Date.now() - started).toBeLessThan(5000);
+        } finally {
+            delete process.env.FAKE_HOLD_STDOUT;
+            delete process.env.FAKE_EXIT_AFTER_MS;
+            Object.assign(backgroundTiming, saved);
+        }
+    }, 20_000);
 
     test("a background sub-agent that never finishes is waited on only so long, and the user is told it was stopped", async () => {
         process.env.FAKE_SCENARIO = "agent-background-stuck";
@@ -463,7 +648,7 @@ describe("Claude Code's background work (live test findings)", () => {
             expect(await run("map the auth module")).toBe("done");
             expect(subEnds(events)).toEqual(["aborted"]);
             expect(taskEnd(events).result.isError).toBe(true);
-            expect(notices(events).join("\n")).toMatch(/^warn: Stopped waiting for 1 background sub-agent \(Map auth\)/m);
+            expect(notices(events).join("\n")).toMatch(/^warn: Harness stopped 1 background sub-agent \(Map auth\) after waiting 1s, its limit for background work, and Claude Code with it\. It won't report back\./m);
         } finally {
             Object.assign(backgroundTiming, saved);
         }
@@ -603,6 +788,315 @@ describe("Claude Code's background work (live test findings)", () => {
         expect(texts(a.events)).toContain("The explorer reported back");
     }, 20_000);
 
+    // #202: between Claude Code's turns, waiting only on background work, nothing is mid-step to protect.
+    describe("messages queued while it only waits on background work", () => {
+        const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+        type Item = { text: string; mode: "steer" | "queue"; images?: import("../src/providers/types").ImagePart[]; held?: boolean };
+        /** The runtime's queue, by its rules: steer-mode text joins a running step; while Claude Code only waits, any message but a command or a held one goes, one at a time. */
+        function queue(items: Item[] = []) {
+            const command = (t: string) => /^\s*(!|\/(?!\/))/.test(t);
+            const take = (pick: (q: Item) => boolean) => {
+                const taken = items.filter(pick);
+                for (const q of taken) items.splice(items.indexOf(q), 1);
+                return taken;
+            };
+            const waits: string[] = [];
+            /** Steer messages a UserPromptSubmit hook blocked: the runtime hands them back to the composer. */
+            const blocked: string[] = [];
+            return {
+                items,
+                waits,
+                blocked,
+                // Their hooks (admit) run while they're still queued, as the runtime has them.
+                drainQueued: async (_record?: () => void, admit?: (text: string) => Promise<Admitted>) => {
+                    const steer = items.filter((q) => q.mode === "steer" && !q.held && !q.images?.length && !command(q.text));
+                    const go: Admitted[] = [];
+                    for (const q of steer) {
+                        const a = admit ? await admit(q.text) : { text: q.text, admission: "go" as const };
+                        if (a.admission === "stopped") return [];
+                        if (a.admission === "blocked") blocked.push(q.text);
+                        else go.push(a);
+                    }
+                    take((q) => steer.includes(q));
+                    return go;
+                },
+                drainWaiting: async (steps: any) => {
+                    const q = items.find((x) => !x.held && !command(x.text));
+                    if (!q) return undefined;
+                    const at = items.indexOf(q);
+                    take((x) => x === q);
+                    const parts = [{ type: "text" as const, text: q.text }, ...(q.images ?? [])];
+                    const admitted: unknown = await steps.admit(parts, q.text);
+                    // Stopped before it went: back where it was, as the runtime puts it.
+                    if (admitted === "stopped") items.splice(at, 0, q);
+                    if (admitted !== "go" && admitted !== true) return undefined;
+                    steps.record();
+                    waits.push(q.text);
+                    return { parts, display: q.text };
+                },
+            };
+        }
+        const userSent = (text: string) => received().find((m) => m.type === "user" && JSON.stringify(m.message.content).includes(text));
+        /** Until `ok`, or the run is over (`done` settles): whether `ok` came first. */
+        async function before(ok: () => boolean, done: Promise<unknown>): Promise<boolean> {
+            let over = false;
+            void done.finally(() => (over = true));
+            while (!ok() && !over) await Bun.sleep(10);
+            return ok();
+        }
+        async function waiting(o: { items?: Item[]; settings?: any; skills?: () => import("../src/agent/skills").Skill[]; session?: InstanceType<typeof Session>; signal?: AbortSignal; prepare?: (a: Awaited<ReturnType<typeof makeAgent>>) => void } = {}) {
+            process.env.FAKE_SCENARIO = "agent-background";
+            process.env.FAKE_SECOND_SCENARIO = "none";
+            process.env.FAKE_BACKGROUND_MS = "2000";
+            const q = queue(o.items);
+            const a = await makeAgent({ provider: "claude-code", settings: o.settings, skills: o.skills, session: o.session, drainQueued: q.drainQueued, drainWaiting: q.drainWaiting });
+            o.prepare?.(a);
+            const done = a.run("map the auth module", o.signal);
+            while (!notices(a.events).some((n) => n.includes("Waiting for"))) await Bun.sleep(10);
+            return { a, q, done };
+        }
+
+        test("an image goes to Claude Code at once, with its image, before the background work ends", async () => {
+            const { a, q, done } = await waiting();
+            const image = { type: "image" as const, mediaType: "image/png", data: PNG };
+            q.items.push({ text: "what's wrong in this screenshot?", mode: "steer", images: [image] });
+            expect(await before(() => Boolean(userSent("what's wrong in this screenshot?")), done)).toBe(true);
+            // The sub-agent is still at work: it didn't wait for it.
+            expect(subEnds(a.events)).toEqual([]);
+            expect(await done).toBe("done");
+            expect(starts()).toHaveLength(1);
+            // Its image first and its text last, as runTurn sends a prompt: Claude Code reads a /command only from the last block.
+            expect(userSent("what's wrong in this screenshot?").message.content).toEqual([
+                { type: "image", source: { type: "base64", media_type: "image/png", data: PNG } },
+                { type: "text", text: "what's wrong in this screenshot?" },
+            ]);
+            // Recorded as a prompt of its own, after the answer before it, with its image.
+            const i = a.session.messages.findIndex((m) => m.role === "user" && m.content.some((p) => (p as any).text === "what's wrong in this screenshot?"));
+            expect(a.session.messages[i]!.meta?.kind).toBe("prompt");
+            expect(a.session.messages[i]!.content).toContainEqual(image);
+            expect(a.session.messages[i - 1]!.role).toBe("assistant");
+            expect(q.items).toEqual([]);
+            expect(subEnds(a.events)).toEqual(["done"]);
+        }, 20_000);
+
+        test("a message in queue mode goes at once too; then the next, once Claude Code has answered it", async () => {
+            const { a, q, done } = await waiting();
+            q.items.push({ text: "and the tests?", mode: "queue" }, { text: "and the docs?", mode: "queue" });
+            expect(await before(() => Boolean(userSent("and the docs?")), done)).toBe(true);
+            expect(subEnds(a.events)).toEqual([]);
+            expect(await done).toBe("done");
+            // In the order sent, each a prompt of its own.
+            expect(userTexts().slice(-2)).toEqual(["and the tests?", "and the docs?"]);
+            expect(q.waits).toEqual(["and the tests?", "and the docs?"]);
+            expect(starts()).toHaveLength(1);
+        }, 20_000);
+
+        test("held messages stay held, and commands wait for the run's end", async () => {
+            const { a, q, done } = await waiting({ items: [{ text: "held since a restart", mode: "queue", held: true }, { text: "/compact", mode: "queue" }, { text: "!ls", mode: "steer" }] });
+            q.items.push({ text: "but this goes", mode: "queue" });
+            expect(await before(() => Boolean(userSent("but this goes")), done)).toBe(true);
+            expect(await done).toBe("done");
+            expect(q.items.map((x) => x.text)).toEqual(["held since a restart", "/compact", "!ls"]);
+            expect(userTexts()).not.toContain("held since a restart");
+            expect(userTexts()).not.toContain("/compact");
+            expect(subEnds(a.events)).toEqual(["done"]);
+        }, 20_000);
+
+        test("its UserPromptSubmit hooks run as for a prompt sent on its own: one that blocks keeps it from Claude Code, and the user is told", async () => {
+            const settings = { hooks: { UserPromptSubmit: [{ command: `grep -q forbidden && { echo "no forbidden words" >&2; exit 2; }; exit 0` }] } };
+            const { a, q, done } = await waiting({ settings });
+            q.items.push({ text: "say forbidden things", mode: "queue" }, { text: "a fine one", mode: "queue" });
+            expect(await before(() => Boolean(userSent("a fine one")), done)).toBe(true);
+            expect(await done).toBe("done");
+            expect(userSent("say forbidden things")).toBeUndefined();
+            expect(notices(a.events)).toContainEqual(expect.stringMatching(/^warn: Prompt blocked by hook: .*no forbidden words/));
+            // Not in the conversation either, as a blocked prompt isn't.
+            expect(JSON.stringify(a.session.messages)).not.toContain("say forbidden things");
+            expect(q.waits).toEqual(["a fine one"]);
+        }, 20_000);
+
+        test("after one its hook blocks, the next goes in order, through its own hooks: a steer one doesn't skip ahead unchecked", async () => {
+            const settings = { hooks: { UserPromptSubmit: [{ command: `grep -q forbidden && { echo "no forbidden words" >&2; exit 2; }; exit 0` }] } };
+            const { q, done } = await waiting({ settings });
+            q.items.push({ text: "A forbidden", mode: "queue" }, { text: "B fine", mode: "queue" }, { text: "C forbidden too", mode: "steer" });
+            expect(await before(() => Boolean(userSent("B fine")), done)).toBe(true);
+            expect(await done).toBe("done");
+            expect(userSent("A forbidden")).toBeUndefined();
+            expect(userSent("C forbidden too")).toBeUndefined();
+            expect(userTexts().slice(-1)).toEqual(["B fine"]);
+            expect(q.waits).toEqual(["B fine"]);
+            expect(q.items).toEqual([]);
+        }, 20_000);
+
+        test("one interrupted while its start snapshot is captured stays queued, image and all: nothing stored or sent, and the open turn's snapshot isn't cut", async () => {
+            const session = Session.create(cwd, { system: "test" });
+            const ac = new AbortController();
+            let capturing = false;
+            const opened: string[] = [];
+            let release!: () => void;
+            const capture = new Promise<void>((r) => (release = r));
+            const { a, q, done } = await waiting({
+                session,
+                signal: ac.signal,
+                prepare: (a) => {
+                    a.agent.options.trusted = () => true;
+                    const snaps = a.agent.turnSnapshots!;
+                    snaps.prepare = async () => {
+                        capturing = true;
+                        await capture;
+                        return { files: {} } as never;
+                    };
+                    snaps.beginWith = async (_id, prompt) => void opened.push(prompt);
+                },
+            });
+            try {
+                const image = { type: "image" as const, mediaType: "image/png", data: PNG };
+                q.items.push({ text: "look at this", mode: "queue", images: [image] });
+                while (!capturing) await Bun.sleep(10);
+                ac.abort();
+                await Bun.sleep(50);
+                release();
+                expect(await done).toBe("aborted");
+                expect(q.items).toEqual([{ text: "look at this", mode: "queue", images: [image] }]);
+                expect(JSON.stringify(a.session.messages)).not.toContain("look at this");
+                expect(userSent("look at this")).toBeUndefined();
+                expect(opened).toEqual([]);
+            } finally {
+                release();
+                ac.abort();
+                await done;
+                session.release();
+            }
+        }, 20_000);
+
+        test("one that goes opens its turn's snapshot from what was captured before it went, once it's stored", async () => {
+            const session = Session.create(cwd, { system: "test" });
+            const opened: { prompt: string; stored: boolean; captured: unknown }[] = [];
+            const captured = { files: { marker: true } };
+            const { a, q, done } = await waiting({
+                session,
+                prepare: (a) => {
+                    a.agent.options.trusted = () => true;
+                    const snaps = a.agent.turnSnapshots!;
+                    snaps.prepare = async () => captured as never;
+                    snaps.beginWith = async (_id, prompt, c) => void opened.push({ prompt, stored: JSON.stringify(a.session.messages).includes("look at this"), captured: c });
+                },
+            });
+            try {
+                q.items.push({ text: "look at this", mode: "queue" });
+                expect(await before(() => Boolean(userSent("look at this")), done)).toBe(true);
+                expect(opened).toEqual([{ prompt: "look at this", stored: true, captured }]);
+                await done;
+            } finally {
+                session.release();
+            }
+        }, 20_000);
+
+        test("one whose hooks are still running when Claude Code goes away stays queued, image and all, and isn't recorded or sent", async () => {
+            // The CLI exits while the hook runs: the message can't go, so it waits for the next run.
+            process.env.FAKE_EXIT_AFTER_MS = "1500";
+            try {
+                const settings = { hooks: { UserPromptSubmit: [{ command: "sleep 3; exit 0" }] } };
+                const { a, q, done } = await waiting({ settings });
+                const image = { type: "image" as const, mediaType: "image/png", data: PNG };
+                q.items.push({ text: "late one", mode: "queue", images: [image] });
+                await done;
+                expect(q.items).toEqual([{ text: "late one", mode: "queue", images: [image] }]);
+                expect(userSent("late one")).toBeUndefined();
+                expect(JSON.stringify(a.session.messages)).not.toContain("late one");
+            } finally {
+                delete process.env.FAKE_EXIT_AFTER_MS;
+            }
+        }, 30_000);
+
+        test("what a UserPromptSubmit hook adds goes with it", async () => {
+            const { q, done } = await waiting({ settings: { hooks: { UserPromptSubmit: [{ command: "echo branch is main" }] } } });
+            q.items.push({ text: "and the tests?", mode: "queue" });
+            expect(await before(() => Boolean(userSent("and the tests?")), done)).toBe(true);
+            await done;
+            expect(JSON.stringify(userSent("and the tests?").message.content)).toContain("Context from a UserPromptSubmit hook:\\nbranch is main");
+        }, 20_000);
+
+        test("a $skill it names is loaded as in a prompt sent on its own", async () => {
+            const dir = join(tempDir("skills-"), "deploy");
+            mkdirSync(dir, { recursive: true });
+            writeFileSync(join(dir, "SKILL.md"), "---\nname: deploy\ndescription: Ship it\n---\nDeploy steps.\n");
+            const deploy = { name: "deploy", description: "Ship it", modelInvocable: true, userInvocable: true, source: "user" as const, file: join(dir, "SKILL.md"), dir };
+            const { q, done } = await waiting({ skills: () => [deploy] });
+            q.items.push({ text: "then ship it with $deploy", mode: "queue" });
+            expect(await before(() => Boolean(userSent("then ship it with $deploy")), done)).toBe(true);
+            await done;
+            expect(userSent("then ship it with $deploy").message.content[0].text).toBe('then ship it with $deploy\n\nLoad the "harness:deploy" skill with the Skill tool and follow it.');
+        }, 20_000);
+
+        test("during a step, a queue-mode message still waits for the run's end and a steer message joins at the tool result", async () => {
+            process.env.FAKE_SCENARIO = "steering";
+            const q = queue([{ text: "after the turn", mode: "queue" }, { text: "with a picture", mode: "steer", images: [{ type: "image", mediaType: "image/png", data: PNG }] }, { text: "steer now", mode: "steer" }]);
+            const a = await makeAgent({ provider: "claude-code", drainQueued: q.drainQueued, drainWaiting: q.drainWaiting });
+            expect(await a.run("start")).toBe("done");
+            expect(logLines().find((l) => l.foldedBeforeResult)?.foldedBeforeResult).toEqual(["steer now"]);
+            expect(userTexts()).toEqual(["start", "steer now"]);
+            // No background work: nothing went as a prompt of its own; the runtime runs them after the run.
+            expect(q.waits).toEqual([]);
+            expect(q.items.map((x) => x.text)).toEqual(["after the turn", "with a picture"]);
+        });
+
+        // #222: steering is the default follow-up, so this is how most messages sent mid-step arrive.
+        test("during a step, a steer message's UserPromptSubmit hooks run before it joins: one they block stays out and goes back, and what they add goes with the rest", async () => {
+            process.env.FAKE_SCENARIO = "steering";
+            const settings = { hooks: { UserPromptSubmit: [{ command: `grep -q forbidden && { echo "no forbidden words" >&2; exit 2; }; exit 0` }, { command: "echo branch is main" }] } };
+            const q = queue([{ text: "say forbidden things", mode: "steer" }, { text: "steer now", mode: "steer" }]);
+            const a = await makeAgent({ provider: "claude-code", settings, drainQueued: q.drainQueued, drainWaiting: q.drainWaiting });
+            expect(await a.run("start")).toBe("done");
+            expect(logLines().find((l) => l.foldedBeforeResult)?.foldedBeforeResult).toEqual(["steer now\n\n<system-reminder>\nContext from a UserPromptSubmit hook:\nbranch is main\n</system-reminder>"]);
+            expect(JSON.stringify(received())).not.toContain("say forbidden things");
+            expect(JSON.stringify(a.session.messages)).not.toContain("say forbidden things");
+            expect(notices(a.events)).toContainEqual(expect.stringMatching(/^warn: Prompt blocked by hook: .*no forbidden words/));
+            expect(q.blocked).toEqual(["say forbidden things"]);
+            expect(q.items).toEqual([]);
+        });
+
+        test("during a step, stopped (a served tool's stop) while a steer message's hooks run: it isn't taken, and stays queued", async () => {
+            process.env.FAKE_SCENARIO = "steering";
+            const settings = { hooks: { UserPromptSubmit: [{ command: "echo branch is main" }] } };
+            const q = queue([{ text: "steer now", mode: "steer" }]);
+            let agent: any;
+            const a = await makeAgent({
+                provider: "claude-code",
+                settings,
+                drainQueued: (record, admit) => q.drainQueued(record, admit && (async (text) => (agent.stopServedTurn?.(), admit(text)))),
+                drainWaiting: q.drainWaiting,
+            });
+            agent = a.agent;
+            await a.run("start");
+            expect(q.items.map((x) => x.text)).toEqual(["steer now"]);
+            expect(JSON.stringify(received())).not.toContain("steer now");
+            expect(JSON.stringify(a.session.messages)).not.toContain("steer now");
+        });
+
+        test("during a step, stopped once a steer message is taken: the next turn is told of it rather than it vanishing", async () => {
+            process.env.FAKE_SCENARIO = "steering";
+            const settings = { hooks: { UserPromptSubmit: [{ command: "echo branch is main" }] } };
+            const q = queue([{ text: "steer now", mode: "steer" }]);
+            let agent: any;
+            const a = await makeAgent({
+                provider: "claude-code",
+                settings,
+                drainQueued: async (record, admit) => {
+                    const taken = await q.drainQueued(record, admit);
+                    if (taken.length) agent.stopServedTurn?.();
+                    return taken;
+                },
+                drainWaiting: q.drainWaiting,
+            });
+            agent = a.agent;
+            await a.run("start");
+            expect(q.items).toEqual([]);
+            expect(JSON.stringify(received())).not.toContain("steer now");
+            expect(JSON.stringify(a.session.messages.at(-1))).toContain("your turn ended before it reached you:\\nsteer now");
+        });
+    });
+
     test("with an API key, Claude Code's own turn with the report doesn't count the run's spend twice", async () => {
         process.env.FAKE_SCENARIO = "agent-background";
         process.env.FAKE_API_KEY_SOURCE = "ANTHROPIC_API_KEY";
@@ -632,6 +1126,49 @@ describe("Claude Code's background work (live test findings)", () => {
         expect(texts(later)).toBe("Working on it.All done.");
         expect(session.messages.at(-1)!.content.map((p) => (p as any).text).join("\n")).toContain("All done.");
         expect(notices(later).join("\n")).toMatch(/didn't finish before the previous session ended/);
+    });
+
+    test("#311: a resumed run says what the last run left behind, each task once (a sub-agent, a shell command)", async () => {
+        const { run, events } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
+        await run("first");
+        process.env.FAKE_STALE_TASK = "2";
+        const from = events.length;
+        expect(await run("second")).toBe("done");
+        expect(notices(events.slice(from)).filter((n) => n.startsWith("info: Claude Code: "))).toEqual([
+            "info: Claude Code: Background agent \"Map auth\" didn't finish before the previous session ended.",
+            "info: Claude Code: Background shell command didn't finish before the previous session ended.",
+        ]);
+    });
+
+    test("#311: a background sub-agent's own foreground commands that fail or are stopped aren't said as left behind (a resumed run); its report still comes", async () => {
+        const { run, events } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
+        await run("first");
+        process.env.FAKE_SCENARIO = "agent-background";
+        process.env.FAKE_SUB_COMMANDS = "1";
+        const from = events.length;
+        expect(await run("map the auth module")).toBe("done");
+        const later = events.slice(from);
+        expect(starts()[1]!.argv).toContain("--resume");
+        expect(JSON.stringify(later)).toContain("toolu_sub_cmd2");
+        expect(notices(later).filter((n) => n.startsWith("info: Claude Code: "))).toEqual([]);
+        expect(texts(later)).toContain("The explorer reported back");
+    });
+
+    test("#311: Esc on a foreground command in a resumed run: its stop isn't said as left behind", async () => {
+        const { run, events } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
+        await run("first");
+        process.env.FAKE_SCENARIO = "hang";
+        process.env.FAKE_FG_TASK = "1";
+        const from = events.length;
+        const ac = new AbortController();
+        const done = run("go", ac.signal);
+        while (!events.slice(from).some((e) => e.type === "tool_start")) await Bun.sleep(10);
+        ac.abort();
+        expect(await done).toBe("aborted");
+        const later = events.slice(from);
+        expect(starts()[1]!.argv).toContain("--resume");
+        expect(toolEnds(later)[0]!.result.content).toBe("Interrupted by user");
+        expect(notices(later).filter((n) => n.startsWith("info: Claude Code: "))).toEqual([]);
     });
 
     test("a reply with nothing in it says so", async () => {
@@ -905,15 +1442,21 @@ describe("Codex backend", () => {
         expect(notices(events).join("\n")).toMatch(/Codex isn't signed in.*codex login/);
     });
 
-    test("the next turn resumes the thread; a lost one starts over", async () => {
+    test("the next turn goes on in the same app-server and thread; a new app-server resumes it; a lost one starts over", async () => {
         const { run, session } = await makeAgent({ provider: "codex", settings: { permissions: { allow: ["Bash(touch:*)"] } } });
         await run("one");
         await run("two");
+        // One app-server for both turns (#219): no second start, no resume.
+        expect(starts()).toHaveLength(1);
+        expect(received().filter((m) => m.method === "turn/start").map((m) => m.params.threadId)).toEqual(["thr-new", "thr-new"]);
+        expect(received().some((m) => m.method === "thread/resume")).toBe(false);
+        await newAppServer();
+        await run("after a restart");
         expect(received().find((m) => m.method === "thread/resume")?.params.threadId).toBe("thr-new");
         rmSync(LOG, { force: true });
         session.setBackendSession("codex", "gone-9", session.messages.length);
         expect(await run("three")).toBe("done");
-        const methods = received().map((m) => m.method).filter((m) => m?.startsWith("thread/"));
+        const methods = received().map((m) => m.method).filter((m) => m?.startsWith("thread/") && !m.startsWith("thread/goal/"));
         expect(methods).toEqual(["thread/resume", "thread/start"]);
     }, 20_000);
 
@@ -1233,6 +1776,45 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
     });
 });
 
+describe("the notice of stopped background tasks (#300)", () => {
+    test("is one short line for the user, each task's name on one short line, nothing written for the model", () => {
+        const command = `cd /private/tmp/fix-steer-image-lost && bun run typecheck 2>&1 | tail -2 &&\n  bun test ./test/attachments.test.ts ./test/backends.test.ts > /tmp/steer-tests2.log 2>&1`;
+        const notice = stoppedTasksNotice([`background command: Wait for the #284 and #289 reviews`, `background command: ${command}`]);
+        expect(notice.text).toBe("Stopped 2 background tasks");
+        expect(notice.details[0]).toBe("Wait for the #284 and #289 reviews");
+        expect(notice.details[1]).toStartWith("cd /private/tmp/fix-steer-image-lost && bun run typecheck");
+        expect(notice.details[1]).toEndWith("…");
+        expect(notice.details[1]!.length).toBeLessThanOrEqual(60);
+        expect(notice.details[1]).not.toContain("\n");
+        expect(JSON.stringify(notice)).not.toMatch(/task IDs|Restart them|background command:/);
+    });
+
+    test("redacts each name whole before cutting it, and cuts between words", async () => {
+        const { registerSecret, unregisterSecret } = await import("../src/util/redact");
+        // Past the cut, as a whole: cut first, its start would no longer match and would show.
+        const credential = "demo_registered_credential_0123456789_ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        registerSecret(credential, "demo");
+        try {
+            const [name] = stoppedTasksNotice([`background command: curl -H Bearer:${credential} https://example.com/api`]).details;
+            expect(name).not.toContain("demo_registered");
+            expect(name).toStartWith("curl -H Bearer:[REDACTED demo]");
+        } finally { unregisterSecret(credential); }
+        // A word the cut falls in goes whole: no half of a token the redactor doesn't know.
+        const word = "q7Zp4Lx9Rw2Kd8Nf3Vb6Ty1Hm5Gs0Jc".repeat(2);
+        expect(stoppedTasksNotice([`background command: deploy --token ${word}`]).details).toEqual(["deploy --token…"]);
+        expect(stoppedTasksNotice([`background command: ${word}`]).details).toEqual(["…"]);
+        // At a space, nothing more goes.
+        const words = `${"a".repeat(29)} ${"b".repeat(29)} tail`;
+        expect(stoppedTasksNotice([`background task: ${words}`]).details).toEqual([`${"a".repeat(29)} ${"b".repeat(29)}…`]);
+    });
+
+    test("names sub-agents as such, and one task in the singular", () => {
+        expect(stoppedTasksNotice(["sub-agent: Map auth", "sub-agent: Check tests"]).text).toBe("Stopped 2 background sub-agents");
+        expect(stoppedTasksNotice(["background monitor: Watch checks"])).toEqual({ text: "Stopped 1 background task", details: ["Watch checks"] });
+        expect(stoppedTasksNotice(["sub-agent: Map auth", "background task: Poll"])).toEqual({ text: "Stopped 2 background tasks", details: ["Map auth", "Poll"] });
+    });
+});
+
 describe("review findings (PR #1)", () => {
     const turnStarts = () => received().filter((m) => m.method === "turn/start").map((m) => m.params);
     const claudeArgs = () => starts()[0]!.argv as string[];
@@ -1513,6 +2095,8 @@ describe("review findings, round 2", () => {
         const a = await makeAgent({ provider: "codex", settings: { permissions: { allow: ["Bash(touch:*)"] } } });
         await a.run("one");
         expect(a.session.backends.get("codex")?.id).toBe("thr-new");
+        // A new app-server (Harness restarted) resumes the thread.
+        await newAppServer();
         process.env.FAKE_SLOW_RESUME = "3000";
         const ac = new AbortController();
         const done = a.run("two", ac.signal);
@@ -1646,6 +2230,8 @@ describe("fast mode backend wiring", () => {
             const { run, session } = await makeAgent({ provider, model: { supportsFastMode: true, fastModeTier: "priority" }, settings: { fastMode: true } });
             session.setFastMode(false);
             await run("hello");
+            // A new app-server resumes the thread: that's sent no tier either.
+            if (provider === "codex") await newAppServer();
             await run("again");
             if (provider === "codex") {
                 expect(received().filter((m) => m.method === "turn/start").every((m) => !("serviceTier" in m.params))).toBe(true);
@@ -1661,10 +2247,12 @@ describe("fast mode backend wiring", () => {
 // session: whichever goes on with a shared one first forks it (natively), and
 // one that saw past the fork point isn't shared at all.
 describe("forked sessions", () => {
-    for (const provider of ["claude-code", "codex"] as const) for (const change of ["none", "selection", "folder"] as const) test(`${provider}: named-account fork with ${change} change respects the source folder`, async () => {
-        const { addAccount, removeAccount } = await import("../src/providers/accounts");
+    for (const provider of ["claude-code", "codex"] as const) for (const change of ["none", "shared", "selection", "folder"] as const) test(`${provider}: named-account fork with ${change} change respects the source folder`, async () => {
+        const { accountPlace, addAccount, removeAccount } = await import("../src/providers/accounts");
         const selected = addAccount(provider, { id: "fork-work", name: "Fork work" });
-        const other = addAccount(provider, { id: "fork-other", name: "Fork other" });
+        // An existing folder keeps a history of its own; a Harness-made account shares Default's, as fork-work does (#377).
+        const other = addAccount(provider, { id: "fork-other", name: "Fork other", folder: join(bin, `${provider}-other`) });
+        const sharing = addAccount(provider, { id: "fork-sharing", name: "Fork sharing" });
         const source = Session.create(cwd);
         source.setAccount(provider, selected.id);
         const settings = { delegation: false, permissions: { allow: ["Bash(touch:*)"] } };
@@ -1681,25 +2269,28 @@ describe("forked sessions", () => {
             }
             const session = forkSession(source, { cut: source.messages.length });
             expect(session.accountId(provider)).toBe(selected.id);
-            expect(session.backendSession(provider, selected.folder)).toMatchObject({ id: shared, fork: true });
+            expect(session.backendSession(provider, { folder: selected.folder })).toMatchObject({ id: shared, fork: true });
             if (change === "selection") session.setAccount(provider, other.id);
+            if (change === "shared") session.setAccount(provider, sharing.id);
             session.release();
             fork = await makeAgent({ provider, session: Session.load(session.path), settings, ask: () => ({ allow: true }) });
             rmSync(LOG, { force: true });
             expect(await fork.run("in the fork")).toBe("done");
-            const folder = change === "selection" ? other.folder : replacement.folder;
+            const folder = change === "selection" ? other.folder : change === "shared" ? sharing.folder : replacement.folder;
+            // The fork's own copy of the thread, natively, wherever its CLI finds the thread.
+            const native = change === "none" || change === "shared";
             expect(starts()[0][provider === "codex" ? "codexHome" : "claudeConfigDir"]).toBe(folder);
             if (provider === "claude-code") {
-                expect(resumes()).toEqual([change === "none" ? `${shared} (fork)` : "new"]);
-                if (change !== "none") expect(userTexts().at(-1)).toContain("User: first on work");
+                expect(resumes()).toEqual([native ? `${shared} (fork)` : "new"]);
+                if (!native) expect(userTexts().at(-1)).toContain("User: first on work");
             } else {
-                const threads = received().filter((m) => m.method?.startsWith("thread/"));
-                expect(threads.map((m) => m.method)).toEqual([change === "none" ? "thread/fork" : "thread/start"]);
-                if (change === "none") expect(threads[0].params.threadId).toBe(shared);
+                const threads = received().filter((m) => m.method?.startsWith("thread/") && !m.method.startsWith("thread/goal/"));
+                expect(threads.map((m) => m.method)).toEqual([native ? "thread/fork" : "thread/start"]);
+                if (native) expect(threads[0].params.threadId).toBe(shared);
                 else expect(JSON.stringify(received().find((m) => m.method === "turn/start")?.params.input)).toContain("User: first on work");
             }
-            expect(fork.session.backendSession(provider, folder)?.fork).toBeUndefined();
-            expect(source.backendSession(provider, selected.folder)).toMatchObject({ id: shared, fork: true });
+            expect(fork.session.backendSession(provider, accountPlace(provider, fork.session.accountId(provider)))?.fork).toBeUndefined();
+            expect(source.backendSession(provider, { folder: selected.folder })).toMatchObject({ id: shared, fork: true });
         } finally {
             await fork?.agent.dispose();
             fork?.session.release();
@@ -1707,6 +2298,7 @@ describe("forked sessions", () => {
             source.release();
             removeAccount(provider, replacement.id, replacement.folder);
             removeAccount(provider, other.id, other.folder);
+            removeAccount(provider, sharing.id, sharing.folder);
         }
     });
 
@@ -1783,7 +2375,7 @@ describe("forked sessions", () => {
         const fork = await makeAgent({ provider: "codex", session: forkSession(orig.session, { cut: orig.session.messages.length }), settings });
         rmSync(LOG, { force: true });
         await fork.run("in the fork");
-        const threads = () => received().filter((m) => m.method?.startsWith("thread/")).map((m) => `${m.method} ${m.params.threadId ?? ""}`.trim());
+        const threads = () => received().filter((m) => m.method?.startsWith("thread/") && !m.method.startsWith("thread/goal/")).map((m) => `${m.method} ${m.params.threadId ?? ""}`.trim());
         expect(threads()).toEqual(["thread/fork thr-new"]);
         const forkThread = fork.session.backends.get("codex")!.id;
         expect(forkThread).toMatch(/^thr-fork-/);
@@ -1793,11 +2385,18 @@ describe("forked sessions", () => {
         expect(tokensOf(fork.session)).toBeGreaterThan(0);
         expect(tokensOf(fork.session)).toBe(tokensOf(orig.session));
 
+        // The original's app-server forks its own copy in place (its background work would go on).
         await orig.run("in the original");
         const origThread = orig.session.backends.get("codex")!.id;
         expect(origThread).toMatch(/^thr-fork-/);
         expect(origThread).not.toBe(forkThread);
+        expect(received().filter((m) => m.method === "turn/start").at(-1)?.params.threadId).toBe(origThread);
         await orig.run("again");
+        expect(threads()).toEqual(["thread/fork thr-new", "thread/fork thr-new"]);
+        expect(received().filter((m) => m.method === "turn/start").at(-1)?.params.threadId).toBe(origThread);
+        // A new app-server resumes the copy.
+        await newAppServer();
+        await orig.run("after a restart");
         expect(threads()).toEqual(["thread/fork thr-new", "thread/fork thr-new", `thread/resume ${origThread}`]);
     });
 
@@ -1849,7 +2448,7 @@ describe("forked sessions", () => {
             expect(resumes()).toEqual(["gone-source (fork)", "new"]);
             expect(userTexts().at(-1)).toContain("User: first");
         } else {
-            expect(received().filter((m) => m.method?.startsWith("thread/")).map((m) => m.method)).toEqual(["thread/fork", "thread/start"]);
+            expect(received().filter((m) => m.method?.startsWith("thread/") && !m.method.startsWith("thread/goal/")).map((m) => m.method)).toEqual(["thread/fork", "thread/start"]);
             expect(JSON.stringify(received().find((m) => m.method === "turn/start")?.params.input)).toContain("User: first");
         }
         expect(fork.session.backends.get(provider)?.fork).toBeUndefined();
@@ -1864,7 +2463,7 @@ describe("forked sessions", () => {
         const fork = await makeAgent({ provider: "codex", session: forkSession(orig.session, { cut: forkCut(orig.session.messages, 0) }), settings });
         rmSync(LOG, { force: true });
         await fork.run("in the fork");
-        expect(received().filter((m) => m.method?.startsWith("thread/")).map((m) => m.method)).toEqual(["thread/start"]);
+        expect(received().filter((m) => m.method?.startsWith("thread/") && !m.method.startsWith("thread/goal/")).map((m) => m.method)).toEqual(["thread/start"]);
         const input = JSON.stringify(received().find((m) => m.method === "turn/start")?.params.input);
         expect(input).toContain("conversation-so-far");
         expect(input).toContain("User: one");
@@ -2076,8 +2675,19 @@ describe("Codex project MCP boundary", () => {
         expect(received().find((m) => m.method === "config/read").params).toEqual({ cwd, includeLayers: true });
         const config = received().find((m) => m.method === "thread/start").params.config;
         expect(config).toEqual({ mcp_servers: { project: { enabled: false }, shared: { enabled: false }, "dotted.name": { enabled: false } } });
+        await newAppServer();
         await run("resume");
         expect(received().find((m) => m.method === "thread/resume").params.config).toEqual(config);
+    });
+
+    test("a plugin the project turns on is off in thread start and resume; the user's own plugins stay on", async () => {
+        process.env.FAKE_USER_PLUGINS = JSON.stringify({ "mine@local": { enabled: true } });
+        process.env.FAKE_PROJECT_PLUGINS = JSON.stringify({ "theirs@local": { enabled: true } });
+        const { run } = await makeAgent({ provider: "codex", trusted: true });
+        await run("hello");
+        await newAppServer();
+        await run("resume");
+        for (const method of ["thread/start", "thread/resume"]) expect(received().find((m) => m.method === method).params.config).toEqual({ plugins: { "theirs@local": { enabled: false } } });
     });
 
     for (const layers of [
@@ -2089,6 +2699,7 @@ describe("Codex project MCP boundary", () => {
         process.env.FAKE_CONFIG_LAYERS = JSON.stringify(layers);
         const { run, events } = await makeAgent({ provider: "codex", trusted: true });
         expect(await run("hello")).toBe("done");
+        await newAppServer();
         expect(await run("resume")).toBe("done");
         for (const method of ["thread/start", "thread/resume"]) {
             expect(received().find((m) => m.method === method).params.config).toEqual({ mcp_servers: { personal: { enabled: false } } });
@@ -2120,9 +2731,19 @@ describe("attachments", () => {
         const { agent } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
         await agent.run([{ type: "text", text: "read these" }, file, pdf], { signal: signal() });
         const content = received().find((m) => m.type === "user").message.content;
-        expect(content[0].type).toBe("text");
-        expect(content[0].text.startsWith(`read these\n\n${framedText(file)}`)).toBe(true);
-        expect(content.slice(1)).toEqual([{ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdf.data } }]);
+        expect(content.at(-1).type).toBe("text");
+        expect(content.at(-1).text.startsWith(`read these\n\n${framedText(file)}`)).toBe(true);
+        expect(content.slice(0, -1)).toEqual([{ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdf.data } }]);
+    });
+
+    test("Claude Code gets a /command with images as its last block, where it reads commands from", async () => {
+        const { agent } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
+        const image = { type: "image", mediaType: "image/png", data: Buffer.from("png").toString("base64") } as const;
+        await agent.run([{ type: "text", text: "/code-review the login form" }, image, image], { signal: signal() });
+        const content = received().find((m) => m.type === "user").message.content;
+        // Claude Code takes the input string from the last block only when it's text; the blocks before go along with it.
+        expect(content.at(-1)).toEqual({ type: "text", text: "/code-review the login form" });
+        expect(content.slice(0, -1)).toEqual([image, image].map((i) => ({ type: "image", source: { type: "base64", media_type: i.mediaType, data: i.data } })));
     });
 
     test("Codex gets text files framed in its prompt; a PDF isn't sent, only named", async () => {
@@ -2149,6 +2770,62 @@ describe("Claude Code turn reliability (#60, #61, #64)", () => {
         expect(timeline[3]![1]).toContain("Adjusted: first correction");
         expect(timeline[3]![1]).not.toContain("Working on it.");
         expect(starts()).toHaveLength(1);
+    });
+
+    test("a wake that arrives while Claude Code works reaches the running turn as queued input does, not as the user's", async () => {
+        process.env.FAKE_SCENARIO = "steering";
+        const wakes = new WakeQueue({ coalesceMs: 60_000 });
+        wakes.push({ source: "pull-request", label: "PR #12: new comment", text: "- bob: \"please rename it\"" });
+        const a = await makeAgent({ provider: "claude-code", wakes });
+        expect(await a.run("start")).toBe("done");
+        const folded = logLines().find((l) => l.foldedBeforeResult)?.foldedBeforeResult as string[];
+        expect(folded).toHaveLength(1);
+        expect(folded[0]).toContain("please rename it");
+        expect(folded[0]).toContain("not the user");
+        expect(a.session.messages.find((m) => JSON.stringify(m.content).includes("please rename it"))?.meta?.kind).toBe("reminder");
+        expect(starts()).toHaveLength(1);
+        expect(wakes.size).toBe(0);
+        wakes.dispose();
+    });
+
+    test("a wake goes to Claude Code marked synthetic, so it expands no @mentions in others' words; the user's queued words don't", async () => {
+        process.env.FAKE_SCENARIO = "steering";
+        const wakes = new WakeQueue({ coalesceMs: 60_000 });
+        wakes.push({ source: "pull-request", label: "PR #12: new comment", text: "- mallory: \"see @secrets.txt\"" });
+        const a = await makeAgent({ provider: "claude-code", wakes, queued: [["my own @notes.md"]] });
+        expect(await a.run("start")).toBe("done");
+        const users = received().filter((m) => m.type === "user");
+        const sent = (s: string) => users.find((m) => JSON.stringify(m.message.content).includes(s));
+        expect(sent("start")?.isSynthetic).toBeUndefined();
+        expect(sent("my own @notes.md")?.isSynthetic).toBeUndefined();
+        expect(sent("see @secrets.txt")?.isSynthetic).toBe(true);
+        expect(JSON.stringify(sent("see @secrets.txt")?.message.content)).not.toContain("my own");
+        wakes.dispose();
+    });
+
+    test("a turn for wakes, or one carrying history the harness adds, is sent synthetic; the user's own prompt is not", async () => {
+        const a = await makeAgent({ provider: "claude-code" });
+        expect(await a.agent.run([{ type: "text", text: "<event>PR #3: new comment @secrets.txt</event>" }], { signal: new AbortController().signal, kind: "wake" })).toBe("done");
+        expect(await a.run("/review @src")).toBe("done");
+        const users = received().filter((m) => m.type === "user");
+        expect(users.map((m) => m.isSynthetic === true)).toEqual([true, false]);
+    });
+
+    test("a prompt the harness prefixes with the conversation so far goes as the user's: the catch-up in a block of its own before their words", async () => {
+        const session = Session.create(cwd, { persist: false });
+        session.push({ role: "user", content: [{ type: "text", text: "earlier, with another model" }], meta: { kind: "prompt" } });
+        session.push({ role: "assistant", content: [{ type: "text", text: "a reply quoting @secrets.txt" }] });
+        const a = await makeAgent({ provider: "claude-code", session });
+        expect(await a.run("go on")).toBe("done");
+        const first = received().find((m) => m.type === "user");
+        // Not synthetic: Claude Code 2.1.304 would record the user's message as not theirs, and the model may refuse it.
+        expect(first.isSynthetic).toBeUndefined();
+        const texts = first.message.content.filter((b: any) => b.type === "text").map((b: any) => b.text);
+        // Claude Code reads only the last text block as what the user typed: others' words (@secrets.txt) aren't in it.
+        expect(texts).toHaveLength(2);
+        expect(texts[0]).toContain("conversation-so-far");
+        expect(texts[0]).toContain("@secrets.txt");
+        expect(texts[1]).toBe("go on");
     });
 
     for (const version of ["2.1.200", "unknown"]) test(`${version}: unverified CLI versions retain between-turn delivery without losing queued input`, async () => {
@@ -2188,6 +2865,82 @@ describe("Claude Code turn reliability (#60, #61, #64)", () => {
         expect(notices(a.events).join("\n")).not.toContain("stopped with Claude Code");
     });
 
+    test("Claude Code's background tasks reach the session's background list as they start and end (#219 PR 2)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background";
+        const a = await makeAgent({ provider: "claude-code" });
+        const reported: BackgroundTaskInfo[] = [];
+        a.agent.state.background = new SessionBackground();
+        a.agent.state.background.onChange(() => reported.push(...a.agent.state.background!.list().filter((t) => !reported.some((r) => JSON.stringify(r) === JSON.stringify(t)))));
+        expect(await a.run("run checks and wait")).toBe("done");
+        expect(reported.map((t) => [t.id, t.provider, t.kind, t.status])).toEqual([
+            ["background-1", "claude-code", "shell", "running"],
+            ["background-1", "claude-code", "shell", "done"],
+        ]);
+        expect(reported[0]!.stoppable).toBe(true);
+    });
+
+    test("the user's stop of a Claude Code background task goes to it as stop_task while its run goes on, and the turn ends", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        const a = await makeAgent({ provider: "claude-code" });
+        a.agent.state.background = new SessionBackground();
+        const done = a.run("run checks and wait");
+        for (let i = 0; i < 500 && !a.agent.backgroundTasks().some((t) => t.id === "background-1" && t.status === "running"); i++) await Bun.sleep(20);
+        expect(await a.agent.stopBackground(["background-1"])).toEqual({ "background-1": "stopped" });
+        expect(received().filter((m) => m.request?.subtype === "stop_task").map((m) => m.request.task_id)).toEqual(["background-1"]);
+        expect(await done).toBe("done");
+        expect(a.agent.backgroundTasks().find((t) => t.id === "background-1")?.status).toBe("stopped");
+        expect(notices(a.events).join("\n")).toContain("info: You stopped 1 background task (Wait for checks). It won't report back.");
+        // With its run over, there's nothing left to stop: it had ended (stopped, and stays so).
+        expect(await a.agent.stopBackground(["background-1"])).toEqual({ "background-1": "ended" });
+        expect(a.agent.backgroundTasks().find((t) => t.id === "background-1")?.status).toBe("stopped");
+        expect(await a.agent.stopBackground(["nope"])).toEqual({ nope: "unknown" });
+    });
+
+    test("a background task Claude Code says failed after it left its list is reported failed, not done (#282 review 3)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background";
+        process.env.FAKE_SHELL_STATUS = "failed";
+        const a = await makeAgent({ provider: "claude-code" });
+        a.agent.state.background = new SessionBackground();
+        expect(await a.run("run checks and wait")).toBe("done");
+        expect(a.agent.backgroundTasks().map((t) => [t.id, t.status])).toEqual([["background-1", "failed"]]);
+    });
+
+    test("the user's stop that Claude Code doesn't answer in time never ends its process: the rest runs on and reports (#282 review 1)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background";
+        process.env.FAKE_STOP_TASK = "hang";
+        process.env.FAKE_SHELL_MS = "700";
+        const saved = { ...backgroundTiming };
+        Object.assign(backgroundTiming, { stopTimeoutMs: 60, pollMs: 10 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            a.agent.state.background = new SessionBackground();
+            const done = a.run("run checks and wait");
+            for (let i = 0; i < 500 && !a.agent.backgroundTasks().some((t) => t.status === "running"); i++) await Bun.sleep(10);
+            expect(await a.agent.stopBackground(["background-1"])).toEqual({ "background-1": "timeout" });
+            expect(await done).toBe("done");
+            expect(notices(a.events).join("\n")).not.toContain("did not confirm a task stop");
+            expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
+            expect(a.agent.backgroundTasks().map((t) => [t.id, t.status])).toEqual([["background-1", "done"]]);
+        } finally { Object.assign(backgroundTiming, saved); }
+    });
+
+    test("a task that completes as the user's stop is refused is over: the run doesn't wait on it for good (#282 review 2)", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
+        process.env.FAKE_STOP_TASK = "complete-reject";
+        const saved = { ...backgroundTiming };
+        Object.assign(backgroundTiming, { pollMs: 10, settleMs: 50 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            a.agent.state.background = new SessionBackground();
+            const done = a.run("map auth in the background");
+            for (let i = 0; i < 500 && !a.agent.backgroundTasks().some((t) => t.status === "running" && t.stoppable); i++) await Bun.sleep(10);
+            // It completed before the stop could stop it: it ended on its own.
+            expect(await a.agent.stopBackground(["toolu_agent"])).toEqual({ toolu_agent: "ended" });
+            expect(await Promise.race([done, Bun.sleep(3000).then(() => "stuck")])).toBe("done");
+            expect(a.agent.backgroundTasks().map((t) => [t.id, t.status])).toEqual([["toolu_agent", "done"]]);
+        } finally { Object.assign(backgroundTiming, saved); }
+    });
+
     test("a never-ending shell has a bounded wait and the model knows its lifetime", async () => {
         process.env.FAKE_SCENARIO = "shell-background-stuck";
         const saved = { ...backgroundTiming };
@@ -2195,7 +2948,7 @@ describe("Claude Code turn reliability (#60, #61, #64)", () => {
         try {
             const a = await makeAgent({ provider: "claude-code" });
             expect(await a.run("run checks and wait")).toBe("done");
-            expect(notices(a.events).join("\n")).toMatch(/warn: Stopped 1 background/);
+            expect(notices(a.events).join("\n")).toMatch(/warn: Harness stopped 1 background task \(Wait for checks\) when its background grace expired after 0\.1s\. It won't report back\./);
             const args = starts()[0].argv;
             expect(args[args.indexOf("--append-system-prompt") + 1]).toContain("Background commands and monitors");
         } finally { Object.assign(backgroundTiming, saved); }
@@ -2238,10 +2991,10 @@ describe("Claude Code turn reliability (#60, #61, #64)", () => {
 
 
 describe("Claude Code background grace (#60 follow-up)", () => {
-    test("default grace is ten minutes, invalid settings fall back, and zero disables waiting", async () => {
+    test("default grace is thirty minutes (Claude Code's default background timeout), invalid settings fall back, and zero disables waiting", async () => {
         const { claudeBackgroundWaitMs } = await import("../src/backends/claude-code");
-        expect(claudeBackgroundWaitMs(undefined)).toBe(600_000);
-        for (const value of [-1, Infinity, NaN, "10"]) expect(claudeBackgroundWaitMs(value)).toBe(600_000);
+        expect(claudeBackgroundWaitMs(undefined)).toBe(1_800_000);
+        for (const value of [-1, Infinity, NaN, "10"]) expect(claudeBackgroundWaitMs(value)).toBe(1_800_000);
         expect(claudeBackgroundWaitMs(0)).toBe(0);
         expect(claudeBackgroundWaitMs(12)).toBe(12_000);
     });
@@ -2256,7 +3009,7 @@ describe("Claude Code background grace (#60 follow-up)", () => {
             const start = Date.now();
             expect(await a.run("wait for checks")).toBe("done");
             expect(Date.now() - start).toBeLessThan(3000);
-            expect(notices(a.events).join("\n")).toMatch(/Stopped.*Wait for checks.*grace expired/);
+            expect(notices(a.events).join("\n")).toMatch(/Harness stopped.*Wait for checks.*when its background grace expired/);
             expect(JSON.stringify(session.messages)).toContain("Waiting for checks.");
             const label = `Waiting for background ${scenario.startsWith("shell") ? "command" : "monitor"}: Wait for checks · Esc to stop it`;
             expect(a.events.some((e) => e.type === "activity" && e.text === label)).toBe(true);
@@ -2264,7 +3017,8 @@ describe("Claude Code background grace (#60 follow-up)", () => {
             session.release();
             const reopened = Session.load(session.file);
             try {
-                expect(reopened.notices.some((n) => n.text.includes("Wait for checks"))).toBe(true);
+                // The user's notice is short, the task's name folded under it; the model's reminder (below) has the rest.
+                expect(reopened.notices).toContainEqual(expect.objectContaining({ level: "warn", text: "Stopped 1 background task", details: ["Wait for checks"] }));
                 process.env.FAKE_SCENARIO = "none";
                 const b = await makeAgent({ provider: "claude-code", session: reopened });
                 expect(await b.run("continue")).toBe("done");
@@ -2307,7 +3061,7 @@ describe("Claude Code background grace (#60 follow-up)", () => {
         expect(await done).toBe("aborted");
         expect(Date.now() - start).toBeLessThan(1500);
         expect(JSON.stringify(a.session.messages)).toContain("Waiting for checks.");
-        expect(notices(a.events).join("\n")).toContain("interrupted by user");
+        expect(notices(a.events).join("\n")).toMatch(/Stopped 1 background task \(Wait for checks\) when you pressed Esc\. It won't report back\./);
         process.env.FAKE_SCENARIO = "none";
         expect(await a.run("continue")).toBe("done");
         expect(userTexts().at(-1)).toContain("background command: Wait for checks");
@@ -2365,11 +3119,174 @@ describe("Claude Code background grace (#60 follow-up)", () => {
     });
 });
 
+// A background Bash command runs until its own timeout, as in Claude Code (scaled down through backgroundTiming).
+describe("Claude Code background commands' own timeouts (#193)", () => {
+    const stops = () => received().filter((m) => m.request?.subtype === "stop_task").map((m) => m.request.task_id);
+    const timing = (t: Partial<typeof backgroundTiming>) => {
+        const saved = { ...backgroundTiming };
+        Object.assign(backgroundTiming, { pollMs: 10, ...t });
+        return () => Object.assign(backgroundTiming, saved);
+    };
+    const prompt = () => {
+        const args = starts()[0].argv;
+        return args[args.indexOf("--append-system-prompt") + 1] as string;
+    };
+
+    test("only a background Bash call's own timeout counts", async () => {
+        const { claudeCommandTimeoutMs } = await import("../src/backends/claude-code");
+        expect(claudeCommandTimeoutMs({ command: "bun test", run_in_background: true, timeout: 3_600_000 })).toBe(3_600_000);
+        expect(claudeCommandTimeoutMs({ command: "bun test", timeout: 3_600_000 })).toBeUndefined();
+        expect(claudeCommandTimeoutMs({ command: "bun test", run_in_background: true })).toBeUndefined();
+        for (const timeout of [0, -1, Infinity, NaN, "3600000"]) expect(claudeCommandTimeoutMs({ command: "bun test", run_in_background: true, timeout })).toBeUndefined();
+    });
+
+    test("a command's own timeout outlives the default grace and the overall cap", async () => {
+        process.env.FAKE_SCENARIO = "shell-background";
+        process.env.FAKE_TIMEOUT = "3600000";
+        process.env.FAKE_SHELL_MS = "500";
+        const restore = timing({ commandWaitMs: 50, maxWaitMs: 200 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            const start = Date.now();
+            expect(await a.run("run the suite")).toBe("done");
+            expect(Date.now() - start).toBeGreaterThanOrEqual(500);
+            expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
+            expect(notices(a.events).some((n) => n.includes("Stopped"))).toBe(false);
+            expect(stops()).toEqual([]);
+        } finally { restore(); }
+    });
+
+    test("a command's own timeout is capped at Claude Code's maximum", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        process.env.FAKE_TIMEOUT = "3600000";
+        const restore = timing({ commandWaitMs: 50, maxWaitMs: 100, commandMaxTimeoutMs: 400 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            const start = Date.now();
+            expect(await a.run("run the suite")).toBe("done");
+            const took = Date.now() - start;
+            expect(took).toBeGreaterThanOrEqual(400);
+            expect(took).toBeLessThan(3000);
+            expect(notices(a.events).join("\n")).toMatch(/Harness stopped 1 background task \(Wait for checks\) when its background timeout of 1s ran out\. It won't report back\./);
+            expect(notices(a.events).join("\n")).not.toContain("Stopped waiting for");
+        } finally { restore(); }
+    });
+
+    test("a timeout shorter than the default grace ends the wait at that timeout", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        process.env.FAKE_TIMEOUT = "300";
+        const restore = timing({});
+        const abort = new AbortController();
+        const timer = setTimeout(() => abort.abort(), 4000);
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            const start = Date.now();
+            expect(await a.run("run the suite", abort.signal)).toBe("done");
+            expect(Date.now() - start).toBeGreaterThanOrEqual(300);
+            expect(notices(a.events).join("\n")).toContain("its background timeout of 1s ran out");
+        } finally { clearTimeout(timer); restore(); }
+    });
+
+    test("without a timeout the default grace applies, and the model is told to pass one for long jobs", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        const restore = timing({ commandWaitMs: 150, commandMaxTimeoutMs: 60_000 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            const start = Date.now();
+            expect(await a.run("run the suite")).toBe("done");
+            expect(Date.now() - start).toBeGreaterThanOrEqual(150);
+            expect(notices(a.events).join("\n")).toContain("background grace expired after 0.15s");
+            expect(prompt()).toContain("until its own `timeout` runs out, counted from its start (at most 1 min)");
+            expect(prompt()).toContain("up to 0.15 seconds after the answer");
+            expect(prompt()).toContain("pass `timeout` with `run_in_background`");
+        } finally { restore(); }
+    });
+
+    for (const sec of [0, 0.05]) test(`backgroundWaitSec ${sec} replaces only the default: a command's own timeout still holds`, async () => {
+        process.env.FAKE_SCENARIO = "shell-background";
+        process.env.FAKE_TIMEOUT = "3600000";
+        process.env.FAKE_SHELL_MS = "300";
+        const restore = timing({});
+        try {
+            const a = await makeAgent({ provider: "claude-code", settings: { claudeCode: { backgroundWaitSec: sec } } });
+            expect(await a.run("run the suite")).toBe("done");
+            expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
+            expect(notices(a.events).some((n) => n.includes("Stopped"))).toBe(false);
+            expect(prompt()).toContain(`up to ${sec} seconds after the answer`);
+        } finally { restore(); }
+    });
+
+    test("at the overall cap a sub-agent waits while a command within its timeout runs on, then is stopped", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-mixed";
+        process.env.FAKE_TIMEOUT = "3600000";
+        process.env.FAKE_SHELL_MS = "600";
+        process.env.FAKE_BACKGROUND_MS = "10000";
+        const restore = timing({ commandWaitMs: 50, maxWaitMs: 250 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            const start = Date.now();
+            expect(await a.run("start both")).toBe("done");
+            expect(Date.now() - start).toBeLessThan(5000);
+            expect(stops()).toEqual(["agent-1"]);
+            expect(notices(a.events).join("\n")).toMatch(/Harness stopped 1 background sub-agent \(Map auth\) after waiting 1s, its limit for background work\. It won't report back\./);
+            expect(notices(a.events).some((n) => /stopped.*Wait for checks/i.test(n))).toBe(false);
+            expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
+            expect(a.events.some((e) => e.type === "subagent" && e.event.type === "turn_end" && e.event.reason === "aborted")).toBe(true);
+            expect(JSON.stringify(a.session.messages.at(-1))).toContain("sub-agent: Map auth");
+        } finally { restore(); }
+    });
+
+    test("at the overall cap a sub-agent whose own command is within its timeout isn't stopped (that would end the command)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-nested";
+        process.env.FAKE_TIMEOUT = "3600000";
+        process.env.FAKE_SHELL_MS = "600";
+        process.env.FAKE_BACKGROUND_MS = "10000";
+        const restore = timing({ commandWaitMs: 50, maxWaitMs: 250 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            const start = Date.now();
+            expect(await a.run("start the agent")).toBe("done");
+            expect(Date.now() - start).toBeLessThan(5000);
+            // The command ran to its end and reported; only then was the sub-agent, now past the cap, stopped.
+            expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
+            expect(notices(a.events).some((n) => /stopped.*Wait for checks/i.test(n))).toBe(false);
+            expect(stops()).toEqual(["agent-1"]);
+        } finally { restore(); }
+    });
+
+    test("a recognized server is stopped at the answer even with a timeout", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        process.env.FAKE_COMMAND = "bun run dev";
+        process.env.FAKE_TIMEOUT = "3600000";
+        const a = await makeAgent({ provider: "claude-code" });
+        const start = Date.now();
+        expect(await a.run("start the server")).toBe("done");
+        expect(Date.now() - start).toBeLessThan(3000);
+        expect(a.events.some((e) => e.type === "activity" && e.text?.includes("Waiting for"))).toBe(false);
+        expect(notices(a.events).join("\n")).toContain("recognized long-lived server/watcher");
+    });
+
+    test("Esc stops a command still within its own timeout", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        process.env.FAKE_TIMEOUT = "3600000";
+        const a = await makeAgent({ provider: "claude-code" });
+        const ac = new AbortController();
+        const done = a.run("run the suite", ac.signal);
+        while (!a.events.some((e) => e.type === "activity" && e.text?.includes("Waiting for background command"))) await Bun.sleep(10);
+        const start = Date.now();
+        ac.abort();
+        expect(await done).toBe("aborted");
+        expect(Date.now() - start).toBeLessThan(1500);
+        expect(notices(a.events).join("\n")).toMatch(/Stopped 1 background task \(Wait for checks\) when you pressed Esc\. It won't report back\./);
+    });
+});
+
 describe("Claude Code reviewed grace fixes", () => {
     test("repeated Monitor report turns cannot extend the overall background cap", async () => {
         process.env.FAKE_SCENARIO = "monitor-repeated-reports";
         const saved = { ...backgroundTiming };
-        Object.assign(backgroundTiming, { maxWaitMs: 350, pollMs: 10 });
+        // The commands' cap alone, sub-agents uncapped as by default: a monitor that keeps reporting still stops.
+        Object.assign(backgroundTiming, { commandsMaxWaitMs: 350, pollMs: 10 });
         const abort = new AbortController();
         const timeout = setTimeout(() => abort.abort(), 4000);
         try {
@@ -2377,7 +3294,7 @@ describe("Claude Code reviewed grace fixes", () => {
             const outcome = await a.run("monitor checks", abort.signal);
             expect(outcome).toBe("done");
             expect(JSON.stringify(a.session.messages)).toContain("Monitor notification 2.");
-            expect(notices(a.events).join("\n")).toMatch(/Stopped waiting for.*Watch checks.*after 1s/);
+            expect(notices(a.events).join("\n")).toMatch(/Harness stopped 1 background task \(Watch checks\) after waiting 1s, its limit for background work, and Claude Code with it\./);
             expect(notices(a.events).join("\n")).not.toContain("grace expired");
             expect(a.session.messages.at(-1)).toMatchObject({ role: "user", meta: { kind: "reminder" } });
             expect(JSON.stringify(a.session.messages.at(-1))).toContain("background monitor: Watch checks");
@@ -2404,6 +3321,20 @@ describe("Claude Code reviewed grace fixes", () => {
         const { longLivedClaudeCommand } = await import("../src/backends/claude-code");
         for (const flags of ["--watch", "--watch=true", "--watch=src", "--no-watch --watch", "--watch=0 --watch=src"]) expect(longLivedClaudeCommand(`npm test -- ${flags}`)).toBe(true);
         expect(longLivedClaudeCommand("npm test -- --watch=")).toBe(false);
+    });
+
+    test("a command listed after the commands' cap has passed for the wait still gets its own full cap", async () => {
+        process.env.FAKE_SCENARIO = "shell-cap-late";
+        process.env.FAKE_BACKGROUND_MS = "1200";
+        const saved = { ...backgroundTiming };
+        Object.assign(backgroundTiming, { commandsMaxWaitMs: 300, pollMs: 10 });
+        try {
+            const a = await makeAgent({ provider: "claude-code", settings: { claudeCode: { backgroundWaitSec: 5 } } });
+            expect(await a.run("start the agent")).toBe("done");
+            expect(JSON.stringify(a.session.messages)).toContain("Command B completed with its results.");
+            expect(notices(a.events).some((n) => /Stopped.*Command B/.test(n))).toBe(false);
+            expect(received().filter((m) => m.request?.subtype === "stop_task").map((m) => m.request.task_id)).toEqual([]);
+        } finally { Object.assign(backgroundTiming, saved); }
     });
 
     for (const scenario of ["shell-grace-queued", "shell-grace-turn", "shell-grace-overlap", "shell-grace-replace", "shell-grace-renew"]) test(`${scenario}: each task gets its own full grace after its answer`, async () => {
@@ -2461,6 +3392,265 @@ describe("Codex mid-turn steering", () => {
         expect(turnStarts()).toHaveLength(1);
         expect(transcript(a.session)).toEqual(["user: start", "assistant: Running it.", "user: also check y", "assistant: Heard: also check y"]);
         expect(a.session.messages[2]!.meta?.kind).toBe("prompt");
+    });
+
+    const PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const imageItem = { type: "image", url: `data:image/png;base64,${PIXEL}` };
+    const OTHER = Buffer.from("another picture").toString("base64");
+    type Attached = import("../src/providers/types").AttachedPart;
+    const image = (data = PIXEL): Attached => ({ type: "image", mediaType: "image/png", data });
+    const imagesIn = (input: any[]) => input.filter((i: any) => i.type === "image");
+    /** Every image Codex took: in the turns it started, and in the steers it accepted (`accepted`: none were refused). */
+    const delivered = (accepted: boolean) => [...turnStarts().flatMap((t) => imagesIn(t.input)), ...(accepted ? steers().flatMap((s) => imagesIn(s.input)) : [])];
+    /** The session's messages with an image in them. */
+    const withImages = (session: InstanceType<typeof Session>) => session.messages.filter((m) => m.content.some((p) => p.type === "image"));
+
+    /**
+     * The runtime's queue as it hands over to an agent CLI (Runtime.drainQueued): one with only words leaves it when
+     * taken; one with attachments goes alone, and leaves it (recorded) only once Codex has it (Admitted.transaction).
+     */
+    function queue() {
+        const items: { text: string; attachments?: Attached[] }[] = [];
+        const recorded: string[] = [];
+        const drainQueued = async (record?: () => void) => {
+            const words = items.filter((q) => !q.attachments?.length);
+            if (words.length) {
+                for (const q of words) items.splice(items.indexOf(q), 1);
+                record?.();
+                return words.map((q) => q.text);
+            }
+            const q = items[0];
+            if (!q) return [];
+            let open = true;
+            const transaction = {
+                accepted: () => {
+                    if (!open) return false;
+                    open = false;
+                    items.splice(items.indexOf(q), 1);
+                    record?.();
+                    recorded.push(q.text);
+                    return true;
+                },
+                refused: () => void (open = false),
+            };
+            return [{ text: q.text, admission: "go" as const, attachments: q.attachments, transaction }];
+        };
+        return { items, recorded, drainQueued };
+    }
+
+    test("steered with an image while the turn runs: Codex accepts it, and only then does it leave the queue, recorded with its image", async () => {
+        process.env.FAKE_SCENARIO = "slow";
+        process.env.FAKE_STEER_WAKES = "1";
+        const q = queue();
+        const a = await makeAgent({ provider: "codex", drainQueued: q.drainQueued });
+        const done = a.run("start");
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        await Bun.sleep(50);
+        q.items.push({ text: "look at this", attachments: [image()] });
+        a.agent.queueChanged();
+        expect(await done).toBe("done");
+        expect(steers()).toHaveLength(1);
+        expect(steers()[0]!.input).toEqual([{ type: "text", text: "look at this", text_elements: [] }, imageItem]);
+        expect(turnStarts()).toHaveLength(1);
+        expect(q.items).toEqual([]);
+        expect(q.recorded).toEqual(["look at this"]);
+        const m = a.session.messages.find((x) => x.role === "user" && JSON.stringify(x.content).includes("look at this"))!;
+        expect(m.content.filter((p) => p.type === "image")).toEqual([image()]);
+        expect(m.meta?.kind).toBe("prompt");
+        expect(delivered(true)).toEqual([imageItem]);
+    });
+
+    test("a steer's text file and PDF go to Codex as turn/start sends them: the file as text, the PDF as a note (it has no document item)", async () => {
+        process.env.FAKE_SCENARIO = "slow";
+        process.env.FAKE_STEER_WAKES = "1";
+        const pdf = Buffer.from("%PDF-1.4\n%%EOF\n").toString("base64");
+        const q = queue();
+        const a = await makeAgent({ provider: "codex", drainQueued: q.drainQueued });
+        const done = a.run("start");
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        await Bun.sleep(50);
+        q.items.push({ text: "see these", attachments: [{ type: "file", kind: "text", name: "notes.md", size: 9, lines: 1, text: "# notes\n" }, { type: "file", kind: "pdf", name: "spec.pdf", size: 14, mediaType: "application/pdf", data: pdf }] });
+        a.agent.queueChanged();
+        expect(await done).toBe("done");
+        const input = steers()[0]!.input;
+        expect(input.map((i: any) => i.type)).toEqual(["text"]);
+        expect(input[0].text).toStartWith("see these");
+        expect(input[0].text).toContain("# notes");
+        expect(input[0].text).toContain("spec.pdf");
+        expect(input[0].text).not.toContain(pdf);
+        expect(q.recorded).toEqual(["see these"]);
+    });
+
+    // Review of e47c004c, finding 1: an image sent with no words was a steer with nothing in it.
+    test("an image steered with no words: turn/steer carries the image alone", async () => {
+        process.env.FAKE_SCENARIO = "slow";
+        process.env.FAKE_STEER_WAKES = "1";
+        const q = queue();
+        const a = await makeAgent({ provider: "codex", drainQueued: q.drainQueued });
+        const done = a.run("start");
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        await Bun.sleep(50);
+        q.items.push({ text: "", attachments: [image()] });
+        a.agent.queueChanged();
+        expect(await done).toBe("done");
+        expect(steers()).toHaveLength(1);
+        expect(steers()[0]!.input).toEqual([imageItem]);
+        expect(delivered(true)).toEqual([imageItem]);
+    });
+
+    // Finding 2: what's attached belongs to one message, not to every message with the same words.
+    test("the same words steered again without an image don't send the first one's image again", async () => {
+        // The turn goes on after each steer (no FAKE_STEER_WAKES), so both go into it.
+        process.env.FAKE_SCENARIO = "slow";
+        const q = queue();
+        const ac = new AbortController();
+        const a = await makeAgent({ provider: "codex", drainQueued: q.drainQueued });
+        const done = a.run("start", ac.signal);
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        await Bun.sleep(50);
+        q.items.push({ text: "check this", attachments: [image()] });
+        a.agent.queueChanged();
+        await until(() => steers().length === 1);
+        q.items.push({ text: "check this" });
+        a.agent.queueChanged();
+        await until(() => steers().length === 2);
+        ac.abort();
+        expect(await done).toBe("aborted");
+        expect(steers()[0]!.input).toEqual([{ type: "text", text: "check this", text_elements: [] }, imageItem]);
+        expect(steers()[1]!.input).toEqual([{ type: "text", text: "check this", text_elements: [] }]);
+    });
+
+    /** A turn whose steer with an image Codex refuses (its turn just ended): the run ends, the message still queued. */
+    async function refused(o: { settings?: any } = {}) {
+        process.env.FAKE_SCENARIO = "steps";
+        process.env.FAKE_STEER_FAIL = "1";
+        process.env.FAKE_SLOW_TURN_START = "200";
+        const q = queue();
+        const a = await makeAgent({ provider: "codex", drainQueued: q.drainQueued, ...o });
+        const done = a.run("start");
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        q.items.push({ text: "late words", attachments: [image()] });
+        a.agent.queueChanged();
+        return { a, q, done };
+    }
+    /** What the runtime does with it after the run: a prompt of its own, with its image. */
+    const ownPrompt = (a: Awaited<ReturnType<typeof refused>>["a"], q: Awaited<ReturnType<typeof refused>>["q"]) => {
+        const m = q.items.shift()!;
+        return a.agent.run([{ type: "text", text: m.text }, ...m.attachments!], { signal: new AbortController().signal });
+    };
+
+    // Rounds 2 and 3 of the review: a steer with attachments is the queue's until Codex has it, so nothing of it is
+    // kept anywhere else, to be lost or sent twice.
+    test("a steer with an image Codex refuses stays queued, image and all, and nothing of it is recorded; then it goes once, as its own prompt", async () => {
+        const { a, q, done } = await refused();
+        expect(await done).toBe("done");
+        expect(steers()).toHaveLength(1);
+        expect(imagesIn(steers()[0]!.input)).toEqual([imageItem]);
+        // Not taken into the next turn either: the run ended, and the message is the queue's.
+        expect(turnStarts()).toHaveLength(1);
+        expect(q.items).toEqual([{ text: "late words", attachments: [image()] }]);
+        expect(q.recorded).toEqual([]);
+        expect(withImages(a.session)).toEqual([]);
+        expect(JSON.stringify(a.session.messages)).not.toContain("late words");
+        expect(await ownPrompt(a, q)).toBe("done");
+        expect(delivered(false)).toEqual([imageItem]);
+    });
+
+    test("one with an image queued as the turn ends isn't taken into the next turn (nor into a turn Codex starts for a goal): it stays queued", async () => {
+        process.env.FAKE_SCENARIO = "steps";
+        const q = queue();
+        // Waiting before the turn ends: the end of the turn drains it (no steer is tried).
+        q.items.push({ text: "with a picture", attachments: [image()] });
+        const a = await makeAgent({ provider: "codex", drainQueued: q.drainQueued });
+        expect(await a.run("start")).toBe("done");
+        expect(turnStarts()).toHaveLength(1);
+        expect(steers()).toEqual([]);
+        expect(q.items).toHaveLength(1);
+        expect(withImages(a.session)).toEqual([]);
+    });
+
+    test("two refused steers with the same words and different images both stay queued, each with its own image", async () => {
+        process.env.FAKE_SCENARIO = "slow";
+        process.env.FAKE_STEER_FAIL = "1";
+        const q = queue();
+        const ac = new AbortController();
+        const a = await makeAgent({ provider: "codex", drainQueued: q.drainQueued });
+        const done = a.run("start", ac.signal);
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        await Bun.sleep(50);
+        q.items.push({ text: "check this", attachments: [image()] });
+        a.agent.queueChanged();
+        await until(() => steers().length === 1);
+        q.items.push({ text: "check this", attachments: [image(OTHER)] });
+        a.agent.queueChanged();
+        await until(() => steers().length === 2);
+        ac.abort();
+        expect(await done).toBe("aborted");
+        expect(q.items).toEqual([{ text: "check this", attachments: [image()] }, { text: "check this", attachments: [image(OTHER)] }]);
+        expect(withImages(a.session)).toEqual([]);
+    });
+
+    test("a refused steer's image waits, queued, through a prompt Codex never started (it couldn't start), and goes once after", async () => {
+        const { a, q, done } = await refused();
+        expect(await done).toBe("done");
+        delete process.env.FAKE_SCENARIO;
+        delete process.env.FAKE_STEER_FAIL;
+        process.env.FAKE_ACCOUNT = "none";
+        expect(await a.run("try this")).toBe("error");
+        expect(q.items).toHaveLength(1);
+        delete process.env.FAKE_ACCOUNT;
+        expect(await a.run("again")).toBe("done");
+        expect(delivered(false)).toEqual([]);
+        expect(await ownPrompt(a, q)).toBe("done");
+        expect(delivered(false)).toEqual([imageItem]);
+    });
+
+    test("a refused steer's image isn't in a Stop hook's continuation: it stays queued, and goes once after", async () => {
+        const counter = join(tempDir(), "stopped");
+        const settings = { hooks: { Stop: [{ command: `[ -e '${counter}' ] && exit 0; touch '${counter}'; echo 'keep going' >&2; exit 2` }] } };
+        const { a, q, done } = await refused({ settings });
+        expect(await done).toBe("done");
+        expect(existsSync(counter)).toBe(true);
+        // The continuation is a turn of its own, without the image.
+        expect(turnStarts()).toHaveLength(2);
+        expect(delivered(false)).toEqual([]);
+        expect(q.items).toHaveLength(1);
+        delete process.env.FAKE_STEER_FAIL;
+        expect(await ownPrompt(a, q)).toBe("done");
+        expect(delivered(false)).toEqual([imageItem]);
+    });
+
+    test("a refused steer's image is the queue's through Codex's compaction: nothing of it is in the history to lose, and it goes once after", async () => {
+        const { a, q, done } = await refused();
+        expect(await done).toBe("done");
+        delete process.env.FAKE_SCENARIO;
+        delete process.env.FAKE_STEER_FAIL;
+        expect(await a.agent.compact({ auto: false, signal: new AbortController().signal })).toBe(true);
+        expect(q.items).toHaveLength(1);
+        expect(await ownPrompt(a, q)).toBe("done");
+        expect(delivered(false)).toEqual([imageItem]);
+    });
+
+    test("a wake while the turn runs steers it at once, marked as the harness's and not as a prompt", async () => {
+        process.env.FAKE_SCENARIO = "slow";
+        process.env.FAKE_STEER_WAKES = "1";
+        const wakes = new WakeQueue({ coalesceMs: 0 });
+        const a = await makeAgent({ provider: "codex", drainQueued: () => [], wakes });
+        const done = a.run("start");
+        await until(() => logLines().some((l) => l.received?.method === "turn/start"));
+        await Bun.sleep(50);
+        wakes.push({ source: "pull-request", key: "pr:acme/app#12", label: "PR #12: checks failed", text: "- Checks failed: test" });
+        expect(await done).toBe("done");
+        expect(steers()).toHaveLength(1);
+        const sent = steers()[0]!.input[0].text as string;
+        expect(sent).toContain("- Checks failed: test");
+        expect(sent).toContain("not the user");
+        expect(turnStarts()).toHaveLength(1);
+        const m = a.session.messages.find((x) => JSON.stringify(x.content).includes("Checks failed: test"))!;
+        expect(m.meta?.kind).toBe("reminder");
+        expect(notices(a.events)).toContain("info: ↻ PR #12: checks failed");
+        expect(wakes.size).toBe(0);
+        wakes.dispose();
     });
 
     test("nothing waiting: a nudge takes nothing and sends nothing", async () => {
@@ -2589,4 +3779,599 @@ describe("Codex mid-turn steering", () => {
         expect(steers()).toEqual([]);
         expect(host).toEqual(["too late"]);
     });
+});
+
+// Round 4 of #299's review: a steer with attachments to Claude Code is the queue's until it's written to its stdin.
+describe("Claude Code: a steer with attachments", () => {
+    const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const image = { type: "image" as const, mediaType: "image/png", data: PNG };
+    /** The runtime's queue, handing over one message with an image as a transaction (Admitted.transaction). */
+    function attached(text: () => string) {
+        const queue = { offered: 0, accepted: 0, refused: 0, left: true };
+        const drainQueued = async () => {
+            if (!queue.left) return [];
+            queue.offered++;
+            let open = true;
+            const transaction = {
+                accepted: () => (open ? ((open = false), (queue.left = false), queue.accepted++, true) : false),
+                refused: () => void (open && ((open = false), queue.refused++)),
+            };
+            return [{ text: text(), admission: "go" as const, attachments: [image], transaction }];
+        };
+        return { queue, drainQueued };
+    }
+    const sentImages = () => received().filter((m) => m.type === "user").flatMap((m) => (Array.isArray(m.message?.content) ? m.message.content.filter((b: any) => b.type === "image") : []));
+
+    test("JsonLinesProcess.send says when a line couldn't be written: the process is gone", async () => {
+        const { JsonLinesProcess } = await import("../src/backends/cli");
+        const p = new JsonLinesProcess("/bin/sh", ["-c", "exit 0"], { cwd, env: process.env as Record<string, string> });
+        await p.exited;
+        await Bun.sleep(20);
+        expect(await p.send({ type: "user" })).toBe(false);
+    });
+
+    // A real pipe: a line bigger than it holds (a 2 MB image) is written only once the reader has taken it all.
+    const big = { type: "user", message: { content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "x".repeat(2 * 1024 * 1024) } }] } };
+    test("JsonLinesProcess.send of a 2 MB line to a process that exits without reading it: false, once that's known", async () => {
+        const { JsonLinesProcess } = await import("../src/backends/cli");
+        const p = new JsonLinesProcess("/bin/sh", ["-c", "sleep 0.3"], { cwd, env: process.env as Record<string, string> });
+        expect(await p.send(big)).toBe(false);
+        await p.exited;
+    });
+
+    test("JsonLinesProcess.send of a 2 MB line to a process that reads it: true, and it got all of it", async () => {
+        const { JsonLinesProcess } = await import("../src/backends/cli");
+        const out = join(tempDir(), "got");
+        const p = new JsonLinesProcess("/bin/sh", ["-c", `cat > '${out}'`], { cwd, env: process.env as Record<string, string> });
+        expect(await p.send(big)).toBe(true);
+        p.end();
+        await p.exited;
+        expect(readFileSync(out, "utf-8")).toBe(JSON.stringify(big) + "\n");
+    });
+
+    test("one whose write to stdin fails (Claude Code went away: EPIPE) isn't accepted: it stays queued, nothing recorded", async () => {
+        process.env.FAKE_SCENARIO = "steering";
+        const { JsonLinesProcess } = await import("../src/backends/cli");
+        const send = JsonLinesProcess.prototype.send;
+        // As stdin throwing EPIPE: the line with the image isn't written.
+        JsonLinesProcess.prototype.send = async function (this: InstanceType<typeof JsonLinesProcess>, obj: any) {
+            return obj?.type === "user" && JSON.stringify(obj).includes('"type":"image"') ? false : send.call(this, obj);
+        };
+        try {
+            const q = attached(() => "look at this");
+            const a = await makeAgent({ provider: "claude-code", drainQueued: q.drainQueued });
+            expect(await a.run("start")).toBe("done");
+            expect(q.queue.offered).toBeGreaterThan(0);
+            expect(q.queue.accepted).toBe(0);
+            expect(q.queue.left).toBe(true);
+            expect(a.session.messages.some((m) => m.content.some((p) => p.type === "image"))).toBe(false);
+        } finally {
+            JsonLinesProcess.prototype.send = send;
+        }
+    });
+
+    test("one in the very words of a wake the turn took is still the user's: its image goes, and it's accepted", async () => {
+        process.env.FAKE_SCENARIO = "steering-many";
+        const wakes = new WakeQueue({ coalesceMs: 60_000 });
+        wakes.push({ source: "pull-request", label: "PR #12: new comment", text: "- bob: \"please rename it\"" });
+        let a!: Awaited<ReturnType<typeof makeAgent>>;
+        // Offered once the wake is in: its text, word for word.
+        const wakeText = () => {
+            const m = a.session.messages.find((x) => x.role === "user" && x.meta?.kind === "reminder" && JSON.stringify(x.content).includes("please rename it"));
+            return m ? (m.content[0] as { text: string }).text : "";
+        };
+        const q = attached(wakeText);
+        const drain = q.drainQueued;
+        a = await makeAgent({ provider: "claude-code", wakes, drainQueued: async () => (wakeText() ? drain() : []) });
+        expect(await a.run("start")).toBe("done");
+        expect(q.queue.accepted).toBe(1);
+        expect(sentImages()).toEqual([{ type: "image", source: { type: "base64", media_type: "image/png", data: PNG } }]);
+        wakes.dispose();
+    });
+});
+
+const { paths } = await import("../src/config/paths");
+describe("the harness's agents on Claude Code", () => {
+    const agentLogs = () => logLines().filter((l) => "agents" in l);
+    function writeAgents() {
+        mkdirSync(paths.userAgents(), { recursive: true });
+        writeFileSync(join(paths.userAgents(), "mine.md"), "---\nname: mine\ndescription: Mine\nmaxTurns: 3\n---\nBe brief.\n");
+        writeFileSync(join(paths.userAgents(), "gpt.md"), "---\nname: gpt\ndescription: On GPT\nmodel: openai:gpt-5\n---\nx\n");
+        mkdirSync(join(cwd, ".harness", "agents"), { recursive: true });
+        writeFileSync(join(cwd, ".harness", "agents", "repo.md"), "---\nname: repo\ndescription: The repo's\n---\ny\n");
+    }
+    afterEach(() => rmSync(paths.userAgents(), { recursive: true, force: true }));
+
+    test("go to its own Agent tool through --agents: user ones always, the repo's once the user trusts it", async () => {
+        writeAgents();
+        const a = await makeAgent({ provider: "claude-code" });
+        await a.run("go");
+        const [first] = agentLogs();
+        expect(first.agents).toEqual({ mine: { description: "Mine", prompt: "Be brief.", model: "inherit", maxTurns: 3 } });
+        // Read from a file only for the run: it's gone once Claude Code exits.
+        expect(existsSync(first.agentsFile)).toBe(false);
+        trust.trustFolder(cwd);
+        rmSync(LOG, { force: true });
+        await a.run("again");
+        expect(Object.keys(agentLogs()[0].agents).sort()).toEqual(["mine", "repo"]);
+    });
+
+    test("not for read-only sub-agents, or when there are none to pass", async () => {
+        writeAgents();
+        await (await makeAgent({ provider: "claude-code", readOnly: true })).run("go");
+        expect(starts()[0].argv).not.toContain("--agents");
+        rmSync(paths.userAgents(), { recursive: true, force: true });
+        rmSync(LOG, { force: true });
+        await (await makeAgent({ provider: "claude-code" })).run("go");
+        expect(starts()[0].argv).not.toContain("--agents");
+    });
+
+    test("each agent's own permissionMode decides its asks, as when the harness runs it", async () => {
+        mkdirSync(paths.userAgents(), { recursive: true });
+        writeFileSync(join(paths.userAgents(), "writer.md"), "---\nname: writer\ndescription: Writes\npermissionMode: acceptEdits\n---\nWrite.\n");
+        writeFileSync(join(paths.userAgents(), "careful.md"), "---\nname: careful\ndescription: Asks\npermissionMode: default\n---\nWrite.\n");
+        process.env.FAKE_SCENARIO = "native-agent-write";
+        const answers = () => logLines().flatMap((l) => (l.agentWrite ? [l.agentWrite] : []));
+        const run = async (type: string, mode: PermissionMode) => {
+            process.env.FAKE_AGENT_TYPE = type;
+            rmSync(LOG, { force: true });
+            const a = await makeAgent({ provider: "claude-code", mode, ask: () => ({ allow: false }) });
+            await a.run("go");
+            return { asked: a.asked.length, answer: answers()[0] };
+        };
+        // An acceptEdits agent in a default session: its edit in the workspace goes through, as the harness's own run would.
+        expect(await run("writer", "default")).toEqual({ asked: 0, answer: "allow" });
+        // The reverse: a default agent in an acceptEdits session is asked.
+        expect(await run("careful", "acceptEdits")).toEqual({ asked: 1, answer: "deny" });
+        // Claude Code's own agents (and any it doesn't name) are under the session's mode.
+        expect(await run("general-purpose", "default")).toEqual({ asked: 1, answer: "deny" });
+        expect(await run("general-purpose", "acceptEdits")).toEqual({ asked: 0, answer: "allow" });
+        // Plan mode in the session wins over the agent's own.
+        expect((await run("writer", "plan")).answer).toBe("deny");
+    });
+
+    test("Codex isn't given them", async () => {
+        writeAgents();
+        await (await makeAgent({ provider: "codex" })).run("go");
+        expect(agentLogs()).toEqual([]);
+    });
+});
+
+describe("Claude Code background tasks: #282 review round 2", () => {
+    const stops = () => received().filter((m) => m.request?.subtype === "stop_task").map((m) => m.request.task_id);
+    const timing = (t: Partial<typeof backgroundTiming>) => {
+        const saved = { ...backgroundTiming };
+        Object.assign(backgroundTiming, t);
+        return () => Object.assign(backgroundTiming, saved);
+    };
+
+    test("a background sub-agent ended by Esc is the user's stop, with Claude Code: not 'Stopped when Harness quit', and no notice (A5)", async () => {
+        const { taskMeta } = await import("../gui/src/lib/background");
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
+        const a = await makeAgent({ provider: "claude-code" });
+        const bg = (a.agent.state.background = new SessionBackground());
+        bg.sync();
+        const ac = new AbortController();
+        const done = a.run("map auth in the background", ac.signal);
+        for (let i = 0; i < 500 && !a.agent.backgroundTasks().some((t) => t.status === "running"); i++) await Bun.sleep(10);
+        expect(bg.sync().length).toBe(0);
+        ac.abort();
+        await done;
+        const t = a.agent.backgroundTasks()[0]!;
+        expect([t.status, t.byUser, t.lost, t.withProcess]).toEqual(["stopped", true, undefined, undefined]);
+        expect(taskMeta(t, [], Date.now(), () => "1s", "Claude Code")).toBe("Stopped · 1s");
+        // The user's own stop: no news.
+        expect(bg.sync()).toEqual([]);
+    });
+
+    test("a background task that goes with Claude Code's process (not Esc, not Harness quitting) says so (A5)", async () => {
+        const { taskMeta } = await import("../gui/src/lib/background");
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
+        process.env.FAKE_EXIT_AFTER_MS = "400";
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            const bg = (a.agent.state.background = new SessionBackground());
+            bg.sync();
+            const done = a.run("map auth in the background");
+            for (let i = 0; i < 500 && !a.agent.backgroundTasks().some((t) => t.status === "running"); i++) await Bun.sleep(10);
+            bg.sync();
+            await done;
+            const t = a.agent.backgroundTasks()[0]!;
+            expect([t.status, t.withProcess, t.lost, t.byUser]).toEqual(["stopped", true, undefined, undefined]);
+            expect(taskMeta(t, [], Date.now(), () => "1s", "Claude Code")).toBe("Stopped with Claude Code");
+            // Not the user's: it's news.
+            expect(bg.sync().map((x) => [x.id, x.status])).toEqual([["toolu_agent", "stopped"]]);
+        } finally {
+            delete process.env.FAKE_EXIT_AFTER_MS;
+        }
+    });
+
+    test("if Claude Code's run throws, the background tasks it reported don't stay running (A2)", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
+        let ref: any;
+        const a = await makeAgent({
+            provider: "claude-code",
+            drainQueued: (() => {
+                if (ref?.backgroundTasks().some((t: any) => t.status === "running")) throw new Error("host went away");
+                return [];
+            }) as any,
+        });
+        ref = a.agent;
+        a.agent.state.background = new SessionBackground();
+        const r = await Promise.race([a.run("map auth in the background").catch((e) => `threw: ${e.message}`), Bun.sleep(8000).then(() => "stuck")]);
+        expect(r).not.toBe("stuck");
+        expect(a.agent.backgroundTasks().map((t) => [t.id, t.status, t.withProcess])).toEqual([["toolu_agent", "stopped", true]]);
+    });
+
+    test("a Stop of a task its CLI no longer knows, listed running: it's over, and shown stopped (A2)", async () => {
+        const a = await makeAgent({ provider: "claude-code" });
+        const bg = (a.agent.state.background = new SessionBackground());
+        bg.report({ id: "toolu_gone", provider: "claude-code", kind: "agent", label: "Map auth", startedAt: Date.now() - 1000, status: "running", stoppable: true });
+        expect(await a.agent.stopBackground(["toolu_gone"])).toEqual({ toolu_gone: "stopped" });
+        expect(a.agent.backgroundTasks().map((t) => [t.id, t.status, t.withProcess])).toEqual([["toolu_gone", "stopped", true]]);
+    });
+
+    test("overlapping stops of one task ask once: the user's late success stands, and Harness's own stop doesn't end the run (B1)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-mixed";
+        process.env.FAKE_COMMAND = "sleep 150";
+        process.env.FAKE_STOP_TASK = "late";
+        // The user's stop times out (300 ms); Harness's own stop of it comes at the grace (350 ms, not while the
+        // user's is pending); the user's answer comes (500 ms) before Harness's own stop would time out.
+        process.env.FAKE_STOP_MS = "500";
+        process.env.FAKE_BACKGROUND_MS = "1500";
+        const restore = timing({ stopTimeoutMs: 300, pollMs: 10 });
+        try {
+            const a = await makeAgent({ provider: "claude-code", settings: { claudeCode: { backgroundWaitSec: 0.35 } } });
+            a.agent.state.background = new SessionBackground();
+            const done = a.run("start both");
+            for (let i = 0; i < 500 && !a.agent.backgroundTasks().some((t) => t.id === "background-1" && t.status === "running"); i++) await Bun.sleep(5);
+            // The user's stop isn't answered in time; Harness then stops the same task at its grace; the user's answer comes.
+            expect(await a.agent.stopBackground(["background-1"])).toEqual({ "background-1": "timeout" });
+            expect(await done).toBe("done");
+            expect(stops()).toEqual(["background-1"]);
+            expect(notices(a.events).join("\n")).not.toContain("did not confirm a task stop");
+            // The sub-agent beside it ran on and reported.
+            expect(JSON.stringify(a.session.messages)).toContain("The explorer reported back");
+            expect(a.agent.backgroundTasks().map((t) => [t.id, t.status]).sort()).toEqual([["background-1", "stopped"], ["toolu_agent", "done"]]);
+        } finally {
+            restore();
+            delete process.env.FAKE_STOP_MS;
+        }
+    });
+
+    test("a task that reports back while its stop is pending, then the process exits: its report and its end stand (B2)", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
+        process.env.FAKE_STOP_TASK = "complete-exit";
+        const a = await makeAgent({ provider: "claude-code" });
+        a.agent.state.background = new SessionBackground();
+        const done = a.run("map auth in the background");
+        for (let i = 0; i < 500 && !a.agent.backgroundTasks().some((t) => t.status === "running" && t.stoppable); i++) await Bun.sleep(10);
+        // It had completed: the stop didn't stop it, it ended on its own.
+        expect(await a.agent.stopBackground(["toolu_agent"])).toEqual({ toolu_agent: "ended" });
+        await Promise.race([done, Bun.sleep(5000)]);
+        expect(a.agent.backgroundTasks().map((t) => [t.id, t.status])).toEqual([["toolu_agent", "done"]]);
+        expect(a.events.some((e) => e.type === "subagent" && e.event.type === "text" && e.event.text === "Auth keeps its strategies in one list.")).toBe(true);
+        expect(a.events.filter((e) => e.type === "subagent" && e.event.type === "turn_end").map((e: any) => e.event.reason)).toEqual(["done"]);
+    });
+
+    test("a sub-agent said to be done, then to have failed: the session is told it failed (B3)", async () => {
+        process.env.FAKE_SCENARIO = "agent-fails-later";
+        const a = await makeAgent({ provider: "claude-code" });
+        const bg = (a.agent.state.background = new SessionBackground());
+        const seen: string[] = [];
+        bg.onChange(() => {
+            const t = bg.get("toolu_agent");
+            if (t && seen.at(-1) !== t.status) seen.push(t.status);
+        });
+        bg.sync();
+        await a.run("map auth in the background");
+        expect(seen).toEqual(["running", "done", "failed"]);
+        expect(a.agent.backgroundTasks().map((t) => [t.id, t.status])).toEqual([["toolu_agent", "failed"]]);
+    });
+});
+
+describe("Claude Code background tasks: #282 review round 3", () => {
+    const stops = () => received().filter((m) => m.request?.subtype === "stop_task").map((m) => m.request.task_id);
+    const timing = (t: Partial<typeof backgroundTiming>) => {
+        const saved = { ...backgroundTiming };
+        Object.assign(backgroundTiming, t);
+        return () => Object.assign(backgroundTiming, saved);
+    };
+    const until = async (pred: () => boolean, ms = 5000) => {
+        for (const end = Date.now() + ms; !pred() && Date.now() < end; ) await Bun.sleep(5);
+        expect(pred()).toBe(true);
+    };
+    const running = (a: { agent: InstanceType<typeof Agent> }, id: string) => a.agent.backgroundTasks().some((t) => t.id === id && t.status === "running" && t.stoppable);
+    const subagentEnds = (events: AgentEvent[]) => events.flatMap((e: any) => (e.type === "subagent" && e.event.type === "turn_end" ? [e.event.reason] : []));
+
+    for (const answer of ["success", "error"] as const) {
+        test(`a background sub-agent that completes as the user's stop is taken (answered ${answer}): it ended on its own, its report turn runs, and that's news (B-R3-1)`, async () => {
+            process.env.FAKE_SCENARIO = "agent-background-stuck";
+            process.env.FAKE_STOP_TASK = "complete-first";
+            process.env.FAKE_FOLLOWUP_MS = "20";
+            if (answer === "error") process.env.FAKE_STOP_ANSWER = "error";
+            const restore = timing({ pollMs: 10 });
+            try {
+                const a = await makeAgent({ provider: "claude-code" });
+                const bg = (a.agent.state.background = new SessionBackground());
+                bg.sync();
+                const done = a.run("map auth in the background");
+                await until(() => running(a, "toolu_agent"));
+                bg.sync();
+                // Claude Code said it completed (with its report) before it took the stop: not the user's stop.
+                expect(await bg.userStop(["toolu_agent"], () => a.agent.stopBackground(["toolu_agent"]))).toEqual({ toolu_agent: "ended" });
+                expect(await Promise.race([done, Bun.sleep(5000).then(() => "stuck")])).toBe("done");
+                expect(JSON.stringify(a.session.messages)).toContain("Follow-up: the explorer reported back.");
+                expect(a.agent.backgroundTasks().map((t) => [t.id, t.status, t.byUser])).toEqual([["toolu_agent", "done", undefined]]);
+                expect(subagentEnds(a.events)).toEqual(["done"]);
+                expect(notices(a.events).join("\n")).not.toContain("You stopped");
+                expect(bg.sync().map((t) => [t.id, t.status])).toEqual([["toolu_agent", "done"]]);
+            } finally {
+                restore();
+            }
+        });
+
+        test(`a background shell that completes as the user's stop is taken (answered ${answer}): its report turn isn't lost, and it's done (B-R3-2)`, async () => {
+            process.env.FAKE_SCENARIO = "shell-background-stuck";
+            process.env.FAKE_STOP_TASK = "complete-first";
+            process.env.FAKE_FOLLOWUP_MS = "20";
+            if (answer === "error") process.env.FAKE_STOP_ANSWER = "error";
+            // A short settle: without its report turn counted, the run would end before the follow-up comes.
+            const restore = timing({ pollMs: 10, settleMs: 1000 });
+            try {
+                const a = await makeAgent({ provider: "claude-code" });
+                const bg = (a.agent.state.background = new SessionBackground());
+                bg.sync();
+                const done = a.run("run checks and wait");
+                await until(() => running(a, "background-1"));
+                bg.sync();
+                expect(await bg.userStop(["background-1"], () => a.agent.stopBackground(["background-1"]))).toEqual({ "background-1": "ended" });
+                expect(await Promise.race([done, Bun.sleep(5000).then(() => "stuck")])).toBe("done");
+                expect(JSON.stringify(a.session.messages)).toContain("Follow-up: the explorer reported back.");
+                expect(a.agent.backgroundTasks().map((t) => [t.id, t.status])).toEqual([["background-1", "done"]]);
+                expect(notices(a.events).join("\n")).not.toContain("You stopped");
+                expect(bg.sync().map((t) => [t.id, t.status])).toEqual([["background-1", "done"]]);
+            } finally {
+                restore();
+            }
+        });
+    }
+
+    test("the user's stop goes unanswered while the shell finishes and its report turn runs: the run ends once the stop times out (B-R3-3)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        process.env.FAKE_STOP_TASK = "hang";
+        process.env.FAKE_SHELL_MS = "250";
+        // The stop goes before the turn's answer: no wait (and no polling) has started when the stop settles.
+        process.env.FAKE_RESULT_DELAY_MS = "150";
+        const restore = timing({ stopTimeoutMs: 1200, pollMs: 10 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            const bg = (a.agent.state.background = new SessionBackground());
+            bg.sync();
+            const done = a.run("run checks and wait");
+            await until(() => running(a, "background-1"));
+            bg.sync();
+            // It said it completed while the stop was pending: when the stop times out, that's how it ended.
+            expect(await bg.userStop(["background-1"], () => a.agent.stopBackground(["background-1"]))).toEqual({ "background-1": "ended" });
+            expect(await Promise.race([done, Bun.sleep(5000).then(() => "stuck")])).toBe("done");
+            expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
+            expect(a.agent.backgroundTasks().map((t) => [t.id, t.status])).toEqual([["background-1", "done"]]);
+        } finally {
+            restore();
+        }
+    }, 15_000);
+
+    test("Harness's own stop goes unanswered, but the task said meanwhile it completed: a look past the stop's timeout doesn't end the run as unconfirmed (D1)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-mixed";
+        process.env.FAKE_COMMAND = "sleep 150";
+        process.env.FAKE_STOP_TASK = "hang";
+        process.env.FAKE_SHELL_MS = "250";
+        process.env.FAKE_BACKGROUND_MS = "1500";
+        const restore = timing({ stopTimeoutMs: 1500, pollMs: 10 });
+        const realNow = Date.now;
+        try {
+            const a = await makeAgent({ provider: "claude-code", settings: { claudeCode: { backgroundWaitSec: 0.1 } } });
+            a.agent.state.background = new SessionBackground();
+            const done = a.run("start both");
+            // Harness stops the shell at its grace; it then says it completed (held for the stop).
+            await until(() => stops().length === 1);
+            await Bun.sleep(400);
+            // The idle check looks at the clock past the stop's timeout before the stop's own timer runs (it raced it).
+            Date.now = () => realNow() + 2000;
+            await Bun.sleep(100);
+            Date.now = realNow;
+            expect(await Promise.race([done, Bun.sleep(8000).then(() => "stuck")])).toBe("done");
+            expect(notices(a.events).join("\n")).not.toContain("did not confirm a task stop");
+            // The sub-agent beside it ran on and reported; the shell's end, held for the stop, stands.
+            expect(JSON.stringify(a.session.messages)).toContain("The explorer reported back");
+            expect(a.agent.backgroundTasks().map((t) => [t.id, t.status]).sort()).toEqual([["background-1", "done"], ["toolu_agent", "done"]]);
+        } finally {
+            Date.now = realNow;
+            restore();
+        }
+    }, 15_000);
+
+    test("the user's stop times out, Harness's own stop of the task takes the same answer, and the task completed first: the run isn't ended as unconfirmed (B1, !over())", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-mixed";
+        process.env.FAKE_COMMAND = "sleep 150";
+        process.env.FAKE_STOP_TASK = "complete-first";
+        process.env.FAKE_STOP_ANSWER = "error";
+        process.env.FAKE_FOLLOWUP_MS = "20";
+        // The user's stop (at the wait's start) times out at 400 ms; Harness's own stop at the grace (450 ms)
+        // shares its request; Claude Code says the task completed, then refuses, at 650 ms.
+        process.env.FAKE_STOP_MS = "650";
+        process.env.FAKE_BACKGROUND_MS = "1500";
+        const restore = timing({ stopTimeoutMs: 400, pollMs: 10 });
+        try {
+            const a = await makeAgent({ provider: "claude-code", settings: { claudeCode: { backgroundWaitSec: 0.45 } } });
+            a.agent.state.background = new SessionBackground();
+            const done = a.run("start both");
+            await until(() => notices(a.events).some((n) => n.includes("Waiting for")));
+            expect(await a.agent.stopBackground(["background-1"])).toEqual({ "background-1": "timeout" });
+            expect(await Promise.race([done, Bun.sleep(8000).then(() => "stuck")])).toBe("done");
+            expect(stops()).toEqual(["background-1"]);
+            expect(notices(a.events).join("\n")).not.toContain("did not confirm a task stop");
+            expect(JSON.stringify(a.session.messages)).toContain("The explorer reported back");
+            expect(a.agent.backgroundTasks().map((t) => [t.id, t.status]).sort()).toEqual([["background-1", "done"], ["toolu_agent", "done"]]);
+        } finally {
+            restore();
+        }
+    }, 15_000);
+
+    test("Stop on a Claude Code task that already failed (the list was a moment old): it ended, and its failure stands (B-R3-4)", async () => {
+        const a = await makeAgent({ provider: "claude-code" });
+        const bg = (a.agent.state.background = new SessionBackground());
+        const t = { id: "toolu_x", provider: "claude-code", kind: "agent" as const, label: "Map auth", startedAt: Date.now() - 1000, status: "running" as const, stoppable: true };
+        bg.report(t);
+        bg.sync();
+        bg.report({ ...t, status: "failed" });
+        expect(await bg.userStop(["toolu_x"], () => a.agent.stopBackground(["toolu_x"]))).toEqual({ toolu_x: "ended" });
+        expect(a.agent.backgroundTasks().map((x) => [x.id, x.status])).toEqual([["toolu_x", "failed"]]);
+        expect(bg.sync().map((x) => [x.id, x.status])).toEqual([["toolu_x", "failed"]]);
+    });
+});
+
+describe("Claude Code background tasks: #282 review round 4", () => {
+    const stops = () => received().filter((m) => m.request?.subtype === "stop_task").map((m) => m.request.task_id);
+    const timing = (t: Partial<typeof backgroundTiming>) => {
+        const saved = { ...backgroundTiming };
+        Object.assign(backgroundTiming, t);
+        return () => Object.assign(backgroundTiming, saved);
+    };
+    const until = async (pred: () => boolean, ms = 5000) => {
+        for (const end = Date.now() + ms; !pred() && Date.now() < end; ) await Bun.sleep(5);
+        expect(pred()).toBe(true);
+    };
+    const running = (a: { agent: InstanceType<typeof Agent> }, id: string) => a.agent.backgroundTasks().some((t) => t.id === id && t.status === "running" && t.stoppable);
+
+    for (const said of [true, false]) {
+        test(`Harness's own stop goes unanswered while Claude Code takes a turn of its own; ${said ? "the task says it completed after the stop's timeout: that end settles it, and the run ends (Bug A)" : "nothing is said: the run ends as unconfirmed"}`, async () => {
+            process.env.FAKE_SCENARIO = "shell-background-mixed";
+            process.env.FAKE_COMMAND = "sleep 150";
+            process.env.FAKE_BACKGROUND_MS = "1500";
+            process.env.FAKE_STOP_TASK = "hang-turn";
+            process.env.FAKE_STOP_NOTIFY_AT = said ? "600" : "999999";
+            const restore = timing({ stopTimeoutMs: 400, pollMs: 20, settleMs: 300 });
+            try {
+                const a = await makeAgent({ provider: "claude-code", settings: { claudeCode: { backgroundWaitSec: 0.1 } } });
+                a.agent.state.background = new SessionBackground();
+                expect(await Promise.race([a.run("start both"), Bun.sleep(8000).then(() => "stuck")])).toBe("done");
+                expect(stops()).toEqual(["background-1"]);
+                if (said) {
+                    expect(notices(a.events).join("\n")).not.toContain("did not confirm a task stop");
+                    expect(JSON.stringify(a.session.messages)).toContain("The explorer reported back");
+                    expect(a.agent.backgroundTasks().map((t) => [t.id, t.status]).sort()).toEqual([["background-1", "done"], ["toolu_agent", "done"]]);
+                } else expect(notices(a.events).join("\n")).toContain("did not confirm a task stop");
+            } finally {
+                restore();
+            }
+        }, 15_000);
+    }
+
+    test("a refused stop of a shell that left the list before saying how it ended: its report turn is still waited for (Astra 1)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-stuck";
+        process.env.FAKE_STOP_TASK = "leave-reject";
+        const restore = timing({ pollMs: 10, settleMs: 1500 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            const bg = (a.agent.state.background = new SessionBackground());
+            bg.sync();
+            const done = a.run("run checks and wait");
+            await until(() => running(a, "background-1"));
+            bg.sync();
+            expect(await bg.userStop(["background-1"], () => a.agent.stopBackground(["background-1"]))).toEqual({ "background-1": "failed" });
+            expect(await Promise.race([done, Bun.sleep(5000).then(() => "stuck")])).toBe("done");
+            expect(JSON.stringify(a.session.messages)).toContain("Follow-up: the checks passed.");
+            expect(a.agent.backgroundTasks().map((t) => [t.id, t.status])).toEqual([["background-1", "done"]]);
+            expect(bg.sync().map((t) => [t.id, t.status])).toEqual([["background-1", "done"]]);
+        } finally {
+            restore();
+        }
+    }, 15_000);
+
+    for (const kind of ["shell", "sub-agent"] as const) {
+        test(`the ${kind}'s report turn ran while the user's stop was pending: once the stop settles the run ends, without waiting for that turn again (Bug C)`, async () => {
+            process.env.FAKE_SCENARIO = kind === "shell" ? "shell-background-stuck" : "agent-background";
+            process.env.FAKE_STOP_TASK = "hang";
+            if (kind === "shell") process.env.FAKE_SHELL_MS = "250";
+            else process.env.FAKE_BACKGROUND_MS = "200";
+            const restore = timing({ stopTimeoutMs: 1200, pollMs: 10, settleMs: 4000 });
+            try {
+                const a = await makeAgent({ provider: "claude-code" });
+                const bg = (a.agent.state.background = new SessionBackground());
+                bg.sync();
+                const done = a.run(kind === "shell" ? "run checks and wait" : "map auth in the background");
+                await until(() => a.agent.backgroundTasks().some((t) => t.status === "running" && t.stoppable));
+                bg.sync();
+                const id = a.agent.backgroundTasks().find((t) => t.status === "running")!.id;
+                expect(await bg.userStop([id], () => a.agent.stopBackground([id]))).toEqual({ [id]: "ended" });
+                const settled = Date.now();
+                expect(await Promise.race([done, Bun.sleep(8000).then(() => "stuck")])).toBe("done");
+                expect(Date.now() - settled).toBeLessThan(2000);
+                expect(a.agent.backgroundTasks().map((t) => t.status)).toEqual(["done"]);
+            } finally {
+                restore();
+            }
+        }, 15_000);
+    }
+
+    test("Harness's own stop is refused, but the task said meanwhile it stopped: not an unconfirmed stop that ends the run (C1c)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-mixed";
+        process.env.FAKE_COMMAND = "sleep 150";
+        process.env.FAKE_STOP_TASK = "complete-first";
+        process.env.FAKE_STOP_STATUS = "stopped";
+        process.env.FAKE_STOP_ANSWER = "error";
+        process.env.FAKE_FOLLOWUP_MS = "20";
+        process.env.FAKE_BACKGROUND_MS = "1500";
+        const restore = timing({ pollMs: 10 });
+        try {
+            const a = await makeAgent({ provider: "claude-code", settings: { claudeCode: { backgroundWaitSec: 0.1 } } });
+            a.agent.state.background = new SessionBackground();
+            expect(await Promise.race([a.run("start both"), Bun.sleep(8000).then(() => "stuck")])).toBe("done");
+            expect(stops()).toEqual(["background-1"]);
+            expect(notices(a.events).join("\n")).not.toContain("did not confirm a task stop");
+            expect(JSON.stringify(a.session.messages)).toContain("The explorer reported back");
+        } finally {
+            restore();
+        }
+    }, 15_000);
+
+    test("Stop on a shell that left Claude Code's list, before it says how it ended: it ended (C8)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background";
+        process.env.FAKE_SHELL_MS = "150";
+        process.env.FAKE_SHELL_NOTIFY_MS = "1500";
+        const restore = timing({ pollMs: 10 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            a.agent.state.background = new SessionBackground();
+            const done = a.run("run checks and wait");
+            await until(() => running(a, "background-1"));
+            // Off the list (150 ms), its notification still to come (1.5 s later).
+            await Bun.sleep(500);
+            expect(await a.agent.stopBackground(["background-1"])).toEqual({ "background-1": "ended" });
+            expect(stops()).toEqual([]);
+            expect(await done).toBe("done");
+            expect(a.agent.backgroundTasks().map((t) => [t.id, t.status])).toEqual([["background-1", "done"]]);
+        } finally {
+            restore();
+        }
+    }, 15_000);
+
+    test("the user's Stop of a monitor whose command just exited (its close not taken in): the agent is told it was stopped (Bug B)", async () => {
+        const { startMonitor } = await import("../src/tools/monitor");
+        const wakes = new WakeQueue();
+        const a = await makeAgent({ provider: "claude-code", wakes });
+        const bg = (a.agent.state.background = new SessionBackground());
+        // A grandchild in a process group of its own keeps stdout open after the command exits.
+        const m = startMonitor({ command: `perl -e 'setpgrp(0,0); sleep 3' & exit 0`, description: "watch build", timeoutMs: 60_000, ctx: { state: a.agent.state, wakes } as never, env: { PATH: process.env.PATH! } });
+        bg.sync({ shells: a.agent.state.shells });
+        await Bun.sleep(150);
+        expect(m.shell.exitCode).toBeNull();
+        expect(await bg.userStop([m.id], () => a.agent.stopBackground([m.id]))).toEqual({ [m.id]: "stopped" });
+        await Bun.sleep(1200);
+        const reminders: string[] = (a.agent as any).pendingReminders.map((x: any) => x.text);
+        const told = reminders.length + wakes.pending().length;
+        expect(told).toBe(1);
+        expect(reminders.join("\n")).toContain(m.id);
+    }, 15_000);
 });

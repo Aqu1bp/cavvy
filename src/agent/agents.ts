@@ -29,12 +29,14 @@
 
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { basename, join } from "path";
 import { paths, harnessHome } from "../config/paths";
 import { isTrusted } from "../config/trust";
+import { loadPlugins } from "../plugins/loader";
 import { EFFORT_LEVELS, type Effort, type HookConfig, type McpServerConfig, type Settings } from "../config/settings";
 import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { HOOK_EVENTS, type HookEvent } from "./hooks";
+import { normalizeHooks } from "../config/hook-config";
 import { parseModelRef } from "../providers/types";
 import { gitRoot } from "../util/git";
 
@@ -152,43 +154,20 @@ function bool(v: unknown): boolean | undefined {
     return s === "true" || s === "yes" ? true : s === "false" || s === "no" ? false : undefined;
 }
 
-/** Hooks as settings.json has them, or Claude Code's nested form ({matcher, hooks: [{type: "command", command}]}). */
+/** Hooks as settings.json has them, or Claude Code's nested form: every handler type, read as settings' are (normalizeHooks). */
 function parseHooks(v: unknown, warn: (m: string) => void): AgentHooks | undefined {
     if (!v || typeof v !== "object" || Array.isArray(v)) {
         warn("hooks: expected a map of events to lists of hooks");
         return undefined;
     }
-    const out: AgentHooks = {};
-    for (const [rawEvent, list] of Object.entries(v)) {
-        // A sub-agent's turn ends with SubagentStop, as in Claude Code.
-        const event = (rawEvent === "Stop" ? "SubagentStop" : rawEvent) as HookEvent;
-        if (!HOOK_EVENTS.includes(event)) {
-            warn(`hooks: unknown event "${rawEvent}"`);
-            continue;
-        }
-        const add = (h: HookConfig) => (out[event] ??= []).push(h);
-        for (const entry of Array.isArray(list) ? list : [list]) {
-            if (!entry || typeof entry !== "object") {
-                warn(`hooks.${rawEvent}: expected a hook, got ${JSON.stringify(entry)}`);
-                continue;
-            }
-            const e = entry as Record<string, unknown>;
-            const matcher = str(e.matcher);
-            const handlers = Array.isArray(e.hooks) ? (e.hooks as unknown[]) : [e];
-            for (const raw of handlers) {
-                const h = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-                const type = str(h.type) ?? "command";
-                const command = str(h.command);
-                if (type !== "command" || !command) {
-                    warn(`hooks.${rawEvent}: ${type !== "command" ? `"${type}" hooks aren't supported` : "a hook without a command"}`);
-                    continue;
-                }
-                const timeout = Number(h.timeout);
-                add({ ...(matcher ? { matcher } : {}), command, ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {}) });
-            }
-        }
+    // A sub-agent's turn ends with SubagentStop, as in Claude Code (its Stop hooks and SubagentStop ones together).
+    const raw: Record<string, unknown[]> = {};
+    for (const [event, list] of Object.entries(v)) {
+        const name = event === "Stop" ? "SubagentStop" : event;
+        raw[name] = [...(raw[name] ?? []), ...(Array.isArray(list) ? list : [list])];
     }
-    return Object.keys(out).length ? out : undefined;
+    const out = normalizeHooks(raw, warn);
+    return out && Object.keys(out).length ? (out as AgentHooks) : undefined;
 }
 
 function serverConfig(name: string, v: unknown, warn: (m: string) => void): AgentMcpServer | undefined {
@@ -303,14 +282,24 @@ export function parseAgentFile(text: string, fallbackName: string, source: Agent
     return def;
 }
 
-function loadDir(dir: string, source: "user" | "project"): AgentDef[] {
+/** `prefix`: a plugin's name, which its agents' names start with ("<plugin>:<name>"). `dir` may be one .md file. */
+function loadDir(dir: string, source: AgentDef["source"], prefix?: string): AgentDef[] {
     if (!existsSync(dir)) return [];
     const out: AgentDef[] = [];
-    for (const f of readdirSync(dir)) {
+    const single = prefix !== undefined && dir.endsWith(".md");
+    let files: string[];
+    try {
+        files = single ? [basename(dir)] : readdirSync(dir);
+    } catch {
+        return []; // not a folder: one bad entry doesn't hide every other agent
+    }
+    for (const f of files) {
         if (!f.endsWith(".md")) continue;
         try {
-            const file = join(dir, f);
-            out.push(parseAgentFile(readFileSync(file, "utf-8"), f.replace(/\.md$/, ""), source, file));
+            const file = single ? dir : join(dir, f);
+            const def = parseAgentFile(readFileSync(file, "utf-8"), f.replace(/\.md$/, ""), source, file);
+            if (prefix) def.name = `${prefix}:${def.name}`;
+            out.push(def);
         } catch {
             // skip unreadable files
         }
@@ -318,11 +307,14 @@ function loadDir(dir: string, source: "user" | "project"): AgentDef[] {
     return out;
 }
 
-export function loadAgents(cwd: string): AgentDef[] {
+/** `trusted`: the run's decision about the folder, as loadMemory takes it. Left out, the folder's trust decides. */
+export function loadAgents(cwd: string, trusted?: boolean): AgentDef[] {
     const byName = new Map<string, AgentDef>();
     // Project agents only in trusted folders: their prompts and tool lists come from the repository.
-    const project = isTrusted(cwd) ? loadDir(paths.projectAgents(cwd), "project") : [];
-    for (const a of [...BUILTIN_AGENTS, ...loadDir(paths.userAgents(), "user"), ...project]) byName.set(a.name, a);
+    const projectTrusted = trusted ?? isTrusted(cwd);
+    const project = projectTrusted ? loadDir(paths.projectAgents(cwd), "project") : [];
+    const plugin = loadPlugins(cwd, projectTrusted).flatMap((p) => p.agentPaths.flatMap((d) => loadDir(d, "plugin", p.name)));
+    for (const a of [...BUILTIN_AGENTS, ...plugin, ...loadDir(paths.userAgents(), "user"), ...project]) byName.set(a.name, a);
     return [...byName.values()];
 }
 
@@ -335,10 +327,10 @@ export function loadAgents(cwd: string): AgentDef[] {
  * the user's ~/.harness/skills and ~/.claude/skills. The body, without
  * its frontmatter.
  */
-export function findSkill(name: string, cwd: string): { path: string; body: string } | undefined {
+export function findSkill(name: string, cwd: string, trusted?: boolean): { path: string; body: string } | undefined {
     if (!/^[A-Za-z0-9][\w.:-]*$/.test(name) || name.includes("..")) return undefined;
     const root = gitRoot(cwd) ?? cwd;
-    const roots = [...(isTrusted(cwd) ? [join(root, ".harness", "skills"), join(root, ".claude", "skills")] : []), join(harnessHome(), "skills"), join(homedir(), ".claude", "skills")];
+    const roots = [...((trusted ?? isTrusted(cwd)) ? [join(root, ".harness", "skills"), join(root, ".claude", "skills")] : []), join(harnessHome(), "skills"), join(homedir(), ".claude", "skills")];
     for (const r of roots) {
         const path = join(r, name, "SKILL.md");
         try {

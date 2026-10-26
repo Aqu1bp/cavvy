@@ -16,13 +16,18 @@ export const paths = {
     userSettings: () => join(harnessHome(), "settings.json"),
     providers: () => join(harnessHome(), "providers.json"),
     credentialsFile: () => join(harnessHome(), "credentials.json"),
+    /** OAuth tokens for remote MCP servers (src/mcp/oauth.ts): part of the credential store. */
+    mcpOAuth: () => join(harnessHome(), "mcp-oauth.json"),
     history: () => join(harnessHome(), "history.jsonl"),
     modelCache: () => join(harnessHome(), "cache", "models.json"),
+    /** The last plan limits the agent CLIs reported (src/server/limits-store.ts). */
+    planLimits: () => join(harnessHome(), "limits.json"),
     userCommands: () => join(harnessHome(), "commands"),
     userAgents: () => join(harnessHome(), "agents"),
     userMemory: () => join(harnessHome(), "HARNESS.md"),
     projectsDir: () => join(harnessHome(), "projects"),
     logs: () => join(harnessHome(), "logs"),
+    plugins: () => join(harnessHome(), "plugins"),
 
     projectDir: (cwd: string) => join(cwd, ".harness"),
     projectSettings: (cwd: string) => join(cwd, ".harness", "settings.json"),

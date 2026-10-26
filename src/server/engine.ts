@@ -3,9 +3,13 @@
 // once, in different projects; each project gets its own settings, trust
 // decision, MCP servers and file index, shared by its sessions.
 
-import { ACCOUNT_PROVIDERS, account, accountProvider, addAccount, defaultAccount, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots } from "../providers/accounts";
+import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
+import { ACCOUNT_PROVIDERS, account, accountProvider, accountSharingWarning, addAccount, defaultAccount, holdLogin, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots } from "../providers/accounts";
 import { loginCommand } from "../backends/account-login";
-import { planLimitKey, type AccountInfo } from "./protocol";
+import { redactedError } from "./git-handles";
+import { sessionWorktree } from "./session-worktrees";
+import { planLimitKey, type AccountInfo, type BackgroundTaskInfo } from "./protocol";
+import { endedText } from "../agent/background";
 import { mergeLimits } from "../backends/limits";
 import { Terminals } from "./terminals";
 import { deleteScript, findScript, findSetupScript, listScripts, markUsed, reorderScripts, saveScript } from "./scripts";
@@ -22,23 +26,26 @@ import { fireHooks } from "../agent/hooks";
 import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder } from "../agent/session";
 import { forkSession } from "../agent/fork";
 import { isFollowUp } from "../agent/queue-store";
-import { loadCustomCommands, type CustomCommand } from "../commands/custom";
+import { loadCustomCommands, pluginCommandFor, type CustomCommand } from "../commands/custom";
 import { loadSkills, sameSkills, type Skill } from "../agent/skills";
-import { McpManager } from "../mcp/manager";
+import { McpManager, SignInReplaced } from "../mcp/manager";
 import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
 import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
-import { checkAgentCli, vendorOf } from "../backends/index";
+import { checkAgentPlan, vendorOf, type AgentCliStatus } from "../backends/index";
+import { loadPlanLimits, savePlanLimits } from "./limits-store";
+import { AppUpdates } from "./app-update";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
 import { gitRoot, gitBranch } from "../util/git";
-import { createWorktree, currentBase, ignoredWaiting, listWorktrees, mainCheckoutOf, managedWorktreeOf, planRemoval, runRemoval, suggestBranch, unpushedReason, type Removal } from "./worktrees";
+import { createWorktreeWithHooks, currentBase, ignoredWaiting, listWorktrees, mainCheckoutOf, managedWorktreeOf, othersPresent, planRemoval, runRemoval, suggestBranch, unpushedReason, type Removal } from "./worktrees";
 import { defaultPlanPath, implementPrompt, planTitle, slugify, writePlanFile } from "./plans";
 import { billingOf, parseRunRequest, startRun, type RunHost, type RunRecord } from "./runs";
 import { readRegular } from "./git-changes";
+import { agentsByWorktree } from "./worktree-agents";
 import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
 import { childEnv } from "../util/env";
 import { expandPath, isInside, sniffImage } from "../util/files";
@@ -46,6 +53,7 @@ import { expandPath, isInside, sniffImage } from "../util/files";
 /** The largest image file shown inline in a reply. */
 const MAX_SHOWN_IMAGE = 10 * 1024 * 1024;
 import { maskKey, redact } from "../util/redact";
+import { searchResources } from "../mcp/mentions";
 import { cleanTitle, modelSummary, promptTitle, Runtime } from "./runtime";
 import { forkUiLog } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
@@ -57,6 +65,7 @@ import { usageDays, usageSummary } from "./usage";
 import type {
     ArchiveOffer,
     ArchiveResult,
+    BrowserState,
     CliSessionInfo,
     CliSessionsList,
     CommandInfo,
@@ -66,6 +75,7 @@ import type {
     EffortLevel,
     GuiSettings,
     HelloResult,
+    KeybindingsFile,
     ImplementMode,
     ImplementPlanResult,
     McpListInfo,
@@ -87,10 +97,19 @@ import type {
     SessionSearchResult,
     SessionSummary,
     WorktreeInfo,
+    PluginActionParams,
+    PluginsInfo,
 } from "./protocol";
+import { ensureKeybindingsFile, keybindingsPath, readKeybindings, watchKeybindings } from "../keybindings/file";
+import { listPlugins } from "../plugins/install";
+import { pluginLogo } from "../plugins/logos";
+import { runPluginCli } from "../plugins/cli";
+import { pluginServerMatch } from "../plugins/loader";
+import { withPluginCommands } from "../plugins/native";
 import { IMPLEMENT_MODES, PROTOCOL_VERSION, SCRIPT_LIMITS } from "./protocol";
 import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
 import { checkFiles, checkMedia, toWire } from "./attachments";
+import { BrowserError } from "../browser/page";
 
 export interface EngineOptions {
     /** --dangerously-skip-permissions: bypass mode may be chosen. */
@@ -224,7 +243,7 @@ export class Workspace {
     }
 
     private startMcp(): McpManager {
-        const mcp = new McpManager(this.cwd, () => this.settings, this.trusted, () => (this.settings = loadSettings(this.cwd, { trusted: this.trusted })));
+        const mcp = new McpManager(this.cwd, () => this.settings, this.trusted, () => (this.settings = loadSettings(this.cwd, { trusted: this.trusted })), true);
         mcp.onChange = () => this.engine.workspaceChanged(this);
         mcp.load();
         void mcp.startAll();
@@ -272,6 +291,9 @@ export class Workspace {
             name: s.name,
             status: s.status,
             tools: s.tools.length,
+            // No empty fields (they'd travel as null).
+            ...((s.resources?.length ?? 0) + (s.templates?.length ?? 0) ? { resources: (s.resources?.length ?? 0) + (s.templates?.length ?? 0) } : {}),
+            ...(s.prompts?.length ? { prompts: s.prompts.length } : {}),
             error: s.error ? visible(redact(s.error.split("\n")[0]!)).text.slice(0, 500) : undefined,
             source: s.source,
             // No fingerprint here; and no empty fields (they'd travel as null).
@@ -300,6 +322,14 @@ export class Workspace {
 
 // ---------------------------------------------------------------------------
 
+/** A window's Rewind dialog holds off an idle compaction apart from its message box. */
+const dialogs = new WeakMap<object, object>();
+function dialogOf(client: object): object {
+    let d = dialogs.get(client);
+    if (!d) dialogs.set(client, (d = {}));
+    return d;
+}
+
 export class Engine {
     private terminals: Terminals;
     /** Script lookup is asynchronous: a tab can close before its shell exists. */
@@ -323,6 +353,8 @@ export class Engine {
     private closingIn = new Map<string, string>();
     /** Worktrees being removed (real paths): no session opens in them meanwhile. */
     private removing = new Set<string>();
+    /** File names of folders Home's @ searches before a session opens there (the last few, newest last). */
+    private homeFiles = new Map<string, FileIndex>();
     /** Closing everything: no new work is taken on, as it would outlive the server. */
     private stopping = false;
     /** Sessions whose plan is being taken to a worktree, and sessions being archived with theirs: one at a time each. */
@@ -333,6 +365,9 @@ export class Engine {
     private cliCommandNames = new Map<string, Set<string>>();
 
     private readonly unregisterAccountRoots: () => void;
+    private stopKeybindings?: () => void;
+    /** The desktop app updating itself from main: only the installed app does. */
+    private readonly updates = new AppUpdates({ emit: (info) => this.broadcast({ type: "app.update", info }) });
 
     constructor(private o: EngineOptions = {}) {
         this.fallbackModel = o.fallbackModel;
@@ -346,21 +381,52 @@ export class Engine {
 
     async start() {
         void this.firstListings();
+        this.loadLimits();
+        void this.checkPlans();
+        // Every window applies a save of the keybindings file at once.
+        this.stopKeybindings = watchKeybindings((r) => this.broadcast({ type: "keybindings.changed", keybindings: { path: keybindingsPath(), ...r } }));
+        this.updates.start();
+        this.reopenScheduled();
         purgeTrash();
         this.purgeTimer = setInterval(() => purgeTrash(), PURGE_EVERY_MS);
         this.purgeTimer.unref?.();
     }
 
+    /**
+     * Sessions with saved schedules are opened when the server starts, so
+     * they run without a window on them. One that can't be (open in a
+     * terminal, its folder gone, not trusted) waits until it's opened.
+     */
+    private reopenScheduled() {
+        for (const [id, e] of Object.entries(readScheduleIndex())) {
+            if (this.runtimes.has(id)) continue;
+            try {
+                if (!isDir(e.cwd) || !isTrusted(e.cwd)) continue;
+                const rt = this.openSession(id);
+                // Nothing to run after all (deleted since): let it go again.
+                void rt.ready.then(() => this.unloadIfUnused(id), () => undefined);
+            } catch (err) {
+                const gone = err instanceof RpcError && err.code === "not_found";
+                if (gone) noteScheduleIndex(id, e.cwd, false);
+                this.log(`Schedules: couldn't reopen session ${id}: ${(err as Error).message}`);
+            }
+        }
+    }
+
     async stop() {
         this.stopping = true;
+        this.planChecks.abort();
         for (const pending of this.openingTerminals.values()) pending.cancelled = true;
         const terminalsStopped = this.terminals.stop();
         clearInterval(this.purgeTimer);
+        this.stopKeybindings?.();
+        this.updates.stop();
         for (const t of this.unloadTimers.values()) clearTimeout(t);
         this.unloadTimers.clear();
         await Promise.all([...this.runtimes.values()].map((r) => r.close().catch(() => undefined)).concat([...this.closing.values()]));
         await terminalsStopped;
         await Promise.race([Promise.all([...this.workspaces.values()].map((w) => w.mcp.closeAll().catch(() => undefined))), new Promise((r) => setTimeout(r, 1500))]);
+        await Promise.race([this.checkingPlans, new Promise((r) => setTimeout(r, 1500))]);
         this.unregisterAccountRoots();
     }
 
@@ -379,6 +445,11 @@ export class Engine {
         return provider ? this.cliCommandNames.get(`${provider}:${resolve(cwd)}`) : undefined;
     }
 
+    /** The session's browser changed: the windows that have it open hear of it. */
+    sendBrowser(sessionId: string, state: BrowserState) {
+        for (const c of this.clients) if (c.subs.has(sessionId)) c.send({ type: "browser.state", sessionId, state });
+    }
+
     sendOps(sessionId: string, seq: number, ops: SessionOp[]) {
         for (const c of this.clients) if (c.subs.has(sessionId)) c.send({ type: "session.ops", sessionId, seq, ops });
     }
@@ -388,15 +459,30 @@ export class Engine {
         for (const c of this.clients) if (c.subs.has(rt.id)) c.send({ type: "draft", sessionId: rt.id, text, ...back });
     }
 
-    notify(rt: Runtime, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
+    /** The session's name for a notification. */
+    private notifyTitle(rt: Runtime): string {
         // One line cut at a word (as a title from the prompt is made), not the raw prompt with its
         // newlines. Redacted first: the title reaches every window and the OS notification center.
         const first = rt.firstPrompt();
-        const title = rt.title ?? (first ? promptTitle(redact(first)) : undefined) ?? basename(rt.ws.cwd);
+        return rt.title ?? (first ? promptTitle(redact(first)) : undefined) ?? basename(rt.ws.cwd);
+    }
+
+    /**
+     * A background task ended on its own (done, failed, stopped by something other than the user's Stop): a
+     * toast in a window showing the session, a notification otherwise (the GUI decides, as for turns).
+     * Tagged per task, so it's said once however many times it reaches a window.
+     */
+    notifyBackground(rt: Runtime, task: BackgroundTaskInfo) {
+        const outcome = task.status === "done" ? "done" : task.status === "failed" ? "failed" : "stopped";
+        this.broadcast({ type: "notify", sessionId: rt.id, kind: "background", title: this.notifyTitle(rt), body: endedText(task), tag: `background:${rt.id}:${task.id}:${task.startedAt}:${outcome}`, task: { id: task.id, outcome } });
+    }
+
+    notify(rt: Runtime, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
+        const title = this.notifyTitle(rt);
         this.broadcast({ type: "notify", sessionId: rt.id, kind, title, body });
         this.sessionChanged(rt);
         const message = `Harness: ${body}`;
-        void fireHooks(rt.settings(), "Notification", { session_id: rt.id, message, kind }, rt.ws.cwd, () => {});
+        void fireHooks(rt.settings(), "Notification", { session_id: rt.id, message, kind, notification_type: kind }, rt.ws.cwd, () => {});
     }
 
     sessionChanged(rt: Runtime) {
@@ -416,6 +502,78 @@ export class Engine {
 
     reloadSettings() {
         for (const ws of this.workspaces.values()) ws.reload();
+    }
+
+    // -----------------------------------------------------------------------
+    // Plugins
+
+    private pluginsInfo(cwd?: string): PluginsInfo {
+        const dir = cwd ? resolve(cwd) : homedir();
+        const trusted = cwd ? isTrusted(dir) : false;
+        return { ...listPlugins(dir, trusted), cwd: cwd ? dir : undefined, trusted };
+    }
+
+    /** Plugin changes run one at a time: two updates of one marketplace mustn't swap its folder at once. */
+    private pluginQueue: Promise<unknown> = Promise.resolve();
+
+    private pluginAction(p: PluginActionParams): Promise<PluginsInfo & { message: string }> {
+        const run = this.pluginQueue.then(() => this.runPluginAction(p));
+        this.pluginQueue = run.catch(() => undefined);
+        return run;
+    }
+
+    private async runPluginAction(p: PluginActionParams): Promise<PluginsInfo & { message: string }> {
+        const cwd = typeof p.cwd === "string" && p.cwd ? resolve(p.cwd) : undefined;
+        const dir = cwd ?? homedir();
+        const trusted = cwd ? isTrusted(dir) : false;
+        const scope = "scope" in p && p.scope !== undefined ? p.scope : undefined;
+        if (scope !== undefined && scope !== "user" && scope !== "project" && scope !== "local") throw new RpcError("scope must be user, project or local", "invalid");
+        if (scope && scope !== "user" && !cwd) throw new RpcError(`Open a project to use the ${scope} scope.`, "invalid");
+        let argv: string[];
+        switch (p.action) {
+            case "install":
+                argv = ["install", str(p.id, "id"), "--scope", scope ?? "user"];
+                break;
+            case "uninstall":
+            case "enable":
+            case "disable":
+                argv = [p.action, str(p.id, "id"), ...(scope ? ["--scope", scope] : [])];
+                break;
+            case "update":
+                argv = ["update", optStr(p.id) ?? "--all"];
+                break;
+            case "marketplaceAdd":
+                argv = ["marketplace", "add", str(p.source, "source")];
+                break;
+            case "marketplaceRemove":
+                argv = ["marketplace", "remove", str(p.name, "name")];
+                break;
+            case "marketplaceUpdate":
+                argv = ["marketplace", "update", str(p.name, "name")];
+                break;
+            default:
+                throw new RpcError(`Unknown plugin action ${String((p as { action?: unknown }).action)}`, "invalid");
+        }
+        const r = await runPluginCli(argv, dir, trusted);
+        if (r.changed) {
+            // Plugins change settings, commands and servers in every open folder.
+            const restart = pluginServerMatch(r.restart);
+            for (const ws of this.workspaces.values()) {
+                ws.reload();
+                void ws.mcp
+                    .sync()
+                    .then(() => restart && ws.mcp.restartWhere(restart))
+                    .catch(() => undefined);
+            }
+            // What Claude Code listed predates the change: it runs the plugins' commands now enabled too.
+            for (const [key, names] of this.cliCommandNames) {
+                const ws = this.workspaces.get(key.slice(key.indexOf(":") + 1));
+                if (ws) this.cliCommandNames.set(key, withPluginCommands(names, ws.commands));
+            }
+        }
+        const message = r.lines.map((l) => l.trim()).filter(Boolean).join("\n");
+        if (!r.ok) throw new RpcError(message || "That didn't work.", "plugin");
+        return { ...this.pluginsInfo(cwd), message };
     }
 
     bypassAllowed(cwd: string): boolean {
@@ -556,15 +714,17 @@ export class Engine {
 
     /**
      * Refused while a session is open inside it: one here (or still closing),
-     * or one in another process (a terminal) once it has sent a message and
-     * so holds its lock. From the check until Git is done no session can
-     * open there from this server, nor can another removal of it start; its
-     * idle workspaces (picked while their paths still resolve) close after.
+     * or one in another process (a terminal) once it holds its lock, or a
+     * `harness -w` there that marked itself present before that. From the
+     * check until Git is done no session can open there from this server,
+     * nor can another removal of it start; its idle workspaces (picked while
+     * their paths still resolve) close after.
      */
     private async removeWorktree(path: string, worktree: string, deleteIgnored?: string, check?: (plan: Removal) => Promise<void>): Promise<RemoveWorktreeResult> {
-        const held = heldSessionFolders();
-        const open = () => [...[...this.runtimes.values()].map((rt) => rt.ws.cwd), ...this.closingIn.values(), ...held];
-        const plan = planRemoval({ path, worktree, inUse: (dir) => open().some(within(dir)) });
+        const open = () => [...[...this.runtimes.values()].map((rt) => rt.ws.cwd), ...this.closingIn.values(), ...heldSessionFolders()];
+        // A terminal's `harness -w` is marked present there from its start, before it has a lock.
+        const inUse = (dir: string) => othersPresent(dir) || open().some(within(dir));
+        const plan = planRemoval({ path, worktree, inUse });
         const reserved = realPath(plan.path);
         if ([...this.removing].some((dir) => within(dir)(reserved) || within(reserved)(dir))) throw new RpcError(`${plan.path} is already being removed.`, "busy");
         this.removing.add(reserved);
@@ -573,7 +733,8 @@ export class Engine {
         try {
             // Last checks of the caller's own, with the folder reserved: nothing can open there meanwhile.
             await check?.(plan);
-            result = await runRemoval(plan, { deleteIgnored }, this.o.log);
+            // Asked again just before Git removes it: one in another process may have opened there since.
+            result = await runRemoval(plan, { deleteIgnored, inUse }, this.o.log);
         } finally {
             this.removing.delete(reserved);
         }
@@ -902,7 +1063,8 @@ export class Engine {
     private unloadIfUnused(id: string) {
         const rt = this.runtimes.get(id);
         if (!rt || this.stopping || [...this.clients].some((c) => c.subs.has(id))) return;
-        if (!rt.idle) return this.unloadLater(id);
+        // A watch (a pull request) goes on with no window open: it wakes the session when there's news.
+        if (!rt.idle || rt.scheduled || rt.watching) return this.unloadLater(id);
         void this.unload(rt);
     }
 
@@ -941,7 +1103,12 @@ export class Engine {
     dropClient(client: EngineClient) {
         this.clients.delete(client);
         this.terminals.drop(client);
+        for (const rt of this.runtimes.values()) rt.browser.unwatch(client);
         this.setups.drop(client);
+        for (const rt of this.runtimes.values()) {
+            rt.setDrafting(client, false);
+            rt.setDrafting(dialogOf(client), false);
+        }
         for (const id of client.subs) this.unloadLater(id);
     }
 
@@ -979,6 +1146,8 @@ export class Engine {
             await Promise.race([setup.catch(() => undefined), new Promise((r) => setTimeout(r, until - Date.now()).unref?.())]);
         }
         const rt = this.runtimes.get(id);
+        // Only when one runs: otherwise the delete goes on in the same tick, as before.
+        if (rt?.compactingWhileIdle) await rt.yieldIdleCompaction();
         if (rt && !rt.idle) throw new RpcError("This session is still working (a response, queued messages, a question, or shells or tasks running). Stop it first, then delete it.", "busy");
         const store = readStore();
         const flags: SessionFlags = { pinned: !!store.pinned?.includes(id), archived: !!store.archived?.includes(id), settled: !!store.settled?.includes(id) };
@@ -1126,7 +1295,7 @@ export class Engine {
         this.implementing.add(rt.id);
         try {
             const from = rt.ws.cwd;
-            const made = resume ? this.madeWorktree(from, resume, branch) : await createWorktree({ path: from, branch, base, folder }, this.o.log);
+            const made = resume ? this.madeWorktree(from, resume, branch) : await createWorktreeWithHooks({ path: from, branch, base, folder }, this.o.log);
             // The new session works where the planning one did, relative to its worktree.
             const top = gitRoot(from);
             const sub = top ? relative(realPath(top), realPath(from)) : "";
@@ -1157,7 +1326,7 @@ export class Engine {
                 if (next.model?.supportsFastMode) next.setFastMode(rt.fastModeEnabled());
                 const title = rt.title ?? rt.firstPrompt()?.replace(/\s+/g, " ").slice(0, 80);
                 const named = base ?? currentBase(from) ?? made.commit?.slice(0, 12) ?? "HEAD";
-                const link = { title, folder: from, path: made.path, branch: made.branch, base: named, at: Date.now() };
+                const link = { title, folder: from, path: made.path, branch: made.branch, base: named, at: Date.now(), plan: plan.id };
                 next.addPlanLink({ role: "from", session: rt.id, ...link });
                 rt.addPlanLink({ role: "to", session: next.id, ...link });
                 this.watch(client, next.id);
@@ -1303,10 +1472,70 @@ export class Engine {
         if (prev && prev.at > limits.at) return;
         const merged = mergeLimits(prev, limits, partial);
         this.limits.set(key, merged);
+        this.saveLimits();
         this.broadcast({ type: "limits", limits: merged });
     }
 
+    /** The limits saved when the server last ran, for accounts that still exist; shown with their age until a newer report. */
+    private loadLimits() {
+        for (const l of loadPlanLimits()) {
+            if (!(ACCOUNT_PROVIDERS as readonly string[]).includes(l.provider) || !listAccounts(l.provider).some((a) => a.id === (l.accountId ?? "default"))) continue;
+            const key = planLimitKey(l.provider, l.accountId);
+            const prev = this.limits.get(key);
+            if (!prev || prev.at < l.at) this.limits.set(key, l);
+        }
+    }
+
+    private saveLimits() {
+        try {
+            savePlanLimits([...this.limits.values()]);
+        } catch (e) {
+            this.log(`Couldn't save plan limits: ${(e as Error).message}`);
+        }
+    }
+
+    private readonly planChecks = new AbortController();
+    private checkingPlans: Promise<void> = Promise.resolve();
+
+    /**
+     * Without a turn: is each account of a CLI in use signed in, on what plan,
+     * and, for Codex on a ChatGPT plan, where its limits stand (Claude Code says
+     * only in a turn). At start; Settings' account checks and turning a CLI on
+     * ask the same (accountsList, connectCli).
+     */
+    private checkPlans(): Promise<void> {
+        const run = async () => {
+            const checks = ACCOUNT_PROVIDERS.filter((provider) => readAgentConfig(provider) && findCli(provider, provider === "codex" ? CODEX_CLI : CLAUDE_CLI))
+                .flatMap((provider) => listAccounts(provider).filter((a) => !a.invalid).map((a) => ({ provider, id: a.id })));
+            const changed = await Promise.all(checks.map(async ({ provider, id }) => {
+                if (this.stopping) return false;
+                try {
+                    const { status, limits } = await checkAgentPlan(provider, this.planChecks.signal, id);
+                    if (this.stopping) return false;
+                    if (limits) this.limitsReported(limits, false);
+                    return this.noteStatus(provider, id, status);
+                } catch {
+                    // Left as it was: Settings asks again.
+                    return false;
+                }
+            }));
+            if (changed.some(Boolean) && !this.stopping) this.broadcast({ type: "models.changed" });
+        };
+        const p = this.checkingPlans.then(run, run).catch(() => undefined);
+        this.checkingPlans = p;
+        return p;
+    }
+
     private accountStatus = new Map<string, Partial<AccountInfo>>();
+
+    /** What the CLI said of an account's sign-in; true when that's news. */
+    private noteStatus(provider: string, id: string, status: AgentCliStatus): boolean {
+        const key = `${provider}:${id}`;
+        const next: Partial<AccountInfo> = { signedIn: status.signedIn, description: status.description, email: status.email, plan: status.plan, apiKey: status.apiKey };
+        if (JSON.stringify(next) === JSON.stringify(this.accountStatus.get(key))) return false;
+        this.accountStatus.set(key, next);
+        return true;
+    }
 
     private accountProjects(): string[] {
         return [
@@ -1323,13 +1552,16 @@ export class Engine {
             const key = `${provider}:${a.id}`;
             if (refresh) {
                 try {
-                    const status = await checkAgentCli(provider, undefined, a.id);
-                    this.accountStatus.set(key, { signedIn: status.signedIn, description: status.description, email: status.email, plan: status.plan });
+                    // Codex on a plan says where its limits stand from the same app-server.
+                    const { status, limits } = await checkAgentPlan(provider, undefined, a.id);
+                    this.noteStatus(provider, a.id, status);
+                    if (limits) this.limitsReported(limits, false);
                 } catch (e) {
                     this.accountStatus.set(key, { description: redact((e as Error).message).slice(0, 400) });
                 }
             }
-            return { ...a, ...this.accountStatus.get(key) };
+            const sharing = accountSharingWarning(provider, a.id);
+            return { ...a, ...this.accountStatus.get(key), ...(sharing ? { sharing } : {}) };
         }));
     }
 
@@ -1401,12 +1633,14 @@ export class Engine {
     private async connectCli(providerId: string): Promise<{ description: string; warning?: string; model?: string }> {
         const def = getProvider(providerId);
         if (def?.auth !== "cli") throw new RpcError(`${providerId} isn't used through a CLI`);
-        const st = await checkAgentCli(def.id);
+        const { status: st, limits } = await checkAgentPlan(def.id);
         if (!st.installed) throw new RpcError(`${def.name} isn't installed. ${st.installHint}, sign in with \`${st.signIn}\`, then try again.`, "not_installed");
         if (!st.signedIn) throw new RpcError(`${def.name} isn't signed in. Run \`${st.signIn}\` in a terminal (${vendorOf(def.id)}'s own sign-in), then try again.`, "not_signed_in");
         saveAgentConfig(def.id);
         forgetClient(def.id);
         await this.afterKeyChange(def.id);
+        this.noteStatus(def.id, "default", st);
+        if (limits) this.limitsReported(limits, false);
         return { description: st.description, warning: st.apiKey ? `${def.name} is signed in with an API key, so usage is billed to that key, not a subscription.` : undefined, model: this.adoptDefaultModel(def.id) };
     }
 
@@ -1441,7 +1675,9 @@ export class Engine {
             defaultMode: s.permissions?.defaultMode,
             showThinking: s.showThinking,
             autoCompact: s.autoCompact,
+            idleCompaction: s.idleCompaction,
             webSearch: s.webSearch,
+            browser: s.browser?.enabled,
             allowBypass: s.permissions?.allowBypass,
             followUpBehavior: s.followUpBehavior,
             editor: s.editor,
@@ -1462,7 +1698,12 @@ export class Engine {
             }
             if ("showThinking" in patch) s.showThinking = Boolean(patch.showThinking);
             if ("autoCompact" in patch) s.autoCompact = patch.autoCompact !== false;
+            if ("idleCompaction" in patch) s.idleCompaction = patch.idleCompaction === "always" ? "always" : patch.idleCompaction === false ? false : undefined;
             if ("webSearch" in patch && ["auto", "anthropic", "brave", "tavily", "duckduckgo", "off"].includes(String(patch.webSearch))) s.webSearch = patch.webSearch as Settings["webSearch"];
+            if ("browser" in patch) {
+                const { enabled: _, ...rest } = s.browser ?? {};
+                s.browser = patch.browser === false ? { ...rest, enabled: false } : Object.keys(rest).length ? rest : undefined;
+            }
             if ("defaultMode" in patch || "allowBypass" in patch) {
                 const perms = (s.permissions ??= {});
                 if ("defaultMode" in patch) perms.defaultMode = patch.defaultMode && PERMISSION_MODES.includes(patch.defaultMode) ? patch.defaultMode : undefined;
@@ -1524,10 +1765,30 @@ export class Engine {
         const line = position(p.line, "line", MAX_LINE);
         const col = position(p.col, "col", MAX_COL);
         const folder = p.folder === true;
-        const { cwd, roots } = this.openScope(p);
-        const t = confinePath(str(p.path, "path"), cwd, roots);
-        if (folder && !t.dir) throw new RpcError(`${p.path} isn't a folder`, "invalid");
-        if (!folder && t.dir && def.style !== "reveal") throw new RpcError(`${p.path} is a folder`, "invalid");
+        let { cwd, roots } = this.openScope(p);
+        // A file a Git listing showed redacted: the server knows where it is; it's confined as any path is.
+        let target: string;
+        if (p.gitToken !== undefined) {
+            const rt = this.runtime(str(p.sessionId, "sessionId"));
+            const where = rt.gitHandles.where(p.gitToken);
+            target = where.path;
+            // Finder reveals a file of another worktree of the session's repository the Review pane listed, as the
+            // window does for names it can see; an editor opens files in the session's folders only.
+            if (def.style === "reveal" && where.root !== rt.ws.cwd) {
+                const w = await sessionWorktree(rt.ws.cwd, where.root).catch(() => undefined);
+                if (w && !w.current && w.real === where.root) ({ cwd, roots } = { cwd: w.real, roots: [w.real] });
+            }
+        } else target = str(p.path, "path");
+        const named = p.gitToken !== undefined ? "That file" : p.path;
+        let t: ReturnType<typeof confinePath>;
+        try {
+            t = confinePath(target, cwd, roots);
+        } catch (e) {
+            // Its messages name the path.
+            throw p.gitToken !== undefined ? redactedError(e) : e;
+        }
+        if (folder && !t.dir) throw new RpcError(`${named} isn't a folder`, "invalid");
+        if (!folder && t.dir && def.style !== "reveal") throw new RpcError(`${named} is a folder`, "invalid");
         // The real location, so a symlink in the path can't be swapped after the
         // check. (A file or folder replaced in the moment between the check and
         // the editor opening it isn't caught: that needs the editor to take an
@@ -1616,21 +1877,26 @@ export class Engine {
     /** With `provider`, the commands that agent CLI runs itself too (those it last listed). */
     private commandsFor(cwd: string, provider?: string): CommandInfo[] {
         const builtin: CommandInfo[] = [
-            { name: "compact", description: "Summarize the conversation to free up context", args: "[instructions]" },
+            { name: "compact", description: "Summarize the conversation to free up context", args: "[instructions]", noAttachments: true },
             { name: "init", description: "Create a HARNESS.md with notes about this codebase" },
             { name: "review", description: "Review the current changes (or a PR number) for bugs", args: "[pr|focus]" },
+            { name: "goal", description: "Keep working until a condition holds (/goal clear stops)", args: "[condition]" },
+            { name: "trust", description: "Trust this folder yourself (MCP approvals, diagnostics after edits)", noAttachments: true },
             { name: "model", description: "Switch the model" },
             { name: "mode", description: "Switch the permission mode" },
             { name: "rewind", description: "Go back to before an earlier prompt" },
             { name: "fork", description: "Continue in a new session from the latest response, keeping this one as it is" },
             { name: "mcp", description: "MCP servers: status, approval, reconnect", args: "[server]" },
-            { name: "tasks", description: "Sub-agents and tasks delegated to other models (/tasks stop stops them)", args: "[stop [task-id]]" },
+            { name: "tasks", description: "Background work: sub-agents, shells, monitors and delegated tasks (/tasks stop stops them)", args: "[stop <task-id|all> | restart]" },
             { name: "rename", description: "Rename this session", args: "<title>" },
             { name: "new", description: "Start a new session in this project" },
             { name: "export", description: "Copy the conversation as markdown" },
             { name: "settings", description: "Open settings" },
+            { name: "plugin", description: "Browse, install and manage plugins" },
             { name: "cost", description: "Tokens and cost by model, and your plan's limits" },
             { name: "context", description: "How full the context window is, and your plan's limits" },
+            { name: "loop", description: "Run a prompt now and then every interval (default 10m); /loop stop stops it", args: "[interval] <prompt>", noAttachments: true },
+            { name: "schedules", description: "This session's schedules (pause, run or delete them above the message box)", args: "[pause|resume|delete|run <id>]", noAttachments: true },
         ];
         const ws = this.workspaces.get(resolve(cwd));
         // Before a session opens the project, its commands are read from disk (the home screen checks a /word against them).
@@ -1639,10 +1905,15 @@ export class Engine {
         const skills = (ws?.freshSkills() ?? this.homeSkills(resolve(cwd)))
             .filter((s) => s.userInvocable && !taken.has(s.name))
             .map((s) => ({ name: s.name, description: s.description, args: s.argumentHint, skill: true }));
-        const own = new Set([...taken, ...skills.map((s) => s.name)]);
+        // Connected MCP servers' prompts (mcp__server__prompt), once a session has the project open.
+        const named = new Set([...taken, ...skills.map((s) => s.name)]);
+        const prompts = (ws?.mcp.promptCommands() ?? []).filter((p) => !named.has(p.command)).map((p) => ({ name: p.command, description: p.description, ...(p.args ? { args: p.args } : {}) }));
+        const own = new Set([...named, ...prompts.map((p) => p.name)]);
         const name = provider ? (getProvider(provider)?.name ?? provider) : "";
-        const cli = [...(this.cliCommands(provider, cwd) ?? [])].filter((n) => !own.has(n)).map((n) => ({ name: n, description: `${name}'s own command` }));
-        return [...builtin, ...custom, ...skills, ...cli];
+        // All Codex reports are its skills (skills/list), for the $ menu too.
+        const skill = provider === "codex";
+        const cli = [...(this.cliCommands(provider, cwd) ?? [])].filter((n) => !own.has(n)).map((n) => ({ name: n, description: `${name}'s own ${skill ? "skill" : "command"}`, ...(skill ? { skill } : {}) }));
+        return [...builtin, ...custom, ...skills, ...prompts, ...cli];
     }
 
     // -----------------------------------------------------------------------
@@ -1663,8 +1934,15 @@ export class Engine {
                     if (!p.login || typeof p.login !== "object") throw new RpcError("Invalid login selector", "invalid");
                     const provider = str(p.login.provider, "provider");
                     const accountId = str(p.login.accountId, "accountId");
-                    const command = loginCommand(provider, accountId);
-                    return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command, login: { provider, accountId, name: account(provider, accountId).name }, onExit: () => { void this.accountsList(provider, true).then(() => this.refreshListings(true)).then(() => this.broadcast({ type: "models.changed" })).catch(() => undefined); } });
+                    // Seen by removals in other Harness processes too, until the login process exits.
+                    const release = holdLogin(provider, accountId);
+                    try {
+                        const command = loginCommand(provider, accountId);
+                        return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command, login: { provider, accountId, name: account(provider, accountId).name }, onExit: () => { release(); void this.accountsList(provider, true).then(() => this.refreshListings(true)).then(() => this.broadcast({ type: "models.changed" })).catch(() => undefined); } });
+                    } catch (e) {
+                        release();
+                        throw e;
+                    }
                 }
                 return this.terminals.open(client, str(p.id, "id"), str(p.cwd, "cwd"), p.cols, p.rows);
             case "terminal.write":
@@ -1687,6 +1965,43 @@ export class Engine {
                 }
                 return null;
             }
+            case "browser.state":
+                return this.runtime(p.id).browser.state();
+            case "browser.watch": {
+                const rt = this.runtime(p.id);
+                // The pane's size, its scale: the page is sized to it.
+                let shownTab: number | undefined;
+                rt.browser.watch(client, (f, frameId) => {
+                    // The first picture can beat the debounced tab announcement. Publish its tab first.
+                    if (shownTab !== f.tab) {
+                        shownTab = f.tab;
+                        client.send({ type: "browser.state", sessionId: rt.id, state: rt.browser.state() });
+                    }
+                    client.send({ type: "browser.frame", sessionId: rt.id, frameId, tab: f.tab, data: f.data, width: f.width, height: f.height });
+                }, { width: num(p.width, 0), height: num(p.height, 0), scale: num(p.scale, 1) });
+                return rt.browser.state();
+            }
+            case "browser.unwatch":
+                this.runtimes.get(str(p.id, "id"))?.browser.unwatch(client);
+                return null;
+            case "browser.ack":
+                this.runtimes.get(str(p.id, "id"))?.browser.ack(client, str(p.frameId, "frameId"));
+                return null;
+            case "browser.input":
+                await this.runtime(p.id).browser.input(p.input, typeof p.tab === "number" ? p.tab : undefined);
+                return null;
+            case "browser.command": {
+                const rt = this.runtime(p.id);
+                await browserCall(() => rt.browser.command({ command: str(p.command, "command"), url: typeof p.url === "string" ? p.url : undefined, tab: typeof p.tab === "number" ? p.tab : undefined }));
+                return rt.browser.state();
+            }
+            case "browser.handBack":
+                await browserCall(async () => this.runtime(p.id).browser.handBack(typeof p.tab === "number" ? p.tab : undefined));
+                return null;
+            case "browser.dialog":
+                if (typeof p.accept !== "boolean") throw new RpcError("accept must be a boolean");
+                await browserCall(() => this.runtime(p.id).browser.answerDialog(p.accept, typeof p.text === "string" ? p.text : undefined, typeof p.tab === "number" ? p.tab : undefined));
+                return null;
             case "terminal.arm":
                 this.terminals.arm(client, str(p.id, "id"));
                 return null;
@@ -1752,6 +2067,12 @@ export class Engine {
                 }
                 return { version: APP_VERSION, protocol: PROTOCOL_VERSION, home: harnessHome(), platform: process.platform, homeDir: homedir(), user, host: hostname().replace(/\.local$/, ""), startCwd } satisfies HelloResult;
             }
+            case "keybindings.get":
+                return { path: keybindingsPath(), ...readKeybindings() } satisfies KeybindingsFile;
+            case "keybindings.create": {
+                const path = keybindingsPath();
+                return { created: ensureKeybindingsFile(path), path };
+            }
             case "sessions.list":
                 return this.listSessions(num(p.limit, 200), Boolean(p.archived));
             case "sessions.search":
@@ -1787,6 +2108,7 @@ export class Engine {
             case "session.close": {
                 const id = str(p.id, "id");
                 client.subs.delete(id);
+                this.runtimes.get(id)?.browser.unwatch(client);
                 this.unloadIfUnused(id);
                 return null;
             }
@@ -1818,6 +2140,7 @@ export class Engine {
                 return null;
             case "session.setModel": {
                 const rt = this.runtime(p.id);
+                if (rt.compactingWhileIdle) await rt.yieldIdleCompaction();
                 // As in the terminal: the turn in progress keeps its model (Claude Code and Codex can't take over half way).
                 if (rt.busy) throw new RpcError("Switch models once this response is done, or interrupt it first.", "busy");
                 if (!(await rt.switchModel(str(p.ref, "ref"), { persist: p.persist !== false }))) throw new RpcError(`Couldn't switch to ${p.ref}`);
@@ -1828,8 +2151,13 @@ export class Engine {
                 if (!PERMISSION_MODES.includes(p.mode)) throw new RpcError("Unknown mode");
                 if (!this.runtime(p.id).setMode(p.mode)) throw new RpcError("Bypass mode is off. Start the GUI with --dangerously-skip-permissions or set permissions.allowBypass in your user settings.");
                 return null;
+            case "session.draft":
+                if (typeof p.present !== "boolean") throw new RpcError("present must be a boolean");
+                this.runtimes.get(str(p.id, "id"))?.setDrafting(p.dialog === true ? dialogOf(client) : client, p.present);
+                return null;
             case "session.setFastMode":
                 if (typeof p.enabled !== "boolean") throw new RpcError("enabled must be a boolean");
+                await this.runtime(p.id).yieldIdleCompaction();
                 this.runtime(p.id).setFastMode(p.enabled);
                 return null;
             case "session.setEffort":
@@ -1858,11 +2186,19 @@ export class Engine {
             case "session.compact":
                 await this.runtime(p.id).compact(optStr(p.instructions));
                 return null;
-            case "session.rewindTargets":
-                return this.runtime(p.id).rewindTargets();
-            case "session.rewindPlan":
-                return this.runtime(p.id).rewindPlan(num(p.index, -1));
+            // The Rewind dialog opening, or a prompt picked in it: an idle compaction stops, so what it shows can still be rewound to.
+            case "session.rewindTargets": {
+                const rt = this.runtime(p.id);
+                if (rt.compactingWhileIdle) await rt.yieldIdleCompaction();
+                return rt.rewindTargets();
+            }
+            case "session.rewindPlan": {
+                const rt = this.runtime(p.id);
+                if (rt.compactingWhileIdle) await rt.yieldIdleCompaction();
+                return rt.rewindPlan(num(p.index, -1));
+            }
             case "session.rewind":
+                await this.runtime(p.id).yieldIdleCompaction();
                 return this.runtime(p.id).rewind(num(p.index, -1), str(p.planId, "planId"), Boolean(p.code), Boolean(p.conversation));
             case "session.fork": {
                 const rt = await this.forkSession(this.runtime(p.id), p.index, str(p.text, "text"), str(p.turn, "turn"));
@@ -1878,7 +2214,14 @@ export class Engine {
                 // A base must be one git lists (checked against for-each-ref); here it's only kept sane.
                 if (p.base !== undefined && (typeof p.base !== "string" || !p.base || p.base.length > 400)) throw new RpcError("base must be a branch name", "invalid");
                 if (p.path !== undefined && typeof p.path !== "string") throw new RpcError("path must be a string", "invalid");
-                return this.runtime(p.id).gitChanges({ scope: p.scope, base: p.base, path: p.path, turnId: p.turnId });
+                if (p.worktree !== undefined && (typeof p.worktree !== "string" || !p.worktree || p.worktree.length > 4096 || p.worktree.includes("\0"))) throw new RpcError("worktree must be a folder path", "invalid");
+                return this.runtime(p.id).gitChanges({ scope: p.scope, base: p.base, baseToken: optStr(p.baseToken), path: p.path, pathToken: optStr(p.pathToken), turnId: p.turnId, worktree: p.worktree });
+            }
+            case "session.worktrees": {
+                const list = await this.runtime(p.id).worktrees();
+                // Every loaded session's sub-agents, not only this one's: what works where, whoever started it.
+                const found = agentsByWorktree(list.map((w) => w.path), [...this.runtimes.values()].flatMap((rt) => rt.agentRuns.map((agent) => ({ sessionId: rt.id, agent }))), homedir());
+                return list.map((w) => (found.has(w.path) ? { ...w, agents: found.get(w.path) } : w));
             }
             case "session.gitPublishInfo":
                 return this.runtime(p.id).gitPublishInfo();
@@ -1894,10 +2237,13 @@ export class Engine {
             }
             case "session.gitCommit":
             case "session.gitCommitMessage": {
-                if (!Array.isArray(p.paths) || !p.paths.length || p.paths.length > 300 || p.paths.some((path: unknown) => typeof path !== "string" || !path || path.length > 4096 || path.includes("\0"))) {
+                // Files whose names were shown redacted come as handles (pathTokens), beside the rest.
+                const tokens: unknown = p.pathTokens ?? [];
+                if (!Array.isArray(tokens) || tokens.some((t) => typeof t !== "string" || !t || t.length > 200)) throw new RpcError("pathTokens must be a list of file handles", "invalid");
+                if (!Array.isArray(p.paths) || !(p.paths.length + tokens.length) || p.paths.length + tokens.length > 300 || p.paths.some((path: unknown) => typeof path !== "string" || !path || path.length > 4096 || path.includes("\0"))) {
                     throw new RpcError("paths must contain 1 to 300 file paths", "invalid");
                 }
-                if (method === "session.gitCommitMessage") return this.runtime(p.id).gitCommitMessage(p.paths);
+                if (method === "session.gitCommitMessage") return this.runtime(p.id).gitCommitMessage(p.paths, tokens as string[]);
                 if (typeof p.message !== "string" || !p.message.trim() || Buffer.byteLength(p.message) > 65_536 || p.message.includes("\0")) {
                     throw new RpcError("message must be nonempty, at most 64 KiB, and contain no NUL bytes", "invalid");
                 }
@@ -1906,18 +2252,25 @@ export class Engine {
                     if (
                         !head || typeof head !== "object" || typeof head.detached !== "boolean" ||
                         (head.detached
-                            ? head.branch !== undefined || typeof head.sha !== "string" || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(head.sha)
-                            : typeof head.branch !== "string" || !head.branch || head.branch.length > 400 || head.branch.includes("\0"))
+                            ? head.branch !== undefined || head.branchToken !== undefined || typeof head.sha !== "string" || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(head.sha)
+                            : head.branchToken !== undefined
+                              ? head.branch !== undefined || typeof head.branchToken !== "string" || !head.branchToken || head.branchToken.length > 200
+                              : typeof head.branch !== "string" || !head.branch || head.branch.length > 400 || head.branch.includes("\0"))
                     ) {
                         throw new RpcError("expectedHead must describe a branch or detached HEAD with its full SHA", "invalid");
                     }
                 }
-                return this.runtime(p.id).gitCommit(p.paths, p.message, p.expectedHead);
+                return this.runtime(p.id).gitCommit(p.paths, p.message, p.expectedHead, tokens as string[]);
             }
             case "session.toolOutput":
                 return { output: this.runtime(p.id).toolOutput(str(p.toolId, "toolId")) };
             case "session.promptImages":
                 return { images: this.runtime(p.id).promptImages(num(p.seg, -1), num(p.index, -1)) };
+            case "session.schedule": {
+                const action = p.action;
+                if (action !== "pause" && action !== "resume" && action !== "run" && action !== "delete") throw new RpcError("action must be pause, resume, run or delete", "invalid");
+                return { found: this.runtime(p.id).scheduleAction(text(p.scheduleId, "scheduleId", 40), action) };
+            }
             case "session.dequeue": {
                 const q = this.runtime(p.id).dequeue(num(p.queueId, -1));
                 if (!q) return { removed: false };
@@ -1978,6 +2331,19 @@ export class Engine {
             case "session.killShell":
                 await this.runtime(p.id).killShell(str(p.shellId, "shellId"));
                 return null;
+            case "session.stopBackground": {
+                if (p.ids !== undefined && (!Array.isArray(p.ids) || p.ids.length > 500 || p.ids.some((x: unknown) => typeof x !== "string" || !x || x.length > 500))) throw new RpcError("ids must be a list of task ids", "invalid");
+                return { results: await this.runtime(p.id).stopBackground(p.ids as string[] | undefined) };
+            }
+            case "session.clearBackground":
+                this.runtime(p.id).clearBackground();
+                return null;
+            case "session.restartCli":
+                await this.runtime(p.id).restartCli();
+                return null;
+            case "session.stopWatch":
+                this.runtime(p.id).stopWatch(str(p.watchId, "watchId"));
+                return null;
             case "session.forgetSecret":
                 this.runtime(p.id).forgetSecret(str(p.name, "name"));
                 return null;
@@ -1994,13 +2360,14 @@ export class Engine {
                 else if (!this.listed) await this.firstListings();
                 return this.modelsList();
             case "session.setAccount":
-                this.runtime(p.id).setAccount(str(p.provider, "provider"), str(p.accountId, "accountId"));
+                await this.runtime(p.id).yieldIdleCompaction();
+                await this.runtime(p.id).setAccount(str(p.provider, "provider"), str(p.accountId, "accountId"));
                 return null;
             case "accounts.list":
                 return this.accountsList(str(p.provider, "provider"), p.refresh === true);
             case "accounts.add": {
                 const provider = str(p.provider, "provider");
-                if ([...this.runtimes.values()].some((rt) => rt.busy || rt.agent?.hasCliChild())) throw new RpcError("Add accounts once running responses finish, so CLI protections can be refreshed", "busy");
+                // An account only selects a CLI's folder (#375): what's running goes on as it is.
                 const added = addAccount(provider, { id: str(p.id, "id"), name: str(p.name, "name"), folder: p.folder === undefined ? undefined : str(p.folder, "folder") }, this.accountProjects());
                 forgetClient(provider);
                 await this.refreshListings(true);
@@ -2019,12 +2386,18 @@ export class Engine {
             case "accounts.remove": {
                 const provider = str(p.provider, "provider");
                 const id = str(p.id, "id");
+                const idle = [...this.runtimes.values()].filter((rt) => rt.compactingWhileIdle && rt.session.accountId(provider) === id);
+                if (idle.length) await Promise.all(idle.map((rt) => rt.yieldIdleCompaction()));
                 for (const rt of this.runtimes.values()) {
-                    if ((rt.busy && rt.session.accountId(provider) === id) || rt.agent?.childUsesAccount(provider, id)) throw new RpcError("Stop the account's running turn before removing it", "busy");
+                    if ((rt.busy && rt.session.accountId(provider) === id) || rt.agent?.childUsesAccount(provider, id)) throw new RpcError("Stop the account's running turn and CLI background tasks before removing it", "busy");
                 }
+                // A login still running would sign in to a folder no longer registered, nor protected once it was the last.
+                // Checked with no await before the removal, so a login can't start in between.
+                if (this.terminals.signingIn(provider, id)) throw new RpcError("Close the account's sign-in terminal before removing it", "busy");
                 removeAccount(provider, id, str(p.confirmedFolder, "confirmedFolder"), this.accountProjects());
                 this.accountStatus.delete(`${provider}:${id}`);
                 this.limits.delete(planLimitKey(provider, id));
+                this.saveLimits();
                 this.broadcast({ type: "limits", limits: { provider, accountId: id, windows: [], reached: false, at: Date.now() } });
                 this.broadcast({ type: "models.changed" });
                 return null;
@@ -2072,7 +2445,7 @@ export class Engine {
                     }
                     preview = { id: text(s.id, "setupScript.id", 64), command: text(s.command, "setupScript.command", SCRIPT_LIMITS.command) };
                 }
-                const made = await createWorktree(
+                const made = await createWorktreeWithHooks(
                     {
                         path: resolve(expandHome(text(p.path, "path", 4096))),
                         branch: text(p.branch, "branch", 200),
@@ -2100,9 +2473,16 @@ export class Engine {
             }
             case "fs.mentions": {
                 const cwd = resolve(str(p.cwd, "cwd"));
+                const query = str(p.query ?? "", "query");
                 const ws = this.workspaces.get(cwd);
-                if (!ws) return [];
-                return ws.files.search(str(p.query ?? "", "query"), 12);
+                if (ws) return ws.files.search(query, 12);
+                // Home, before a session opens there: the folder's file names (listed, as for a session, nothing read).
+                if (!isDir(cwd) || [...this.removing].some((dir) => within(dir)(cwd))) return [];
+                const index = this.homeFiles.get(cwd) ?? new FileIndex(cwd);
+                this.homeFiles.delete(cwd);
+                this.homeFiles.set(cwd, index);
+                for (const old of this.homeFiles.keys()) if (this.homeFiles.size > 4) this.homeFiles.delete(old);
+                return index.search(query, 12);
             }
             case "fs.dirs":
                 return listDirs(str(p.path, "path"));
@@ -2120,7 +2500,9 @@ export class Engine {
                 const commands = this.commandsFor(cwd, provider);
                 const command = optStr(p.command);
                 // An uninitialized Claude Code workspace resolves its own skills, just as session.send does.
-                if (command && !commands.some((c) => c.name === command) && !(provider === "claude-code" && this.cliCommands(provider, cwd) === undefined)) {
+                // A bare /name may be a plugin's command (/plugin:name) when only one plugin has it.
+                const plugin = () => pluginCommandFor(this.workspaces.get(cwd)?.commands ?? loadCustomCommands(cwd, isTrusted(cwd)), command!);
+                if (command && !commands.some((c) => c.name === command) && !(provider === "claude-code" && this.cliCommands(provider, cwd) === undefined) && !plugin()) {
                     throw new RpcError(`Unknown command /${command}`, "unknown_command");
                 }
                 return commands;
@@ -2167,6 +2549,42 @@ export class Engine {
                 void rt.ws.mcp.reconnect(name).catch(() => undefined);
                 return rt.ws.mcpList(rt);
             }
+            case "plugins.list":
+                return this.pluginsInfo(optStr(p.cwd));
+            case "plugins.action":
+                return this.pluginAction(p as PluginActionParams);
+            case "plugins.logo":
+                return pluginLogo(str(p.owner, "owner"));
+            case "session.mcpSignIn": {
+                const rt = this.runtime(p.id);
+                const name = str(p.name, "name");
+                await rt.ws.mcp.refresh();
+                if (!rt.ws.mcp.servers.has(name)) throw new RpcError(`There's no MCP server named "${name}" here.`, "unknown");
+                // Answered with the link as soon as there is one; the sign-in itself goes on in the browser.
+                let shown!: (url: string) => void;
+                const link = new Promise<string>((r) => (shown = r));
+                const done = rt.ws.mcp.signIn(name, (url) => shown(url));
+                done.then(
+                    (st) => rt.notice(st.status === "connected" ? `Signed in to ${name}: connected.` : `Signed in to ${name}, but it didn't connect${st.error ? `: ${redact(st.error.split("\n")[0]!)}` : "."}`, st.status === "connected" ? "info" : "warn"),
+                    (e) => e instanceof SignInReplaced || rt.notice(`Sign-in to ${name} didn't finish: ${redact((e as Error).message)}`, "error"),
+                );
+                try {
+                    return { url: await Promise.race([link, done.then(() => { throw new RpcError("The sign-in finished without a link to open.", "mcp"); })]) };
+                } catch (e) {
+                    const m = mcpError(e);
+                    throw m instanceof RpcError ? m : new RpcError(redact((e as Error).message), "mcp");
+                }
+            }
+            case "session.mcpSignOut": {
+                const rt = this.runtime(p.id);
+                const name = str(p.name, "name");
+                await rt.ws.mcp.signOut(name);
+                return rt.ws.mcpList(rt);
+            }
+            case "session.mcpResources": {
+                const rt = this.runtime(p.id);
+                return searchResources(rt.ws.mcp.resourceList(), str(p.query ?? "", "query"), 8).map(({ server, uri, name, title, description, mention }) => ({ server, uri, name, ...(title ? { title } : {}), ...(description ? { description } : {}), mention }));
+            }
             case "settings.get":
                 return this.guiSettings(optStr(p.cwd));
             case "settings.update":
@@ -2175,6 +2593,12 @@ export class Engine {
                 return [...this.limits.values()];
             case "usage.summary":
                 return usageSummary(usageDays(p.days), Date.now(), [...this.limits.values()]);
+            case "app.update.get":
+                return this.updates.get();
+            case "app.update.check":
+                return await this.updates.check();
+            case "app.update.start":
+                return await this.updates.update();
             default:
                 throw new RpcError(`Unknown method ${String(method)}`, "unknown_method");
         }
@@ -2265,6 +2689,15 @@ function realPath(p: string): string {
 
 function optStr(v: unknown): string | undefined {
     return typeof v === "string" && v ? v : undefined;
+}
+
+/** A browser call whose refusal (not an address, no such tab) is for the window to show. */
+async function browserCall<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+        return await fn();
+    } catch (e) {
+        throw e instanceof BrowserError ? new RpcError(e.message, "browser") : e;
+    }
 }
 
 function num(v: unknown, d: number): number {

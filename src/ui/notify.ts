@@ -167,7 +167,7 @@ export class Notifier {
         const s = this.o.settings();
         if (!shouldNotify({ kind, focused: this.o.focus(), elapsedMs, afterMs: notifyAfterMs(s), interactive: this.o.interactive })) return false;
         const message = notificationMessage(kind, elapsedMs);
-        const hooks = fireHooks(s, "Notification", { session_id: this.o.sessionId(), message, kind }, this.o.cwd(), this.o.warn);
+        const hooks = fireHooks(s, "Notification", { session_id: this.o.sessionId(), message, kind, notification_type: kind }, this.o.cwd(), this.o.warn);
         const env = this.o.env ?? process.env;
         const write = this.o.write ?? ((x: string) => void process.stdout.write(x));
         const channel = resolveChannel(notificationMode(s), env, this.o.platform ?? process.platform);

@@ -49,31 +49,34 @@ export function Ring(p: { value: number; size?: number; stroke?: number; title?:
     const r = (size - stroke) / 2;
     const c = 2 * Math.PI * r;
     const v = () => Math.max(0, Math.min(1, p.value));
-    const tone = () => p.tone === "danger" ? "var(--danger)" : p.tone === "warning" ? "var(--warning)" : p.tone === "normal" ? (p.neutral ? "var(--fg-muted)" : "var(--accent)")
-        : (v() >= 0.85 ? "var(--danger)" : v() >= 0.7 ? "var(--warning)" : p.neutral ? "var(--fg-muted)" : "var(--accent)");
+    const tone = () => p.tone === "danger" ? "var(--danger)" : p.tone === "warning" ? "var(--warn)" : p.tone === "normal" ? (p.neutral ? "var(--fg-2)" : "var(--accent)")
+        : (v() >= 0.85 ? "var(--danger)" : v() >= 0.7 ? "var(--warn)" : p.neutral ? "var(--fg-2)" : "var(--accent)");
     return (
         <svg class="ring" width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={p.title}>
             <title>{p.title}</title>
-            <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={p.neutral ? "color-mix(in srgb, var(--fg-muted) 28%, transparent)" : "var(--border-strong)"} stroke-width={stroke} />
+            <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={p.neutral ? "color-mix(in srgb, var(--fg-2) 28%, transparent)" : "var(--line-strong)"} stroke-width={stroke} />
             <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={tone()} stroke-width={stroke} stroke-linecap="round" stroke-dasharray={`${c * v()} ${c}`} transform={`rotate(-90 ${size / 2} ${size / 2})`} />
         </svg>
     );
 }
 
-export function Toggle(p: { checked: boolean; onChange: (v: boolean) => void; label?: string }) {
+/** A switch. `tone="danger"`: on is a warning colour (a setting that lowers a safeguard). */
+export function Toggle(p: { checked: boolean; onChange: (v: boolean) => void; label?: string; tone?: "danger" }) {
     return (
-        <button class={`toggle ${p.checked ? "on" : ""}`} role="switch" aria-checked={p.checked} aria-label={p.label} onClick={() => p.onChange(!p.checked)}>
+        <button class={`toggle ${p.checked ? "on" : ""} ${p.tone ?? ""}`} role="switch" aria-checked={p.checked} aria-label={p.label} onClick={() => p.onChange(!p.checked)}>
             <span class="toggle-knob" />
         </button>
     );
 }
 
-export function Segmented<T extends string>(p: { value: T; options: { value: T; label: JSX.Element; title?: string }[]; onChange: (v: T) => void; label?: string; size?: "sm" | "md" }) {
+/** A `disabled` option stays focusable and keeps its tooltip (which should say why), but can't be chosen.
+ *  `name`: the option's accessible name, when its label alone doesn't say it (an icon, a bare count). */
+export function Segmented<T extends string>(p: { value: T; options: { value: T; label: JSX.Element; name?: string; title?: string; disabled?: boolean }[]; onChange: (v: T) => void; label?: string; size?: "sm" | "md" }) {
     return (
         <div class={`segmented seg-${p.size ?? "md"}`} role="radiogroup" aria-label={p.label}>
             <For each={p.options}>
                 {(o) => (
-                    <button role="radio" aria-checked={p.value === o.value} class={p.value === o.value ? "on" : ""} title={o.title} onClick={() => p.onChange(o.value)}>
+                    <button role="radio" aria-checked={p.value === o.value} aria-disabled={o.disabled || undefined} aria-label={o.name} class={p.value === o.value ? "on" : ""} title={o.title} onClick={() => !o.disabled && p.onChange(o.value)}>
                         {o.label}
                     </button>
                 )}
@@ -82,14 +85,19 @@ export function Segmented<T extends string>(p: { value: T; options: { value: T; 
     );
 }
 
-/** The app's mark: an H with a status dot. */
-export function Logo(p: { size?: number }) {
+/**
+ * The app's mark: an H with a status dot. `variant="brand"`: the small one in the
+ * window's frame (the rail's top row), in the rail's ink, its strokes a touch
+ * heavier so they hold at 20px.
+ */
+export function Logo(p: { size?: number; variant?: "brand" }) {
     const s = p.size ?? 22;
+    const brand = () => p.variant === "brand";
     return (
-        <svg class="logo" width={s} height={s} viewBox="0 0 64 64" aria-hidden="true">
-            <rect width="64" height="64" rx="16" fill="var(--bg-inverse)" />
-            <path d="M21 19v26M43 19v26M21 32h22" stroke="var(--fg-inverse)" stroke-width="6.5" stroke-linecap="round" fill="none" />
-            <circle cx="43" cy="19" r="5.5" fill="var(--accent)" />
+        <svg class={brand() ? "logo brand" : "logo"} width={s} height={s} viewBox="0 0 64 64" aria-hidden="true">
+            <rect width="64" height="64" rx="16" fill={brand() ? "var(--rail-fg)" : "var(--fg)"} />
+            <path d="M21 19v26M43 19v26M21 32h22" stroke="var(--sheet)" stroke-width={brand() ? 7 : 6.5} stroke-linecap="round" fill="none" />
+            <circle cx="43" cy="19" r={brand() ? 6 : 5.5} fill="var(--accent)" />
         </svg>
     );
 }

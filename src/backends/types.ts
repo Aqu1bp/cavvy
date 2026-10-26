@@ -5,14 +5,28 @@
 // sends it the prompt, shows what it does and answers its permission prompts.
 
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
+import type { NativeGoal } from "../agent/goal";
 import type { ImagePart, ModelInfo, PdfPart, ProviderClient, Usage } from "../providers/types";
 import type { PermissionMode } from "../permissions/modes";
 import type { Effort } from "../config/settings";
 import type { ApprovedMcpServers } from "../mcp/manager";
 import type { ToolDisplay } from "../tools/types";
+import type { HookConfig } from "../config/settings";
+import type { HookEvent, HookOutcome, HookResult } from "../agent/hooks";
+import type { Skill } from "../agent/skills";
+import type { ClaudeAgentDefinition } from "./claude-agents";
+import type { NoticeData, PlanLimits } from "../server/protocol";
+import type { BackgroundTaskInfo } from "./live/info";
 
 /** A permission prompt raised by the backend's own permission system. */
 export interface BackendPermission {
+    /**
+     * Asked by a background sub-agent of the CLI's (its work outlives the turn): the turn's end or Esc doesn't
+     * withdraw it; the session's end does.
+     */
+    background?: boolean;
+    /** With background: aborts when the request no longer matters (its sub-agent's turn ended), withdrawing the prompt. */
+    signal?: AbortSignal;
     /** The harness tool whose rules apply: Bash, Edit, Write, Read, WebFetch, mcp__server__tool, or the backend's own name. */
     toolName: string;
     /** Input in that tool's shape (command, file_path, url, …). */
@@ -43,10 +57,21 @@ export interface BackendPermission {
     agentLabel?: string;
     /** The call it asks about, as its tool_start names it: its row waits while it asks. */
     callId?: string;
+    /** What PreToolUse hooks said of it (the backend ran them before asking): allow approves it unless a rule denies it. */
+    hookDecision?: "allow" | "ask";
+    /** The backend asked only because PreToolUse hooks needed to see it: approve what the mode allows. */
+    hooksOnly?: boolean;
+    /** The backend's sub-agent asking, by its type (a harness agent Claude Code runs natively): its own mode applies. */
+    agentType?: string;
 }
 
 export type PermissionAnswer =
-    | { allow: true; /** The user switched modes from the prompt ("allow all edits"). */ mode?: PermissionMode }
+    | {
+          allow: true;
+          /** The user switched modes from the prompt ("allow all edits"). */ mode?: PermissionMode;
+          /** A PermissionRequest hook approved this input in place of the one asked about (already checked against the rules). */
+          updatedInput?: Record<string, unknown>;
+      }
     | {
           allow: false;
           message: string;
@@ -63,8 +88,69 @@ export interface BackendQuestion {
     multiSelect?: boolean;
 }
 
-export interface BackendHost {
-    emit(e: AgentEvent): void;
+/** A queued message as a prompt of its own: its text (attached text files framed in), its images, and PDFs for a backend that reads them. */
+export interface BackendPrompt {
+    text: string;
+    images: ImagePart[];
+    documents: PdfPart[];
+    /** As BackendTurn's: the user's message as typed, which its $names are read from, and what follows it in `text`. */
+    request?: string;
+    requestAfter?: string;
+}
+
+/**
+ * A message drained to steer with (TurnSink.drainQueued): its text, and the images and PDFs (for a backend
+ * that reads them) attached to it, which the backend sends beside its text. They belong to this message alone,
+ * however many say the same words.
+ */
+export interface SteerMessage {
+    text: string;
+    images: ImagePart[];
+    documents: PdfPart[];
+    /**
+     * For one with attachments (it comes alone): it's still the host's until the backend has it. The backend calls
+     * this once: true once it's gone (Codex accepted its turn/steer; written to Claude Code's stdin), and the host
+     * records it then; false when it doesn't go (refused, the turn ended or was stopped first), and the host keeps
+     * it queued, attachments and all, to go as a prompt of its own. Never given to undelivered().
+     */
+    settle?(sent: boolean): Promise<void>;
+}
+
+/** Something a backend reports about the session rather than a turn: its background work, a notice when no turn runs. */
+export type SessionEvent =
+    /** `accountId`: the account the CLI process reporting it signed in with (it can differ from the session's selection now). */
+    | { type: "background_task"; task: BackgroundTaskInfo; accountId?: string }
+    | { type: "notice"; level: "info" | "warn" | "error"; message: string; /** What it is, for the GUI to draw (#426); `message` stays the whole of it, as text. */ data?: NoticeData }
+    /** Something the CLI did outside any turn (a background sub-agent's steps, its Agent call ending): shown where it belongs (by its call's id). */
+    | { type: "event"; event: AgentEvent };
+
+/** A turn the CLI started by itself (a background task's report, a goal's next step), for the host to adopt as a wake turn. */
+export interface BackendWake {
+    /** The agent CLI it's in. */
+    provider: string;
+    /** The turn, as the backend names it (BackendTurn.adopt). */
+    ref: string;
+    /** What it's about, for the wake's row: "Background task finished: Map auth". */
+    label?: string;
+    /**
+     * The turn answers a message of the user's (`label`, as they typed it): one that Esc sent at once in place of
+     * the turn it stopped. Recorded as their prompt, not as a wake.
+     */
+    prompt?: boolean;
+    /**
+     * What the background work it reports said (a finished command's output, a sub-agent's report), redacted:
+     * shown, and told to the session's model, when the session can't take the turn over (it's on another model).
+     */
+    report?: string;
+}
+
+/**
+ * What a backend asks of the harness about the session, whichever turn is running or none (a background
+ * sub-agent's permission prompt between turns): permissions, questions, the mode, hooks, usage, its own
+ * session id, plan limits, session-level events and wakes. Bound once a live session (#219); the per-turn
+ * backends get one with each turn.
+ */
+export interface SessionHost {
     /** The harness's permission mode now (it can change during a turn). */
     mode(): PermissionMode;
     /** Fast mode now: a sub-agent's follows its session, which can change during its turn. BackendTurn.fastMode otherwise. */
@@ -81,23 +167,74 @@ export interface BackendHost {
     context?(contextTokens: number): void;
     /** The backend's own session or thread id, for resuming it next turn. */
     sessionId(id: string): void;
+    /** The plan's usage limits, as the CLI reported them (`partial`: only some windows). */
+    limits?(limits: PlanLimits, partial: boolean): void;
+    /** Run the harness's hooks for something the backend did (Codex's items). */
+    hooks?(event: HookEvent, payload: Record<string, unknown>): Promise<HookOutcome | undefined>;
+    /** Run one hook handler the backend called back for (Claude Code's hook_callback), with the backend's input. */
+    hookHandler?(event: HookEvent, h: HookConfig, input: Record<string, unknown>, signal: AbortSignal): Promise<HookResult>;
+    /** Session-level news: a background task started, changed or ended; a notice outside any turn. */
+    emitSession?(e: SessionEvent): void;
+    /** The CLI started a turn by itself: the host starts a wake turn that adopts it (BackendTurn.adopt). */
+    onWake?(w: BackendWake): void;
+}
+
+/** Where one turn's events go, and what the turn takes in while it runs (messages to steer with). */
+export interface TurnSink {
+    emit(e: AgentEvent): void;
     /** Messages the user typed while the backend was working. If any are drained,
-     * consume and record preceding output before recording the queued prompt. */
-    drainQueued(progress?: () => BackendResult): string[] | Promise<string[]>;
+     * consume and record preceding output before recording the queued prompt. `live`: whether the
+     * backend can still take them, checked before they're taken (their hooks run first). */
+    drainQueued(progress?: () => BackendResult, live?: () => boolean): SteerMessage[] | Promise<SteerMessage[]>;
+    /**
+     * For when the CLI is between its turns, waiting only on background work: nothing is mid-step, so
+     * the next message the user queued goes now as a prompt of its own, whatever its mode, with what's
+     * attached (drainQueued's rules are for a running step). Undefined when none can: held ones, and
+     * commands and `!commands` (Harness runs those itself, after the run). Records the output before
+     * it, as drainQueued does. `live`: whether the backend can still send it (not stopped, its CLI not gone),
+     * checked last before it's taken; from then to the send nothing is awaited.
+     */
+    drainWaiting?(progress?: () => BackendResult, live?: () => boolean): Promise<BackendPrompt | undefined>;
+    /** A drained message is an event a watch raised (others' words, such as a PR comment), not the user's. */
+    fromWake?(text: string): boolean;
+    /** The words the user typed of a drained message of theirs, which it starts with: what a hook added follows. */
+    requestOf?(text: string): string | undefined;
     /** Called when a message to steer with arrives mid-turn, for a backend that can take it at once (Codex). Returns the unsubscribe. */
     onQueued?(listener: () => void): () => void;
     /**
      * Drained messages the backend never received (its turn ended before it took
      * them). They're in the transcript already; the host saves them for the next
-     * turn, so they reach it even after a restart.
+     * turn, so they reach it even after a restart, with their images (a prompt's,
+     * kept by the backend: #438). Never a queued message with attachments: that
+     * stays queued until it goes (SteerMessage.settle).
      */
-    undelivered?(texts: string[]): void;
+    undelivered?(messages: SteerMessage[]): void;
+    /**
+     * Files the backend changed (absolute paths): the language servers' new
+     * problems in them, as a note for the model, or undefined when there's
+     * nothing new. The user is told either way (a notice). For a backend
+     * without diagnostics of its own (Codex).
+     */
+    diagnose?(paths: string[]): Promise<string | undefined>;
 }
 
 export interface BackendTurn {
     /** The CLI config folder selection; omitted means its Default account. */
     accountId?: string;
     prompt: string;
+    /** With a /goal command as the prompt: what Harness would have put before it (the conversation so far), kept apart. */
+    goalContext?: string;
+    /**
+     * The prompt isn't the user's at all (a turn for wakes: an event a watch raised, others' words): Claude Code
+     * reads it as written, with no @mention expansion or slash command, and records it as not the user's.
+     */
+    synthetic?: boolean;
+    /**
+     * What Harness put before the user's words at the start of `prompt` (the conversation so far, its notes to the
+     * model). A backend that sends blocks sends it as one of its own before theirs: Claude Code reads only the last
+     * text block as what the user typed (a /command), so others' words in it aren't taken as the user's.
+     */
+    preamble?: string;
     images: ImagePart[];
     /** PDFs, for a backend that reads them (Claude Code); others get a note in the prompt instead. */
     documents?: PdfPart[];
@@ -107,15 +244,35 @@ export interface BackendTurn {
     effort?: Effort;
     fastMode?: boolean;
     appendSystemPrompt?: string;
-    /** Grace for Claude Code background shells/monitors (seconds, default 600). */
+    /** Grace for Claude Code background shells without a timeout of their own, and monitors (seconds, default 1800). */
     backgroundWaitSec?: number;
+    /**
+     * Run on the session's live CLI process, kept between turns (#219), rather than one process per turn: the
+     * agentCli.liveSessions setting (on unless it's false). A backend without live sessions ignores it.
+     */
+    liveSessions?: boolean;
+    /** Start a turn that tells the CLI when a background command it started ends after its turn (Codex; default true). */
+    wakeOnBackgroundCommand?: boolean;
     additionalDirectories: string[];
     /** The user trusts this folder's configuration. */
     trusted: boolean;
+    /**
+     * The harness's skills (src/agent/skills.ts), for the backend to hand its
+     * CLI so the CLI runs them itself (src/backends/native-skills.ts).
+     */
+    skills?: readonly Skill[];
+    /** The user's message as typed: its /name or $name are read from this. `prompt` ends with it and then `requestAfter`. */
+    request?: string;
+    /** What follows the user's message in `prompt`: its attached files' text and the harness's notes, which name no skills. */
+    requestAfter?: string;
+    /** Enabled harness plugins' folders, for a backend that loads them itself (Claude Code's --plugin-dir). */
+    pluginDirs?: string[];
     /** Snapshot of the MCP manager’s folder and approved definitions; absent means strict MCP isolation. */
     approvedMcpServers?: ApprovedMcpServers;
     /** The harness's deny and ask rules, and the root their paths are relative to. */
     rules: { deny: string[]; ask: string[]; root: string };
+    /** The harness's hooks the backend runs itself, at its own lifecycle points (Claude Code). */
+    hooks?: Partial<Record<HookEvent, HookConfig[]>>;
     /** Stop after this many model turns (Claude Code). */
     maxTurns?: number;
     /** Continue this backend session (from an earlier turn). */
@@ -135,8 +292,30 @@ export interface BackendTurn {
      * sandbox auto-approval for commands, MCP servers from its own config).
      */
     readOnly?: boolean;
+    /**
+     * The harness's agent definitions for Claude Code to run with its own
+     * Agent tool (src/backends/claude-agents.ts). Codex ignores them.
+     */
+    agents?: Record<string, ClaudeAgentDefinition>;
     signal: AbortSignal;
-    host: BackendHost;
+    /** The harness session (or child agent) the turn belongs to: a live CLI process is kept per key. */
+    sessionKey: string;
+    /**
+     * Send nothing: the CLI started this turn itself (BackendWake.ref), and this run takes its events
+     * until it ends. Only for a backend with adoptsTurns.
+     */
+    adopt?: string;
+    /**
+     * Nothing will take a report after this turn (-p, the SDK runner, a harness sub-agent): the turn itself should
+     * wait for the work it leaves in the background. A backend may run it on a process of its own with the per-turn
+     * path's bounded wait (backgroundWaitSec, #193's timeouts, servers stopped at the answer), as Claude Code does
+     * (#219 PR 4); one that ignores it ends the turn at its answer, and what's left in the background stops at release.
+     */
+    untilQuiet?: boolean;
+    /** The session's side: permissions, usage, background tasks, wakes. */
+    session: SessionHost;
+    /** This turn's events and steering. */
+    sink: TurnSink;
 }
 
 export interface OrchestratorServer {
@@ -165,6 +344,16 @@ export interface BackendResult {
     backgroundStopped?: string[];
     /** The session in resumeId couldn't be resumed (gone, or another folder's). */
     resumeFailed?: boolean;
+    /**
+     * Known not to have reached the CLI's session: an error before the prompt went (its process didn't start or
+     * exited first, it isn't signed in where that's checked before the prompt goes), the CLI's own no (Codex answering
+     * turn/start with an error), or a stop (aborted) before the prompt was sent. Not set when the CLI took the prompt
+     * and then failed (it keeps that prompt in its session, #407), nor when that isn't known (Codex gone while
+     * turn/start waited for its answer): those count as delivered.
+     */
+    refused?: boolean;
+    /** It stopped on the plan's usage limit; `resetsAt` (ms) when the backend said when that lifts. */
+    limit?: { resetsAt?: number; /** The window that's reached ("5-hour"), when known. */ window?: string };
 }
 
 export interface AgentBackendClient extends ProviderClient {
@@ -174,7 +363,52 @@ export interface AgentBackendClient extends ProviderClient {
     compact(t: Omit<BackendTurn, "prompt" | "images"> & { instructions?: string }): Promise<BackendResult>;
     /** The user changed the permission mode while a turn runs. */
     setMode(m: PermissionMode): void;
+    /** It can take over a turn its CLI started by itself (BackendTurn.adopt). */
+    readonly adoptsTurns?: boolean;
+    /**
+     * Ask for background tasks of a session to stop (these, or every one): how each went. A stop counts once
+     * the task is reported not running (SessionEvent background_task); none here means the backend can't.
+     */
+    stopBackground?(sessionKey: string, ids?: string[]): Promise<Record<string, BackgroundStop>>;
+    /**
+     * Esc with a message the user sent while the turn ran: the backend sends it at once in place of the turn
+     * the interrupt stops (Claude Code's send_now), and reports its turn as a wake with `prompt`. False when it
+     * can't now: the message stays the caller's. Called just before the turn's signal is aborted.
+     */
+    sendNow?(sessionKey: string, text: string): boolean;
+    /** Restart a session's live CLI process (it didn't answer an interrupt): what runs under it stops. */
+    restart?(sessionKey: string): Promise<void>;
+    /**
+     * The session switched to another model (#412): the CLI's own goal, if it's going on, is paused in the CLI kept
+     * for the session, so it starts no turns of its own for it, and one it started for it is stopped. Its background
+     * work goes on. Returns the goal as paused, or undefined when there was none going on (or no CLI running). Throws
+     * when the CLI didn't take the pause.
+     */
+    pauseGoal?(sessionKey: string): Promise<NativeGoal | undefined>;
+    /**
+     * A wake the session won't take over (it's on another model) that carries no report (a Claude Code monitor's
+     * event: only the turn it starts sees its output): what that turn said, once it has ended (however long that
+     * takes), or undefined for a
+     * turn this backend doesn't have. Its events go nowhere else.
+     */
+    wakeReport?(w: BackendWake): Promise<string | undefined>;
+    /**
+     * The harness is done with this session (closed, cleared or replaced, the harness quitting) or sub-agent
+     * (its run is over): stop the CLI process kept for it. What ran in it stopped with it, and is reported so
+     * (SessionEvent background_task, status stopped, withProcess), as any loss of the process is. A session
+     * already let go records nothing more: its log keeps those tasks running, so when it's opened again they
+     * show as stopped when Harness quit, and the agent is told (src/agent/background.ts).
+     */
+    release?(sessionKey: string): Promise<void>;
+    /** Stop every live CLI process it keeps (the client is dropped, or the harness quits), reported as release's are. */
+    shutdown?(): Promise<void>;
 }
+
+/**
+ * How a request to stop a background task went (see src/backends/live/tasks.ts StopResult). `ended`: it had
+ * already ended on its own (before the stop, or while it was pending), so the stop wasn't what ended it.
+ */
+export type BackgroundStop = "stopped" | "timeout" | "failed" | "not_stoppable" | "unknown" | "ended";
 
 export function isAgentBackend(c: ProviderClient | undefined): c is AgentBackendClient {
     return Boolean(c && (c as Partial<AgentBackendClient>).agentBackend === true);

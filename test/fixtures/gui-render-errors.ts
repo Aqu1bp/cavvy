@@ -5,7 +5,13 @@ import { all, component, node, renderer, text } from "../helpers/gui-render";
 import { boundary } from "../helpers/render-boundary";
 import { rawRenderText, renderDetails } from "../../gui/src/lib/render-error";
 import * as format from "../../gui/src/lib/format";
+import * as toolWords from "../../gui/src/lib/tool-words";
+import * as liveLine from "../../gui/src/lib/live-line";
+import * as notices from "../../gui/src/lib/notices";
+import { createReveal } from "../../gui/src/lib/reveal";
+import * as diffWindow from "../../gui/src/lib/diff-window";
 import { registerSecret, unregisterSecret } from "../../src/util/redact";
+import { columnSteps, COLUMN_NARROW, COLUMN_SHORT } from "../../gui/src/lib/layout";
 
 const source = (file: string) => readFileSync(new URL(`../../gui/src/components/${file}.tsx`, import.meta.url), "utf8").replace(/^import [\s\S]*?;\n/gm, "");
 
@@ -76,9 +82,9 @@ for (const kind of ["Markdown", "CodeBlock", "DiffView", "ToolRow", "ToolDetails
         const Widget = component(source(file), kind, {
             RenderBoundary: boundary(undefined, (error) => errors.push(error)),
             MarkdownRenderer: class { segments() { throw Error("bad markdown"); } },
-            ...format, now: () => 0, prefs: {}, findReveal: () => undefined,
+            ...format, ...toolWords, ...liveLine, ...notices, now: () => 0, prefs: {}, findReveal: () => undefined, motionMs: () => 0,
             ...Object.fromEntries(["Wrench", "Bot", "FileText", "ChevronRight", "CopyButton"].map((name) => [name, () => node(name)])),
-            onMount() {}, highlight: async () => undefined,
+            onMount() {}, highlight: async () => undefined, createReveal, paint() {},
             groupBlocks: () => { throw Error("bad turn"); },
         });
         const View = component('export function View() { return <><Widget {...props} /><button>still usable</button></>; }', "View", { Widget, props: props[kind] });
@@ -105,7 +111,8 @@ for (const kind of ["CodeBlock", "DiffView"]) {
         const highlight = async () => { if (fail) throw Error(secret); return undefined; };
         const Widget = component(source(`blocks/${kind}`), kind, {
             RenderBoundary: boundary(undefined, (error) => errors.push(error)),
-            highlight, highlightLines: highlight, langOf: () => "ts", escapeHtml: (s: string) => s,
+            highlight, highlightLines: highlight, highlightLineStream: streamOf(highlight), langOf: () => "ts", escapeHtml: (s: string) => s,
+            ...diffWindow, plural: format.plural,
             CopyButton: () => node("copy"),
             IntersectionObserver: class {
                 constructor(private callback: Function) {}
@@ -144,8 +151,8 @@ for (const target of ["SettingsPage", "AgentView", "ReviewPane"]) {
         const tags = [...new Set([...appSource.matchAll(/<([A-Z][A-Za-z0-9]*)[\s/>]/g)].map((m) => m[1]!))].filter((tag) => !builtins.has(tag));
         const App = component(appSource.slice(appSource.indexOf("export function App")), "App", {
             RenderBoundary: boundary(), app: { conn: "open", activeId: "session" }, handleFor: () => handle,
-            prefs: { sidebar: true }, isTauri: false, document: {}, onMount() {},
-            settingsTab, agentFocus, review, setAgentFocus() {}, setReview() {}, attentionCount: () => 0,
+            prefs: { sidebar: true }, isTauri: false, document: {}, onMount() {}, setEnterSends() {}, actionOf: () => undefined, skipCovered() {},
+            railDrag: () => undefined, columnSteps, COLUMN_NARROW, COLUMN_SHORT, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, column: { w: 1100, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }), settingsTab, agentFocus, review, setAgentFocus() {}, setReview() {}, attentionCount: () => 0,
             ...Object.fromEntries(tags.map((tag) => [tag, () => { if (tag === target) throw Error("injected " + target); return node(tag); }])),
         });
         const root = node("root");
@@ -180,6 +187,17 @@ test("root failure offers Reload and safe Copy details", async () => {
 });
 
 /** Execute the actual highlighting module, replacing only dynamic module loading. */
+/** DiffView's streamed highlighting (highlight.ts) over a whole-file highlightLines, as the worker's first part. */
+function streamOf(highlightLines: (code: string, lang?: string) => Promise<string[] | undefined>) {
+    return (code: string, lang: string | undefined, part: (from: number, lines: string[]) => void) => {
+        let over = false;
+        const done = highlightLines(code, lang).then((lines) => {
+            if (!over && lines) part(0, lines);
+        });
+        return { done, cancel: () => void (over = true) };
+    };
+}
+
 function retryingHighlighter(failure: "import" | "initialize" = "import") {
     const original = readFileSync(new URL("../../gui/src/lib/highlight-core.ts", import.meta.url), "utf8");
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(original)
@@ -205,8 +223,10 @@ function retryingHighlighter(failure: "import" | "initialize" = "import") {
             },
         };
     };
+    const core = new Function("loadModule", `${js}; return { highlight, highlightLines, warmUp };`)(loadModule);
     return {
-        ...new Function("loadModule", `${js}; return { highlight, highlightLines, warmUp };`)(loadModule),
+        ...core,
+        highlightLineStream: streamOf(core.highlightLines),
         loads: () => loads,
     };
 }
@@ -218,6 +238,7 @@ for (const kind of ["CodeBlock", "DiffView"]) {
         const Widget = component(source(`blocks/${kind}`), kind, {
             RenderBoundary: boundary(undefined, (error) => errors.push(error)),
             ...highlighting, langOf: () => "typescript", escapeHtml: (s: string) => s,
+            ...diffWindow, plural: format.plural,
             CopyButton: () => node("copy"),
             IntersectionObserver: class {
                 constructor(private callback: Function) {}

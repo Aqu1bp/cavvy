@@ -1,6 +1,9 @@
 // The interactive terminal app: prompt, transcript rendering, dialogs,
 // permission prompts, and wiring between the agent and the screen.
 
+import { GIT_TOOL_HEADINGS } from "../tools/git-tools";
+import { BROWSER_TOOL_HEADINGS } from "../tools/browser-tools";
+import { WakeQueue, WatcherMap, formatWakes, stopWatchers, wakeDisplay, type Wake } from "../agent/wakes";
 import { spawnSync } from "bun";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
@@ -9,39 +12,53 @@ import { Screen, type Entry, type Printable } from "./screen";
 import { Editor, imagesIn, plainText, withoutImage, type Draft } from "./editor";
 import { followUpDefault, loadQueue, saveQueue, type FollowUp, type StoredQueued } from "../agent/queue-store";
 import type { Key } from "./keys";
+import { CHORD_TIMEOUT_MS, strokeId, type Keymap } from "../keybindings/core";
+import { TuiKeybindings, tuiStroke } from "../keybindings/tui";
 import { bold, dim, italic, strike, stripAnsi, theme, truncate, width, wrapLine, termCols, termRows, padEnd, sanitizeLine } from "./ansi";
 import { inline, MarkdownStream, renderMarkdown } from "./markdown";
 import { SelectDialog, InputDialog, MessageDialog, type Dialog } from "./dialogs";
-import { BULLET, SPINNER_FRAMES, SPINNER_VERBS, formatDuration, renderDiff, renderFilePreview, resultLines, toolLine, type SelectItem } from "./components";
+import type { Ask as WorktreeAsk } from "./worktree";
+import { BULLET, SPINNER_FRAMES, SPINNER_VERBS, formatDuration, renderDiagnostics, renderDiff, renderFilePreview, resultLines, toolLine, type SelectItem } from "./components";
 import { FileIndex, expandMentions } from "./mentions";
+import { expandMcpMentions, searchResources } from "../mcp/mentions";
+import type { McpAsker } from "../mcp/elicitation";
 import { formatBytes } from "../util/files";
 import { loadImageFile, planPaste, prepareImage, readClipboardImage, type NamedImage, type Prepared, type PrepareOptions } from "./images";
-import { Agent, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
+import { Agent, type Admitted, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
+import { describeTask, endedText, leaveDelegated, leaveShells, SessionBackground } from "../agent/background";
+import type { BackendWake } from "../backends/types";
+import { IdleCompactTimer } from "../agent/idle-compact";
 import { DELEGATE_TOOL } from "../agent/delegation";
 import { fireHooks, type HookEvent } from "../agent/hooks";
+import { backgroundWork, canAnswerOneOff, GoalController, limitedCodexGoal, loopGoalDropped, nativeGoalBack, nativeGoalEnd, nativeGoalLeft, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, queuedGoalSet, sentence, sessionTokens, type NativeGoal } from "../agent/goal";
+import { sessionHookServices, sessionStartHooks } from "../agent/session-hooks";
 import { Notifier } from "./notify";
 import { Session } from "../agent/session";
+import { SessionSchedules } from "../agent/schedule-host";
+import { CRON_TOOLS } from "../agent/schedule-tools";
+import { shortTime } from "../agent/schedule";
 import { appendPromptHistory, loadPromptHistory } from "../agent/session";
-import { rewindTargets } from "../agent/checkpoints";
+import { resetToolState, rewindTargets } from "../agent/checkpoints";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { addMemoryNote } from "../agent/memory";
 import type { Effort, Settings } from "../config/settings";
 import { loadSettings, loadScope, addPermissionRule, onConfigWarning } from "../config/settings";
-import { APP_TITLE, APP_VERSION } from "../config/paths";
+import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
 import { MODE_INFO, nextMode, type PermissionMode } from "../permissions/modes";
 import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "../permissions/classifier";
 import { toolPath } from "../permissions/rules";
 import { McpManager } from "../mcp/manager";
-import { BUILTIN_TOOLS } from "../tools/index";
-import type { Tool, ToolState, TodoItem } from "../tools/types";
+import { BUILTIN_TOOLS, offered } from "../tools/index";
+import type { Sampler, Tool, ToolDisplay, ToolState, TodoItem } from "../tools/types";
+import { isShellTool } from "../tools/types";
 import { killAllShells, runShell, childEnv } from "../tools/bash";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
 import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveModelInfo, reviewTarget, smallModelFor, lookupModel, type ProviderListing } from "../providers/models";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
-import { account } from "../providers/accounts";
+import { account, accountSwitch, catalogNote, removedAccount, removedAccountNote, switchHow } from "../providers/accounts";
 import { RpcError } from "../server/rpc-error";
-import { modelRef, parseModelRef, textOf, type ImagePart, type Message, type ModelInfo, type ProviderClient, type TextPart, type ToolCallPart } from "../providers/types";
+import { assistantText, modelRef, parseModelRef, textOf, type ImagePart, type Message, type ModelInfo, type ProviderClient, type TextPart, type ToolCallPart, type UserContent } from "../providers/types";
 import { formatCost, formatTokens } from "../providers/pricing";
 import { attachmentsNote } from "../providers/files";
 import { configuredProviders, storageDescription } from "../auth/credentials";
@@ -49,13 +66,16 @@ import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { commandList, commandRefusesImages, runCommand } from "../commands/index";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { loadSkills, skillMentions, withSkills, type Skill } from "../agent/skills";
+import { cliRunsSkills } from "../backends/native-skills";
 import { skillTool } from "../tools/skill-tool";
+import { pluginsFor } from "../plugins/loader";
+import { loadsPluginsNatively, onlyPluginHooks, sessionHookSettings, withoutPluginHooks } from "../plugins/native";
 import { displayPath } from "../util/files";
 import { redact } from "../util/redact";
 import { SecretStore, secretValueError } from "../agent/secrets";
 import { planLimitKey } from "../server/protocol";
 import { mergeLimits } from "../backends/limits";
-import type { PlanLimits } from "../server/protocol";
+import type { PlanLimits, StoppedTask } from "../server/protocol";
 
 export interface AppInit {
     cwd: string;
@@ -78,6 +98,11 @@ export interface AppInit {
     resumePicker?: boolean;
     /** Default model when settings don't name one (legacy MODEL in the harness .env). */
     fallbackModel?: string;
+    /**
+     * --worktree: its line in the welcome box, and what happens to it on exit: decided first (asking
+     * with `ask`, when given), done once the session's shells are gone, returning the lines to print.
+     */
+    worktree?: { line: string; resume: string; decide: (ask?: WorktreeAsk) => Promise<() => Promise<string[]>>; kept: () => string[] };
 }
 
 interface ActiveTool {
@@ -93,6 +118,9 @@ interface ActiveTool {
 
 type InputMode = "prompt" | "bash" | "memory";
 
+/** How often the TUI looks at its background shells while one runs (tests shorten it). */
+export const backgroundPoll = { ms: 2000 };
+
 export class App {
     screen = new Screen();
     editor = new Editor();
@@ -102,12 +130,17 @@ export class App {
     checker: PermissionChecker;
     classifier: AutoClassifier;
     mcp: McpManager;
+    /** The servers' first start, which a SessionStart mcp_tool hook waits for (up to MCP_START_WAIT_MS). */
+    private mcpStarting: Promise<unknown> = Promise.resolve();
     files: FileIndex;
     listings: ProviderListing[] = [];
     model?: ModelInfo;
     client?: ProviderClient;
     agent?: Agent;
     session!: Session;
+    /** The session's /goal (src/agent/goal.ts); a new one with each session. */
+    goal?: GoalController;
+    private goalSession?: Session;
     toolState: ToolState;
     customCommands: CustomCommand[] = [];
     skills: Skill[] = [];
@@ -119,6 +152,27 @@ export class App {
     private dialogs: Dialog[] = [];
     private dialogQueue: Dialog[] = [];
     busy = false;
+    /** Compacts a long conversation left idle before its prompt cache expires (src/agent/idle-compact.ts). */
+    readonly idleCompact = new IdleCompactTimer({
+        plan: (now) => this.agent?.idleCompactPlan(now) ?? null,
+        // Not while anything waits on the user, or they're typing: they're back.
+        // Nor on a CLI account that was removed (#410): nothing runs there.
+        ready: () => !this.busy && !this.exiting && !this.switching && !this.dialogs.length && !this.dialogQueue.length && !this.queued.length && this.editor.isEmpty && !this.pendingSubmit && !this.goal?.pending() && !this.needsAccount(),
+        run: () => void this.compactIdle(),
+    });
+    /** The task running is an idle compaction: a message sent meanwhile cancels it and runs. */
+    idleCompacting = false;
+    private idleDone?: Promise<void>;
+    /** It's being stopped for something the user asked for: no "Cancelled". */
+    private idleYielding = false;
+
+    /** The user is back (a command): an idle compaction stops, and what they asked for goes ahead. */
+    async yieldIdleCompaction() {
+        if (!this.idleCompacting) return;
+        this.idleYielding = true;
+        this.abort?.abort();
+        await this.idleDone;
+    }
     /** Whether the last renderLive showed just the prompt (no turn, no dialog), to tell when it's back. */
     private wasIdle = false;
     private abort?: AbortController;
@@ -145,6 +199,8 @@ export class App {
     private mdEntries: Entry[] = [];
     private mdSource = "";
     private mdCols = 0;
+    /** Accepted text held open while an output-limited answer is continued. */
+    private continuationSource?: string;
     private thinking = "";
     private receiving = new Map<string, { name: string; chars: number }>();
     private active = new Map<string, ActiveTool>();
@@ -172,10 +228,17 @@ export class App {
     private takeBackBlockedAt = 0;
     private flash?: { text: string; until: number };
     private showHelp = false;
+    /** The keybindings file, applied (and reapplied on every save). */
+    readonly keys = new TuiKeybindings();
+    /** Keys of a chord being typed, handled as usual if it isn't finished. */
+    private chordHeld: Key[] = [];
+    private chordToken = 0;
     private menuIndex = 0;
     private menuHiddenFor?: string;
     private exitResolve!: () => void;
     private exiting = false;
+    /** Exit has started asking what to do with the worktree. */
+    private leaving = false;
     readonly notifier = new Notifier({
         settings: () => this.settings,
         focus: () => this.screen.focus,
@@ -192,11 +255,46 @@ export class App {
         this.allowBypass = init.allowBypass;
         this.checker = new PermissionChecker(() => this.settings, init.cwd);
         this.classifier = new AutoClassifier(undefined);
-        this.mcp = new McpManager(init.cwd, () => this.settings, init.trusted, () => this.reloadSettings());
+        this.mcp = new McpManager(init.cwd, () => this.settings, init.trusted, () => this.reloadSettings(), true);
         this.mcp.onChange = () => this.renderLive();
         this.files = new FileIndex(init.cwd);
-        this.toolState = { cwd: init.cwd, projectRoot: init.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore() };
+        this.toolState = { cwd: init.cwd, projectRoot: init.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore(), wakes: new WakeQueue(), watchers: new WatcherMap() };
+        this.schedules = new SessionSchedules({
+            session: () => this.session,
+            settings: () => this.settings,
+            idle: () => this.schedulable(),
+            identity: () => (this.model ? `${modelRef(this.model)}|${this.session.accountId(this.model.provider)}` : ""),
+            run: (prompt, job, label) => this.runScheduled(prompt, label, job.kind === "resume"),
+            notice: (text, level) => this.notice(text, level),
+            changed: () => this.renderLive(),
+        });
+        this.toolState.scheduler = this.schedules.scheduler;
+        this.toolState.wakes!.onReady(() => this.wake());
+        (this.toolState.watchers as WatcherMap).onChange = () => this.renderLive();
         this.editor.setHistory(loadPromptHistory(init.cwd));
+    }
+
+    /** /loop, cron jobs and the resume after a usage limit (src/agent/schedule.ts). */
+    readonly schedules: SessionSchedules;
+    /** The next turn to start is a schedule's, not the user's. */
+    /** The turn starting is a scheduled prompt ("resume": the one after a usage limit, which picks a paused goal up again). */
+    private scheduledTurn: boolean | "resume" = false;
+
+    /** A scheduled prompt may start now: nothing running (an idle compaction gives way), waiting, or being set up. */
+    private schedulable(): boolean {
+        // A goal between its turns (checking, retrying, waiting on background work) goes first: scheduled prompts wait for it.
+        // Nor while the session's CLI account is gone (#410): they run once the user picks another.
+        return (!this.busy || this.idleCompacting) && !this.dialogs.length && !this.dialogQueue.length && !this.switching && !this.pendingSubmit && !this.exiting && this.modelReady && Boolean(this.session) && !this.goal?.pending() && !this.needsAccount();
+    }
+
+    private async runScheduled(prompt: string, label: string, resume = false): Promise<unknown> {
+        // An idle compaction stops: the prompt runs on the cache that's still warm, not alongside it.
+        if (this.idleCompacting) await this.yieldIdleCompaction();
+        // A line of its own, so it doesn't read as part of the answer before it.
+        this.print(["", theme.muted(`⏱ ${label}`)]);
+        this.scheduledTurn = resume ? "resume" : true;
+        // Codex stopped its goal at the limit: the resume makes it active again, for Codex to go on with.
+        return this.submitText(resume && limitedCodexGoal(this.nativeGoal) ? "/goal resume" : prompt).finally(() => (this.scheduledTurn = false));
     }
 
     get cwd(): string {
@@ -209,6 +307,29 @@ export class App {
         if (this.init.extraDeny?.length) p.deny = [...(p.deny ?? []), ...this.init.extraDeny];
         if (this.init.addDirs?.length) p.additionalDirectories = [...(p.additionalDirectories ?? []), ...this.init.addDirs];
         if (this.init.effort) this.settings.effort = this.init.effort;
+    }
+
+    /**
+     * The user trusted the folder (/trust) after it was opened untrusted: its
+     * project settings (language servers among them), commands and skills
+     * apply from now on. True if anything changed.
+     */
+    projectTrusted(): boolean {
+        if (this.init.trusted) return false;
+        this.init.trusted = true;
+        this.reloadSettings();
+        this.customCommands = loadCustomCommands(this.cwd, true);
+        this.skills = loadSkills(this.cwd, true);
+        return true;
+    }
+
+    /** Plugins that are on but not installed (a project's), or that have problems. */
+    private pluginNotices() {
+        if (!this.settings.enabledPlugins) return;
+        const { plugins, missing } = pluginsFor(this.settings.enabledPlugins);
+        if (missing.length) this.notice(`Settings turn on plugin${missing.length === 1 ? "" : "s"} that ${missing.length === 1 ? "isn't" : "aren't"} installed: ${missing.join(", ")}. Install with /plugin install <name>.`, "info");
+        const broken = plugins.filter((p) => p.errors.length);
+        if (broken.length) this.notice(`Plugin${broken.length === 1 ? "" : "s"} with problems: ${broken.map((p) => p.name).join(", ")}. Run /plugin to see them.`, "warn");
     }
 
     reloadSettings() {
@@ -232,24 +353,33 @@ export class App {
         process.on("exit", restore);
         // stderr would scribble over the screen.
         onConfigWarning((msg) => this.notice(msg, "warn"));
-        for (const sig of ["SIGTERM", "SIGHUP"] as const) process.on(sig, () => void this.exit(0));
+        this.keys.watch((km, status) => this.reportKeybindings(km, status));
+        for (const sig of ["SIGTERM", "SIGHUP"] as const) process.on(sig, () => void this.exit(0, { signal: true }));
 
         this.customCommands = loadCustomCommands(this.cwd, this.init.trusted);
         this.skills = loadSkills(this.cwd, this.init.trusted);
         this.printWelcome();
         for (const n of this.init.startupNotes) this.notice(n, "warn");
+        if (this.keys.keymap.issues.length) this.reportKeybindings(this.keys.keymap, "start");
 
         this.mcp.load();
         const approvals = this.mcp.needsApproval();
         if (approvals.length) this.notice(`This project's .mcp.json defines ${approvals.length} MCP server${approvals.length === 1 ? "" : "s"} (${approvals.map((s) => s.name).join(", ")}). Run /mcp to review and enable them.`, "info");
-        void this.mcp.startAll();
+        this.mcpStarting = this.mcp.startAll().catch(() => undefined);
+        this.pluginNotices();
 
         if (this.init.resumeFile) this.resume(this.init.resumeFile);
         else this.session = Session.create(this.cwd);
+        this.bindBackground();
+        this.schedules.restore();
+        this.bindGoal();
         if (this.init.fastMode !== undefined) this.session.setFastMode(this.init.fastMode);
-        void this.sessionHook("SessionStart", { source: this.init.resumeFile ? "resume" : "startup" });
+        // The plugins' own wait for the model: on Claude Code, it runs them itself.
+        const source = this.init.resumeFile ? "resume" : "startup";
+        void this.sessionHook("SessionStart", { source }, undefined, withoutPluginHooks(this.settings));
 
         await this.trackSwitch(this.initModel());
+        if (!loadsPluginsNatively(this.model?.provider)) void this.sessionHook("SessionStart", { source }, undefined, onlyPluginHooks(this.settings));
         if (this.init.fastMode && !this.model?.supportsFastMode) {
             this.session.setFastMode(false);
             this.notice("Fast mode is not available for this model/backend; using standard speed.", "warn");
@@ -261,21 +391,56 @@ export class App {
         await done;
     }
 
-    async exit(code = 0) {
-        if (this.exiting) return;
+    /** `signal`: nobody may be at the keyboard, so nothing on the way out asks. */
+    async exit(code = 0, o: { signal?: boolean } = {}) {
+        // A signal while the worktree question is up still ends it (the worktree is kept).
+        if (this.exiting || (this.leaving && !o.signal)) return;
+        // The worktree's fate is asked about while the prompt is still up; nothing is removed yet.
+        let finishWorktree: (() => Promise<string[]>) | undefined;
+        // Cut short (a signal, or Ctrl+C while it was being checked): kept, and said so.
+        if (this.init.worktree && this.leaving) finishWorktree = async () => this.init.worktree!.kept();
+        if (this.init.worktree && !this.leaving) {
+            this.leaving = true;
+            this.abort?.abort();
+            this.flash = { text: "Checking the worktree… Ctrl+C keeps it and exits now", until: Infinity };
+            this.renderLive();
+            const ask: WorktreeAsk | undefined = o.signal || !this.screen.interactive ? undefined : async (q) => {
+                this.flash = undefined;
+                return (await this.showDialog(new SelectDialog({ ...q, numbers: true }))) as "keep" | "remove" | undefined;
+            };
+            try {
+                finishWorktree = await this.init.worktree.decide(ask);
+            } catch (e) {
+                finishWorktree = async () => [theme.error(`Couldn't check the worktree, so it's kept: ${redact((e as Error).message)}`)];
+            }
+            // A signal finished the exit meanwhile.
+            if (this.exiting) return;
+        }
         this.exiting = true;
+        this.schedules.dispose();
+        this.goal?.dispose();
+        this.idleCompact.disarm();
         this.abort?.abort();
+        stopWatchers(this.toolState);
+        this.toolState.wakes?.dispose();
+        if (this.backgroundTimer) clearInterval(this.backgroundTimer);
+        this.backgroundTimer = undefined;
         const disposed = this.agent?.dispose();
         for (const d of [...this.dialogs, ...this.dialogQueue]) d.cancel();
         this.stopTicker();
+        this.keys.close();
         this.screen.setLive([]);
-        const hint = this.session?.messages.length && this.session.persisted ? theme.muted(`Resume this session with: harness --resume ${this.session.meta.id}`) : "";
+        const hint = this.session?.messages.length && this.session.persisted ? theme.muted(`Resume this session with: ${this.init.worktree?.resume ?? APP_NAME} --resume ${this.session.meta.id}`) : "";
         if (this.session?.cost || this.session?.costUnknown) this.screen.print(theme.muted(`Total cost: ${formatCost(this.session.cost, this.session.costUnknown)}${this.session.costUnknown ? " (no price known for some of the models used)" : ""}`));
         if (hint) this.screen.print(hint);
         this.screen.flushNow();
         // SessionEnd hooks get at most 5 seconds.
         const ended = this.sessionHook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000));
-        await Promise.all([ended, disposed, killAllShells({ state: this.toolState }), Promise.race([this.mcp.closeAll(), new Promise((r) => setTimeout(r, 1500))])]);
+        await Promise.all([ended, disposed, killAllShells({ state: this.toolState }), this.toolState.lsp?.dispose(), this.toolState.browser?.dispose(), Promise.race([this.mcp.closeAll(), new Promise((r) => setTimeout(r, 1500))])]);
+        if (finishWorktree) {
+            for (const line of await finishWorktree().catch((e: Error) => [theme.error(`Couldn't remove the worktree: ${redact(e.message)}`)])) this.screen.print(line);
+            this.screen.flushNow();
+        }
         this.screen.stop();
         this.exitResolve?.();
         process.exit(code);
@@ -288,6 +453,7 @@ export class App {
             theme.muted(`  /help for help · /model to switch models · /login to add an API key`),
             "",
             theme.muted(`  cwd: ${displayPath(this.cwd, process.env.HOME ?? "/")}`),
+            ...(this.init.worktree ? [theme.muted(`  ${this.init.worktree.line}`)] : []),
         ];
         this.screen.print((cols) => {
             const inner = Math.min(cols, 90) - 5;
@@ -395,17 +561,150 @@ export class App {
     }
 
     /** Keep account changes between turns, like model changes. */
-    setAccount(provider: string, id: string) {
+    async setAccount(provider: string, id: string) {
         if (this.busy) throw new RpcError("Switch accounts once this response is done, or interrupt it first.", "busy");
         const selected = account(provider, id);
-        if (!this.session.setAccount(provider, selected.id)) return;
+        const had = this.session.backends.get(provider)?.id;
+        // Already this one (added again under the same id, #410): what waited for an account goes now.
+        if (!this.session.setAccount(provider, selected.id)) return this.releaseForAccount(provider);
+        this.schedules.cancelLimitResume("account");
+        // As the desktop's: an idle compaction planned on the earlier account's cache doesn't run on the new one.
+        if (this.agent?.accountChanged(provider)) this.idleCompact.disarm();
         const name = getProvider(provider)?.name ?? provider;
-        const text = this.session.messages.length
-            ? `Continuing on ${name} · ${selected.name}: starting a new ${name} thread with this conversation as context.`
-            : `Using ${name} · ${selected.name}.`;
-        this.session.recordNotice("info", text);
-        this.notice(text);
+        const how = switchHow(had, this.session.backends.get(provider)?.id, this.session.messages.length > 0);
+        // Kept as the desktop keeps it (one line, the latest of switches with no message between); the model list's
+        // caveat is only said here, in the terminal, which has no picker to say it.
+        const switched = accountSwitch(provider, selected, name, how, had !== undefined && how !== "native");
+        const line = switched ? this.session.recordSwitch(switched).notice : undefined;
+        if (line) this.notice(line.text);
+        else this.notice(`Using ${name} · ${selected.name}.`);
+        const catalog = catalogNote(provider, selected, name);
+        if (catalog) this.notice(catalog);
         this.renderLive();
+        // As the desktop's (Runtime.setAccount): the process signed in as the earlier account goes now, with its work.
+        // Turns it started that wait to be taken over, or that it starts while it's let go of, aren't (dropAdopt, #408).
+        // Counted: a second switch meanwhile can finish first (nothing left to let go of), and this one's still going.
+        let stopped: StoppedTask[] = [];
+        this.releasing.set(provider, (this.releasing.get(provider) ?? 0) + 1);
+        try {
+            for (const w of this.adopts.filter((w) => w.provider === provider)) this.dropAdopt(w);
+            stopped = (await this.agent?.releaseAccountProcess(provider)) ?? [];
+        } finally {
+            const left = (this.releasing.get(provider) ?? 1) - 1;
+            if (left) this.releasing.set(provider, left);
+            else this.releasing.delete(provider);
+        }
+        if (stopped.length) {
+            this.session.recordStopped(line, { provider, cli: name, tasks: stopped });
+            this.notice(`${name} was restarted for the account change, which stopped:\n${stopped.map((t) => `· ${t.label}`).join("\n")}`, "warn");
+            this.renderLive();
+        }
+        this.releaseForAccount(provider);
+    }
+
+    // ---- A removed CLI account (#410): nothing runs on an account the user didn't choose.
+
+    /** Messages held because the account this session used for a CLI (`provider`) was removed: sent once the user picks one. */
+    private heldForAccount?: { provider: string; drafts: QueuedDraft[] };
+
+    /** The session's model is a CLI, and the account this session selected for it was removed: the CLI and the account's id. */
+    private removedAccount(): { provider: string; id: string } | undefined {
+        const provider = this.model?.provider;
+        const id = provider && this.session ? removedAccount(provider, this.session.accountId(provider)) : undefined;
+        return provider && id ? { provider, id } : undefined;
+    }
+
+    /**
+     * Nothing may run until the user picks an account for the session's CLI: its account was removed, or messages are
+     * held for one (even if it's back, added again under its id: picking it sends them first).
+     */
+    private needsAccount(): { provider: string; id: string } | undefined {
+        const gone = this.removedAccount();
+        if (gone) return gone;
+        const provider = this.model?.provider;
+        return provider && this.heldForAccount?.provider === provider ? { provider, id: this.session.accountId(provider) } : undefined;
+    }
+
+    /**
+     * The session's CLI account was removed: `draft` (a message about to go) and what's queued behind it are held, not
+     * stored or sent, until the user picks an account for the CLI (/account): releaseForAccount sends them then.
+     */
+    private holdForAccount(gone: { provider: string; id: string }, draft: Draft) {
+        const drafts = [...(this.heldForAccount?.drafts ?? []), { ...draft, mode: "queue" as const }, ...this.queued];
+        this.queued = [];
+        this.heldForAccount = { provider: gone.provider, drafts };
+        this.queueUpdated();
+        this.notice(`${removedAccountNote(getProvider(gone.provider)?.name ?? gone.provider, gone.id)} Use /account.`, "warn");
+    }
+
+    /** An account was picked for `provider`'s CLI (setAccount): the messages held for one go now, in order, each once. */
+    private releaseForAccount(provider: string) {
+        const held = this.heldForAccount;
+        if (this.model?.provider !== provider || this.removedAccount()) return;
+        if (held?.provider !== provider) {
+            // What waited for it meanwhile (a watch's events, a schedule) can go now.
+            this.toolState.wakes?.poke();
+            this.schedules.poke();
+            return;
+        }
+        this.releaseHeld();
+    }
+
+    /**
+     * What was held for an account goes, in order, each once: ahead of anything sent meanwhile. Busy (a message sent
+     * while the switch let the CLI go), they run when its turn ends, as queued ones do. Otherwise the first goes once
+     * the command that picked the account (/account) is done; until its turn starts, what's sent waits behind them
+     * (draining), and leaving the session meanwhile hands them back to the prompt (leaveHeld).
+     */
+    private releaseHeld() {
+        const held = this.heldForAccount;
+        if (!held) return;
+        this.heldForAccount = undefined;
+        this.queued.unshift(...held.drafts);
+        this.queueUpdated();
+        if (this.busy) return;
+        const token = {};
+        const session = this.session;
+        this.draining = token;
+        setTimeout(() => {
+            if (this.draining !== token) return;
+            if (this.session !== session) {
+                this.draining = undefined;
+                return;
+            }
+            const next = this.queued.shift();
+            this.queueUpdated();
+            if (!next) {
+                this.draining = undefined;
+                return;
+            }
+            // Its turn takes over the reservation (startTurn ends it); a command that starts none ends it here.
+            void this.submitText(next, undefined, true).finally(() => {
+                if (this.draining === token) this.draining = undefined;
+            });
+        }, 0);
+    }
+
+    /** Released messages waiting for their turn to start (releaseHeld): what's sent meanwhile queues behind them. */
+    private draining?: object;
+
+    /**
+     * Leaving the session (another, or a new one). What's held for its account stays saved with it, held, for when
+     * it's opened again; one not saved yet comes back to the prompt. Released ones whose turn hasn't started yet
+     * come back to the prompt rather than run in the next session.
+     */
+    private leaveHeld() {
+        if (this.draining) {
+            this.draining = undefined;
+            this.returnQueued();
+        }
+        const held = this.heldForAccount;
+        if (!held) return;
+        this.heldForAccount = undefined;
+        if (this.session.persisted) return;
+        this.queued.unshift(...held.drafts);
+        this.returnQueued();
+        this.notice(`${held.drafts.length === 1 ? "The message held for an account is" : "The messages held for an account are"} back in the prompt.`);
     }
 
     /** Switch the active model. Returns false if the provider isn't usable. */
@@ -433,6 +732,11 @@ export class App {
         const prev = this.model;
         this.model = info;
         this.client = client;
+        this.schedules.cancelLimitResume("model");
+        // A CLI's own goal stays with that CLI: another provider doesn't carry it on, and it pauses there (#412). The
+        // pause goes on while the agent takes the new model, never with the agent still on the CLI's (waited on below).
+        const leaving = this.switchNativeGoal(this.agent?.model.provider, info);
+        this.dropLoopGoal();
         this.updateHelpers();
         if (!this.agent) this.makeAgent();
         else {
@@ -440,6 +744,7 @@ export class App {
             this.agent.options.nativeWebSearch = this.nativeSearch();
             if (prev) this.agent.noteModelChange(modelRef(prev), info);
         }
+        await leaving;
         if (opts.persist) {
             const { updateSettings } = await import("../config/settings");
             try {
@@ -450,6 +755,19 @@ export class App {
             }
         }
         if (!opts.quiet) this.screen.print(["", `${theme.success("✔")} Model set to ${bold(info.name ?? info.id)} ${theme.muted(`(${ref})`)}`]);
+        // A CLI whose account this session used was removed (#410): asked for now; what's held waits for it.
+        const gone = this.removedAccount();
+        const held = this.heldForAccount;
+        if (gone) {
+            if (held) held.provider = gone.provider;
+            if (!opts.quiet) this.notice(`${removedAccountNote(def.name, gone.id, false)} Use /account.`, "warn");
+        } else if (held && !opts.quiet) {
+            // The user picked a model that runs without that account: where they chose to run, so what was held for
+            // an account goes there now, once each, in order (as on the desktop). Not on a model set without being
+            // picked (quiet): they stay held.
+            this.notice(`Sending ${held.drafts.length === 1 ? "the message" : `the ${held.drafts.length} messages`} held for an account to ${info.name ?? info.id}.`);
+            this.releaseHeld();
+        }
         this.renderLive();
         return true;
     }
@@ -487,7 +805,7 @@ export class App {
     }
 
     /** One-shot completion on a cheap model (summaries), the auto-mode reviewer with `review`, or with `main` on the session's model. */
-    async complete(system: string, prompt: string, signal?: AbortSignal, opts?: { main?: boolean; review?: ReviewStage }): Promise<string> {
+    async complete(system: string, prompt: string, signal?: AbortSignal, opts?: { main?: boolean; review?: ReviewStage; maxTokens?: number; stopped?: (reason: string | undefined) => void }): Promise<string> {
         let model = this.model!;
         let client = this.client!;
         const smallRef = this.settings.smallModel;
@@ -512,7 +830,7 @@ export class App {
         }
         const res = await client.stream(
             // Not a session message, so redact here (WebFetch pages, reviewer prompts).
-            { model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: 2048, effort: "low", lightweight: true, signal, ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) },
+            { model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: opts?.maxTokens ?? 2048, effort: "low", lightweight: true, signal, ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) },
             () => {},
         );
         if (res.usage) {
@@ -520,14 +838,24 @@ export class App {
             const c = costOf(res.usage, model);
             this.session.recordUsage(modelRef(model), res.usage, c.usd, c.unknown);
         }
+        opts?.stopped?.(res.stopReason);
         return opts?.review ? reviewText(res) : textOf(res);
+    }
+
+    /** MCP sampling: the session's own model, the server's token limit, and why it stopped. */
+    private sampler(): Sampler {
+        return async (system, prompt, signal, maxTokens) => {
+            let stopReason: string | undefined;
+            const text = await this.complete(system, prompt, signal, { main: true, maxTokens, stopped: (r) => (stopReason = r) });
+            return { text, model: this.model ? modelRef(this.model) : "unknown", stopReason };
+        };
     }
 
     tools(): Tool<any>[] {
         const native = this.nativeSearch();
-        const builtin = BUILTIN_TOOLS.filter((t) => !(native && t.name === "WebSearch") && !(t.name === "WebSearch" && this.settings.webSearch === "off"));
+        const builtin = BUILTIN_TOOLS.filter((t) => !(native && t.name === "WebSearch") && !(t.name === "WebSearch" && this.settings.webSearch === "off") && offered(t, this.settings));
         const skill = skillTool(this.skills);
-        return [...builtin, ...(skill ? [skill] : []), ...this.mcp.tools()];
+        return [...builtin, ...(skill ? [skill] : []), ...CRON_TOOLS, ...this.mcp.tools()];
     }
 
     makeAgent() {
@@ -537,6 +865,7 @@ export class App {
         this.agent = new Agent({
             session: this.session,
             trusted: () => this.init.trusted,
+            skills: () => this.skills,
             model: this.model,
             client: this.client,
             settings: () => this.settings,
@@ -566,10 +895,13 @@ export class App {
                     approvePlan: (plan) => this.approvePlan(plan),
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
                 },
-                drainQueued: () => this.drainQueued(),
+                drainQueued: (_record, admit) => this.drainQueued(admit),
+                wake: (w) => this.adoptWake(w),
+                backgroundChanged: () => this.persistBackground(),
             },
             helpers: {
                 complete: (s, p, sig) => this.complete(s, p, sig),
+                sample: this.sampler(),
                 webSearch: async (query, signal) => {
                     const backend = await availableSearchBackend(this.settings.webSearch);
                     if (!backend) throw new Error("Web search is turned off (settings.webSearch = off)");
@@ -612,50 +944,355 @@ export class App {
         return true;
     }
 
+    /** Another conversation doesn't get the last one's browser tabs: they close, and the next page opens its own. */
+    private leaveBrowser() {
+        const browser = this.toolState.browser;
+        this.toolState.browser = undefined;
+        void browser?.dispose().catch(() => undefined);
+    }
+
     newSession() {
         const prev = this.session;
+        this.leaveHeld();
+        this.leaveBackground();
         this.session = Session.create(this.cwd);
         prev.release();
+        this.bindBackground();
+        stopWatchers(this.toolState);
+        this.toolState.wakes?.drainRunning();
         this.toolState.fileState.clear();
         this.toolState.todos = [];
         this.toolState.secrets?.clear();
+        this.leaveBrowser();
         this.checker.resetSession();
         this.makeAgent();
+        this.schedules.switchSession();
+        this.bindGoal();
         this.sessionSwitched(prev, "clear");
     }
 
     /** Switch to a saved session (/resume), or to one just opened (a fork). */
     resume(from: string | Session) {
         const prev = this.session;
+        let next: Session;
         try {
-            this.session = typeof from === "string" ? Session.load(from) : from;
+            next = typeof from === "string" ? Session.load(from) : from;
         } catch (e) {
             this.notice(`Could not resume: ${(e as Error).message}`, "error");
             // Stay in the current conversation; at startup there's none yet.
             if (!prev) this.session = Session.create(this.cwd);
             return;
         }
+        if (prev) this.leaveHeld();
+        this.session = next;
+        if (prev) this.leaveBackground(prev);
         prev?.release();
-        this.toolState.fileState.clear();
-        this.toolState.todos = [];
+        this.bindBackground();
+        stopWatchers(this.toolState);
+        this.toolState.wakes?.drainRunning();
+        resetToolState(this.toolState, this.session.messages);
         this.toolState.secrets?.clear();
+        this.leaveBrowser();
         this.checker.resetSession();
         if (this.agent) this.makeAgent();
         this.replayTranscript();
         this.restoreSavedQueue();
-        // At startup, run() fires SessionStart.
-        if (prev) this.sessionSwitched(prev, "resume");
+        this.bindGoal();
+        // At startup, run() fires SessionStart (and restores its schedules).
+        if (prev) {
+            this.schedules.switchSession();
+            this.sessionSwitched(prev, "resume");
+        }
+    }
+
+    /**
+     * The session's background list (src/agent/background.ts), from its log: what ran when Harness last quit on
+     * it is said once here, and to the agent with the next prompt.
+     */
+    private bindBackground() {
+        if (this.toolState.background && this.boundBackground === this.session) return;
+        this.boundBackground = this.session;
+        this.adopts = [];
+        this.toolState.background = new SessionBackground(this.session, Date.now, this.toolState.shells);
+        this.toolState.background.onChange(() => this.persistBackground());
+        const lost = this.toolState.background.shown().filter((t) => t.lost);
+        if (lost.length) this.notice(`${lost.length === 1 ? "This background task" : `These ${lost.length} background tasks`} stopped when Harness quit: ${lost.map((t) => describeTask(t)).join("; ")}.`, "warn");
+    }
+
+    private boundBackground?: Session;
+
+    /** Leaving the session (/new, /resume): its list as it is now goes to its log, and the shells that run on aren't its any more. */
+    private leaveBackground(session = this.session) {
+        if (!this.toolState.background || this.boundBackground !== session) return;
+        this.persistBackground();
+        leaveShells(session, this.toolState.shells);
+        // The Agent is replaced next (makeAgent), and the tasks it delegated stop with it.
+        if (this.agent && this.model && this.client) leaveDelegated(session, this.agent.delegatedTasks);
+    }
+
+    /** While a shell runs: looks at the background list now and then, so one that ends while idle is kept and said. */
+    private backgroundTimer?: ReturnType<typeof setInterval>;
+
+    /** Keep the background list in the session log (what started, what ended), and say what ended on its own. */
+    private persistBackground() {
+        const shellsRunning = [...this.toolState.shells.values()].some((s) => s.exitCode === null);
+        if (shellsRunning && !this.backgroundTimer && !this.exiting) {
+            this.backgroundTimer = setInterval(() => this.persistBackground(), backgroundPoll.ms);
+            this.backgroundTimer.unref?.();
+        } else if (!shellsRunning && this.backgroundTimer) {
+            clearInterval(this.backgroundTimer);
+            this.backgroundTimer = undefined;
+        }
+        const delegated = this.agent?.delegatedTasks;
+        const ended = this.toolState.background?.sync({ delegated, shells: this.toolState.shells }) ?? [];
+        // A delegated task's end is said already, with where its result goes (Agent.deliverTasks). None with the
+        // agentCli.liveSessions kill switch off, as before.
+        if (this.settings.agentCli?.liveSessions === false) return;
+        for (const t of ended) if (!delegated?.some((d) => d.id === t.id)) this.notice(redact(endedText(t)), t.status === "failed" ? "warn" : "info");
+    }
+
+    /** Turns agent CLIs started by themselves, waiting for the session to be free to adopt them (wake). */
+    private adopts: BackendWake[] = [];
+
+    /** An agent CLI started a turn by itself: it becomes a wake turn, when nothing else runs. */
+    adoptWake(w: BackendWake) {
+        if (this.exiting) return;
+        // From the process an account change is letting go of: not taken over under the new account.
+        if (this.releasing.has(w.provider)) return this.dropAdopt(w);
+        this.adopts.push(w);
+        this.wake();
+    }
+
+    /** Agent CLIs whose process for this session an account change is letting go of (setAccount), with how many such releases are under way. */
+    private releasing = new Map<string, number>();
+
+    /**
+     * As the desktop's (Runtime.dropAdopt): a turn a CLI started by itself in the process an account change lets go
+     * of isn't taken over (#408). What it reported is shown and told to the model; a message of the user's it answers
+     * goes back to the prompt if nothing's typed there, to history (↑) if something is, as a blocked one does.
+     */
+    private dropAdopt(w: BackendWake) {
+        this.adopts = this.adopts.filter((x) => x !== w);
+        if (!w.prompt) return void this.agent?.dropAdopt(w);
+        if (!w.label?.trim()) return;
+        const back: Draft = { text: w.label, attachments: new Map() };
+        const name = getProvider(w.provider)?.name ?? w.provider;
+        const free = this.editor.isEmpty && this.inputMode === "prompt";
+        if (free) this.editor.restore([back]);
+        else this.editor.pushHistory(w.label, back);
+        const message = `${name} was restarted for the account change before it answered your message. ${free ? "It's back in the prompt" : "It's in history (↑)"}, to send again.`;
+        this.session.recordNotice("warn", message);
+        this.notice(message, "warn");
+        this.renderLive();
+    }
+
+    /** A controller for the current session's /goal; a resumed session's goal comes back paused. */
+    private bindGoal() {
+        if (this.goalSession === this.session) return;
+        this.goal?.dispose();
+        this.goalSession = this.session;
+        // A CLI's own goal was the last session's: this one's comes with its next turn. So was one it left paused.
+        this.nativeGoal = undefined;
+        this.goalLeft = undefined;
+        const session = this.session;
+        this.goal = new GoalController({
+            session,
+            tokens: () => sessionTokens(session),
+            canJudge: () => this.helperAnswers(),
+            judge: (system, prompt, signal) => this.complete(system, prompt, signal),
+            backgroundRunning: () => backgroundWork(this.agent?.delegatedTasks, this.toolState.shells),
+            idle: () => !this.busy && !this.queued.length && !this.pendingSubmit && this.session === session,
+            notice: (text, level) => {
+                session.recordNotice(level, text);
+                if (text.startsWith("✓")) this.screen.print((cols) => text.split("\n").flatMap((line) => wrapLine(line, cols - 6)).map((l, i) => (i === 0 ? `  ⎿  ${theme.success(l)}` : `     ${theme.muted(l)}`)));
+                else this.notice(text, level);
+            },
+            changed: () => this.goalChanged(),
+            alert: (kind, _text, elapsed) => void this.notifier.notify(kind, elapsed),
+            startTurn: (prompt, display) => void this.startTurn(prompt, { display, kind: "command", goal: true }),
+        });
+        if (session.goal) {
+            this.goal.restore(session.goal);
+            if (!this.dropLoopGoal()) this.notice(`◎ Goal restored: ${sentence(truncate(session.goal.condition.replace(/\s+/g, " "), 200))} It continues after your next message, or /goal resume.`);
+        }
+    }
+
+    /** Claude Code and Codex keep goals of their own (and get /goal): the loop's goal doesn't go on with them. True if one was dropped. */
+    private dropLoopGoal(): boolean {
+        const provider = this.model?.provider;
+        if (!nativeGoals(provider)) return false;
+        const dropped = this.goal?.clear();
+        const said = dropped && loopGoalDropped(dropped, provider!);
+        if (said) {
+            this.session.recordNotice("info", said);
+            this.notice(said);
+        }
+        return Boolean(dropped);
+    }
+
+    /** Whether one-off requests (titles, the /goal check) have a model that answers them: not Claude Code or Codex, which run whole turns only. */
+    helperAnswers(): boolean {
+        return canAnswerOneOff(this.settings.smallModel, this.model?.provider);
+    }
+
+    /** A goal check or retry is coming: the session isn't free for other automatic prompts (scheduled ones). */
+    goalPending(): boolean {
+        return this.goal?.pending() ?? false;
+    }
+
+    /** /goal clear: a /goal <condition> sent mid-turn, still waiting in the queue, goes too. Their conditions. */
+    dropQueuedGoals(): string[] {
+        const dropped = this.queued.flatMap((d) => {
+            const c = queuedGoalSet(plainText(d.text));
+            return c === undefined ? [] : [{ d, c }];
+        });
+        if (!dropped.length) return [];
+        this.queued = this.queued.filter((d) => !dropped.some((x) => x.d === d));
+        this.queueUpdated();
+        return dropped.map((x) => x.c);
+    }
+
+    /** Claude Code's or Codex's own goal, as it last reported it (src/agent/goal.ts NativeGoal). */
+    nativeGoal?: NativeGoal;
+    /** A CLI's goal paused as the session switched away from that CLI (#412): shown again, with how to go on, back on it. */
+    private goalLeft?: NativeGoal;
+
+    /**
+     * The model switched from provider `from` to `to`. A CLI's own goal stays with that CLI: another provider doesn't
+     * carry it on, and one going on pauses there, so the CLI starts no turns of its own for it while the session is on
+     * another model (its background work goes on). Back on that CLI, a goal left paused shows again, and how to go on is
+     * said. As the app's server does (Runtime.switchNativeGoal).
+     */
+    private async switchNativeGoal(from: string | undefined, to: ModelInfo) {
+        const had = this.nativeGoal;
+        if (had && had.provider !== to.provider) this.nativeGoal = undefined;
+        const left = this.goalLeft;
+        if (left && left.provider === to.provider) {
+            this.goalLeft = undefined;
+            this.nativeGoal = left;
+            const message = nativeGoalBack(left);
+            this.session.recordNotice("info", message);
+            this.notice(message);
+        }
+        if (from && from !== to.provider && nativeGoals(from) && this.agent) {
+            const name = getProvider(from)?.name ?? from;
+            let paused: NativeGoal | undefined;
+            try {
+                paused = await this.agent.pauseNativeGoal(from);
+            } catch (e) {
+                const message = `Couldn't pause ${name}'s goal (${redact((e as Error).message)}). ${name} may go on with it by itself; its turns aren't taken up while this session is on another model.`;
+                this.session.recordNotice("warn", message);
+                this.notice(message, "warn");
+            }
+            if (paused) {
+                const background = this.agent.backgroundTasks().filter((t) => t.provider === from && t.status === "running").length;
+                const message = nativeGoalLeft(paused, background);
+                this.session.recordNotice("info", message);
+                this.notice(message);
+            }
+            const kept = paused ?? (had?.provider === from && had.status === "paused" ? had : undefined);
+            if (kept) this.goalLeft = kept;
+        }
+    }
+
+    /** After the running turn has been stopped: the /goal command that stopped it (clear, pause), sent to the CLI then. */
+    private afterStop?: string;
+
+    /** /goal goes to the session's agent CLI (Claude Code, Codex) rather than the loop here. */
+    nativeGoals(): boolean {
+        return nativeGoals(this.model?.provider);
+    }
+
+    /**
+     * /goal on Claude Code or Codex: what needs no turn is answered here, a clear or pause mid-turn stops the
+     * turn and is sent after. False: it's sent to the CLI as it is (queued while a turn runs).
+     */
+    nativeGoalCommand(text: string, args: string): boolean {
+        const c = parseGoalCommand(args);
+        if (c.kind === "invalid") {
+            this.notice(c.message, "error");
+            return true;
+        }
+        if (this.model?.provider === "claude-code" && (c.kind === "pause" || c.kind === "resume")) {
+            this.notice(c.kind === "pause" ? "Claude Code's goals don't pause: press esc to stop the turn (it carries on with your next message), or /goal clear." : "Claude Code carries on with the goal when you send a message.");
+            return true;
+        }
+        if (!this.busy) return false;
+        if (c.kind === "status") {
+            this.notice(nativeGoalStatus(this.nativeGoal, true));
+            return true;
+        }
+        if (c.kind === "clear" || c.kind === "pause") {
+            this.afterStop = text;
+            this.interrupt();
+            return true;
+        }
+        return false;
+    }
+
+    private nativeGoalReported(g: NativeGoal | null) {
+        const end = g && nativeGoalEnd(g);
+        if (end) {
+            // Said once, as it ends: Codex still reports a met goal at the start of later runs.
+            if (this.nativeGoal?.condition === g!.condition) {
+                const failed = g!.status === "failed";
+                this.session.recordNotice(failed ? "warn" : "info", end);
+                this.screen.print((cols) => ["", ...end.split("\n").flatMap((line, i) => wrapLine(line, cols - 6).map((l, j) => (i === 0 && j === 0 ? `  ⎿  ${failed ? theme.warning(l) : theme.success(l)}` : `     ${theme.muted(l)}`)))]);
+            }
+            g = null;
+        }
+        this.nativeGoal = g ?? undefined;
+        this.renderLive();
+    }
+
+    private goalChanged() {
+        // A check or a wait has a spinner and a clock of its own while no turn runs.
+        if (this.goal?.pending() && !this.busy) this.startTicker();
+        else if (!this.busy) this.stopTicker();
+        this.renderLive();
+    }
+
+    /** The line under the output while a goal is set. */
+    private goalLine(cols: number): string | undefined {
+        const v = this.goal?.view() ?? (this.nativeGoal ? nativeGoalView(this.nativeGoal, this.busy) : undefined);
+        if (!v) return undefined;
+        if (v.judge === "native") {
+            const turns = v.turns ? ` · ${v.turns} check${v.turns === 1 ? "" : "s"}` : "";
+            if (v.state === "paused") return truncate(`${theme.muted(`◎ /goal (${v.by})`)} ${theme.subtle(`· ${v.note ?? "paused"} · /goal clear removes it`)}`, cols - 1);
+            return truncate(`${theme.accent(`◎ /goal active (${v.by})`)} ${theme.muted(`· ${formatDuration(Date.now() - v.since)}${turns}`)}`, cols - 1);
+        }
+        const clock = formatDuration(Date.now() - v.since);
+        const turns = v.turns ? ` · ${v.turns} check${v.turns === 1 ? "" : "s"}` : "";
+        if (v.state === "paused") return truncate(`${theme.muted("◎ /goal paused")} ${theme.subtle(`· send a message or /goal resume to continue · /goal clear removes it`)}`, cols - 1);
+        if (v.state === "checking" || v.state === "waiting") {
+            const glyph = SPINNER_FRAMES[this.frame % SPINNER_FRAMES.length]!;
+            const what = v.state === "checking" ? "Checking the goal…" : v.retryAt ? `Retrying in ${formatDuration(Math.max(0, v.retryAt - Date.now()))}` : "Waiting for background tasks before checking the goal";
+            return truncate(`${theme.accent(glyph)} ${theme.accent(what)} ${theme.muted(`(${clock}${turns} · ${(this.keys.label("chat:cancel") ?? "esc").replace(/^escape$/, "esc")} to pause)`)}`, cols - 1);
+        }
+        return truncate(`${theme.accent("◎ /goal active")} ${theme.muted(`· ${clock}${turns}`)}`, cols - 1);
     }
 
     /** /clear or /resume: SessionEnd for the old session, then SessionStart for the new one. */
     private sessionSwitched(prev: Session, how: "clear" | "resume") {
         const id = this.session.meta.id;
-        void this.sessionHook("SessionEnd", { session_id: prev.meta.id, reason: how }).then(() => this.sessionHook("SessionStart", { session_id: id, source: how }));
+        const session = this.session;
+        const switched = this.sessionHook("SessionEnd", { session_id: prev.meta.id, reason: how }).then(() => (this.session === session ? this.sessionHook("SessionStart", { session_id: id, source: how }) : undefined));
+        // A prompt sent while SessionEnd still runs waits for SessionStart's context too.
+        session.hooksStarting = switched.catch(() => undefined);
     }
 
     /** SessionStart and SessionEnd hooks only inform: they run in the background, and problems show as notices. */
-    private sessionHook(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
-        return fireHooks(this.settings, event, { session_id: this.session?.meta.id, ...payload }, this.toolState.cwd, (msg) => this.notice(msg, "warn"), signal);
+    private async sessionHook(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal, settings = sessionHookSettings(this.settings, this.model?.provider)): Promise<void> {
+        // SessionStart also loads memory files (InstructionsLoaded) and keeps its context for the first prompt.
+        if (event === "SessionStart") {
+            const warn = (msg: string, level: "info" | "warn" = "warn") => this.notice(msg, level);
+            // A second batch (the plugins', once the model is known) adds to what the first prompt waits for.
+            const before = this.session.hooksStarting;
+            const started = sessionStartHooks(settings, this.session, String(payload.source), this.toolState.cwd, warn, sessionHookServices({ session: () => this.session, warn, complete: this.client ? (s, p, sig) => this.complete(s, p, sig) : undefined, mcpTools: () => this.mcp.tools(), mcpReady: () => Promise.race([this.mcpStarting, Bun.sleep(MCP_START_WAIT_MS)]) }));
+            if (before) this.session.hooksStarting = Promise.all([before, this.session.hooksStarting]).then(() => {});
+            return started;
+        }
+        await fireHooks(settings, event, { session_id: this.session?.meta.id, ...payload }, this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level), signal);
     }
 
     private replayTranscript() {
@@ -674,13 +1311,16 @@ export class App {
                     const n = notices[next]!;
                     const color = n.level === "error" ? theme.error : n.level === "warn" ? theme.warning : theme.muted;
                     out.push(...wrapLine(n.text, cols - 6).map((l, i) => (i === 0 ? `  ⎿  ` : "     ") + color(l)));
+                    // Its details (the background tasks it stopped): a short line each, under it.
+                    for (const d of n.details ?? []) out.push(`     ${theme.muted(truncate(`· ${d}`, cols - 6))}`);
                 }
             };
             tail.forEach((m, i) => {
                 noticesUpTo(from + i);
                 if (m.role === "user") {
                     const kind = m.meta?.kind ?? "prompt";
-                    if (kind === "prompt" || kind === "summary") {
+                    if (kind === "wake") out.push("", ...wrapLine(theme.muted("↻ ") + theme.subtle(truncate(m.meta?.display ?? "", cols * 2)), cols - 2));
+                    else if (kind === "prompt" || kind === "summary") {
                         const t = (m.meta?.display ?? textOf(m)).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
                         if (t) out.push("", ...wrapLine(theme.muted("> ") + truncate(t, cols * 3), cols - 2));
                         const note = attachmentsNote(m.content);
@@ -688,8 +1328,17 @@ export class App {
                     }
                 } else {
                     // A Claude Code or Codex turn ends with what it did ("[Codex used: …]"): shown as its actions, one a line.
-                    const { text: t, actions } = splitActionsNote(m);
-                    if (t) {
+                    // Replay one Markdown document for the answer, even when the
+                    // history tail begins halfway through its continuation chain.
+                    const at = from + i;
+                    const link = msgs[at + 1];
+                    const continues = link?.role === "user" && link.meta?.kind === "continuation" && msgs[at + 2]?.role === "assistant";
+                    const previous = msgs[at - 1];
+                    const display = previous?.role === "user" && previous.meta?.kind === "continuation"
+                        ? { ...m, content: [{ type: "text" as const, text: assistantText(msgs.slice(0, at - 1)) }, ...m.content] }
+                        : m;
+                    const { text: t, actions } = splitActionsNote(display);
+                    if (t && !continues) {
                         const md = renderMarkdown(t, cols - 2);
                         out.push("", ...md.slice(0, 30).map((l, i) => (i === 0 ? `${BULLET} ` : "  ") + l));
                         if (md.length > 30) out.push(theme.subtle(`  … +${md.length - 30} lines`));
@@ -719,7 +1368,7 @@ export class App {
 
     notice(msg: string, level: "info" | "warn" | "error" = "info") {
         const color = level === "error" ? theme.error : level === "warn" ? theme.warning : theme.muted;
-        this.screen.print((cols) => wrapLine(msg, cols - 6).map((l, i) => (i === 0 ? `  ⎿  ` : "     ") + color(l)));
+        this.screen.print((cols) => msg.split("\n").flatMap((line) => wrapLine(line, cols - 6)).map((l, i) => (i === 0 ? `  ⎿  ` : "     ") + color(l)));
     }
 
     private printUser(text: string) {
@@ -728,6 +1377,11 @@ export class App {
             const shown = body.length > 12 ? [...body.slice(0, 10), theme.subtle(`… +${body.length - 10} lines`)] : body;
             return ["", ...shown.map((l, i) => (i === 0 ? theme.muted("> ") : "  ") + theme.user(l))];
         });
+    }
+
+    /** A turn an event started (a watched PR): one dim line, not a prompt of the user's. */
+    private printWake(label: string) {
+        this.screen.print((cols) => ["", ...wrapLine(theme.muted("↻ ") + theme.subtle(label), cols - 2)]);
     }
 
     private printAssistant(lines: string[]) {
@@ -756,6 +1410,7 @@ export class App {
         this.mdLines = 0;
         this.mdEntries = [];
         this.mdSource = "";
+        this.continuationSource = undefined;
         this.flushThinking();
     }
 
@@ -775,7 +1430,7 @@ export class App {
             const lines = thinkingLines(t, cols);
             const shown = lines.slice(0, max);
             const out = ["", ...shown.map((l, i) => (i === 0 ? theme.muted("✻ ") : "  ") + italic(theme.muted(l)))];
-            if (lines.length > max) out.push(theme.subtle(`  … +${lines.length - max} lines (ctrl+o to show more next time)`));
+            if (lines.length > max) out.push(theme.subtle(`  … +${lines.length - max} lines (${this.keys.label("app:toggleTranscript") ?? "/config"} to show more next time)`));
             return out;
         });
     }
@@ -791,12 +1446,15 @@ export class App {
                 this.status = e.text;
                 break;
             case "request_start":
+                if (!e.continuation && this.continuationSource !== undefined) this.flushStream();
                 this.status = undefined;
                 this.thinkingNow = false;
                 break;
             case "text": {
                 this.thinkingNow = false;
-                if (this.thinking) this.flushThinking();
+                // Reasoning between continuation fragments must not split their Markdown
+                // (the previous fragment can end inside a line or a code fence).
+                if (this.thinking && this.continuationSource === undefined) this.flushThinking();
                 if (!this.md) {
                     this.mdCols = termCols();
                     this.md = new MarkdownStream(this.mdCols - 2);
@@ -814,7 +1472,7 @@ export class App {
                 break;
             case "tool_call_start":
                 this.thinkingNow = false;
-                this.flushStream();
+                if (this.continuationSource === undefined) this.flushStream();
                 this.receiving.set(e.id, { name: e.name, chars: 0 });
                 break;
             case "tool_call_delta": {
@@ -825,7 +1483,7 @@ export class App {
             }
             case "server_tool":
                 this.thinkingNow = false;
-                this.flushStream();
+                if (this.continuationSource === undefined) this.flushStream();
                 if (e.name === "web_search") this.screen.print(["", toolLine("Web Search", "ok")]);
                 else if (e.name === "web_search_result") {
                     const detail = e.detail;
@@ -833,9 +1491,11 @@ export class App {
                 }
                 break;
             case "assistant": {
-                this.flushStream();
+                if (e.message.stopReason === "max_tokens" && !e.message.content.some((p) => p.type === "tool_call")) {
+                    this.continuationSource = this.mdSource;
+                } else this.flushStream();
                 this.receiving.clear();
-                const t = textOf(e.message).trim();
+                const t = (e.answer ?? textOf(e.message)).trim();
                 if (t) this.lastResponse = t;
                 break;
             }
@@ -862,14 +1522,21 @@ export class App {
                 if (a && e.title) a.title = e.title;
                 this.printToolResult(e.call, e.result, e.durationMs);
                 this.active.delete(e.call.id);
+                // A shell it started (or stopped) is in the list now, and looked at from here on, not from the turn's end.
+                this.persistBackground();
                 break;
             }
             case "notice":
-                this.flushStream();
+                // An in-flight continuation can still fail after a tool header or
+                // notice; keep the accepted prefix and renderer available to retry.
+                if (this.continuationSource === undefined) this.flushStream();
                 this.notice(e.message, e.level);
                 break;
             case "retry":
                 if (this.md?.hasContent || this.mdLines) this.notice("(connection problem; the partial response above was discarded and is being retried)", "warn");
+                // A retry discards only this request's partial output. Rebuild the
+                // renderer with the accepted prefix, including its open Markdown state.
+                if (this.continuationSource !== undefined) this.screen.replace(this.mdEntries, []);
                 this.md = undefined;
                 this.mdLines = 0;
                 this.mdEntries = [];
@@ -877,7 +1544,19 @@ export class App {
                 this.thinking = "";
                 this.thinkingNow = false;
                 this.receiving.clear();
+                if (this.continuationSource !== undefined) {
+                    this.mdCols = termCols();
+                    this.md = new MarkdownStream(this.mdCols - 2);
+                    this.mdSource = this.continuationSource;
+                    this.printAssistant(this.md.push(this.mdSource));
+                    this.screen.redraw();
+                }
                 this.status = `${e.reason.slice(0, 80)} · retrying in ${Math.ceil(e.delayMs / 1000)}s (attempt ${e.attempt})`;
+                break;
+            case "goal":
+                // Not from a CLI the session has switched away from (its goal paused there as the switch went through).
+                if (e.goal && e.goal.provider !== this.model?.provider) break;
+                this.nativeGoalReported(e.goal);
                 break;
             case "cli_commands":
                 this.cliCommands = { provider: e.provider, names: new Set(e.names) };
@@ -895,10 +1574,10 @@ export class App {
                 this.thinkingNow = false;
                 break;
             case "compact_start":
-                this.verb = "Compacting conversation";
+                this.verb = e.idle ? "Compacting while idle" : "Compacting conversation";
                 break;
             case "compact_end":
-                this.screen.print(["", theme.muted(`✻ Conversation compacted · ${this.verbose ? "summary below" : "/summary to view the summary"}`)]);
+                this.screen.print(["", theme.muted(e.idle ? `✻ Compacted while idle, before the prompt cache expired · ${this.verbose ? "summary below" : "/summary to view"} · /config to turn off` : `✻ Conversation compacted · ${this.verbose ? "summary below" : "/summary to view the summary"}`)]);
                 if (this.verbose) {
                     const summary = e.summary;
                     this.screen.print((cols) => renderMarkdown(summary, cols - 4).map((l) => "  " + dim(l)));
@@ -947,7 +1626,7 @@ export class App {
         }
     }
 
-    private printToolResult(call: ToolCallPart, result: { content: string; isError?: boolean; display?: { summary?: string; body?: string; diff?: { path: string; before: string; after: string } } }, durationMs: number) {
+    private printToolResult(call: ToolCallPart, result: { content: string; isError?: boolean; display?: ToolDisplay }, durationMs: number) {
         const a = this.active.get(call.id);
         const title = a?.title ?? call.name;
         const tool = a?.tool;
@@ -983,6 +1662,7 @@ export class App {
                 out.push(theme.muted(`  ⎿  ${d.summary ?? "Updated"}`));
                 const body = before ? renderDiff(path, before, after, cols - 6, { maxLines: verbose ? 400 : 24 }) : renderFilePreview(path, after, cols - 6, verbose ? 400 : 10);
                 out.push(...body.map((l) => "     " + l));
+                if (d.diagnostics) out.push(...renderDiagnostics(d.diagnostics, cols, verbose ? 40 : 3));
             } else if (d?.body !== undefined || call.name === "Bash" || call.name === "BashOutput") {
                 // With a display, its body is what to show (none: the summary says it all).
                 const body = d ? (d.body ?? "") : result.content;
@@ -1015,7 +1695,11 @@ export class App {
     pushDialog(d: Dialog) {
         // A sub-agent must never redirect keystrokes meant for a masked input
         // into a permission or question. All interactive dialogs share the queue.
-        if (this.dialogs.length || this.dialogQueue.length) this.dialogQueue.push(d);
+        // A progress box waits on work that may itself need an answer: that question
+        // goes on top of it, or the two would wait on each other.
+        const top = this.dialogs[this.dialogs.length - 1];
+        if (top?.yields) this.dialogs.push(d);
+        else if (this.dialogs.length || this.dialogQueue.length) this.dialogQueue.push(d);
         else this.dialogs.push(d);
         this.renderLive();
     }
@@ -1031,6 +1715,7 @@ export class App {
                 const next = this.dialogQueue.shift();
                 if (next) this.dialogs.push(next);
                 this.renderLive();
+                if (!next) this.schedules.poke();
             });
         }
         this.renderLive();
@@ -1054,8 +1739,8 @@ export class App {
         let hiddenNote = "";
 
         if (req.agentLabel) header.push(theme.muted(`Requested by sub-agent: ${req.agentLabel}`), "");
-        if (tool.name === "Bash") {
-            title = req.secrets?.length ? "Bash command with secrets" : "Bash command";
+        if (isShellTool(tool.name)) {
+            title = tool.name === "Monitor" ? "Monitor command" : req.secrets?.length ? "Bash command with secrets" : "Bash command";
             const cmd = String(input.command ?? "");
             const { highlightCode } = await import("./highlight");
             const lines = highlightCode(cmd, "sh");
@@ -1096,6 +1781,19 @@ export class App {
             header.push(bold(String(input.url ?? "")));
             if (input.prompt) header.push(theme.muted(String(input.prompt).slice(0, 200)));
             if (suggestions.length) items.push({ label: `Yes, and don't ask again for ${bold(suggestions[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1"))}`, value: "always" });
+        } else if (BROWSER_TOOL_HEADINGS[tool.name]) {
+            title = BROWSER_TOOL_HEADINGS[tool.name]!;
+            header.push(bold(tool.name === "BrowserNavigate" ? String(input.url ?? "") : req.title));
+            if (req.preview?.summary && tool.name !== "BrowserNavigate") header.push(theme.muted(req.preview.summary));
+            if (req.preview?.body) header.push("", ...req.preview.body.split("\n").slice(0, 12).map((l) => "  " + l));
+            if (suggestions.length) items.push({ label: tool.name === "BrowserNavigate" ? `Yes, and don't ask again for ${bold(suggestions[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1"))}` : `Yes, and don't ask again for ${bold(tool.name)} in ${bold(projectName)}`, value: "always" });
+        } else if (GIT_TOOL_HEADINGS[tool.name]) {
+            title = GIT_TOOL_HEADINGS[tool.name]!;
+            if (req.preview?.summary) header.push(theme.muted(req.preview.summary));
+            const body = (req.preview?.body ?? "").split("\n");
+            if (req.preview?.body) header.push("", ...body.slice(0, 16).map((l) => "  " + l));
+            if (body.length > 16) header.push(theme.subtle(`  … +${body.length - 16} lines`));
+            if (suggestions.length) items.push({ label: `Yes, and don't ask again for ${bold(tool.name)} in ${bold(projectName)}`, value: "always" });
         } else if (tool.category === "mcp") {
             title = "MCP tool";
             header.push(bold(req.title));
@@ -1107,7 +1805,7 @@ export class App {
             header.push(bold(req.title));
         }
         if (decision.dangerous) header.unshift(theme.error(`⚠ ${decision.reason ?? "This action is potentially destructive."}`), "");
-        else if (decision.reason && tool.name !== "Bash") header.push("", theme.muted(decision.reason));
+        else if (decision.reason && !isShellTool(tool.name)) header.push("", theme.muted(decision.reason));
         if (req.classifierReason) header.push("", theme.autoMode(`Auto mode asked you because: ${req.classifierReason}`));
         // What it does in a line, above the command, marked as the model's.
         if (req.summary) header.unshift(theme.muted("AI summary: ") + bold(req.summary) + (hiddenNote ? theme.warning(hiddenNote) : ""), "");
@@ -1171,17 +1869,34 @@ export class App {
         return signal.aborted ? undefined : value;
     }
 
+    /** How what MCP servers ask for (forms, sampling) reaches the user outside a tool call: @-mentions, prompts. */
+    mcpAsker(): McpAsker {
+        return {
+            askQuestion: (q, opts, multi) => this.askQuestion(q, opts, multi),
+            sample: this.sampler(),
+            warn: (m) => this.notice(m, "warn"),
+        };
+    }
+
     private async askQuestion(question: string, options: { label: string; description?: string }[], multi: boolean): Promise<string[] | undefined> {
         const OTHER = "\u0000other";
+        // A title is one line: the rest (an MCP server's form puts its message and the field on separate lines) goes under it.
+        const [title = "", ...more] = question.split("\n");
+        const header = more.length ? more.map((l) => theme.muted(l)) : undefined;
+        void this.notifier.notify("question");
+        if (!options.length) {
+            // Nothing to pick from: straight to typing the answer.
+            const text = await this.showDialog(new InputDialog({ title, header, placeholder: "Your answer", color: theme.info }));
+            return text === undefined ? undefined : [text];
+        }
         const items: SelectItem<string>[] = options.map((o) => ({ label: o.label, value: o.label, description: o.description }));
         items.push({ label: theme.muted("Type something else…"), value: OTHER });
-        const d = new SelectDialog<string>({ title: question, items, multi, numbers: true, color: theme.info });
-        void this.notifier.notify("question");
+        const d = new SelectDialog<string>({ title, header, items, multi, numbers: true, color: theme.info });
         const r = await this.showDialog(d);
         if (r === undefined) return undefined;
         const arr = Array.isArray(r) ? r : [r];
         if (arr.includes(OTHER)) {
-            const text = await this.showDialog(new InputDialog({ title: question, placeholder: "Your answer", color: theme.info }));
+            const text = await this.showDialog(new InputDialog({ title, header, placeholder: "Your answer", color: theme.info }));
             if (text === undefined) return undefined;
             return [...arr.filter((x) => x !== OTHER), text];
         }
@@ -1218,6 +1933,11 @@ export class App {
 
     private onKey(k: Key) {
         const top = this.dialogs[this.dialogs.length - 1];
+        // Exiting: only the worktree question takes keys; nothing new may start in the worktree being checked.
+        if (this.leaving && !top) {
+            if (k.ctrl && k.name === "c") void this.exit(0, { signal: true });
+            return;
+        }
         if (top) {
             if (k.ctrl && k.name === "c" && this.busy) {
                 // cancel the prompt and the turn
@@ -1235,6 +1955,8 @@ export class App {
 
     private interrupt() {
         if (!this.busy) return;
+        // Stopped by the user: what watches wake it again only once they send something.
+        this.toolState.wakes?.pause();
         this.abort?.abort();
         for (const d of [...this.dialogs, ...this.dialogQueue]) d.cancel();
         this.status = "Interrupting";
@@ -1244,18 +1966,9 @@ export class App {
         const e = this.editor;
         const n = k.name;
         if (this.pendingSubmit && ((k.ctrl && n === "c") || n === "escape")) return this.pendingSubmit.cancel();
-        const menu = this.completions();
-        if (menu && menu.items.length) {
-            if (n === "up") return void (this.menuIndex = (this.menuIndex - 1 + menu.items.length) % menu.items.length);
-            if (n === "down") return void (this.menuIndex = (this.menuIndex + 1) % menu.items.length);
-            if (n === "tab" && !k.shift) return this.applyCompletion(menu, false);
-            if (n === "enter" && !k.shift && !k.meta && !k.ctrl) return this.applyCompletion(menu, true);
-            if (n === "escape") {
-                this.menuHiddenFor = e.text;
-                return;
-            }
-        }
+        // Ctrl+C and Ctrl+D can't be rebound: they always get you out.
         if (k.ctrl && n === "c") {
+            this.dropChord();
             if (this.busy) return this.interrupt();
             if (!e.isEmpty || this.inputMode !== "prompt") {
                 e.clear();
@@ -1269,47 +1982,172 @@ export class App {
             return;
         }
         if (k.ctrl && n === "d") {
+            this.dropChord();
             if (e.isEmpty && !this.busy) return void this.exit(0);
             return e.del();
         }
-        if (n === "escape") {
-            if (this.busy) {
-                // An Esc meant to cancel a queued follow-up must not kill the running turn.
-                if (this.queued.length && Date.now() - this.takeBackBlockedAt >= 3000) return this.takeBackQueued();
-                this.takeBackBlockedAt = 0;
-                return this.interrupt();
-            }
-            if (this.showHelp) return void (this.showHelp = false);
-            if (Date.now() - this.escAt < 800) {
-                this.escAt = 0;
-                this.flash = undefined;
-                if (!e.isEmpty) {
-                    e.clear();
-                    this.inputMode = "prompt";
-                } else if (this.inputMode === "prompt") void runCommand(this, "/rewind");
-                return;
-            }
-            this.escAt = Date.now();
-            if (!e.isEmpty) this.flash = { text: "Esc again to clear", until: Date.now() + 800 };
-            else if (this.inputMode === "prompt" && rewindTargets(this.session.messages).length) this.flash = { text: "Esc again to rewind", until: Date.now() + 800 };
+        const menu = this.completions();
+        // Enter on the / and @ menu takes the suggestion, whatever Enter is bound to.
+        if (n === "enter" && menu?.items.length && !k.shift && !k.meta && !k.ctrl && !this.chordHeld.length) return this.applyCompletion(menu, true);
+        const stroke = tuiStroke(k);
+        if (!stroke) {
+            this.flushChord(menu);
+            return this.fixedKey(k, menu);
+        }
+        const r = this.keys.matcher.match(stroke, menu?.items.length ? ["Autocomplete", "Chat", "Global"] : ["Chat", "Global"]);
+        if (r.kind === "pending") {
+            // A new chord after one that went nowhere: the old one's keys first.
+            if (r.abandoned) for (const h of this.chordHeld.splice(0)) this.replayKey(h, menu);
+            this.chordHeld.push(k);
+            this.flash = { text: `${r.keys.replace(/ctrl\+enter/g, "ctrl+j")} … (waiting for the next key)`, until: Date.now() + CHORD_TIMEOUT_MS };
+            const token = ++this.chordToken;
+            // A chord left unfinished: its keys do what they'd do on their own.
+            setTimeout(() => {
+                if (token !== this.chordToken || this.keys.matcher.waiting) return;
+                // A dialog opened meanwhile: its keys aren't typed into the prompt behind it.
+                if (this.dialogs.length) return this.dropChord();
+                this.flushChord(this.completions());
+                this.renderLive();
+            }, CHORD_TIMEOUT_MS + 20);
             return;
         }
-        if (n === "tab" && k.shift) return this.cycleMode();
-        // While working: send it the other way (queue instead of steer, or steer instead of queue).
-        if (n === "tab" && !k.ctrl && !k.meta && this.busy && this.inputMode === "prompt" && e.text.trim()) return void this.submit(true);
-        if (n === "enter") {
-            if (k.shift || k.meta || k.ctrl) return e.insert("\n");
-            if (e.text.endsWith("\\") && e.cursor === e.text.length) {
-                e.backspace();
+        const held = this.chordHeld.splice(0);
+        if (held.length) this.flash = undefined;
+        if (r.abandoned) for (const h of held) this.replayKey(h, menu);
+        if (r.kind === "action") return this.runKeyAction(r.action, k, this.completions());
+        // Unbinding takes away an action, not the key's editing meaning (a GUI-only null can't break the prompt).
+        return this.fixedKey(k, held.length ? this.completions() : menu, r.kind === "none" && r.unbound);
+    }
+
+    /** The keys of an unfinished chord, as they'd be on their own. */
+    private flushChord(menu: ReturnType<App["completions"]>) {
+        const held = this.chordHeld.splice(0);
+        this.keys.matcher.reset();
+        this.chordToken++;
+        if (held.length && this.flash?.text.endsWith("(waiting for the next key)")) this.flash = undefined;
+        for (const h of held) this.replayKey(h, menu);
+    }
+
+    /**
+     * A key of a chord that went nowhere, on its own: its editing meaning, and
+     * the steer-or-queue key still sends (as it did before it was bindable), unless unbound.
+     */
+    private replayKey(k: Key, menu: ReturnType<App["completions"]>) {
+        const stroke = tuiStroke(k);
+        const contexts = menu?.items.length ? (["Autocomplete", "Chat", "Global"] as const) : (["Chat", "Global"] as const);
+        const id = stroke && strokeId(stroke);
+        const own = id ? contexts.map((c) => this.keys.keymap.table.get(c)?.get(id)).find((a) => a !== undefined) : undefined;
+        if (own === "chat:submitOtherWay") return this.runKeyAction(own, k, menu);
+        return this.fixedKey(k, menu, own === null);
+    }
+
+    private dropChord() {
+        if (!this.chordHeld.length) return;
+        this.chordHeld = [];
+        this.keys.matcher.reset();
+        this.chordToken++;
+        this.flash = undefined;
+    }
+
+    /** What a bound action does in the input box. */
+    private runKeyAction(action: string, k: Key, menu: ReturnType<App["completions"]>) {
+        const e = this.editor;
+        const items = menu?.items.length ? menu : undefined;
+        switch (action) {
+            case "autocomplete:accept":
+                return items && this.applyCompletion(items, false);
+            case "autocomplete:dismiss":
+                return void (this.menuHiddenFor = e.text);
+            case "autocomplete:previous":
+                return void (items && (this.menuIndex = (this.menuIndex - 1 + items.items.length) % items.items.length));
+            case "autocomplete:next":
+                return void (items && (this.menuIndex = (this.menuIndex + 1) % items.items.length));
+            case "chat:submit":
+                // Enter on an open menu takes the suggestion (and runs a command).
+                if (items) return this.applyCompletion(items, true);
+                if (e.text.endsWith("\\") && e.cursor === e.text.length) {
+                    e.backspace();
+                    return e.insert("\n");
+                }
+                return void this.submit();
+            case "chat:newline":
                 return e.insert("\n");
-            }
-            return void this.submit();
+            case "chat:submitOtherWay":
+                // Only while a turn runs, for a prompt with something in it; otherwise the key is as if unbound.
+                if (this.busy && this.inputMode === "prompt" && e.text.trim()) return void this.submit(true);
+                return this.fixedKey(k, menu);
+            case "chat:cancel":
+                return this.escapeKey();
+            case "chat:cycleMode":
+                return this.cycleMode();
+            case "chat:externalEditor":
+                return void this.externalEditor();
+            case "chat:imagePaste":
+                return void this.pasteClipboardImage();
+            case "chat:undo":
+                return e.undo();
+            case "history:previous":
+                // The arrow moves between the lines of a long prompt first.
+                if (k.name === "up" && !k.ctrl && !k.meta && e.up()) return;
+                if (e.historyPrev()) this.syncModeFromHistory();
+                return;
+            case "history:next":
+                if (k.name === "down" && !k.ctrl && !k.meta && e.down()) return;
+                if (e.historyNext()) this.syncModeFromHistory();
+                return;
+            case "app:toggleTranscript":
+                this.verbose = !this.verbose;
+                this.flash = { text: `Verbose output ${this.verbose ? "on" : "off"}`, until: Date.now() + 1500 };
+                return;
+            case "app:toggleTodos":
+                this.showTodos = !this.showTodos;
+                return;
+            case "app:redraw":
+                return this.screen.clearScreen();
         }
+    }
+
+    private escapeKey() {
+        const e = this.editor;
+        if (this.busy) {
+            // An Esc meant to cancel a queued follow-up must not kill the running turn.
+            if (this.queued.length && Date.now() - this.takeBackBlockedAt >= 3000) return this.takeBackQueued();
+            this.takeBackBlockedAt = 0;
+            return this.interrupt();
+        }
+        if (this.goal?.pending()) {
+            this.goal.pause("Stopped with esc. It continues after your next message, or /goal resume.");
+            this.notice("Goal paused. Send a message or /goal resume to continue; /goal clear removes it.", "warn");
+            return;
+        }
+        if (this.showHelp) return void (this.showHelp = false);
+        const again = this.keys.label("chat:cancel") ?? "esc";
+        if (Date.now() - this.escAt < 800) {
+            this.escAt = 0;
+            this.flash = undefined;
+            if (!e.isEmpty) {
+                e.clear();
+                this.inputMode = "prompt";
+            } else if (this.inputMode === "prompt") void runCommand(this, "/rewind");
+            return;
+        }
+        this.escAt = Date.now();
+        const name = again === "escape" ? "Esc" : again;
+        if (!e.isEmpty) this.flash = { text: `${name} again to clear`, until: Date.now() + 800 };
+        else if (this.inputMode === "prompt" && rewindTargets(this.session.messages).length) this.flash = { text: `${name} again to rewind`, until: Date.now() + 800 };
+    }
+
+    /** Keys that aren't bindings: typing and moving around the input box. */
+    private fixedKey(k: Key, menu: ReturnType<App["completions"]>, unbound = false) {
+        const e = this.editor;
+        const n = k.name;
+        if (n === "enter" && menu?.items.length && !k.shift && !k.meta && !k.ctrl) return this.applyCompletion(menu, true);
+        // Any other modified Enter nobody unbound adds a line, in terminals that tell them apart.
+        if (n === "enter" && (k.shift || k.meta || k.ctrl)) return unbound ? undefined : e.insert("\n");
         if (n === "paste" && k.paste !== undefined) return this.pasteInto(k.paste);
-        if (k.ctrl && !k.meta && n === "v") return void this.pasteClipboardImage();
         if (n === "text" && k.text) {
             if (e.isEmpty && this.inputMode === "prompt") {
-                if (k.text === "!" ) return void (this.inputMode = "bash");
+                if (k.text === "!") return void (this.inputMode = "bash");
                 if (k.text === "#") return void (this.inputMode = "memory");
                 if (k.text === "?") return void (this.showHelp = !this.showHelp);
             }
@@ -1332,28 +2170,22 @@ export class App {
         if (k.ctrl && n === "u") return e.killToStart();
         if (k.ctrl && n === "w") return e.killWordLeft();
         if (k.ctrl && n === "y") return e.yank();
-        if (k.ctrl && (n === "_" || n === "-")) return e.undo();
-        if (n === "up" || (k.ctrl && n === "p")) {
-            if (n === "up" && e.up()) return;
-            if (e.historyPrev()) this.syncModeFromHistory();
-            return;
-        }
-        if (n === "down" || (k.ctrl && n === "n")) {
-            if (n === "down" && e.down()) return;
-            if (e.historyNext()) this.syncModeFromHistory();
-            return;
-        }
-        if (k.ctrl && n === "o") {
-            this.verbose = !this.verbose;
-            this.flash = { text: `Verbose output ${this.verbose ? "on" : "off"}`, until: Date.now() + 1500 };
-            return;
-        }
-        if (k.ctrl && n === "t") {
-            this.showTodos = !this.showTodos;
-            return;
-        }
-        if (k.ctrl && n === "l") return this.screen.clearScreen();
-        if (k.ctrl && n === "g") return void this.externalEditor();
+    }
+
+    /** Keybindings problems, shown when the file loads or changes. */
+    private reportKeybindings(km: Keymap, status: "start" | "applied" | "kept") {
+        if (km.issues.length) {
+            const errors = km.issues.filter((i) => i.level === "error").length;
+            const warnings = km.issues.length - errors;
+            const counts = [errors && `${errors} error${errors === 1 ? "" : "s"}`, warnings && `${warnings} warning${warnings === 1 ? "" : "s"}`].filter(Boolean).join(", ");
+            const head = `${status === "kept" ? "Keybindings not reloaded, the last good ones stay" : status === "applied" ? "Keybindings reloaded with problems" : "Problems in your keybindings"} (${counts}): ${displayPath(this.keys.path, this.cwd)}`;
+            const color = errors ? theme.error : theme.warning;
+            this.screen.print((cols) => [
+                ...wrapLine(head, cols - 6).map((l, i) => (i === 0 ? "  ⎿  " : "     ") + color(l)),
+                ...km.issues.flatMap((issue) => wrapLine(issue.message, cols - 9).map((l, i) => (i === 0 ? `     ${issue.level === "error" ? theme.error("✘") : theme.warning("!")} ` : "       ") + l)),
+            ]);
+        } else if (status === "applied") this.notice(`Keybindings reloaded${km.customized.size ? ` (${km.customized.size} customized)` : ""}`);
+        this.renderLive();
     }
 
     private syncModeFromHistory() {
@@ -1526,7 +2358,9 @@ export class App {
         }
         if (/^\$[a-zA-Z0-9:_-]*$/.test(tok.text) && !/[A-Z]/.test(tok.text)) {
             const q = tok.text.slice(1);
-            const found = this.skills
+            // Codex's own skills too, once it has listed them.
+            const cli = this.cliCommands?.provider === "codex" && this.model?.provider === "codex" ? [...this.cliCommands.names].filter((n) => !this.skills.some((s) => s.name === n)).map((n) => ({ name: n, description: "Codex's own skill", userInvocable: true })) : [];
+            const found = [...this.skills, ...cli]
                 .filter((s) => s.userInvocable && (s.name.startsWith(q) || (q.length > 1 && s.name.includes(q))))
                 .sort((a, b) => Number(!a.name.startsWith(q)) - Number(!b.name.startsWith(q)) || a.name.localeCompare(b.name))
                 .slice(0, 8);
@@ -1536,9 +2370,12 @@ export class App {
         }
         if (tok.text.startsWith("@") && tok.text.length >= 1) {
             const q = tok.text.slice(1).replace(/^"/, "");
-            const found = this.files.search(q, 8);
-            if (this.menuIndex >= found.length) this.menuIndex = 0;
-            return { items: found.map((p) => ({ label: "@" + p, insert: "@" + (p.includes(" ") ? `"${p}"` : p) + (p.endsWith("/") ? "" : " "), start: tok.start, end: e.cursor })) };
+            // MCP resources first when the query names a server ("github:"), else after a few files.
+            const resources = searchResources(this.mcp.resourceList(), q, 8).map((r) => ({ label: `@${r.server}:${r.uri}`, description: r.title ?? (r.name !== r.uri ? r.name : r.description), insert: `@${r.mention} `, start: tok.start, end: e.cursor }));
+            const files = this.files.search(q, 8).map((p) => ({ label: "@" + p, insert: "@" + (p.includes(" ") ? `"${p}"` : p) + (p.endsWith("/") ? "" : " "), start: tok.start, end: e.cursor }));
+            const items = (q.includes(":") ? [...resources, ...files] : [...files.slice(0, Math.max(4, 8 - resources.length)), ...resources]).slice(0, 8);
+            if (this.menuIndex >= items.length) this.menuIndex = 0;
+            return { items };
         }
         return undefined;
     }
@@ -1554,7 +2391,7 @@ export class App {
     // -----------------------------------------------------------------------
     // Submitting
 
-    /** `opposite`: Tab while working, the other of steer and queue for this message. */
+    /** `opposite`: the steer-or-queue key (Tab) while working, the other of steer and queue for this message. */
     private async submit(opposite = false) {
         if (this.pendingSubmit) {
             this.flash = { text: "Still preparing images for the last prompt (esc cancels it)", until: Date.now() + 2000 };
@@ -1594,34 +2431,63 @@ export class App {
     }
 
     /** A prompt, or a draft with images, as typed: a command, queued while busy, or a turn. `followUp`: what it does if a turn is running (default: the setting). */
-    async submitText(input: string | Draft, followUp?: FollowUp) {
+    /** `drained`: one of the messages released for an account (releaseHeld), whose reservation this is. */
+    async submitText(input: string | Draft, followUp?: FollowUp, drained = false) {
         const draft: Draft = typeof input === "string" ? { text: input, attachments: new Map() } : input;
         const text = plainText(draft.text);
+        this.toolState.wakes?.resume();
         if (this.switching) await this.switching.catch(() => undefined);
         if (text.startsWith("/") && !text.startsWith("//")) {
             const handled = await runCommand(this, text, draft);
             if (handled) return;
         }
-        if (this.busy) {
-            const q: QueuedDraft = { ...draft, mode: followUp ?? this.followUp() };
+        // Messages released for an account go first (releaseHeld): this waits behind them.
+        if (this.busy || (this.draining && !drained)) {
+            // No turn runs yet (only released ones wait to start): it waits its turn rather than steer theirs.
+            const q: QueuedDraft = { ...draft, mode: this.busy ? (followUp ?? this.followUp()) : "queue" };
             this.queued.push(q);
             this.queueUpdated();
             if (q.mode === "steer" && steers(q)) this.agent?.queueChanged?.();
+            // Back before an idle compaction is done: it stops, and this runs on the cache that's still warm.
+            if (this.idleCompacting) this.abort?.abort();
             return;
         }
         await this.startTurn(text, { draft });
     }
 
     /** `draft` carries the images typed with the prompt (or with the command that built it). */
-    /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files (a skill's instructions are sent as written). */
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command"; draft?: Draft; mentionsIn?: string } = {}) {
+    /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files and MCP resources (a skill's or an MCP prompt's text is sent as written). */
+    /** `extra`: parts that go with the prompt as they are (an MCP prompt's images). */
+    /** `goal`: a turn the goal started (src/agent/goal.ts). */
+    /** `adopt`: a wake turn its agent CLI started by itself (adoptWake): nothing is sent, the turn takes its events. */
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; draft?: Draft; extra?: UserContent[]; mentionsIn?: string; wakes?: Wake[]; goal?: boolean; adopt?: BackendWake } = {}) {
         if (!this.agent) {
             this.notice("No model is selected. Pick one with /model (or add an API key with /login).", "error");
             return;
         }
+        // The session's CLI account was removed (#410): nothing is stored or sent. The user's message waits for an
+        // account (it's the prompt, or a command that built it); a watch's events go back in their queue.
+        const gone = opts.adopt ? undefined : this.needsAccount();
+        if (gone) {
+            if (opts.wakes) return void this.toolState.wakes?.requeue(opts.wakes);
+            if (!opts.goal && !this.scheduledTurn && opts.kind !== "wake") return this.holdForAccount(gone, opts.draft ?? { text: opts.kind === "command" ? (opts.display ?? text) : text, attachments: new Map() });
+            return this.notice(`${removedAccountNote(getProvider(gone.provider)?.name ?? gone.provider, gone.id, false)} Use /account.`, "warn");
+        }
+        // The user's own turn overtakes a pending goal check, and a paused goal picks up after it. A scheduled prompt
+        // leaves a paused goal paused; the resume after a usage limit is the exception, as in Claude Code.
+        // A watch's events don't either: they aren't the user's.
+        if (!opts.goal && opts.kind !== "wake" && this.scheduledTurn !== true) this.goal?.userTurn();
+        const goal = this.goal;
+        const from = this.session.messages.length;
         // Busy from here on, so prompts typed while MCP servers finish connecting queue up.
         const agent = this.agent;
         this.busy = true;
+        // Busy now: what's sent waits behind this turn, and the rest released for an account follows it.
+        this.draining = undefined;
+        this.idleCompact.disarm();
+        // The user's own turn: a resume waiting for the usage limit isn't needed.
+        if (!this.scheduledTurn) this.schedules.userSent();
+        this.scheduledTurn = false;
         const ac = (this.abort = new AbortController());
         this.turnStart = Date.now();
         this.turnTokens = 0;
@@ -1634,32 +2500,44 @@ export class App {
         this.startTicker();
         let reason: TurnEndReason | undefined;
         try {
-            this.printUser(opts.display ?? text);
+            if (opts.kind === "wake") this.printWake(opts.display ?? "");
+            else this.printUser(opts.display ?? text);
             const images = opts.draft ? imagesIn(opts.draft.text, opts.draft.attachments) : [];
             if (images.length) this.screen.print((cols) => wrapLine(theme.subtle(`  ⎿  ${images.map((im, i) => `Image ${i + 1}: ${im.name} (${formatBytes(im.bytes)})`).join(", ")}`), cols - 2));
             if (!this.session.meta.system) await this.freezeSystemPrompt(ac.signal);
             if (ac.signal.aborted) {
-                // Nothing was sent: hand the message back rather than dropping it.
-                this.screen.print(theme.error(`  ⎿  Interrupted before sending; your message is back in the prompt.`));
-                this.queued.unshift({ ...(opts.draft ?? { text: opts.kind === "command" ? (opts.display ?? text) : text, attachments: new Map() }), mode: "queue" });
+                // Nothing was sent: events go back in their queue; a message back in the prompt rather than dropped.
+                if (opts.wakes) this.toolState.wakes?.requeue(opts.wakes);
+                // The CLI's own turn goes on without it: nothing is put back.
+                else if (!opts.adopt) {
+                    this.screen.print(theme.error(`  ⎿  Interrupted before sending; your message is back in the prompt.`));
+                    this.queued.unshift({ ...(opts.draft ?? { text: opts.kind === "command" ? (opts.display ?? text) : text, attachments: new Map() }), mode: "queue" });
+                }
             } else {
                 const roots = [this.cwd, ...(this.settings.permissions?.additionalDirectories ?? [])];
                 // $name brings that skill's instructions along; the transcript keeps what was typed.
-                const skills = opts.kind === "command" ? [] : skillMentions(text, this.skills);
-                const sent = skills.length ? withSkills(text, skills) : text;
-                const { parts, attached, notices } = await expandMentions(opts.mentionsIn ?? text, this.toolState, roots, this.checker, { prepare: this.imagePrep });
+                const skills = opts.kind === "command" || opts.kind === "wake" ? [] : skillMentions(text, this.skills);
+                // Claude Code and Codex are sent the $name, and load the skill themselves.
+                const sent = skills.length && !cliRunsSkills(agent.model.provider) ? withSkills(text, skills) : text;
+                // A wake quotes outside text (PR comments): its @words are not files or MCP resources to attach.
+                const scan = opts.kind === "wake" ? "" : (opts.mentionsIn ?? text);
+                const { parts, attached, notices } = opts.kind === "wake" ? { parts: [{ type: "text" as const, text }], attached: [], notices: [] } : await expandMentions(scan, this.toolState, roots, this.checker, { prepare: this.imagePrep });
                 parts[0] = { type: "text", text: sent };
                 if (skills.length) this.notice(`Using ${skills.length === 1 ? "skill" : "skills"} ${skills.map((sk) => sk.name).join(", ")}`);
-                parts.push(...images.map((im) => im.part));
+                const res = await expandMcpMentions(scan, this.mcp, this.mcpAsker(), ac.signal);
+                parts.push(...res.parts, ...images.map((im) => im.part), ...(opts.extra ?? []));
+                attached.push(...res.attached);
+                notices.push(...res.notices);
                 for (const n of notices) this.notice(n, "warn");
                 if (attached.length) this.notice(`Attached ${attached.join(", ")}`);
-                reason = await agent.run(parts, { signal: ac.signal, display: opts.display ?? text, kind: opts.kind });
+                reason = await agent.run(parts, { signal: ac.signal, display: opts.display ?? text, kind: opts.kind, ...(opts.adopt ? { adopt: opts.adopt } : {}) });
             }
         } catch (e) {
             this.notice(`Unexpected error: ${redact((e as Error).message)}`, "error");
             reason = "error";
         } finally {
             this.busy = false;
+            this.persistBackground();
             this.takeBackBlockedAt = 0;
             this.abort = undefined;
             this.stopTicker();
@@ -1668,10 +2546,32 @@ export class App {
             this.status = undefined;
             this.renderLive();
         }
-        if (reason) void this.notifier.turnEnded(reason, Date.now() - this.turnStart);
-        if (ac.signal.aborted) return this.returnQueued();
+        // While a goal keeps going its turns don't each notify: the goal says when it stops (GoalHost.alert).
+        if (reason && !(goal?.active && goal.view()?.state !== "paused")) void this.notifier.turnEnded(reason, Date.now() - this.turnStart);
+        if (reason) this.schedules.turnEnded(reason, agent.limitStop);
+        if (ac.signal.aborted) {
+            if (goal === this.goal) void goal?.afterTurn("aborted", from, Boolean(opts.goal));
+            this.returnQueued();
+            // The /goal clear or pause that stopped the turn: now the CLI gets it.
+            const after = this.afterStop;
+            this.afterStop = undefined;
+            if (after) return void (await this.submitText(after));
+            // A turn its agent CLI started by itself runs whatever the user stopped: it's taken now.
+            if (this.adopts.length) this.wake();
+            return this.schedules.poke();
+        }
         const next = this.nextQueued();
-        if (next === undefined) return;
+        if (next === undefined) {
+            // Nothing the user typed is waiting: the goal decides whether another turn starts; then a schedule, or
+            // events a watch raised meanwhile, can have their turn.
+            if (reason && goal === this.goal) await goal?.afterTurn(reason, from, Boolean(opts.goal), this.turnStart);
+            if (this.adopts.length) this.wake();
+            this.toolState.wakes?.poke();
+            this.schedules.poke();
+            // Nothing followed it: from here the conversation is idle.
+            if (!this.busy) this.idleCompact.arm();
+            return;
+        }
         this.queued.shift();
         this.queueUpdated();
         await this.submitText(next);
@@ -1686,10 +2586,13 @@ export class App {
     private queueUpdated() {
         this.renderLive();
         if (!this.session?.persisted) return;
-        const mine = this.queued.map((d): StoredQueued => {
+        const store = (d: QueuedDraft, account?: string): StoredQueued => {
             const images = imagesIn(d.text, d.attachments).map((im) => im.part);
-            return { text: plainText(d.text), mode: d.mode, ...(images.length ? { attachments: images } : {}) };
-        });
+            return { text: plainText(d.text), mode: d.mode, ...(images.length ? { attachments: images } : {}), ...(account ? { account } : {}) };
+        };
+        // Held for an account, saved as held (#410): reopened, they still wait for one.
+        const held = this.heldForAccount;
+        const mine = [...(held?.drafts.map((d) => store(d, held.provider)) ?? []), ...this.queued.map((d) => store(d))];
         const kept = this.keptQueue?.id === this.session.meta.id ? this.keptQueue.items : [];
         saveQueue(this.session.path, this.session.meta.id, [...mine, ...kept]);
     }
@@ -1705,9 +2608,18 @@ export class App {
         if (!this.session.persisted) return;
         const all = loadQueue(this.session.path, this.session.meta.id);
         // The terminal attaches images only: one with a file (a PDF) stays saved for the app, rather than lose it.
-        const saved = all.filter((q) => !q.attachments?.some((a) => a.type !== "image"));
-        const kept = all.filter((q) => !saved.includes(q));
+        const fits = all.filter((q) => !q.attachments?.some((a) => a.type !== "image"));
+        const kept = all.filter((q) => !fits.includes(q));
         this.keptQueue = { id: this.session.meta.id, items: kept };
+        // Held for an account (#410): they stay held, each a message of its own, until one is picked (/account).
+        const holding = fits.filter((q) => q.account);
+        const saved = fits.filter((q) => !q.account);
+        if (holding.length) {
+            const provider = holding[0]!.account!;
+            this.heldForAccount = { provider, drafts: holding.map((q) => this.draftOf(q)) };
+            const cli = getProvider(provider)?.name ?? provider;
+            this.notice(`${holding.length === 1 ? "A message waits" : `${holding.length} messages wait`} for an account: the ${cli} account this session used was removed. Pick one with /account to send ${holding.length === 1 ? "it" : "them"}.`, "warn");
+        }
         if (!saved.length) {
             if (kept.length) this.notice(kept.length === 1 ? "A message with a file that was waiting when Harness closed is still saved: open this session in the app to send it." : `${kept.length} messages with files that were waiting when Harness closed are still saved: open this session in the app to send them.`);
             return;
@@ -1717,26 +2629,44 @@ export class App {
         e.set("");
         saved.forEach((q, i) => {
             if (i) e.insert("\n");
-            const images = (q.attachments ?? []).filter((a): a is ImagePart => a.type === "image");
-            let n = 0;
-            // Each [Image #k] label gets its image again, in order (the editor numbers them afresh).
-            const attach = (image: ImagePart) => e.attachImage({ name: `image ${++n}`, bytes: Math.floor((image.data.length * 3) / 4), part: image });
-            for (const piece of q.text.split(/(\[Image #\d+\])/)) {
-                const image = /^\[Image #\d+\]$/.test(piece) ? images[n] : undefined;
-                if (image) attach(image);
-                else if (piece) e.insert(piece);
-            }
-            // The app keeps a message's images beside its text, with no labels in it: they go after the text.
-            for (const image of images.slice(n)) {
-                if (e.text && !/\s$/.test(e.text)) e.insert(" ");
-                attach(image);
-            }
+            this.fillEditor(q);
         });
         if (typed) e.restore([typed]);
-        saveQueue(this.session.path, this.session.meta.id, kept);
+        this.queueUpdated();
         const back = saved.length === 1 ? "A message that was waiting when Harness closed is back in the prompt." : `${saved.length} messages that were waiting when Harness closed are back in the prompt.`;
         this.notice(kept.length ? `${back} ${kept.length === 1 ? "One with a file is" : `${kept.length} with files are`} still saved: open this session in the app to send ${kept.length === 1 ? "it" : "them"}.` : back);
         this.renderLive();
+    }
+
+    /** A saved message as a draft of its own (its images attached), made in the editor, which is left as it was. */
+    private draftOf(q: StoredQueued): QueuedDraft {
+        const e = this.editor;
+        const typed = e.text ? e.capture() : undefined;
+        e.set("");
+        this.fillEditor(q);
+        const draft = e.capture();
+        e.set("");
+        if (typed) e.restore([typed]);
+        return { ...draft, mode: q.mode };
+    }
+
+    /** A saved message into the editor at the cursor: its text, with each image where its label was. */
+    private fillEditor(q: StoredQueued) {
+        const e = this.editor;
+        const images = (q.attachments ?? []).filter((a): a is ImagePart => a.type === "image");
+        let n = 0;
+        // Each [Image #k] label gets its image again, in order (the editor numbers them afresh).
+        const attach = (image: ImagePart) => e.attachImage({ name: `image ${++n}`, bytes: Math.floor((image.data.length * 3) / 4), part: image });
+        for (const piece of q.text.split(/(\[Image #\d+\])/)) {
+            const image = /^\[Image #\d+\]$/.test(piece) ? images[n] : undefined;
+            if (image) attach(image);
+            else if (piece) e.insert(piece);
+        }
+        // The app keeps a message's images beside its text, with no labels in it: they go after the text.
+        for (const image of images.slice(n)) {
+            if (e.text && !/\s$/.test(e.text)) e.insert(" ");
+            attach(image);
+        }
     }
 
     // ---- /queue: what's waiting, with send now, reorder and remove
@@ -1775,13 +2705,74 @@ export class App {
         return true;
     }
 
+    /** Events a tool asked to be woken for (a watched PR): a turn of their own when nothing else is going on. */
+    private wake() {
+        // Looked at again later: the turns a CLI started itself (adopts) are looked for here, not in the
+        // WakeQueue, whose poke does nothing without events of its own.
+        const again = () => (this.adopts.length ? this.wake() : this.toolState.wakes?.poke());
+        // An idle compaction stops: the wake runs on the cache that's still warm, not after a summary nobody asked for.
+        if (this.idleCompacting) return void this.yieldIdleCompaction().then(again);
+        // Busy or with messages queued, the turn's end looks again.
+        if (this.exiting || this.busy || this.queued.length) return;
+        // The session's CLI account was removed (#410): nothing runs until the user picks another (releaseForAccount looks again).
+        if (this.needsAccount()) return;
+        // A model switch, a dialog open, no agent yet, a goal between its turns (it goes first, as with scheduled
+        // prompts): look again in a moment.
+        if (this.switching || !this.agent || this.dialogs.length || this.goalPending()) {
+            setTimeout(again, 1000).unref?.();
+            return;
+        }
+        // A turn an agent CLI started by itself goes first: it's running already, its events held until it's taken.
+        const adopt = this.adopts.shift();
+        if (adopt) {
+            const label = adopt.label?.trim() || `${getProvider(adopt.provider)?.name ?? adopt.provider} reported back`;
+            return void this.startTurn(label, { display: label, kind: adopt.prompt ? "prompt" : "wake", adopt });
+        }
+        const wakes = this.toolState.wakes!.takeForTurn();
+        if (!wakes.length) return;
+        void this.startTurn(formatWakes(wakes), { display: wakeDisplay(wakes), kind: "wake", wakes });
+    }
+
+    /**
+     * A long conversation left idle compacts before its prompt cache expires.
+     * Esc cancels it; so does sending a message, which then runs at once.
+     */
+    private async compactIdle() {
+        const agent = this.agent;
+        if (!agent || this.busy) return;
+        this.idleCompacting = true;
+        let done!: () => void;
+        this.idleDone = new Promise<void>((r) => (done = r));
+        try {
+            await this.runTask("Compacting while idle", (signal) => agent.compact({ auto: true, idle: true, signal }), {
+                failed: (message) => this.notice(`Couldn't compact while idle: ${message}. The conversation is unchanged.`, "warn"),
+                // Cancelled by a message sent meanwhile: that message runs rather than coming back to the prompt.
+                cancelled: () => (this.queued.length || this.idleYielding ? false : undefined),
+            });
+        } finally {
+            this.idleCompacting = false;
+            this.idleYielding = false;
+            done();
+        }
+    }
+
     /** Run a non-chat task (like /compact) with the spinner and esc-to-cancel. */
-    async runTask<T>(verb: string, fn: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> {
+    async runTask<T>(
+        verb: string,
+        fn: (signal: AbortSignal) => Promise<T>,
+        o: {
+            /** Says it failed its own way. */
+            failed?: (message: string) => void;
+            /** Cancelled: false runs what was queued meanwhile rather than handing it back (and says nothing). */
+            cancelled?: () => false | undefined;
+        } = {},
+    ): Promise<T | undefined> {
         if (this.busy) {
             this.notice("Wait for the current response to finish, or press esc to interrupt it.", "warn");
             return undefined;
         }
         this.busy = true;
+        this.idleCompact.disarm();
         const ac = (this.abort = new AbortController());
         this.turnStart = Date.now();
         this.turnTokens = 0;
@@ -1792,10 +2783,13 @@ export class App {
         this.verb = verb;
         this.status = undefined;
         this.startTicker();
+        /** Cancelled, but what was queued meanwhile runs rather than coming back to the prompt. */
+        let carryOn = false;
         try {
             return await fn(ac.signal);
         } catch (e) {
-            if (!ac.signal.aborted) this.notice(redact((e as Error).message), "error");
+            if (!ac.signal.aborted) (o.failed ?? ((m) => this.notice(m, "error")))(redact((e as Error).message));
+            else if (o.cancelled?.() === false) carryOn = true;
             else this.notice("Cancelled", "warn");
             return undefined;
         } finally {
@@ -1806,7 +2800,7 @@ export class App {
             this.active.clear();
             this.detached.clear();
             this.renderLive();
-            this.afterTask(ac.signal.aborted);
+            this.afterTask(ac.signal.aborted && !carryOn);
         }
     }
 
@@ -1816,8 +2810,47 @@ export class App {
      * gets a turn of its own). Like a message queued for the turn's end, one of
      * those doesn't hold a steer back: steering is joining the turn now.
      */
-    private drainQueued(): string[] {
-        const take = this.queued.filter((d) => d.mode === "steer" && steers(d));
+    private drainQueued(admit?: (text: string) => Promise<Admitted>): string[] | Promise<Admitted[]> {
+        const steering = () => this.queued.filter((d) => d.mode === "steer" && steers(d));
+        const take = steering();
+        if (!take.length) return [];
+        return admit ? this.admitQueued(take, admit, steering) : this.steerWith(take);
+    }
+
+    /**
+     * Their UserPromptSubmit hooks run while they stay queued: an interrupt meanwhile hands them back to the
+     * prompt. One a hook blocks comes back now, to change or drop (the hook's warning says why), unless
+     * something new has been typed (then it's in history, ↑); the rest go.
+     */
+    private async admitQueued(take: QueuedDraft[], admit: (text: string) => Promise<Admitted>, steering: () => QueuedDraft[]): Promise<Admitted[]> {
+        const blocked: QueuedDraft[] = [];
+        const admitted = new Map<QueuedDraft, Admitted>();
+        for (const d of take) {
+            const a = await admit(plainText(d.text));
+            if (a.admission === "stopped") return [];
+            if (a.admission === "blocked") blocked.push(d);
+            else admitted.set(d, a);
+        }
+        const back = blocked.filter((d) => this.queued.includes(d));
+        if (back.length) {
+            this.queued = this.queued.filter((d) => !back.includes(d));
+            this.queueUpdated();
+            if (this.editor.isEmpty && this.inputMode === "prompt") this.editor.restore(back);
+            else {
+                for (const d of back) this.editor.pushHistory(plainText(d.text), d);
+                this.notice(`What you've typed since stays; the blocked message is in history (↑).`, "warn");
+            }
+            this.renderLive();
+        }
+        // One taken back meanwhile (Esc) doesn't go.
+        const still = steering();
+        const go = take.filter((d) => admitted.has(d) && still.includes(d));
+        this.steerWith(go);
+        // Each with what its own hooks added (two alike are still two).
+        return go.map((d) => admitted.get(d)!);
+    }
+
+    private steerWith(take: QueuedDraft[]): string[] {
         if (!take.length) return [];
         this.queued = this.queued.filter((d) => !take.includes(d));
         this.queueUpdated();
@@ -1828,7 +2861,12 @@ export class App {
 
     /** Messages typed during a task run next; after a cancel they go back to the prompt. */
     private afterTask(cancelled: boolean) {
-        if (!this.queued.length) return;
+        if (!this.queued.length) {
+            this.toolState.wakes?.poke();
+            // After the caller (a command like /compact) has finished, as below.
+            setTimeout(() => this.schedules.poke(), 0);
+            return;
+        }
         if (cancelled) return this.returnQueued();
         const next = this.queued.shift()!;
         this.queueUpdated();
@@ -1907,10 +2945,11 @@ export class App {
             this.status = undefined;
         }
         // --append-system-prompt isn't frozen in: the agent adds this run's to every request.
-        this.session.setSystem(buildSystemPrompt({ cwd: this.cwd, model: this.model!, append: this.mcp.instructions() || undefined }));
+        this.session.setSystem(await buildSystemPrompt({ cwd: this.cwd, model: this.model!, append: this.mcp.instructions() || undefined, signal }));
     }
 
     private async runBashMode(cmd: string) {
+        await this.yieldIdleCompaction();
         if (this.busy) {
             this.notice("Still working on the last request; press esc to interrupt it, then run the command.", "warn");
             if (this.editor.isEmpty) {
@@ -1927,10 +2966,16 @@ export class App {
         const note = res.aborted ? "\n(interrupted)" : res.timedOut ? "\n(stopped after 2 minutes)" : "";
         const maxLines = this.verbose ? 200 : 20;
         this.screen.print((cols) => resultLines((out || "(no output)") + note, cols, maxLines, (s) => s));
-        if (res.newCwd) this.toolState.cwd = res.newCwd;
+        if (res.newCwd && res.newCwd !== this.toolState.cwd) {
+            const from = this.toolState.cwd;
+            this.toolState.cwd = res.newCwd;
+            void this.agent?.cwdChanged(from);
+        }
         // Let the model see it next turn.
         const text = `<bash-input>${cmd}</bash-input>\n<bash-stdout>${out.slice(0, 20_000)}</bash-stdout>${res.exitCode ? `\n<bash-exit-code>${res.exitCode}</bash-exit-code>` : ""}`;
         this.agent?.addReminder(`The user ran a shell command themselves (output shown to them):\n${text}`);
+        // Still idle after it: the conversation's cache is where the last turn left it.
+        if (!this.busy && !this.queued.length) this.idleCompact.arm();
     }
 
     private async addMemory(note: string) {
@@ -1974,6 +3019,8 @@ export class App {
         const rows = termRows();
         // The reply and running tools continue the output; the spinner, prompt and footer stay on the bottom rows.
         const { flow, status } = this.busy ? this.renderActivity(cols, rows) : { flow: [], status: [] };
+        const goal = this.goalLine(cols);
+        if (goal) status.push(goal);
         const lines = [...flow];
         if (status.length) lines.push("", ...status);
         lines.push("");
@@ -2044,7 +3091,10 @@ export class App {
                 : quiet >= 10_000 && this.agentWork && this.model && !this.status && !this.active.size && !this.receiving.size
                   ? ` · waiting for ${shortModel(this.model)} ${formatDuration(quiet)}`
                   : "";
-            status.push(`${theme.accent(glyph)} ${theme.accent(label)} ${theme.muted(`(${elapsed}${tokens ? ` · ↓ ${formatTokens(tokens)} tokens` : ""}${waiting} · ${this.queued.length ? "esc to take back the queued message" : "esc to interrupt"})`)}`);
+            const cancel = this.keys.label("chat:cancel")?.replace(/^escape$/, "esc");
+            const cancelHint = this.idleCompacting ? `send a message${cancel ? ` or ${cancel} to cancel` : ""}`
+                : cancel ? `${cancel} ${this.queued.length ? "to take back the queued message" : "to interrupt"}` : "";
+            status.push(`${theme.accent(glyph)} ${theme.accent(label)} ${theme.muted(`(${elapsed}${tokens ? ` · ↓ ${formatTokens(tokens)} tokens` : ""}${waiting}${cancelHint ? ` · ${cancelHint}` : ""})`)}`);
         }
         const todos = this.toolState.todos;
         if (this.showTodos && todos.length && todos.some((t) => t.status !== "completed")) status.push(...renderTodos(todos, cols).slice(0, 10));
@@ -2057,11 +3107,17 @@ export class App {
         return { flow: out, status };
     }
 
+    private followUpPlaceholder(): string {
+        const k = this.keys.label("chat:submitOtherWay");
+        const send = this.keys.label("chat:submit") ?? "enter";
+        return this.followUp() === "steer" ? `Steer the current turn (${send})${k ? ` · ${k} to queue it for after` : ""}` : `Queue a message for after this turn (${send})${k ? ` · ${k} to steer now` : ""}`;
+    }
+
     private renderInput(cols: number): string[] {
         const color = this.inputMode === "bash" ? theme.bashMode : this.inputMode === "memory" ? theme.memoryMode : this.mode === "plan" ? theme.planMode : theme.subtle;
         const symbol = this.inputMode === "bash" ? "!" : this.inputMode === "memory" ? "#" : ">";
         const rule = color("─".repeat(Math.max(10, cols - 1)));
-        const placeholder = this.inputMode === "bash" ? "Run a shell command" : this.inputMode === "memory" ? "Add to memory" : this.busy ? (this.followUp() === "steer" ? "Steer the current turn (enter) · tab to queue it for after" : "Queue a message for after this turn (enter) · tab to steer now") : 'Try "explain this codebase" or "fix the failing test"';
+        const placeholder = this.inputMode === "bash" ? "Run a shell command" : this.inputMode === "memory" ? "Add to memory" : this.idleCompacting ? "Type a message to stop compacting and send it" : this.busy ? this.followUpPlaceholder() : 'Try "explain this codebase" or "fix the failing test"';
         const r = this.editor.render(cols - 2, color(symbol) + " ", "  ", { showCursor: true, placeholder });
         const maxInput = Math.max(3, termRows() - 12);
         let inputLines = r.lines;
@@ -2081,7 +3137,7 @@ export class App {
             return out;
         }
         if (this.showHelp) {
-            out.push(...shortcutHelp(cols));
+            out.push(...shortcutHelp(cols, this.keys));
             return out;
         }
         out.push(this.footer(cols));
@@ -2099,6 +3155,10 @@ export class App {
             left = info.color(`${info.symbol} ${info.short} on`) + theme.muted(" (shift+tab to cycle)");
         }
         const parts: string[] = [];
+        // Watching in the background: lines from these can wake the agent (/bashes lists and stops them).
+        let monitors = 0;
+        for (const s of this.toolState.shells.values()) if (s.monitor && s.exitCode === null) monitors++;
+        if (monitors) parts.push(theme.success(`◉ ${monitors} monitor${monitors === 1 ? "" : "s"}`));
         if (this.model) parts.push(shortModel(this.model));
         if (this.model?.supportsFastMode && (this.session.fastMode ?? this.settings.fastMode)) parts.push("↯ fast");
         if (this.agent && this.model?.contextWindow) {
@@ -2109,6 +3169,18 @@ export class App {
             }
         }
         if (this.session?.cost) parts.push(formatCost(this.session.cost, this.session.costUnknown));
+        const sched = this.schedules.scheduler;
+        if (sched.size) {
+            const next = sched.nextAt;
+            const due = sched.list().some((j) => j.due);
+            parts.push(theme.accent(`⏱ ${sched.size}`) + (due ? " due" : next ? ` next ${shortTime(next)}` : " paused"));
+        }
+        const watches = [...(this.toolState.watchers?.values() ?? [])];
+        if (watches.length) {
+            const bad = watches.some((w) => /failing|conflicts/.test(w.detail ?? ""));
+            const text = `↻ watching ${watches.length === 1 ? watches[0]!.label.replace(/ in .*$/, "") : `${watches.length} ${watches.every((w) => w.kind === "pull-request") ? "PRs" : "watches"}`}`;
+            parts.push(bad ? theme.warning(text) : text);
+        }
         const mcpFailed = [...this.mcp.servers.values()].filter((s) => s.status === "failed").length;
         if (mcpFailed) parts.push(theme.error(`${mcpFailed} MCP failed · /mcp`));
         const custom = this.statusLineText();
@@ -2191,6 +3263,8 @@ export interface QueuedDraft extends Draft {
     mode: FollowUp;
 }
 
+/** How long a startup hook waits for MCP servers to connect, as headless mode does. */
+const MCP_START_WAIT_MS = 15_000;
 const otherFollowUp = (m: FollowUp): FollowUp => (m === "steer" ? "queue" : "steer");
 
 /** One the running turn can take: not a command (it runs after), and without images (they get a turn of their own). */
@@ -2203,18 +3277,24 @@ function isCommand(text: string): boolean {
     return text.startsWith("/") && !text.startsWith("//");
 }
 
-function shortcutHelp(cols: number): string[] {
+function shortcutHelp(cols: number, keys: TuiKeybindings): string[] {
+    // Each hint names the key bound now; one with no key isn't shown.
+    const hint = (action: string, text: (key: string) => string) => {
+        const key = keys.label(action);
+        return key === undefined ? undefined : text(key === "escape" ? "esc" : key);
+    };
+    const newline = keys.all("chat:newline").filter((k) => k !== "shift+enter");
     const rows = [
-        ["! for bash mode", "double esc to clear or rewind", "shift+tab to cycle modes"],
-        ["/ for commands", "ctrl+g to edit in $EDITOR", "ctrl+o for verbose output"],
-        ["@ for file paths", "\\⏎ or ctrl+j for newline", "ctrl+t to toggle todos"],
-        ["# to memorize", "esc to interrupt (queued first)", "ctrl+c twice to exit"],
-        ["tab: steer or queue the other way", "/queue to manage queued messages", ""],
+        ["! for bash mode", hint("chat:cancel", (k) => `double ${k} to clear or rewind`), hint("chat:cycleMode", (k) => `${k} to cycle modes`)],
+        ["/ for commands", hint("chat:externalEditor", (k) => `${k} to edit in $EDITOR`), hint("app:toggleTranscript", (k) => `${k} for verbose output`)],
+        ["@ for file paths", `\\⏎${newline.length ? ` or ${newline[newline.length - 1]}` : ""} for newline`, hint("app:toggleTodos", (k) => `${k} to toggle todos`)],
+        ["# to memorize", hint("chat:cancel", (k) => `${k} to interrupt (queued first)`), "ctrl+c twice to exit"],
+        [hint("chat:submitOtherWay", (k) => `${k}: steer or queue the other way`), "/queue to manage queued messages", ""],
     ];
     const w = Math.floor((cols - 4) / 3);
     return [
-        ...rows.map((r) => "  " + r.map((c) => padEnd(theme.muted(truncate(c, w - 1)), w)).join("")),
-        "  " + theme.muted(truncate("shift+enter also adds a newline, in terminals that support it", cols - 4)),
+        ...rows.map((r) => "  " + r.map((c) => padEnd(theme.muted(truncate(c ?? "", w - 1)), w)).join("")),
+        "  " + theme.muted(truncate(keys.all("chat:newline").includes("shift+enter") ? "shift+enter also adds a newline, in terminals that support it" : `Keys: ${keys.path}`, cols - 4)),
     ];
 }
 

@@ -2,19 +2,22 @@
 
 import { createSignal } from "solid-js";
 import { adjacentSession, sidebarEntries, sidebarIds, SESSION_PAGE } from "../lib/session-order";
-import { sidebarOrder } from "./sidebar";
+import { sidebarOrder, unselect } from "./sidebar";
+import { sessionCount, sessionNames } from "../lib/rail-select";
 import type { ArchiveResult, CliSessionInfo, EditorInfo, EffortLevel, FollowUpMode, GitCommitHead, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
 import { copyText, pickFolder } from "../lib/platform";
 import { toWire, type Attachment } from "../lib/attachments";
-import { activate, app, createSession, dropHandle, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
+import { activate, app, createSession, revealBackground, dropHandle, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
+import { keepSentImages } from "./images";
 import { prefs, setPrefs } from "./prefs";
-import { requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setReview, setRewindOpen, setSettingsTab } from "./ui";
+import { railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setDeleteRequest, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, setReview, setRewindOpen, setSettingsTab, setTerminalMax, shellLayout } from "./ui";
 import { clientAction, slashName } from "../lib/commands";
 import { forkAnchor } from "../lib/fork";
+import { backgroundOf, stopOutcome, stopTasks } from "../lib/background";
 export { forkAnchor } from "../lib/fork";
 
 export type { Attachment } from "../lib/attachments";
@@ -100,6 +103,9 @@ function clientCommand(id: string | undefined, text: string): boolean {
         case "settings":
             setSettingsTab("general");
             return true;
+        case "plugins":
+            setSettingsTab("plugins");
+            return true;
         case "usage":
             setSettingsTab("usage");
             return true;
@@ -115,14 +121,18 @@ function clientCommand(id: string | undefined, text: string): boolean {
             return true;
         case "tasks": {
             const [verb, task] = args.trim().split(/\s+/);
-            if (verb === "stop" && id) {
-                // By task id (task-1), as in the terminal, or every one still running.
-                const agent = task ? handleFor(id)?.view.agents.find((a) => a.taskId === task || a.id === task) : undefined;
-                if (task && !agent) toast(`No delegated task ${task}`, "error");
-                else void stopAgent(id, agent?.id);
+            if (verb === "restart" && id) {
+                void rpc.call("session.restartCli", { id }).catch(reportError);
                 return true;
             }
-            openAgents();
+            if (verb === "stop" && id) {
+                // By task id (task-1, bash_2, a CLI's own), as in the terminal, or every one still running.
+                const listed = backgroundOf(handleFor(id)?.view.state);
+                if (task && task !== "all" && !listed.some((t) => t.id === task && t.status === "running")) toast(`No running background task ${task}`, "error");
+                else void stopBackground(id, task && task !== "all" ? [task] : undefined);
+                return true;
+            }
+            openBackground(id);
             return true;
         }
     }
@@ -150,9 +160,32 @@ export function openAgents(agentId?: string) {
     setPrefs("panel", true);
 }
 
+/**
+ * Open a session that needs you, from Needs you (the rail's pinned rows, the title
+ * bar, Settings' top line): its conversation, where its request is. Settings closes,
+ * and so does a sub-agent's view: opening the session already open (from Settings)
+ * wouldn't change the active id, so nothing else would leave it.
+ */
+export function openWaiting(id: string) {
+    // Settings can hide a reader whose restored width would cover the request.
+    setReview(undefined);
+    if (shellLayout().inspector.mode !== "dock") setPrefs("panel", false);
+    setSettingsTab(undefined);
+    setAgentFocus(undefined);
+    setTerminalMax(false);
+    setRailOpen(false);
+    return activate(id);
+}
+
 /** The docked review pane, on a file and a view when given (else the view last used). */
-export function openReview(path?: string, scope?: ReviewScope, turnId?: number) {
-    setReview({ path, scope, turnId });
+/** `token`: the file's handle when its name was shown redacted (GitFileDiff.pathToken). */
+export function openReview(path?: string, scope?: ReviewScope, turnId?: number, token?: string) {
+    setReview({ path, scope, turnId, ...(path !== undefined && token ? { token } : {}) });
+}
+
+/** The diff reader on another worktree of the session's repository, on its branch: at `path` (relative to it), if given; `token` when its name was shown redacted. */
+export function openWorktreeReview(worktree: string, path?: string, token?: string) {
+    setReview({ worktree, ...(path !== undefined ? { path, ...(token ? { token } : {}) } : {}) });
 }
 
 /** Stop a delegated task (or every one running); Task sub-agents stop with the turn. */
@@ -163,6 +196,25 @@ export async function stopAgent(sessionId: string, agentId?: string) {
     } catch (e) {
         reportError(e);
     }
+}
+
+/** Stop background tasks (the side panel, /tasks stop): these, or every one running. */
+export async function stopBackground(sessionId: string, ids?: string[]) {
+    try {
+        const results = await stopTasks(rpc.call.bind(rpc) as never, sessionId, handleFor(sessionId)?.view.state, ids);
+        const { message, level } = stopOutcome(results);
+        toast(message, level);
+    } catch (e) {
+        reportError(e);
+    }
+}
+
+/** The side panel, on the tab that lists what runs in the background. */
+export const openBackground = revealBackground;
+
+/** Clear the finished tasks from the side panel. */
+export async function clearBackground(sessionId: string) {
+    await rpc.call("session.clearBackground", { id: sessionId }).catch(reportError);
 }
 
 export async function exportSession(id: string) {
@@ -211,6 +263,9 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
             id = h.id;
             created = true;
         }
+        const images = attachments.flatMap((a) => (a.kind === "image" ? [a] : []));
+        // Hashed while the message uploads: done long before the turn asks (and if not, it asks the server as before).
+        if (images.length) void keepSentImages(id, images);
         await rpc.call("session.send", { id, text, ...toWire(attachments), literal: opts.literal || undefined, ...(opts.followUp ? { mode: opts.followUp } : {}) });
         opts.accepted?.(id);
         // A final server refusal leaves the original Home composer and its draft in place.
@@ -259,7 +314,9 @@ export function respond(id: string, interactionId: string, response: Interaction
 
 export async function setModel(ref: string) {
     const id = app.activeId;
-    if (id && handleFor(id)?.view.state.busy) {
+    const st = id ? handleFor(id)?.view.state : undefined;
+    // An idle compaction stops for a model switch.
+    if (st?.busy && !st.activity?.idle) {
         toast("Switch models once this response is done, or interrupt it first.", "warn");
         return;
     }
@@ -309,13 +366,17 @@ export async function setFastMode(enabled: boolean) {
     } catch (e) { reportError(e); }
 }
 
-export async function setEffort(effort: EffortLevel) {
+/** Whether the server took it (a failure is reported here). */
+export async function setEffort(effort: EffortLevel): Promise<boolean> {
     const id = app.activeId;
-    if (id) await rpc.call("session.setEffort", { id, effort }).catch(reportError);
-    else {
-        await rpc.call("settings.update", { patch: { effort } }).catch(reportError);
-        setApp("settings", "effort", effort);
-    }
+    const failed = (e: unknown) => {
+        reportError(e);
+        return false;
+    };
+    if (id) return rpc.call("session.setEffort", { id, effort }).then(() => true, failed);
+    const ok = await rpc.call("settings.update", { patch: { effort } }).then(() => true, failed);
+    if (ok) setApp("settings", "effort", effort);
+    return ok;
 }
 
 export async function rename(id: string, title: string) {
@@ -326,12 +387,13 @@ export async function pin(id: string, pinned: boolean) {
     await rpc.call("session.pin", { id, pinned }).catch(reportError);
 }
 
-/** Set aside (or back in play). Sending to it puts it back too. */
-export async function settle(id: string, settled: boolean) {
+/** Set aside (or back in play). Sending to it puts it back too. Whether it was done. */
+export async function settle(id: string, settled: boolean): Promise<boolean> {
     try {
         await rpc.call("session.settle", { id, settled });
     } catch (e) {
-        return reportError(e);
+        reportError(e);
+        return false;
     }
     if (settled) {
         toast("Session settled", "info", {
@@ -341,14 +403,16 @@ export async function settle(id: string, settled: boolean) {
             },
         });
     }
+    return true;
 }
 
-/** After the confirm dialog. The server moves its files to the trash; Undo puts them back. */
-export async function deleteSession(id: string) {
+/** After the confirm dialog. The server moves its files to the trash; Undo puts them back. Whether it was done. */
+export async function deleteSession(id: string): Promise<boolean> {
     try {
         await rpc.call("session.delete", { id });
     } catch (e) {
-        return reportError(e);
+        reportError(e);
+        return false;
     }
     toast(
         "Session deleted",
@@ -361,12 +425,133 @@ export async function deleteSession(id: string) {
         },
         UNDO_DELETE_MS,
     );
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Several sessions at once (picked in the rail): each goes the way a single one
+// does, with one toast and one Undo for all of them. Those that fail are named
+// in a second toast and stay selected.
+
+const summaryOf = (id: string) => app.sessions.find((s) => s.id === id) ?? app.archived.find((s) => s.id === id);
+const titleOf = (id: string) => summaryOf(id)?.title ?? handleFor(id)?.view.state.title ?? "Untitled";
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** Each id through `one`, a few at a time: those done and those that failed (both in the order given), and the first failure. */
+async function eachSession(ids: readonly string[], one: (id: string) => Promise<unknown>) {
+    const done = new Set<string>();
+    const failed = new Set<string>();
+    let error: unknown;
+    let next = 0;
+    const worker = async () => {
+        while (next < ids.length) {
+            const id = ids[next++]!;
+            try {
+                await one(id);
+                done.add(id);
+            } catch (e) {
+                failed.add(id);
+                error ??= e;
+            }
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, ids.length) }, worker));
+    return { done: ids.filter((id) => done.has(id)), failed: ids.filter((id) => failed.has(id)), error };
+}
+
+async function bulk(ids: readonly string[], o: {
+    /** "Couldn't <verb> “A” and “B”: …" */
+    verb: string;
+    /** "5 sessions <did>"; none: no toast when it worked. */
+    did?: string;
+    one: (id: string) => Promise<unknown>;
+    undo?: (id: string) => Promise<unknown>;
+    ms?: number;
+    /** With the ones done, before the toast. */
+    after?: (done: readonly string[]) => void;
+}): Promise<string[]> {
+    // Taken now: a deleted session's summary is gone by the time its Undo runs.
+    const titles = new Map(ids.map((id) => [id, titleOf(id)]));
+    const names = (list: readonly string[]) => sessionNames(list.map((id) => titles.get(id)!));
+    const r = await eachSession(ids, o.one);
+    unselect(r.done);
+    if (r.done.length) {
+        o.after?.(r.done);
+        let left = r.done;
+        const undo = o.undo;
+        if (o.did)
+            toast(`${sessionCount(r.done.length)} ${o.did}`, "info", undo ? {
+                label: "Undo",
+                // A retry brings back only those still missing.
+                run: async () => {
+                    const back = await eachSession(left, undo);
+                    left = back.failed;
+                    if (left.length) throw new Error(`${names(left)} couldn't be brought back: ${errorText(back.error)}`);
+                },
+            } : undefined, o.ms);
+    }
+    if (r.failed.length) toast(`Couldn't ${o.verb} ${names(r.failed)}: ${errorText(r.error)}`, "error");
+    return r.failed;
+}
+
+/** Settle several (or bring them back into play). The ids that failed. */
+export async function settleSessions(ids: readonly string[], settled: boolean): Promise<string[]> {
+    if (ids.length === 1) return (await settle(ids[0]!, settled)) ? (unselect(ids), []) : [...ids];
+    return bulk(ids, {
+        verb: settled ? "settle" : "bring back",
+        did: settled ? "settled" : undefined,
+        one: (id) => rpc.call("session.settle", { id, settled }),
+        undo: settled ? (id) => rpc.call("session.settle", { id, settled: false }) : undefined,
+    });
+}
+
+/**
+ * Archive several (or restore them). One alone goes the usual way (asking about
+ * its worktree); several are archived only, keeping their worktrees, as that
+ * question's default does. The ids that failed.
+ */
+export async function archiveSessions(ids: readonly string[], archived: boolean): Promise<string[]> {
+    if (ids.length === 1) {
+        if ((await archive(ids[0]!, archived)) === false) return [...ids];
+        unselect(ids);
+        return [];
+    }
+    return bulk(ids, {
+        verb: archived ? "archive" : "restore",
+        did: archived ? "archived" : "restored",
+        one: (id) => rpc.call("session.archive", { id, archived }),
+        undo: archived ? (id) => rpc.call("session.archive", { id, archived: false }) : undefined,
+        // As for one: the open session, archived, leaves the screen for Home.
+        after: (done) => {
+            if (archived && app.activeId && done.includes(app.activeId)) newSession(app.homeCwd);
+        },
+    });
+}
+
+/** After the confirm dialog: several to the trash, one Undo for all. The ids that failed. */
+export async function deleteSessions(ids: readonly string[]): Promise<string[]> {
+    if (ids.length === 1) return (await deleteSession(ids[0]!)) ? (unselect(ids), []) : [...ids];
+    return bulk(ids, {
+        verb: "delete",
+        did: "deleted",
+        one: (id) => rpc.call("session.delete", { id }),
+        undo: (id) => rpc.call("session.restore", { id }),
+        ms: UNDO_DELETE_MS,
+    });
+}
+
+/** The delete dialog, for one session or several. */
+export function askToDelete(ids: readonly string[]) {
+    const list = ids.map(summaryOf).filter((s) => s !== undefined);
+    if (list.length === 1) setDeleteRequest({ id: list[0]!.id, title: list[0]!.title, projectName: list[0]!.projectName });
+    else if (list.length > 1) setDeleteRequest({ ids: list.map((s) => s.id), titles: list.map((s) => s.title) });
 }
 
 /** Only the commit dialog's explicit Commit click calls this. Errors stay in the dialog. */
-export async function gitCommit(id: string, paths: string[], message: string, expectedHead?: GitCommitHead) {
+/** `pathTokens`: files whose names were shown redacted (GitFileDiff.pathToken), beside `paths`. */
+export async function gitCommit(id: string, paths: string[], message: string, expectedHead?: GitCommitHead, pathTokens: string[] = []) {
     try {
-        const result = await rpc.call("session.gitCommit", { id, paths, message, expectedHead });
+        const result = await rpc.call("session.gitCommit", { id, paths, message, expectedHead, ...(pathTokens.length ? { pathTokens } : {}) });
         toast(`Committed ${result.hash.slice(0, 7)} ${result.subject}`, "success");
         return result;
     } finally {
@@ -376,8 +561,8 @@ export async function gitCommit(id: string, paths: string[], message: string, ex
     }
 }
 
-export function gitCommitMessage(id: string, paths: string[]) {
-    return rpc.call("session.gitCommitMessage", { id, paths });
+export function gitCommitMessage(id: string, paths: string[], pathTokens: string[] = []) {
+    return rpc.call("session.gitCommitMessage", { id, paths, ...(pathTokens.length ? { pathTokens } : {}) });
 }
 
 /**
@@ -446,6 +631,8 @@ export function togglePanel() {
 }
 
 export function toggleSidebar() {
+    // Narrow windows: the rail is a drawer over the sheet, opened for the moment.
+    if (shellLayout().railMode === "overlay") return void setRailOpen(!railOpen());
     setPrefs("sidebar", !prefs.sidebar);
 }
 
@@ -467,17 +654,22 @@ export function activeHandle() {
  * Use the user's own plan through their installed Claude Code or Codex. The
  * CLI is asked whether it's signed in; signing in is the CLI's own business.
  */
-export async function connectCli(pr: ProviderInfo): Promise<boolean> {
+/**
+ * Turns on a CLI the user is signed in to. True once it's connected. `failed`: where a failure to connect goes, when
+ * something on screen shows it (Settings' provider row) rather than an error card.
+ */
+export async function connectCli(pr: ProviderInfo, failed: (e: unknown) => void = reportError): Promise<boolean> {
+    let r: Awaited<ReturnType<typeof rpc.call<"providers.connectCli">>>;
     try {
-        const r = await rpc.call("providers.connectCli", { provider: pr.id });
-        toast(`Using your ${pr.agentCli?.plan ?? pr.name} through ${pr.name} (${r.description})`, "success");
-        if (r.warning) toast(r.warning, "warn");
-        await Promise.all([refreshProviders(), refreshModels(), refreshSettings()]);
-        return true;
+        r = await rpc.call("providers.connectCli", { provider: pr.id });
     } catch (e) {
-        reportError(e);
+        failed(e);
         return false;
     }
+    toast(`Using your ${pr.agentCli?.plan ?? pr.name} through ${pr.name} (${r.description})`, "success");
+    if (r.warning) toast(r.warning, "warn");
+    await Promise.all([refreshProviders(), refreshModels(), refreshSettings()]).catch(reportError);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -508,11 +700,12 @@ export function editorName(): string | undefined {
  * Settings. The server resolves `path` against the session's folder and opens
  * only what's inside its folders.
  */
-export async function openInEditor(path: string, line?: number, o: { col?: number; folder?: boolean; sessionId?: string } = {}) {
+/** `gitToken`: a file a Git listing showed redacted (GitFileDiff.pathToken): the server opens it, `path` unused. `editor`: "finder" reveals it. */
+export async function openInEditor(path: string, line?: number, o: { col?: number; folder?: boolean; sessionId?: string; gitToken?: string; editor?: string } = {}) {
     const sessionId = o.sessionId ?? app.activeId;
     if (!sessionId) return;
     try {
-        await rpc.call("fs.open", { sessionId, path, line, col: o.col, folder: o.folder });
+        await rpc.call("fs.open", { sessionId, ...(o.gitToken !== undefined ? { gitToken: o.gitToken } : { path }), line, col: o.col, folder: o.folder, ...(o.editor ? { editor: o.editor } : {}) });
     } catch (e) {
         const code = e instanceof RpcError ? e.code : undefined;
         if (code === "no_editor" || code === "not_installed")

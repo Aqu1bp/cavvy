@@ -13,6 +13,7 @@
 // changed to fit this reviewer's verdicts and merged with the harness's own.
 
 import { textOf, type AssistantMessage, type ChatRequest } from "../providers/types";
+import { isShellTool } from "../tools/types";
 
 export interface ReviewContext {
     /** The developer's own recent messages, oldest first. */
@@ -157,6 +158,20 @@ export function summaryFits(input: unknown): boolean {
 /** A popup waits at most this long for its summary: it never holds the popup up. */
 export const SUMMARY_TIMEOUT_MS = 5_000;
 
+/**
+ * A model's summary as one line for the popup, which labels it "AI summary:" itself:
+ * whitespace collapsed, quotes around it and its own leading "Summary:" (any case,
+ * markdown-bold too) taken off.
+ */
+export function cleanSummary(text: string): string {
+    let s = text.replace(/\s+/g, " ").trim();
+    for (let prev = ""; prev !== s; ) {
+        prev = s;
+        s = s.replace(/^["'`]+|["'`]+$/g, "").replace(/^[*_]{0,2}summary[*_]{0,2}\s*:\s*[*_]{0,2}\s*/i, "").trim();
+    }
+    return s;
+}
+
 /** A command worth summarizing: long, or more than one line. */
 export function needsSummary(command: string): boolean {
     return command.length > 100 || command.includes("\n");
@@ -180,7 +195,7 @@ export function parseVerdict(text: string): ClassifierVerdict | undefined {
         // "escalate" is what an older prompt asked for: a no either way.
         const decision = j.decision === "allow" ? "allow" : j.decision === "block" || j.decision === "escalate" ? "block" : undefined;
         if (!decision) return undefined;
-        const summary = typeof j.summary === "string" ? j.summary.replace(/\s+/g, " ").trim().slice(0, 200) : "";
+        const summary = typeof j.summary === "string" ? cleanSummary(j.summary).slice(0, 200) : "";
         return { decision, reason: String(j.reason ?? "").slice(0, 300), ...(summary ? { summary } : {}) };
     } catch {
         return undefined;
@@ -247,12 +262,12 @@ export function reviewPrompt(c: ClassifierInput): string {
     // Hosts only mean something in the sandbox; outside it the command can reach anything.
     const hosts = c.sandboxed && Array.isArray(allowedHosts) && allowedHosts.length ? allowedHosts : undefined;
     const shown = hosts ? { ...rest, allowedHosts: hosts } : rest;
-    parts.push("", "Proposed action:", `<action tool="${c.toolName}">\n${quote(stableStringify(c.toolName === "Bash" ? shown : c.input))}\n</action>`);
+    parts.push("", "Proposed action:", `<action tool="${c.toolName}">\n${quote(stableStringify(isShellTool(c.toolName) ? shown : c.input))}\n</action>`);
     if (c.sandboxed && hosts) {
         parts.push("", "If allowed, this command runs in a sandbox: network only to localhost and the hosts in allowedHosts, writes only inside the project and temp directories, no credential files, no other processes. Judge whether the task needs those hosts; apart from them, only its effect on the project itself matters.");
     } else if (c.sandboxed) {
         parts.push("", "If allowed, this command runs in a sandbox: no network except localhost, writes only inside the project and temp directories, no credential files, no other processes. Only its effect on the project itself matters.");
-    } else if (c.toolName === "Bash") {
+    } else if (isShellTool(c.toolName)) {
         parts.push("", unsandboxed ? "The agent asked to run this outside the sandbox (most likely its sandboxed run failed). It would run with the developer's full access." : "This command would run with the developer's full access (network, all their files).");
     }
     if (c.sensitive) parts.push("", `Sensitive target: the command names ${c.sensitive}, which may contain credentials. Loading it so a project command can use it is routine; printing, copying or sending it anywhere isn't.`);
@@ -366,7 +381,7 @@ export class AutoClassifier {
         try {
             const prompt = `Working directory: ${c.cwd}\n\n<action tool="${c.toolName}">\n${quote(action)}\n</action>`;
             const text = await Promise.race([this.complete(SUMMARY_SYSTEM, prompt, stop, { review: "fast" }), deadline]);
-            const line = text.replace(/\s+/g, " ").trim().replace(/^["'`]+|["'`]+$/g, "").slice(0, 200);
+            const line = cleanSummary(text).slice(0, 200);
             return line || undefined;
         } catch {
             return undefined;

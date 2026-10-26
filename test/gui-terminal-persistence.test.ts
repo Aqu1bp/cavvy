@@ -118,8 +118,11 @@ import solidPreset from "../gui/node_modules/babel-preset-solid/index.js";
 import * as solid from "../gui/node_modules/solid-js/dist/solid.js";
 import { EarlyInput, terminalInputChunks } from "../gui/src/lib/terminal";
 import { RpcError } from "../gui/src/lib/rpc";
+import { frameDrag } from "../gui/src/lib/drag";
+import { terminalFontSize } from "../gui/src/lib/text-size";
+import { fakeFrames } from "./helpers/frames";
 
-function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string; saved?: SavedTabs; script?: SavedTabs["tabs"][number]["script"]; fresh?: boolean; login?: { provider: string; accountId: string; name: string }; cwd?: string } = {}) {
+function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string; saved?: SavedTabs; script?: SavedTabs["tabs"][number]["script"]; fresh?: boolean; login?: { provider: string; accountId: string; name: string }; cwd?: string; terminalKey?: (e: KeyboardEvent) => string; setPrefs?: (key: string, value: unknown) => void; setTerminalDrag?: (h: number | undefined) => void; frames?: ReturnType<typeof fakeFrames>; visible?: boolean; panelHold?: () => unknown } = {}) {
     const [conn, setConn] = solid.createSignal(opts.conn ?? "open");
     const [panelOpen, setPanelOpen] = solid.createSignal(false);
     const calls: { method: string; params: any; resolve: (v: any) => void; reject: (e: any) => void }[] = [];
@@ -129,12 +132,17 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
     const terminals: Emulator[] = [];
     const closed: string[] = [];
     const saved: SavedTabs[] = [];
+    /** What the fit addon fits the screen to (its container's size, in cells), its ResizeObservers, and the frames asked for. */
+    const fitted = { cols: 80, rows: 24 };
+    const resizes = new Set<() => void>();
+    const frameQueue: (() => void)[] = [];
     class Emulator {
         options: any = {}; cols = 80; rows = 24;
         input: (data: string) => void = () => {};
         writes: { data: string; done?: () => void }[] = [];
         constructor() { terminals.push(this); }
-        loadAddon() {} open() {} focus() {} dispose() {} attachCustomKeyEventHandler() {}
+        keyHandler?: (e: KeyboardEvent) => boolean;
+        loadAddon() {} open() {} focus() {} dispose() {} attachCustomKeyEventHandler(fn: (e: KeyboardEvent) => boolean) { this.keyHandler = fn; }
         onData(fn: (data: string) => void) { this.input = fn; return { dispose() {} }; }
         write(data: string, done?: () => void) { this.writes.push({ data, done }); }
         drain() { for (const w of this.writes.splice(0)) { if (w.data.includes("QUERY")) this.input("\x1b[?1;2c"); w.done?.(); } }
@@ -154,7 +162,7 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
     const resolve = (value: any): any => typeof value === "function" ? resolve(value()) : value;
     const renderer = {
         ...solid, effect: solid.createRenderEffect, memo: solid.createMemo,
-        createElement(tag: string) { const node = { tag, props: {}, clientHeight: 0 }; nodes.push(node); return node; },
+        createElement(tag: string) { const node = { tag, props: {}, clientHeight: opts.visible ? 200 : 0 }; nodes.push(node); return node; },
         createTextNode: () => ({}), insertNode() {},
         setProp(node: any, key: string, value: any) { node.props[key] = value; },
         insert(_node: any, value: any) { solid.createRenderEffect(() => resolve(value)); },
@@ -166,29 +174,66 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
     const deps = {
         renderer, ...solid, rpc, app: { get conn() { return conn(); } }, RpcError, EarlyInput, TerminalClosures, terminalInputChunks, isTerminalReply,
         loadTabs: () => opts.saved ?? { tabs: [], next: 1, open: false }, restoreTabs, saveTabs: (value: SavedTabs) => saved.push(value),
-        terminalOpen: panelOpen, setTerminalOpen: setPanelOpen, terminalActions: {}, prefs: { terminalHeight: 200 }, setPrefs() {},
-        basename: (v: string) => v, tildify: (v: string) => v, terminalShortcut: "Ctrl+`", toast() {}, reportError() {}, refreshProviders() {}, setSettingsTab() {}, setupObscured: () => false, trustRequest: () => undefined,
-        Play: noop, Plus: noop, RotateCw: noop, SquareTerminal: noop, X: noop, Terminal: Emulator, FitAddon: class { fit() {} },
-        ResizeObserver: class { observe() {} disconnect() {} }, MutationObserver: class { observe() {} disconnect() {} },
+        terminalOpen: panelOpen, setTerminalOpen: setPanelOpen, terminalActions: {}, prefs: { terminalHeight: 200, fontSize: 14 }, terminalFontSize, setPrefs: opts.setPrefs ?? (() => {}),
+        setTerminalDrag: opts.setTerminalDrag ?? (() => {}), frameDrag: (o: Parameters<typeof frameDrag>[0]) => frameDrag({ ...o, frames: opts.frames ?? fakeFrames() }),
+        basename: (v: string) => v, tildify: (v: string) => v, withShortcut: (label: string) => label, terminalKey: opts.terminalKey ?? (() => "shell"), toast() {}, reportError() {}, refreshProviders() {}, setSettingsTab() {}, setupObscured: () => false, trustRequest: () => undefined,
+        Play: noop, Plus: noop, RotateCw: noop, TerminalIcon: noop, X: noop, ChevronDown: noop, Maximize2: noop, Minimize2: noop,
+        terminalMax: () => false, setTerminalMax() {}, setTerminalShown() {}, shellLayout: () => ({ terminal: { most: 560 } }), panelHold: opts.panelHold ?? (() => undefined), Terminal: Emulator,
+        FitAddon: class { fit() { const t = terminals.at(-1)!; t.cols = fitted.cols; t.rows = fitted.rows; } },
+        ResizeObserver: class { constructor(private cb: () => void) {} observe() { resizes.add(this.cb); } disconnect() { resizes.delete(this.cb); } }, MutationObserver: class { observe() {} disconnect() {} },
         getComputedStyle: () => ({ getPropertyValue: () => "#000" }), document: { documentElement: {} },
-        requestAnimationFrame: () => 0, cancelAnimationFrame() {}, isTerminalToggle: () => false, isMod: () => false, copyText() {},
+        requestAnimationFrame: (fn: () => void) => frameQueue.push(fn), cancelAnimationFrame() {}, isMod: () => false, copyText() {},
     };
     const component = new Function(...Object.keys(deps), `${js}; return ${name};`)(...Object.values(deps));
     let dispose!: () => void;
     solid.createRoot((d: () => void) => {
         dispose = d;
         component(name === "TerminalPanel" ? { cwd: opts.cwd ?? "/p" } : {
-            tab: { id: "tab", terminal: "shell", cwd: "/p", number: 1, attach: !opts.fresh, script: opts.script, login: opts.login }, visible: false,
+            tab: { id: "tab", terminal: "shell", cwd: "/p", number: 1, attach: !opts.fresh, script: opts.script, login: opts.login }, visible: !!opts.visible,
             onClose: (id: string) => closed.push(id),
             onRestart: async (_next: string, previous?: string) => { if (previous) await rpc.call("terminal.close", { id: previous }); },
         });
     });
-    return { calls, terminals, nodes, closed, saved, dispose, setPanelOpen,
+    return { calls, terminals, nodes, closed, saved, dispose, setPanelOpen, fitted,
+        /** The screen's container changing size, and the next frame. */
+        resized() { for (const fn of resizes) fn(); },
+        frame() { for (const fn of frameQueue.splice(0)) fn(); },
         event(e: any) { for (const fn of events) fn(e); },
         connection(state: string) { setConn(state); for (const fn of states) fn(state); },
     };
 }
 const tick = () => Bun.sleep(0);
+
+test("dragging the terminal's edge shows its height once a frame, within its bounds, and saves it on release", () => {
+    const frames = fakeFrames();
+    const saved: [string, unknown][] = [];
+    const shown: (number | undefined)[] = [];
+    const m = mounted("TerminalPanel", { setPrefs: (key, value) => saved.push([key, value]), setTerminalDrag: (h) => shown.push(h), frames });
+    try {
+        const handle = m.nodes.find((n) => n.props.class === "terminal-resize")!;
+        const listeners: Record<string, ((e: any) => void) | undefined> = {};
+        const target = { setPointerCapture() {}, addEventListener: (type: string, fn: any) => (listeners[type] = fn), removeEventListener: (type: string, fn: any) => listeners[type] === fn && delete listeners[type] };
+        // From 260 (the panel's height when it has none to measure).
+        handle.props.onPointerDown({ button: 0, clientY: 500, pointerId: 1, preventDefault() {}, currentTarget: target });
+        listeners.pointermove!({ clientY: 480 });
+        listeners.pointermove!({ clientY: 470 });
+        expect(shown).toEqual([]);
+        frames.run();
+        expect(shown).toEqual([290]);
+        // No higher than the layout lets it (560 here), and nothing saved yet.
+        listeners.pointermove!({ clientY: 0 });
+        frames.run();
+        expect(shown).toEqual([290, 560]);
+        expect(saved).toEqual([]);
+        // No lower than 120; the release saves the last height at once.
+        listeners.pointermove!({ clientY: 900 });
+        listeners.lostpointercapture!({});
+        expect(saved).toEqual([["terminalHeight", 120]]);
+        expect(shown).toEqual([290, 560, undefined]);
+        expect(frames.pending()).toBe(0);
+        expect(listeners.pointermove).toBeUndefined();
+    } finally { m.dispose(); }
+});
 
 test("real panel waits for a connection and retries interrupted reconciliation", async () => {
     const m = mounted("TerminalPanel", { conn: "connecting", saved: { tabs: [], next: 1, open: false } });
@@ -201,6 +246,38 @@ test("real panel waits for a connection and retries interrupted reconciliation",
         m.calls[1]!.resolve([{ id: "server-shell", cwd: "/p", script: { id: "dev", name: "Dev" } }]); await tick();
         expect(m.calls.map((c) => c.method)).toEqual(["terminal.list", "terminal.list", "terminal.attach"]);
         expect(m.saved.at(-1)?.tabs[0]?.script?.name).toBe("Dev");
+    } finally { m.dispose(); }
+});
+
+test("the screen tells its shell a new size only when fitting changes it, not on every resize while a panel slides", async () => {
+    const m = mounted("TerminalScreen", { visible: true });
+    try {
+        m.calls.find((c) => c.method === "terminal.attach")!.resolve({ id: "shell", cwd: "/p" }); await tick();
+        m.frame();
+        const sizes = () => m.calls.filter((c) => c.method === "terminal.resize").map((c) => `${c.params.cols}x${c.params.rows}`);
+        // Attaching sends its size (a full-screen program draws itself again), as does showing it.
+        expect(sizes().length).toBeGreaterThan(0);
+        const sent = sizes().length;
+        // Its box resized each frame of a slide, still fitting the same cells: nothing to tell the shell.
+        for (let i = 0; i < 8; i++) { m.resized(); m.frame(); }
+        expect(sizes().length).toBe(sent);
+        m.fitted.cols = 120;
+        m.resized(); m.frame(); m.resized(); m.frame();
+        expect(sizes().slice(sent)).toEqual(["120x24"]);
+    } finally { m.dispose(); }
+});
+
+test("while the panels slide the terminal keeps the size held for it (lib/layout.ts heldSizes), from the row's top", () => {
+    const [held, setHeld] = solid.createSignal<any>();
+    const m = mounted("TerminalPanel", { panelHold: held });
+    try {
+        const panel = m.nodes.find((n) => n.tag === "section")!;
+        const style = () => (typeof panel.props.style === "function" ? panel.props.style() : panel.props.style);
+        expect([style().width, style().height, panel.props.classList?.held]).toEqual([undefined, undefined, false]);
+        setHeld({ column: { w: 732, h: 604 }, from: { w: 732, h: 864 }, to: { w: 732, h: 604 }, sheetWidth: 1092, terminal: 260 });
+        expect([style().width, style().height, panel.props.classList?.held]).toEqual(["1092px", "260px", true]);
+        setHeld(undefined);
+        expect([style().width, style().height]).toEqual([undefined, undefined]);
     } finally { m.dispose(); }
 });
 
@@ -319,4 +396,29 @@ test("a saved setup tab retains only display metadata and reattaches on reload a
         expect(m.calls.some((c) => ["scripts.run", "terminal.arm", "terminal.open"].includes(c.method))).toBe(false);
         expect(JSON.stringify(m.calls.map((c) => c.params))).not.toContain("ticket");
     } finally { m.dispose(); }
+});
+
+test("the terminal holds back the first key of a chord for the terminal toggle, and only that", async () => {
+    const kb = await import("../gui/src/state/keybindings");
+    const key = (k: string, code: string, extra: Partial<KeyboardEvent> = {}) =>
+        ({ type: "keydown", key: k, code, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, isComposing: false, keyCode: 0, preventDefault() {}, ...extra }) as unknown as KeyboardEvent;
+    kb.applyKeybindingsFile({ path: "/k.json", text: JSON.stringify({ bindings: [{ context: "Global", bindings: { "ctrl+u t": "app:toggleTerminal", "enter t": "app:toggleTerminal", "ctrl+x ctrl+s": "app:settings" } }] }) });
+    const m = mounted("TerminalScreen", { terminalKey: kb.terminalKey });
+    try {
+        const handler = m.terminals[0]!.keyHandler!;
+        // true: xterm sends the key to the shell.
+        expect(handler(key("u", "KeyU", { ctrlKey: true }))).toBe(false);
+        expect(handler(key("t", "KeyT"))).toBe(false);
+        expect(handler(key("Enter", "Enter"))).toBe(false);
+        expect(handler(key("t", "KeyT"))).toBe(false);
+        // A chord whose action doesn't run from the terminal leaves its keys to the shell, and is dropped.
+        expect(handler(key("x", "KeyX", { ctrlKey: true }))).toBe(true);
+        expect(kb.matchKey(key("s", "KeyS", { ctrlKey: true }), ["Global"]).kind).toBe("none");
+        // Typing is the shell's.
+        expect(handler(key("a", "KeyA"))).toBe(true);
+        expect(handler(key("u", "KeyU"))).toBe(true);
+    } finally {
+        m.dispose();
+        kb.applyKeybindingsFile({ path: "/k.json" });
+    }
 });

@@ -16,7 +16,7 @@ export function sessionReadReady(handle: SessionHandle): boolean {
 export function commitUnavailable(handle: SessionHandle | undefined): string | undefined {
     if (!handle) return "This session is no longer open.";
     const state = handle.view.state;
-    if (state.busy || state.queued.length || state.interactions.length || state.shells.some((s) => s.running) || handle.view.agents.some((a) => !a.replayed && (a.status === "running" || a.status === "waiting"))) return "Wait for the session's responses, questions, shells, and tasks to finish before committing.";
+    if ((state.busy && !state.activity?.idle) || state.queued.length || state.interactions.length || state.shells.some((s) => s.running && !s.monitor) || handle.view.agents.some((a) => !a.replayed && (a.status === "running" || a.status === "waiting"))) return "Wait for the session's responses, questions, shells, and tasks to finish before committing.";
     if (!state.trusted) return "Trust this folder before committing: Git runs the repository's hooks.";
 }
 
@@ -32,21 +32,26 @@ export function useChanges(handle: () => SessionHandle) {
     );
 }
 
-/** Git's answer, or why there isn't one (a base that's gone, a folder too big). */
-export type GitView = GitChangesInfo & { error?: string };
+/** Git's answer, or why there isn't one (a base that's gone, a folder too big); `worktree`: the other worktree it's of, if it is. */
+export type GitView = GitChangesInfo & { error?: string; worktree?: string };
 
 const asked = new Map<string, Slot<GitView>>();
+
+/** A branch shown redacted is picked by its handle (GitChangesInfo.baseTokens). Git never allows ":" in a branch's name, so the two can't be mistaken. */
+const baseParam = (base: string) => (base.startsWith("git:") ? { baseToken: base } : { base });
 
 /**
  * One request per session, scope and base at a time: the panel and the pane asking together
  * share it, and a refresh asked for mid-request (a turn ending during the scan its start
  * began) gets one more, after it.
  */
-export function fetchGitChanges(id: string, scope: GitScope, base?: string, path?: string, turnId?: number): Promise<GitView> {
-    return coalesce(asked, JSON.stringify([id, scope, base, path, turnId]), () =>
+export function fetchGitChanges(id: string, scope: GitScope, base?: string, path?: string, turnId?: number, worktree?: string, pathToken?: string): Promise<GitView> {
+    return coalesce(asked, JSON.stringify([id, scope, base, path, turnId, worktree, pathToken]), () =>
         rpc
-            .call("session.gitChanges", { id, scope, ...(base ? { base } : {}), ...(path !== undefined ? { path } : {}), ...(turnId !== undefined ? { turnId } : {}) })
-            .catch((e): GitView => ({ repo: true, scope, files: [], added: 0, removed: 0, tracked: true, bases: [], more: 0, error: e instanceof Error ? e.message : String(e) })),
+            .call("session.gitChanges", { id, scope, ...(base ? baseParam(base) : {}), ...(pathToken !== undefined ? { pathToken } : path !== undefined ? { path } : {}), ...(turnId !== undefined ? { turnId } : {}), ...(worktree !== undefined ? { worktree } : {}) })
+            .catch((e): GitView => ({ repo: true, scope, files: [], added: 0, removed: 0, tracked: true, bases: [], more: 0, error: e instanceof Error ? e.message : String(e) }))
+            // Which folder the answer is of travels with it: a view switching folders shows the last answer until the next one comes.
+            .then((v): GitView => (worktree !== undefined ? { ...v, worktree } : v)),
     );
 }
 
@@ -75,13 +80,19 @@ export function changedOutside(): number {
     return outside();
 }
 
-/** Git's view of a session's folder; fetched again as edits land, when a turn starts or ends, and on changedOutside(). */
-export function useGitChanges(handle: () => SessionHandle, scope: () => GitScope = () => "uncommitted", base: () => string | undefined = () => undefined, turnId: () => number | undefined = () => undefined) {
+/**
+ * Git's view of a session's folder, or of another `worktree` of its repository; fetched again as edits land,
+ * when a turn starts or ends, and on changedOutside().
+ */
+export function useGitChanges(handle: () => SessionHandle, scope: () => GitScope = () => "uncommitted", base: () => string | undefined = () => undefined, turnId: () => number | undefined = () => undefined, worktree: () => string | undefined = () => undefined) {
     return createResource(
-        () => sessionReadReady(handle()) && { id: handle().id, scope: scope(), base: base(), turnId: turnId(), n: handle().view.state.filesChanged, busy: handle().view.state.busy, outside: changedOutside() },
-        ({ id, scope, base, turnId }) => fetchGitChanges(id, scope, base, undefined, turnId),
+        () => sessionReadReady(handle()) && { id: handle().id, scope: scope(), base: base(), turnId: turnId(), worktree: worktree(), n: handle().view.state.filesChanged, busy: handle().view.state.busy, outside: changedOutside() },
+        ({ id, scope, base, turnId, worktree }) => fetchGitChanges(id, scope, base, undefined, turnId, worktree),
     );
 }
 
-/** The view and base last used per session, so the pane reopens the way it was left. */
-export const lastView = new Map<string, { scope?: ReviewScope; base?: string; turnId?: number }>();
+/**
+ * The view last used per session, so the pane reopens the way it was left; for as long as the app runs.
+ * `worktree`: another worktree being looked at (the session's own folder when unset), and the view it had.
+ */
+export const lastView = new Map<string, { scope?: ReviewScope; base?: string; turnId?: number; worktree?: string; own?: { scope: ReviewScope; base?: string } }>();

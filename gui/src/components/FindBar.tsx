@@ -1,11 +1,12 @@
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show, untrack } from "solid-js";
-import { ChevronDown, ChevronUp, Search, X } from "lucide-solid";
+import { ChevronLeft, ChevronRight, Search, X } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { clearPaint, findMatches, MAX_MATCHES, paintMatches, revealInBoxes, textRanges, type FindMatch } from "../lib/find";
+import { FAR } from "../lib/transcript-scroll";
 import { findFocus, findQuery, setFindOpen, setFindQuery, setFindReveal } from "../state/ui";
 
-/** The top of the view the bar covers (prompts sit on the right, under it). */
-export const BAR_ROOM = 60;
+/** The top of the view the bar covers: the title bar's row (52px) and the find pill under it (58px down, 38px tall), with a little air. */
+export const BAR_ROOM = 104;
 
 /** Where a jump from ⌘K landed: the match shown first is in this turn. */
 export interface FindAnchor {
@@ -18,6 +19,8 @@ export function FindBar(p: {
     turns: () => readonly Turn[];
     scroller: () => HTMLElement | undefined;
     col: () => HTMLElement | undefined;
+    /** The composer dock's height: a match is shown above it. */
+    dock: () => number;
     /** Draws the turn (its page) and stops following the end. */
     show: (turnId: string) => void;
     anchor: () => FindAnchor | undefined;
@@ -84,6 +87,8 @@ export function FindBar(p: {
         const turn = col.querySelector(`[data-turn="${CSS.escape(m.turnId)}"]`);
         const el = turn?.querySelector(`[data-find="${CSS.escape(m.part)}"]`) ?? turn;
         if (!el) return;
+        // Drawn now, if it was skipped far from the view, so the boxes it scrolls in are measured.
+        turn?.removeAttribute(FAR);
         const ranges = textRanges(el, findQuery());
         current = ranges[Math.min(m.n, ranges.length - 1)];
         repaint();
@@ -92,7 +97,7 @@ export function FindBar(p: {
         if (current) revealInBoxes(current, scroller);
         const box = (current ?? el).getBoundingClientRect();
         const view = scroller.getBoundingClientRect();
-        const dock = parseFloat(getComputedStyle(scroller).getPropertyValue("--dock-h")) || 0;
+        const dock = p.dock();
         // Below the bar, above the composer.
         if (box.top >= view.top + BAR_ROOM && box.bottom <= view.bottom - dock - 24) { p.onNavigate?.(); return; }
         // With its prompt when the turn fits that far, else a third of the way down.
@@ -218,19 +223,19 @@ export function FindBar(p: {
     };
 
     return (
-        <div class="find-bar" role="search" aria-label="Conversation" on:keydown={onBarKey}>
-            <Search size={14} class="muted" />
+        <div class="find-bar glass" role="search" aria-label="Conversation" on:keydown={onBarKey}>
+            <Search size={14} class="find-ic" />
             <input ref={input} value={text()} onInput={(e) => onInput(e.currentTarget.value)} on:keydown={onKey} placeholder="Find in conversation" spellcheck={false} aria-label="Find in conversation" />
             <span class="find-count num" role="status" aria-live="polite" aria-atomic="true">{count()}</span>
             <Show when={matches().length > 1}>
-                <button class="icon-btn" title="Previous (Shift+Enter)" aria-label="Previous match" onClick={() => go(cur() - 1)}>
-                    <ChevronUp size={14} />
+                <button class="find-btn" title="Previous (Shift+Enter)" aria-label="Previous match" onClick={() => go(cur() - 1)}>
+                    <ChevronLeft size={14} />
                 </button>
-                <button class="icon-btn" title="Next (Enter)" aria-label="Next match" onClick={() => go(cur() + 1)}>
-                    <ChevronDown size={14} />
+                <button class="find-btn" title="Next (Enter)" aria-label="Next match" onClick={() => go(cur() + 1)}>
+                    <ChevronRight size={14} />
                 </button>
             </Show>
-            <button class="icon-btn" title="Close (Esc)" aria-label="Close find" onClick={close}>
+            <button class="find-btn" title="Close (Esc)" aria-label="Close find" onClick={close}>
                 <X size={14} />
             </button>
         </div>

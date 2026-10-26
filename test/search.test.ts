@@ -176,6 +176,26 @@ describe("searching session files", () => {
         expect(turnFor(s.file, f.seg, f.index)?.prompt?.text).toBe("echo after compaction");
     });
 
+    test("a prompt an automatic compaction kept is found once, where it went on", async () => {
+        const kept = prompt("juliet kept prompt words", { meta: { kind: "prompt", checkpoint: 3 } });
+        const s = write([
+            prompt("kilo earlier prompt"),
+            reply("ok"),
+            kept,
+            { t: "compact", summary: "Summary so far.", kept: true },
+            { t: "msg", m: { role: "user", content: [{ type: "text", text: "summary" }], meta: { kind: "summary" } } },
+            kept,
+            reply("lima answer to the kept prompt"),
+        ]);
+        const hits = (await searchSessions("juliet kept prompt")).hits;
+        expect(hits).toHaveLength(1);
+        expect(hits[0]).toMatchObject({ seg: 1, index: 1 });
+        expect(turnFor(s.file, 1, 1)?.prompt).toMatchObject({ text: "juliet kept prompt words", index: 1 });
+        const answer = (await searchSessions("lima answer")).hits[0]!;
+        expect(turnFor(s.file, answer.seg, answer.index)?.prompt?.text).toBe("juliet kept prompt words");
+        expect(turnFor(s.file, 0, 0)?.prompt?.text).toBe("kilo earlier prompt");
+    });
+
     test("a reply that carries on after an automatic compaction is in its own place", async () => {
         const s = write([
             prompt("golf before the automatic compaction"),

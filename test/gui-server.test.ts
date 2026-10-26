@@ -1064,6 +1064,111 @@ describe("connecting", () => {
         }
     }, 30_000);
 
+    test("a message Claude Code takes at a tool result has its turn at its own place in the session (rewind and fork go by it)", async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        process.env.FAKE_SCENARIO = "steering";
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            await engine.handle(c, "models.list", { refresh: true });
+            await engine.handle(c, "session.setModel", { id, ref: "claude-code:default", persist: false });
+            await engine.handle(c, "session.send", { id, text: "start" });
+            expect(await engine.handle(c, "session.send", { id, text: "a correction", mode: "steer" })).toEqual({ queued: true });
+            for (let k = 0; k < 500 && (rt.busy || rt.snapshot().state.queued.length); k++) await Bun.sleep(20);
+            const at = rt.session.messages.findIndex((m) => m.role === "user" && m.content.some((p) => (p as { text?: string }).text === "a correction"));
+            expect(at).toBeGreaterThan(0);
+            // What Claude Code said before it is recorded first, so the prompt sits after it.
+            expect(rt.session.messages[at - 1]!.role).toBe("assistant");
+            const turn = rt.snapshot().turns.find((t) => t.prompt?.text === "a correction")!;
+            expect(turn.prompt!.index).toBe(at);
+            expect(turn.pos).toEqual({ seg: 0, index: at });
+        } finally {
+            await engine.stop();
+            delete process.env.FAKE_SCENARIO;
+            removeAgentConfig("claude-code");
+        }
+    }, 30_000);
+
+    /** A Claude Code session that answered and waits on a background sub-agent, with `hook` as its UserPromptSubmit hook. */
+    async function waitingOnBackground(hook: string, backgroundMs = 1500) {
+        const { saveAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        process.env.FAKE_SCENARIO = "agent-background";
+        process.env.FAKE_SECOND_SCENARIO = "none";
+        process.env.FAKE_BACKGROUND_MS = String(backgroundMs);
+        process.env.FAKE_LOG = join(tempDir("cli-log-"), "log.jsonl");
+        const s = await engineWithSession();
+        const events: any[] = [];
+        (s.c as { send: (e: unknown) => void }).send = (e) => void events.push(e);
+        await s.engine.handle(s.c, "models.list", { refresh: true });
+        await s.engine.handle(s.c, "session.setModel", { id: s.id, ref: "claude-code:default", persist: false });
+        // The per-run path, whose turn waits for its background work (agentCli.liveSessions off): what's tested is
+        // a message sent during that wait. On a live session the turn is over at its answer (claude-live.test.ts).
+        s.rt.ws.settings = { ...s.rt.ws.settings, agentCli: { liveSessions: false }, hooks: { UserPromptSubmit: [{ command: hook }] } };
+        await s.engine.handle(s.c, "session.send", { id: s.id, text: "map the auth module" });
+        for (let k = 0; k < 500 && !s.rt.snapshot().state.activity?.label?.includes("Waiting for"); k++) await Bun.sleep(10);
+        expect(s.rt.snapshot().state.activity?.label).toContain("Waiting for");
+        return { ...s, events };
+    }
+    const cliLog = () => (process.env.FAKE_LOG && existsSync(process.env.FAKE_LOG) ? readFileSync(process.env.FAKE_LOG, "utf-8") : "");
+    async function settled(rt: { busy: boolean }) {
+        for (let k = 0; k < 1000 && rt.busy; k++) await Bun.sleep(10);
+    }
+
+    test("a message the user interrupts while its hooks run goes back to the composer, with its image", async () => {
+        const { removeAgentConfig } = await import("../src/providers/registry");
+        const marker = join(tempDir("hook-"), "running");
+        const { engine, c, id, rt, events } = await waitingOnBackground(`grep -q 'look at' && { touch '${marker}'; sleep 3; }; exit 0`);
+        try {
+            const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+            await engine.handle(c, "session.send", { id, text: "look at this", images: [{ mediaType: "image/png", data: png }], mode: "queue" });
+            for (let k = 0; k < 500 && !existsSync(marker); k++) await Bun.sleep(10);
+            expect(existsSync(marker)).toBe(true);
+            await engine.handle(c, "session.interrupt", { id });
+            await settled(rt);
+            const draft = events.find((e) => e.type === "draft");
+            expect(draft).toMatchObject({ text: "look at this", images: [{ mediaType: "image/png", data: png }] });
+            expect(rt.session.messages.some((m) => m.role === "user" && JSON.stringify(m.content).includes("look at this"))).toBe(false);
+        } finally {
+            await engine.stop();
+            for (const k of ["FAKE_SCENARIO", "FAKE_SECOND_SCENARIO", "FAKE_BACKGROUND_MS", "FAKE_LOG"]) delete process.env[k];
+            removeAgentConfig("claude-code");
+        }
+    }, 30_000);
+
+    test("a message its hook blocks while Claude Code waits leaves the turn as it was: the report lands there and is kept", async () => {
+        const { removeAgentConfig } = await import("../src/providers/registry");
+        const { engine, c, id, rt } = await waitingOnBackground(`grep -q forbidden && { echo "no forbidden words" >&2; exit 2; }; exit 0`);
+        try {
+            await engine.handle(c, "session.send", { id, text: "say forbidden things", mode: "queue" });
+            await settled(rt);
+            const turns = rt.snapshot().turns;
+            const text = (t: (typeof turns)[number]) => JSON.stringify(t.blocks);
+            const first = turns.find((t) => t.prompt?.text === "map the auth module")!;
+            // The warning shows, and the report comes in the turn that waited for it.
+            expect(turns.some((t) => text(t).includes("Prompt blocked by hook"))).toBe(true);
+            expect(text(first)).toContain("The explorer reported back");
+            expect(turns.filter((t) => text(t).includes("The explorer reported back"))).toHaveLength(1);
+            expect(cliLog()).not.toContain("say forbidden things");
+            await engine.stop();
+            // Kept: reopened, the report is still there.
+            const { Engine } = await import("../src/server/engine");
+            const reopened = new Engine();
+            const next = { subs: new Set<string>(), send() {} };
+            reopened.clients.add(next);
+            try {
+                const view = (await reopened.handle(next, "session.open", { id })) as SessionSnapshot;
+                expect(JSON.stringify(view.turns)).toContain("The explorer reported back");
+            } finally {
+                await reopened.stop();
+            }
+        } finally {
+            await engine.stop();
+            removeAgentConfig("claude-code");
+            for (const k of ["FAKE_SCENARIO", "FAKE_SECOND_SCENARIO", "FAKE_BACKGROUND_MS", "FAKE_LOG"]) delete process.env[k];
+        }
+    }, 30_000);
+
     test("a turn still waiting on the model when the server stops is saved as interrupted", async () => {
         const { findSessionAnywhere } = await import("../src/agent/session");
         const { engine, c, id } = await engineWithSession();
@@ -1186,6 +1291,52 @@ describe("connecting", () => {
 });
 
 describe("sessions", () => {
+    test("a prompt's turn goes out before the send's reply, not with the next batch of output", async () => {
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project() });
+        await c.call("session.send", { id, text: "explain the layout of the otter module" });
+        const messages = c.raw.map((m) => JSON.parse(m));
+        const turn = messages.findIndex((m) => m.event?.type === "session.ops" && m.event.ops.some((o: { op: string; turn?: Turn }) => o.op === "turn" && o.turn?.prompt?.text === "explain the layout of the otter module"));
+        const reply = messages.findIndex((m) => m.result?.queued === false);
+        expect(turn).toBeGreaterThanOrEqual(0);
+        expect(turn).toBeLessThan(reply);
+        // It went with the state the turn started with, so the window shows it working at once too.
+        expect(messages[turn].event.ops).toContainEqual(expect.objectContaining({ op: "state", patch: expect.objectContaining({ busy: true }) }));
+        await c.until(id, done);
+        c.close();
+    });
+
+    test("stopping a first turn while its git snapshot is read ends it then, and stops its git calls", async () => {
+        const cwd = project();
+        commitRepo(cwd);
+        const bin = tempDir("harness-slow-git-");
+        const finished = join(bin, "log-finished");
+        // `git log` (the snapshot's recent commits) takes a while; everything else is git as usual.
+        writeFileSync(join(bin, "git"), `#!/bin/sh\ncase " $* " in *" log "*) sleep 1.5; touch '${finished}';; esac\nexec '${Bun.which("git")}' "$@"\n`, { mode: 0o700 });
+        const before = process.env.PATH;
+        process.env.PATH = `${bin}:${before}`;
+        try {
+            const c = await client();
+            const id = await c.open("session.create", { cwd });
+            await c.call("session.send", { id, text: "explain the layout" });
+            await c.until(id, (v) => v.state.busy);
+            await c.call("session.interrupt", { id });
+            await c.until(id, done, 5000);
+            expect(existsSync(finished)).toBe(false);
+            expect(lastTurn(c.view(id)).status).not.toBe("done");
+            // Its git calls were stopped with it, not left to finish.
+            await Bun.sleep(1600);
+            expect(existsSync(finished)).toBe(false);
+            // The next send builds the prompt, git snapshot and all.
+            await c.call("session.send", { id, text: "explain the layout" });
+            await c.until(id, (v) => done(v) && lastTurn(v).status === "done", 10_000);
+            c.close();
+        } finally {
+            if (before === undefined) delete process.env.PATH;
+            else process.env.PATH = before;
+        }
+    }, 20_000);
+
     test("sessions.search finds a prompt and a reply, at the turn the session draws", async () => {
         const c = await client();
         const id = await c.open("session.create", { cwd: project() });
@@ -1386,11 +1537,52 @@ describe("sessions", () => {
         c.close();
     }, 30_000);
 
+    test("a prompt auto-compaction kept stays its turn's: shown once, rewindable, with its images, live as after a reopen", async () => {
+        const file = join(iso.home, "settings.json");
+        const saved = readFileSync(file, "utf-8");
+        const c = await client();
+        try {
+            // Compacts at the start of any turn with more than four messages before it.
+            writeFileSync(file, JSON.stringify({ ...JSON.parse(saved), autoCompactThreshold: 0.001 }));
+            const id = await c.open("session.create", { cwd: project() });
+            const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+            for (const text of ["alpha words", "bravo words"]) {
+                await c.call("session.send", { id, text });
+                await c.until(id, (v) => done(v) && v.turns.some((t) => t.prompt?.text === text));
+            }
+            await c.call("session.send", { id, text: "charlie words", images: [{ mediaType: "image/png", data: png }] });
+            await c.until(id, (v) => done(v) && v.turns.some((t) => t.prompt?.text === "charlie words"), 15_000);
+            const live = c.view(id).turns.filter((t) => t.prompt?.text === "charlie words");
+            expect(live).toHaveLength(1);
+            expect(live[0]!.blocks.some((b) => b.t === "compact")).toBe(true);
+            expect(live[0]).toMatchObject({ pos: { seg: 1, index: 1 }, prompt: { index: 1, images: 1 } });
+            expect(await c.call("session.promptImages", { id, ...live[0]!.pos })).toEqual({ images: [{ mediaType: "image/png", data: png }] });
+            expect((await c.call("session.rewindTargets", { id })).map((t: { index: number }) => t.index)).toEqual([1]);
+            // Opened again: once, where it went on, the same snapshot, prompt images and start.
+            await c.call("session.close", { id });
+            const lock = `${findSessionAnywhere(id)}.lock`;
+            for (let i = 0; i < 50 && existsSync(lock); i++) await Bun.sleep(100);
+            await c.open("session.open", { id });
+            const again = c.view(id).turns.filter((t) => t.prompt?.text === "charlie words");
+            expect(again).toHaveLength(1);
+            expect(again[0]).toMatchObject({ pos: { seg: 1, index: 1 }, prompt: { index: 1, imagesKey: live[0]!.prompt!.imagesKey }, startedAt: live[0]!.startedAt });
+            expect(again[0]!.archived).toBeUndefined();
+            expect(again[0]!.snapshotId).toBe(live[0]!.snapshotId);
+            // Rewound to it, it's gone (no copy left among the archived turns).
+            const plan = await c.call("session.rewindPlan", { id, index: 1 });
+            await c.call("session.rewind", { id, index: 1, planId: plan.planId, code: false, conversation: true });
+            await c.until(id, (v) => !v.turns.some((t) => t.prompt?.text === "charlie words"));
+        } finally {
+            writeFileSync(file, saved);
+            c.close();
+        }
+    }, 30_000);
+
     test("an @mentioned image is one of the prompt's images: counted, keyed and returned, live as after a reopen", async () => {
         const c = await client();
         const dir = project();
         const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
-        const gif = "R0lGODlhAQABAAAAACw=";
+        const gif = "R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=="; // a real 1×1 GIF: images are decoded on their way in
         writeFileSync(join(dir, "shot.gif"), Buffer.from(gif, "base64"));
         const id = await c.open("session.create", { cwd: dir });
         await c.call("session.send", { id, text: "compare @shot.gif with this", images: [{ mediaType: "image/png", data: png }] });
@@ -2169,7 +2361,7 @@ describe("sub-agents", () => {
             // Shown under the task's call to it, on the task's model, with what it did and what it answered.
             expect([sub.parentId, sub.turnId, sub.model, sub.status, sub.taskId, sub.report]).toEqual([task.id, task.turnId, "codex:gpt-test", "done", undefined, "CHILD_REPORT: 2 files."]);
             expect(task.blocks.some((b) => b.id === sub.id && b.t === "tool" && b.agent)).toBe(true);
-            expect(sub.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t === "notice" ? `${b.level}: ${b.text}` : b.t))).toEqual(["info: Codex: Model metadata for `gpt-test` not found.", "error: child stream hiccup", "Bash:ok", "CHILD_REPORT: 2 files."]);
+            expect(sub.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t === "notice" ? `${b.level}: ${b.text}` : b.t))).toEqual(["info: Model metadata for `gpt-test` not found.", "error: child stream hiccup", "Bash:ok", "CHILD_REPORT: 2 files."]);
             expect(sub.toolCount).toBe(1);
             expect(sub.tokens).toBe(5050);
             // The task's own steps don't take in its sub-agent's.
@@ -2239,7 +2431,7 @@ describe("sub-agents", () => {
     }, 45_000);
 
     /** A turn on the fake Claude Code in a scenario; the session's view once it's over. */
-    async function claudeCodeTurn(scenario: string) {
+    async function claudeCodeTurn(scenario: string, settled: (v: { state: SessionState; turns: Turn[]; agents: AgentRun[] }) => boolean = done) {
         const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
         saveAgentConfig("claude-code", { path: fakeClaude() });
         process.env.FAKE_SCENARIO = scenario;
@@ -2249,7 +2441,7 @@ describe("sub-agents", () => {
             const id = await c.open("session.create", { cwd: project() });
             await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
             await c.call("session.send", { id, text: "map the auth module" });
-            await c.until(id, done, 30_000);
+            await c.until(id, settled, 30_000);
             const v = c.view(id);
             c.close();
             return v;
@@ -2283,35 +2475,199 @@ describe("sub-agents", () => {
         expect([call.status, call.agent, call.output]).toEqual(["ok", true, "src/auth registers sign-in strategies in one list."]);
     }, 45_000);
 
+    test("a Claude Code skill that runs as its own agent (as /code-review does): its call is that agent's, so its row shows the agent's steps rather than just loading", async () => {
+        const v = await claudeCodeTurn("skill-agent", (v) => done(v) && v.agents[0]?.status === "done");
+        const call = tools(lastTurn(v)).find((b) => b.name === "Skill")!;
+        expect([call.status, call.agent]).toEqual(["ok", true]);
+        expect(v.agents).toHaveLength(1);
+        const a = v.agents[0]!;
+        expect([a.id, a.description, a.status]).toEqual(["toolu_skill", "code-review", "done"]);
+        // Claude Code says it ended before the Skill call's result comes: that result is still its report, kept.
+        expect(a.report).toBe("No findings.");
+        expect(a.blocks.filter((b) => b.t === "tool").map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : ""))).toEqual(["Read:ok"]);
+    }, 45_000);
+
     for (const [scenario, when] of [
         ["agent-background", "launched first"],
         ["agent-background-late", "launched after its first step"],
     ])
-        test(`Claude Code's sub-agent in the background (${when}) keeps the turn going until it reports back`, async () => {
-            const v = await claudeCodeTurn(scenario);
+        test(`Claude Code's sub-agent in the background (${when}): the turn ends at its answer, and the report comes in a turn of its own`, async () => {
+            const REPORT = "src/auth registers sign-in strategies in one list.";
+            // While it runs, its call stays open in the turn that's over; then it ends with the report.
+            const seen: string[] = [];
+            const v = await claudeCodeTurn(scenario, (v) => {
+                const call = v.turns[0] && tools(v.turns[0]).find((b) => b.agent);
+                if (call && v.turns[0]!.status === "done") seen.push(call.status);
+                return done(v) && v.agents[0]?.status === "done" && texts(lastTurn(v)).includes("The explorer reported back");
+            });
+            expect(seen[0]).toBe("running");
+            expect(seen).not.toContain("error");
             expect(v.agents).toHaveLength(1);
             const a = v.agents[0]!;
-            const REPORT = "src/auth registers sign-in strategies in one list.";
             expect([a.description, a.status, a.report, a.tokens]).toEqual(["Map auth", "done", REPORT, 4321]);
             expect(a.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t))).toEqual(["Read:ok", "Glob:ok", REPORT]);
-            // A sub-agent row in the transcript, open while it ran, with its report rather than the launch note.
-            const call = tools(lastTurn(v)).find((b) => b.agent)!;
+            // The turn ended at its answer; the report came in a turn of its own, and the call has the report.
+            expect(v.turns.map((t) => [t.prompt?.text, t.status])).toEqual([
+                ["map the auth module", "done"],
+                ["Background sub-agent finished: Map auth", "done"],
+            ]);
+            expect(texts(v.turns[0]!)).not.toContain("The explorer reported back");
+            expect(texts(v.turns[1]!)).toContain("The explorer reported back");
+            const call = tools(v.turns[0]!).find((b) => b.agent)!;
             expect([call.name, call.status, call.output]).toEqual(["Task", "ok", REPORT]);
             expect(call.durationMs).toBeGreaterThanOrEqual(250);
-            expect(texts(lastTurn(v))).toContain("The explorer reported back");
         }, 45_000);
 
-    test("Claude Code's background sub-agent that never finishes: the turn stops waiting, and says so", async () => {
-        const { backgroundTiming } = await import("../src/backends/claude-code");
-        const saved = { ...backgroundTiming };
-        backgroundTiming.maxWaitMs = 500;
+    for (const stranger of [false, true])
+        test(`a sub-agent Claude Code resumes with SendMessage (${stranger ? "one an earlier process started" : "after it finished"}) runs again as its run, which its row in the Agents tab opens (#458)`, async () => {
+            const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+            const { agentRows, workSection } = await import("../gui/src/lib/background");
+            const REPORT = "src/auth registers sign-in strategies in one list.";
+            const RESUMED = "Sessions last 60 minutes (src/auth/session.ts).";
+            saveAgentConfig("claude-code", { path: fakeClaude() });
+            if (stranger) process.env.FAKE_RESUME_STRANGER = "1";
+            else {
+                process.env.FAKE_SCENARIO = "agent-background";
+                process.env.FAKE_BACKGROUND_MS = "100";
+            }
+            process.env.FAKE_SECOND_SCENARIO = "agent-resume";
+            if (stranger) process.env.FAKE_SCENARIO = "agent-resume";
+            process.env.FAKE_RESUME_MS = "1500";
+            try {
+                const c = await client();
+                await c.call("models.list", { refresh: true });
+                const id = await c.open("session.create", { cwd: project() });
+                await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
+                if (!stranger) {
+                    await c.call("session.send", { id, text: "map the auth module" });
+                    await c.until(id, (v) => done(v) && v.agents[0]?.status === "done" && texts(lastTurn(v)).includes("The explorer reported back"), 30_000);
+                }
+                await c.call("session.send", { id, text: "ask it about sessions too" });
+                // While it works again: one run, running, and the task Claude Code lists is that run's, so its row opens it.
+                const runId = stranger ? "toolu_send1" : "toolu_agent";
+                await c.until(id, (v) => done(v) && (v.state.backgroundTasks ?? []).some((t) => t.kind === "agent" && t.status === "running"), 30_000);
+                let v = c.view(id);
+                expect(v.agents.map((a) => [a.id, a.description, a.status])).toEqual([[runId, "Map auth", "running"]]);
+                const task = v.state.backgroundTasks!.find((t) => t.status === "running")!;
+                expect([task.id, task.toolUseId]).toEqual([stranger ? "agent-9" : "agent-1", runId]);
+                const live = workSection(agentRows(v.state.backgroundTasks!, v.agents)).running;
+                expect(live.map((p) => [p.row.key, p.row.agent?.id, p.row.status])).toEqual([[runId, runId, "running"]]);
+                // Then it ends with its new report, its new steps after its earlier ones, and Claude Code's turn passes it on.
+                await c.until(id, (v) => done(v) && v.agents[0]?.status === "done" && texts(lastTurn(v)).includes("sessions last 60 minutes"), 30_000);
+                v = c.view(id);
+                expect(v.agents).toHaveLength(1);
+                const a = v.agents[0]!;
+                expect([a.id, a.status, a.report]).toEqual([runId, "done", RESUMED]);
+                const steps = a.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t));
+                expect(steps).toEqual(stranger ? ["Read:ok", RESUMED] : ["Read:ok", "Glob:ok", REPORT, "Read:ok", RESUMED]);
+                if (stranger) expect(a.prompt).toBe("Now check src/auth/session.ts too.");
+                const rows = agentRows(v.state.backgroundTasks!, v.agents);
+                expect(rows.map((r) => [r.key, r.agent?.id, r.status])).toEqual([[runId, runId, "done"]]);
+                // The Agent call keeps the report of the run it started.
+                if (!stranger) expect(tools(v.turns[0]!).find((b) => b.agent)!.output).toBe(REPORT);
+                c.close();
+            } finally {
+                for (const k of ["FAKE_SCENARIO", "FAKE_SECOND_SCENARIO", "FAKE_BACKGROUND_MS", "FAKE_RESUME_MS", "FAKE_RESUME_STRANGER"]) delete process.env[k];
+                removeAgentConfig("claude-code");
+            }
+        }, 60_000);
+
+    for (const [resumed, restart] of [[true, false], [true, true], [false, false]] as const)
+        test(`a ${resumed ? "resumed" : "background"} sub-agent whose Claude Code process ${restart ? "is restarted" : "exits"} before saying it ended is stopped with it, not left running (#461 review)`, async () => {
+            const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+            saveAgentConfig("claude-code", { path: fakeClaude() });
+            process.env.FAKE_SCENARIO = "agent-background";
+            if (resumed) {
+                process.env.FAKE_BACKGROUND_MS = "100";
+                process.env.FAKE_SECOND_SCENARIO = "agent-resume";
+                // Restarted (/tasks restart) while it works; or the process exits after its first step.
+                process.env.FAKE_RESUME_MS = restart ? "60000" : "300";
+                if (!restart) process.env.FAKE_RESUME_EXIT = "1";
+            } else {
+                // It works on long after the answer; the process goes away meanwhile.
+                process.env.FAKE_BACKGROUND_MS = "60000";
+                process.env.FAKE_EXIT_IDLE_MS = "400";
+            }
+            try {
+                const c = await client();
+                await c.call("models.list", { refresh: true });
+                const id = await c.open("session.create", { cwd: project() });
+                await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
+                await c.call("session.send", { id, text: "map the auth module" });
+                if (resumed) {
+                    await c.until(id, (v) => done(v) && v.agents[0]?.status === "done" && texts(lastTurn(v)).includes("The explorer reported back"), 30_000);
+                    await c.call("session.send", { id, text: "ask it about sessions too" });
+                    if (restart) {
+                        await c.until(id, (v) => done(v) && v.agents[0]?.status === "running", 30_000);
+                        await c.call("session.restartCli", { id });
+                    } else await c.until(id, (v) => v.agents[0]?.blocks.filter((b) => b.t === "tool").length === 3, 30_000);
+                }
+                // The process is gone: its task stopped with it, and so did the run.
+                await c.until(id, (v) => (v.state.backgroundTasks ?? []).some((t) => t.kind === "agent" && t.status === "stopped"), 30_000);
+                await c.until(id, (v) => v.agents.every((a) => a.status !== "running" && a.status !== "waiting"), 5_000).catch(() => {});
+                const v = c.view(id);
+                // (A resumed one's earlier run is listed too, done.)
+                expect(v.state.backgroundTasks!.filter((t) => t.kind === "agent").map((t) => [t.status, t.withProcess])).toEqual([...(resumed ? [["done", undefined]] : []), ["stopped", true]]);
+                expect(v.agents.map((a) => [a.id, a.status])).toEqual([["toolu_agent", "stopped"]]);
+                expect(v.agents[0]!.endedAt).toBeDefined();
+                // Its call that never got a result is closed with it.
+                expect(v.agents[0]!.blocks.filter((b) => b.t === "tool" && b.status === "running")).toEqual([]);
+                c.close();
+            } finally {
+                for (const k of ["FAKE_SCENARIO", "FAKE_SECOND_SCENARIO", "FAKE_BACKGROUND_MS", "FAKE_RESUME_MS", "FAKE_RESUME_EXIT", "FAKE_EXIT_IDLE_MS"]) delete process.env[k];
+                removeAgentConfig("claude-code");
+            }
+        }, 60_000);
+
+    test("Claude Code's background sub-agent that never finishes: the turn ends at its answer, it's listed as running, and Stop stops it", async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        process.env.FAKE_SCENARIO = "agent-background-stuck";
         try {
-            const v = await claudeCodeTurn("agent-background-stuck");
-            expect(v.agents.map((a) => [a.status, a.report])).toEqual([["stopped", undefined]]);
-            const notices = lastTurn(v).blocks.flatMap((b) => (b.t === "notice" ? [b.text] : []));
-            expect(notices.some((n) => /^Stopped waiting for 1 background sub-agent/.test(n))).toBe(true);
+            const c = await client();
+            await c.call("models.list", { refresh: true });
+            const id = await c.open("session.create", { cwd: project() });
+            await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
+            await c.call("session.send", { id, text: "map the auth module" });
+            await c.until(id, (v) => done(v) && (v.state.backgroundTasks ?? []).some((t) => t.kind === "agent" && t.status === "running"), 30_000);
+            const task = c.view(id).state.backgroundTasks!.find((t) => t.kind === "agent")!;
+            expect(c.view(id).agents.map((a) => a.status)).toEqual(["running"]);
+            expect(await c.call("session.stopBackground", { id, ids: [task.id] })).toEqual({ results: { [task.id]: "stopped" } });
+            await c.until(id, (v) => (v.state.backgroundTasks ?? []).every((t) => t.status !== "running") && v.agents.every((a) => a.status !== "running"), 10_000);
+            expect(c.view(id).agents.map((a) => a.status)).toEqual(["stopped"]);
+            c.close();
         } finally {
-            Object.assign(backgroundTiming, saved);
+            delete process.env.FAKE_SCENARIO;
+            removeAgentConfig("claude-code");
+        }
+    }, 45_000);
+
+    test("a Claude Code session no window shows stays open while its background sub-agent runs, and its report is kept", async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        saveAgentConfig("claude-code", { path: fakeClaude() });
+        process.env.FAKE_SCENARIO = "agent-background";
+        process.env.FAKE_BACKGROUND_MS = "1200";
+        try {
+            const c = await client();
+            await c.call("models.list", { refresh: true });
+            const id = await c.open("session.create", { cwd: project() });
+            await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
+            await c.call("session.send", { id, text: "map the auth module" });
+            await c.until(id, (v) => done(v) && v.agents[0]?.status === "running", 30_000);
+            c.close();
+            // Well past the server's unload delay (300 ms): closing it would stop Claude Code, and the sub-agent with it.
+            await Bun.sleep(800);
+            const rt = srv.engine.runtimes.get(id);
+            expect(rt).toBeDefined();
+            // Its report comes as a turn of its own, with no window open; then the session is closed as usual.
+            for (let i = 0; i < 300 && !rt!.session.messages.some((m) => JSON.stringify(m.content).includes("The explorer reported back")); i++) await Bun.sleep(20);
+            expect(rt!.session.messages.some((m) => JSON.stringify(m.content).includes("The explorer reported back"))).toBe(true);
+            for (let i = 0; i < 200 && srv.engine.runtimes.has(id); i++) await Bun.sleep(20);
+            expect(srv.engine.runtimes.has(id)).toBe(false);
+        } finally {
+            delete process.env.FAKE_SCENARIO;
+            delete process.env.FAKE_BACKGROUND_MS;
+            removeAgentConfig("claude-code");
         }
     }, 45_000);
 
@@ -2411,7 +2767,7 @@ describe("sub-agents", () => {
             // Its tokens, even those Codex reported before the spawn said whose they were.
             expect(a.tokens).toBe(5050);
             // Its warning and error show on its chip, not as the session's.
-            expect(a.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t === "notice" ? `${b.level}: ${b.text}` : b.t))).toEqual(["info: Codex: Model metadata for `gpt-test` not found.", "error: child stream hiccup", "Bash:ok", "CHILD_REPORT: 2 files."]);
+            expect(a.blocks.map((b) => (b.t === "tool" ? `${b.name}:${b.status}` : b.t === "text" ? b.text : b.t === "notice" ? `${b.level}: ${b.text}` : b.t))).toEqual(["info: Model metadata for `gpt-test` not found.", "error: child stream hiccup", "Bash:ok", "CHILD_REPORT: 2 files."]);
             const turn = lastTurn(v);
             expect(turn.blocks.filter((b) => b.t === "notice")).toEqual([]);
             expect(tools(turn).map((b) => [b.name, b.agent ?? false])).toEqual([["Task", true], ["wait", false]]);
@@ -2505,10 +2861,12 @@ describe("sub-agents", () => {
 
 describe("reopening a Claude Code session", () => {
     /** A session on the fake Claude Code: one turn in `scenario`, in `mode`. */
-    async function claudeCodeSession(scenario: string, mode: string) {
+    /** `later`: the scenario of its prompts after the first (one Claude Code process serves the session: it's set before it starts). */
+    async function claudeCodeSession(scenario: string, mode: string, later?: string) {
         const { saveAgentConfig } = await import("../src/providers/registry");
         saveAgentConfig("claude-code", { path: fakeClaude() });
         process.env.FAKE_SCENARIO = scenario;
+        if (later) process.env.FAKE_SECOND_SCENARIO = later;
         const c = await client();
         await c.call("models.list", { refresh: true });
         const dir = project();
@@ -2522,6 +2880,7 @@ describe("reopening a Claude Code session", () => {
     async function cleanup() {
         const { removeAgentConfig } = await import("../src/providers/registry");
         delete process.env.FAKE_SCENARIO;
+        delete process.env.FAKE_SECOND_SCENARIO;
         removeAgentConfig("claude-code");
     }
     /** The session as a fresh server opens it (after a restart, or once it was unloaded). */
@@ -2592,7 +2951,8 @@ describe("reopening a Claude Code session", () => {
 
     test("after Claude Code compacts its own context, later turns still come back (the transcript itself wasn't compacted)", async () => {
         try {
-            const { c, id } = await claudeCodeSession("write", "acceptEdits");
+            // Its later prompts (the compaction's, the next one's) run the agent scenario.
+            const { c, id } = await claudeCodeSession("write", "acceptEdits", "agent");
             const hitFor = async (query: string) => (await c.call<SessionSearchResult>("sessions.search", { query, limit: 200 })).hits.find((h) => h.id === id)!;
             const target = (turns: Turn[], h: { seg: number; index: number }) => turns.filter((t) => t.pos && (t.pos.seg < h.seg || (t.pos.seg === h.seg && t.pos.index <= h.index))).at(-1)!;
             const before = await hitFor("map the auth module");
@@ -2606,7 +2966,6 @@ describe("reopening a Claude Code session", () => {
             expect(first.startedAt).toBe(after.at);
             expect(c.view(id).turns.find((t) => !t.prompt && t.blocks.some((b) => b.t === "compact"))!.pos).toBeUndefined();
             // (Calls of their own: the fake's ids are the same each turn.)
-            process.env.FAKE_SCENARIO = "agent";
             await c.call("session.send", { id, text: "and the tests?" });
             await c.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 2, 30_000);
             const live = structuredClone(c.view(id));
@@ -2926,6 +3285,11 @@ describe("reopening a Claude Code session", () => {
             const { c, id } = await claudeCodeSession("write", "acceptEdits");
             await c.call("session.setEffort", { id, effort: "high" });
             c.close();
+            // As when the server quits: the session is closed, and its Claude Code process goes with it (the servers
+            // here share one process, so the next server's session would otherwise find it running).
+            for (let i = 0; i < 200 && srv.engine.runtimes.has(id); i++) await Bun.sleep(20);
+            const { clientFor } = await import("../src/providers/models");
+            await ((await clientFor("claude-code")) as { shutdown(): Promise<void> }).shutdown();
             expect((await reopened(id)).state.effort).toBe("high");
             process.env.FAKE_LOG = log;
             const again = await startServer({ token: TOKEN });
@@ -3711,6 +4075,39 @@ describe("a sub-agent's own sub-agents", () => {
             await engine.stop();
         }
     }, 30_000);
+
+    test("a sub-agent's skill agent keeps what its Skill call returned as its report", async () => {
+        const { Engine } = await import("../src/server/engine");
+        const engine = new Engine({});
+        const c = { subs: new Set<string>(), send() {} };
+        engine.clients.add(c);
+        try {
+            const snap = (await engine.handle(c, "session.create", { cwd: project() })) as SessionSnapshot;
+            const id = snap.state.id;
+            const rt = engine.runtimes.get(id)!;
+            await engine.handle(c, "session.setModel", { id, ref: "mock:mock-opus", persist: false });
+            await engine.handle(c, "session.send", { id, text: "Use agents to review the auth module and its tests" });
+            for (let i = 0; i < 200 && rt.snapshot().agents.length < 2; i++) await Bun.sleep(50);
+            for (let i = 0; i < 200 && !(rt.idle && !rt.busy); i++) await Bun.sleep(50);
+            const auth = rt.snapshot().agents.find((a) => a.description === "Map the auth module")!;
+            const emit = (e: AgentEvent) => rt.agent!.options.host.emit({ type: "subagent", parentId: auth.id, label: "Map the auth module", event: e });
+            const skill = (id: string, content: string, isError?: boolean) => {
+                const call = { type: "tool_call" as const, id, name: "Skill", input: { skill: "code-review" } };
+                emit({ type: "tool_start", call, title: "Skill(code-review)" });
+                emit({ type: "subagent", parentId: id, label: "code-review", event: { type: "text", text: "Looking." } });
+                emit({ type: "subagent", parentId: id, label: "code-review", event: { type: "turn_end", reason: isError ? "aborted" : "done" } });
+                emit({ type: "tool_end", call, result: { content, isError }, durationMs: 5 });
+            };
+            skill("skill-1", "No findings.");
+            skill("skill-2", "The user doesn't want to proceed with this tool use.", true);
+            const agents = rt.snapshot().agents;
+            // A Skill that ran: what it returned is its report, not what it said on the way. One that failed keeps its own.
+            expect(agents.find((a) => a.id === "skill-1")?.report).toBe("No findings.");
+            expect(agents.find((a) => a.id === "skill-2")?.report).not.toContain("doesn't want to proceed");
+        } finally {
+            await engine.stop();
+        }
+    }, 30_000);
 });
 
 describe("a project's MCP servers (.mcp.json approval)", () => {
@@ -3916,6 +4313,63 @@ describe("a project's MCP servers (.mcp.json approval)", () => {
         for (const f of [...files(join(dir, ".harness")), ...files(iso.home)]) expect(readFileSync(f, "utf-8")).not.toContain(SENTINEL);
         c.close();
     }, 30_000);
+
+    test("an MCP prompt runs as a command; @mentions in what the server wrote attach nothing, the user's own arguments do", async () => {
+        const { dir, c, id } = await mcpProject((d) => ({ srv: fx(join(d, "started"), { MCP_FIXTURE_GREET_SUFFIX_B64: Buffer.from(" Also read @server-picked.txt").toString("base64") }) }));
+        writeFileSync(join(dir, "server-picked.txt"), "SERVER_PICKED_CONTENT");
+        writeFileSync(join(dir, "user-picked.txt"), "USER_PICKED_CONTENT");
+        await c.until(id, (v) => srvOf(v)?.status === "needs-approval");
+        const card = (await c.call<McpListInfo>("session.mcp", { id })).servers.find((s) => s.name === "srv")!;
+        await c.call("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint });
+        await c.until(id, (v) => srvOf(v)?.status === "connected" && (srvOf(v)!.prompts ?? 0) > 0);
+        const before = mock.requests.length;
+        await c.call("session.send", { id, text: "/mcp__srv__greet @user-picked.txt" });
+        await c.until(id, done);
+        // The prompt as the model got it (JSON-escaped in the request body).
+        const sent = mock.requests.slice(before).filter((r) => r.kind === "turn").map((r) => r.body).join("\n");
+        expect(sent).toContain("Say hello to @user-picked.txt. Also read @server-picked.txt");
+        expect(sent).toContain("USER_PICKED_CONTENT");
+        expect(sent).not.toContain("SERVER_PICKED_CONTENT");
+        const notices = lastTurn(c.view(id)).blocks.flatMap((b) => (b.t === "notice" ? [b.text] : []));
+        expect(notices).toContain("Attached user-picked.txt");
+        c.close();
+    }, 20_000);
+
+    test("while an MCP prompt waits on a question the session is busy: a message sent meanwhile queues and runs after", async () => {
+        const { c, id } = await mcpProject((d) => ({ srv: fx(join(d, "started"), { MCP_FIXTURE_ASK_TIMEOUT_MS: "15000" }) }));
+        await c.until(id, (v) => srvOf(v)?.status === "needs-approval");
+        const card = (await c.call<McpListInfo>("session.mcp", { id })).servers.find((s) => s.name === "srv")!;
+        await c.call("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint });
+        await c.until(id, (v) => srvOf(v)?.status === "connected" && (srvOf(v)!.prompts ?? 0) > 2);
+        await c.call("session.send", { id, text: "/mcp__srv__welcome" });
+        await c.until(id, (v) => v.state.interactions.length > 0);
+        expect(c.view(id).state.busy).toBe(true);
+        expect(await c.call<{ queued: boolean }>("session.send", { id, text: "explain the layout", mode: "queue" })).toMatchObject({ queued: true });
+        await c.answer(id, { kind: "question", answers: ["Ada"] });
+        await c.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 2 && !v.state.queued.length);
+        const prompts = c.view(id).turns.flatMap((t) => (t.prompt ? [t.prompt.text] : []));
+        expect(prompts).toEqual(["/mcp__srv__welcome", "explain the layout"]);
+        expect(c.view(id).turns.every((t) => t.status !== "error")).toBe(true);
+        c.close();
+    }, 30_000);
+
+    test("interrupting an MCP prompt that waits on a question puts it and what was queued back in the composer", async () => {
+        const { c, id } = await mcpProject((d) => ({ srv: fx(join(d, "started"), { MCP_FIXTURE_ASK_TIMEOUT_MS: "15000" }) }));
+        await c.until(id, (v) => srvOf(v)?.status === "needs-approval");
+        const card = (await c.call<McpListInfo>("session.mcp", { id })).servers.find((s) => s.name === "srv")!;
+        await c.call("session.mcpApprove", { id, name: "srv", fingerprint: card.fingerprint });
+        await c.until(id, (v) => srvOf(v)?.status === "connected" && (srvOf(v)!.prompts ?? 0) > 2);
+        await c.call("session.send", { id, text: "/mcp__srv__welcome" });
+        await c.until(id, (v) => v.state.interactions.length > 0);
+        await c.call("session.send", { id, text: "and then this", mode: "queue" });
+        await c.call("session.interrupt", { id });
+        await c.until(id, (v) => !v.state.busy && !v.state.interactions.length);
+        await Bun.sleep(100);
+        const drafts = c.events.filter((e) => e.type === "draft" && e.sessionId === id) as Extract<ServerEvent, { type: "draft" }>[];
+        expect(drafts.map((d) => d.text)).toEqual(["/mcp__srv__welcome\n\nand then this"]);
+        expect(c.view(id).turns).toHaveLength(0);
+        c.close();
+    }, 30_000);
 });
 
 // A message sent while a turn runs steers it (joins at its next step) or waits for it to end; the queue
@@ -3935,7 +4389,7 @@ describe("steering and the queue", () => {
         return id;
     }
 
-    test("each queued message says what it will do; the steering one joins the turn, the queued ones run after it, in order", async () => {
+    test("each queued message says what it will do; the steering ones join the turn (an image too), the queued ones run after it, in order", async () => {
         const c = await client();
         const id = await working(c);
         await c.call("session.send", { id, text: "steer with this", mode: "steer" });
@@ -3943,15 +4397,16 @@ describe("steering and the queue", () => {
         await c.call("session.send", { id, text: "", images: [{ mediaType: "image/png", data: png }], mode: "steer" });
         await c.call("session.send", { id, text: "/compact", mode: "steer" });
         await c.until(id, (v) => v.state.queued.length === 4);
-        expect(c.view(id).state.queuedModes).toEqual(["steer", "queue", "turn", "turn"]);
+        expect(c.view(id).state.queuedModes).toEqual(["steer", "queue", "steer", "turn"]);
         await c.answer(id, { kind: "permission", choice: "yes" });
-        // Taken at the next step: what waits for the turn's end stays.
-        await c.until(id, (v) => v.state.queued.length === 3);
-        expect(c.view(id).state.queued).toEqual(["after it", "", "/compact"]);
+        // Taken at the next step, the image with the text: what waits for the turn's end stays.
+        await c.until(id, (v) => v.state.queued.length === 2);
+        expect(c.view(id).state.queued).toEqual(["after it", "/compact"]);
         expect(prompts(c.view(id))).toEqual(["demo", "steer with this"]);
+        expect(lastTurn(c.view(id)).prompt).toMatchObject({ text: "steer with this", images: 1 });
         // Then each waiting one in a turn of its own, in the order they were sent.
-        await c.until(id, (v) => done(v) && v.state.queued.length === 0 && v.turns.length === 5, 30_000);
-        expect(prompts(c.view(id))).toEqual(["demo", "steer with this", "after it", ""]);
+        await c.until(id, (v) => done(v) && v.state.queued.length === 0 && v.turns.length === 4, 30_000);
+        expect(prompts(c.view(id))).toEqual(["demo", "steer with this", "after it"]);
         expect(lastTurn(c.view(id)).blocks.map((b) => b.t)).toEqual(["compact"]);
         c.close();
     }, 60_000);
@@ -3978,7 +4433,7 @@ describe("steering and the queue", () => {
         c.close();
     }, 30_000);
 
-    test("send now: a queued message steers instead; one with an image can't; one already gone sends nothing", async () => {
+    test("send now: a queued message steers instead, one with an image too; one already gone sends nothing", async () => {
         const c = await client();
         const id = await working(c);
         await c.call("session.send", { id, text: "later", mode: "queue" });
@@ -3987,12 +4442,14 @@ describe("steering and the queue", () => {
         const [later, image] = c.view(id).state.queueIds;
         expect(await c.call("session.sendQueuedNow", { id, queueId: later })).toEqual({ sent: true });
         await c.until(id, (v) => v.state.queuedModes?.[0] === "steer");
-        await expect(c.call("session.sendQueuedNow", { id, queueId: image })).rejects.toThrow(/can.t join a running turn/);
+        expect(await c.call("session.sendQueuedNow", { id, queueId: image })).toEqual({ sent: true });
+        await c.until(id, (v) => v.state.queuedModes?.[1] === "steer");
         expect(await c.call("session.sendQueuedNow", { id, queueId: 99_999 })).toEqual({ sent: false });
-        // Taken at the next step.
+        // Taken at the next step, both.
         await c.answer(id, { kind: "permission", choice: "yes" });
-        await c.until(id, (v) => v.state.queued.length === 1);
+        await c.until(id, (v) => v.state.queued.length === 0);
         expect(prompts(c.view(id))).toContain("later");
+        expect(lastTurn(c.view(id)).prompt).toMatchObject({ text: "later", images: 1 });
         await c.call("session.interrupt", { id });
         await c.until(id, done);
         c.close();

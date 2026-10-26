@@ -6,6 +6,10 @@
   "bin": {
     "harness": "bin/harness"
   },
+  "exports": {
+    "./sdk": "./src/sdk/index.ts",
+    "./package.json": "./package.json"
+  },
   "scripts": {
     "start": "bun --no-env-file --config=bunfig.toml src/index.ts",
     "dev": "bun --no-env-file --config=bunfig.toml src/index.ts",
@@ -20,7 +24,10 @@
     "desktop:dev": "cd desktop && bun install && bun run dev",
     "desktop:build": "cd desktop && bun install && bun run build",
     "desktop:install": "bun --no-env-file --config=bunfig.toml scripts/install-desktop.ts",
-    "review:eval": "bun --no-env-file --config=bunfig.toml scripts/review-eval.ts"
+    "desktop:update": "bun --no-env-file --config=bunfig.toml scripts/update-desktop.ts",
+    "review:eval": "bun --no-env-file --config=bunfig.toml scripts/review-eval.ts",
+    "sdk:example": "bun --no-env-file --config=bunfig.toml scripts/sdk-demo.ts",
+    "sdk:bench": "bun --no-env-file --config=bunfig.toml scripts/sdk-bench.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",

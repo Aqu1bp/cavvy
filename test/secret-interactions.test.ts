@@ -46,7 +46,7 @@ test("the dock keeps a partially typed secret when unrelated interactions change
         solid.onCleanup(() => { input.value = ""; });
         return input;
     };
-    const InteractionTab = new Function("renderer", "SecretCard", "PermissionCard", "QuestionCard", "PlanCard", `${js}; return InteractionTab;`)(renderer, card, () => ({}), () => ({}), () => ({}));
+    const InteractionTab = new Function("renderer", "SecretCard", "PermissionCard", "QuestionCard", "PlanCard", "columnHeight", `${js}; return InteractionTab;`)(renderer, card, () => ({}), () => ({}), () => ({}), () => "800px");
     const secret = { id: "secret-1", kind: "secret", name: "DEMO_TOKEN", purpose: "Test the dock" };
     let dispose!: () => void;
     let update!: (items: any[]) => void;

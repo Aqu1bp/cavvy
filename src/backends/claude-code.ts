@@ -14,8 +14,10 @@
 // takes a turn of its own with the report (a result with origin
 // task-notification). So a run lasts until the prompts it sent are answered
 // (each result names the prompt it answers, by the uuid it was sent with) and
-// nothing it waits for is left in the background, at most
-// backgroundTiming.maxWaitMs past the answer.
+// nothing it waits for is left in the background. Sub-agents and workflows
+// run until they're done or the user stops them, as in Claude Code (no limit
+// by default: backgroundTiming.maxWaitMs); background commands until their
+// own timeout or the grace for one without.
 //
 // What this never does: read, copy or forward Claude Code's credentials (its
 // keychain entry, ~/.claude/.credentials.json, CLAUDE_CODE_OAUTH_TOKEN), call
@@ -25,35 +27,71 @@
 // through those credentials. The harness's own provider keys are removed from
 // the CLI's environment (childEnv), so it can't be pointed at one of those.
 
+import type { HookConfig } from "../config/settings";
+import { backendMatcher, claudeCodeHookOutput, type HookEvent } from "../agent/hooks";
 import { homedir } from "os";
-import type { AssistantMessage, ModelInfo, Usage } from "../providers/types";
+import type { AssistantMessage, ChatRequest, ImagePart, ModelInfo, PdfPart, Usage } from "../providers/types";
+import { ONE_OFF_TIMEOUT_MS, oneOffAnswer, oneOffPrompt, oneOffRefusal } from "./one-off";
 import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
 import type { PlanLimits } from "../server/protocol";
-import { limitAccountLabel, limitNews, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
+import { cliNotice } from "./notice-data";
+import { creditsNote, limitAccountLabel, limitNews, limitNotice, limitStopOf, limitStopReport, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
 import { accountEnv, defaultAccount } from "../providers/accounts";
-import { accountProtectionFolders, claudeAccountSandbox, watchAccountFolders } from "./account-permissions";
+import { signInAdvice } from "./account-login";
+import { accountProtectionFolders } from "./account-permissions";
 import type { PermissionMode } from "../permissions/modes";
 import type { ToolDisplay } from "../tools/types";
 import { diffLines, diffStats } from "../util/diff";
 import { parseRule, pathPattern } from "../permissions/rules";
-import { paths } from "../config/paths";
+import { APP_TITLE, paths } from "../config/paths";
 import { redact } from "../util/redact";
 import { cliCommandNames } from "../commands/custom";
+import { formatSkill } from "../agent/skills";
+import { CLAUDE_PREFIX, claudeNames, claudePrompt, forClaudeCode, skillFolder } from "./native-skills";
 import { CLAUDE_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, runCli, stopTiming } from "./cli";
 import { claudeMcpPolicy } from "./claude-mcp-policy";
-import { backendModel, type AgentBackendClient, type BackendHost, type BackendResult, type BackendTurn } from "./types";
+import { writeAgentsFile } from "./claude-agents";
+import { backendModel, type AgentBackendClient, type BackgroundStop, type SessionHost, type TurnSink, type BackendResult, type BackendTurn, type SteerMessage, type BackendWake } from "./types";
+import type { BackgroundTaskInfo } from "./live/info";
 import type { TurnEndReason } from "../agent/agent";
+import type { NativeGoal } from "../agent/goal";
+import { ClaudeGoalWatch, claudeTranscriptFile } from "./claude-goal";
+import { ClaudeLive } from "./claude-live";
+import type { AgentCliStatus } from "./index";
+import { servedBrowserTool } from "../tools/browser-tools";
+
+/** checkAgentCli, imported when it's asked for (index.ts imports this file). */
+async function checkAgentCliLazy(providerId: string, signal?: AbortSignal, accountId?: string): Promise<AgentCliStatus> {
+    return (await import("./index")).checkAgentCli(providerId, signal, accountId);
+}
+
+/** How often the transcript is looked at for the goal's progress while Claude Code runs. */
+const GOAL_POLL_MS = 400;
 
 /** How long each turn waits for approved MCP servers and delegation before sending the prompt (changeable for tests). */
 export const attachTiming = { timeoutMs: 30_000 };
 
 /** Waiting on Claude Code's background work once the prompt is answered (changeable for tests). */
 export const backgroundTiming = {
-    /** Overall background wait cap, including across automatic report turns. */
-    maxWaitMs: 60 * 60_000,
-    /** Shells and monitors get a shorter grace; dev servers should not hold a turn open. */
-    commandWaitMs: 10 * 60_000,
+    /**
+     * A cap on the wait for sub-agents, workflows and other background work, across report turns; none by
+     * default, as Claude Code has none: they run until they're done or the user stops them (Esc). It doesn't
+     * stop a command still within its own timeout. Tests set one.
+     */
+    maxWaitMs: Number.POSITIVE_INFINITY,
+    /**
+     * The cap for background commands without a timeout of their own and for monitors, across report turns:
+     * a monitor's grace starts again with each report, so one that reports often would otherwise keep the run
+     * going for good. A command still within its own timeout isn't cut short. (At most maxWaitMs, when that's set.)
+     */
+    commandsMaxWaitMs: 60 * 60_000,
+    /** After Claude Code exits, how long its output may stay quiet before it's no longer read (a child it started may hold it open). */
+    exitDrainMs: 2000,
+    /** The grace for a background command that passes no timeout, and for monitors: Claude Code's default background timeout. */
+    commandWaitMs: 30 * 60_000,
+    /** The most a background command's own timeout can give it: Claude Code's maximum background timeout. */
+    commandMaxTimeoutMs: 2 * 60 * 60_000,
     /** A selective stop must answer promptly, or shutdown is the only safe fallback. */
     stopTimeoutMs: 5000,
     /** After one ends, how long Claude Code has to start its turn with the report before the run ends without it. */
@@ -62,9 +100,25 @@ export const backgroundTiming = {
     pollMs: 300,
 };
 
+/** The grace for a background command without a timeout of its own, and for monitors: the setting (seconds), else the default. */
 export function claudeBackgroundWaitMs(seconds: unknown): number {
     return typeof seconds === "number" && seconds >= 0 && Number.isFinite(seconds * 1000) ? seconds * 1000 : backgroundTiming.commandWaitMs;
 }
+
+/**
+ * A background Bash call's own timeout (ms): in Claude Code, how long the
+ * command may run in the background (capped at commandMaxTimeoutMs where
+ * it's used). Undefined when the call passed none or doesn't run in the
+ * background (then the grace above applies).
+ */
+export function claudeCommandTimeoutMs(input: Record<string, unknown>): number | undefined {
+    const t = input.timeout;
+    if (input.run_in_background !== true || typeof t !== "number" || !(t > 0) || !Number.isFinite(t)) return undefined;
+    return t;
+}
+
+/** A duration for a notice or the prompt: minutes from one up, else seconds. */
+const span = (ms: number) => (ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.ceil(ms / 1000)}s`);
 
 /** Deliberately conservative command heuristic, never run on an agent's prose. */
 export function longLivedClaudeCommand(command: string): boolean {
@@ -99,23 +153,33 @@ interface BackgroundWork {
     commandTask?: boolean;
     monitor?: boolean;
     command?: string;
+    /** A background Bash command's own timeout (ms), and when it started: it may run until then. */
+    timeoutMs?: number;
+    started?: number;
+    /** A sub-agent's Agent call. */
+    toolUseId?: string;
     label: string;
 }
 
+/** A call's result when the user declined it ("The user doesn't want to proceed with this tool use. The tool use was rejected …"). */
+export const DECLINED = /doesn't want to proceed with this tool use|tool use was rejected/i;
+
 /** What a background sub-agent's Agent call says when it ends without a report. */
-const LAUNCH_END: Record<string, string> = {
+export const LAUNCH_END: Record<string, string> = {
     done: "Claude Code passed on no report from this sub-agent.",
     error: "The sub-agent failed.",
     aborted: "The sub-agent was stopped before it reported back.",
 };
 
 /** A sub-agent that ended this way failed or was stopped: its call's row says so, as its chip does. */
-const endedBadly = (reason: TurnEndReason) => reason !== "done" && reason !== "max_turns";
+export const endedBadly = (reason: TurnEndReason) => reason !== "done" && reason !== "max_turns";
 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
 /** Claude Code's tools that change files, off for a read-only sub-agent. */
 const READ_ONLY_DENY = ["Write", "Edit", "MultiEdit", "NotebookEdit"];
+/** Claude Code's own scheduling, which needs its process to stay up between turns. */
+export const CLAUDE_SCHEDULE_TOOLS = ["CronCreate", "CronDelete", "CronList", "ScheduleWakeup"];
 
 const STREAM_ARGS = ["-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"];
 
@@ -125,7 +189,7 @@ const STREAM_ARGS = ["-p", "--output-format", "stream-json", "--input-format", "
  * where the harness's still asks for shell commands. It runs in default mode
  * instead, and the harness approves its edits inside the workspace itself.
  */
-const MODES: Record<PermissionMode, string> = {
+export const MODES: Record<PermissionMode, string> = {
     default: "default",
     acceptEdits: "default",
     plan: "plan",
@@ -174,7 +238,7 @@ export function claudeFastModeVersion(version: unknown): boolean {
     return claudeVersionAtLeast(version, 205);
 }
 
-function claudeVersionAtLeast(version: unknown, minPatch: number): boolean {
+export function claudeVersionAtLeast(version: unknown, minPatch: number): boolean {
     if (typeof version !== "string") return false;
     const m = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
     if (!m) return false;
@@ -182,8 +246,28 @@ function claudeVersionAtLeast(version: unknown, minPatch: number): boolean {
     return major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= minPatch)));
 }
 
+/**
+ * The harness's prompt hooks for the events Claude Code runs, in Claude Code's
+ * own settings format: it asks its own small model, as it would for one of
+ * its own prompt hooks. A model named as a harness model (provider:model) is
+ * left to Claude Code's default.
+ */
+export function claudePromptHooks(hooks: BackendTurn["hooks"]): { hooks?: Record<string, { matcher?: string; hooks: Record<string, unknown>[] }[]> } {
+    const out: Record<string, { matcher?: string; hooks: Record<string, unknown>[] }[]> = {};
+    for (const [event, list] of Object.entries(hooks ?? {}) as [string, HookConfig[]][]) {
+        const groups = list
+            .filter((h) => h.type === "prompt" && h.prompt)
+            .map((h) => ({
+                ...(h.matcher ? { matcher: backendMatcher(event, h.matcher) } : {}),
+                hooks: [{ type: "prompt", prompt: h.prompt, timeout: h.timeout ?? 30, ...(h.model && !h.model.includes(":") ? { model: h.model } : {}), ...(h.if ? { if: h.if } : {}), ...(h.statusMessage ? { statusMessage: h.statusMessage } : {}) }],
+            }));
+        if (groups.length) out[event] = groups;
+    }
+    return Object.keys(out).length ? { hooks: out } : {};
+}
+
 let requestSeq = 0;
-const requestId = () => `harness-${Date.now().toString(36)}-${(++requestSeq).toString(36)}`;
+export const requestId = () => `harness-${Date.now().toString(36)}-${(++requestSeq).toString(36)}`;
 
 export class ClaudeCodeBackend implements AgentBackendClient {
     readonly agentBackend = true as const;
@@ -197,11 +281,47 @@ export class ClaudeCodeBackend implements AgentBackendClient {
     private spent = new Map<string, number>();
     /** Each limit window's last status and reset, so "close to the limit" is said once for each (Claude Code repeats it per request). */
     private limitSeen = new Map<string, string>();
+    /** The sessions' live processes (src/backends/claude-live.ts), made at the first live turn. */
+    private _live?: ClaudeLive;
+    /** It takes over turns Claude Code starts by itself (its live sessions'). */
+    readonly adoptsTurns = true;
 
     constructor(readonly def: ProviderDef) {}
 
-    async stream(): Promise<AssistantMessage> {
-        throw new ProviderError(`${this.def.name} runs whole turns with its own tools, so it can't answer one-off requests. Set smallModel to another provider's model for those.`);
+    get live(): ClaudeLive {
+        return (this._live ??= new ClaudeLive(this.def, { spending: this.spent, limitSeen: this.limitSeen }, async (accountId, signal) => ({ status: await checkAgentCliLazy(this.def.id, signal, accountId) }), (signal) => this.listModels(signal)));
+    }
+
+    /**
+     * A one-off request (a prompt hook, MCP sampling, a title): Claude Code
+     * answers it with its own model and sign-in, in a session of its own with
+     * no tools, settings, MCP servers or session file. Its token limit isn't
+     * one Claude Code takes, so maxTokens is left to the model.
+     */
+    async stream(req: ChatRequest): Promise<AssistantMessage> {
+        const refused = oneOffRefusal(this.def.name, req);
+        if (refused) throw refused;
+        const bin = requireCli(this.def.id, CLAUDE_CLI);
+        const model = req.model.id === "default" ? [] : ["--model", req.model.id];
+        const args = [...extraArgs(this.def.id), ...STREAM_ARGS, "--tools", "", "--disable-slash-commands", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence", "--system-prompt", req.system, ...model];
+        const proc = new JsonLinesProcess(bin, args, { cwd: homedir(), env: accountEnv(this.def.id, defaultAccount(this.def.id)) });
+        const kill = () => void proc.kill();
+        req.signal?.addEventListener("abort", kill, { once: true });
+        const timer = setTimeout(kill, ONE_OFF_TIMEOUT_MS);
+        try {
+            proc.send({ type: "user", message: { role: "user", content: [{ type: "text", text: oneOffPrompt(req) }] }, parent_tool_use_id: null, session_id: "" });
+            for await (const m of proc.messages()) {
+                if (m.type !== "result") continue;
+                if (m.is_error || m.subtype !== "success") throw new ProviderError(`${this.def.name}: ${cliMessage(String(m.result ?? m.subtype ?? "the request failed"))}`);
+                return oneOffAnswer(this.def.id, req.model.id, typeof m.result === "string" ? m.result : "");
+            }
+            if (req.signal?.aborted) throw new ProviderError("Interrupted");
+            throw new ProviderError(`${this.def.name} exited without answering${proc.stderr() ? `: ${cliMessage(proc.stderr())}` : ""}`);
+        } finally {
+            clearTimeout(timer);
+            req.signal?.removeEventListener("abort", kill);
+            void proc.kill();
+        }
     }
 
     /**
@@ -239,14 +359,71 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         }
     }
 
+    /**
+     * Stop background tasks of a session's run (these, or every one): Claude Code's stop_task. Its tasks run
+     * only while its run does (until #219 PR 4 keeps the process): with none, there's nothing to stop.
+     */
+    async stopBackground(sessionKey: string, ids?: string[]): Promise<Record<string, BackgroundStop>> {
+        const turn = [...this.turns].find((t) => t.sessionKey === sessionKey);
+        if (turn) return turn.stopBackground(ids);
+        if (this._live?.get(sessionKey)) return this._live.stopBackground(sessionKey, ids);
+        return Object.fromEntries((ids ?? []).map((id) => [id, "unknown" as const]));
+    }
+
+    sendNow(sessionKey: string, text: string): boolean {
+        return this._live?.sendNow(sessionKey, text) ?? false;
+    }
+
+    async wakeReport(w: BackendWake): Promise<string | undefined> {
+        return this._live?.wakeReport(w.ref);
+    }
+
+    async restart(sessionKey: string): Promise<void> {
+        await this._live?.restart(sessionKey);
+    }
+
+    async release(sessionKey: string): Promise<void> {
+        await this._live?.release(sessionKey);
+    }
+
+    /** Stop every live process (the harness is quitting). */
+    async shutdown(): Promise<void> {
+        await this._live?.shutdown();
+    }
+
     async runTurn(t: BackendTurn): Promise<BackendResult> {
+        // One process per session, kept between turns (#219), unless agentCli.liveSessions is off: then one per turn, as
+        // before. So too a turn nothing takes reports after (-p, the SDK runner, a sub-agent): its run waits for its
+        // background work, with the bounded wait below (servers stopped at the answer, #193's timeouts), until the
+        // live layer has that policy (#219 PR 5).
+        // A turn Claude Code started by itself (a wake) is on the live process, whatever the setting says now: its
+        // report is taken there, never asked again of a new process.
+        if (t.adopt || (t.liveSessions !== false && !t.untilQuiet)) return this.live.runTurn(t);
+        // A process still kept for the session (live sessions turned off since): it goes first, or it would go on
+        // beside this run in the same Claude Code session (its background work reporting there).
+        const kept = this._live?.get(t.sessionKey);
+        if (kept) {
+            const tasks = kept.tasks.running().length;
+            await this._live!.release(t.sessionKey);
+            if (tasks) t.sink.emit({ type: "notice", level: "warn", message: `Live sessions are off (agentCli.liveSessions), so Claude Code's process for this session was stopped, and ${tasks === 1 ? "its background task" : `its ${tasks} background tasks`} with it.` });
+        }
         const bin = requireCli(this.def.id, CLAUDE_CLI);
         const key = (id: string) => `${t.accountId ?? "default"}:${id}`;
-        const turn = new ClaudeTurn(this.def, bin, t, t.resumeId ? this.spent.get(key(t.resumeId)) : undefined, this.limitSeen);
+        // The harness's skills Claude Code doesn't read itself come as a plugin of their own, so it runs them like its own.
+        const configDir = t.skills?.length ? claudeConfigDir(this.def.id, t) : undefined;
+        const plugged = t.skills?.length ? forClaudeCode(t.skills, t.cwd, t.trusted, configDir) : [];
+        const pluginDir = skillFolder(plugged, { plugin: true });
+        // One it has under no name (the plugin couldn't be made, an untrusted project's) is pasted in, as for the harness's models.
+        const names = claudeNames(t.skills ?? [], pluginDir ? plugged : [], t.cwd, t.trusted, configDir);
+        const prompt = claudePrompt(t.prompt, t.request, t.skills ?? [], names, formatSkill, t.requestAfter);
+        const turn = new ClaudeTurn(this.def, bin, { ...t, prompt }, t.resumeId ? this.spent.get(key(t.resumeId)) : undefined, this.limitSeen);
+        turn.pluginDir = pluginDir;
+        turn.skillNames = names;
         this.turns.add(turn);
         try {
-            const documents = (t.documents ?? []).map((d) => ({ type: "document", source: { type: "base64", media_type: "application/pdf", data: d.data } }));
-            return await turn.run([{ type: "text", text: t.prompt }, ...t.images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.mediaType, data: i.data } })), ...documents]);
+            // The text goes last: Claude Code reads a /command only from the last block (what's before it goes along with it),
+            // so with images or PDFs first, /skill and its own commands run with them attached instead of reaching the model as words.
+            return await turn.run([...mediaBlocks(t.images, t.documents ?? []), ...textBlocks(prompt, t.preamble)]);
         } finally {
             this.turns.delete(turn);
             const s = turn.spending();
@@ -263,10 +440,11 @@ export class ClaudeCodeBackend implements AgentBackendClient {
     /** Each running turn takes its own agent's mode now (a read-only sub-agent's stays read-only). */
     setMode(_m: PermissionMode) {
         for (const turn of this.turns) turn.setMode(turn.agentMode());
+        this._live?.setMode();
     }
 }
 
-interface PendingTool {
+export interface PendingTool {
     name: string;
     input: Record<string, unknown>;
     title: string;
@@ -291,6 +469,8 @@ class ClaudeTurn {
     private texts: string[] = [];
     private actions: string[] = [];
     private sessionId?: string;
+    /** Its /goal, followed in its transcript. */
+    private goals?: ClaudeGoalWatch;
     private billedToPlan = false;
     private resolvedModel?: string;
     private contextTokens?: number;
@@ -327,8 +507,13 @@ class ClaudeTurn {
     private launched = new Set<string>();
     /** Those that have ended (how, and when), in case a report or another word on how it ended comes later. */
     private closedLaunches = new Map<string, PendingTool & { reason: TurnEndReason; ended: number }>();
-    /** Background sub-agents that ended since Claude Code's last turn started: it takes one with their reports. */
-    private reportsDue = 0;
+    /** Claude Code's turns in this run so far (each starts with init, a turn it takes itself with reports too). */
+    private turnCount = 0;
+    /**
+     * Background tasks Claude Code gave word of ending (it left its list, or said how it ended), by task id: in
+     * which of its turns. The first turn after that takes its report (reportDue).
+     */
+    private endedIn = new Map<string, number>();
     /** What each sub-agent said last: its report, when nothing else carries one. */
     private lastWords = new Map<string, string>();
     /** Each sub-agent's token count as Claude Code last reported it. */
@@ -337,12 +522,20 @@ class ClaudeTurn {
     private waitingSince?: number;
     /** Each command's grace starts after an answer, or when it joins the wait. */
     private commandWaitingSince = new Map<string, number>();
+    /** Each command's overall cap counts from when the wait first listed it, across answers and report turns. */
+    private commandListedSince = new Map<string, number>();
     private waitingLabel?: string;
-    private taskCommands = new Map<string, string>();
-    private shellCommands = new Map<string, string>();
+    /** Each Bash call's command and own background timeout, by its tool_use id; then by the task it started (task_started), from when. */
+    private shellCommands = new Map<string, { command: string; timeoutMs?: number }>();
+    private taskCommands = new Map<string, { command: string; timeoutMs?: number; started: number }>();
     private stoppedTaskIds = new Set<string>();
     private stoppedBackground = new Set<string>();
-    private pendingStops = new Map<string, { task: BackgroundWork; since: number }>();
+    /** Stops asked of Claude Code and not answered yet, by task id; `byUser`: the user's (a timeout of theirs never ends the run). */
+    private pendingStops = new Map<string, { task: BackgroundWork; since: number; byUser: boolean; release: () => void }>();
+    /** A task's end Claude Code said while its stop was pending: taken as said if the stop doesn't go through. */
+    private heldEnds = new Map<string, Record<string, any>>();
+    /** Background tasks that left Claude Code's list before it said how they ended (by the id they're reported with). */
+    private leftList = new Set<string>();
     private stopFailed = false;
     private pollTimer?: ReturnType<typeof setInterval>;
     private settleTimer?: ReturnType<typeof setTimeout>;
@@ -350,6 +543,20 @@ class ClaudeTurn {
     private finishing = false;
     /** The user was told the background sub-agents were stopped. */
     private toldStopped = false;
+    /** The harness's hooks registered with Claude Code, by the callback id it sends back. */
+    private hookCallbacks = new Map<string, { event: HookEvent; hook: HookConfig }>();
+    /** The harness's skills, as a plugin folder (src/backends/native-skills.ts). */
+    pluginDir?: string;
+    /** The name Claude Code runs each of the harness's skills by (claudeNames), for the prompts sent during the run. */
+    skillNames: ReadonlyMap<string, string> = new Map();
+    /** Each sub-agent's type, by the id it asks permission with. */
+    private agentTypes = new Map<string, string>();
+    /** Where --agents reads from, removed when the process exits. */
+    private agentsFile?: { path: string; remove: () => void };
+    /** What the session was last told runs in this run's background (SessionHost.emitSession), by task id. */
+    private reportedBackground = new Map<string, BackgroundTaskInfo>();
+    /** How Claude Code said each background task ended (task_notification), by its task id. */
+    private taskEnds = new Map<string, string>();
 
     constructor(
         private def: ProviderDef,
@@ -361,60 +568,151 @@ class ClaudeTurn {
         private limitSeen = new Map<string, string>(),
     ) {}
 
+    get sessionKey(): string {
+        return this.t.sessionKey;
+    }
+
+    /**
+     * Tell the session what runs in the background when that changed: what started, and what ended since.
+     * `gone`: the process is stopped, and whatever still ran stopped with it.
+     */
+    private syncBackground(gone = false) {
+        const emit = this.cliSession.emitSession;
+        if (!emit) return;
+        const seen = new Set<string>();
+        const calls = new Set(this.agentLabels.values());
+        const mapped = new Set(this.agentTasks.values());
+        for (const w of gone ? [] : this.inBackground()) {
+            // A sub-agent by its Agent call (its task id may come later), the rest by task id.
+            const id = w.toolUseId ?? w.id;
+            if (!id) continue;
+            // Listed before its task_started ties it to its Agent call: it's that call's, reported as such once tied.
+            if (w.agent && !w.toolUseId && !mapped.has(id) && calls.has(w.label)) continue;
+            seen.add(id);
+            const was = this.reportedBackground.get(id);
+            const task: BackgroundTaskInfo = {
+                id,
+                provider: this.def.id,
+                kind: w.agent ? "agent" : w.monitor ? "monitor" : w.commandTask ? "shell" : "other",
+                label: w.label,
+                ...(w.toolUseId ? { toolUseId: w.toolUseId } : {}),
+                startedAt: was?.startedAt ?? w.started ?? Date.now(),
+                status: "running",
+                // stop_task needs its task id.
+                stoppable: Boolean(w.id),
+            };
+            if (was && JSON.stringify(was) === JSON.stringify(task)) continue;
+            this.reportedBackground.set(id, task);
+            emit({ type: "background_task", task, accountId: this.t.accountId ?? "default" });
+        }
+        for (const [id, t] of this.reportedBackground) {
+            if (seen.has(id)) continue;
+            const taskId = t.toolUseId ? this.agentTasks.get(t.toolUseId) : id;
+            const said = taskId ? this.taskEnds.get(taskId) : undefined;
+            const launch = t.toolUseId ? this.closedLaunches.get(t.toolUseId)?.reason : undefined;
+            const stopped = (taskId !== undefined && this.stoppedTaskIds.has(taskId)) || said === "stopped" || launch === "aborted";
+            let status: BackgroundTaskInfo["status"] | undefined = stopped ? "stopped" : said === "failed" || launch === "error" ? "failed" : said || launch ? "done" : undefined;
+            let withProcess = false;
+            if (!status) {
+                // Off Claude Code's list with no word yet of how it ended (its task_notification comes after the
+                // list changes, or its stop is still being answered): it's said once that word comes.
+                if (!gone) {
+                    this.leftList.add(id);
+                    continue;
+                }
+                // The process is gone: one that had left the list (its stop not pending) ended before; the rest went with it.
+                const stopping = taskId !== undefined && this.pendingStops.has(taskId);
+                if (this.leftList.has(id) && !stopping) status = "done";
+                else {
+                    status = "stopped";
+                    withProcess = !stopping;
+                }
+            }
+            this.reportedBackground.delete(id);
+            this.leftList.delete(id);
+            // Ended with the process by the user's Esc: their stop (no news to them), not a crash's.
+            const how = status === "stopped" && this.aborted ? { byUser: true } : withProcess ? { withProcess: true } : {};
+            const ended: BackgroundTaskInfo = { ...t, status, endedAt: Date.now(), ...how };
+            this.endedBackground.set(id, ended);
+            emit({ type: "background_task", task: ended, accountId: this.t.accountId ?? "default" });
+        }
+        // One said to have ended, then said to have ended otherwise (a sub-agent done, then failed after all): so it did.
+        for (const [id, t] of this.endedBackground) {
+            if (t.status === "stopped") continue;
+            const said = this.taskEnds.get((t.toolUseId ? this.agentTasks.get(t.toolUseId) : id) ?? "");
+            const launch = t.toolUseId ? this.closedLaunches.get(t.toolUseId)?.reason : undefined;
+            const status: BackgroundTaskInfo["status"] | undefined = said === "failed" || (!said && launch === "error") ? "failed" : said === "completed" || (!said && launch === "done") ? "done" : undefined;
+            if (!status || status === t.status) continue;
+            const revised = { ...t, status };
+            this.endedBackground.set(id, revised);
+            emit({ type: "background_task", task: revised, accountId: this.t.accountId ?? "default" });
+        }
+    }
+
+    /** What the session was told of each background task that ended in this run, by its id: said again if Claude Code changes its word. */
+    private endedBackground = new Map<string, BackgroundTaskInfo>();
+
+    /** The user's stop of background tasks (these, or every one): how each went, once Claude Code answers. */
+    async stopBackground(ids?: string[]): Promise<Record<string, BackgroundStop>> {
+        const left = this.inBackground();
+        const targets = ids ?? left.map((t) => t.toolUseId ?? t.id).filter((id): id is string => Boolean(id));
+        const out: Record<string, BackgroundStop> = {};
+        await Promise.all(
+            targets.map(async (id) => {
+                const w = left.find((t) => t.toolUseId === id || t.id === id);
+                // Off Claude Code's list: ended (how is said once Claude Code says), unless a stop of it is still pending.
+                if (!w) out[id] = this.reportedBackground.has(id) || this.endedBackground.has(id) ? (this.pendingStops.has(this.agentTasks.get(id) ?? id) ? "timeout" : "ended") : "unknown";
+                else if (!w.id || this.finishing) out[id] = "not_stoppable";
+                else out[id] = await this.stopTask(w, "", true);
+            }),
+        );
+        return out;
+    }
+
     /** The session's spend so far, as its last result put it. */
     spending(): { sessionId: string; total: number } | undefined {
         return this.sessionId && this.spent !== undefined ? { sessionId: this.sessionId, total: this.spent } : undefined;
     }
 
-    private get host(): BackendHost {
-        return this.t.host;
+    /** The session's side of the host: permissions, usage, background tasks. */
+    private get cliSession(): SessionHost {
+        return this.t.session;
+    }
+
+    /** This turn's events and steering. */
+    private get sink(): TurnSink {
+        return this.t.sink;
     }
 
     /** The mode of the agent running this turn, as it is now. */
     agentMode(): PermissionMode {
-        return this.host.mode();
+        return this.cliSession.mode();
     }
 
     private args(): string[] {
         const t = this.t;
-        const a = [...extraArgs(this.def.id), ...STREAM_ARGS, "--include-partial-messages", "--permission-prompt-tool=stdio", "--permission-mode", MODES[t.mode]];
-        if (t.model.id !== "default") a.push("--model", t.model.id);
-        if (t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort))) a.push("--effort", t.effort);
-        if (t.resumeId) a.push("--resume", t.resumeId, ...(t.forkSession ? ["--fork-session"] : []));
-        if (t.maxTurns && Number.isFinite(t.maxTurns)) a.push("--max-turns", String(t.maxTurns));
-        a.push("--append-system-prompt", [t.appendSystemPrompt,
-            `Harness waits up to ${claudeBackgroundWaitMs(t.backgroundWaitSec) / 1000} seconds after an answer for reported background commands and monitors; sub-agents retain their 60-minute limit. Background commands and monitors do not survive process shutdown, a user interrupt, or their grace timeout. Recognized dev servers/watchers are stopped without waiting after the answer. Consume finite-work results before declaring success; do not expect a background server to outlive the turn. Work not reported by the CLI cannot be waited for.`,
-        ].filter(Boolean).join("\n\n"));
-        for (const d of t.additionalDirectories) a.push("--add-dir", d);
-        // An untrusted folder's Claude Code settings (hooks, permission rules), skills, agents and .mcp.json stay off.
-        if (!t.trusted) a.push("--setting-sources", "user");
-        // The harness's deny and ask rules also cover what Claude Code would do without asking.
-        const permissions = claudePermissions(t.rules);
-        const sandbox = claudeAccountSandbox();
-        // Also check excluded commands, which the CLI may run outside its sandbox.
-        if (sandbox && !permissions.ask.includes("Bash")) permissions.ask.push("Bash");
-        // Always override external preferences: an unsupported model must not silently switch to Opus.
-        const fastMode = Boolean(t.fastMode && t.model.supportsFastMode);
-        const mcp = t.trusted && !t.readOnly ? claudeMcpPolicy(t.cwd, t.approvedMcpServers) : { strict: true };
-        if (mcp.strict) a.push("--strict-mcp-config");
-        if (mcp.warning) this.host.emit({ type: "notice", level: "warn", message: mcp.warning });
-        if (!t.readOnly) {
-            a.push("--settings", JSON.stringify({ permissions, fastMode, ...(sandbox ? { sandbox } : {}), ...mcp.settings }));
-            return a;
-        }
-        // A read-only sub-agent: no edit tools, no MCP servers of its own, and every command asks (the harness lets read-only ones run).
-        a.push("--disallowedTools", READ_ONLY_DENY.join(","));
-        const settings = { fastMode, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { ...sandbox, autoAllowBashIfSandboxed: false } };
-        a.push("--settings", JSON.stringify(settings));
-        return a;
+        // The harness's agents, for its own Agent tool (a file: -p reads one, and prompts can outgrow an argument).
+        if (t.agents && Object.keys(t.agents).length && !t.readOnly) this.agentsFile ??= writeAgentsFile(t.agents);
+        const { args, mcpWarning } = claudeArgs(this.def.id, t, {
+            pluginDir: this.pluginDir,
+            agentsPath: this.agentsFile?.path,
+            append: [t.appendSystemPrompt, t.goalContext,
+                `After an answer, Harness waits for a reported background Bash command until its own \`timeout\` runs out, counted from its start (at most ${span(backgroundTiming.commandMaxTimeoutMs)}); for one without a timeout, and for each monitor, it waits up to ${claudeBackgroundWaitMs(t.backgroundWaitSec) / 1000} seconds after the answer. ${Number.isFinite(backgroundTiming.maxWaitMs) ? `Sub-agents and other background work have a ${span(backgroundTiming.maxWaitMs)} limit, which doesn't cut short a command still within its own timeout (nor, while one is, any sub-agent or workflow).` : "Sub-agents and other background work run until they finish or the user stops them, with no time limit."} For a long finite job in the background (a test suite, a build, a benchmark), pass \`timeout\` with \`run_in_background\`, set to how long it may take. Background commands and monitors do not survive process shutdown, a user interrupt, or the end of their wait. Recognized dev servers/watchers are stopped without waiting after the answer, timeout or not. Consume finite-work results before declaring success; do not expect a background server to outlive the turn. Work not reported by the CLI cannot be waited for.`,
+            ],
+        });
+        if (mcpWarning) this.sink.emit({ type: "notice", level: "warn", message: mcpWarning });
+        return args;
     }
 
     setMode(m: PermissionMode) {
         this.proc?.send({ type: "control_request", request_id: requestId(), request: { subtype: "set_permission_mode", mode: MODES[m] } });
     }
 
-    private sendUser(content: unknown[]) {
-        if (this.aborted || this.finishing) return;
+    /** `synthetic`: not the user's own words (see BackendTurn.synthetic), so Claude Code expands no @mentions in it. */
+    /** False when it didn't go: stopping, or Claude Code's stdin is gone (known once the write is done: JsonLinesProcess.send). */
+    private async sendUser(content: unknown[], synthetic = false): Promise<boolean> {
+        if (this.aborted || this.finishing) return false;
+        const wasBusy = this.busy;
         this.prompted = true;
         this.busy = true;
         this.commandWaitingSince.clear();
@@ -424,7 +722,13 @@ class ClaudeTurn {
         this.settleTimer = undefined;
         const uuid = crypto.randomUUID();
         this.unanswered.add(uuid);
-        this.proc.send({ type: "user", uuid, message: { role: "user", content }, parent_tool_use_id: null, session_id: this.sessionId ?? "" });
+        const sent = await this.proc.send({ type: "user", uuid, message: { role: "user", content }, parent_tool_use_id: null, session_id: this.sessionId ?? "", ...(synthetic ? { isSynthetic: true } : {}) });
+        // Not written: no answer to wait for.
+        if (!sent) {
+            this.unanswered.delete(uuid);
+            this.busy = wasBusy;
+        }
+        return sent;
     }
 
     /**
@@ -457,12 +761,16 @@ class ClaudeTurn {
         const labels = new Set(agents.filter((id) => !this.agentTasks.has(id)).map((id) => this.agentLabels.get(id) ?? "sub-agent"));
         // And what else it lists (a sub-agent there that's one of those once only).
         const listed = (this.background ?? []).filter((t) => !this.stoppedTaskIds.has(t.id) && !tasks.has(t.id) && !(t.type === "local_agent" && labels.has(t.description)));
-        return [...agents.map((id) => ({ agent: true, label: this.agentLabels.get(id) ?? "sub-agent" })), ...listed.map((t) => ({ id: t.id, agent: t.type === "local_agent", commandTask: t.type === "local_bash" || t.type.startsWith("monitor"), monitor: t.type.startsWith("monitor"), command: t.type === "local_bash" ? this.taskCommands.get(t.id) ?? t.description : undefined, label: t.description || "background task" }))];
+        return [...agents.map((id) => ({ id: this.agentTasks.get(id), toolUseId: id, agent: true, label: this.agentLabels.get(id) ?? "sub-agent" })), ...listed.map((t) => {
+            const shell = t.type === "local_bash" ? this.taskCommands.get(t.id) : undefined;
+            return { id: t.id, agent: t.type === "local_agent", commandTask: t.type === "local_bash" || t.type.startsWith("monitor"), monitor: t.type.startsWith("monitor"), command: t.type === "local_bash" ? shell?.command ?? t.description : undefined, timeoutMs: shell?.timeoutMs, started: shell?.started, label: t.description || "background task" };
+        })];
     }
 
     /** Background sub-agents Claude Code hasn't said are over. */
     private unreported(): string[] {
-        return [...this.backgroundAgents].filter((id) => this.liveAgents.has(id));
+        // One Harness stopped (at the overall cap) is over too, whatever Claude Code says of it later.
+        return [...this.backgroundAgents].filter((id) => this.liveAgents.has(id) && !this.stoppedTaskIds.has(this.agentTasks.get(id) ?? ""));
     }
 
     /**
@@ -482,13 +790,19 @@ class ClaudeTurn {
 
     private async checkIdle(): Promise<boolean> {
         if (this.busy || this.unanswered.size || !this.answered || this.aborted || this.finishing) return false;
-        if (await this.deliverQueued()) return false;
+        // Waiting only on background work, Claude Code is between its turns: nothing is mid-step, so what the
+        // user queued goes now, whatever its mode, with its attachments. Otherwise only messages to steer with.
+        if (await this.deliverQueued(this.inBackground().length > 0)) return false;
         if (this.aborted || this.finishing) return false;
         // A timer may have awaited a snapshot while the message loop received fresh work.
         if (this.busy || this.unanswered.size || !this.answered) return false;
+        // Harness's own stops past their timeout. One whose task said how it ended while it was pending (before
+        // the timeout or after it) is settled by that end, here, whichever of this and the stop's timer comes first.
+        for (const [id, p] of [...this.pendingStops]) if (!p.byUser && this.heldEnds.has(id) && Date.now() - p.since >= backgroundTiming.stopTimeoutMs) p.release();
         const left = this.inBackground();
-        if (this.stopFailed || [...this.pendingStops.values()].some((p) => Date.now() - p.since >= backgroundTiming.stopTimeoutMs)) {
-            this.noteStopped(left, "Claude Code did not confirm a task stop; ending its process");
+        // The rest end the run: only Harness's own stops do when they go unanswered; the user's never do.
+        if (this.stopFailed || [...this.pendingStops.values()].some((p) => !p.byUser && Date.now() - p.since >= backgroundTiming.stopTimeoutMs)) {
+            this.noteStopped(left, "harness", "because Claude Code did not confirm a task stop, so its process was ended");
             this.toldStopped = true;
             return true;
         }
@@ -499,17 +813,25 @@ class ClaudeTurn {
         for (const id of this.commandWaitingSince.keys()) {
             if (!commands.some((t) => t.id === id)) this.commandWaitingSince.delete(id);
         }
+        for (const id of this.commandListedSince.keys()) {
+            if (!commands.some((t) => t.id === id)) this.commandListedSince.delete(id);
+        }
         const stopping: { task: BackgroundWork; why: string }[] = [];
         for (const task of commands) {
             // Command tasks come from the CLI's list and have task IDs.
             const id = task.id!;
             if (!this.commandWaitingSince.has(id)) this.commandWaitingSince.set(id, now);
-            if (task.command && longLivedClaudeCommand(task.command)) stopping.push({ task, why: "recognized long-lived server/watcher" });
-            else if (now - this.commandWaitingSince.get(id)! >= grace) stopping.push({ task, why: `background grace expired after ${grace / 1000}s` });
+            if (!this.commandListedSince.has(id)) this.commandListedSince.set(id, now);
+            const until = ownDeadline(task);
+            if (task.command && longLivedClaudeCommand(task.command)) stopping.push({ task, why: "without waiting: a recognized long-lived server/watcher" });
+            // One with a timeout of its own runs until it's up, as in Claude Code; the setting changes only the default.
+            else if (until !== undefined) {
+                if (now >= until) stopping.push({ task, why: `when its background timeout of ${span(until - task.started!)} ran out` });
+            } else if (now - this.commandWaitingSince.get(id)! >= grace) stopping.push({ task, why: `when its background grace expired after ${grace / 1000}s` });
         }
         if (stopping.length) {
             if (stopping.length === left.length) {
-                for (const { task, why } of stopping) this.noteStopped([task], why);
+                for (const { task, why } of stopping) this.noteStopped([task], "harness", why);
                 this.toldStopped = true;
                 return true;
             }
@@ -523,17 +845,30 @@ class ClaudeTurn {
             clearTimeout(this.settleTimer);
             this.settleTimer = undefined;
             this.waitFor(left);
-            if (Date.now() - this.waitingSince! < backgroundTiming.maxWaitMs) return false;
-            // Waited long enough (only between Claude Code's turns, so none is cut short): what's left stops with it.
-            const ms = backgroundTiming.maxWaitMs;
+            // Commands without a timeout of their own and monitors have a cap; sub-agents and workflows none by
+            // default (maxWaitMs), as in Claude Code: they run until they're done or the user stops them.
+            // A command's from when it was first listed, not from the start of a wait other work kept going.
+            const waited = (t: BackgroundWork) => now - (t.commandTask ? (this.commandListedSince.get(t.id!) ?? this.waitingSince!) : this.waitingSince!);
+            const capOf = (t: BackgroundWork) => (t.commandTask ? Math.min(backgroundTiming.commandsMaxWaitMs, backgroundTiming.maxWaitMs) : backgroundTiming.maxWaitMs);
+            // Sub-agents and workflows go on too while a command within its own timeout does: stopping one ends the
+            // shells under it (a grandchild's too), and a command's completion goes to the sub-agent that ran it.
+            const timed = left.some((t) => ownDeadline(t) !== undefined);
+            const over = left.filter((t) => ownDeadline(t) === undefined && waited(t) >= capOf(t) && !(timed && !t.commandTask));
+            if (!over.length) return false;
+            const ms = Math.min(...over.map(capOf));
+            // So too while a finished command's report is still due: stop the rest by task id and let that turn come.
+            if (over.length < left.length || (this.reportDue() && over.every((t) => t.id))) {
+                for (const task of over) this.stopTask(task, `after waiting ${span(ms)}, its limit for background work`);
+                return false;
+            }
             this.toldStopped = true;
             this.rememberStopped(left);
-            this.host.emit({ type: "notice", level: "warn", message: `Stopped waiting for ${describeBackground(left)} after ${ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.ceil(ms / 1000)}s`}. ${left.length === 1 ? "It was" : "They were"} stopped with Claude Code, so ${left.length === 1 ? "its report" : "their reports"} won't come.` });
+            this.sink.emit({ type: "notice", level: "warn", message: `${APP_TITLE} stopped ${describeBackground(left)} after waiting ${span(ms)}, its limit for background work, and Claude Code with ${left.length === 1 ? "it" : "them"}. ${left.length === 1 ? "It won't" : "They won't"} report back.` });
             return true;
         }
         this.stopWaiting();
         // A sub-agent ended: Claude Code's turn with its report is due.
-        if (this.reportsDue) {
+        if (this.reportDue()) {
             this.settleTimer ??= setTimeout(() => {
                 this.settleTimer = undefined;
                 // A queued prompt may still be waiting for its start snapshot.
@@ -555,61 +890,214 @@ class ClaudeTurn {
     /** Serialized with idle checks: snapshot/record the preceding output before the new user row. */
     private deliveryPending?: Promise<boolean>;
 
-    private deliverQueued(): Promise<boolean> {
-        return (this.deliveryPending ??= this.forwardQueued().finally(() => { this.deliveryPending = undefined; }));
+    /** `waiting`: Claude Code is between its turns, waiting only on background work (see BackendHost.drainWaiting). */
+    private deliverQueued(waiting = false): Promise<boolean> {
+        return (this.deliveryPending ??= this.forward(waiting).finally(() => { this.deliveryPending = undefined; }));
+    }
+
+    private async forward(waiting: boolean): Promise<boolean> {
+        // One at a time, in the order they were sent: the next goes once Claude Code has answered this one.
+        if (waiting && (await this.forwardWaiting())) return true;
+        return this.forwardQueued();
+    }
+
+    /** What the run has said and done since the last of it was recorded, taken out. */
+    private progress(): BackendResult {
+        return { reason: "done", text: this.texts.splice(0).join("\n\n"), actions: this.actions.splice(0) };
+    }
+
+    private async forwardWaiting(): Promise<boolean> {
+        if (this.aborted || this.finishing || !this.sink.drainWaiting) return false;
+        const p = await this.sink.drainWaiting(() => this.progress(), () => !this.aborted && !this.finishing);
+        if (!p) return false;
+        if (this.aborted || this.finishing) {
+            // Not expected: nothing is awaited between its "go" (see AgentHost.drainWaiting) and here. Should
+            // a stop land anyway, the next turn is told of it rather than it vanishing.
+            this.sink.undelivered?.([{ text: p.text, images: p.images, documents: p.documents }]);
+            return false;
+        }
+        this.reason = undefined;
+        // As a prompt of the user's own is sent (runTurn): its $names read the same way, its images and PDFs first.
+        const text = claudePrompt(p.text, p.request, this.t.skills ?? [], this.skillNames, formatSkill, p.requestAfter);
+        this.sendUser([...mediaBlocks(p.images, p.documents), ...(text ? [{ type: "text", text }] : [])]);
+        return true;
     }
 
     private async forwardQueued(): Promise<boolean> {
         if (this.aborted || this.finishing) return false;
-        const queued = await this.host.drainQueued(() => ({
-            reason: "done", text: this.texts.splice(0).join("\n\n"), actions: this.actions.splice(0),
-        }));
-        if (!queued.length || this.aborted || this.finishing) return false;
+        // Their hooks run first: they're taken only if it can still send them.
+        const queued = await this.sink.drainQueued(() => this.progress(), () => !this.aborted && !this.finishing);
+        if (!queued.length) return false;
+        if (this.aborted || this.finishing) {
+            // Stopped once they were taken (they're in the transcript): the next turn is told of them rather than them
+            // vanishing. One with attachments isn't in it yet: it stays queued, to go as a prompt of its own.
+            for (const m of queued) await m.settle?.(false);
+            const told = queued.filter((m) => !m.settle);
+            if (told.length) this.sink.undelivered?.(told);
+            return false;
+        }
         this.reason = undefined;
-        this.sendUser([{ type: "text", text: queued.join("\n\n") }]);
-        return true;
+        // The user's messages as they typed them; a watch's events (others' words) apart, read as written.
+        // One with attachments (settle) is the user's, whatever its words.
+        const fromWake = (m: SteerMessage) => !m.settle && Boolean(this.sink.fromWake?.(m.text));
+        const typed = queued.filter((m) => !fromWake(m));
+        const woke = queued.filter(fromWake);
+        // Their images and PDFs first, as a prompt's (runTurn); the text last.
+        const media = typed.flatMap((m) => mediaBlocks(m.images, m.documents));
+        // One with only images or files has no text block (the API refuses an empty one).
+        const words = typed.map((m) => m.text).filter((t) => t).join("\n\n");
+        // Both buffered in order now; each known written (or not) once its write is done.
+        const sending = typed.length ? this.sendUser([...media, ...(words ? [{ type: "text", text: words }] : [])]) : Promise.resolve(false);
+        const telling = woke.length ? this.sendUser([{ type: "text", text: woke.map((m) => m.text).join("\n\n") }], true) : Promise.resolve(false);
+        const [sent, told] = await Promise.all([sending, telling]);
+        // Written whole to its stdin, as text steers are: one with attachments is the host's to record now (and if
+        // the write failed, Claude Code went away before taking it: it stays queued).
+        for (const m of typed) await m.settle?.(sent);
+        // Nothing written: nothing to wait for.
+        return sent || told;
     }
 
     private rememberStopped(tasks: BackgroundWork[]) {
         for (const t of tasks) this.stoppedBackground.add(`${t.agent ? "sub-agent" : t.monitor ? "background monitor" : t.commandTask ? "background command" : "background task"}: ${t.label}`);
     }
 
-    private noteStopped(tasks: BackgroundWork[], why: string) {
+    /**
+     * Say that background tasks were stopped, and by whom (#285): Harness (`why`: at a limit, or a command's own
+     * timeout), the user (their Stop, or Esc), or the process ending under them.
+     */
+    private noteStopped(tasks: BackgroundWork[], by: "harness" | "user" | "esc" | "process", why = "") {
         if (!tasks.length) return;
         this.rememberStopped(tasks);
-        this.host.emit({ type: "notice", level: "warn", message: `Stopped ${describeBackground(tasks)} (${why}). They will not produce further results.` });
+        const what = describeBackground(tasks);
+        const said = by === "harness" ? `${APP_TITLE} stopped ${what}${why ? ` ${why}` : ""}.` : by === "user" ? `You stopped ${what}.` : by === "esc" ? `Stopped ${what} when you pressed Esc.` : `Claude Code's process ended, and with it ${what}.`;
+        this.sink.emit({ type: "notice", level: by === "user" ? "info" : "warn", message: `${said} ${tasks.length === 1 ? "It won't" : "They won't"} report back.` });
     }
 
-    private stopTask(task: BackgroundWork, why: string) {
-        if (!task.id) { this.stopFailed = true; return; }
+    /**
+     * Ask Claude Code to stop a background task: how it went. One Harness stops (at a cap) that Claude Code
+     * doesn't stop ends the run; one the user stops (`byUser`) that doesn't stop is only said to have failed.
+     * A second stop of a task whose stop is still unanswered (the user's timed out, then Harness's at a cap)
+     * asks nothing more: both take the one answer. Once it's stopped, or has said how it ended, a failure or
+     * a silence after doesn't count against the run.
+     */
+    private stopTask(task: BackgroundWork, why: string, byUser = false): Promise<BackgroundStop> {
+        // `why`: Harness's reason (noteStopped); the user's stop needs none.
+        if (!task.id) {
+            if (!byUser) this.stopFailed = true;
+            return Promise.resolve("not_stoppable");
+        }
         const id = task.id;
-        const request = requestId();
-        this.pendingStops.set(id, { task, since: Date.now() });
-        this.controls.set(request, (response) => {
-            this.controls.delete(request);
+        if (this.stoppedTaskIds.has(id)) return Promise.resolve("stopped");
+        const pending = { task, since: Date.now(), byUser, release: () => notStopped() };
+        // Harness's own stop decides what an unanswered one does (it ends the run, checkIdle): the user's doesn't take its place.
+        const before = this.pendingStops.get(id);
+        if (!before || before.byUser) this.pendingStops.set(id, pending);
+        const mine = () => this.pendingStops.get(id) === pending;
+        /** Claude Code said how it ended before (not held for a stop): there was nothing left to stop. */
+        const over = () => this.taskEnds.has(id) && !this.heldEnds.has(id);
+        /** The stop didn't go through (refused, or not answered in time): the task's end, if Claude Code said it meanwhile, counts. */
+        const notStopped = () => {
+            if (!mine()) return;
             this.pendingStops.delete(id);
-            if (response.subtype !== "success") { this.stopFailed = true; return; }
+            const held = this.heldEnds.get(id);
+            this.heldEnds.delete(id);
+            if (held) this.onSystem(held);
+            this.syncBackground();
+        };
+        /** The answer came (it's the same for every stop of the task waiting on it): its pending stop goes, and the end held for it counts. */
+        const release = () => {
+            this.pendingStops.delete(id);
+            const held = this.heldEnds.get(id);
+            this.heldEnds.delete(id);
+            if (held) this.onSystem(held);
+            this.syncBackground();
+        };
+        const answered = this.askStop(id).then((ok): BackgroundStop => {
+            // Another stop of it has taken this answer already.
+            if (this.stoppedTaskIds.has(id)) return "stopped";
+            // Claude Code answers success for a task it no longer runs, and says a task it stops ended "stopped" before
+            // it answers. An end it said otherwise while the stop was pending (done, failed), or before the stop was
+            // asked: the task ended on its own, and that's how (its report turn is due), whatever the answer.
+            const held = this.heldEnds.get(id);
+            if (over() || (held && (held.status !== "stopped" || !ok))) {
+                release();
+                return "ended";
+            }
+            if (!ok) {
+                if (!byUser) this.stopFailed = true;
+                release();
+                return "failed";
+            }
+            this.pendingStops.delete(id);
+            this.heldEnds.delete(id);
             this.stoppedTaskIds.add(id);
-            this.noteStopped([task], why);
+            // A sub-agent stopped (at the overall cap, or by the user): over, without a report.
+            if (task.toolUseId) this.endAgent(task.toolUseId, "aborted");
+            this.noteStopped([task], byUser ? "user" : "harness", why);
+            this.syncBackground();
+            return "stopped";
         });
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        // Its process gone, the task went with it; unless it said how it ended first (held for this stop): that's how.
+        const gone = this.proc.exited.then((): BackgroundStop => {
+            const held = mine() ? this.heldEnds.get(id) : undefined;
+            if (!held) return "stopped";
+            notStopped();
+            return held.status === "stopped" ? "stopped" : "ended";
+        });
+        const late = new Promise<BackgroundStop>(
+            (resolve) =>
+                (timer = setTimeout(() => {
+                    // The user's: the task runs on as far as Harness knows, and the run with it (an automatic
+                    // stop's timeout ends the run, checkIdle, unless the task said meanwhile how it ended). A
+                    // late answer still counts.
+                    const held = mine() ? this.heldEnds.get(id) : undefined;
+                    if (byUser || held) notStopped();
+                    resolve(held && held.status !== "stopped" ? "ended" : "timeout");
+                }, backgroundTiming.stopTimeoutMs)),
+        );
+        return Promise.race([answered, gone, late]).finally(() => {
+            clearTimeout(timer);
+            // A pending stop holds the run open (checkIdle): once it's settled, whatever else it waited on may be done
+            // (a report turn that came meanwhile), with nothing else to look again (no wait polling yet).
+            this.recheckIdle();
+        });
+    }
+
+    /** Each task's stop_task not answered yet, by task id: whether it went through. One request per task at a time. */
+    private stopRequests = new Map<string, Promise<boolean>>();
+
+    private askStop(id: string): Promise<boolean> {
+        const asked = this.stopRequests.get(id);
+        if (asked) return asked;
+        const request = requestId();
+        const answer = new Promise<boolean>((resolve) => {
+            this.controls.set(request, (response) => {
+                this.controls.delete(request);
+                this.stopRequests.delete(id);
+                resolve(response.subtype === "success");
+            });
+        });
+        this.stopRequests.set(id, answer);
         this.proc.send({ type: "control_request", request_id: request, request: { subtype: "stop_task", task_id: id } });
+        return answer;
     }
 
     private clearWaitStatus() {
         if (this.waitingLabel === undefined) return;
         this.waitingLabel = undefined;
-        this.host.emit({ type: "activity" });
+        this.sink.emit({ type: "activity" });
     }
 
     private waitFor(left: BackgroundWork[]) {
         const label = `Waiting for ${left.map((t) => `${t.agent ? "background sub-agent" : t.monitor ? "background monitor" : t.commandTask ? "background command" : "background task"}: ${t.label}`).join("; ")} · Esc to stop ${left.length === 1 ? "it" : "them"}`;
         if (label !== this.waitingLabel) {
             this.waitingLabel = label;
-            this.host.emit({ type: "activity", text: label });
+            this.sink.emit({ type: "activity", text: label });
         }
         if (this.waitingSince !== undefined) return;
         this.waitingSince = Date.now();
-        this.host.emit({ type: "notice", level: "info", message: `Waiting for ${describeBackground(left)} to report back: the turn ends once Claude Code has the results (Esc stops them).` });
+        this.sink.emit({ type: "notice", level: "info", message: `Waiting for ${describeBackground(left)} to report back: the turn ends once Claude Code has the results (Esc stops them).` });
         // Messages the user sends meanwhile go to Claude Code now, not after the wait; and the wait has an end.
         this.pollTimer = setInterval(() => {
             void this.idle().then((done) => {
@@ -623,7 +1111,31 @@ class ClaudeTurn {
         this.pollTimer = undefined;
         this.waitingSince = undefined;
         this.commandWaitingSince.clear();
+        this.commandListedSince.clear();
         this.clearWaitStatus();
+    }
+
+    /**
+     * Whether Claude Code's turn with a report is due: a background task ended (on its own, not by a stop of ours,
+     * and with no stop of it still unsettled) since its last turn started. Derived from what happened, in whatever
+     * order: a report a turn took while the task's stop was pending isn't waited for again.
+     */
+    private reportDue(): boolean {
+        for (const [id, turn] of this.endedIn) if (turn === this.turnCount && !this.stoppedTaskIds.has(id) && !this.pendingStops.has(id)) return true;
+        return false;
+    }
+
+    /** It ended (left the list, or said so): first word only. */
+    private markEnded(taskId: string) {
+        if (!this.endedIn.has(taskId)) this.endedIn.set(taskId, this.turnCount);
+    }
+
+    /** Look again whether the run is over, from outside its loop (a stop settled): end it if so. */
+    private recheckIdle() {
+        if (this.busy || this.finishing || this.aborted) return;
+        void this.idle().then((done) => {
+            if (done) this.finish();
+        });
     }
 
     /** End the run from outside its loop: Claude Code is stopped (it would otherwise wait on its background work), and its output ends. */
@@ -640,7 +1152,7 @@ class ClaudeTurn {
     private async attach() {
         const o = this.t.orchestrator;
         if (!o || this.t.readOnly) return;
-        const warn = (message: string) => this.host.emit({ type: "notice", level: "warn", message });
+        const warn = (message: string) => this.sink.emit({ type: "notice", level: "warn", message });
         const servers = {
             [o.name]: {
                 type: "http",
@@ -670,13 +1182,17 @@ class ClaudeTurn {
 
     async run(content: unknown[]): Promise<BackendResult> {
         const { signal } = this.t;
-        if (signal.aborted) return { reason: "aborted", text: "", actions: [] };
-        this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd, env: accountEnv(this.def.id, this.t.accountId, this.t.cwd) });
-        const stopAccountWatch = watchAccountFolders(() => {
-            this.failure = "Account folders changed while Claude Code was running. Send again to apply their updated protections.";
-            this.reason = "error";
-            void this.proc.kill();
-        });
+        if (signal.aborted) return { reason: "aborted", text: "", actions: [], refused: true };
+        let env: ReturnType<typeof accountEnv>;
+        try {
+            env = accountEnv(this.def.id, this.t.accountId, this.t.cwd);
+            this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd, env });
+        } catch (e) {
+            this.agentsFile?.remove();
+            throw e;
+        }
+        // Its /goal, as it goes: read from its transcript (src/backends/claude-goal.ts).
+        this.goals = new ClaudeGoalWatch(() => (this.sessionId ? claudeTranscriptFile(env.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR, this.t.cwd, this.sessionId) : undefined), Date.now(), (goal) => this.sink.emit({ type: "goal", goal }));
         let killTimer: ReturnType<typeof setTimeout> | undefined;
         const onAbort = () => {
             this.aborted = true;
@@ -687,21 +1203,28 @@ class ClaudeTurn {
             killTimer = setTimeout(() => void this.proc.kill(), stopTiming.interruptMs);
         };
         signal.addEventListener("abort", onAbort, { once: true });
-        this.proc.send({ type: "control_request", request_id: requestId(), request: { subtype: "initialize" } });
+        this.proc.send({ type: "control_request", request_id: requestId(), request: { subtype: "initialize", ...this.hookRegistration() } });
         // The prompt waits for the MCP server, so its first request has the harness's tools.
-        void this.attach().then(() => this.aborted || this.sendUser(content));
+        void this.attach().then(() => this.aborted || this.sendUser(content, this.t.synthetic));
+        const goalTimer = setInterval(() => this.goals?.poll(), GOAL_POLL_MS);
+        let threw = true;
         try {
-            for await (const m of this.proc.messages()) {
+            // Claude Code gone (a crash) while something it started holds its output open: once all it wrote is
+            // read and nothing more comes for a moment, the run ends rather than waiting for good.
+            for await (const m of this.proc.messages({ quietAfterExitMs: backgroundTiming.exitDrainMs })) {
                 if (m.type === "result") {
+                    this.goals?.poll();
                     this.commandWaitingSince.clear();
                     this.busy = false;
                     const ours = this.answers(m);
                     this.onResult(m, ours);
                     if (ours && !this.unanswered.size) this.answered = true;
+                    this.syncBackground();
                     if (this.aborted || (await this.idle())) break;
                     continue;
                 }
                 this.onMessage(m);
+                this.syncBackground();
                 // stream-json accepts user messages while running; Claude Code consumes
                 // them between tool rounds. Await recording/snapshots before reading
                 // subsequent frames so the timeline stays in delivery order.
@@ -711,13 +1234,26 @@ class ClaudeTurn {
                 // Between turns, what changes in the background can end the run.
                 if (!this.busy && (await this.idle())) break;
             }
+            threw = false;
         } finally {
-            stopAccountWatch();
+            clearInterval(goalTimer);
+            this.goals?.poll();
             signal.removeEventListener("abort", onAbort);
             this.stopWaiting();
             clearTimeout(this.settleTimer);
             this.finishing = true;
             await this.proc.stop(this.aborted ? 1000 : 3000);
+            // How tasks ended that Claude Code said while their stop was pending (a report among them): the
+            // process is gone, so no answer will come, and that's how they ended.
+            for (const [id, m] of [...this.heldEnds]) {
+                this.pendingStops.delete(id);
+                this.heldEnds.delete(id);
+                this.onSystem(m);
+            }
+            // The run failed (its host gone, say): what still ran in the background stopped with the process
+            // all the same, or the session would list it running for good, with nothing left to stop it.
+            if (threw) this.syncBackground(true);
+            this.agentsFile?.remove();
             // Polling may still be recording a queued prompt's start. Finish it before Agent records the end.
             await this.idlePending;
             await this.deliveryPending;
@@ -727,15 +1263,18 @@ class ClaudeTurn {
         const lost = [...this.liveAgents].filter((id) => this.backgroundAgents.has(id));
         if (lost.length && !this.aborted && !this.toldStopped) {
             const what = describeBackground(lost.map((id) => ({ agent: true, label: this.agentLabels.get(id) ?? "sub-agent" })));
-            this.host.emit({ type: "notice", level: "warn", message: `${what} stopped with Claude Code before reporting back.` });
+            this.sink.emit({ type: "notice", level: "warn", message: `${what} stopped with Claude Code before reporting back.` });
         }
         const remaining = this.inBackground().filter((t) => !t.agent);
-        if (remaining.length && !this.toldStopped) this.noteStopped(remaining, this.aborted ? "interrupted by user" : "Claude Code process ended");
+        if (remaining.length && !this.toldStopped) this.noteStopped(remaining, this.aborted ? "esc" : "process");
         const backgroundStopped = this.stoppedBackground.size ? [...this.stoppedBackground] : undefined;
+        // Whatever still ran in the background stopped with the process.
+        this.syncBackground(true);
         for (const id of [...this.liveAgents]) this.endAgent(id, "aborted");
         for (const [id, p] of this.tools) this.endTool(id, p, this.aborted ? "Interrupted by user" : "Claude Code stopped before this finished.", true);
         const text = this.texts.join("\n\n");
-        if (this.aborted) return { reason: "aborted", text, actions: this.actions, backgroundStopped };
+        // Stopped before the prompt went: Claude Code never had it.
+        if (this.aborted) return { reason: "aborted", text, actions: this.actions, backgroundStopped, ...(this.prompted ? {} : { refused: true }) };
         const error = this.failure && this.diagnostic && !this.failure.includes(this.diagnostic) ? `${this.failure} ${this.diagnostic}` : this.failure;
         // A session it can't find ends with an error result (or exit) before init.
         const err = this.proc.stderr();
@@ -743,12 +1282,20 @@ class ClaudeTurn {
         if (!this.answered || this.unanswered.size || resumeFailed) {
             const code = await this.proc.exited;
             const why = [error, cliMessage(err)].filter(Boolean).join(": ") || `claude exited with code ${code}`;
-            return { reason: "error", text, actions: this.actions, backgroundStopped, error: resumeFailed ? `Couldn't resume the Claude Code session: ${why}` : `Claude Code stopped: ${why}`, resumeFailed };
+            // No turn started (no init): it exited before taking the prompt, which isn't in its session. Once a turn has
+            // started, it keeps the prompt in its transcript, even when the request then fails (signed out, the limit).
+            const refused = this.turnCount === 0 && !resumeFailed;
+            return { reason: "error", text, actions: this.actions, backgroundStopped, error: resumeFailed ? `Couldn't resume the Claude Code session: ${why}` : `Claude Code stopped: ${why}`, resumeFailed, ...this.limitStop(), ...(refused ? { refused } : {}) };
         }
         const reason = this.reason ?? "done";
         // An answer with nothing in it (not a command of Claude Code's own, like /compact): said, so the turn isn't just blank.
-        if (reason === "done" && !text.trim() && !this.actions.length && !this.t.prompt.trimStart().startsWith("/")) this.host.emit({ type: "notice", level: "warn", message: "Claude Code ended the turn without a reply." });
-        return { reason, text, actions: this.actions, error, backgroundStopped };
+        if (reason === "done" && !text.trim() && !this.actions.length && !this.t.prompt.trimStart().startsWith("/")) this.sink.emit({ type: "notice", level: "warn", message: "Claude Code ended the turn without a reply." });
+        return { reason, text, actions: this.actions, error, backgroundStopped, ...(reason === "error" ? this.limitStop() : {}) };
+    }
+
+    /** The turn stopped on the plan's usage limit: when it resets, for an automatic resume. */
+    private limitStop(): Pick<BackendResult, "limit"> {
+        return this.limitHit ? { limit: limitStopOf(this.limits, this.limits?.reached ? this.limits.resetsAt : undefined) } : {};
     }
 
     private fastModeNotice?: string;
@@ -760,7 +1307,7 @@ class ClaudeTurn {
         const reason = typeof m.fast_mode_disabled_reason === "string" ? m.fast_mode_disabled_reason.replace(/_/g, " ") : m.fast_mode_state;
         if (reason === this.fastModeNotice) return;
         this.fastModeNotice = reason;
-        this.host.emit({ type: "notice", level: "warn", message: `Claude Code is not using fast mode (${reason}). Account, organization settings or capacity can limit availability.` });
+        this.sink.emit({ type: "notice", level: "warn", message: `Claude Code is not using fast mode (${reason}). Account, organization settings or capacity can limit availability.` });
     }
 
     private onMessage(m: Record<string, any>) {
@@ -775,7 +1322,7 @@ class ClaudeTurn {
                 // Do not exceed that window or assume older producers aggregate them.
                 if (Array.isArray(r.response?.models)) {
                     this.midTurnInput = claudeVersionAtLeast(r.response.claude_code_version, 301);
-                    if (!this.midTurnInput) this.host.emit({ type: "notice", level: "info", message: "This Claude Code version has no verified mid-turn input acknowledgements. Queued messages will be delivered when its current turn ends." });
+                    if (!this.midTurnInput) this.sink.emit({ type: "notice", level: "info", message: "This Claude Code version has no verified mid-turn input acknowledgements. Queued messages will be delivered when its current turn ends." });
                 }
                 this.controls.get(String(r.request_id ?? ""))?.(r);
                 break;
@@ -796,6 +1343,11 @@ class ClaudeTurn {
             case "rate_limit_event":
                 this.onRateLimit(m.rate_limit_info ?? {});
                 break;
+            case "active_goal":
+                // Its remote sessions report the goal themselves; the transcript says the same, and more (met, impossible).
+                this.goals?.poll();
+                if (!this.goals?.found) this.sink.emit({ type: "goal", goal: claudeGoal(m.value) });
+                break;
         }
     }
 
@@ -807,25 +1359,27 @@ class ClaudeTurn {
                 this.clearWaitStatus();
                 // Each turn starts with one, a turn Claude Code takes itself (with background reports) too.
                 this.busy = true;
-                this.reportsDue = 0;
+                this.turnCount++;
                 clearTimeout(this.settleTimer);
                 this.settleTimer = undefined;
                 if (typeof m.session_id === "string" && m.session_id) {
                     this.sessionId = m.session_id;
-                    this.host.sessionId(m.session_id);
+                    this.cliSession.sessionId(m.session_id);
                 }
                 // No API key behind it: the turn runs on the user's plan, not per-token billing.
                 this.billedToPlan = m.apiKeySource === "none";
                 if (typeof m.model === "string") this.resolvedModel = m.model;
                 // It runs these itself when one is the prompt (/context, a skill): they aren't mistyped commands.
-                if (cliCommandNames(m.slash_commands)) this.host.emit({ type: "cli_commands", provider: this.def.id, names: cliCommandNames(m.slash_commands)! });
+                // Not the harness's own skills (harness:name): the menus have those already.
+                const names = cliCommandNames(m.slash_commands)?.filter((n) => !n.startsWith(CLAUDE_PREFIX));
+                if (names) this.sink.emit({ type: "cli_commands", provider: this.def.id, names });
                 break;
             case "background_tasks_changed":
                 if (Array.isArray(m.tasks)) {
                     const next = m.tasks.map((t: any) => ({ id: String(t?.task_id ?? ""), type: String(t?.task_type ?? ""), description: typeof t?.description === "string" ? t.description : "" }));
                     // A shell/Monitor may leave the list before its notification and
                     // automatic report turn. Give that turn the same grace as agents.
-                    this.reportsDue += (this.background ?? []).filter((t) => t.type !== "local_agent" && !this.pendingStops.has(t.id) && !this.stoppedTaskIds.has(t.id) && !next.some((n: { id: string }) => n.id === t.id)).length;
+                    for (const t of this.background ?? []) if (t.type !== "local_agent" && !this.stoppedTaskIds.has(t.id) && !next.some((n: { id: string }) => n.id === t.id)) this.markEnded(t.id);
                     for (const id of this.commandWaitingSince.keys()) {
                         if (!next.some((t: { id: string }) => t.id === id)) this.commandWaitingSince.delete(id);
                     }
@@ -838,36 +1392,46 @@ class ClaudeTurn {
             case "api_retry": {
                 const delay = Number(m.retry_delay_ms ?? m.delay_ms ?? 0);
                 const why = [m.error_status, typeof m.error === "string" ? m.error : m.error?.message].filter(Boolean).join(" ");
-                this.host.emit({ type: "retry", attempt: Number(m.attempt ?? 1), delayMs: delay, reason: why || "Claude Code is retrying the request" });
+                this.sink.emit({ type: "retry", attempt: Number(m.attempt ?? 1), delayMs: delay, reason: why || "Claude Code is retrying the request" });
                 break;
             }
             case "compact_boundary":
-                this.host.emit({ type: "notice", level: "info", message: "Claude Code compacted its context." });
+                this.sink.emit({ type: "notice", level: "info", message: "Claude Code compacted its context." });
                 break;
             case "task_started": {
                 const id = String(m.tool_use_id ?? "");
-                if (this.shellCommands.has(id) && typeof m.task_id === "string") this.taskCommands.set(m.task_id, this.shellCommands.get(id)!);
+                if (this.shellCommands.has(id) && typeof m.task_id === "string") this.taskCommands.set(m.task_id, { ...this.shellCommands.get(id)!, started: Date.now() });
                 if (this.agentLabels.has(id) && typeof m.task_id === "string") this.agentTasks.set(id, m.task_id);
+                // Its permission requests carry this id (agent_id): which agent asks.
+                if (typeof m.task_id === "string" && typeof m.subagent_type === "string") this.agentTypes.set(m.task_id, m.subagent_type);
                 if (m.is_backgrounded === true && this.agentLabels.has(id)) this.backgroundAgents.add(id);
                 this.agentStarted(id);
                 break;
             }
             case "task_notification": {
                 this.commandWaitingSince.delete(m.task_id);
+                if (typeof m.task_id === "string" && typeof m.status === "string") this.taskEnds.set(m.task_id, m.status);
                 // A sub-agent finished (in the foreground, this comes before its Agent call's result). It
                 // ran even if nothing of it showed. A later one replaces what this one said (the report it
                 // was waiting on, or how it ended).
                 const id = String(m.tool_use_id ?? "");
                 const summary = typeof m.summary === "string" ? m.summary.trim() : "";
-                if (this.pendingStops.has(m.task_id) || this.stoppedTaskIds.has(m.task_id)) break;
-                const listed = this.background?.find((t) => t.id === m.task_id);
-                if (listed && !this.agentLabels.has(id)) {
-                    this.background = this.background!.filter((t) => t.id !== m.task_id);
-                    this.reportsDue++;
+                if (this.stoppedTaskIds.has(m.task_id)) break;
+                // A background task's end: its report turn is due from now (reportDue), unless a stop of ours ended it.
+                if (typeof m.task_id === "string" && (this.agentLabels.has(id) ? this.backgroundAgents.has(id) : this.background?.some((t) => t.id === m.task_id))) this.markEnded(m.task_id);
+                // Its stop is being answered: if it doesn't go through, this is how the task ended.
+                if (this.pendingStops.has(m.task_id)) {
+                    this.heldEnds.set(m.task_id, m);
+                    break;
                 }
+                const listed = this.background?.find((t) => t.id === m.task_id);
+                if (listed && !this.agentLabels.has(id)) this.background = this.background!.filter((t) => t.id !== m.task_id);
                 if (!this.agentLabels.has(id)) {
-                    // One an earlier run left behind (stopped with it, said when the session is resumed).
-                    if (summary && (m.status === "stopped" || m.status === "failed")) this.host.emit({ type: "notice", level: "info", message: `Claude Code: ${summary}.` });
+                    // One an earlier run left behind (stopped with it): Claude Code says so as it resumes the session,
+                    // before the run's first turn. Not a command of this run's that ended (a foreground one stopped by Esc,
+                    // a sub-agent's that failed): its own row says so (#311).
+                    const leftBehind = Boolean(this.t.resumeId) && this.turnCount === 0 && m.owned_by_subagent !== true;
+                    if (leftBehind && summary && (m.status === "stopped" || m.status === "failed")) this.sink.emit({ type: "notice", level: "info", message: `Claude Code: ${summary}.` });
                     break;
                 }
                 const background = this.backgroundAgents.has(id);
@@ -878,12 +1442,14 @@ class ClaudeTurn {
                 if (report === undefined && background && m.status === "completed") report = this.lastWords.get(id) ?? (summary || undefined);
                 this.agentStarted(id);
                 this.agentUsage(id, m.usage);
-                if (background) this.reportsDue++;
                 this.endAgent(id, m.status === "completed" ? "done" : m.status === "failed" ? "error" : "aborted", report);
                 break;
             }
             case "informational":
-                if (typeof m.content === "string" && m.content.trim()) this.host.emit({ type: "notice", level: m.level === "warning" ? "warn" : m.level === "error" ? "error" : "info", message: m.content });
+                if (typeof m.content === "string" && m.content.trim()) {
+                    const level = m.level === "warning" ? "warn" : m.level === "error" ? "error" : "info";
+                    this.sink.emit({ type: "notice", level, message: m.content, data: cliNotice(this.def.id, level, m.content) });
+                }
                 break;
         }
     }
@@ -891,22 +1457,22 @@ class ClaudeTurn {
     private onStreamEvent(e: Record<string, any>) {
         switch (e.type) {
             case "message_start":
-                this.host.emit({ type: "request_start" });
+                this.sink.emit({ type: "request_start" });
                 break;
             case "content_block_start":
                 if (e.content_block?.type === "tool_use") {
                     this.streamingTools.set(e.index, e.content_block.id);
                     // Under the harness's name from the start (Agent is a sub-agent's Task), as its call will be.
-                    this.host.emit({ type: "tool_call_start", id: e.content_block.id, name: toHarness(String(e.content_block.name ?? ""), {}).name });
+                    this.sink.emit({ type: "tool_call_start", id: e.content_block.id, name: toHarness(String(e.content_block.name ?? ""), {}).name });
                 }
                 break;
             case "content_block_delta": {
                 const d = e.delta ?? {};
-                if (d.type === "text_delta" && d.text) this.host.emit({ type: "text", text: d.text });
-                else if (d.type === "thinking_delta" && d.thinking) this.host.emit({ type: "thinking", text: d.thinking });
+                if (d.type === "text_delta" && d.text) this.sink.emit({ type: "text", text: d.text });
+                else if (d.type === "thinking_delta" && d.thinking) this.sink.emit({ type: "thinking", text: d.thinking });
                 else if (d.type === "input_json_delta" && d.partial_json) {
                     const id = this.streamingTools.get(e.index);
-                    if (id) this.host.emit({ type: "tool_call_delta", id, partial: d.partial_json });
+                    if (id) this.sink.emit({ type: "tool_call_delta", id, partial: d.partial_json });
                 }
                 break;
             }
@@ -931,15 +1497,15 @@ class ClaudeTurn {
                     const fresh = typeof b.input?.message === "string" && this.report(parent, b.input.message);
                     // One that ended before it (waiting on work of its own) takes it as its report: it ends again, as it did.
                     const was = this.endedAgents.get(parent);
-                    if (fresh && over && was !== undefined) this.host.emit({ type: "subagent", parentId: parent, label, event: { type: "turn_end", reason: was } });
+                    if (fresh && over && was !== undefined) this.sink.emit({ type: "subagent", parentId: parent, label, event: { type: "turn_end", reason: was } });
                     continue;
                 }
                 if (over) continue;
                 const { name, input } = toHarness(b.name, b.input ?? {});
                 const title = titleFor(name, input);
-                if (b.name === "Bash" && typeof input.command === "string") this.shellCommands.set(b.id, input.command);
+                if (b.name === "Bash" && typeof input.command === "string") this.shellCommands.set(b.id, { command: input.command, timeoutMs: claudeCommandTimeoutMs(input) });
                 this.subTools.set(b.id, { name, input, title, started: Date.now(), parent });
-                this.host.emit({ type: "subagent", parentId: parent, label, event: { type: "tool_start", call: { type: "tool_call", id: b.id, name, input }, title } });
+                this.sink.emit({ type: "subagent", parentId: parent, label, event: { type: "tool_start", call: { type: "tool_call", id: b.id, name, input }, title } });
             }
             return;
         }
@@ -947,7 +1513,7 @@ class ClaudeTurn {
             const u = msg.usage;
             const tokens = Number(u.input_tokens ?? 0) + Number(u.cache_read_input_tokens ?? 0) + Number(u.cache_creation_input_tokens ?? 0) + Number(u.output_tokens ?? 0);
             // Shown as it works: a long turn's context doesn't wait for its result.
-            if (tokens && tokens !== this.contextTokens) this.host.context?.(tokens);
+            if (tokens && tokens !== this.contextTokens) this.cliSession.context?.(tokens);
             this.contextTokens = tokens;
         }
         if (m.error) {
@@ -961,14 +1527,16 @@ class ClaudeTurn {
         for (const b of blocks) {
             if (b?.type === "text" && typeof b.text === "string" && b.text.trim()) {
                 this.texts.push(b.text);
-                this.host.emit({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: b.text }], provider: this.def.id, model: this.t.model.id } });
+                this.sink.emit({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: b.text }], provider: this.def.id, model: this.t.model.id } });
             } else if (b?.type === "tool_use" && typeof b.id === "string") {
                 const { name, input } = toHarness(b.name, b.input ?? {});
                 const title = titleFor(name, input);
                 this.tools.set(b.id, { name, input, title, started: Date.now() });
-                if (b.name === "Bash" && typeof input.command === "string") this.shellCommands.set(b.id, input.command);
+                if (b.name === "Bash" && typeof input.command === "string") this.shellCommands.set(b.id, { command: input.command, timeoutMs: claudeCommandTimeoutMs(input) });
                 if (b.name === "Agent" || b.name === "Task") this.agentLabels.set(b.id, String(input.description ?? input.subagent_type ?? "sub-agent"));
-                this.host.emit({ type: "tool_start", call: { type: "tool_call", id: b.id, name, input }, title });
+                // A skill can run as its own agent (/code-review does): one only if its steps come (task_started, its messages).
+                if (b.name === "Skill") this.agentLabels.set(b.id, String(input.skill ?? "skill"));
+                this.sink.emit({ type: "tool_start", call: { type: "tool_call", id: b.id, name, input }, title });
             }
         }
     }
@@ -976,10 +1544,10 @@ class ClaudeTurn {
     private onAssistantError(error: string) {
         if (error === "authentication_failed") {
             this.signedOut = true;
-            this.failure = `Claude Code isn't signed in, or its sign-in expired. In a terminal, run \`${CLAUDE_CLI.signIn}\`, then try again.`;
+            this.failure = `Claude Code isn't signed in, or its sign-in expired. ${signInAdvice(this.def.id, this.t.accountId)}`;
         } else if (error === "rate_limit") {
             this.limitHit = true;
-            if (!this.limits?.reached) this.noteLimits({ provider: this.def.id, accountId: this.t.accountId ?? "default", windows: [], reached: true, at: Date.now() }, true);
+            this.noteLimits(limitStopReport(this.def.id, this.t.accountId ?? "default"), true);
             this.failure = this.limitFailure();
         }
         else if (error === "billing_error") this.failure = "Claude Code reported a billing problem with the account it's signed in to.";
@@ -1016,6 +1584,11 @@ class ClaudeTurn {
                 // Its report came as a handback: the result only says where to find it.
                 content = this.reports.get(b.tool_use_id) || content;
             }
+            // A skill that ran as its own agent: Claude Code says nothing more of it than its call's result, which ends it,
+            // with what it returned; declined while it worked, it was stopped, not failed.
+            // Ended already (Claude Code said so first): what it returned is still its report.
+            if (p.name === "Skill" && this.liveAgents.has(b.tool_use_id)) this.endAgent(b.tool_use_id, b.is_error ? (DECLINED.test(content) ? "aborted" : "error") : "done", b.is_error ? undefined : content);
+            else if (p.name === "Skill" && this.endedAgents.has(b.tool_use_id) && !b.is_error) this.report(b.tool_use_id, content, true);
             // The structured result (for diffs) describes the message's one tool result.
             const structured = blocks.length === 1 && !b.is_error ? resultDisplay(p, m.tool_use_result, this.t.cwd) : undefined;
             this.endTool(b.tool_use_id, p, content, Boolean(b.is_error), structured);
@@ -1039,7 +1612,7 @@ class ClaudeTurn {
     private endSubTool(id: string, p: PendingTool & { parent: string }, content: string, isError: boolean, display?: ToolDisplay) {
         this.subTools.delete(id);
         const label = this.agentLabels.get(p.parent) ?? "sub-agent";
-        this.host.emit({ type: "subagent", parentId: p.parent, label, event: { type: "tool_end", call: { type: "tool_call", id, name: p.name, input: p.input }, result: { content, isError, display }, durationMs: Date.now() - p.started } });
+        this.sink.emit({ type: "subagent", parentId: p.parent, label, event: { type: "tool_end", call: { type: "tool_call", id, name: p.name, input: p.input }, result: { content, isError, display }, durationMs: Date.now() - p.started } });
     }
 
     /**
@@ -1052,7 +1625,7 @@ class ClaudeTurn {
         if (!text.trim() || (had !== undefined && (!replace || had.trim() === text.trim()))) return false;
         this.reports.set(parent, text);
         // Only on a sub-agent that has a chip: one that never started would get one that never ends.
-        if (this.liveAgents.has(parent) || this.endedAgents.has(parent)) this.host.emit({ type: "subagent", parentId: parent, label: this.agentLabels.get(parent) ?? "sub-agent", event: { type: "text", text } });
+        if (this.liveAgents.has(parent) || this.endedAgents.has(parent)) this.sink.emit({ type: "subagent", parentId: parent, label: this.agentLabels.get(parent) ?? "sub-agent", event: { type: "text", text } });
         // A background sub-agent's call that ended before: its result is this report now (and it still says how it ended).
         const p = this.closedLaunches.get(parent);
         if (p) this.relaunchEnd(parent, p, text);
@@ -1067,7 +1640,7 @@ class ClaudeTurn {
         const had = this.agentTokens.get(id) ?? 0;
         if (total <= had) return;
         this.agentTokens.set(id, total);
-        this.host.emit({ type: "subagent", parentId: id, label: this.agentLabels.get(id) ?? "sub-agent", event: { type: "usage", usage: { inputTokens: total - had, outputTokens: 0 }, cost: { usd: 0, estimated: true, unknown: true }, contextTokens: total } });
+        this.sink.emit({ type: "subagent", parentId: id, label: this.agentLabels.get(id) ?? "sub-agent", event: { type: "usage", usage: { inputTokens: total - had, outputTokens: 0 }, cost: { usd: 0, estimated: true, unknown: true }, contextTokens: total, displayOnly: true } });
     }
 
     /**
@@ -1092,7 +1665,7 @@ class ClaudeTurn {
 
     /** A background sub-agent's call that ended before, ending again: with what it says now, and as long as it ran then. */
     private relaunchEnd(id: string, p: PendingTool & { reason: TurnEndReason; ended: number }, content: string) {
-        this.host.emit({ type: "tool_end", call: { type: "tool_call", id, name: p.name, input: p.input }, result: { content, isError: endedBadly(p.reason) }, durationMs: p.ended - p.started });
+        this.sink.emit({ type: "tool_end", call: { type: "tool_call", id, name: p.name, input: p.input }, result: { content, isError: endedBadly(p.reason) }, durationMs: p.ended - p.started });
     }
 
     private agentStarted(id: string) {
@@ -1115,18 +1688,18 @@ class ClaudeTurn {
         for (const [sub, p] of this.subTools) if (p.parent === id) this.endSubTool(sub, p, reason === "done" ? "Claude Code didn't report a result for this." : "Stopped with the sub-agent.", true);
         // Before its chip ends, so what the call says without a report isn't taken for one.
         this.closeLaunch(id, reason);
-        this.host.emit({ type: "subagent", parentId: id, label: this.agentLabels.get(id) ?? "sub-agent", event: { type: "turn_end", reason } });
+        this.sink.emit({ type: "subagent", parentId: id, label: this.agentLabels.get(id) ?? "sub-agent", event: { type: "turn_end", reason } });
     }
 
     private endTool(id: string, p: PendingTool, content: string, isError: boolean, display?: ToolDisplay) {
         this.tools.delete(id);
         this.actions.push(p.title);
-        this.host.emit({ type: "tool_end", call: { type: "tool_call", id, name: p.name, input: p.input }, result: { content, isError, display }, durationMs: Date.now() - p.started });
+        this.sink.emit({ type: "tool_end", call: { type: "tool_call", id, name: p.name, input: p.input }, result: { content, isError, display }, durationMs: Date.now() - p.started });
     }
 
     private noteLimits(limits: PlanLimits, partial: boolean) {
         this.limits = mergeLimits(this.limits, limits, partial);
-        this.host.emit({ type: "limits", limits, partial });
+        this.cliSession.limits?.(limits, partial);
     }
 
     private limitFailure(): string {
@@ -1138,7 +1711,7 @@ class ClaudeTurn {
         if (parsed) {
             // A sparse rejection must not forget another window that still blocks this turn.
             this.limits = mergeLimits(this.limits, parsed.limits, parsed.partial);
-            this.host.emit({ type: "limits", limits: parsed.limits, partial: parsed.partial });
+            this.cliSession.limits?.(parsed.limits, parsed.partial);
         }
         const w = parsed?.limits.windows.find((x) => x.id === info.rateLimitType);
         // Every status counts, so a warning after the window was fine again (or reset) is news again.
@@ -1150,8 +1723,10 @@ class ClaudeTurn {
             if (this.limitHit) this.failure = this.limitFailure();
             if (this.reachedNoted) return;
             this.reachedNoted = true;
-            this.host.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: ${which}usage limit reached. ${resetSentence(this.limits?.resetsAt, "Claude Code")}` });
-        } else if (news) this.host.emit({ type: "notice", level: "info", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: close to the ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}` });
+            // On extra usage it isn't a stop: the turn goes on, and it costs.
+            const credits = creditsNote(this.limits, "extra usage");
+            this.sink.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: ${which}usage limit reached${credits}. ${resetSentence(this.limits?.resetsAt, "Claude Code")}`, data: { source: this.def.id, limit: limitNotice(this.def.id, this.t.accountId, this.limits, { window: w?.label, credits: Boolean(credits) }) } });
+        } else if (news) this.sink.emit({ type: "notice", level: "info", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: close to the ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}`, data: { source: this.def.id } });
     }
 
     /** A result: one answering the run's prompts (`ours`), or one for a turn Claude Code took itself. */
@@ -1167,6 +1742,8 @@ class ClaudeTurn {
             outputTokens: Number(u.output_tokens ?? 0),
             cacheReadTokens: Number(u.cache_read_input_tokens ?? 0),
             cacheWriteTokens: Number(u.cache_creation_input_tokens ?? 0),
+            // How long its cache lasts (an hour on a subscription): idle compaction goes by it.
+            ...(u.cache_creation && typeof u.cache_creation === "object" ? { cacheWrite1hTokens: Number(u.cache_creation.ephemeral_1h_input_tokens ?? 0) } : {}),
             // Fast service uses paid credits even on a subscription. A final cooldown
             // must not erase earlier fast spend; the CLI only gives a whole-turn total.
             cost: this.billedToPlan && !this.fastModeObserved ? 0 : spent,
@@ -1176,14 +1753,14 @@ class ClaudeTurn {
         const nothing = !ours && !usage.inputTokens && !usage.outputTokens && !usage.cacheReadTokens && !usage.cacheWriteTokens && !spent;
         if (!nothing) {
             const mixedPlanCost = this.billedToPlan && this.fastModeObserved && m.fast_mode_state !== "on";
-            if (mixedPlanCost) this.host.emit({ type: "notice", level: "info", message: "Claude Code changed speed during this turn. The displayed cost is its total estimate; the share covered by your plan is not reported." });
+            if (mixedPlanCost) this.sink.emit({ type: "notice", level: "info", message: "Claude Code changed speed during this turn. The displayed cost is its total estimate; the share covered by your plan is not reported." });
             if (mixedPlanCost) usage.costEstimated = true;
             const models = Object.keys(m.modelUsage ?? {});
             // A result can include several models; its init identifies the main one.
             const served = models.length === 1 ? models[0] : models.find((id) => id === this.resolvedModel);
             if (served) usage.resolvedModel = `${this.def.id}:${served}`;
             const window = Object.values((m.modelUsage ?? {}) as Record<string, { contextWindow?: number }>).find((x) => typeof x?.contextWindow === "number")?.contextWindow;
-            this.host.usage(usage, { contextTokens: this.contextTokens, contextWindow: window });
+            this.cliSession.usage(usage, { contextTokens: this.contextTokens, contextWindow: window });
         }
         if (this.aborted) return;
         // How a turn of Claude Code's own went counts only when it went wrong.
@@ -1193,13 +1770,50 @@ class ClaudeTurn {
             this.reason = "error";
             const errs = Array.isArray(m.errors) ? m.errors.filter((x: unknown) => typeof x === "string") : [];
             this.failure ??= redact(errs.join("; ") || (typeof m.result === "string" && m.result) || `Claude Code ended the turn with ${m.subtype}`);
-            if (this.signedOut) this.failure = `Claude Code isn't signed in, or its sign-in expired. In a terminal, run \`${CLAUDE_CLI.signIn}\`, then try again.`;
+            if (this.signedOut) this.failure = `Claude Code isn't signed in, or its sign-in expired. ${signInAdvice(this.def.id, this.t.accountId)}`;
         } else this.reason = "done";
+    }
+
+    /**
+     * The harness's hooks for the events Claude Code runs itself, one matcher
+     * group per handler: Claude Code matches, runs them at once and merges
+     * their answers, calling back (hook_callback) for each.
+     */
+    private hookRegistration(): { hooks?: Record<string, { matcher?: string; hookCallbackIds: string[]; timeout?: number }[]> } {
+        if (!this.t.hooks || !this.cliSession.hookHandler) return {};
+        const hooks: Record<string, { matcher?: string; hookCallbackIds: string[]; timeout?: number }[]> = {};
+        let n = 0;
+        for (const [event, list] of Object.entries(this.t.hooks) as [HookEvent, HookConfig[]][]) {
+            // Prompt hooks Claude Code runs itself, with its own model (claudePromptHooks).
+            const called = list.filter((hook) => hook.type !== "prompt");
+            if (!called.length) continue;
+            hooks[event] = called.map((hook) => {
+                const id = `harness_${n++}`;
+                this.hookCallbacks.set(id, { event, hook });
+                return { ...(hook.matcher ? { matcher: backendMatcher(event, hook.matcher) } : {}), hookCallbackIds: [id], timeout: hook.timeout ?? 60 };
+            });
+        }
+        return n ? { hooks } : {};
+    }
+
+    private async hookCallback(req: Record<string, any>): Promise<Record<string, unknown>> {
+        const cb = this.hookCallbacks.get(String(req.callback_id ?? ""));
+        if (!cb || !this.cliSession.hookHandler) return {};
+        const input: Record<string, unknown> = req.input && typeof req.input === "object" ? req.input : {};
+        // Harness's browser tools run the hooks themselves, as BrowserAct and the rest: this CLI's run would be a second one.
+        if (servedBrowserTool(this.t.orchestrator?.name, input.tool_name)) return {};
+        const r = await this.cliSession.hookHandler(cb.event, cb.hook, input, this.t.signal);
+        return claudeCodeHookOutput(cb.event, r);
     }
 
     private async onControlRequest(m: Record<string, any>) {
         const req = m.request ?? {};
         const reply = (response: Record<string, unknown>) => this.proc.send({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response } });
+        if (req.subtype === "hook_callback") {
+            // A hook that fails says nothing (the harness has shown why): Claude Code goes on as if it weren't there.
+            reply(await this.hookCallback(req).catch(() => ({})));
+            return;
+        }
         if (req.subtype !== "can_use_tool") {
             this.proc.send({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: `${String(req.subtype)} isn't supported by this host` } });
             return;
@@ -1221,15 +1835,15 @@ class ClaudeTurn {
                 options: (Array.isArray(q?.options) ? q.options : []).map((o: any) => ({ label: String(o?.label ?? ""), description: typeof o?.description === "string" ? o.description : undefined })),
                 multiSelect: Boolean(q?.multiSelect),
             }));
-            const answers = await this.host.askQuestions(questions);
+            const answers = await this.cliSession.askQuestions(questions);
             if (!answers) return { behavior: "deny", message: "The user dismissed the question without answering.", interrupt: true };
             return { behavior: "allow", updatedInput: { ...raw, answers: Object.fromEntries(questions.map((q, i) => [q.question, (answers[i] ?? []).join(", ")])) } };
         }
         if (req.tool_name === "ExitPlanMode") {
-            const r = await this.host.approvePlan(String(raw.plan ?? ""));
+            const r = await this.cliSession.approvePlan(String(raw.plan ?? ""));
             if (r.approved) {
                 const mode = r.mode ?? "default";
-                this.host.setMode(mode);
+                this.cliSession.setMode(mode);
                 return { behavior: "allow", updatedInput: raw, updatedPermissions: [{ type: "setMode", mode: MODES[mode], destination: "session" }] };
             }
             const fb = r.feedback?.trim();
@@ -1239,24 +1853,101 @@ class ClaudeTurn {
         }
         // The harness's own tools: what a delegated agent does is checked when it does it, and run_with_secrets checks its command itself.
         const own = this.t.orchestrator;
-        if (own && String(req.tool_name ?? "").startsWith(`mcp__${own.name}__`)) return { behavior: "allow", updatedInput: raw };
+        if (own && own.tools.some((t) => req.tool_name === `mcp__${own.name}__${t}`)) return { behavior: "allow", updatedInput: raw };
         const { name, input } = toHarness(String(req.tool_name ?? ""), raw);
         const reason = typeof req.decision_reason === "string" && req.decision_reason.trim() ? req.decision_reason : undefined;
-        const a = await this.host.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined });
-        if (a.allow) return { behavior: "allow", updatedInput: raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
+        const agentType = typeof req.agent_id === "string" ? this.agentTypes.get(req.agent_id) : undefined;
+        const a = await this.cliSession.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ...(agentType ? { agentType } : {}) });
+        if (a.allow) return { behavior: "allow", updatedInput: a.updatedInput ?? raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
         return { behavior: "deny", message: a.message, interrupt: a.stop };
     }
 }
 
+/**
+ * The prompt as text blocks: what Harness put before the user's words (BackendTurn.preamble) in one of its own, then
+ * theirs, last. Claude Code reads only the last text block as what the user typed (a /command; the blocks before it
+ * go along as they are), and the message stays the user's: it isn't marked synthetic for Harness's catch-up.
+ */
+export function textBlocks(prompt: string, preamble?: string): Record<string, unknown>[] {
+    const split = splitPreamble(prompt, preamble);
+    return [...(split.preamble ? [{ type: "text", text: split.preamble }] : []), { type: "text", text: split.text }];
+}
+
+/** The prompt's preamble (BackendTurn.preamble) and the user's words after it, apart; all of it as theirs if it has none. */
+export function splitPreamble(prompt: string, preamble?: string): { preamble?: string; text: string } {
+    const own = preamble && prompt.startsWith(preamble) ? prompt.slice(preamble.length) : undefined;
+    if (!own?.trim() || !preamble!.trim()) return { text: prompt };
+    return { preamble: preamble!.trimEnd(), text: own };
+}
+
+/** What claudeArgs reads of a turn: its spawn settings. */
+export type ClaudeSpawnSettings = Pick<BackendTurn, "mode" | "model" | "effort" | "resumeId" | "forkSession" | "maxTurns" | "additionalDirectories" | "pluginDirs" | "readOnly" | "trusted" | "agents" | "rules" | "orchestrator" | "fastMode" | "cwd" | "approvedMcpServers" | "hooks">;
+
+/**
+ * `claude -p`'s arguments for a turn's settings: the stream-json protocol, the mode, model and effort, the
+ * session to resume, and what keeps it within the harness's rules (--settings: permissions, the sandbox,
+ * MCP policy, prompt hooks). `append`: the parts of --append-system-prompt (empty ones left out).
+ * `mcpWarning`: what the MCP policy says the user should know. `accountDenies: false` leaves out the deny
+ * rules for CLI account folders (a live process's fingerprint: accounts added or removed restart nothing).
+ */
+export function claudeArgs(defId: string, t: ClaudeSpawnSettings, o: { pluginDir?: string; agentsPath?: string; append: (string | undefined)[]; accountDenies?: boolean }): { args: string[]; mcpWarning?: string } {
+    const a = [...extraArgs(defId), ...STREAM_ARGS, "--include-partial-messages", "--permission-prompt-tool=stdio", "--permission-mode", MODES[t.mode]];
+    if (t.model.id !== "default") a.push("--model", t.model.id);
+    if (t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort))) a.push("--effort", t.effort);
+    if (t.resumeId) a.push("--resume", t.resumeId, ...(t.forkSession ? ["--fork-session"] : []));
+    if (t.maxTurns && Number.isFinite(t.maxTurns)) a.push("--max-turns", String(t.maxTurns));
+    const append = o.append.filter(Boolean).join("\n\n");
+    if (append) a.push("--append-system-prompt", append);
+    for (const d of t.additionalDirectories) a.push("--add-dir", d);
+    if (o.pluginDir) a.push("--plugin-dir", o.pluginDir);
+    // The harness's plugins, in Claude Code's own format: it runs their commands, agents, skills, hooks and servers.
+    if (!t.readOnly) for (const d of t.pluginDirs ?? []) a.push("--plugin-dir", d);
+    // An untrusted folder's Claude Code settings (hooks, permission rules), skills, agents and .mcp.json stay off.
+    if (!t.trusted) a.push("--setting-sources", "user");
+    // The harness's agents, for its own Agent tool.
+    if (o.agentsPath && t.agents && Object.keys(t.agents).length && !t.readOnly) a.push("--agents", o.agentsPath);
+    // The harness's deny and ask rules also cover what Claude Code would do without asking.
+    // Named accounts add only deny rules for their folders (#375): nothing that changes how Claude Code asks or sandboxes.
+    const permissions = claudePermissions(t.rules, o.accountDenies !== false);
+    // Its own schedules would fire only while its process runs (it's stopped at a turn's end, or when idle): Harness's schedule tools keep them instead.
+    if (t.orchestrator?.tools.includes("schedule_create")) permissions.deny.push(...CLAUDE_SCHEDULE_TOOLS);
+    // Always override external preferences: an unsupported model must not silently switch to Opus.
+    const fastMode = Boolean(t.fastMode && t.model.supportsFastMode);
+    const mcp = t.trusted && !t.readOnly ? claudeMcpPolicy(t.cwd, t.approvedMcpServers) : { strict: true };
+    if (mcp.strict) a.push("--strict-mcp-config");
+    if (!t.readOnly) {
+        a.push("--settings", JSON.stringify({ permissions, fastMode, ...mcp.settings, ...claudePromptHooks(t.hooks) }));
+        return { args: a, mcpWarning: mcp.warning };
+    }
+    // A read-only sub-agent: no edit tools, no MCP servers of its own, and every command asks (the harness lets read-only ones run).
+    a.push("--disallowedTools", READ_ONLY_DENY.join(","));
+    const settings = { fastMode, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { autoAllowBashIfSandboxed: false }, ...claudePromptHooks(t.hooks) };
+    a.push("--settings", JSON.stringify(settings));
+    return { args: a, mcpWarning: mcp.warning };
+}
+
+/** A prompt's images and PDFs as Claude Code takes them, after its text. */
+export function mediaBlocks(images: readonly ImagePart[], documents: readonly PdfPart[]): Record<string, unknown>[] {
+    return [
+        ...images.map((i) => ({ type: "image", source: { type: "base64", media_type: i.mediaType, data: i.data } })),
+        ...documents.map((d) => ({ type: "document", source: { type: "base64", media_type: "application/pdf", data: d.data } })),
+    ];
+}
+
+/** When a background command with a timeout of its own is up: its timeout (at most Claude Code's maximum) from its start. */
+function ownDeadline(t: BackgroundWork): number | undefined {
+    return t.timeoutMs !== undefined && t.started !== undefined ? t.started + Math.min(t.timeoutMs, backgroundTiming.commandMaxTimeoutMs) : undefined;
+}
+
 /** "2 background sub-agents (Map auth, Check tests)". */
-function describeBackground(list: { agent: boolean; label: string }[]): string {
+export function describeBackground(list: { agent: boolean; label: string }[]): string {
     const kind = list.length && list.every((x) => x.agent) ? "background sub-agent" : "background task";
     const shown = list.slice(0, 3).map((x) => x.label);
     return `${plural(list.length, kind)}${shown.length ? ` (${shown.join(", ")}${list.length > shown.length ? `, and ${list.length - shown.length} more` : ""})` : ""}`;
 }
 
 /** The report a sub-agent handed back, as its Agent call's structured result carries it. */
-function handedBack(m: Record<string, any>): string | undefined {
+export function handedBack(m: Record<string, any>): string | undefined {
     const text = m.tool_use_result?.handbackReport?.text;
     return typeof text === "string" ? text : undefined;
 }
@@ -1300,12 +1991,15 @@ export function claudeRule(raw: string, root: string): string[] {
     return [];
 }
 
-/** The harness's deny and ask rules for Claude Code, with its credential store denied outright. */
-export function claudePermissions(r: { deny: string[]; ask: string[]; root: string }): { deny: string[]; ask: string[] } {
-    const store = [paths.credentialsFile(), paths.providers()].flatMap((f) => [`Read(/${f})`, `Edit(/${f})`]);
-    const accounts = accountProtectionFolders().flatMap((folder) => [`Read(/${folder})`, `Read(/${folder}/**)`, `Edit(/${folder})`, `Edit(/${folder}/**)`]);
+/**
+ * The harness's deny and ask rules for Claude Code, with its credential store denied outright, and with
+ * `accounts`, CLI account folders and sign-in files too.
+ */
+export function claudePermissions(r: { deny: string[]; ask: string[]; root: string }, accounts = true): { deny: string[]; ask: string[] } {
+    const store = [paths.credentialsFile(), paths.mcpOAuth(), paths.providers()].flatMap((f) => [`Read(/${f})`, `Edit(/${f})`]);
+    const folders = (accounts ? accountProtectionFolders() : []).flatMap((folder) => [`Read(/${folder})`, `Read(/${folder}/**)`, `Edit(/${folder})`, `Edit(/${folder}/**)`]);
     const map = (rules: string[]) => [...new Set(rules.flatMap((x) => claudeRule(x, r.root)))];
-    return { deny: [...map(r.deny), ...store, ...accounts], ask: map(r.ask) };
+    return { deny: [...map(r.deny), ...store, ...folders], ask: map(r.ask) };
 }
 
 /** Claude Code's tool name and input as the harness's own tool sees them (for rules, titles, previews). */
@@ -1337,13 +2031,13 @@ export function titleFor(name: string, input: Record<string, unknown>): string {
         case "Task":
             return `Task(${s("description") || s("subagent_type")})`;
         case "Skill":
-            return `Skill(${s("skill") || s("name")})`;
+            return `Skill(${(s("skill") || s("name")).replace(CLAUDE_PREFIX, "")})`;
         default:
             return name;
     }
 }
 
-function resultText(content: unknown): string {
+export function resultText(content: unknown): string {
     if (typeof content === "string") return content;
     if (Array.isArray(content)) {
         return content
@@ -1359,7 +2053,7 @@ function rel(path: string, cwd: string): string {
 }
 
 /** Diffs for Claude Code's file edits, from the structured result it reports. */
-function resultDisplay(p: PendingTool, r: unknown, cwd: string): ToolDisplay | undefined {
+export function resultDisplay(p: PendingTool, r: unknown, cwd: string): ToolDisplay | undefined {
     if (!r || typeof r !== "object") return undefined;
     const x = r as Record<string, unknown>;
     const path = typeof x.filePath === "string" ? x.filePath : undefined;
@@ -1393,4 +2087,29 @@ function resultDisplay(p: PendingTool, r: unknown, cwd: string): ToolDisplay | u
         return { summary: `Found ${n} ${what}${n === 1 ? "" : what === "match" ? "es" : "s"}` };
     }
     return undefined;
+}
+
+/** The config folder this turn's Claude Code reads (its skills are under it). */
+export function claudeConfigDir(provider: string, t: BackendTurn): string | undefined {
+    try {
+        return accountEnv(provider, t.accountId, t.cwd).CLAUDE_CONFIG_DIR;
+    } catch {
+        return process.env.CLAUDE_CONFIG_DIR;
+    }
+}
+
+/** Claude Code's `active_goal` value (its /goal, set or with a new verdict; null once it's cleared or met). */
+export function claudeGoal(v: unknown): NativeGoal | null {
+    if (!v || typeof v !== "object") return null;
+    const g = v as { condition?: unknown; iterations?: unknown; set_at?: unknown; last_reason?: unknown };
+    if (typeof g.condition !== "string" || !g.condition.trim()) return null;
+    const at = typeof g.set_at === "number" && g.set_at > 0 ? (g.set_at < 1e12 ? g.set_at * 1000 : g.set_at) : Date.now();
+    return {
+        provider: "claude-code",
+        condition: g.condition,
+        status: "active",
+        since: at,
+        ...(typeof g.iterations === "number" ? { turns: g.iterations } : {}),
+        ...(typeof g.last_reason === "string" && g.last_reason.trim() ? { lastReason: redact(g.last_reason) } : {}),
+    };
 }

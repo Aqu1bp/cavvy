@@ -17,7 +17,7 @@ export function RunSwitcher(p: { id: string }) {
     const members = () => (run() ? app.sessions.filter((s) => s.run?.id === run()!.id).sort((a, b) => a.createdAt - b.createdAt) : []);
     return (
         <Show when={members().length > 1}>
-            <div class="run-switch" role="group" aria-label={`Models given “${run()!.label}”`}>
+            <div class="run-switch glass" role="group" aria-label={`Models given “${run()!.label}”`}>
                 <For each={members()}>
                     {(s) => (
                         <button class={`rs ${s.id === p.id ? "on" : ""}`} aria-current={s.id === p.id ? "page" : undefined} title={`${s.run!.modelName}: ${state(s).word}\n${s.cwd}`} onClick={() => s.id !== p.id && void activate(s.id)}>

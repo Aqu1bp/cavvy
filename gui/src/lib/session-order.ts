@@ -37,9 +37,15 @@ function sessionGroups(list: readonly SessionSummary[]): SessionSummary[][] {
 export type SidebarEntry =
     | { key: string; kind: "card" | "row"; id: string }
     | { key: string; kind: "run"; ids: string[]; row: boolean }
-    | { key: string; kind: "project"; cwd: string; name: string }
+    /** A project heading; `collapsed`: its sessions in play (`ids`) are folded under it. */
+    | { key: string; kind: "project"; cwd: string; name: string; collapsed?: boolean; ids?: string[] }
     | { key: string; kind: "settled" | "archived" }
-    | { key: string; kind: "more"; page: "cards" | "settled" | "archived"; remaining: number };
+    | { key: string; kind: "more"; page: "cards" | "settled" | "archived"; remaining: number }
+    /**
+     * Needs you, pinned above everything: the sessions waiting on you (`ids`), each
+     * also in its own place below. Its ids aren't the list's order (sidebarIds).
+     */
+    | { key: string; kind: "needs"; ids: string[] };
 
 export interface SidebarOptions {
     activeId?: string;
@@ -49,6 +55,28 @@ export interface SidebarOptions {
     cards: number;
     settled: number;
     archive: number;
+    /** Grouped by project: the projects (by path) whose sessions are folded under their heading. */
+    collapsed?: readonly string[];
+    /** Sessions waiting on you but the one in front of you (rail.ts needsYou), pinned at the top of the active list. */
+    needs?: readonly string[];
+}
+
+/** The project a session is listed under when grouped by project: a run's own folder, else its folder. */
+export const projectOf = (s: Pick<SessionSummary, "cwd" | "run">) => s.run?.cwd ?? s.cwd;
+
+/** Fold a project's sessions under its heading, or unfold them. */
+export function toggleProject(collapsed: readonly string[], cwd: string): string[] {
+    return collapsed.includes(cwd) ? collapsed.filter((c) => c !== cwd) : [...collapsed, cwd];
+}
+
+/**
+ * Opening a session in a folded project unfolds it, so the open row shows.
+ * The same array when there's nothing to unfold (a settled or archived one is
+ * listed elsewhere; listed by date, nothing folds).
+ */
+export function revealProject(collapsed: readonly string[], s: Pick<SessionSummary, "cwd" | "run" | "settled" | "archived"> | undefined, groupBy: "date" | "project"): readonly string[] {
+    if (!s || groupBy !== "project" || s.settled || s.archived || !collapsed.includes(projectOf(s))) return collapsed;
+    return collapsed.filter((c) => c !== projectOf(s));
 }
 
 /** A single projection drives the DOM and keyboard navigation, including paging. */
@@ -75,20 +103,30 @@ export function sidebarEntries(sessions: readonly SessionSummary[], archived: re
         more("archived", sessionGroups(all).length - sessionGroups(visible).length);
         return entries;
     }
+    if (o.needs?.length) entries.push({ key: "heading:needs", kind: "needs", ids: [...o.needs] });
     requiredElsewhere(archived);
-    const cards = orderSessions(sessions.filter((s) => !s.settled));
+    const all = orderSessions(sessions.filter((s) => !s.settled));
+    // A folded project's sessions take no page slots: only its heading shows, where its latest session would be.
+    const folded = new Set(o.groupBy === "project" ? o.collapsed ?? [] : []);
+    const cards = folded.size ? all.filter((s) => !folded.has(projectOf(s))) : all;
     const visible = pageSessions(cards, o.cards, o.activeId);
     if (o.groupBy === "project") {
+        const shown = new Set(visible.map((s) => s.id));
         const groups = new Map<string, SessionSummary[]>();
-        for (const s of visible) {
-            const cwd = s.run?.cwd ?? s.cwd;
+        for (const s of all) {
+            const cwd = projectOf(s);
+            if (!folded.has(cwd) && !shown.has(s.id)) continue;
             const group = groups.get(cwd) ?? [];
             group.push(s);
             groups.set(cwd, group);
         }
         for (const [cwd, group] of groups) {
-            entries.push({ key: `project:${cwd}`, kind: "project", cwd, name: group[0]!.run ? basename(cwd) : group[0]!.projectName });
-            rows(group, "card", "cards");
+            const name = group[0]!.run ? basename(cwd) : group[0]!.projectName;
+            if (folded.has(cwd)) entries.push({ key: `project:${cwd}`, kind: "project", cwd, name, collapsed: true, ids: group.map((s) => s.id) });
+            else {
+                entries.push({ key: `project:${cwd}`, kind: "project", cwd, name });
+                rows(group, "card", "cards");
+            }
         }
     } else rows(visible, "card", "cards");
     more("cards", sessionGroups(cards).length - sessionGroups(visible).length);
@@ -103,12 +141,17 @@ export function sidebarEntries(sessions: readonly SessionSummary[], archived: re
 }
 
 /** Hold the entire layout, not just sorting: moving between shelves also moves targets.
- * New attention/open rows append while held, without displacing any existing row. */
-export function holdSidebar(previous: readonly SidebarEntry[], next: SidebarEntry[], held: boolean, sessions: readonly SessionSummary[], activeId?: string): SidebarEntry[] {
+ * New attention/open rows append while held, without displacing any existing row.
+ * Needs you (pinned above it all) is held only while `pinnedHeld` (the pointer on the
+ * rail, a row's menu open): its ids aren't the list's order, so a selection alone
+ * needn't keep it from following who's waiting. */
+export function holdSidebar(previous: readonly SidebarEntry[], next: SidebarEntry[], held: boolean, sessions: readonly SessionSummary[], activeId?: string, pinnedHeld = held): SidebarEntry[] {
     if (!held || !previous.length) return next;
     const live = new Map(sessions.map((s) => [s.id, s]));
+    const pinned = pinnedHeld ? [] : next.filter((e) => e.kind === "needs");
     const kept = previous.flatMap((e): SidebarEntry[] => {
-        if (e.kind === "run") {
+        if (e.kind === "needs" && !pinnedHeld) return [];
+        if (e.kind === "run" || e.kind === "needs") {
             const ids = e.ids.filter((id) => live.has(id));
             return ids.length ? [{ ...e, ids }] : [];
         }
@@ -124,7 +167,7 @@ export function holdSidebar(previous: readonly SidebarEntry[], next: SidebarEntr
         }
         return "id" in e && !ids.has(e.id) && requiredSession(live.get(e.id)!, activeId) ? [e] : [];
     });
-    return [...kept, ...added];
+    return [...pinned, ...kept, ...added];
 }
 
 export function sidebarIds(entries: readonly SidebarEntry[]): string[] {

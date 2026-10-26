@@ -21,7 +21,7 @@ import { homedir } from "os";
 import { join, resolve } from "path";
 import { commandTitle } from "../backends/cli";
 import { titleFor } from "../backends/claude-code";
-import { redact } from "../util/redact";
+import { redact, redactPrefix } from "../util/redact";
 
 export type CliSource = "claude-code" | "codex";
 export const CLI_SOURCES: CliSource[] = ["claude-code", "codex"];
@@ -842,7 +842,8 @@ function slimInput(input: unknown): Record<string, unknown> {
     const i = input as Record<string, unknown>;
     const out: Record<string, unknown> = {};
     for (const k of ["command", "file_path", "notebook_path", "pattern", "path", "url", "query", "description", "subagent_type", "skill", "name"]) {
-        if (typeof i[k] === "string") out[k] = (i[k] as string).slice(0, 500);
+        // Redacted whole, then cut: a registered value crossing the cut must not leave its first part.
+        if (typeof i[k] === "string") out[k] = redactPrefix(i[k] as string, 500);
     }
     return out;
 }
@@ -887,14 +888,16 @@ function codexAction(p: Record<string, any>): string {
     } else if (p.action && typeof p.action === "object") args = p.action;
     if (name === "shell" || name === "exec_command" || name === "shell_command" || name === "local_shell" || p.type === "local_shell_call") {
         const cmd = Array.isArray(args.command) ? shellCommand(args.command) : typeof args.command === "string" ? args.command : typeof args.cmd === "string" ? args.cmd : "";
-        return commandTitle(cmd);
+        // The title cuts the command: redact it whole first.
+        return commandTitle(redact(cmd));
     }
     if (name === "apply_patch") {
         const patch = typeof p.input === "string" ? p.input : typeof args.input === "string" ? args.input : "";
         const files = [...patch.matchAll(/^\*\*\* (Add|Update|Delete) File: (.+)$/gm)];
         if (!files.length) return "Edit";
         const verb = files.every((f) => f[1] === "Add") ? "Write" : "Edit";
-        return `${verb}(${files[0]![2]!.trim()}${files.length > 1 ? ` +${files.length - 1} more` : ""})`;
+        // Redacted before trimming: a registered value with spaces at its ends wouldn't match after.
+        return `${verb}(${redact(files[0]![2]!).trim()}${files.length > 1 ? ` +${files.length - 1} more` : ""})`;
     }
     return name;
 }

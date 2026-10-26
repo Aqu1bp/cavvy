@@ -1,7 +1,7 @@
 // What the plan meter and the Usage view say: plain functions of the
 // server's data and the time (no DOM, so they're tested from test/).
 
-import type { AccountInfo, PlanLimits, UsageRow, UsageSummary } from "@shared/protocol";
+import { usingCredits, type AccountInfo, type PlanLimits, type UsageRow, type UsageSummary } from "@shared/protocol";
 
 /** Older than this, a report is shown with "as of" its time. */
 export const STALE_MS = 15 * 60_000;
@@ -19,6 +19,8 @@ export interface Meter {
     windows: MeterWindow[];
     /** A limit is reached now (and hasn't reset since). */
     reached: boolean;
+    /** Reached, but turns go on past it, billed to credits (Codex) or extra usage (Claude Code). */
+    usingCredits: boolean;
     /** When a reached limit resets, as a phrase ("4:40 PM, in 2h 5m"). */
     resets?: string;
     /** "as of 2:02 PM" when the numbers may be out of date. */
@@ -71,6 +73,7 @@ export function meterOf(l: PlanLimits | undefined, now: number): Meter | undefin
     return {
         windows,
         reached,
+        usingCredits: usingCredits(l, reached, (i) => windows[i]!.reached),
         resets: reached && resetsAt ? resetLabel(resetsAt, now, true) : undefined,
         asOf: stale ? `as of ${sameDay(l.at, now) ? clock(l.at) : resetLabel(l.at, now, true).replace(/, in .*$/, "")}` : undefined,
         top: pcts.length ? Math.max(...pcts) : undefined,
@@ -90,8 +93,8 @@ export function limitAlternatives(accounts: AccountInfo[], accountId: string): A
 export function usd(n: number): string {
     if (n === 0) return "$0.00";
     if (n < 0.01) return "<$0.01";
-    if (n < 1000) return `$${n.toFixed(2)}`;
-    return `$${Math.round(n).toLocaleString()}`;
+    if (n < 99.995) return `$${n.toFixed(2)}`;
+    return `$${Math.round(n).toLocaleString("en-US")}`;
 }
 
 /** A row's or the total's cost: "unknown" when none of it had a price, "$X + unknown" when part didn't. Never "$0" for unpriced usage. */

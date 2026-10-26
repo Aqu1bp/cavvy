@@ -112,8 +112,8 @@ model: sonnet
 hooks:
   Nope: [{ command: x }]
   PreToolUse:
-    - type: http
-      url: https://example.com
+    - type: agent
+      prompt: x
     - matcher: Bash
 mcpServers:
   - broken: { args: [x] }`),
@@ -122,8 +122,39 @@ mcpServers:
         );
         for (const k of ["permissionMode", "effort", "maxTurns", "isolation", "background", "memory", "model", "hooks", "mcpServers"]) expect((d as any)[k]).toBeUndefined();
         const w = d.warnings!.join("\n");
-        for (const s of ['permissionMode "dontAsk"', 'effort "extreme"', 'maxTurns "-3"', 'isolation "container"', 'background "maybe"', 'memory "team"', 'model "sonnet"', 'unknown event "Nope"', '"http" hooks', "without a command", "mcpServers.broken"]) expect(w).toContain(s);
+        for (const s of ['permissionMode "dontAsk"', 'effort "extreme"', 'maxTurns "-3"', 'isolation "container"', 'background "maybe"', 'memory "team"', 'model "sonnet"', "Nope isn't a hook event", 'type "agent" isn\'t supported', "needs a command", "mcpServers.broken"]) expect(w).toContain(s);
         expect(d.name).toBe("bad");
+    });
+
+    test("hooks take every handler type settings do, read by the same rules (review of #173)", () => {
+        const d = parseAgentFile(
+            file(`name: h
+hooks:
+  PreToolUse:
+    - matcher: Bash
+      hooks:
+        - type: http
+          url: https://example.com/hook
+        - type: prompt
+          prompt: Refuse rm.
+        - type: mcp_tool
+          server: notes
+          tool: log
+        - type: command
+          command: ./guard.sh
+          args: [--strict]
+          if: Bash(rm *)
+          async: true
+  Stop:
+    - type: prompt
+      prompt: Is it done?`),
+            "h",
+            "user",
+        );
+        expect(d.warnings).toBeUndefined();
+        expect(d.hooks?.PreToolUse?.map((h) => h.type ?? "command")).toEqual(["http", "prompt", "mcp_tool", "command"]);
+        expect(d.hooks?.PreToolUse?.[3]).toMatchObject({ matcher: "Bash", command: "./guard.sh", args: ["--strict"], if: "Bash(rm *)", async: true });
+        expect(d.hooks?.SubagentStop).toEqual([expect.objectContaining({ type: "prompt", prompt: "Is it done?" })]);
     });
 
     test("line by line, YAML-style lists still work", () => {
@@ -493,6 +524,44 @@ describe("isolation: worktree", () => {
         expect(result("t1")!.content).toContain("It made no changes, so its worktree was removed.");
     });
 
+    test.each([".", "src"])("two runs of a worktree agent send the same cached prefix: each one's worktree is named after it (#255; session in %s)", async (dir) => {
+        await initRepo();
+        // The project's instructions at the repository root, an ancestor of a session opened in src/.
+        mkdirSync(join(cwd, "src"));
+        writeFileSync(join(cwd, "AGENTS.md"), "Run the linter before committing.\n");
+        writeFileSync(join(cwd, "src", "main.ts"), "\n");
+        await git(cwd, "add", ".");
+        await git(cwd, "commit", "-qm", "layout");
+        // Trusted by the user, so the worktrees inside it read the project's files.
+        trust.trustFolder(cwd);
+        cwd = join(cwd, dir === "." ? "" : dir);
+        defineAgent("isolated", "isolation: worktree");
+        childScript = () => say("looked around");
+        mainCalls(["t1", "Task", task("isolated")], ["t2", "Task", task("isolated")]);
+        const { run } = await makeAgent({ mode: "bypassPermissions" });
+        await run("go");
+        expect(childRequests).toHaveLength(2);
+        // As the Anthropic provider sends them (the scripted child stands in for a Claude model).
+        const { AnthropicProvider } = await import("../src/providers/anthropic");
+        const { BUILTIN_PROVIDERS } = await import("../src/providers/registry");
+        const anthropic = new AnthropicProvider(BUILTIN_PROVIDERS.find((p) => p.id === "anthropic")!, "sk-ant-test") as any;
+        const sent = childRequests.map((r) => anthropic.buildParams({ ...r, model: { provider: "anthropic", id: "claude-haiku-5-5" } }, false).params);
+        const prefix = (p: any) => JSON.stringify({ tools: p.tools, system: p.system.slice(0, 1) });
+        expect(sent[0].system[0].cache_control).toEqual({ type: "ephemeral" });
+        expect(prefix(sent[1])).toBe(prefix(sent[0]));
+        const where = childRequests.map((r) => /You work in a git worktree of your own, (\S+), on branch (\S+)/.exec(r.system)!);
+        expect(where[0]![1]).not.toBe(where[1]![1]);
+        sent.forEach((p, i) => {
+            expect(p.system[0].text).toContain(`Project: ${cwd} (you work in a git worktree of it`);
+            expect(p.system[0].text).not.toContain(".claude/worktrees");
+            expect(p.system[0].text).not.toContain("agent/isolated-");
+            // Read from the worktree, named from where the session is.
+            expect(p.system[0].text).toContain(`Contents of ${dir === "." ? "AGENTS.md" : "../AGENTS.md"} (project instructions, checked into the codebase):\n\nRun the linter before committing.`);
+            expect(p.system[1].text).toContain(`Working directory: ${where[i]![1]}`);
+            expect(p.system[1].text).toContain(where[i]![2]);
+        });
+    });
+
     test("one that changed something is kept, and the report says where", async () => {
         await initRepo();
         defineAgent("changer", "isolation: worktree\npermissionMode: acceptEdits");
@@ -659,7 +728,7 @@ describe("background", () => {
         expect(said.some((m) => m.includes("still running"))).toBe(false);
     });
 
-    test("interrupting the turn stops it; so does the session ending", async () => {
+    test("interrupting the turn leaves it running (#228); the session ending stops it", async () => {
         childScript = (_r, _n, signal) =>
             new Promise((_res, rej) => {
                 signal?.addEventListener("abort", () => rej(new Error("aborted")), { once: true });
@@ -675,17 +744,13 @@ describe("background", () => {
         ];
         const { run, agent } = await makeAgent();
         await run("go", ctrl.signal);
-        await until(() => agent.delegatedTasks[0]?.status !== "running");
-        expect(agent.delegatedTasks[0]!.status).toBe("cancelled");
+        // Esc stops the answer, not background work (agentCli.liveSessions; delegation.test.ts covers it off).
+        await new Promise((r) => setTimeout(r, 100));
+        expect(agent.delegatedTasks[0]!.status).toBe("running");
 
-        // A new one, then the session ends.
-        mainSteps = [() => use("t2", "Task", task("general-purpose", { run_in_background: true }), "main"), () => say("ok", "main")];
-        mainRequests = [];
-        mainSent = [];
-        await run("again");
-        expect(agent.delegatedTasks[1]!.status).toBe("running");
+        // The session ending stops it.
         await agent.dispose(1000);
-        expect(agent.delegatedTasks[1]!.status).toBe("cancelled");
+        expect(agent.delegatedTasks[0]!.status).toBe("cancelled");
     });
 
     test("a one-shot run (-p) runs it in the foreground", async () => {

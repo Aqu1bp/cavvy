@@ -8,7 +8,7 @@ import { isolate, tempDir as rawTempDir } from "./helpers/isolate";
 
 const iso = isolate();
 const { SecretStore, secretNameError, secretValueError, cleanPurpose, MAX_PURPOSE } = await import("../src/agent/secrets");
-const { BashTool, BashOutputTool, killAllShells } = await import("../src/tools/bash");
+const { BashTool, BashOutputTool, killAllShells, OUTPUT_FILE_LIMIT } = await import("../src/tools/bash");
 const { RequestSecretTool } = await import("../src/tools/meta-tools");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const { childEnv } = await import("../src/util/env");
@@ -183,19 +183,27 @@ describe("RequestSecret and Bash", () => {
 
     test("output past the size cap can't end partway through the value", async () => {
         const { ctx, secrets } = toolCtx();
+        const progress: string[] = [];
+        ctx.onProgress = (s: string) => progress.push(s);
         const v = "dY4hS8uA9kW2nC7Q";
         secrets.set("CAP_TOKEN", v);
-        // The cap is 600,000 characters: filler up to just under it, then the value's start in the chunk that crosses it,
-        // and its rest a moment later (in a chunk that isn't kept).
+        // Filler up to just under a cap, then the value's start in the chunk that crosses it, and its rest a moment later.
+        // 600,000 characters is what the preview keeps; 8 MiB is where one line stops being held whole and only its ends are kept.
+        // Either way the whole value reaches redaction, so its marker shows and no piece of it does.
         const straddle = (filler: string) => `${filler}; printf %s "$(printf %s "$CAP_TOKEN" | cut -c1-6)"; sleep 0.3; printf '%s\n' "$(printf %s "$CAP_TOKEN" | cut -c7-)"`;
         // Filler in 1,000-character lines, so the last line break is near the cap (shorter lines only add redaction work), and with none.
-        for (const filler of [`yes "$(head -c 999 /dev/zero | tr '\\0' a)" | head -c 599997`, "head -c 599997 /dev/zero | tr '\\0' a"]) {
+        for (const filler of [`yes "$(head -c 999 /dev/zero | tr '\\0' a)" | head -c 599997`, "head -c 599997 /dev/zero | tr '\\0' a", `head -c ${OUTPUT_FILE_LIMIT - 3} /dev/zero | tr '\\0' a`]) {
+            progress.length = 0;
             const r = await bash(ctx, straddle(filler));
-            expect(r.content).toContain(filler.startsWith("yes ") ? "aaaaaaaaa" : "[Output line omitted");
+            expect(r.content).toContain("aaaaaaaaa");
+            expect(r.content).toContain("[REDACTED CAP_TOKEN]");
             noFragments(r.content, v);
             noFragments(r.display?.body ?? "", v);
+            noFragments(progress.join(""), v);
+            const saved = /(?:Full|Saved) output: (.+)/.exec(r.content)![1]!;
+            noFragments(readFileSync(saved, "latin1"), v);
         }
-    });
+    }, 20_000);
 
     test("a background line still being written waits, so a read can't split the value", async () => {
         const { ctx, secrets } = toolCtx();

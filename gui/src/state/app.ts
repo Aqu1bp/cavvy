@@ -5,11 +5,12 @@
 import { batch, createEffect, createRoot, createSignal } from "solid-js";
 import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store";
 import { planLimitKey, type PlanLimits } from "@shared/protocol";
-import type { GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
-import { applyOp, type SessionView } from "@shared/timeline";
+import type { AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
+import { applyOp, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
-import { credentials, focused, notify, isTauri, windowKey } from "../lib/platform";
-import { prefs } from "./prefs";
+import { credentials, focused, notify, isTauri, showWindow, windowKey } from "../lib/platform";
+import { prefs, setPrefs } from "./prefs";
+import { backgroundOf, COALESCE_MS, combineEnded, noticeRoute, tabOf, workTabFor } from "../lib/background";
 import { mayCreateFiles } from "../lib/pathcache";
 // filelinks imports rpc from here: used only once events arrive, so the cycle is harmless.
 import { paths } from "./filelinks";
@@ -18,7 +19,8 @@ export type { Toast } from "../lib/toasts";
 import { DelayedPending } from "../lib/delayed-pending";
 import { safeRenderText } from "../lib/render-error";
 import { afterFailedReopen } from "../lib/reopen";
-import { jumpTarget, setFindOpen, setJumpTarget } from "./ui";
+import { jumpTarget, setAgentFocus, setFindOpen, setInspectorPane, setJumpTarget, setSettingsTab } from "./ui";
+import { applyKeybindingsFile, keymap } from "./keybindings";
 import { orderSessions } from "../lib/session-order";
 import { composerStorage } from "../lib/drafts";
 import { composerDrafts } from "../lib/composer-draft";
@@ -28,17 +30,27 @@ rpc.retriesCredentials = isTauri;
 
 // ---------------------------------------------------------------------------
 // Toasts
+//
+// Confirmations and notices drop into the title bar's row (Toasts.tsx), at most two, each for a
+// moment. Errors don't: they're cards by the composer (ErrorCards.tsx) and stay until they're
+// dismissed, or until the code that raised them clears them. A repeat bumps the count of the one up.
 
-// Two wrapped rows fit above Home's input even in a 600px-tall window.
+// Two rows fit in the title bar's row.
 const MAX_TOASTS = 2;
 const MAX_QUEUED_TOASTS = 10;
+/** Errors waiting to be dismissed: past this many, the oldest without an action goes. */
+const MAX_ERRORS = 20;
 let toastId = 0;
 export const [toasts, setToasts] = createStore<Toast[]>([]);
 const toastTimers = new Map<number, { life: ToastLifetime; duration: number; message: string; timer?: ReturnType<typeof setTimeout> }>();
 const toastQueue: (Toast & { duration: number })[] = [];
 
+const isError = (t: Toast) => t.level === "error";
+/** The title bar's toasts: all but the errors. */
+const notices = () => toasts.filter((t) => !isError(t));
+
 function showQueuedToasts() {
-    while (toasts.length < MAX_TOASTS && toastQueue.length) {
+    while (notices().length < MAX_TOASTS && toastQueue.length) {
         const { duration, ...item } = toastQueue.shift()!;
         // Waiting in the queue uses none of the toast's visible lifetime.
         const life = new ToastLifetime(duration, performance.now());
@@ -53,6 +65,9 @@ function scheduleToast(id: number) {
     const entry = toastTimers.get(id);
     if (!entry) return;
     clearTimeout(entry.timer);
+    entry.timer = undefined;
+    // An error waits for you.
+    if (toasts.find((t) => t.id === id)?.level === "error") return;
     if (!entry.life.paused) entry.timer = setTimeout(() => dismissToast(id), entry.life.remaining(performance.now()));
 }
 
@@ -70,8 +85,24 @@ export function toast(message: string, level: Toast["level"] = "info", actionOrA
     if (existing) {
         const index = toasts.findIndex((t) => t.id === existing.id);
         setToasts(index, "count", existing.count + 1);
-        toastTimers.get(existing.id)?.life.restart(toastMs(level, ms), performance.now());
+        toastTimers.get(existing.id)?.life.restart(toastMs(level, ms, action), performance.now());
         scheduleToast(existing.id);
+        return;
+    }
+    const item: Toast = { id: ++toastId, level, message, count: 1, action, additionalActions: additionalActions.length ? additionalActions : undefined };
+    const duration = toastMs(level, ms, action);
+    if (level === "error") {
+        // An error's action is a fix ("Show", "Try again"), not one operation's Undo: the same error with the same
+        // fix is one card, counted, with the latest fix (repeatedToast keeps every Undo apart, so it doesn't merge these).
+        const same = action && toasts.find((t) => isError(t) && !t.running && t.message === message && t.action?.label === action.label);
+        if (same) {
+            setToasts(toasts.indexOf(same), { count: same.count + 1, action, additionalActions: item.additionalActions });
+            return;
+        }
+        // Straight into the error stack, which keeps them (it shows two and counts the rest).
+        toastTimers.set(item.id, { life: new ToastLifetime(duration, performance.now()), duration, message });
+        setToasts((t) => [...t, item]);
+        capErrors(item.id);
         return;
     }
     const waiting = repeatedToast(toastQueue, message, level, action);
@@ -79,9 +110,9 @@ export function toast(message: string, level: Toast["level"] = "info", actionOrA
         waiting.count++;
         return;
     }
-    toastQueue.push({ id: ++toastId, level, message, count: 1, action, additionalActions: additionalActions.length ? additionalActions : undefined, duration: toastMs(level, ms) });
-    if (toasts.length >= MAX_TOASTS) {
-        const idle = toasts.find((t) => !t.action && !t.running && !toastTimers.get(t.id)?.life.interacting);
+    toastQueue.push({ ...item, duration });
+    if (notices().length >= MAX_TOASTS) {
+        const idle = notices().find((t) => !t.action && !t.running && !toastTimers.get(t.id)?.life.interacting);
         if (idle) dismissToast(idle.id);
     }
     showQueuedToasts();
@@ -90,6 +121,22 @@ export function toast(message: string, level: Toast["level"] = "info", actionOrA
         // Recovery actions take precedence over the queue limit when none can be dropped.
         if (oldest < 0) break;
         toastQueue.splice(oldest, 1);
+    }
+}
+
+/**
+ * Past the cap the oldest errors go: ones without a fix first, then the oldest not running its fix.
+ * Never `added`, the error just raised (it's the one you haven't seen yet). While every other error is
+ * running its fix, there may be more for a moment: each fix as it ends calls this again (runToastChoice).
+ */
+function capErrors(added: number) {
+    for (;;) {
+        const errors = toasts.filter(isError);
+        if (errors.length <= MAX_ERRORS) return;
+        const others = errors.filter((t) => t.id !== added && !t.running);
+        const oldest = others.find((t) => !t.action) ?? others[0];
+        if (!oldest) return;
+        dismissToast(oldest.id);
     }
 }
 
@@ -123,15 +170,19 @@ export async function runToastChoice(id: number, index: number) {
             reportError(e);
             return;
         }
-        // A separate error toast could evict another failed Undo under the two-row cap.
+        // The toast itself becomes the error card, keeping its action for an explicit retry (a separate
+        // error would leave the failed Undo to time out). Its place in the title bar frees.
         const message = e instanceof Error ? e.message : String(e);
         setToasts((t) => t.id === id, { level: "error", message: `${entry.message}: ${message}` });
+        showQueuedToasts();
     } finally {
-        // A failed action gets its full visible lifetime again, never an automatic retry.
+        // A failed action gets its full lifetime again (an error's has no end), never an automatic retry.
         entry.life.restart(entry.duration, performance.now());
         entry.life.resume("action", performance.now());
         setToasts((t) => t.id === id, "running", false);
         scheduleToast(id);
+        // Running, it couldn't go to keep the cap; now it, or another, can (this one's kept if it failed again).
+        capErrors(id);
     }
 }
 
@@ -168,6 +219,8 @@ export interface AppState {
     seen: Record<string, number>;
     /** The agent CLIs' plan limits, by provider and account: the account's, shared by its sessions. */
     limits: Record<string, PlanLimits>;
+    /** The desktop app's updates from main (Settings → About, and the rail's Update button while there's one). */
+    update?: AppUpdateInfo;
 }
 
 const SEEN_KEY = "harness.seen";
@@ -280,6 +333,8 @@ export function handleFor(id: string | undefined): SessionHandle | undefined {
 
 function adopt(snap: SessionSnapshot): SessionHandle {
     const id = snap.state.id;
+    // Its unset fields come as null (an unset goal would be read as one).
+    const state = fromWireState(snap.state);
     // Ops missed while it wasn't open (or the connection was down) may have created files.
     paths.sawSnapshot(id);
     // There after all (brought back while this window was away).
@@ -289,13 +344,13 @@ function adopt(snap: SessionSnapshot): SessionHandle {
         existing.seq = snap.seq;
         existing.queue = [];
         batch(() => {
-            existing.set(reconcile({ state: snap.state, turns: snap.turns, agents: snap.agents ?? [] }, { key: "id", merge: false }));
+            existing.set(reconcile({ state, turns: snap.turns, agents: snap.agents ?? [] }, { key: "id", merge: false }));
             existing.setReady(true);
         });
         return existing;
     }
     const h = createRoot(() => {
-        const [view, set] = createStore<SessionView>({ state: snap.state, turns: snap.turns, agents: snap.agents ?? [] });
+        const [view, set] = createStore<SessionView>({ state, turns: snap.turns, agents: snap.agents ?? [] });
         const [draft, setDraft] = createSignal<Draft | undefined>();
         const [ready, setReady] = createSignal(true);
         // While no input box has taken it (the session isn't shown), another draft adds to it rather than replacing it.
@@ -539,6 +594,33 @@ export async function refreshLimits() {
     setApp("limits", reconcile(Object.fromEntries(limits.map((l) => [planLimitKey(l.provider, l.accountId), l]))));
 }
 
+export async function refreshUpdate() {
+    setApp("update", reconcile(await rpc.call("app.update.get", {})));
+}
+
+let keybindingsLoaded = false;
+export async function refreshKeybindings() {
+    const { fatal } = applyKeybindingsFile(await rpc.call("keybindings.get", {}));
+    // Problems in the file are told once a window opens; reconnects stay quiet.
+    if (keybindingsLoaded) return;
+    keybindingsLoaded = true;
+    const issues = keymap().issues;
+    if (fatal || issues.length) toast(`Your keybindings file has ${issues.length === 1 ? "a problem" : `${issues.length} problems`}: ${issues[0]!.message}`, issues.some((i) => i.level === "error") ? "error" : "warn", { label: "Show", run: () => void setSettingsTab("shortcuts") });
+}
+
+/** A save of the keybindings file: applied at once, and a word on how it went. */
+function keybindingsChanged(next: Parameters<typeof applyKeybindingsFile>[0]) {
+    const { fatal } = applyKeybindingsFile(next);
+    const show = { label: "Show", run: () => void setSettingsTab("shortcuts") };
+    if (fatal) return toast(`Keybindings not reloaded: ${fatal}`, "error", show);
+    const issues = keymap().issues;
+    if (issues.length) {
+        const errors = issues.filter((i) => i.level === "error").length;
+        return toast(`Keybindings reloaded with ${issues.length} problem${issues.length === 1 ? "" : "s"}: ${issues[0]!.message}`, errors ? "error" : "warn", show);
+    }
+    toast(next.text === undefined ? "Keybindings file removed: default shortcuts" : "Keybindings reloaded", "info");
+}
+
 export async function refreshSettings() {
     setApp("settings", await rpc.call("settings.get", {}));
     // Observe the first settings immediately: other startup refreshes may still be pending when the editor changes.
@@ -644,12 +726,19 @@ function onEvent(ev: ServerEvent) {
         case "limits":
             setApp("limits", planLimitKey(ev.limits.provider, ev.limits.accountId), reconcile(ev.limits));
             return;
+        case "keybindings.changed":
+            keybindingsChanged(ev.keybindings);
+            return;
+        case "app.update":
+            setApp("update", reconcile(ev.info));
+            return;
         case "models.changed":
             void refreshProviders().catch(() => undefined);
             // A fetch in flight gets the new list anyway.
             if (!app.modelsLoading) void refreshModels().catch(() => undefined);
             return;
         case "notify": {
+            if (ev.kind === "background") return backgroundEnded(ev);
             if (!prefs.notifications) return;
             if (focused() && app.activeId === ev.sessionId) return;
             if (ev.kind === "done" && focused()) return;
@@ -659,7 +748,57 @@ function onEvent(ev: ServerEvent) {
     }
 }
 
+/** Background tasks whose end was told here (a toast or a notification), by tag: once each. */
+const toldEnded = new Set<string>();
+
+/** A background task ended on its own: a toast in its session's view, a desktop notification otherwise. */
+function backgroundEnded(ev: Extract<ServerEvent, { type: "notify" }>) {
+    const tag = ev.tag ?? `${ev.sessionId}:${ev.body}`;
+    const route = noticeRoute({ focused: focused(), active: app.activeId === ev.sessionId, notifications: prefs.notifications, seen: toldEnded.has(tag) });
+    if (route === "none") return;
+    toldEnded.add(tag);
+    const reveal = () => {
+        void activate(ev.sessionId);
+        revealBackground(ev.sessionId, ev.task?.id);
+    };
+    if (route === "toast") toast(ev.body, ev.task?.outcome === "failed" ? "warn" : ev.task?.outcome === "done" ? "success" : "info", { label: "Show", run: reveal });
+    else desktopEnded(ev.sessionId, ev.title, ev.body, tag, reveal);
+}
+
+/** A session's task endings waiting a moment to go out as one desktop notification. */
+const gathering = new Map<string, { title: string; bodies: string[]; tags: string[] }>();
+
+/** A desktop notification for task endings: those close together (a burst) go as one, so they don't pile up. */
+function desktopEnded(sessionId: string, title: string, body: string, tag: string, reveal: () => void) {
+    let g = gathering.get(sessionId);
+    if (!g) {
+        const batch = (g = { title, bodies: [], tags: [] });
+        gathering.set(sessionId, batch);
+        setTimeout(() => {
+            gathering.delete(sessionId);
+            void notify(batch.title, combineEnded(batch.bodies), reveal, { tag: batch.tags.length === 1 ? batch.tags[0] : `background:${sessionId}` });
+        }, COALESCE_MS);
+    }
+    g.bodies.push(body);
+    g.tags.push(tag);
+}
+
+/** The side panel on a session's background work: on that task's tab, else Agents while a sub-agent runs, else Commands. */
+export function revealBackground(sessionId = app.activeId, taskId?: string) {
+    setAgentFocus(undefined);
+    setPrefs("panel", true);
+    const h = sessionId ? handleFor(sessionId) : undefined;
+    if (!h) return;
+    const tasks = backgroundOf(h.view.state);
+    const task = taskId ? tasks.find((t) => t.id === taskId) : undefined;
+    setInspectorPane(task ? tabOf(task) : workTabFor(tasks, h.view.agents));
+}
+
+/** How long the window waits for the first screen before it shows what there is (the splash, while the server starts). */
+const SHOW_WINDOW_MS = 1000;
+
 export function start() {
+    setTimeout(showWindow, SHOW_WINDOW_MS);
     document.addEventListener("visibilitychange", () => {
         for (const t of toasts) pauseToast(t.id, "hidden", document.hidden);
     });
@@ -671,13 +810,17 @@ export function start() {
             if (s !== "open") for (const h of handles.values()) h.setReady(false);
             setApp("conn", s);
         });
+        // A screen that won't change by itself (a link that needs the terminal, a server that's gone) shows at once.
+        if (s === "unauthorized" || s === "unavailable") showWindow();
         if (s !== "open") return;
         void (async () => {
             try {
                 setApp("hello", await rpc.call("hello", { client: isTauri ? "desktop" : "browser" }));
-                await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders()]);
+                await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders(), refreshKeybindings().catch(() => undefined)]);
                 void refreshModels().catch(() => undefined);
                 void refreshLimits().catch(() => undefined);
+                // A server from before app.update.get has nothing to say: no update state, no button.
+                void refreshUpdate().catch(() => undefined);
                 // After a reconnect, the open sessions start over from fresh snapshots.
                 for (const h of [...handles.values()]) if (!h.ready()) await rpc.call("session.open", { id: h.id }).then(adopt, (e) => reopenFailed(h.id, e));
                 await restoreActiveSession();
@@ -686,6 +829,8 @@ export function start() {
             } catch (e) {
                 reportError(e);
             }
+            // The first screen is drawn, with what it shows: the window comes up on it.
+            showWindow();
         })();
     });
     void rpc.connect();

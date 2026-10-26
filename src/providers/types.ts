@@ -7,6 +7,14 @@
 
 import type { Effort } from "../config/settings";
 
+// Lives here, not in tools/types, so the GUI can import the transcript types
+// without pulling the agent's tool code into its typecheck.
+export interface TodoItem {
+    content: string;
+    status: "pending" | "in_progress" | "completed";
+    activeForm?: string;
+}
+
 export type TextPart = { type: "text"; text: string };
 export type ImagePart = { type: "image"; mediaType: string; data: string /* base64 */ };
 /**
@@ -55,12 +63,21 @@ export interface UserMessage {
     content: UserContent[];
     /** Harness-only bookkeeping, never sent to providers. */
     meta?: {
-        kind?: "prompt" | "tool_results" | "interrupt" | "summary" | "command" | "reminder";
+        kind?: "prompt" | "tool_results" | "interrupt" | "summary" | "command" | "reminder" | "continuation" | "wake";
         display?: string;
         /** The file checkpoint this prompt started (/rewind). */
         checkpoint?: number;
         /** Brought in from a Claude Code or Codex session started elsewhere: shown, never rewound to. */
         imported?: boolean;
+        /** Models (modelRef) that refused a request for this message's images: they're sent it without them. The images stay. */
+        imagesRefused?: string[];
+        /** State at a compaction boundary, restored before replaying later tool calls. */
+        compactedState?: { todos: TodoItem[]; approvedPlan?: string };
+        /**
+         * A reminder that sends again messages a CLI's turn ended before taking (TurnSink.undelivered, #438): their
+         * words as stored. A catch-up that has those messages already leaves it out, or they'd go twice.
+         */
+        resends?: string[];
     };
 }
 
@@ -80,7 +97,7 @@ export interface AssistantMessage {
 
 export type Message = UserMessage | AssistantMessage;
 
-export type StopReason = "end_turn" | "tool_use" | "max_tokens" | "refusal" | "stop_sequence" | "pause_turn" | "error" | "aborted" | "other";
+export type StopReason = "end_turn" | "tool_use" | "max_tokens" | "context_window_exceeded" | "refusal" | "stop_sequence" | "pause_turn" | "error" | "aborted" | "other";
 
 export interface Usage {
     inputTokens: number;
@@ -90,6 +107,8 @@ export interface Usage {
     /** Portion of cache writes using Anthropic's one-hour TTL. */
     cacheWrite1hTokens?: number;
     reasoningTokens?: number;
+    /** Billable Anthropic server web searches ($10 per 1,000 requests). */
+    webSearchRequests?: number;
     /** The provider actually served this response at fast speed. */
     fastMode?: boolean;
     /** Provider-reported cost in USD, when available (OpenRouter). */
@@ -108,6 +127,22 @@ export interface ToolSchema {
     parameters: Record<string, unknown>; // JSON Schema (type: object)
 }
 
+/**
+ * The heading of a system prompt's last section, what it says of its session
+ * only (the date, the git status at its start; src/agent/system-prompt.ts).
+ */
+export const SESSION_CONTEXT_HEADING = "# Session context";
+
+/**
+ * A system prompt as the part every session of a project shares and the
+ * session's own context after it ("" when there's none, as in prompts frozen
+ * before there was a section for it).
+ */
+export function splitSystemPrompt(system: string): { shared: string; session: string } {
+    const at = system.lastIndexOf(`\n\n${SESSION_CONTEXT_HEADING}\n`);
+    return at > 0 ? { shared: system.slice(0, at), session: system.slice(at + 2) } : { shared: system, session: "" };
+}
+
 export interface ChatRequest {
     model: ModelInfo;
     system: string;
@@ -122,7 +157,12 @@ export interface ChatRequest {
     lightweight?: boolean;
     /** No extended thinking, where the model can turn it off (a quick answer matters more). */
     noThinking?: boolean;
-    /** Cache the system prompt even when lightweight: it's the same on every call (the auto-mode reviewer's). */
+    /**
+     * Cache the system prompt (and the tools ahead of it) on its own, up to its
+     * session context, so requests whose messages differ share it: every session
+     * and sub-agent of a kind in a project sends the same one, as the auto-mode
+     * reviewer does on each call (even lightweight).
+     */
     cacheSystem?: boolean;
     /** Anthropic server-side web search. */
     webSearch?: boolean;
@@ -137,7 +177,8 @@ export type StreamEvent =
     | { type: "tool_call_delta"; id: string; partial: string }
     | { type: "server_tool"; name: string; detail: string }
     | { type: "retry"; attempt: number; delayMs: number; reason: string }
-    | { type: "notice"; message: string }
+    /** `resent`: the request was sent again (a feature or reasoning dropped, tool JSON malformed). */
+    | { type: "notice"; message: string; resent?: true }
     | { type: "usage"; usage: Usage };
 
 export interface ModelInfo {
@@ -164,8 +205,10 @@ export interface ModelInfo {
     fastPricingLong?: ModelInfo["pricing"];
     pricingLong?: ModelInfo["pricing"];
     longContextThreshold?: number;
-    /** Anthropic: effort levels this model accepts. */
+    /** Effort levels offered by Harness, including mapped manual thinking budgets. */
     effortLevels?: Effort[];
+    /** Anthropic native output_config.effort support, separate from budget controls. */
+    nativeEffortLevels?: Effort[];
     /** Anthropic: adaptive thinking supported. */
     adaptiveThinking?: boolean;
     /** Anthropic: budget-style thinking (older models). */
@@ -209,6 +252,45 @@ export function textOf(msg: Message): string {
         .filter((p): p is TextPart => p.type === "text")
         .map((p) => p.text)
         .join("");
+}
+
+/** Display/export groups; continuation links join assistants without changing their stored wire payloads. */
+export function* continuationGroups(messages: readonly Message[]): Generator<Message[]> {
+    for (let i = 0; i < messages.length; i++) {
+        const first = messages[i]!;
+        const group = [first];
+        if (first.role === "assistant") {
+            while (i + 2 < messages.length) {
+                const link = messages[i + 1]!;
+                const next = messages[i + 2]!;
+                if (link.role !== "user" || link.meta?.kind !== "continuation" || next.role !== "assistant") break;
+                group.push(next);
+                i += 2;
+            }
+        }
+        yield group;
+    }
+}
+
+/** The latest answer, joining only messages linked by an output-limit continuation. */
+export function assistantText(messages: readonly Message[]): string {
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i]!;
+        if (m.role === "user") {
+            if ([undefined, "prompt", "command", "wake"].includes(m.meta?.kind)) return "";
+            continue;
+        }
+        let text = textOf(m);
+        while (i >= 2) {
+            const link = messages[i - 1]!;
+            const previous = messages[i - 2]!;
+            if (link.role !== "user" || link.meta?.kind !== "continuation" || previous.role !== "assistant") break;
+            text = textOf(previous) + text;
+            i -= 2;
+        }
+        return text;
+    }
+    return "";
 }
 
 export function toolCallsOf(msg: AssistantMessage): ToolCallPart[] {
