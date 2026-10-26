@@ -66,8 +66,11 @@ export type CliEvent =
     | { t: "turn_started"; ref: string; origin: "user" | "wake" | "goal"; answers?: string[] }
     /** Something in a turn; without a ref, in the one running. */
     | { t: "turn_event"; ref?: string; event: AgentEvent }
-    /** A turn ended. `answers`: every prompt it answered (steering messages folded into it). */
-    | { t: "turn_ended"; ref: string; answers?: string[]; reason: TurnEndReason; error?: string; usage?: Usage; limit?: { resetsAt?: number } }
+    /**
+     * A turn ended. `answers`: every prompt it answered (steering messages folded into it). `refused`: its prompt never
+     * reached the CLI's session (Esc withdrew it, and the CLI said it dropped it): LiveTurnResult.refused.
+     */
+    | { t: "turn_ended"; ref: string; answers?: string[]; reason: TurnEndReason; error?: string; usage?: Usage; limit?: { resetsAt?: number; window?: string }; refused?: boolean }
     /**
      * A background task started, changed or ended. `wakeDue`: the CLI will start a turn of its own to report
      * it (Claude Code after a task_notification); until a turn starts or ends, the session isn't quiet.
@@ -109,8 +112,11 @@ export interface AgentCliAdapter {
     readonly def: AgentCliDef;
     /** How to start a process for this config. Called at every turn's start to compare fingerprints, so without side effects. */
     spawn(cfg: SpawnConfig): SpawnSpec;
-    /** Start talking to a process just started: read its output, reporting it to `events`. */
-    connect(proc: JsonLinesProcess, events: CliEventSink, host: SessionHost): Promise<CliConnection>;
+    /**
+     * Start talking to a process just started: read its output, reporting it to `events`. `resume`: the session it was
+     * started to resume or fork (what it says before its first turn can be about an earlier process's work).
+     */
+    connect(proc: JsonLinesProcess, events: CliEventSink, host: SessionHost, resume?: { resumeId?: string; fork?: boolean }): Promise<CliConnection>;
     status(accountId: string | undefined, signal?: AbortSignal): Promise<{ status: AgentCliStatus; limits?: PlanLimits }>;
     listModels(signal?: AbortSignal): Promise<ModelInfo[]>;
     /** A one-off request with no tools (stream() today). */

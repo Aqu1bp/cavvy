@@ -54,5 +54,5 @@
     d.style.setProperty("--font-scale", String(p.fontSize / 14));
     d.style.setProperty("--sidebar-w", p.sidebarWidth + "px");
     d.style.setProperty("--review-w", p.reviewWidth + "px");
-    d.style.setProperty("--column-w", (COLUMNS[p.chatWidth] || COLUMNS["default"]) + "px");
+    d.style.setProperty("--column-w", "calc(" + (COLUMNS[p.chatWidth] || COLUMNS["default"]) + " * var(--sp))");
 })();

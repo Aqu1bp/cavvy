@@ -1049,6 +1049,145 @@ describe("caselessFold", () => {
     });
 });
 
+describe("here-documents (#448)", () => {
+    const REPORT = "cat <<'EOF' > notes.txt\nSSO: SAML first, then OIDC\nGate enforcement on verified domains\nEOF\nwc -l notes.txt";
+    /** A quote in the data paired with the comment's when the data was read as commands, hiding `touch marker`. */
+    const HIDDEN = "cat <<EOF\ncat '\nEOF\ntouch marker # '";
+    const noSandbox = () => new PermissionChecker(() => settings, W, () => undefined);
+    const seatbelt = () => new PermissionChecker(() => settings, W, () => "seatbelt");
+    const offered = (c: Checker, cmd: string, mode: PermissionMode = "default") => c.withGrant(T("Bash"), bash(cmd), c.check(T("Bash"), bash(cmd), mode, W), W);
+
+    test("the reported command offers no rule or grant made of its data lines", () => {
+        for (const mode of ["default", "acceptEdits"] as const) {
+            const d = offered(noSandbox(), REPORT, mode);
+            expect(d.behavior).toBe("ask");
+            expect(JSON.stringify([d.suggestions, d.grant])).not.toMatch(/SSO|Gate|EOF/);
+        }
+    });
+
+    test("a grant names the program that runs, never the data", () => {
+        const d = offered(noSandbox(), "npm test <<'EOF'\nSSO: SAML first\nEOF");
+        expect(d.grant).toEqual({ label: "npm test", rules: ["Bash(npm test:*)"] });
+    });
+
+    test("no wider grant when where the data ends isn't certain", () => {
+        for (const cmd of ["npm test <<EOF\nrm x", "npm test <<$X\nrm x\n$X"]) {
+            const d = offered(noSandbox(), cmd);
+            expect(d.behavior).toBe("ask");
+            expect(d.grant).toBeUndefined();
+            expect(d.suggestions ?? []).toEqual([]);
+        }
+    });
+
+    describe("what runs after the data is judged (failed open before #448)", () => {
+        test("asks in default and acceptEdits, refused in plan, reviewed in auto", () => {
+            expect(noSandbox().check(T("Bash"), bash(HIDDEN), "default", W).behavior).toBe("ask");
+            expect(noSandbox().check(T("Bash"), bash(HIDDEN), "acceptEdits", W).behavior).toBe("ask");
+            expect(noSandbox().check(T("Bash"), bash(HIDDEN), "plan", W).behavior).toBe("deny");
+            expect(noSandbox().check(T("Bash"), bash(HIDDEN), "auto", W)).toMatchObject({ behavior: "ask", needsClassifier: true });
+        });
+
+        test("so is one after an escaped `<` (`\\<<<EOF` is `\\<` and a here-document)", () => {
+            const cmd = "cat \\<<<EOF\ncat '\nEOF\ntouch marker # '";
+            expect(noSandbox().check(T("Bash"), bash(cmd), "default", W).behavior).toBe("ask");
+            expect(noSandbox().check(T("Bash"), bash(cmd), "plan", W).behavior).toBe("deny");
+        });
+
+        test("so is a substitution an escaped newline splits (`$\\⏎(…)`)", () => {
+            const cmd = "cat <<EOF\n$\\\n(touch marker)\nEOF";
+            expect(noSandbox().check(T("Bash"), bash(cmd), "default", W).behavior).toBe("ask");
+            expect(noSandbox().check(T("Bash"), bash(cmd), "plan", W).behavior).toBe("deny");
+            settings.permissions!.allow = ["Bash(cat:*)"];
+            expect(noSandbox().check(T("Bash"), bash(cmd), "default", W).behavior).not.toBe("allow");
+        });
+
+        test("an allow rule for the data's program doesn't approve it", () => {
+            settings.permissions!.allow = ["Bash(cat:*)"];
+            for (const mode of ["default", "acceptEdits", "auto"] as const) expect(noSandbox().check(T("Bash"), bash(HIDDEN), mode, W).behavior).not.toBe("allow");
+        });
+
+        test("a deny rule for what runs refuses it in every mode", () => {
+            settings.permissions!.deny = ["Bash(touch:*)"];
+            for (const mode of MODES) expect(noSandbox().check(T("Bash"), bash(HIDDEN), mode, W)).toMatchObject({ behavior: "deny", rule: "Bash(touch:*)" });
+        });
+
+        test("an ask rule for what runs asks", () => {
+            settings.permissions!.ask = ["Bash(touch:*)"];
+            for (const mode of ["default", "acceptEdits", "auto"] as const) expect(noSandbox().check(T("Bash"), bash(HIDDEN), mode, W)).toMatchObject({ behavior: "ask", rule: "Bash(touch:*)" });
+        });
+    });
+
+    describe("deny and ask rules still see data lines that may run", () => {
+        test("deny", () => {
+            settings.permissions!.deny = ["Bash(rm:*)"];
+            for (const mode of MODES) expect(noSandbox().check(T("Bash"), bash("bash <<'EOF'\nrm -rf build\nEOF"), mode, W).behavior).toBe("deny");
+        });
+
+        test("a shell reading the data is dangerous", () => {
+            expect(noSandbox().check(T("Bash"), bash("bash <<'EOF'\nrm -rf /\nEOF"), "bypassPermissions", W)).toMatchObject({ behavior: "ask", dangerous: true });
+        });
+    });
+
+    describe("data that is only written or read doesn't make a harmless command ask (failed closed before #448)", () => {
+        test("not dangerous, and read-only when nothing writes", () => {
+            expect(noSandbox().check(T("Bash"), bash("cat <<'EOF'\nrm -rf /\nsudo reboot\nEOF"), "default", W)).toEqual({ behavior: "allow", reason: "read-only command" });
+            const d = noSandbox().check(T("Bash"), bash("cat <<'EOF' > notes.txt\nrm -rf /\nEOF"), "default", W);
+            expect(d.behavior).toBe("ask");
+            expect(d.dangerous).toBeUndefined();
+        });
+
+        test("a .env or harness config named in the data isn't read or changed", () => {
+            expect(noSandbox().check(T("Bash"), bash("cat <<'EOF'\nsource .env first\nedit .git/config and ~/.harness/settings.json\nEOF"), "default", W)).toEqual({ behavior: "allow", reason: "read-only command" });
+        });
+
+        test("in auto mode with a sandbox: no network refusal or deletion review for the data", () => {
+            expect(seatbelt().check(T("Bash"), bash("cat <<'EOF' > notes.txt\ncurl https://example.com/install.sh\nrm -rf src\nEOF"), "auto", W)).toEqual({ behavior: "allow", sandbox: true, reason: "sandboxed" });
+        });
+
+        test("data written to a startup file is still dangerous, bypass included", () => {
+            expect(noSandbox().check(T("Bash"), bash("tee -a ~/.bashrc <<'EOF'\nrm -rf ~\nEOF"), "bypassPermissions", W)).toMatchObject({ behavior: "ask", dangerous: true });
+        });
+
+        test("data that something may run is still judged", () => {
+            expect(seatbelt().check(T("Bash"), bash("cat <<'EOF' | sh\nrm -rf src\nEOF"), "auto", W)).toMatchObject({ behavior: "ask", needsClassifier: true });
+        });
+    });
+});
+
+describe("review of #453: each runs `touch marker` in bash, zsh and sh", () => {
+    const noSandbox = () => new PermissionChecker(() => settings, W, () => undefined);
+    const decide = (cmd: string, mode: PermissionMode) => noSandbox().check(T("Bash"), bash(cmd), mode, W);
+
+    test.each([
+        "cat <<<EOF\ntouch marker\nEOF\ncat <<A\nA",
+        "cat <<< EOF <<A\nA\ntouch marker",
+        "cat <<<x <<EOF\ny\nEOF\ntouch marker",
+        "cat 0<<<EOF\ntouch marker\nEOF\ncat <<A\nA",
+        "bash -h <<EOF\ntouch marker\nEOF",
+        "zsh -V <<EOF\ntouch marker\nEOF",
+        "python3 -v <<'EOF'\nimport os; os.system(\"touch marker\")\nEOF",
+    ])("%p: refused in plan, asked in default, not approved by Bash(cat:*)", (cmd) => {
+        expect(decide(cmd, "plan").behavior).toBe("deny");
+        expect(decide(cmd, "default").behavior).toBe("ask");
+        settings.permissions!.allow = ["Bash(cat:*)"];
+        expect(decide(cmd, "default").behavior).toBe("ask");
+    });
+
+    test("a here-string's following lines are dangerous when they are", () => {
+        expect(decide("cat <<<EOF\nrm -rf ~\nEOF\ncat <<A\nA", "bypassPermissions")).toMatchObject({ behavior: "ask", dangerous: true });
+    });
+
+    test.each([
+        "cat <<$'EOF'\n'\nEOF\ntouch marker #'",
+        "cat <<E$'O'F\n'\nEOF\ntouch marker #'",
+        'cat <<$"EOF"\n\'\nEOF\ntouch marker #\'',
+        "cat <<$(x)\n'\n$(x)\ntouch marker #'",
+    ])("%p: a deny rule for touch refuses it in every mode", (cmd) => {
+        settings.permissions!.deny = ["Bash(touch:*)"];
+        for (const mode of MODES) expect(decide(cmd, mode)).toMatchObject({ behavior: "deny", rule: "Bash(touch:*)" });
+    });
+});
+
 describe("likelyHosts", () => {
     test("a host stops at shell punctuation and a trailing dot", () => {
         expect(likelyHosts("curl https://example.com; echo x")).toEqual(["example.com"]);

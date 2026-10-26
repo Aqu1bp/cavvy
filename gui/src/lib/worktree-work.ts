@@ -70,6 +70,14 @@ export function pickWorktree(cur: ReviewPlace, worktree: string | undefined): Re
     return { worktree, scope: "branch", own };
 }
 
+/**
+ * Asked to look at `worktree` (a turn's card naming where it worked): that worktree on its branch against the main
+ * branch, as the card counted it, even when it's the one already looked at in another view or against another base.
+ */
+export function requestWorktree(cur: ReviewPlace, worktree: string): ReviewPlace {
+    return { ...pickWorktree(cur, worktree), scope: "branch", base: undefined };
+}
+
 /** A view picked: another worktree takes only Git's (the others are disabled there, but just in case). */
 export function pickScope(cur: ReviewPlace, scope: ReviewScope): ReviewPlace {
     if (cur.worktree !== undefined && !OTHER_WORKTREE_SCOPES.has(scope)) return cur;

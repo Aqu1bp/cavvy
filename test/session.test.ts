@@ -303,16 +303,91 @@ describe("Session persistence", () => {
         const s = Session.create(project());
         s.setAccount("codex", "personal");
         s.push(user("prior"));
-        s.setBackendSession("codex", "bound-thread", 1, "/tmp/original-home");
+        s.setBackendSession("codex", "bound-thread", 1, { folder: "/tmp/original-home" });
         s.release();
         const loaded = Session.load(s.path);
-        expect(loaded.backendSession("codex", "/tmp/original-home")?.id).toBe("bound-thread");
-        expect(loaded.backendSession("codex", "/tmp/replacement-home")).toBeUndefined();
+        expect(loaded.backendSession("codex", { folder: "/tmp/original-home" })?.id).toBe("bound-thread");
+        expect(loaded.backendSession("codex", { folder: "/tmp/replacement-home" })).toBeUndefined();
         expect(loaded.backends.has("codex")).toBe(false);
         loaded.release();
         const reopened = Session.load(s.path);
         expect(reopened.backends.has("codex")).toBe(false);
         reopened.release();
+    });
+
+    // A native thread goes on in another home whose CLI finds the same transcripts (#377): Claude Code's
+    // projects/, Codex's sessions/, by real path, as Harness-made accounts link Default's.
+    describe("native threads across homes sharing a history", () => {
+        const { realpathSync, symlinkSync } = require("fs") as typeof import("fs");
+        const homes = () => {
+            const root = realpathSync(tempDir("homes-"));
+            const at = (name: string) => join(root, name);
+            for (const d of ["default/projects", "default/sessions", "shared", "custom/projects", "custom/sessions"]) mkdirSync(at(d), { recursive: true });
+            symlinkSync(at("default/projects"), at("shared/projects"));
+            symlinkSync(at("default/sessions"), at("shared/sessions"));
+            const place = (name: string, history: string) => ({ folder: at(name), history: realpathSync(join(at(name), history)) });
+            return { at, place };
+        };
+
+        for (const [provider, history] of [["claude-code", "projects"], ["codex", "sessions"]] as const) test(`${provider}: kept where its ${history}/ is the same folder, forgotten elsewhere; the history is saved with the home`, () => {
+            const { place } = homes();
+            const s = Session.create(project());
+            s.push(user("prior"));
+            s.setBackendSession(provider, "thread", 1, place("default", history));
+            expect(s.backendSession(provider, place("shared", history))?.id).toBe("thread");
+            s.release();
+            const line = readFileSync(s.path, "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((l) => l.t === "backend").at(-1);
+            expect(line).toMatchObject({ folder: place("default", history).folder, history: place("default", history).history });
+            const loaded = Session.load(s.path);
+            expect(loaded.backendSession(provider, place("shared", history))?.id).toBe("thread");
+            expect(loaded.backendSession(provider, place("custom", history))).toBeUndefined();
+            loaded.release();
+        });
+
+        test("a session file from before histories were saved (its home only) still loads, and goes on where that home's history is shared", () => {
+            const { at, place } = homes();
+            const s = Session.create(project());
+            s.push(user("prior"));
+            s.release();
+            // As the earlier version wrote them: the home, no history.
+            appendFileSync(s.path, JSON.stringify({ t: "backend", provider: "claude-code", id: "old-claude", synced: 1, folder: at("default") }) + "\n");
+            appendFileSync(s.path, JSON.stringify({ t: "backend", provider: "codex", id: "old-codex", synced: 1, folder: at("default") }) + "\n");
+            const loaded = Session.load(s.path);
+            expect(loaded.messages).toHaveLength(1);
+            expect(loaded.backendPlace("claude-code")).toEqual({ folder: at("default") });
+            expect(loaded.backendSession("claude-code", { folder: at("default") })?.id).toBe("old-claude");
+            expect(loaded.backendSession("claude-code", place("shared", "projects"))?.id).toBe("old-claude");
+            expect(loaded.backendSession("codex", place("custom", "sessions"))).toBeUndefined();
+            loaded.release();
+        });
+
+        test("an account line after a thread with its home saved keeps it until a turn checks its place (a torn switch can't bind it elsewhere); one with no home saved is Default's, dropped by another account", () => {
+            const { place } = homes();
+            const s = Session.create(project());
+            s.push(user("prior"));
+            s.setBackendSession("codex", "bound", 1, place("default", "sessions"));
+            s.setBackendSession("claude-code", "unbound", 1);
+            s.release();
+            // A switch whose forget line never made it to the file.
+            appendFileSync(s.path, JSON.stringify({ t: "account", provider: "codex", id: "custom" }) + "\n");
+            appendFileSync(s.path, JSON.stringify({ t: "account", provider: "claude-code", id: "work" }) + "\n");
+            const loaded = Session.load(s.path);
+            expect(loaded.accountId("codex")).toBe("custom");
+            expect(loaded.backends.get("codex")?.id).toBe("bound");
+            expect(loaded.backendSession("codex", place("custom", "sessions"))).toBeUndefined();
+            expect(loaded.backends.has("claude-code")).toBe(false);
+            loaded.release();
+        });
+
+        test("a thread with no home saved (from before accounts) goes on only on Default", () => {
+            const { place } = homes();
+            const s = Session.create(project(), { persist: false });
+            s.push(user("prior"));
+            s.setBackendSession("codex", "legacy", 1);
+            expect(s.backendSession("codex", place("default", "sessions"))?.id).toBe("legacy");
+            s.accounts.codex = "work";
+            expect(s.backendSession("codex", place("shared", "sessions"))).toBeUndefined();
+        });
     });
 
     test("legacy sessions keep Default without rewriting their selection", () => {

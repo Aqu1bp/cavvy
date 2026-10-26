@@ -2,23 +2,31 @@
 // setting is one row: what it is, what it does, its control, and a reset
 // when it's been changed.
 
-import { createEffect, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
-import { AlertTriangle, ArrowLeft, ChartColumn, ChevronDown, Copy, ExternalLink, FolderOpen, Info, Keyboard, Minus, Palette, Plug, Plus, Puzzle, RotateCcw, SlidersHorizontal, X } from "lucide-solid";
+import { createEffect, createMemo, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
+import { AlertTriangle, ArrowLeft, ChartColumn, ChevronDown, CircleAlert, Copy, Download, ExternalLink, FolderOpen, Info, Keyboard, Minus, Palette, Plug, Plus, Puzzle, RotateCcw, SlidersHorizontal, X } from "lucide-solid";
 import { MODE_LABELS, type FollowUpMode, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
 import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
+import { reconcile } from "solid-js/store";
+import { now } from "../lib/clock";
+import { updateView } from "../lib/app-update";
 import { connectCli, editors, refreshEditors } from "../state/actions";
 import { ACCENTS, CHAT_WIDTHS, prefs, PREF_DEFAULTS, setPrefs, type AccentId, type Scheme } from "../state/prefs";
 import { setSettingsTab, settingsTab, type SettingsTab } from "../state/ui";
-import { canReveal, copyText, mod, openExternal, os, revealPath } from "../lib/platform";
+import { canReveal, copyText, isTauri, mod, openExternal, os, revealPath } from "../lib/platform";
 import { keybindingsFile, keymap, withShortcut } from "../state/keybindings";
 import { ACTIONS, CONTEXTS, KEYBINDINGS_DOCS, formatKeys } from "../../../src/keybindings/core";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { Accounts } from "./Accounts";
+import { createUpdateAction } from "./UpdateAction";
+import { MessageText } from "./ErrorCards";
+import { commandIn } from "../lib/error-text";
 import { ModeIcon, MODES } from "./ModePicker";
 import { EffortBars } from "./ModelPicker";
 import { effortLevels, effortOf } from "../lib/effort";
 import { SidebarFrame } from "./Sidebar";
+import { NeedsYou } from "./Header";
+import { needsYou } from "../lib/rail";
 import { Segmented, Spinner, Toggle } from "./ui/bits";
 import { UsageView } from "./UsageView";
 import { Plugins } from "./Plugins";
@@ -259,6 +267,9 @@ function General() {
                         </select>
                     </SelectButton>
                 </Row>
+                <Row title="Browser" desc="Let agents open pages in a headless Chrome, which you can watch and take over in the side panel.">
+                    <Toggle label="Browser" checked={s().browser !== false} onChange={(v) => void update({ browser: v })} />
+                </Row>
                 <Row title="Expand tool activity" desc="Show every tool call instead of a one-line summary.">
                     <Toggle label="Expand tool activity" checked={prefs.expandActivity} onChange={(v) => setPrefs("expandActivity", v)} />
                 </Row>
@@ -479,10 +490,28 @@ function ProviderRow(p: { pr: ProviderInfo }) {
     const [adding, setAdding] = createSignal(false);
     const [key, setKey] = createSignal("");
     const [busy, setBusy] = createSignal(false);
+    // A failure of the row's own action (connecting, saving its key) shows on the row, with its fix,
+    // for as long as it's true, and not also as an error card.
+    const [failure, setFailure] = createSignal<{ message: string; tag: string }>();
+    // Arriving, the row flashes; the name alternates so a second failure flashes again.
+    const [flash, setFlash] = createSignal<"a" | "b">();
+    const failed = (e: unknown, tag: string) => {
+        setFailure({ message: e instanceof Error ? e.message : String(e), tag });
+        setFlash((f) => (f === "a" ? "b" : "a"));
+    };
+    createEffect(on(() => p.pr.configured, (configured) => configured && setFailure(undefined)));
+    // A key that wasn't saved is wrong only while it's still there to save.
+    createEffect(on(adding, (open) => !open && !p.pr.agentCli && setFailure(undefined), { defer: true }));
+    const copyCommand = async (command: string) => {
+        const copied = await copyText(command);
+        toast(copied ? `Copied ${command}` : "Couldn't copy the command", copied ? "success" : "info");
+    };
     const save = async () => {
         setBusy(true);
         try {
-            const r = await rpc.call("providers.setKey", { provider: p.pr.id, key: key() });
+            const r = await rpc.call("providers.setKey", { provider: p.pr.id, key: key() }).catch((e: unknown) => void failed(e, "Key not saved"));
+            if (!r) return;
+            setFailure(undefined);
             toast(`Saved the ${p.pr.name} key ${r.masked}`, "success");
             if (r.warning) toast(r.warning, "warn");
             setAdding(false);
@@ -512,11 +541,48 @@ function ProviderRow(p: { pr: ProviderInfo }) {
             });
         }
     };
+    // connectCli's request (state/actions.ts), with its failure kept for the row: "Use my plan", and Check again.
     const connect = async () => {
+        if (busy()) return;
         setBusy(true);
-        await connectCli(p.pr);
-        setBusy(false);
+        try {
+            // A failure shows on this row, not as an error card.
+            const ok = await connectCli(p.pr, (e) => {
+                const code = (e as { code?: string }).code;
+                failed(e, code === "not_signed_in" ? "Not signed in" : code === "not_installed" ? "Not installed" : "Couldn't connect");
+            });
+            if (ok) setFailure(undefined);
+        } finally {
+            setBusy(false);
+        }
     };
+    const badTag = (tag: string) => (
+        <span class="tag bad">
+            <CircleAlert size={11} stroke-width={2.5} />
+            {tag}
+        </span>
+    );
+    /** The fix: the command the message names, to copy, and (for a CLI) the check again. */
+    const fix = (message: string, retry?: () => void) => (
+        <>
+            <Show when={commandIn(message)}>
+                {(command) => (
+                    <button class="btn ghost sm" onClick={() => void copyCommand(command())}>
+                        <Copy size={13} />
+                        Copy command
+                    </button>
+                )}
+            </Show>
+            <Show when={retry}>
+                <button class="btn primary sm" disabled={busy()} onClick={() => retry!()}>
+                    <Show when={busy()} fallback="Check again">
+                        <Spinner size={12} />
+                        Checking
+                    </Show>
+                </button>
+            </Show>
+        </>
+    );
     const removable = () => p.pr.requiresKey && p.pr.configured && !p.pr.source?.startsWith("$");
     // The line under the name: the key as stored (masked), or what's missing.
     const sub = () =>
@@ -524,7 +590,7 @@ function ProviderRow(p: { pr: ProviderInfo }) {
         : !p.pr.configured ? (p.pr.requiresKey ? "Not set up" : "Set up in the terminal")
         : undefined;
     return (
-        <div class="prov">
+        <div class="prov" classList={{ err: !!failure() }} data-flash={failure() ? flash() : undefined}>
             <ConfirmDialog
                 open={confirmRemove()}
                 onClose={() => setConfirmRemove(false)}
@@ -538,7 +604,23 @@ function ProviderRow(p: { pr: ProviderInfo }) {
             {/* Claude Code and Codex: their row, accounts and menus are in Accounts. */}
             <Show
                 when={!p.pr.agentCli}
-                fallback={<Accounts provider={p.pr} connecting={busy()} onConnect={() => void connect()} onTurnOff={() => setConfirmRemove(true)} />}
+                fallback={
+                    <>
+                        <Accounts provider={p.pr} connecting={busy()} onConnect={() => void connect()} onTurnOff={() => setConfirmRemove(true)} />
+                        {/* Accounts draws the CLI's line, so what's wrong goes on a line of its own under it. */}
+                        <Show when={failure()}>
+                            {(f) => (
+                                <div class="prov-err-line">
+                                    <div class="prov-err-msg selectable" role="alert">
+                                        {badTag(f().tag)}
+                                        <MessageText text={f().message} />
+                                    </div>
+                                    <span class="prov-fix">{fix(f().message, () => void connect())}</span>
+                                </div>
+                            )}
+                        </Show>
+                    </>
+                }
             >
                 <div class="prov-line">
                     <span class="prov-logo" title={p.pr.configured ? "Set up" : "Not set up"}>
@@ -550,16 +632,32 @@ function ProviderRow(p: { pr: ProviderInfo }) {
                             <Show when={p.pr.local}>
                                 <span class="tag">local</span>
                             </Show>
+                            <Show when={failure()}>{(f) => badTag(f().tag)}</Show>
                         </div>
-                        <Show when={p.pr.masked || sub()}>
-                            <div class="prov-sub">
-                                <Show when={p.pr.masked} fallback={sub()}>
-                                    <code class="prov-key">{p.pr.masked}</code>
+                        <Show
+                            when={failure()}
+                            fallback={
+                                <Show when={p.pr.masked || sub()}>
+                                    <div class="prov-sub">
+                                        <Show when={p.pr.masked} fallback={sub()}>
+                                            <code class="prov-key">{p.pr.masked}</code>
+                                        </Show>
+                                    </div>
                                 </Show>
-                            </div>
+                            }
+                        >
+                            {(f) => (
+                                <div class="prov-sub selectable" role="alert">
+                                    <MessageText text={f().message} />
+                                </div>
+                            )}
                         </Show>
                     </div>
                     <span class="prov-end">
+                        {/* Saving again is the key's own Save, under the row. */}
+                        <Show when={failure() && commandIn(failure()!.message)}>
+                            <span class="prov-fix">{fix(failure()!.message)}</span>
+                        </Show>
                         <Show when={p.pr.source && p.pr.source !== "local"}>
                             <span class="tag">{p.pr.source}</span>
                         </Show>
@@ -773,39 +871,116 @@ function Shortcuts() {
     );
 }
 
+/**
+ * The desktop app updating itself from main (src/server/app-update.ts): what's
+ * new since this build, and Update & restart. The build runs while you work;
+ * Harness restarts once it's installed. Only the desktop app shows why it can't
+ * (a browser's server never updates an app).
+ */
+function Updates() {
+    const working = () => app.sessions.filter((s) => s.status === "running").length;
+    const v = createMemo(() => updateView(app.update, working(), now()));
+    const [asking, setAsking] = createSignal(false);
+    const u = () => app.update!;
+    const SHOWN = 6;
+    // The same as the rail's icon: asks first while sessions are working.
+    const update = createUpdateAction();
+    async function check() {
+        setAsking(true);
+        try {
+            setApp("update", reconcile(await rpc.call("app.update.check", {})));
+        } catch (e) {
+            reportError(e);
+        } finally {
+            setAsking(false);
+        }
+    }
+    return (
+        <Show when={v() && (isTauri || !app.update?.unavailable) ? v() : undefined}>
+            {(v) => (
+                <Section title="Updates" class="upd-group">
+                    <Row title={v().title} desc={v().detail} class={`upd-row ${u().updating ? "running" : ""}`}>
+                        <Show when={!v().busy && v().action} fallback={<Show when={v().busy}><Spinner size={16} class="upd-spin" /></Show>}>
+                            {(a) => (
+                                <Show when={a() === "update"} fallback={<button class="btn sm" disabled={asking()} onClick={() => void check()}>Check now</button>}>
+                                    <button class="btn primary sm" disabled={update.pending()} onClick={update.request}>
+                                        <Download size={14} /> Update &amp; restart
+                                    </button>
+                                </Show>
+                            )}
+                        </Show>
+                    </Row>
+                    <Show when={v().warn}>
+                        <div class="upd-warn"><AlertTriangle size={13} /> {v().warn}</div>
+                    </Show>
+                    <Show when={!u().updating && u().changes?.length}>
+                        <ul class="upd-changes" aria-label="New on main">
+                            <For each={u().changes.slice(0, SHOWN)}>{(c) => <li><code>{c.hash}</code><span class="truncate">{c.subject}</span></li>}</For>
+                            <Show when={u().behind > SHOWN}><li class="upd-more">and {u().behind - SHOWN} more</li></Show>
+                        </ul>
+                    </Show>
+                    <Show when={!u().updating && u().failed}>
+                        <div class="upd-error" role="alert">
+                            <CircleAlert size={14} />
+                            <span>{u().failed}</span>
+                            <Show when={canReveal && u().log}><button class="btn ghost sm" onClick={() => void revealPath(u().log!)}>Show log</button></Show>
+                        </div>
+                    </Show>
+                    <Show when={!u().updating && u().error}>
+                        <div class="upd-error" role="alert">
+                            <CircleAlert size={14} />
+                            <span>{u().error}</span>
+                        </div>
+                    </Show>
+                    <update.Confirm />
+                </Section>
+            )}
+        </Show>
+    );
+}
+
 function About() {
     return (
-        <Section>
-            <Row title="Version">
-                <span class="set-val">{app.hello?.version ?? "—"}</span>
-            </Row>
-            <Row title="Protocol">
-                <span class="set-val">{app.hello?.protocol ?? "—"}</span>
-            </Row>
-            <Row title="Data">
-                <span class="set-val">{app.hello?.home ?? "—"}</span>
-            </Row>
-            <Row title="Platform">
-                <span class="set-val">{app.hello?.platform ?? "—"}</span>
-            </Row>
-            <Row title="Connection">
-                <span class="set-val">{app.conn}</span>
-            </Row>
-        </Section>
+        <>
+            <Updates />
+            <Section title={app.update && (isTauri || !app.update.unavailable) ? "Details" : undefined}>
+                <Row title="Version">
+                    <span class="set-val">{app.hello?.version ?? "—"}</span>
+                </Row>
+                <Row title="Protocol">
+                    <span class="set-val">{app.hello?.protocol ?? "—"}</span>
+                </Row>
+                <Row title="Data">
+                    <span class="set-val">{app.hello?.home ?? "—"}</span>
+                </Row>
+                <Row title="Platform">
+                    <span class="set-val">{app.hello?.platform ?? "—"}</span>
+                </Row>
+                <Row title="Connection">
+                    <span class="set-val">{app.conn}</span>
+                </Row>
+            </Section>
+        </>
     );
 }
 
 export function SettingsPage() {
     const label = () => TABS.find((t) => t.id === tab())?.label ?? "Settings";
+    // Every session waiting on you, the open one too: Settings covers its request.
+    const waiting = createMemo(() => needsYou([...app.sessions, ...app.archived]));
     let page: HTMLDivElement | undefined;
     // Each section starts at its top.
     createEffect(on(tab, () => page?.scrollTo({ top: 0 }), { defer: true }));
     return (
         <div ref={page} class={`settings-page ${prefs.sidebar ? "" : "rail-off"}`}>
             <div class="set-in">
-                {/* The header stays while the page scrolls; the window drags from it. */}
-                <div class="set-top" data-tauri-drag-region>
-                    <h2 data-tauri-drag-region>{label()}</h2>
+                {/* The header stays while the page scrolls (on the window's top strip, which moves the window). */}
+                <div class="set-top">
+                    <h2>{label()}</h2>
+                    {/* Settings covers the rail and the title bar, where Needs you would be: it's here instead. */}
+                    <Show when={waiting().length}>
+                        <NeedsYou waiting={waiting()} />
+                    </Show>
                     <button class="set-close" title={`${withShortcut("Close settings", "app:settings")}, or Esc`} aria-label="Close settings" onClick={() => setSettingsTab(undefined)}>
                         <X size={16} />
                     </button>

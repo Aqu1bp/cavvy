@@ -56,6 +56,7 @@ export interface Prefs {
     motion: "instant" | "quick" | "smooth";
 }
 
+/** The column's widths at text size 14: it widens and narrows with the text (--sp, tokens.css). */
 export const CHAT_WIDTHS: Record<Prefs["chatWidth"], number> = { narrow: 640, default: 736, wide: 880 };
 
 export const PREF_DEFAULTS: Prefs = {
@@ -139,7 +140,7 @@ export function appearanceOf(p: Prefs, systemDark: boolean): Appearance {
             "--font-scale": String(p.fontSize / 14),
             "--sidebar-w": `${p.sidebarWidth}px`,
             "--review-w": `${p.reviewWidth}px`,
-            "--column-w": `${CHAT_WIDTHS[p.chatWidth] ?? CHAT_WIDTHS.default}px`,
+            "--column-w": `calc(${CHAT_WIDTHS[p.chatWidth] ?? CHAT_WIDTHS.default} * var(--sp))`,
         },
     };
 }

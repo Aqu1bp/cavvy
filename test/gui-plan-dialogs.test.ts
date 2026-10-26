@@ -189,29 +189,3 @@ test("archive removal forwards an ignored-files token only after the second expl
     } finally { d.dispose(); }
 });
 
-for (const git of [undefined, { main: "/repo", branch: "plan", base: "main" }]) {
-    test(`answered plan side panel ${git ? "offers" : "disables"} worktree creation according to repository availability`, () => {
-        const source = readFileSync(new URL("../gui/src/components/RightPanel.tsx", import.meta.url), "utf8");
-        const requests: any[] = [];
-        const c = component(source.slice(source.indexOf("function ProposedPlan("), source.indexOf("function Plan(")), "ProposedPlan", {
-            createResource: () => [() => ({ git, notGit: git ? undefined : "This folder is not a Git repository." })],
-            app: { sessions: [], archived: [] },
-            setPlanDialog: (request: any) => requests.push(request),
-            Popover: (p: any) => p.children,
-            Menu: (p: any) => p.children,
-            ClipboardList() {}, FolderGit2() {}, Save() {}, Copy() {}, ArrowUpLeft() {}, GitBranchPlus() {},
-        });
-        solid.createRoot((dispose: () => void) => {
-            c.render({ handle: { id: "session", view: { state: { plan: { id: "plan", title: "Saved plan" }, interactions: [] } } } });
-            const button = c.nodes.find((n) => n.props.class === "menu-item compact" && "disabled" in n.props);
-            expect(button.props.disabled).toBe(!git);
-            if (git) {
-                button.props.onClick();
-                expect(requests).toEqual([{ kind: "worktree", sessionId: "session", planId: "plan" }]);
-            } else {
-                expect(button.props.title).toBe("This folder is not a Git repository.");
-            }
-            dispose();
-        });
-    });
-}

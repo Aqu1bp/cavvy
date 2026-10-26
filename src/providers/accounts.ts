@@ -1,4 +1,6 @@
-// Account metadata and folder ownership. Never open files inside a CLI home.
+// Account metadata and folder ownership. Never open files inside a CLI home (except
+// what account-layout.ts says it opens: its own marker, and the names of Default's
+// Claude Code sign-in settings).
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { dirname, isAbsolute, join, resolve, sep } from "path";
 import { homedir } from "os";
@@ -7,6 +9,8 @@ import { paths } from "../config/paths";
 import { canonical } from "../util/files";
 import { readAgentConfig, readProvidersFileForUpdate, writeProvidersFile, type CliAccount, validAccountFolder } from "./registry";
 import { RpcError } from "../server/rpc-error";
+import { catalogSentence, type NoticeAccount } from "../server/protocol";
+import { ensureSharedLayout, isSharedLink, type SharedLayout } from "./account-layout";
 
 export const ACCOUNT_PROVIDERS = ["claude-code", "codex"] as const;
 export function accountProvider(provider: string): asserts provider is typeof ACCOUNT_PROVIDERS[number] {
@@ -52,6 +56,38 @@ export function account(provider: string, id = "default"): CliAccount {
     if (found.invalid) throw new RpcError("Invalid account folder: use a non-empty absolute path with no '..'", "invalid");
     return found;
 }
+/**
+ * Where a native CLI session lives: the account's home, and the folder its CLI finds the transcripts it resumes in
+ * (Claude Code's `projects/`, Codex's `sessions/`), both by real path. Homes with the same history folder (Default
+ * and the Harness-made accounts that link it, account-layout.ts) can resume each other's sessions.
+ */
+export interface AccountPlace {
+    folder: string;
+    history?: string;
+}
+/** The history folder of a CLI home (AccountPlace.history), by real path; undefined when it can't be resolved. */
+export function historyFolder(provider: string, folder: string): string | undefined {
+    try { return accountRealPath(join(folder, provider === "codex" ? "sessions" : "projects")); } catch { return undefined; }
+}
+/** The account's AccountPlace now. Throws as account() does. */
+export function accountPlace(provider: string, id = "default"): AccountPlace {
+    const folder = accountRealPath(account(provider, id).folder);
+    const history = historyFolder(provider, folder);
+    return history ? { folder, history } : { folder };
+}
+/**
+ * The account a session selected for `provider`'s CLI, when it was removed since (#410): its id. Undefined when it's
+ * still there, or `provider` isn't a CLI with accounts. Such a session sends nothing until the user picks another:
+ * no other account is ever used in its place.
+ */
+export function removedAccount(provider: string | undefined, id: string): string | undefined {
+    if (!provider || !(ACCOUNT_PROVIDERS as readonly string[]).includes(provider)) return undefined;
+    return listAccounts(provider).some((a) => a.id === id) ? undefined : id;
+}
+/** What a session whose CLI account was removed says when it holds a message back (removedAccount). */
+export function removedAccountNote(cli: string, id: string, held = true): string {
+    return `The ${cli} account this session used ("${id}") was removed. Pick an account for ${cli} ${held ? "to send your message" : "before you send"}.`;
+}
 export function defaultAccount(provider: string): string {
     const id = readAgentConfig(provider)?.defaultAccount ?? "default";
     return listAccounts(provider).some((a) => a.id === id) ? id : "default";
@@ -64,7 +100,25 @@ export function catalogNote(provider: string, selected: CliAccount, cli: string)
     const from = defaultAccount(provider);
     if (from === selected.id) return undefined;
     const source = listAccounts(provider).find((a) => a.id === from)?.name ?? from;
-    return `${cli}'s model list, with each model's effort and speed options, comes from its starting account (${source}); ${selected.name} may not offer all of them.`;
+    return catalogSentence(cli, source, selected.name);
+}
+/**
+ * A session's switch to `selected`, as its notice draws it (#426): how its conversation goes on with the CLI.
+ * `native`: the native session was kept (the new account's CLI finds it: its home shares the history), and is
+ * resumed there. `returned`: the native thread the session had where the new account's CLI finds it (parked when it
+ * switched away, #413) goes on, sent what it missed. `handoff`: a new native thread will be handed the conversation;
+ * `dropped` when there was a native session the new account can't resume. Neither (no conversation yet): no notice.
+ * Where the CLI's model list comes from (catalogNote) is said in the model picker, not here.
+ */
+export function accountSwitch(provider: string, selected: CliAccount, cli: string, how: "native" | "returned" | "handoff" | undefined, dropped = false): NoticeAccount | undefined {
+    if (!how) return undefined;
+    return { provider, cli, name: selected.name, how, ...(how === "handoff" && dropped ? { dropped: true as const } : {}) };
+}
+/** How a switch's conversation goes on (accountSwitch), from the native thread's id before it and after it. */
+export function switchHow(before: string | undefined, after: string | undefined, conversation: boolean): "native" | "returned" | "handoff" | undefined {
+    if (before !== undefined && after === before) return "native";
+    if (after !== undefined) return "returned";
+    return conversation ? "handoff" : undefined;
 }
 const SELECTORS = { "claude-code": ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"], codex: ["CODEX_HOME"] } as const;
 /**
@@ -95,13 +149,42 @@ export function accountEnv(provider: string, id = "default", cwd = homedir()): R
     const folder = accountRealPath(resolve(a.folder));
     separateFromDefault(folder, [cwd]);
     separateFromAccounts(folder, { provider, id });
-    validateIdentityFiles(provider, folder);
+    // Before every login and launch: accounts made before sharing, and what Default gained since.
+    const shared = sharesDefault(provider, a, folder);
+    if (shared) shareDefault(provider, id, folder);
+    validateIdentityFiles(provider, folder, shared);
     if (provider === "claude-code") separateKeychain(folder, id);
     // Secure storage can independently override Claude's config directory, even
     // with an empty value (which selects the user's default keychain entry).
     return provider === "claude-code"
         ? { CLAUDE_CONFIG_DIR: folder, CLAUDE_SECURESTORAGE_CONFIG_DIR: folder }
         : { CODEX_HOME: folder };
+}
+/** Only folders Harness made, where they belong; an existing folder is used as the user set it up. */
+function sharesDefault(provider: string, a: CliAccount, real: string): boolean {
+    if (!a.managed || a.invalid) return false;
+    const expected = join(accountRealPath(paths.home()), "accounts", provider, a.id);
+    return a.folder === expected && real === expected;
+}
+/** What wasn't shared with Default, by account. */
+const sharingConflicts = new Map<string, SharedLayout>();
+function shareDefault(provider: string, id: string, folder: string): void {
+    const layout = ensureSharedLayout(provider, folder, defaultFolder(provider));
+    if (layout.conflicts.length || layout.withheld.length) sharingConflicts.set(`${provider}:${id}`, layout);
+    else sharingConflicts.delete(`${provider}:${id}`);
+}
+/** Said of a Harness-made account that doesn't share all of Default's entries. */
+export function accountSharingWarning(provider: string, id: string): string | undefined {
+    const layout = sharingConflicts.get(`${provider}:${id}`);
+    if (!layout) return undefined;
+    const said: string[] = [];
+    const { conflicts, withheld } = layout;
+    if (withheld.length) said.push(`Not shared with Default: ${withheld.join("; ")}.`);
+    if (conflicts.length) {
+        const names = conflicts.slice(0, 8).join(", ") + (conflicts.length > 8 ? ` and ${conflicts.length - 8} more` : "");
+        said.push(`Not shared with Default, because this account's folder has its own: ${names}. Move them out of the folder to share Default's.`);
+    }
+    return said.join(" ");
 }
 export function hasNamedAccounts(): boolean {
     return ACCOUNT_PROVIDERS.some((p) => readAgentConfig(p)?.accounts?.length);
@@ -191,11 +274,16 @@ function validateFolder(folder: unknown, roots: string[], exclude?: { provider: 
     if (existsSync(real) && !statSync(real).isDirectory()) throw new RpcError("Account folder is not a directory", "invalid");
     return real;
 }
-/** Only metadata is inspected; credential and configuration contents belong to the CLI. */
-function validateIdentityFiles(provider: string, folder: string): void {
+/**
+ * Only metadata is inspected; credential and configuration contents belong to the CLI.
+ * A Harness-made account shares Default's Codex config.toml through Harness's own link:
+ * it holds no sign-in (that's auth.json, or a keyring entry named for each home's path).
+ */
+function validateIdentityFiles(provider: string, folder: string, shared = false): void {
     const names = provider === "claude-code" ? [".claude.json", ".credentials.json"] : ["auth.json", "config.toml"];
     for (const name of names) {
         const file = join(folder, name);
+        if (shared && name === "config.toml" && isSharedLink(file, defaultFolder(provider), name)) continue;
         try {
             let stat = lstatSync(file);
             if (stat.isSymbolicLink()) {
@@ -251,6 +339,7 @@ export function addAccount(provider: string, input: { id: string; name: string; 
     try { mkdirSync(folder, { recursive: true, mode: 0o700 }); }
     catch { throw new RpcError("Cannot create account folder", "invalid"); }
     const a = { id: input.id, name: input.name, folder, managed };
+    if (managed) shareDefault(provider, a.id, folder);
     all.push(a);
     writeProvidersFile(pf);
     return a;
@@ -356,6 +445,7 @@ function forgetAccount(provider: string, id: string, a: CliAccount, projectRoots
         validateFolder(expected, projectRoots, { provider, id }, true);
         rmSync(expected, { recursive: true, force: true });
     }
+    sharingConflicts.delete(`${provider}:${id}`);
     const cfg = pf.agents![provider]!;
     cfg.accounts = cfg.accounts!.filter((v) => v.id !== id);
     if (cfg.defaultAccount === id) delete cfg.defaultAccount;

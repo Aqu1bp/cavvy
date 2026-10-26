@@ -10,6 +10,7 @@
 // reviewer answers them instead). The harness never reads Codex's
 // credentials (~/.codex/auth.json) and never signs in on its behalf.
 
+import { randomUUID } from "crypto";
 import { existsSync, readFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
@@ -18,7 +19,8 @@ import { ONE_OFF_TIMEOUT_MS, oneOffAnswer, oneOffPrompt, oneOffRefusal } from ".
 import { ProviderError } from "../providers/types";
 import type { ProviderDef } from "../providers/registry";
 import type { PlanLimits } from "../server/protocol";
-import { codexReachedType, limitAccountLabel, mergeLimits, parseCodexRateLimits, resetSentence } from "./limits";
+import { cliNotice } from "./notice-data";
+import { codexReachedType, creditsNote, limitAccountLabel, limitNotice, limitStopOf, limitStopReport, mergeLimits, parseCodexRateLimits, resetSentence } from "./limits";
 import type { PermissionMode } from "../permissions/modes";
 import { analyzeCommand } from "../permissions/bash-safety";
 import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
@@ -30,16 +32,23 @@ import { codexMcpOverrides } from "./codex-mcp";
 import { CODEX_HOOK_EVENTS, CODEX_HOOK_SERVER, type CodexHookEvent, codexHookArgs, codexHookFailed, codexHookTaken, codexHookTool, nativeCall, preToolUseAnswer, subagentAnswer } from "./codex-hooks";
 import { registerTools, type Registration, type ServerTool } from "../mcp/server";
 import { MONITOR_SERVER_TOOLS } from "../tools/monitor";
+import { servedBrowserTool } from "../tools/browser-tools";
 import { codexInput, codexSkills, pastedPrompt, skillFolder, type CodexSkill } from "./native-skills";
 import { accountEnv, defaultAccount } from "../providers/accounts";
 import { signInAdvice } from "./account-login";
-import { accountPermissionConfig, accountPermissionProfile, watchAccountFolders } from "./account-permissions";
 import { askForm } from "../mcp/elicitation";
 import { backendModel, type AgentBackendClient, type BackgroundStop, type SessionHost, type TurnSink, type BackendPermission, type BackendQuestion, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer, type SteerMessage } from "./types";
 import type { HookEvent } from "../agent/hooks";
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
 import { parseGoalCommand, type GoalCommand, type NativeGoal } from "../agent/goal";
 import type { CodexLive } from "./codex-live";
+import { liveDebug } from "./live/debug";
+
+/**
+ * Codex answered a request with an error: it got the request and declined it (a turn/start it refused started no
+ * turn). Not a request that failed because Codex went away before answering: what it did with that isn't known.
+ */
+export class CodexAnswerError extends ProviderError {}
 
 /** A JSON-RPC peer over a JsonLinesProcess: our requests, its notifications and requests. */
 export class Rpc {
@@ -73,7 +82,7 @@ export class Rpc {
                     const p = this.pending.get(m.id);
                     if (!p) continue;
                     this.pending.delete(m.id);
-                    if (m.error) p.reject(new ProviderError(`Codex: ${cliMessage(String(m.error.message ?? "request failed"))}`));
+                    if (m.error) p.reject(new CodexAnswerError(`Codex: ${cliMessage(String(m.error.message ?? "request failed"))}`));
                     else p.resolve(m.result);
                 }
             }
@@ -134,8 +143,8 @@ function spawnRpc(providerId: string, cwd: string, onNotification: (method: stri
     return new Rpc(new JsonLinesProcess(bin, args, { cwd, env: accountEnv(providerId, opts.accountId, cwd) }), onNotification, onRequest);
 }
 
-async function handshake(rpc: Rpc, accountPermissions = false) {
-    await rpc.request("initialize", { clientInfo: { name: CODEX_CLIENT_NAME, title: APP_TITLE, version: APP_VERSION }, capabilities: accountPermissions ? { experimentalApi: true } : null });
+async function handshake(rpc: Rpc) {
+    await rpc.request("initialize", { clientInfo: { name: CODEX_CLIENT_NAME, title: APP_TITLE, version: APP_VERSION }, capabilities: null });
     rpc.notify("initialized");
 }
 
@@ -379,7 +388,7 @@ export class CodexBackend implements AgentBackendClient {
             const r: any = await rpc.request("thread/start", { cwd: homedir(), model, ephemeral: true, approvalPolicy: "never", sandbox: "read-only", baseInstructions: req.system, config: { ...ONE_OFF_CONFIG, ...mcp } });
             threadId = r?.thread?.id;
             if (!threadId) throw new ProviderError("Codex didn't start a thread");
-            const t: any = await rpc.request("turn/start", { threadId, input: [{ type: "text", text: oneOffPrompt(req), text_elements: [] }] });
+            const t: any = await rpc.request("turn/start", { threadId, input: [{ type: "text", text: oneOffPrompt(req), text_elements: [] }], clientUserMessageId: clientMessageId("turn") });
             turnId = typeof t?.turn?.id === "string" ? t.turn.id : undefined;
             await done;
             return oneOffAnswer(this.def.id, typeof r?.model === "string" ? r.model : req.model.id, said.join("\n\n"));
@@ -470,6 +479,14 @@ export class CodexBackend implements AgentBackendClient {
     /** Stop background terminals or sub-agents of a session's live app-server: these, or all. */
     async stopBackground(sessionKey: string, ids?: string[]): Promise<Record<string, BackgroundStop>> {
         return (await this.liveSessions()).stopBackground(sessionKey, ids);
+    }
+
+    /**
+     * The session switched to another model: the thread goal pauses in its live app-server, if one is kept (a run of
+     * its own, with live sessions off, stops its app-server as it ends, so nothing goes on between runs).
+     */
+    async pauseGoal(sessionKey: string): Promise<NativeGoal | undefined> {
+        return this.live?.pauseGoal(sessionKey);
     }
 
     /** The session is done: its app-server goes, with what runs in it. */
@@ -595,6 +612,12 @@ export class CodexTurn {
     protected unclaimed = new Map<string, [string, any][]>();
     /** Turns (of any thread) that started while connected: their usage is new spend. */
     protected turnsSeen = new Set<string>();
+    /**
+     * Where the run's prompt is: not sent yet; turn/start sent and not answered; refused (Codex answered turn/start with
+     * an error, and no turn of its own took it); taken (turn/start answered, or a turn of Codex's own took it). A failure
+     * while still "sending" (Codex gone before it answered) can't tell whether Codex has it: counted as delivered.
+     */
+    private promptDelivery: "unsent" | "sending" | "refused" | "taken" = "unsent";
     /** Each thread's token totals as Codex last reported them. */
     protected totals = new Map<string, Tokens>();
     protected threadModels = new Map<string, string>();
@@ -661,6 +684,14 @@ export class CodexTurn {
     protected modeKilled?: string;
     /** The goal was paused in Codex for a mode change, so Codex starts no turns of its own under the old policy: made active again under the new one. */
     protected goalPausedForMode = false;
+    /** Turns (of any thread) Codex said started or ended, by thread/turn: the last 128. */
+    private turnStates = new Map<string, "active" | "ended">();
+    /** Interrupts Codex refused because their turn wasn't active yet, with how many more tries each has (sendInterrupt). */
+    private interruptRetries = new Map<string, number>();
+    /** Steers sent that Codex hasn't taken into their turn yet, by the clientUserMessageId each went with (steerTurn). */
+    private pendingSteers = new Map<string, { turnId: string; text: string; taken?: () => Promise<void>; dropped: () => Promise<void> | void }>();
+    /** userMessage items that took a steer of ours (the last 64): its other event doesn't take another. */
+    private takenItems = new Set<string>();
 
     constructor(
         protected def: ProviderDef,
@@ -759,7 +790,7 @@ export class CodexTurn {
      * nothing goes on under the old policy.
      */
     protected interruptForMode(turnId: string) {
-        void this.rpc.request("turn/interrupt", { threadId: this.threadId, turnId }).catch(() => {});
+        if (this.threadId) void this.sendInterrupt(this.threadId, turnId);
         const timer = setTimeout(() => {
             this.modeKills.delete(timer);
             if (this.aborted || this.completedTurns.has(turnId)) return;
@@ -793,16 +824,11 @@ export class CodexTurn {
 
     async run(opts: { compact?: boolean } = {}): Promise<BackendResult> {
         const t = this.t;
-        if (t.signal.aborted) return { reason: "aborted", text: "", actions: [] };
-        const accountPermissions = accountPermissionConfig(t.additionalDirectories);
+        if (t.signal.aborted) return { reason: "aborted", text: "", actions: [], refused: true };
         // PreToolUse and sub-agent hooks go to Codex as its own, calling back to the harness, which runs them.
         this.nativeEvents = CODEX_HOOK_EVENTS.filter((e) => this.hooked(e));
         if (this.nativeEvents.length) this.hookServer = registerTools(this.nativeEvents.map((e) => this.hookTool(e)));
         this.rpc = spawnRpc(this.def.id, t.cwd, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p), { trusted: t.trusted, accountId: t.accountId, hooks: this.nativeEvents });
-        const stopAccountWatch = watchAccountFolders(() => {
-            this.failure = "Account folders changed while Codex was running. Send again to apply their updated protections.";
-            void this.rpc.proc.kill();
-        });
         let abortTimer: ReturnType<typeof setTimeout> | undefined;
         /** Stopped by the user with the goal active: its pause, which goes in before Codex is stopped. */
         let pausing: Promise<void> | undefined;
@@ -825,10 +851,10 @@ export class CodexTurn {
         // A message to steer with goes into the running turn as it's sent (turn/steer), not at its end.
         const stopSteering = opts.compact ? undefined : this.sink.onQueued?.(() => this.steerQueued());
         try {
-            await withTimeout(handshake(this.rpc, Boolean(accountPermissions)), 30_000, "Codex didn't start (no answer to initialize)");
+            await withTimeout(handshake(this.rpc), 30_000, "Codex didn't start (no answer to initialize)");
             const account = parseAccount(await this.rpc.request("account/read", {}));
             if (!account.type && account.requiresAuth) {
-                return { reason: "error", text: "", actions: [], error: `Codex isn't signed in. ${signInAdvice(this.def.id, this.t.accountId)}` };
+                return { reason: "error", text: "", actions: [], error: `Codex isn't signed in. ${signInAdvice(this.def.id, this.t.accountId)}`, refused: true };
             }
             this.billedToPlan = account.type === "chatgpt";
             // Where the plan stands before the first update comes (they come only as it changes).
@@ -839,7 +865,7 @@ export class CodexTurn {
             const model = t.model.id === "default" ? undefined : t.model.id;
             let o = t.orchestrator;
             const overrides = await this.mcpOverrides(t.cwd, Boolean(t.readOnly), [o?.name, this.nativeHooks ? CODEX_HOOK_SERVER : undefined].filter((n): n is string => Boolean(n)));
-            if (typeof overrides === "string") return { reason: "error", text: "", actions: [], error: overrides };
+            if (typeof overrides === "string") return { reason: "error", text: "", actions: [], error: overrides, refused: true };
             const off = overrides.config;
             if (overrides.collisions.includes(CODEX_HOOK_SERVER)) {
                 this.sink.emit({ type: "notice", level: "warn", message: `Codex already has a server named ${CODEX_HOOK_SERVER}; it is disabled, and ${APP_TITLE} runs your hooks the older way this turn${this.nativeEvents.includes("PreToolUse") ? ", asking about every command so your PreToolUse hooks see them" : ""}.` });
@@ -854,7 +880,6 @@ export class CodexTurn {
             const developerInstructions = [baseInstructions, o?.instructions].filter(Boolean).join("\n\n") || undefined;
             let config: Record<string, unknown> | undefined = o && !t.readOnly ? { ...off, mcp_servers: { ...off?.mcp_servers, ...(orchestratorConfig(o).mcp_servers as Record<string, unknown>) } } : off;
             if (this.nativeHooks && this.hookServer) config = { ...config, mcp_servers: { ...(config?.mcp_servers as Record<string, unknown> | undefined), ...hookServerConfig(this.hookServer) } };
-            if (accountPermissions) config = { ...config, ...accountPermissions };
             // Fast is the catalog's tier for it. Standard sends nothing (a Codex from before "default" was a
             // tier name refuses it), except null to take a thread on a fast tier (an earlier fast turn, or
             // Codex's own config) back off it: 0.163 puts it on "default". Other tiers set in Codex (flex) are left alone.
@@ -863,14 +888,13 @@ export class CodexTurn {
             /** The thread's tier as last reported or set. */
             let tierNow: string | null | undefined;
             this.threadMode = startMode;
-            const threadParams = { cwd: t.cwd, model, ...(fastTier ? { serviceTier: fastTier } : {}), approvalPolicy: policy.approvalPolicy, ...(accountPermissions ? { permissions: accountPermissionProfile(startMode, t.readOnly) } : { sandbox: policy.sandbox }), approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
+            const threadParams = { cwd: t.cwd, model, ...(fastTier ? { serviceTier: fastTier } : {}), approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox, approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
             // A Codex that won't take the delegation server's config still gets its thread, without it.
             const thread = async (method: string, params: Record<string, unknown>) => {
                 try {
                     return await this.rpc.request(method, params);
                 } catch (e) {
-                    // Never fall back by dropping account denies: fail closed instead.
-                    if (this.aborted || !o || accountPermissions) throw e;
+                    if (this.aborted || !o) throw e;
                     const kept = this.nativeHooks && this.hookServer ? { ...off, mcp_servers: { ...off?.mcp_servers, ...hookServerConfig(this.hookServer) } } : off;
                     const r = await this.rpc.request(method, { ...params, config: kept, developerInstructions: baseInstructions });
                     this.sink.emit({ type: "notice", level: "warn", message: `Codex didn't accept ${APP_TITLE}'s delegation tools (${redact((e as Error).message).replace(/^Codex:\s*/, "")}); this turn runs without them, preserving MCP restrictions.` });
@@ -943,6 +967,7 @@ export class CodexTurn {
                     if (model) this.threadModels.set(this.threadId!, model);
                     await this.waitFor(async () => {
                         if (adopt) {
+                            this.promptDelivery = "taken";
                             // Codex's own turn runs under the thread's policy: a mode changed since restarts it (waitFor checks).
                             this.turnMode = this.running.get(adopt) ?? this.threadMode;
                             this.adopted = true;
@@ -957,8 +982,9 @@ export class CodexTurn {
                             this.starting = true;
                             this.startingThreadMode = this.threadMode;
                             this.startingMode = mode;
+                            if (this.promptDelivery !== "taken") this.promptDelivery = "sending";
                             try {
-                                r = await this.rpc.request("turn/start", { threadId: this.threadId, input, cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, ...(accountPermissions ? { permissions: accountPermissionProfile(mode, t.readOnly) } : { sandboxPolicy: policy.sandboxPolicy }), approvalsReviewer: policy.approvalsReviewer, summary: "auto" }).finally(() => (this.starting = false));
+                                r = await this.rpc.request("turn/start", { threadId: this.threadId, input, clientUserMessageId: clientMessageId("turn"), cwd: t.cwd, model, effort, serviceTier, approvalPolicy: policy.approvalPolicy, sandboxPolicy: policy.sandboxPolicy, approvalsReviewer: policy.approvalsReviewer, summary: "auto" }).finally(() => (this.starting = false));
                                 break;
                             } catch (e) {
                                 // Any turn that started meanwhile was Codex's own.
@@ -970,15 +996,18 @@ export class CodexTurn {
                                 if (!id) {
                                     // The messages this turn was for aren't lost with it: saved for the next turn.
                                     if (queued) this.unsteered.push(...queued);
+                                    if (this.promptDelivery !== "taken" && e instanceof CodexAnswerError) this.promptDelivery = "refused";
                                     throw e;
                                 }
                                 // Under the thread's policy, as any turn Codex starts itself, not this one's mode.
                                 this.turnMode = this.running.get(id) ?? this.threadMode;
                                 this.adopted = true;
+                                this.promptDelivery = "taken";
                                 return this.adoptTurn(id, [{ text, images, documents: [] }]);
                             }
                         }
                         this.turnId = r?.turn?.id;
+                        this.promptDelivery = "taken";
                         this.threadMode = mode;
                         // Which turn that started meanwhile was this one: the others were Codex's own.
                         this.settleStarted(this.turnId, mode);
@@ -1073,7 +1102,6 @@ export class CodexTurn {
                 this.sink.emit({ type: "goal", goal: this.goal ?? null });
             }
             if (this.threadId && this.goal?.status === "active") await withTimeout(this.rpc.request("thread/goal/set", { threadId: this.threadId, status: "paused" }), 2000, "").catch(() => {});
-            stopAccountWatch();
             stopSteering?.();
             t.signal.removeEventListener("abort", onAbort);
             if (abortTimer) clearTimeout(abortTimer);
@@ -1081,6 +1109,8 @@ export class CodexTurn {
             this.modeKills.clear();
             await this.rpc.proc.stop(1000);
             this.hookServer?.close();
+            // Steers Codex hadn't taken by then never will be (its turn's end may not have come: it was stopped).
+            this.steersDropped();
             // Settled once Codex is gone (its pending requests fail): nothing records a prompt after the turn's end.
             await this.steering;
             // Recorded as sent but never taken (the turn failed or was stopped): saved for the next turn.
@@ -1091,8 +1121,9 @@ export class CodexTurn {
         for (const sub of new Set(this.subs.values())) if (sub.turnId) this.endSubTurn(sub, "aborted");
         const text = this.texts.join("\n\n");
         const answer = answerOf(this.answer) || undefined;
-        if (this.aborted) return { reason: "aborted", text, answer, actions: this.actions };
-        if (this.failure) return { reason: "error", text, answer, actions: this.actions, error: this.limitHit ? `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached. ${resetSentence(this.limits?.resetsAt, "Codex")} Choose another account with /account or the plan meter, then send again.` : this.failure, ...(this.limitHit ? { limit: { resetsAt: this.limits?.resetsAt } } : {}) };
+        const notSent = this.promptDelivery === "unsent" || this.promptDelivery === "refused";
+        if (this.aborted) return { reason: "aborted", text, answer, actions: this.actions, ...(notSent ? { refused: true } : {}) };
+        if (this.failure) return { reason: "error", text, answer, actions: this.actions, error: this.limitHit ? `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached. ${resetSentence(this.limits?.resetsAt, "Codex")} Choose another account with /account or the plan meter, then send again.` : this.failure, ...(this.limitHit ? { limit: limitStopOf(this.limits, this.limits?.resetsAt) } : {}), ...(notSent ? { refused: true } : {}) };
         return { reason: "done", text, answer, actions: this.actions };
     }
 
@@ -1173,7 +1204,7 @@ export class CodexTurn {
             if (some) this.unsteered.push(...messages!);
             return;
         }
-        if (some) await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: id, input: this.input(joined(messages!), imagesOf(messages!)) }).catch(() => this.unsteered.push(...messages!));
+        if (some) await this.steerTurn(id, this.input(joined(messages!), imagesOf(messages!)), joined(messages!), { dropped: () => void this.unsteered.push(...messages!) });
         // Sent while no turn was running (waiting for this one): it can take them now.
         if (this.steerWaiting) this.steerQueued();
     }
@@ -1226,7 +1257,7 @@ export class CodexTurn {
         if (error?.codexErrorInfo !== "usageLimitExceeded" || this.limitHit) return;
         this.limitHit = true;
         this.limitUpdates.revision++;
-        if (!this.limits?.reached) this.noteLimits({ provider: this.def.id, accountId: this.t.accountId ?? "default", windows: [], reached: true, at: Date.now() }, true);
+        this.noteLimits(limitStopReport(this.def.id, this.t.accountId ?? "default"), true);
     }
 
     /**
@@ -1261,7 +1292,39 @@ export class CodexTurn {
     /** Stop the running turn: the main thread's, or one sub-agent's. */
     protected interrupt(sub?: { thread: string; turnId?: string }) {
         const [threadId, turnId] = sub ? [sub.thread, sub.turnId] : [this.threadId, this.turnId];
-        if (threadId && turnId) void this.rpc.request("turn/interrupt", { threadId, turnId }).catch(() => {});
+        if (threadId && turnId) void this.sendInterrupt(threadId, turnId);
+    }
+
+    /**
+     * turn/interrupt for a turn. Codex answers turn/start a few ms before the turn is active, and says "no active turn
+     * to interrupt" in between (seen with 0.163, #439): that turn's interrupt goes again as its turn/started comes (at
+     * once if it came meanwhile), at most INTERRUPT_RETRIES times, and never for one that has ended. Never fails.
+     */
+    protected async sendInterrupt(threadId: string, turnId: string): Promise<void> {
+        const key = `${threadId}/${turnId}`;
+        try {
+            await this.rpc.request("turn/interrupt", { threadId, turnId });
+            this.interruptRetries.delete(key);
+        } catch (e) {
+            if (!NO_ACTIVE_TURN.test((e as Error)?.message ?? "") || this.turnStates.get(key) === "ended" || this.rpc.closed) return void this.interruptRetries.delete(key);
+            const left = this.interruptRetries.get(key) ?? INTERRUPT_RETRIES;
+            if (left <= 0) return void this.interruptRetries.delete(key);
+            this.interruptRetries.set(key, left - 1);
+            liveDebug("codex", "interrupt before the turn was active: again once it is", { thread: threadId, turn: turnId, started: this.turnStates.get(key) === "active" });
+            // Started meanwhile (its turn/started overtook the answer): again now.
+            if (this.turnStates.get(key) === "active") await this.sendInterrupt(threadId, turnId);
+        }
+    }
+
+    /** Codex said a turn started or ended (any thread's): an interrupt it refused before the turn was active goes again now. */
+    protected turnState(threadId: string | undefined, turnId: unknown, state: "active" | "ended") {
+        if (!threadId || typeof turnId !== "string") return;
+        const key = `${threadId}/${turnId}`;
+        this.turnStates.delete(key);
+        this.turnStates.set(key, state);
+        if (this.turnStates.size > 128) this.turnStates.delete(this.turnStates.keys().next().value!);
+        if (state === "ended") return void this.interruptRetries.delete(key);
+        if (this.interruptRetries.has(key)) void this.sendInterrupt(threadId, turnId);
     }
 
     /** Start something that ends with turn/completed (or thread/compacted), and wait for that. */
@@ -1294,6 +1357,7 @@ export class CodexTurn {
             const turn = typeof p.turnId === "string" ? p.turnId : this.turnId;
             if (turn) this.turnModels.set(`${modelThread}/${turn}`, p.toModel);
         }
+        if (method === "turn/started" || method === "turn/completed") this.turnState(thread ?? this.threadId, p?.turn?.id, method === "turn/started" ? "active" : "ended");
         if (method === "turn/started" && typeof p.turn?.id === "string") {
             this.turnsSeen.add(p.turn.id);
             const model = modelThread && this.threadModels.get(modelThread);
@@ -1345,12 +1409,16 @@ export class CodexTurn {
                 this.patchUpdated(p);
                 break;
             case "item/started":
+                if (p.item?.type === "userMessage") this.steerTaken(p.item);
                 this.onItemStarted(p.item ?? {});
                 break;
             case "item/completed":
+                if (p.item?.type === "userMessage") this.steerTaken(p.item);
                 this.onItemCompleted(p.item ?? {}, p.turnId);
                 break;
             case "turn/completed":
+                // What was steered into it that it never took goes with the next turn.
+                if (typeof p.turn?.id === "string") this.steersDropped(p.turn.id);
                 if (typeof p.turn?.id === "string") this.running.delete(p.turn.id);
                 if (typeof p.turn?.id === "string") this.completedTurns.set(p.turn.id, { status: typeof p.turn.status === "string" ? p.turn.status : "completed", ...(p.turn.status === "failed" ? { error: p.turn.error } : {}) });
                 if (p.turn?.id && this.turnId && p.turn.id !== this.turnId) break;
@@ -1373,7 +1441,7 @@ export class CodexTurn {
             case "configWarning":
             case "deprecationNotice": {
                 const msg = String(p.message ?? p.summary ?? "").trim();
-                if (msg) this.sink.emit({ type: "notice", level: "info", message: `Codex: ${msg}` });
+                if (msg) this.sink.emit({ type: "notice", level: "info", message: `Codex: ${msg}`, data: cliNotice(this.def.id, "info", msg) });
                 break;
             }
             case "item/autoApprovalReview/completed": {
@@ -1429,7 +1497,9 @@ export class CodexTurn {
                 const reached = codexReachedType(p.rateLimits);
                 if (reached && !this.limitNoted) {
                     this.limitNoted = true;
-                    this.sink.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached (${reached}). ${resetSentence(this.limits?.resetsAt, "Codex")}` });
+                    // On credits it isn't a stop: the turn goes on, and it costs.
+                    const credits = creditsNote(this.limits);
+                    this.sink.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.t.accountId)}: usage limit reached (${reached})${credits}. ${resetSentence(this.limits?.resetsAt, "Codex")}`, data: { source: this.def.id, limit: limitNotice(this.def.id, this.t.accountId, this.limits, { credits: Boolean(credits) }) } });
                 }
                 break;
             }
@@ -1533,7 +1603,7 @@ export class CodexTurn {
             case "warning":
             case "configWarning": {
                 const msg = String(p.message ?? p.summary ?? "").trim();
-                if (msg) this.subEmit(sub, { type: "notice", level: "info", message: `Codex: ${msg}` });
+                if (msg) this.subEmit(sub, { type: "notice", level: "info", message: `Codex: ${msg}`, data: cliNotice(this.def.id, "info", msg) });
                 break;
             }
         }
@@ -1928,10 +1998,10 @@ export class CodexTurn {
         return this.cliSession.permission({ ...req, hookDecision, hooksOnly: (this.turnMode ?? this.cliSession.mode()) === "bypassPermissions" });
     }
 
-    /** Harness's Monitor tools run the hooks themselves, as Monitor, BashOutput or KillShell: Codex's run would be a second one. */
+    /** Harness's Monitor and browser tools run the hooks themselves, as Monitor, BashOutput, KillShell or BrowserAct: Codex's run would be a second one. */
     protected hooksItself(toolName: string): boolean {
         const server = this.t?.orchestrator?.name;
-        return Boolean(server) && MONITOR_SERVER_TOOLS.some((t) => toolName === `mcp__${server}__${t}`);
+        return (Boolean(server) && MONITOR_SERVER_TOOLS.some((t) => toolName === `mcp__${server}__${t}`)) || servedBrowserTool(server, toolName);
     }
 
     /** PostToolUse or PostToolUseFailure for a main-thread item that ran; what they say reaches Codex while it works. */
@@ -2174,17 +2244,67 @@ export class CodexTurn {
                 this.unsteered.push(...(await this.holdOver(messages)));
                 return;
             }
-            try {
-                // With what's attached to them: turn/steer takes the same input items as turn/start (an image alone too).
-                await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: turnId, input: this.input(joined(messages), imagesOf(messages)) });
-            } catch {
-                // Each as it was queued, so the user's words and a watch's events stay told apart.
-                this.unsteered.push(...(await this.holdOver(messages)));
-                return;
-            }
-            // Codex has it: one with attachments is the host's to record now.
-            for (const m of messages) await m.settle?.(true);
+            // With what's attached to them: turn/steer takes the same input items as turn/start (an image alone too).
+            await this.steerTurn(turnId, this.input(joined(messages), imagesOf(messages)), joined(messages), {
+                // Codex has it: one with attachments is the host's to record now.
+                taken: async () => {
+                    for (const m of messages) await m.settle?.(true);
+                },
+                // Refused, or dropped with its turn: each as it was queued, so the user's words and a watch's events stay told apart.
+                dropped: async () => void this.unsteered.push(...(await this.holdOver(messages))),
+            });
         }).catch(() => {});
+    }
+
+    /**
+     * Steer the main thread's turn (turn/steer). Codex answers before it takes the input into the turn, and an interrupt
+     * in between drops it without a word (seen with 0.163: an Esc sent with the steer, #438; unhindered, it took one 2 ms
+     * after answering, a command still running). So it's delivered only once Codex takes it: its userMessage item, whose
+     * clientId is the clientUserMessageId it went with (`taken`). Refused, or its turn over before that, it wasn't
+     * (`dropped`, in the steering chain, so a turn's end waits for it). One or the other, once. Returns whether Codex
+     * accepted it.
+     */
+    protected async steerTurn(turnId: string, input: unknown[], text: string, on: { taken?: () => Promise<void>; dropped: () => Promise<void> | void }): Promise<boolean> {
+        const id = clientMessageId("steer");
+        this.pendingSteers.set(id, { turnId, text, taken: on.taken, dropped: on.dropped });
+        try {
+            await this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: turnId, input, clientUserMessageId: id });
+            return true;
+        } catch {
+            if (this.pendingSteers.delete(id)) await on.dropped();
+            return false;
+        }
+    }
+
+    /** Codex took input into a turn of the main thread (a userMessage item): the steer of ours it was is delivered. */
+    protected steerTaken(item: any) {
+        // Its item/started and item/completed: one item takes one steer, however many wait with the same words.
+        const itemId = typeof item?.id === "string" ? item.id : undefined;
+        if (itemId !== undefined && this.takenItems.has(itemId)) return;
+        let id: string | undefined = typeof item?.clientId === "string" && this.pendingSteers.has(item.clientId) ? item.clientId : undefined;
+        if (!id && item?.clientId == null) {
+            // A Codex that doesn't say whose it is: the first waiting with the same words.
+            const text = (Array.isArray(item?.content) ? item.content : []).map((c: any) => (c?.type === "text" && typeof c.text === "string" ? c.text : "")).join("");
+            if (text) id = [...this.pendingSteers].find(([, s]) => s.text === text)?.[0];
+        }
+        const s = id !== undefined ? this.pendingSteers.get(id) : undefined;
+        if (!s) return;
+        this.pendingSteers.delete(id!);
+        if (itemId !== undefined) {
+            this.takenItems.add(itemId);
+            if (this.takenItems.size > 64) this.takenItems.delete(this.takenItems.keys().next().value!);
+        }
+        void s.taken?.().catch(() => {});
+    }
+
+    /** Steers Codex hadn't taken when their turn ended (`turnId`; none: any, as the run ends): they go with the next turn. */
+    protected steersDropped(turnId?: string) {
+        for (const [id, s] of [...this.pendingSteers]) {
+            if (turnId !== undefined && s.turnId !== turnId) continue;
+            this.pendingSteers.delete(id);
+            liveDebug("codex", "steer dropped: its turn ended before Codex took it", { thread: this.threadId, turn: s.turnId });
+            this.steering = this.steering.then(() => s.dropped()).catch(() => {});
+        }
     }
 
     /**
@@ -2220,7 +2340,8 @@ export class CodexTurn {
 
     /**
      * Add text to the running turn (turn/steer). The user's words start the
-     * next turn if that fails; the harness's own notes (followUp false) don't.
+     * next turn if Codex refuses them or drops them (its turn ended or was
+     * stopped before it took them, #438); the harness's own notes (followUp false) don't.
      * A sub-agent's turn is steered the same way (checked with 0.163), but
      * nothing starts another of its turns.
      */
@@ -2234,14 +2355,18 @@ export class CodexTurn {
             if (followUp) this.addFollowUp(text);
             return;
         }
-        // In the steering chain, so a turn that ends meanwhile waits to see whether Codex took it.
-        const sent = this.rpc.request("turn/steer", { threadId: this.threadId, expectedTurnId: this.turnId, input: this.input(text, []) }).then(
-            () => {},
-            () => {
-                if (followUp) this.addFollowUp(text);
+        // In the steering chain, so a turn that ends meanwhile waits to see whether Codex took it. Not taken, the
+        // user's words go with the next turn, or the next prompt after a stop.
+        const sent = this.steerTurn(this.turnId, this.input(text, []), text, {
+            // Stopped: kept for the next prompt. Otherwise a follow-up, which is capped like a hook's (a refused
+            // decline's feedback would start turns without end).
+            dropped: () => {
+                if (!followUp) return;
+                if (this.aborted) this.unsteered.push({ text, images: [], documents: [] });
+                else this.addFollowUp(text);
             },
-        );
-        this.steering = this.steering.then(() => sent);
+        });
+        this.steering = this.steering.then(() => sent).then(() => {});
     }
 }
 
@@ -2516,6 +2641,18 @@ export function applyHunks(text: string, diff: string): string | undefined {
     out.push(...src.slice(pos));
     return out.join("\n");
 }
+
+/**
+ * An id for input we send (turn/start's, turn/steer's clientUserMessageId), which Codex 0.163 gives back as its userMessage
+ * item's clientId. A turn's own input has one too, so its item is never taken for a steer waiting with the same words
+ * (CodexTurn.steerTaken): only an item with no clientId (an older Codex) is matched by its words.
+ */
+export const clientMessageId = (kind: "turn" | "steer") => `${CODEX_CLIENT_NAME}-${kind}-${randomUUID()}`;
+
+/** Codex's answer to turn/interrupt for a turn that isn't active (not yet, or not any more). */
+const NO_ACTIVE_TURN = /no active turn/i;
+/** How many times an interrupt refused before its turn was active goes again (sendInterrupt). */
+const INTERRUPT_RETRIES = 2;
 
 /** How long a run waits for Codex to start the goal's next turn itself before it gives up on it. */
 const GOAL_TURN_WAIT_MS = 60_000;

@@ -8,11 +8,14 @@
 import { createHash, randomBytes, randomUUID } from "crypto";
 import type { Server } from "bun";
 import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
+import type { ImagePart } from "../providers/types";
 import { redact, registerSecret } from "../util/redact";
 
 export interface ServerToolResult {
     text: string;
     isError?: boolean;
+    /** Sent after the text as image content. The tool fits them to what providers take (fitToolImages) first. */
+    images?: ImagePart[];
 }
 
 export interface ServerTool {
@@ -164,7 +167,7 @@ function callTool(req: Request, srv: Server<undefined>, entry: Entry, id: unknow
     const result = tool
         .call(args, { signal: ac.signal, meta })
         .then(
-            (r) => ({ content: [{ type: "text", text: r.text }], isError: Boolean(r.isError) }),
+            (r) => ({ content: [{ type: "text", text: r.text }, ...(r.images ?? []).map((i) => ({ type: "image", data: i.data, mimeType: i.mediaType }))], isError: Boolean(r.isError) }),
             (e) => ({ content: [{ type: "text", text: `${name} failed: ${redact((e as Error).message ?? String(e))}` }], isError: true }),
         )
         .finally(() => {

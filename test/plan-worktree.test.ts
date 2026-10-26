@@ -189,13 +189,13 @@ describe("implementing a plan in a new worktree", () => {
         expect(prompt).toContain("Branch: add-sso (new, started from main (");
         expect(prompt).toContain(`Paths in the plan under ${main} mean the same files under ${r.path}`);
         expect(prompt).toContain("Add `SamlProvider` in `src/auth/sso.ts`");
-        expect(st.planLinks).toMatchObject([{ role: "from", session: id, folder: main, path: r.path, branch: "add-sso", base: "main" }]);
+        expect(st.planLinks).toMatchObject([{ role: "from", session: id, folder: main, path: r.path, branch: "add-sso", base: "main", plan: info.id }]);
 
         // The card was answered without approving: the planning session stopped, still planning, and changed nothing.
         await c.until(id, (v) => done(v) && !v.state.interactions.length);
         expect(c.view(id).state.mode).toBe("plan");
         expect(tools(lastTurn(c.view(id))).find((b) => b.name === "ExitPlanMode")?.summary).toBe("Plan handed off to a new session");
-        expect(c.view(id).state.planLinks).toMatchObject([{ role: "to", session: r.sessionId, path: r.path, branch: "add-sso" }]);
+        expect(c.view(id).state.planLinks).toMatchObject([{ role: "to", session: r.sessionId, path: r.path, branch: "add-sso", plan: info.id }]);
         expect(status(main)).toBe("");
         expect(readFileSync(join(main, "src", "auth", "index.ts"), "utf8")).toBe("export const strategies = [emailStrategy];\n");
 
@@ -206,7 +206,7 @@ describe("implementing a plan in a new worktree", () => {
         await Bun.sleep(600);
         const d = await client();
         const again = await d.open("session.open", { id });
-        expect(d.view(again).state.planLinks).toMatchObject([{ role: "to", session: r.sessionId, branch: "add-sso" }]);
+        expect(d.view(again).state.planLinks).toMatchObject([{ role: "to", session: r.sessionId, branch: "add-sso", plan: info.id }]);
         // The plan itself too, after the card is gone.
         expect(d.view(again).state.plan).toMatchObject({ id: info.id, title: "add SSO" });
         expect((await d.call<PlanInfo>("session.planInfo", { id: again })).plan).toContain("SamlProvider");

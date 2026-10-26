@@ -1,11 +1,11 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on, onCleanup, Show, Switch, type JSX } from "solid-js";
 import { isMod, mod } from "../lib/platform";
-import { ArrowUp, AtSign, CornerDownRight, Database, FileText, Folder, ListEnd, Paperclip, Slash, Sparkles, SquareTerminal } from "lucide-solid";
+import { ArrowUp, AtSign, CornerDownRight, Database, FileText, Folder, ListEnd, Maximize2, Minimize2, Paperclip, Slash, Sparkles, SquareTerminal } from "lucide-solid";
 import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
 import { interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
-import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, settingsTab, columnHeight } from "../state/ui";
+import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, settingsTab, columnHeight, glideDock, shellLayout } from "../state/ui";
 import { keymap, matchKey, shortcut, shortcutHint, withShortcut } from "../state/keybindings";
 import { eventStrokes } from "../lib/keystrokes";
 import type { MatchResult } from "../../../src/keybindings/core";
@@ -25,6 +25,8 @@ import { aroundOf, newCommentId, reviewComments } from "../state/review-comments
 import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
 import { createLifetimeGuard } from "../lib/lifetime";
 import { createComposerDraft } from "../lib/composer-draft";
+import { expandedDown, expandedHeight, grow, GROW_MS } from "../lib/composer-size";
+import { motionMs } from "./LiveLine";
 
 import { composerStorage } from "../lib/drafts";
 import { composingKey, revealMenuOption } from "../lib/composer-menu";
@@ -32,17 +34,19 @@ import { matchSkills, skillToken } from "../lib/commands";
 import { firstSendable, followUpFor, otherFollowUp } from "../lib/queue";
 import { canStop } from "../lib/session-status";
 import { QueueTab } from "./QueueTab";
+import { StepsTray } from "./StepsTray";
 
 /** `mention`: a skill picked from the $ menu, which goes in where the $ is. */
 type MenuItem = { kind: "command"; cmd: CommandInfo; mention?: boolean } | { kind: "file"; path: string } | { kind: "resource"; res: McpResourceInfo };
 
-export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; /** Tucked under the card, like a drawer (Home's folder and branch). */ strip?: JSX.Element; /** Home: sending to several models at once. */ compare?: CompareOption }) {
+export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; /** Tucked under the card, like a drawer (Home's project, worktree and the composer's prefixes). */ strip?: JSX.Element; /** Home: sending to several models at once. */ compare?: CompareOption; /** Home: told what's in the box each time it changes. */ onText?: (text: string) => void }) {
     /** The last @ search asked MCP servers too, so its empty state says so. */
     const [searchedResources, setSearchedResources] = createSignal(false);
     const whileMounted = createLifetimeGuard();
     let ta: HTMLTextAreaElement | undefined;
     let fileInput: HTMLInputElement | undefined;
     let box: HTMLDivElement | undefined;
+    let root: HTMLDivElement | undefined;
     const draftKey = () => p.sessionId ?? "home";
     const draft = createComposerDraft(draftKey, wasDeleted);
     const { text, setText, attachments, setAttachments } = draft;
@@ -78,13 +82,66 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const holdsComments = () => !takesComments(text());
     /** Compare is only available on Home in a Git project. */
     const runPicks = () => (!p.sessionId && p.compare?.available ? comparePicks() : undefined);
+    /** The text runs past the box's modest height (composer.css), so it scrolls: the expand button shows. */
+    const [overflows, setOverflows] = createSignal(false);
+    /** Opened large (the expand button or its key) until it's closed, sent, or another draft is shown. */
+    const [expanded, setExpanded] = createSignal(false);
+    /** The text's height when it was opened large: the large size is never less. */
+    let least = 0;
+    /** The text's height at the large size (lib/composer-size): up from the window's foot to near the column's top, or (Home) down to near the page's foot. */
+    const largeHeight = () => {
+        if (!ta || !root) return least;
+        const stage = root.closest(".stage");
+        if (stage) return expandedHeight({ text: ta.offsetHeight, top: root.getBoundingClientRect().top, columnTop: stage.getBoundingClientRect().top, column: shellLayout().column.h || stage.clientHeight, least });
+        const page = root.closest(".home") ?? document.documentElement;
+        return expandedDown({ text: ta.offsetHeight, bottom: root.getBoundingClientRect().bottom, pageBottom: page.getBoundingClientRect().bottom, least });
+    };
     const resize = () => {
         if (!ta) return;
+        if (expanded()) {
+            ta.style.height = `${largeHeight()}px`;
+            return;
+        }
         ta.style.height = "auto";
-        ta.style.height = `${Math.min(ta.scrollHeight, Math.round(window.innerHeight * 0.4))}px`;
+        // Up to the modest height composer.css gives it; past that it scrolls.
+        ta.style.height = `${ta.scrollHeight}px`;
+        setOverflows(ta.scrollHeight > ta.clientHeight + 1);
+    };
+    /** Opens the large size or closes it: laid out at once, drawn growing from where it was (lib/composer-size), the conversation gliding with it. */
+    const toggleExpanded = (open = !expanded()) => {
+        if (!ta || !box || open === expanded()) return;
+        const from = box.getBoundingClientRect().height;
+        // Its height as shown, not the taller one asked for that composer.css caps: what it grows from.
+        least = ta.offsetHeight;
+        ta.style.height = `${least}px`;
+        setExpanded(open);
+        resize();
+        // Closed with the caret at the end: the end is what shows.
+        if (!open && ta.selectionEnd === text().length) ta.scrollTop = ta.scrollHeight;
+        if (p.variant !== "home") glideDock();
+        grow(box, from, box.offsetHeight, p.variant === "home" ? "top" : "bottom", motionMs(GROW_MS));
+        ta.focus();
     };
 
     createEffect(on([draftKey, text], () => requestAnimationFrame(resize)));
+    // Every change, whatever made it: typing, history, a send clearing the box.
+    createEffect(() => p.onText?.(text()));
+    // The modest height is a few lines of the text size, or a share of the column: either changing moves it.
+    createEffect(on([columnHeight, () => prefs.fontSize], () => requestAnimationFrame(resize), { defer: true }));
+    // Large, it keeps its top where it is as what's above or in the box comes and goes (the tray, a request, attachments).
+    createEffect(() => {
+        if (!expanded() || !root || typeof ResizeObserver === "undefined") return;
+        let frame = 0;
+        const ro = new ResizeObserver(() => {
+            cancelAnimationFrame(frame);
+            frame = requestAnimationFrame(resize);
+        });
+        ro.observe(root);
+        onCleanup(() => {
+            ro.disconnect();
+            cancelAnimationFrame(frame);
+        });
+    });
     // A message being written means the user is back: the server holds off compacting while idle.
     const writing = () => Boolean(text().trim() || attachments().length);
     createEffect(on([() => p.sessionId, writing, () => h()?.ready?.()], ([id, present, ready]) => {
@@ -92,6 +149,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         void rpc.call("session.draft", { id, present }).catch(() => undefined);
         if (present) onCleanup(() => void rpc.call("session.draft", { id, present: false }).catch(() => undefined));
     }));
+    // A message is held because the session's CLI account was removed (#410): the model picker opens on its accounts.
+    createEffect(on(() => st()?.accountNeeded, (provider, was) => {
+        if (provider && provider !== was) setModelPickerOpen(true);
+    }, { defer: true }));
     // What the server hands back (interrupted queue, rewound prompt).
     createEffect(() => {
         const d = h()?.draft();
@@ -123,6 +184,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         onCleanup(() => cancelAnimationFrame(frame));
     };
     createEffect(on(draftKey, () => {
+        setExpanded(false);
         histIdx = -1;
         historyDraft = "";
         dismissMenu();
@@ -211,16 +273,17 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         }
         const tok = token();
         const cwd = st()?.cwd ?? app.homeCwd;
-        if (tok && cwd && p.sessionId) {
+        // Home (no session yet) searches its folder's files.
+        if (tok && cwd) {
             setMenuStatus("loading");
             const sid = p.sessionId;
             // Only a session whose servers offer resources is asked for them.
-            const hasResources = (st()?.mcp ?? []).some((m) => m.status === "connected" && m.resources);
+            const hasResources = Boolean(sid) && (st()?.mcp ?? []).some((m) => m.status === "connected" && m.resources);
             mentionTimer = setTimeout(async () => {
                 try {
                     const [found, resources] = await Promise.all([
                         rpc.call("fs.mentions", { cwd, query: tok.query }),
-                        hasResources && tok.query ? rpc.call("session.mcpResources", { id: sid, query: tok.query }).catch(() => [] as McpResourceInfo[]) : Promise.resolve([] as McpResourceInfo[]),
+                        hasResources && tok.query ? rpc.call("session.mcpResources", { id: sid!, query: tok.query }).catch(() => [] as McpResourceInfo[]) : Promise.resolve([] as McpResourceInfo[]),
                     ]);
                     if (version !== mentionVersion) return;
                     const files = found.map((path) => ({ kind: "file" as const, path }));
@@ -239,6 +302,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         setMenu([]);
     };
     onCleanup(dismissMenu);
+    // Home keeps its draft while switching projects. Invalidate both displayed
+    // suggestions and in-flight replies immediately, independently of commands.list.
+    createEffect(on(() => st()?.cwd ?? app.homeCwd, () => updateMenu(false), { defer: true }));
 
     const apply = (item: MenuItem, run: boolean) => {
         if (item.kind === "command" && item.mention) {
@@ -291,7 +357,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         const message = withComments(t, sentComments);
         // A toast retry may finish after Home has unmounted too.
         const resizeAfterSend = whileMounted(() => requestAnimationFrame(resize));
+        // Sent, the box closes: not if a newer draft is in it by then (typed, maybe opened large, while this went).
+        const collapseSent = () => { if (draft.holds(submitted)) setExpanded(false); };
         const sent = () => {
+            collapseSent();
             draft.clearSent(submitted);
             resizeAfterSend();
         };
@@ -312,6 +381,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 composerStorage.remember(submitted.key, t);
                 setComparePicks(undefined);
             }
+            collapseSent();
             draft.clearSent(submitted, ok === "command");
             if (ok === "command" && t.trim() && !atts.length) {
                 if (!wasDeleted(submitted.key)) composerStorage.remember(submitted.key, t);
@@ -375,6 +445,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             case "chat:newline":
                 e.preventDefault();
                 newline();
+                return;
+            case "chat:expand":
+                e.preventDefault();
+                toggleExpanded();
                 return;
             case "chat:submitOtherWay":
                 // While a turn runs, with the / and @ menu open too: the message goes the other way, or the first queued one now.
@@ -513,7 +587,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
 
     return (
         <div
-            class={`composer v-${p.variant ?? "session"} ${shell() ? "shell" : ""} ${dragging() ? "dragging" : ""} ${working() ? "running" : ""}`}
+            ref={root}
+            class={`composer v-${p.variant ?? "session"} ${shell() ? "shell" : ""} ${dragging() ? "dragging" : ""} ${working() ? "running" : ""} ${expanded() ? "expanded" : ""} ${expanded() || overflows() ? "expandable" : ""}`}
             onDragEnter={(e) => {
                 if (!e.dataTransfer?.types.includes("Files")) return;
                 dragDepth++;
@@ -613,6 +688,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     </Show>
                 </div>
             </Show>
+            <Show when={p.sessionId ? h() : undefined}>{(handle) => <StepsTray sessionId={p.sessionId!} view={handle().view} />}</Show>
             <Show when={p.sessionId && st()?.queued.length}>
                 <QueueTab sessionId={p.sessionId!} state={st()!} dequeue={(i, edit) => void dequeue(i, edit)} />
             </Show>
@@ -702,7 +778,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} open={modePickerOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
                     <span class="grow" />
                     <BackgroundChip sessionId={p.sessionId} />
-                    <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} />
+                    <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} home={p.variant === "home"} />
                     {/* Writing while a turn runs: the key that sends it the other way, by the button that sends it this way. */}
                     <Show when={busy() && hasContent() && !runPicks() && shortcutHint("chat:submitOtherWay")}>
                         {(key) => (
@@ -744,6 +820,20 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         </button>
                     </Show>
                 </div>
+                {/* Past its modest height the text scrolls: this opens it large (and closes it again). */}
+                <Show when={expanded() || overflows()}>
+                    <button
+                        class="cb c-expand"
+                        title={withShortcut(expanded() ? "Collapse" : "Expand", "chat:expand")}
+                        aria-label={expanded() ? "Collapse the message box" : "Expand the message box"}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => toggleExpanded()}
+                    >
+                        <Show when={expanded()} fallback={<Maximize2 size={14} />}>
+                            <Minimize2 size={14} />
+                        </Show>
+                    </button>
+                </Show>
             </div>
             <Show when={p.strip}>
                 <div class="composer-strip">{p.strip}</div>

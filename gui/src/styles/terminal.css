@@ -27,6 +27,18 @@
     display: none;
 }
 
+/* Maximized, its toolbar is the window's top row: the title bar's height, so its tabs sit on the
+   traffic lights' line (--top-line), and clear of the lights where they're over the sheet (the rail
+   hidden, or a drawer), as the title bar is (header.css). The empty part moves the window. */
+.terminal-panel.max .terminal-toolbar {
+    height: calc(2 * (var(--top-line) - var(--win-pad, 8px)));
+}
+
+.app.tauri.os-macos.rail-off .terminal-panel.max .terminal-toolbar,
+.app.tauri.os-macos[data-rail="overlay"] .terminal-panel.max .terminal-toolbar {
+    padding-left: 84px;
+}
+
 .terminal-resize {
     position: absolute;
     top: 0;
@@ -63,9 +75,9 @@
 .terminal-toolbar {
     display: flex;
     align-items: center;
-    gap: 2px;
-    height: 38px;
-    padding: 0 6px 0 8px;
+    gap: calc(2 * var(--sp));
+    height: calc(38 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(8 * var(--sp));
     flex: none;
     font-size: 0.929rem;
 }
@@ -76,7 +88,7 @@
 
 .terminal-tabs {
     display: flex;
-    gap: 2px;
+    gap: calc(2 * var(--sp));
     min-width: 0;
     overflow-x: auto;
     scrollbar-width: none;
@@ -85,9 +97,9 @@
 .terminal-tab {
     display: inline-flex;
     align-items: center;
-    gap: 2px;
-    height: 28px;
-    padding: 0 3px 0 10px;
+    gap: calc(2 * var(--sp));
+    height: calc(28 * var(--sp));
+    padding: 0 calc(3 * var(--sp)) 0 calc(10 * var(--sp));
     border-radius: var(--pill);
     flex: none;
     color: var(--fg-3);
@@ -110,7 +122,7 @@
 .terminal-tab > button[role="tab"] {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
+    gap: calc(7 * var(--sp));
     height: 100%;
     color: inherit;
     white-space: nowrap;
@@ -126,8 +138,8 @@
 }
 
 .terminal-tab .terminal-tab-x {
-    width: 20px;
-    height: 20px;
+    width: calc(20 * var(--sp));
+    height: calc(20 * var(--sp));
     opacity: 0;
 }
 
@@ -139,7 +151,7 @@
 
 .terminal-cwd {
     margin-left: auto;
-    padding: 0 8px;
+    padding: 0 calc(8 * var(--sp));
     max-width: 40%;
     color: var(--fg-3);
     font-family: var(--font-mono);
@@ -150,7 +162,7 @@
     flex: 1;
     min-height: 0;
     flex-direction: column;
-    padding: 2px 6px 6px 14px;
+    padding: calc(2 * var(--sp)) calc(6 * var(--sp)) calc(6 * var(--sp)) calc(14 * var(--sp));
 }
 
 .terminal-emulator {
@@ -173,8 +185,8 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
-    padding: 8px 14px;
+    gap: calc(8 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(14 * var(--sp));
     color: var(--fg-3);
     font-size: 0.857rem;
 }

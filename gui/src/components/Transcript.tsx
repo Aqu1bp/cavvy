@@ -1,13 +1,16 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, untrack } from "solid-js";
-import { ArrowDown, GitFork } from "lucide-solid";
+import { ArrowDown, ArrowUpLeft, GitFork } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { fork, forkAnchor } from "../state/actions";
-import { activate, toast, type SessionHandle } from "../state/app";
-import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setJumpTarget, setRewindOpen } from "../state/ui";
+import { activate, app, toast, type SessionHandle } from "../state/app";
+import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setJumpTarget, setRewindOpen, takeDockGlide } from "../state/ui";
+import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
 import { anchoredTop, atBottom, FAR, firstBelow, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
-import { glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
+import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
+import { revealing } from "../lib/reveal";
+import { observeWorkRendering } from "../lib/work-rendering";
 import { TurnView } from "./TurnView";
 import { LiveLine, motionMs } from "./LiveLine";
 import { CardFoldsProvider } from "./blocks/Activity";
@@ -45,6 +48,8 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     const saved = transcriptPositions.get(id);
     const openWork = new Set(saved?.openWork);
     const [stick, setStick] = createSignal(saved?.bottom ?? true);
+    /** Scrolled all the way down: "Latest" has nothing to jump to, following the end or not. */
+    const [scrolledDown, setScrolledDown] = createSignal(true);
     const [shown, setShown] = createSignal(restoredShown(p.handle.view.turns.map((t) => t.id), saved));
     let reading = saved?.anchor;
     let ready = false;
@@ -64,11 +69,15 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     /** When the column's content last changed, and when onScroll last put the engine's scroll back. */
     let mutatedAt = -Infinity;
     let repinned: number[] = [];
+    const gapOf = (el: HTMLElement) => el.scrollHeight - el.clientHeight - el.scrollTop;
+    /** Measured after every scroll and size change: the button goes by what's in view, not only by following. */
+    const measureEnd = () => scroller && setScrolledDown(gapOf(scroller) <= 1);
     const wrote = () => {
         if (!scroller) return;
         lastTop = scroller.scrollTop;
-        lastGap = scroller.scrollHeight - scroller.clientHeight - lastTop;
+        lastGap = gapOf(scroller);
         lastSize = sizeOf(scroller);
+        measureEnd();
     };
     const afterLayout = (fn: () => void) => {
         cancelAnimationFrame(frame);
@@ -105,10 +114,13 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     let pinFrame = 0;
     /** The running glide: the same translate on each of the column's rows in sight. */
     let glides: { el: HTMLElement; anim: Animation }[] = [];
+    /** A fold's moves (fold()): what's above an answer, coming down. */
+    let folds: { el: HTMLElement; anim: Animation }[] = [];
+    const translate = (el: Element) => new DOMMatrixReadOnly(getComputedStyle(el).transform).m42;
     /** How far a running glide has the rows in sight drawn from their place (px). */
     const shift = () => {
         const g = glides[0];
-        return g?.anim.playState === "running" ? new DOMMatrixReadOnly(getComputedStyle(g.el).transform).m42 : 0;
+        return g?.anim.playState === "running" ? translate(g.el) : 0;
     };
     const cancelGlide = () => {
         for (const g of glides) g.anim.cancel();
@@ -118,6 +130,8 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         cancelAnimationFrame(pinFrame);
         pinFrame = 0;
         cancelGlide();
+        for (const f of folds) f.anim.cancel();
+        folds = [];
     };
     /** The column's rows in the view, or within `px` of it, from the end up (where a pin leaves it, a few). */
     const inSight = (px: number) => {
@@ -153,8 +167,53 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         });
     };
 
-    /** How far a running glide draws this row of the column from its place: rows out of its reach don't move. */
-    const shiftOf = (row: Element) => (glides.some((g) => g.el === row) ? shift() : 0);
+    /**
+     * A finished turn's work folds into "Worked for" (TurnView, once it has faded out). Following the end, the answer
+     * stays put and what's above it comes down by what folded away: drawn from where it was, it glides down rather
+     * than jumping, as growth glides up.
+     */
+    const fold = (turn: HTMLElement, run: () => void) => {
+        const ms = motionMs(GLIDE_MS);
+        if (!scroller || !content || !turn.isConnected || !stick() || smoothScroll || !ms || typeof content.animate !== "function") return run();
+        // The turn's top (its prompt): where it was, and where it is once the work has folded.
+        const was = turn.getBoundingClientRect().top;
+        const running = shift();
+        run();
+        toBottom();
+        const moved = was - turn.getBoundingClientRect().top;
+        // A fold is one move, not growth that goes on: all the way, up to a screen.
+        const max = scroller.clientHeight;
+        if (glideFrom(moved, 0, max) === undefined) return;
+        // What moved: the column's rows above the turn in sight (or coming into it on the way), the turn's parts
+        // before its reply, and "Worked for", which takes the work's place under the prompt.
+        const rows = inSight(Math.min(Math.abs(moved), max));
+        const at = rows.indexOf(turn);
+        const parts = [...turn.children] as HTMLElement[];
+        const reply = parts.find((el) => el.classList.contains("reply"));
+        const els = [
+            ...(at < 0 ? [] : rows.slice(at + 1)),
+            ...parts.filter((el) => el !== reply),
+            ...([...(reply?.children ?? [])] as HTMLElement[]).filter((el) => el.classList.contains("worked")),
+        ];
+        folds = folds.filter((f) => f.anim.playState === "running");
+        for (const el of els) {
+            // A row still gliding up goes on from where that glide has it.
+            const glide = glides.find((g) => g.el === el);
+            glide?.anim.cancel();
+            const from = glideFrom(moved, glide ? running : 0, max);
+            if (from !== undefined) folds.push({ el, anim: el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GLIDE_EASE }) });
+        }
+    };
+
+    /**
+     * How far running glides and folds draw this element from its place (the moves on it and on what it's in):
+     * what's out of their reach doesn't move.
+     */
+    const shiftOf = (el: Element) => {
+        let by = 0;
+        for (const m of [...glides, ...folds]) if (m.anim.playState === "running" && (m.el === el || m.el.contains(el))) by += translate(m.el);
+        return by;
+    };
     const capture = (): ScrollAnchor | undefined => {
         if (!scroller || !content) return;
         // Where things are, not where a running glide draws them (the reader may have scrolled away from it).
@@ -163,13 +222,19 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         const els = visible().flatMap((t) => turnEls.get(t.id) ?? []);
         const turn = els[firstBelow(els.length, (i) => els[i]!.getBoundingClientRect().bottom - shiftOf(els[i]!), top)];
         if (!turn) return;
-        const moved = shiftOf(turn);
         // A block anchor also survives replacing the live head with a work-log toggle.
-        const part = [...turn.querySelectorAll<HTMLElement>("[data-find], .worklog")].find((el) => el.getBoundingClientRect().bottom - moved > top);
+        let part = [...turn.querySelectorAll<HTMLElement>("[data-find], .worklog")].find((el) => el.getBoundingClientRect().bottom - shiftOf(el) > top);
+        // Within one large work log or reply, anchor the measured row in view. A container's
+        // top alone cannot preserve the paragraph/tool being read when rows above reflow.
+        const rows = part ? [...part.querySelectorAll<HTMLElement>('[data-work-row="sized"]')] : [];
+        const rowIndex = firstBelow(rows.length, (i) => rows[i]!.getBoundingClientRect().bottom - shiftOf(rows[i]!), top);
+        const row = rows[rowIndex];
+        if (row?.dataset.find) part = row;
         return {
-            turnId: turn.dataset.turn!, offset: turn.getBoundingClientRect().top - moved - top,
+            turnId: turn.dataset.turn!, offset: turn.getBoundingClientRect().top - shiftOf(turn) - top,
             part: part?.dataset.find ?? (part ? `worklog:${[...turn.querySelectorAll(".worklog")].indexOf(part)}` : undefined),
-            partOffset: part ? part.getBoundingClientRect().top - moved - top : undefined,
+            partOffset: part ? part.getBoundingClientRect().top - shiftOf(part) - top : undefined,
+            ...(row && row !== part ? { row: [...part!.querySelectorAll<HTMLElement>("[data-work-row]")].indexOf(row), rowOffset: row.getBoundingClientRect().top - shiftOf(row) - top } : {}),
         };
     };
     const restore = () => {
@@ -179,13 +244,14 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         const part = reading.part?.startsWith("worklog:")
             ? turn.querySelectorAll<HTMLElement>(".worklog")[Number(reading.part.slice(8))]
             : reading.part ? turn.querySelector<HTMLElement>(`[data-find="${CSS.escape(reading.part)}"]`) : undefined;
-        const el = part ?? turn;
+        const row = part && reading.row !== undefined ? part.querySelectorAll<HTMLElement>("[data-work-row]")[reading.row] : undefined;
+        const el = row ?? part ?? turn;
         const box = el.getBoundingClientRect();
-        const savedOffset = part && reading.partOffset !== undefined ? reading.partOffset : reading.offset;
+        const savedOffset = row && reading.rowOffset !== undefined ? reading.rowOffset : part && reading.partOffset !== undefined ? reading.partOffset : reading.offset;
         // A remounted prompt may be clamped again. If the saved reading point
         // no longer fits, show this anchor's top instead of skipping past it.
         const offset = savedOffset <= -box.height ? 0 : savedOffset;
-        const next = anchoredTop(scroller.scrollTop, box.top - shiftOf(turn) - scroller.getBoundingClientRect().top, offset);
+        const next = anchoredTop(scroller.scrollTop, box.top - shiftOf(el) - scroller.getBoundingClientRect().top, offset);
         // A no-op write would cancel an in-flight smooth Jump to latest.
         if (Math.abs(next - scroller.scrollTop) > 0.5) scroller.scrollTop = next;
         wrote();
@@ -234,17 +300,41 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                 to.fn = undefined;
             });
         }
+        onCleanup(observeWorkRendering(scroller, content, (moved) => {
+            if (stick() || smoothScroll) return;
+            scroller!.scrollTop += moved;
+            wrote();
+            reading = capture();
+        }));
         const ro = new ResizeObserver(() => {
             if (!ready) return;
-            if (smoothScroll) toBottom(true);
-            // Glides only while a turn is running: the end of a turn (its work folding away above, its footer,
-            // the composer settling) lands at once.
-            else if (stick()) turns().at(-1)?.status === "running" ? pin() : toBottom();
-            else restore();
+            const running = turns().at(-1)?.status === "running";
+            // A jump down (a send, "Latest") near the end while a turn grows: the rest of the way is a glide, which
+            // growth carries on. Scrolling there smoothly again on every growth restarts the scroll each time: it
+            // stutters, and a fast reply never lets it arrive.
+            if (smoothScroll && running && scroller!.scrollHeight - scroller!.clientHeight - scroller!.scrollTop <= GLIDE_MAX) {
+                smoothScroll = false;
+                pin();
+            }
+            else if (smoothScroll) toBottom(true);
+            // Glides only while a turn is running, or its reply's last words are still coming out: the end of a
+            // turn (its footer, the composer settling) lands at once. Its work folding away glides (fold()).
+            else if (stick()) running || revealing() ? pin() : toBottom();
+            else {
+                restore();
+                // Nothing left to scroll (something folded until it all fits): no scroll event will come to say the
+                // end is in view, so it's followed again here.
+                if (scroller!.scrollHeight <= scroller!.clientHeight + 1) setStick(true);
+            }
+            measureEnd();
         });
         ro.observe(content);
         ro.observe(scroller);
         onCleanup(() => ro.disconnect());
+        for (const type of ["click", "keydown"]) scroller.addEventListener(type, toggling, true);
+        onCleanup(() => {
+            for (const type of ["click", "keydown"]) scroller?.removeEventListener(type, toggling, true);
+        });
         if (typeof MutationObserver !== "undefined") {
             const mo = new MutationObserver(() => (mutatedAt = performance.now()));
             mo.observe(content, { childList: true, subtree: true, characterData: true });
@@ -283,6 +373,48 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         wrote();
         reading = capture();
     };
+
+    // A row the reader opens or folds (a command, a tool call, a thought) stays where it was clicked: what it adds
+    // goes below it, not glided or scrolled to the end. Where it is is taken as the click starts (the capture phase),
+    // and kept after the row's own handler has run (in the scroller's onClick, which the event reaches after the
+    // row's). Opened at the end, the end isn't followed any more: the reader is reading what they opened.
+    let toggled: { el: Element; top: number } | undefined;
+    const toggling = (e: Event) => {
+        toggled = undefined;
+        const target = e.target as Element | null;
+        // A button's Enter or Space comes as a click.
+        if (e.type === "keydown" && ((e as KeyboardEvent).key !== "Enter" && (e as KeyboardEvent).key !== " " || target?.tagName === "BUTTON")) return;
+        const el = target?.closest?.("[aria-expanded]:not([aria-haspopup])");
+        if (el) toggled = { el, top: el.getBoundingClientRect().top };
+    };
+    const toggledRow = () => {
+        const t = toggled;
+        toggled = undefined;
+        if (!t || !scroller || !t.el.isConnected) return;
+        // Where a running glide drew it is where the reader saw it: the glide stops, and the row stays there.
+        stopGlide();
+        smoothScroll = false;
+        const next = anchoredTop(scroller.scrollTop, t.el.getBoundingClientRect().top, t.top);
+        if (Math.abs(next - scroller.scrollTop) > 0.5) scroller.scrollTop = next;
+        // Followed again if the end is in view after it (folded with all of it showing): as a scroll there would.
+        setStick(scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= 1);
+        wrote();
+        reading = capture();
+    };
+
+    // The composer opening or closing its large size (Composer.tsx): following the end, the end stays just above it,
+    // gliding with its edge from where it was drawn. Here, as the dock's new height is set: before it's drawn.
+    createEffect(on(() => p.dock, (now, was) => {
+        if (!takeDockGlide() || now === undefined || was === undefined || !scroller || !stick() || smoothScroll) return;
+        stopGlide();
+        scroller.scrollTop = scroller.scrollHeight - scroller.clientHeight;
+        wrote();
+        const ms = motionMs(GROW_MS);
+        const from = now - was;
+        if (!ms || Math.abs(from) < 1 || !content || typeof content.animate !== "function") return;
+        pinned = { at: performance.now(), from: scroller.scrollTop - from };
+        glides = inSight(Math.abs(from)).map((el) => ({ el, anim: el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GROW_EASE }) }));
+    }));
 
     // Sending a prompt jumps back down.
     createEffect(
@@ -334,6 +466,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         else if (atBottom(top, scroller.scrollHeight, scroller.clientHeight) && (gap <= 1 || top > lastTop + 0.5)) setStick(true);
         lastTop = top;
         lastGap = gap;
+        measureEnd();
         // Following the end, nothing is anchored (every way out of it takes its own reading).
         if (!stick()) reading = capture();
     };
@@ -353,7 +486,8 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     };
     /** The reader scrolling up (wheel, touch, keys): it stops following at once, however near the end. */
     const scrollUp = () => {
-        if (!stick() && !smoothScroll) return;
+        // Following an end it can't scroll up from (the whole conversation fits), there's nothing to stop.
+        if (!smoothScroll && (!stick() || !scroller || scroller.scrollTop <= 0)) return;
         smoothScroll = false;
         setStick(false);
         reading = capture();
@@ -369,13 +503,37 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         };
         for (const t of ["pointerup", "pointercancel", "touchend", "touchcancel"]) addEventListener(t, lift, true);
     };
+    /** The reader moving down where it can't go further: at the end, it follows the end again (no scroll event comes to say so). */
+    const downAtEnd = (target: EventTarget | null) => {
+        if (scroller && !smoothScroll && gapOf(scroller) <= 1 && !innerTakes(target)) setStick(true);
+    };
+    /**
+     * A box inside the conversation (a command's output) that takes the move down itself, or a field the keys type
+     * into: the conversation doesn't move, so it doesn't follow the end again (the output read there would move).
+     */
+    const innerTakes = (target: EventTarget | null) => {
+        for (let el = target as HTMLElement | null; el && el !== scroller; el = el.parentElement) {
+            if (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName)) return true;
+            const scrolls = el.scrollHeight > el.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(el).overflowY);
+            if (scrolls && el.scrollTop + el.clientHeight < el.scrollHeight - 1) return true;
+        }
+        return false;
+    };
     const onWheel = (e: WheelEvent) => {
-        if (e.deltaY < 0) scrollUp();
-        else interruptJump();
+        // A mostly sideways swipe (a wide code block, a table) isn't a scroll up, whatever its hair of deltaY.
+        if (e.deltaY < 0 && -e.deltaY > Math.abs(e.deltaX)) scrollUp();
+        else {
+            interruptJump();
+            if (e.deltaY > 0) downAtEnd(e.target);
+        }
     };
     const onKey = (e: KeyboardEvent) => {
+        toggledRow();
         if (["ArrowUp", "PageUp", "Home"].includes(e.key) || (e.key === " " && e.shiftKey)) scrollUp();
-        else interruptJump();
+        else {
+            interruptJump();
+            if (["ArrowDown", "PageDown", "End", " "].includes(e.key)) downAtEnd(e.target);
+        }
     };
 
     /** Finished turns a steer carried on, while the chain still runs: they stay open until it ends. */
@@ -472,7 +630,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             <div class="transcript-fade" aria-hidden="true" />
             {/* Keeps one size while the panels slide (lib/layout.ts heldSizes): the conversation is laid out once, not every frame. */}
             <div class="transcript-hold" ref={box} classList={{ held: !!hold() }} style={hold()}>
-            <div class="transcript" ref={scroller} onScroll={onScroll} onWheel={onWheel} onTouchStart={press} onPointerDown={press} onKeyDown={onKey} aria-label="Conversation">
+            <div class="transcript" ref={scroller} onScroll={onScroll} onWheel={onWheel} onTouchStart={press} onPointerDown={press} onKeyDown={onKey} onClick={toggledRow} aria-label="Conversation">
                 {/* Clips the column's glide, so a translate never adds to what the conversation scrolls through. */}
                 <div class="transcript-glide">
                 <div class="transcript-col" ref={content}>
@@ -483,6 +641,14 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                             </button>
                         )}
                     </Show>
+                    {/* Started from another session's plan (in a new worktree): that session, a click away. */}
+                    <For each={(p.handle.view.state.planLinks ?? []).filter((l) => l.role === "from")}>
+                        {(l) => (
+                            <button class="forked-from" title={`Implementing a plan from another session, on ${l.branch}. Open that session.`} onClick={() => void activate(l.session)}>
+                                <ArrowUpLeft size={13} /> Plan from <span class="truncate">“{app.sessions.find((s) => s.id === l.session)?.title ?? app.archived.find((s) => s.id === l.session)?.title ?? l.title ?? "another session"}”</span>
+                            </button>
+                        )}
+                    </For>
                     <Show when={hidden()}>
                         <button class="earlier" onClick={earlier}>
                             Show {Math.min(PAGE, hidden())} earlier {hidden() === 1 ? "turn" : "turns"}
@@ -490,7 +656,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                     </Show>
                     <CardFoldsProvider sessionId={id}>
                         <For each={visible()}>{(t) => <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={rewind} onFork={() => forkFrom(t)}
-                            workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} held={held().has(t.id)} onElement={track} />}</For>
+                            workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} held={held().has(t.id)} onElement={track} onFold={fold} />}</For>
                     </CardFoldsProvider>
                     {/* Work that isn't a turn (a compaction, one while idle): it shows at the end, as a turn's would. */}
                     <Show when={p.handle.view.state.busy && specialActivity(p.handle.view.state.activity?.label) && !turns().some((t) => t.status === "running")}>
@@ -511,7 +677,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             <Show when={findOpen()}>
                 <FindBar turns={turns} scroller={() => scroller} dock={() => p.dock ?? 0} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={navigated} />
             </Show>
-            <Show when={!stick()}>
+            <Show when={!stick() && !scrolledDown()}>
                 <button class="jump glass" style={{ "--dock-h": dock() }} classList={{ "is-live": running() }} title="Jump to latest" aria-label={running() ? "Jump to latest: still working" : "Jump to latest"} onClick={() => { setStick(true); toBottom(true); }}>
                     {/* Still working down there: a spinner, where the arrow is. */}
                     <Show when={running()} fallback={<ArrowDown size={14} />}>

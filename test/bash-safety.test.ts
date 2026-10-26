@@ -2,13 +2,14 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { CASE_INSENSITIVE_FS } from "../src/util/files";
 
 // Isolate from the real ~/.harness before loading anything that reads paths.
 const prevHarnessHome = process.env.HARNESS_HOME;
 const HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-test-"));
 process.env.HARNESS_HOME = HARNESS_HOME;
 
-const { analyzeCommand, commandsWithDirs, effectiveArgv, isReadOnlyCommand, dangerousReason, sensitiveTarget, suggestBashRules } = await import("../src/permissions/bash-safety");
+const { analyzeCommand, commandsWithDirs, effectiveArgv, isReadOnlyCommand, dangerousReason, sensitiveTarget, shellCommands, suggestBashRules, withoutHeredocData } = await import("../src/permissions/bash-safety");
 const { bashRuleMatches } = await import("../src/permissions/rules");
 
 afterAll(() => {
@@ -566,4 +567,282 @@ test("cwd tracking accepts cd and pushd option terminators and cd physical/logic
         }
         expect(commandsWithDirs("cd - && cat file", cwd)[0]?.dir).toBeNull();
     } finally { rmSync(cwd, { recursive: true, force: true }); }
+});
+
+describe("here-documents (#448)", () => {
+    /** The command from the report: a heredoc's lines written to a file, then counted. */
+    const REPORT = "cat <<'EOF' > notes.txt\nSSO: SAML first, then OIDC\nGate enforcement on verified domains\nEOF\nwc -l notes.txt";
+    /** The programs that run, as the shell reads the line. */
+    const programs = (cmd: string) => shellCommands(cmd).commands.map((c) => c.argv[0]);
+
+    test("the shell reading has the real commands, not the data lines", () => {
+        expect(programs(REPORT)).toEqual(["cat", "wc"]);
+        expect(shellCommands(REPORT).commands[0]!.argv).toEqual(["cat", "notes.txt"]);
+        expect(shellCommands(REPORT).heredocOpen).toBeUndefined();
+    });
+
+    test.each([
+        ["unquoted", "cat <<EOF\nrm x\nEOF\nmake y"],
+        ["single-quoted", "cat <<'EOF'\nrm x\nEOF\nmake y"],
+        ["double-quoted", 'cat <<"EOF"\nrm x\nEOF\nmake y'],
+        ["partly quoted", "cat <<E'O'F\nrm x\nEOF\nmake y"],
+        ["escaped", "cat <<\\EOF\nrm x\nEOF\nmake y"],
+        ["spaced", "cat << EOF\nrm x\nEOF\nmake y"],
+        ["<<- strips leading tabs", "cat <<-EOF\n\trm x\n\tEOF\nmake y"],
+        ["with a redirection after it", "cat <<EOF > out.txt\nrm x\nEOF\nmake y"],
+        ["with a comment after it", "cat <<EOF # notes\nrm x\nEOF\nmake y"],
+    ])("%s delimiter: the data is skipped", (_, cmd) => {
+        expect(programs(cmd)).toEqual(["cat", "make"]);
+    });
+
+    test("several here-documents on one line are read in order", () => {
+        expect(programs("cat <<A; cat <<B\nrm a\nA\nrm b\nB\nmake y")).toEqual(["cat", "cat", "make"]);
+        expect(programs("diff /dev/fd/3 - 3<<A <<B\nrm a\nA\nrm b\nB\nmake y")).toEqual(["diff", "make"]);
+    });
+
+    test("a delimiter that never comes leaves the rest as data, and says so", () => {
+        expect(programs("cat <<EOF\nrm x\nmake y")).toEqual(["cat"]);
+        expect(shellCommands("cat <<EOF\nrm x\nmake y").heredocOpen).toBe(true);
+        // Only a line that is the delimiter ends it: not with spaces, or untabbed spaces with <<-.
+        expect(programs("cat <<EOF\nEOF \nrm x")).toEqual(["cat"]);
+        expect(programs("cat <<-EOF\n  EOF\nrm x")).toEqual(["cat"]);
+        expect(shellCommands("cat <<EOF").heredocOpen).toBe(true);
+    });
+
+    test("an unquoted document joins an escaped newline before looking for its delimiter, as bash and zsh do", () => {
+        expect(programs("cat <<EOF\na\\\nEOF\nrm x\nEOF\nmake y")).toEqual(["cat", "make"]);
+        // Quoted, the backslash is data and the next line can end it.
+        expect(programs("cat <<'EOF'\na\\\nEOF\nmake y")).toEqual(["cat", "make"]);
+    });
+
+    test("a delimiter that can't be read for certain makes the line unparsable", () => {
+        for (const cmd of ["npm test <<$X\nx\n$X", "npm test <<`x`\ny\nx", "npm test <<\nx", "npm test << ;\nx"]) {
+            expect(shellCommands(cmd).unparsable).toBe(true);
+            expect(isReadOnlyCommand(cmd)).toBe(false);
+        }
+    });
+
+    test("an unquoted document's substitutions run; a quoted one's are data", () => {
+        expect(shellCommands("cat <<EOF\n$(touch x)\nEOF").hasSubstitution).toBe(true);
+        expect(shellCommands("cat <<EOF\n`touch x`\nEOF").hasSubstitution).toBe(true);
+        expect(shellCommands("cat <<EOF\n${x:=y}\nEOF").unsafeExpansion).toBe(true);
+        expect(isReadOnlyCommand("cat <<EOF\n$(touch x)\nEOF")).toBe(false);
+        expect(isReadOnlyCommand("cat <<'EOF'\n$(touch x)\nEOF")).toBe(true);
+        expect(isReadOnlyCommand("cat <<EOF\n$HOME and ${HOME}\nEOF")).toBe(true);
+    });
+
+    describe("grant rules come from the commands that run", () => {
+        test("the reported command offers none of its data lines", () => {
+            const rules = suggestBashRules(REPORT);
+            expect(rules.join(" ")).not.toMatch(/SSO|Gate|EOF/);
+            // cat and wc are read-only programs: like `cat x > notes.txt; wc -l notes.txt`, no rule to offer.
+            expect(rules).toEqual(suggestBashRules("cat x > notes.txt\nwc -l notes.txt"));
+        });
+
+        test("a program that needs approval is offered, and its rule approves the line", () => {
+            const cmd = "npm test <<'EOF'\nSSO: SAML first\nGate it\nEOF";
+            expect(suggestBashRules(cmd)).toEqual(["Bash(npm test:*)"]);
+            expect(bashRuleMatches("npm test:*", cmd, "allow")).toBe(true);
+            expect(suggestBashRules("npm test <<A; make build <<B\nrm a\nA\ngit push\nB")).toEqual(["Bash(npm test:*)", "Bash(make build:*)"]);
+        });
+
+        test("no rules when where the data ends isn't certain", () => {
+            expect(suggestBashRules("npm test <<EOF\nrm x")).toEqual([]);
+            expect(suggestBashRules("npm test <<$X\nrm x\n$X")).toEqual([]);
+        });
+    });
+
+    describe("a quote in the data can't hide what runs after it (failed open before #448)", () => {
+        // To the shell the data's quote is data; read as a command it paired with the one in the
+        // comment, and `touch marker` became part of a word. bash and zsh both run it.
+        const HIDDEN = "cat <<EOF\ncat '\nEOF\ntouch marker # '";
+        const HIDDEN_DQ = 'cat <<EOF\ncat "\nEOF\ntouch marker # "';
+
+        test.each([HIDDEN, HIDDEN_DQ])("%p isn't read-only", (cmd) => {
+            expect(isReadOnlyCommand(cmd)).toBe(false);
+            expect(programs(cmd)).toEqual(["cat", "touch"]);
+        });
+
+        test.each([HIDDEN, HIDDEN_DQ])("%p isn't approved by an allow rule for the data's program", (cmd) => {
+            expect(bashRuleMatches("cat:*", cmd, "allow")).toBe(false);
+        });
+
+        test.each([HIDDEN, HIDDEN_DQ])("%p is caught by a deny rule for what runs", (cmd) => {
+            expect(bashRuleMatches("touch:*", cmd, "deny")).toBe(true);
+        });
+
+        test("the rule offered is for what runs", () => {
+            expect(suggestBashRules(HIDDEN)).toEqual(["Bash(touch:*)"]);
+        });
+
+        // After a substitution, and with a delimiter the shells take as written (`$X`, backticks):
+        // never approved, and deny rules see what runs after it.
+        test.each([
+            "echo $(true); cat <<EOF\ncat '\nEOF\ntouch marker # '",
+            "cat <<$X\ncat '\n$X\ntouch marker # '",
+            "cat <<${X}\ncat '\n${X}\ntouch marker # '",
+            "cat <<`x`\ncat '\n`x`\ntouch marker # '",
+        ])("%p: denied by a rule for what runs, approved by none", (cmd) => {
+            expect(bashRuleMatches("touch:*", cmd, "deny")).toBe(true);
+            expect(bashRuleMatches("cat:*", cmd, "allow")).toBe(false);
+            expect(isReadOnlyCommand(cmd)).toBe(false);
+        });
+    });
+
+    describe("protective checks still see data that may run", () => {
+        test("deny rules match a data line too (both readings)", () => {
+            expect(bashRuleMatches("rm:*", "bash <<'EOF'\nrm -rf build\nEOF", "deny")).toBe(true);
+            expect(bashRuleMatches("rm:*", "cat <<'EOF'\nrm -rf build\nEOF", "deny")).toBe(true);
+        });
+
+        test.each([
+            "bash <<'EOF'\nrm -rf /\nEOF",
+            "sh <<EOF\nrm -rf ~\nEOF",
+            "cat <<'EOF' | sh\nrm -rf /\nEOF",
+            "python3 - <<'EOF'\nimport os\nos.system(\"rm -rf / \")\nEOF",
+            "cat <<EOF\n$(rm -rf /)\nEOF",
+            "cat <<EOF > ~/.zshrc\nalias ls=ls\nEOF",
+            "PATH=/tmp cat <<'EOF'\nrm -rf /\nEOF",
+            "cat <<EOF\nrm -rf /",
+        ])("%p is still dangerous", (cmd) => {
+            expect(dangerousReason(cmd)).toBeDefined();
+        });
+    });
+
+    describe("data that only gets written or read isn't taken for a command (failed closed before #448)", () => {
+        test.each([
+            "cat <<'EOF'\nrm -rf /\nEOF",
+            "cat <<'EOF' > notes.txt\nrm -rf ~\nsudo reboot\nEOF",
+            "cat <<-EOF | grep rm\n\trm -rf /\n\tEOF",
+            "tee notes.txt <<EOF >/dev/null\ngit push --force origin main\nEOF",
+        ])("%p isn't dangerous", (cmd) => {
+            expect(dangerousReason(cmd)).toBeUndefined();
+        });
+
+        test("only the data is blanked, never what runs", () => {
+            expect(withoutHeredocData("cat <<'EOF' > notes.txt\nrm -rf /\nEOF\nwc -l notes.txt")).toBe("cat <<'EOF' > notes.txt\n        \nEOF\nwc -l notes.txt");
+            // A program that may run it, or a line the checks can't follow: nothing is blanked.
+            for (const cmd of ["bash <<EOF\nx\nEOF", "cat <<EOF | sh\nx\nEOF", "cat <<EOF\nx", "cat <<EOF\n$(x)\nEOF", "cat <<EOF\nx\nEOF\nrm y", "sort --compress-program=sh <<EOF\nx\nEOF"]) {
+                expect(withoutHeredocData(cmd)).toBeUndefined();
+            }
+        });
+
+        test("a read-only line with data is read-only", () => {
+            expect(isReadOnlyCommand("cat <<'EOF'\nrm -rf /\nit's here\nEOF")).toBe(true);
+            expect(isReadOnlyCommand("grep -c x <<EOF\nnpm publish\nEOF")).toBe(true);
+        });
+
+        test("data written where it runs later isn't blanked", () => {
+            for (const cmd of ["tee -a ~/.bashrc <<'EOF'\nrm -rf ~\nEOF", "tee .git/hooks/pre-commit <<'EOF' >/dev/null\nrm -rf ~\nEOF", "cat <<'EOF' > .git/hooks/pre-push\nrm -rf ~\nEOF", ...(CASE_INSENSITIVE_FS ? ["cat <<'EOF' >> ~/.ZPROFILE\nrm -rf ~\nEOF"] : [])]) {
+                expect(withoutHeredocData(cmd)).toBeUndefined();
+                expect(dangerousReason(cmd)).toBeDefined();
+            }
+            expect(dangerousReason("tee -a notes.txt <<'EOF'\nrm -rf ~\nEOF")).toBeUndefined();
+            // uniq writes its second operand; aliases, direnv and login items run later too.
+            for (const cmd of ["uniq - ~/.bashrc <<'EOF'\nrm -rf ~\nEOF", "uniq /dev/stdin ~/.bashrc <<EOF\nrm -rf ~\nEOF", "tee -a ~/.bash_aliases <<'EOF'\nrm -rf ~\nEOF", "cat <<'EOF' >> .envrc\nrm -rf ~\nEOF", "cat <<'EOF' > ~/.config/autostart/x.desktop\nExec=rm -rf ~\nEOF", "tee ~/Library/LaunchAgents/x.plist <<'EOF'\nrm -rf ~\nEOF"]) {
+                expect(withoutHeredocData(cmd)).toBeUndefined();
+            }
+            expect(withoutHeredocData("uniq <<'EOF'\nrm -rf ~\nEOF")).toBeDefined();
+        });
+    });
+
+    // Review of #453: each checked in bash, zsh and sh, where every one runs `touch marker`.
+    describe("a here-string isn't a here-document", () => {
+        test.each([
+            "cat <<<EOF\ntouch marker\nEOF\ncat <<A\nA",
+            "cat <<< EOF <<A\nA\ntouch marker",
+            "cat <<<x <<EOF\ny\nEOF\ntouch marker",
+            "cat 0<<<EOF\ntouch marker\nEOF\ncat <<A\nA",
+        ])("%p runs touch: not read-only, not approved by Bash(cat:*)", (cmd) => {
+            expect(programs(cmd)).toContain("touch");
+            expect(isReadOnlyCommand(cmd)).toBe(false);
+            expect(bashRuleMatches("cat:*", cmd, "allow")).toBe(false);
+            expect(suggestBashRules(cmd)).toContain("Bash(touch:*)");
+        });
+
+        // An escaped or quoted `<` before `<<` isn't part of a here-string: the `<<` is a here-document.
+        test.each([
+            "cat \\<<<EOF\ncat '\nEOF\ntouch marker # '",
+            "cat x\\<<<EOF\ncat '\nEOF\ntouch marker # '",
+            "cat '<'<<EOF\ncat '\nEOF\ntouch marker # '",
+        ])("%p runs touch after its data", (cmd) => {
+            expect(programs(cmd)).toContain("touch");
+            expect(isReadOnlyCommand(cmd)).toBe(false);
+            expect(bashRuleMatches("cat:*", cmd, "allow")).toBe(false);
+            expect(bashRuleMatches("touch:*", cmd, "deny")).toBe(true);
+        });
+
+        test("what follows a here-string is judged, not blanked", () => {
+            const cmd = "cat <<<EOF\nrm -rf ~\nEOF\ncat <<A\nA";
+            expect(withoutHeredocData(cmd) ?? cmd).toContain("rm -rf ~");
+            expect(dangerousReason(cmd)).toBeDefined();
+        });
+    });
+
+    describe("a version or help flag that runs stdin isn't read-only", () => {
+        test.each([
+            "bash -h <<EOF\ntouch marker\nEOF",
+            "sh -h <<EOF\ntouch marker\nEOF",
+            "zsh -h <<EOF\ntouch marker\nEOF",
+            "zsh -V <<EOF\ntouch marker\nEOF",
+            "npx -V <<EOF\ntouch marker\nEOF",
+            "python3 -v <<'EOF'\nimport os; os.system(\"touch marker\")\nEOF",
+            "python -v <<'EOF'\nimport os\nEOF",
+            "echo 'touch marker' | bash -h",
+            "echo 'touch marker' | zsh -V",
+            // dash (sh on Debian and Ubuntu) takes -V as its vi option.
+            "sh -V <<EOF\ntouch marker\nEOF",
+            "echo 'touch marker' | sh -V",
+            "bash -V <<EOF\ntouch marker\nEOF",
+        ])("%p", (cmd) => {
+            expect(isReadOnlyCommand(cmd)).toBe(false);
+        });
+
+        test.each(["bash --version", "bash --help", "sh --version", "zsh --version", "zsh --help", "npx --version", "npx -h", "python3 -V", "python3 --version", "python3 -h", "node -v", "ruby -v", "curl -h", "ssh -V", "git --version"])("%p still is", (cmd) => {
+            expect(isReadOnlyCommand(cmd)).toBe(true);
+        });
+    });
+
+    // Review of #453: the shell joins escaped newlines before it reads `$(`, so each runs touch (bash and dash).
+    describe("an escaped newline inside `$(`, `${` or `$[` doesn't hide it", () => {
+        test.each([
+            "cat <<EOF\n$\\\n(touch marker)\nEOF",
+            "cat <<EOF\n$\\\n\\\n(touch marker)\nEOF",
+            "cat <<EOF\nx $\\\n(touch marker) y\nEOF",
+            "echo $\\\n(touch marker)",
+            'echo "$\\\n(touch marker)"',
+            "cat <\\\n(touch marker)",
+        ])("%p runs touch", (cmd) => {
+            expect(isReadOnlyCommand(cmd)).toBe(false);
+            expect(bashRuleMatches("cat:*", cmd, "allow")).toBe(false);
+            expect(bashRuleMatches("echo:*", cmd, "allow")).toBe(false);
+            expect(bashRuleMatches("touch:*", cmd, "deny")).toBe(true);
+            expect(withoutHeredocData(cmd)).toBeUndefined();
+        });
+
+        test.each(["cat <<EOF\n$\\\n{x/a/b}\nEOF", "cat <<EOF\n$\\\n[1+1]\nEOF", "echo $\\\n{x:-y}", "echo $\\\n'\\x41'"])("%p isn't read-only", (cmd) => {
+            expect(isReadOnlyCommand(cmd)).toBe(false);
+        });
+
+        test("a quoted here-document's data is still only data", () => {
+            const cmd = "cat <<'EOF'\n$\\\n(touch marker)\nEOF";
+            expect(isReadOnlyCommand(cmd)).toBe(true);
+            expect(withoutHeredocData(cmd)).toBeDefined();
+        });
+    });
+
+    describe("a delimiter whose end can't be known: deny rules see what runs after it", () => {
+        test.each([
+            "cat <<$'EOF'\n'\nEOF\ntouch marker #'",
+            "cat <<E$'O'F\n'\nEOF\ntouch marker #'",
+            'cat <<$"EOF"\n\'\nEOF\ntouch marker #\'',
+            "cat <<$(x)\n'\n$(x)\ntouch marker #'",
+            "cat <<\"E F\"\n'\nE F\ntouch marker #'",
+        ])("%p", (cmd) => {
+            expect(bashRuleMatches("touch:*", cmd, "deny")).toBe(true);
+            expect(bashRuleMatches("cat:*", cmd, "allow")).toBe(false);
+            expect(isReadOnlyCommand(cmd)).toBe(false);
+            expect(suggestBashRules(cmd)).toEqual([]);
+        });
+    });
 });

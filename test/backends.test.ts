@@ -87,7 +87,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_IGNORE_INTERRUPT", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_MS", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS", "FAKE_SHELL_STATUS", "FAKE_STOP_ANSWER", "FAKE_STOP_MS", "FAKE_FOLLOWUP_MS", "FAKE_RESULT_DELAY_MS", "FAKE_EXIT_AFTER_MS", "FAKE_STOP_STATUS", "FAKE_STOP_TURN_AT", "FAKE_STOP_NOTIFY_AT", "FAKE_STOP_RESULT_AT", "FAKE_SHELL_NOTIFY_MS"]) delete process.env[k];
+    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_IGNORE_INTERRUPT", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_MS", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_FG_TASK", "FAKE_SUB_COMMANDS", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS", "FAKE_SHELL_STATUS", "FAKE_STOP_ANSWER", "FAKE_STOP_MS", "FAKE_FOLLOWUP_MS", "FAKE_RESULT_DELAY_MS", "FAKE_EXIT_AFTER_MS", "FAKE_STOP_STATUS", "FAKE_STOP_TURN_AT", "FAKE_STOP_NOTIFY_AT", "FAKE_STOP_RESULT_AT", "FAKE_SHELL_NOTIFY_MS"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -569,6 +569,19 @@ describe("Claude Code's background work (live test findings)", () => {
         expect(texts(events)).toContain("The explorer reported back");
         expect(notices(events).join("\n")).toMatch(/^info: Waiting for 1 background sub-agent \(Map auth\)/m);
         expect(session.messages.at(-1)!.content.map((p) => (p as any).text).join("\n")).toContain("The explorer reported back");
+    });
+
+    test("a skill that runs as its own agent (as /code-review does) ends with its Skill call: done, or stopped when declined, whether or not Claude Code says it ended", async () => {
+        for (const [scenario, ended] of [["skill-agent", "done"], ["skill-agent-quiet", "done"], ["skill-agent-declined", "aborted"]] as const) {
+            process.env.FAKE_SCENARIO = scenario;
+            const { run, events } = await makeAgent({ provider: "claude-code" });
+            await run("review the diff");
+            // Once: not left running after its call is over, and not ended twice when Claude Code does say.
+            expect({ scenario, ends: subEnds(events) }).toEqual({ scenario, ends: [ended] });
+            // What the skill returned is its report, also when Claude Code said it ended first.
+            const reported = events.some((e) => e.type === "subagent" && e.event.type === "text" && e.event.text === "No findings.");
+            if (ended === "done") expect({ scenario, reported }).toEqual({ scenario, reported: true });
+        }
     });
 
     test("...and its usage is what Claude Code reports for it", async () => {
@@ -1113,6 +1126,49 @@ describe("Claude Code's background work (live test findings)", () => {
         expect(texts(later)).toBe("Working on it.All done.");
         expect(session.messages.at(-1)!.content.map((p) => (p as any).text).join("\n")).toContain("All done.");
         expect(notices(later).join("\n")).toMatch(/didn't finish before the previous session ended/);
+    });
+
+    test("#311: a resumed run says what the last run left behind, each task once (a sub-agent, a shell command)", async () => {
+        const { run, events } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
+        await run("first");
+        process.env.FAKE_STALE_TASK = "2";
+        const from = events.length;
+        expect(await run("second")).toBe("done");
+        expect(notices(events.slice(from)).filter((n) => n.startsWith("info: Claude Code: "))).toEqual([
+            "info: Claude Code: Background agent \"Map auth\" didn't finish before the previous session ended.",
+            "info: Claude Code: Background shell command didn't finish before the previous session ended.",
+        ]);
+    });
+
+    test("#311: a background sub-agent's own foreground commands that fail or are stopped aren't said as left behind (a resumed run); its report still comes", async () => {
+        const { run, events } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
+        await run("first");
+        process.env.FAKE_SCENARIO = "agent-background";
+        process.env.FAKE_SUB_COMMANDS = "1";
+        const from = events.length;
+        expect(await run("map the auth module")).toBe("done");
+        const later = events.slice(from);
+        expect(starts()[1]!.argv).toContain("--resume");
+        expect(JSON.stringify(later)).toContain("toolu_sub_cmd2");
+        expect(notices(later).filter((n) => n.startsWith("info: Claude Code: "))).toEqual([]);
+        expect(texts(later)).toContain("The explorer reported back");
+    });
+
+    test("#311: Esc on a foreground command in a resumed run: its stop isn't said as left behind", async () => {
+        const { run, events } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
+        await run("first");
+        process.env.FAKE_SCENARIO = "hang";
+        process.env.FAKE_FG_TASK = "1";
+        const from = events.length;
+        const ac = new AbortController();
+        const done = run("go", ac.signal);
+        while (!events.slice(from).some((e) => e.type === "tool_start")) await Bun.sleep(10);
+        ac.abort();
+        expect(await done).toBe("aborted");
+        const later = events.slice(from);
+        expect(starts()[1]!.argv).toContain("--resume");
+        expect(toolEnds(later)[0]!.result.content).toBe("Interrupted by user");
+        expect(notices(later).filter((n) => n.startsWith("info: Claude Code: "))).toEqual([]);
     });
 
     test("a reply with nothing in it says so", async () => {
@@ -2191,10 +2247,12 @@ describe("fast mode backend wiring", () => {
 // session: whichever goes on with a shared one first forks it (natively), and
 // one that saw past the fork point isn't shared at all.
 describe("forked sessions", () => {
-    for (const provider of ["claude-code", "codex"] as const) for (const change of ["none", "selection", "folder"] as const) test(`${provider}: named-account fork with ${change} change respects the source folder`, async () => {
-        const { addAccount, removeAccount } = await import("../src/providers/accounts");
+    for (const provider of ["claude-code", "codex"] as const) for (const change of ["none", "shared", "selection", "folder"] as const) test(`${provider}: named-account fork with ${change} change respects the source folder`, async () => {
+        const { accountPlace, addAccount, removeAccount } = await import("../src/providers/accounts");
         const selected = addAccount(provider, { id: "fork-work", name: "Fork work" });
-        const other = addAccount(provider, { id: "fork-other", name: "Fork other" });
+        // An existing folder keeps a history of its own; a Harness-made account shares Default's, as fork-work does (#377).
+        const other = addAccount(provider, { id: "fork-other", name: "Fork other", folder: join(bin, `${provider}-other`) });
+        const sharing = addAccount(provider, { id: "fork-sharing", name: "Fork sharing" });
         const source = Session.create(cwd);
         source.setAccount(provider, selected.id);
         const settings = { delegation: false, permissions: { allow: ["Bash(touch:*)"] } };
@@ -2211,25 +2269,28 @@ describe("forked sessions", () => {
             }
             const session = forkSession(source, { cut: source.messages.length });
             expect(session.accountId(provider)).toBe(selected.id);
-            expect(session.backendSession(provider, selected.folder)).toMatchObject({ id: shared, fork: true });
+            expect(session.backendSession(provider, { folder: selected.folder })).toMatchObject({ id: shared, fork: true });
             if (change === "selection") session.setAccount(provider, other.id);
+            if (change === "shared") session.setAccount(provider, sharing.id);
             session.release();
             fork = await makeAgent({ provider, session: Session.load(session.path), settings, ask: () => ({ allow: true }) });
             rmSync(LOG, { force: true });
             expect(await fork.run("in the fork")).toBe("done");
-            const folder = change === "selection" ? other.folder : replacement.folder;
+            const folder = change === "selection" ? other.folder : change === "shared" ? sharing.folder : replacement.folder;
+            // The fork's own copy of the thread, natively, wherever its CLI finds the thread.
+            const native = change === "none" || change === "shared";
             expect(starts()[0][provider === "codex" ? "codexHome" : "claudeConfigDir"]).toBe(folder);
             if (provider === "claude-code") {
-                expect(resumes()).toEqual([change === "none" ? `${shared} (fork)` : "new"]);
-                if (change !== "none") expect(userTexts().at(-1)).toContain("User: first on work");
+                expect(resumes()).toEqual([native ? `${shared} (fork)` : "new"]);
+                if (!native) expect(userTexts().at(-1)).toContain("User: first on work");
             } else {
                 const threads = received().filter((m) => m.method?.startsWith("thread/") && !m.method.startsWith("thread/goal/"));
-                expect(threads.map((m) => m.method)).toEqual([change === "none" ? "thread/fork" : "thread/start"]);
-                if (change === "none") expect(threads[0].params.threadId).toBe(shared);
+                expect(threads.map((m) => m.method)).toEqual([native ? "thread/fork" : "thread/start"]);
+                if (native) expect(threads[0].params.threadId).toBe(shared);
                 else expect(JSON.stringify(received().find((m) => m.method === "turn/start")?.params.input)).toContain("User: first on work");
             }
-            expect(fork.session.backendSession(provider, folder)?.fork).toBeUndefined();
-            expect(source.backendSession(provider, selected.folder)).toMatchObject({ id: shared, fork: true });
+            expect(fork.session.backendSession(provider, accountPlace(provider, fork.session.accountId(provider)))?.fork).toBeUndefined();
+            expect(source.backendSession(provider, { folder: selected.folder })).toMatchObject({ id: shared, fork: true });
         } finally {
             await fork?.agent.dispose();
             fork?.session.release();
@@ -2237,6 +2298,7 @@ describe("forked sessions", () => {
             source.release();
             removeAccount(provider, replacement.id, replacement.folder);
             removeAccount(provider, other.id, other.folder);
+            removeAccount(provider, sharing.id, sharing.folder);
         }
     });
 

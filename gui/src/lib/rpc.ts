@@ -3,6 +3,7 @@
 // restarted desktop sidecar with a new port and token is picked up).
 
 import type { Method, ParamsOf, ResultOf, ServerEvent, ServerMessage } from "@shared/protocol";
+import { decodeBrowserFrame, type BrowserImageFrame } from "../../../src/server/browser-wire";
 import { RequestAges } from "./request-age";
 
 export interface Credentials {
@@ -31,6 +32,7 @@ interface Pending {
 
 export class Rpc {
     private ws?: WebSocket;
+    private frameListeners = new Set<(frame: BrowserImageFrame) => void>();
     private next = 1;
     private pending = new Map<number, Pending>();
     private listeners = new Set<(e: ServerEvent) => void>();
@@ -47,6 +49,30 @@ export class Rpc {
 
     /** `windowKey`: this window's, presented on every connection; the server's terminals belong to it. */
     constructor(private credentials: () => Promise<Credentials | undefined>, private windowKey?: () => string) {}
+
+    /** A separate connection with the same credential lifecycle; pictures never queue behind chat. */
+    browserStream(): Rpc {
+        const stream = new Rpc(async () => {
+            const credentials = await this.credentials();
+            if (!credentials) return;
+            const url = new URL(credentials.url);
+            url.pathname = "/browser-stream";
+            return { ...credentials, url: url.toString() };
+        }, this.windowKey);
+        stream.retriesCredentials = this.retriesCredentials;
+        return stream;
+    }
+
+    onFrame(fn: (frame: BrowserImageFrame) => void): () => void {
+        this.frameListeners.add(fn);
+        return () => this.frameListeners.delete(fn);
+    }
+
+    /** Ephemeral input is never replayed after a disconnect. */
+    notify(method: "browser.input" | "browser.ack", params: ParamsOf<typeof method>): void {
+        if (this.closed || this.ws?.readyState !== WebSocket.OPEN) return;
+        try { this.ws.send(JSON.stringify({ method, params })); } catch { /* The transport closed; never replay input. */ }
+    }
 
     onEvent(fn: (e: ServerEvent) => void): () => void {
         this.listeners.add(fn);
@@ -107,6 +133,7 @@ export class Rpc {
         const key = this.windowKey?.();
         const ws = new WebSocket(creds.url, ["harness.v1", `auth.${creds.token}`, ...(key ? [`window.${key}`] : [])]);
         this.ws = ws;
+        ws.binaryType = "arraybuffer";
         let opened = false;
         ws.onopen = () => {
             if (this.ws !== ws || this.closed) return;
@@ -115,7 +142,11 @@ export class Rpc {
             this.setState("open");
         };
         ws.onmessage = (m) => {
-            if (this.ws === ws && !this.closed) this.receive(String(m.data));
+            if (this.ws !== ws || this.closed) return;
+            if (m.data instanceof ArrayBuffer) {
+                const frame = decodeBrowserFrame(m.data);
+                if (frame) for (const fn of this.frameListeners) fn(frame);
+            } else this.receive(String(m.data));
         };
         ws.onclose = (ev) => {
             if (this.ws !== ws) return;

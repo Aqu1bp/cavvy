@@ -9,6 +9,8 @@ const counters: Fields = Object.fromEntries([
 counters.cache_creation = { ephemeral_5m_input_tokens: true, ephemeral_1h_input_tokens: true };
 const fields: Fields = {
     t: true, type: true, at: true, timestamp: true, model: true, cost: true, unknown: true, accountId: true,
+    // A Harness session's account, backend, parked and subagent lines (usage-reader.ts ran()).
+    provider: true, id: true, fork: true, createdAt: true,
     sessionId: true, requestId: true, usage: counters,
     message: { id: true, model: true, usage: counters },
     payload: { type: true, id: true, session_id: true, model: true,

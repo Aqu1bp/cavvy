@@ -218,8 +218,9 @@ for (const sub of ["src", "..app", "nested/..app"]) test(`implementing from ${su
         expect(next.session.model).toBe("test:model");
         expect(prompt).toContain("# Build feature");
         expect(prompt).toContain(base);
-        expect(next.session.planLinks[0]).toMatchObject({ role: "from", session: rt.id });
-        expect(rt.session.planLinks[0]).toMatchObject({ role: "to", session: next.id });
+        // Both links name the plan they're for: the session can have presented others.
+        expect(next.session.planLinks[0]).toMatchObject({ role: "from", session: rt.id, plan: "plan-id" });
+        expect(rt.session.planLinks[0]).toMatchObject({ role: "to", session: next.id, plan: "plan-id" });
         expect(readFileSync(join(main, sub, "file.ts"), "utf8")).toBe("source\n");
     } finally { await engine.stop(); }
 });

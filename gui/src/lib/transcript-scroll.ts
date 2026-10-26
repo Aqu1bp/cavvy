@@ -3,7 +3,7 @@ export const TURN_PAGE = 40;
 /** On a turn far from the view (Transcript): it skips layout and paint until it comes near. */
 export const FAR = "data-far";
 
-export type ScrollAnchor = { turnId: string; offset: number; part?: string; partOffset?: number };
+export type ScrollAnchor = { turnId: string; offset: number; part?: string; partOffset?: number; row?: number; rowOffset?: number };
 export type TranscriptPosition = {
     bottom: boolean;
     top: number;

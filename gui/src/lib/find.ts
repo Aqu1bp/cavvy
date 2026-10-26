@@ -4,11 +4,13 @@
 
 import { foldCase, type Block, type Turn } from "@shared/protocol";
 import { cardOf } from "../components/blocks/Activity";
-import { commandDescription, toolLabel } from "./tool-words";
-import { commandMeta, outputLines } from "./command-row";
+import { planTitle } from "./plan-chat";
+import { toolLabel } from "./tool-words";
+import { commandLabel, commandMeta, outputLines } from "./command-row";
 import { stripAnsi } from "./format";
 import { renderMarkdown } from "./markdown";
 import { splitComments } from "./review-comments";
+import { noticeReads } from "./notices";
 
 /** More than this and the count says "N+". */
 export const MAX_MATCHES = 5000;
@@ -47,13 +49,15 @@ function blockText(b: Block): string | undefined {
             const l = toolLabel(b);
             // A sub-agent's row starts with its task, not the word "Agent", running or not.
             if (b.agent) return typeof b.input?.description === "string" && b.input.description.trim() ? b.input.description.trim() : l.arg;
+            // A plan's card: its title (the rest is a faded glimpse; the plan dialog has all of it).
+            if (cardOf(b) === "plan") return b.status === "streaming" || b.status === "queued" ? undefined : planTitle(String(b.input?.plan ?? "")) || "Plan";
             if (cardOf(b) === "command") {
-                // As its row reads: what it's for, the command, what it came to; opened, all of the command and its output.
+                // As its row reads folded: its label (what it's for, or the command shortened) and what it came to;
+                // opened, all of the command and its output.
                 if (b.status === "streaming") return undefined;
-                const desc = commandDescription(b);
                 // Under way, the turn's live line shows it: its command is what find counts there (its description is the line's label).
                 if (b.status === "running" || b.status === "queued" || b.status === "awaiting") return l.arg;
-                const head = [desc, l.arg, commandMeta(b)].filter(Boolean).join(" ");
+                const head = [commandLabel(b), commandMeta(b)].filter(Boolean).join(" ");
                 const command = String(b.input?.command ?? "").trim();
                 // Its output as the opened row draws it (without the exit code the tool adds: the footer, which find skips, says it).
                 const output = outputLines(b.output, b.status === "error").join("\n");
@@ -68,8 +72,8 @@ function blockText(b: Block): string | undefined {
             return [cardOf(b) ? undefined : l.verb, l.arg, meta].filter(Boolean).join(" ");
         }
         case "notice":
-            // As it reads unfolded: the line, then each of its details.
-            return [b.text, ...(b.details ?? [])].join("\n");
+            // As it reads opened (lib/notices.ts): its title or line, then what folds under it.
+            return noticeReads(b, Date.now());
         case "compact":
             return plain(b.summary);
         case "shell":

@@ -7,6 +7,7 @@ import { fileURLToPath } from "url";
 import type { AgentRun, Block } from "../src/server/protocol";
 import { agentsByWorktree, agentWorktree, commandPaths, normalPath, shellWords, toolPaths, worktreeOf } from "../src/server/worktree-agents";
 import { keepWorktree, ownOnScreen, pickScope, pickWorktree, worktreeWork, type ReviewPlace } from "../gui/src/lib/worktree-work";
+import { viewMenu } from "../gui/src/lib/review-stack";
 
 const HOME = "/Users/me";
 const MAIN = "/Users/me/repo";
@@ -190,6 +191,25 @@ describe("the reader's choice of worktree", () => {
         }
         // At home, nothing to fall back from.
         expect(keepWorktree(own, [])).toBe(own);
+    });
+
+    test("the view menu picks as the old controls did: a worktree, then its views, then home again", () => {
+        const turns = [{ id: 1, prompt: "Fix it", startedAt: 1, endedAt: 2 }];
+        const menu = (place: ReviewPlace, turnId?: number) => viewMenu({ place, turnId, repo: true, turns, busy: false });
+        // At home on a recorded turn: that turn is the one checked, no view is.
+        const onTurn = pickScope(own, "turn");
+        expect(menu(onTurn, 1).turns[0]!.on).toBe(true);
+        expect(menu(onTurn, 1).views.some((v) => v.on)).toBe(false);
+        // Another worktree from the menu: its branch, the turns gone, a turn picked there changes nothing.
+        const there = pickWorktree(onTurn, TMP);
+        expect(menu(there).views.find((v) => v.on)?.scope).toBe("branch");
+        expect(menu(there).turns).toEqual([]);
+        expect(pickScope(there, "turn")).toBe(there);
+        expect(menu(there).views.filter((v) => v.disabled).map((v) => v.scope)).toEqual(["last-turn", "harness"]);
+        // Back to This session: the turn it was on.
+        const home = pickWorktree(pickScope(there, "uncommitted"), undefined);
+        expect(home).toEqual({ scope: "turn", base: "origin/main" });
+        expect(menu(home, 1).turns[0]!.on).toBe(true);
     });
 
     test("the session's own actions wait for the session's own answer: back from another worktree, its diff stays on screen until the session's comes", () => {

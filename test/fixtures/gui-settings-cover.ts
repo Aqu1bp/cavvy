@@ -65,7 +65,7 @@ test("a menu of the covered session opened while Settings is up (a shortcut, say
     let closes = 0;
     const doc = { addEventListener() {}, removeEventListener() {} };
     const Popover = component(source, "Popover", {
-        settingsTab: tab, document: doc, window: doc, requestAnimationFrame() {}, mountMenu: () => () => {}, placePopover: () => undefined,
+        settingsTab: tab, document: doc, window: doc, requestAnimationFrame() {}, mountMenu: () => () => {}, placePopover: () => undefined, sp: (n: number) => n,
         renderer: { ...solid, ...renderer, Portal: (p: any) => p.children },
     });
     const covered = { closest: (sel: string) => (sel.includes(".settings-page") ? null : covered) };

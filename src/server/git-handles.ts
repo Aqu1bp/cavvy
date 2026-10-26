@@ -4,12 +4,22 @@
 // it, for the folder it was listed in. Names redact() leaves alone need none and go back as they are.
 
 import { randomBytes } from "crypto";
+import { realpathSync } from "fs";
 import { resolve } from "path";
 import type { GitChangesInfo } from "./protocol";
 import { RpcError } from "./rpc-error";
 import { redact } from "../util/redact";
 
 type Kind = "path" | "ref";
+
+/** A worktree's folder as the diff reader resolves names in it (session-worktrees.ts takes its real path). */
+function realFolder(path: string): string {
+    try {
+        return realpathSync(path);
+    } catch {
+        return resolve(path);
+    }
+}
 /** Handles kept per session, the oldest let go first: a listing names at most a few thousand. */
 const MAX = 4096;
 
@@ -77,6 +87,19 @@ export class GitHandles {
             }),
             bases: [],
         };
+        // A turn's other worktrees: their branches redacted, and their files with handles for the folder each is in,
+        // as the diff reader lists that worktree (by its real path) when the card opens it there.
+        if (info.places) {
+            out.places = info.places.map((p) => {
+                const root = realFolder(p.path);
+                return {
+                    ...p,
+                    ...(p.branch !== undefined ? { branch: redact(p.branch) } : {}),
+                    ...(p.base !== undefined ? { base: redact(p.base) } : {}),
+                    ...(p.top ? { top: p.top.map((f) => { const n = this.show("path", root, f.path); return { ...f, path: n.text, ...(n.token ? { pathToken: n.token } : {}) }; }) } : {}),
+                };
+            });
+        }
         if (info.reason !== undefined) out.reason = redact(info.reason);
         if (info.notes) out.notes = info.notes.map(redact);
         if (info.turns) out.turns = info.turns.map((t) => ({ ...t, prompt: redact(t.prompt) }));
