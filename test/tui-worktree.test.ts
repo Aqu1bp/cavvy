@@ -89,7 +89,7 @@ describe("making the worktree", () => {
 
     test("the branch prefix can be changed or left out", async () => {
         const main = repo();
-        expect((await W.enterSessionWorktree({ cwd: main, name: "x", branchPrefix: "aquib/" })).branch).toBe("aquib/x");
+        expect((await W.enterSessionWorktree({ cwd: main, name: "x", branchPrefix: "me/" })).branch).toBe("me/x");
         expect((await W.enterSessionWorktree({ cwd: main, name: "y", branchPrefix: "" })).branch).toBe("y");
         // A prefix that makes the branch invalid is refused before anything's made.
         const e = await failure(W.enterSessionWorktree({ cwd: main, name: "z", branchPrefix: "bad prefix/" }));
