@@ -8,15 +8,17 @@ import { dirname } from "node:path";
 export const SCRATCH = process.env.PROBE_SCRATCH ?? "/tmp/live-probes-scratch";
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Scrub anything that looks like an account email, org/account/user id or token before it is written. */
+/** Scrub anything that looks like an account email, an org, account, user or install id, or a token before it is written. */
 export function scrub<T>(v: T): T {
     const s = JSON.stringify(v)
         .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "<email>")
         .replace(/\b(sk|sess|ghp|gho|xox[a-z])-[A-Za-z0-9_-]{16,}/g, "<token>")
         .replace(/(eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,})/g, "<jwt>")
-        .replace(/("(?:[A-Za-z]*(?:account|org|organization|user|workspace|chatgpt|tenant)_?(?:id|uuid))"\s*:\s*)"[^"]*"/gi, '$1"<id>"')
+        .replace(/("(?:[A-Za-z]*(?:account|org|organization|user|workspace|chatgpt|tenant|installation|device|machine)_?(?:id|uuid))"\s*:\s*)"[^"]*"/gi, '$1"<id>"')
         .replace(/("(?:email|name|display_?name)"\s*:\s*)"[^"]*@[^"]*"/gi, '$1"<email>"')
         .replace(/\/Users\/[^/"\s]+/g, "/Users/<user>")
+        // claude.ai's synced skills and plugins sit in a folder named for the organization and account (<org>_<account>).
+        .replace(/\/synced\/[0-9a-f]{8}-[0-9a-f-]{27}_[0-9a-f]{8}-[0-9a-f-]{27}/gi, "/synced/<org>_<account>")
         .replace(/\baquibs?-macbook-pro(\.local)?\b/gi, "<host>")
         .replace(/("balance"\s*:\s*)"[^"]*"/g, '$1"<n>"')
         .replace(/\baquib\b/gi, "<user>");
