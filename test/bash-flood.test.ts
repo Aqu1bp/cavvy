@@ -77,9 +77,12 @@ function wholeLines(content: string): string[] {
 
 describe("a background flood", () => {
     test("leaves the server its turns, and BashOutput (filtered or not) answers while it runs", async () => {
-        const { ctx } = setup();
-        // Two lines per `yes` round, 23 characters, cut at a whole round.
-        const { id, shell } = await background(ctx, "yes 'GET /a 200\nPOST /b 500' | head -c 19999995; echo FINAL_MARKER");
+        const { ctx, dir } = setup();
+        // A flood for a set time, not a set size: a fast machine prints 20 MB in under 50 ms, over before the reads below.
+        const flood = "const chunk = 'GET /a 200\\nPOST /b 500\\n'.repeat(1000); const end = Date.now() + 400; while (Date.now() < end) await write(chunk); await write('FINAL_MARKER\\n');";
+        const { id, shell } = await background(ctx, script(dir, flood));
+        // Once it has started (its runtime takes a moment to): the reads below are then all in the flood.
+        for (let i = 0; i < 1000 && !shell.output.includes("POST /b 500"); i++) await Bun.sleep(5);
         const reads: string[] = [];
         const { turns } = await turnsDuring(async () => {
             for (let i = 0; i < 4 && shell.exitCode === null; i++) {
@@ -160,7 +163,8 @@ describe("a background flood", () => {
         const tag = `FLOOD${process.pid}${Date.now()}`;
         const { id, shell } = await background(ctx, `yes ${tag}`);
         const { turns } = await turnsDuring(async () => {
-            for (let i = 0; i < 2000 && shell.output.length < 500_000; i++) await Bun.sleep(5);
+            // A set time of flood (about 300 ms), not a set size: a fast machine prints 500 KB in a few turns.
+            for (let i = 0; i < 60; i++) await Bun.sleep(5);
         });
         expect(turns).toBeGreaterThanOrEqual(5);
         expect(shell.output).toContain(tag);

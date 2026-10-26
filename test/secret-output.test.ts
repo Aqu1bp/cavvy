@@ -509,7 +509,9 @@ test("round 2: exhausted session quota does not affect small outputs or keep the
     const command = script(dir, `for (let i = 0; i < 8300; i++) await write('x'.repeat(1023) + '\\n');`);
     let path = "";
     let last = "";
-    for (let i = 0; i < 8; i++) {
+    // Until the session's quota is used: each run saves just under 8 MiB, how far under depending on how the OS
+    // hands the output over (a chunk that would cross the file limit isn't saved), so 8 runs aren't always 64 MiB.
+    for (let i = 0; i < 12 && !last.includes("64 MiB session"); i++) {
         const out = await BashTool.run({ command }, ctx);
         path ||= /(?:Full|Saved) output: (.+)/.exec(out.content)![1]!;
         last = out.content;
