@@ -42,8 +42,8 @@ test("spaces and well-formed non-ASCII characters remain valid", () => {
 
 test("both CLI tool descriptions and documentation warn against writing secret files", () => {
     const tools = secretTools({ store: new SecretStore(), ask: async () => undefined, run: async () => ({ text: "unused" }) });
-    const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
-    for (const text of [...tools.map((t) => t.description), SECRET_INSTRUCTIONS, readme]) {
+    const docs = readFileSync(new URL("../docs/secrets.md", import.meta.url), "utf8");
+    for (const text of [...tools.map((t) => t.description), SECRET_INSTRUCTIONS, docs]) {
         expect(text).toContain("Don't write secrets into files");
         expect(text).toContain("Read or Grep");
         expect(text).toContain("Cavvy can't redact");
@@ -137,9 +137,9 @@ test("credential endings and the sole DATABASE_URL exception are accepted", () =
     for (const name of ["NODE_AUTH_TOKEN", "OPENAI_API_KEY", "GIT_PASSWORD", "PWD"]) expect(secretNameError(name)).toMatch(/changes how programs run/);
 });
 
-test("secret tool descriptions and README explain credential endings", () => {
+test("secret tool descriptions and their docs explain credential endings", () => {
     const tools = secretTools({ store: new SecretStore(), ask: async () => undefined, run: async () => ({ text: "unused" }) });
-    for (const text of [RequestSecretTool.description, ...tools.map((t) => t.description), SECRET_INSTRUCTIONS, readFileSync(new URL("../README.md", import.meta.url), "utf8")]) {
+    for (const text of [RequestSecretTool.description, ...tools.map((t) => t.description), SECRET_INSTRUCTIONS, readFileSync(new URL("../docs/secrets.md", import.meta.url), "utf8")]) {
         for (const ending of endings) expect(text).toContain(ending);
         expect(text).toContain("DATABASE_URL");
     }

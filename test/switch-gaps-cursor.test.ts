@@ -194,7 +194,9 @@ for (const provider of CLIS)
                 const before = h.prompts().length;
                 expect((await h.send("go on now")).status).toBe("done");
                 expect(h.opened().slice(-2)).toEqual([id, "new"]);
-                expect(h.notices().join("\n")).toMatch(/Starting a new one with this conversation as context/);
+                // Its title says what happened; what the CLI said folds under it (#426).
+                const titles = h.turns().flatMap((t: any) => t.blocks).filter((b: any) => b.t === "notice").map((b: any) => b.title);
+                expect(titles.join("\n")).toMatch(/started a new one/);
                 const since = h.prompts().slice(before);
                 expect(since).toHaveLength(1);
                 const p = since[0]!;
