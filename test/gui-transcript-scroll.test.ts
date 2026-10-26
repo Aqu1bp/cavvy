@@ -99,6 +99,11 @@ test("a session reopened where it was being read mounts the place read and about
     expect(firstWindow(heights, 40, undefined, 800)).toEqual({ shown: 4, trimmed: 0 });
     // A place read near the end: nothing below to hold back.
     expect(firstWindow(heights, 40, 58, 800)).toEqual({ shown: 3, trimmed: 0 });
+    // Read near the end of a turn taller than two screens: the two screens count from the place read, so the turns
+    // below it that were in view go in too.
+    const tall = [...Array(30).fill(400), 3000, ...Array(29).fill(400)];
+    expect(firstWindow(tall, 40, 30, 800)).toEqual({ shown: 31, trimmed: 29 });
+    expect(firstWindow(tall, 40, 30, 800, 2600)).toEqual({ shown: 31, trimmed: 26 });
     // The place read at the page's first turn: not the turn above it, which isn't in the page.
     expect(firstWindow(heights, 40, 20, 800).shown).toBe(40);
 });

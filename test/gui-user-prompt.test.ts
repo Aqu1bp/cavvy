@@ -30,6 +30,21 @@ describe("promptTime", () => {
         expect(yesterday).not.toContain("2026");
         expect(promptTime(at, new Date(2027, 0, 2).getTime())).toContain("2026");
     });
+    test("the computer's time zone moving: times in the new one, though the formatters are kept", () => {
+        const was = process.env.TZ;
+        const noon = Date.UTC(2026, 9, 22, 12, 0);
+        try {
+            process.env.TZ = "UTC";
+            const utc = clock(noon);
+            expect(utc).toBe(new Date(noon).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }));
+            process.env.TZ = "Asia/Kolkata";
+            expect(clock(noon)).toBe(new Date(noon).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }));
+            expect(clock(noon)).not.toBe(utc);
+        } finally {
+            if (was === undefined) delete process.env.TZ;
+            else process.env.TZ = was;
+        }
+    });
 });
 
 test("shortPrompt: one line of under 60 characters", () => {

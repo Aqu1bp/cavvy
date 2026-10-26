@@ -58,7 +58,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     const anchorIndex = !opensAtEnd && saved?.anchor ? ids.indexOf(saved.anchor.turnId) : -1;
     const first = !opensAtEnd && anchorIndex < 0
         ? { shown: target, trimmed: 0 }
-        : firstWindow(p.handle.view.turns.map(turnHeight), target, opensAtEnd ? undefined : anchorIndex, window.innerHeight);
+        : firstWindow(p.handle.view.turns.map(turnHeight), target, opensAtEnd ? undefined : anchorIndex, window.innerHeight, -(saved?.anchor?.offset ?? 0));
     const [shown, setShown] = createSignal(first.shown);
     /** Turns at the very end not mounted yet (reopened mid-way: those below the place read go in first). */
     const [trimmed, setTrimmed] = createSignal(first.trimmed);
@@ -336,7 +336,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                 restore();
                 // Nothing left to scroll (something folded until it all fits): no scroll event will come to say the
                 // end is in view, so it's followed again here.
-                if (scroller!.scrollHeight <= scroller!.clientHeight + 1) setStick(true);
+                if (trimmed() === 0 && scroller!.scrollHeight <= scroller!.clientHeight + 1) setStick(true);
             }
             measureEnd();
         });
@@ -458,6 +458,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             () => turns().length,
             (n, prev) => {
                 if (prev !== undefined && n > prev && turns()[n - 1]?.prompt) {
+                    setTrimmed(0);
                     setStick(true);
                     afterLayout(() => toBottom(true));
                 }
@@ -499,7 +500,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             return;
         }
         if (up) setStick(false);
-        else if (atBottom(top, scroller.scrollHeight, scroller.clientHeight) && (gap <= 1 || top > lastTop + 0.5)) setStick(true);
+        else if (trimmed() === 0 && atBottom(top, scroller.scrollHeight, scroller.clientHeight) && (gap <= 1 || top > lastTop + 0.5)) setStick(true);
         lastTop = top;
         lastGap = gap;
         measureEnd();
@@ -541,7 +542,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     };
     /** The reader moving down where it can't go further: at the end, it follows the end again (no scroll event comes to say so). */
     const downAtEnd = (target: EventTarget | null) => {
-        if (scroller && !smoothScroll && gapOf(scroller) <= 1 && !innerTakes(target)) setStick(true);
+        if (scroller && !smoothScroll && trimmed() === 0 && gapOf(scroller) <= 1 && !innerTakes(target)) setStick(true);
     };
     /**
      * A box inside the conversation (a command's output) that takes the move down itself, or a field the keys type
@@ -715,7 +716,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                 <FindBar turns={turns} scroller={() => scroller} dock={() => p.dock ?? 0} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={navigated} />
             </Show>
             <Show when={!stick() && !scrolledDown()}>
-                <button class="jump glass" style={{ "--dock-h": dock() }} classList={{ "is-live": running() }} title="Jump to latest" aria-label={running() ? "Jump to latest: still working" : "Jump to latest"} onClick={() => { setStick(true); toBottom(true); }}>
+                <button class="jump glass" style={{ "--dock-h": dock() }} classList={{ "is-live": running() }} title="Jump to latest" aria-label={running() ? "Jump to latest: still working" : "Jump to latest"} onClick={() => { setTrimmed(0); setStick(true); toBottom(true); }}>
                     {/* Still working down there: a spinner, where the arrow is. */}
                     <Show when={running()} fallback={<ArrowDown size={14} />}>
                         <Spinner size={12} />

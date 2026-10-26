@@ -100,14 +100,15 @@ export function atBottom(top: number, height: number, viewport: number) {
  * The turns to mount at first, as a window over the last `shown`: `shown` from the end, less `trimmed` at the very end.
  * Opening at the end (`anchor` undefined or not found): about two screens of the last turns (firstShown). Opening where
  * the turn at index `anchor` was being read: the turn above it, and it and the turns below it to about two screens; the rest goes in
- * after, below first, then above.
+ * after, below first, then above. `read` is how far into that turn the view's top was: the two screens count from there, so a
+ * turn taller than them, read near its end, still brings the turns below it in view.
  */
-export function firstWindow(heights: readonly number[], shown: number, anchor: number | undefined, screen: number): { shown: number; trimmed: number } {
+export function firstWindow(heights: readonly number[], shown: number, anchor: number | undefined, screen: number, read = 0): { shown: number; trimmed: number } {
     const n = heights.length;
     if (anchor === undefined || anchor < 0 || anchor >= n) return { shown: firstShown(heights, shown, true, screen), trimmed: 0 };
     const start = Math.max(n - shown, Math.min(anchor, Math.max(0, anchor - 1)));
     let end = anchor + 1;
-    let filled = heights[anchor] ?? 0;
+    let filled = Math.max(0, (heights[anchor] ?? 0) - Math.max(0, read));
     while (end < n && filled < 2 * screen) filled += heights[end++]!;
     return { shown: n - start, trimmed: n - end };
 }

@@ -709,8 +709,16 @@ try {
     dispose(); dispose = mount(many);
     assert.equal(articles().length, 120, "reopened, it shows the pages down from where it was read");
     assert.equal(turn("turn-300").getBoundingClientRect().top, 0, "at the same place");
+    // Opened again there, "Latest" before the turns below the place read are all in goes to the real end at once,
+    // not through them a few at a time.
+    dispose(); dispose = mount(b);
+    dispose(); dispose = mount(many, false); flush();
+    assert.equal(turn("turn-399"), undefined, "reopened mid-way, the turns far below go in after");
+    scroller().props.onScroll();
+    button("jump").props.onClick();
+    assert.ok(turn("turn-399"), "Latest shows the last turn at once");
+    settle(); scroller().props.onScroll();
     // ...and left at the end, only its last page.
-    button("jump").props.onClick(); scroller().props.onScroll();
     dispose(); dispose = mount(b);
     dispose(); dispose = mount(many);
     assert.equal(articles().length, 40, "reopened after being left at the end, it shows its last page");
