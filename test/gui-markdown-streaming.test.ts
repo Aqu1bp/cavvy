@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { MarkdownRenderer, settle } from "../gui/src/lib/markdown";
-import { revealEnd, revealStep } from "../gui/src/lib/reveal";
+import { LAG_MS, revealEnd, revealStep } from "../gui/src/lib/reveal";
 import { Marked } from "../gui/node_modules/marked/lib/marked.esm.js";
 
 const visible = (r: MarkdownRenderer, text: string, streaming = true) => r.segments(text, streaming).map((s) => s.kind === "html" ? { kind: s.kind, html: s.html } : { kind: s.kind, lang: s.lang, code: s.code, open: s.open });
@@ -63,13 +63,16 @@ test("long Markdown lexes only the growing block on append, with safe full-parse
     const { Renderer } = require("../gui/node_modules/marked/lib/marked.esm.js");
     const Counted = new Function("Marked", "Renderer", `${js}; return MarkdownRenderer;`)(CountedMarked, Renderer);
     const r = new Counted();
-    let text = Array.from({ length: 2000 }, (_, i) => `Paragraph ${i}.\n\n`).join("");
+    // Enough that lexing the whole text on each update is far past the threshold below.
+    // Under Bun, marked's block lexer takes quadratic time on long text, so no bigger than that.
+    const paragraphs = 500;
+    let text = Array.from({ length: paragraphs }, (_, i) => `Paragraph ${i}.\n\n`).join("");
     r.segments(text, true);
     chars = 0;
     const start = performance.now();
     for (let i = 0; i < 100; i++) { text += "word "; r.segments(text, true); }
-    console.log(JSON.stringify({ paragraphs: 2000, updates: 100, lexedChars: chars, elapsedMs: performance.now() - start }));
-    expect(chars).toBeLessThan(30_000); // 25,250 chars; the old full lexer reads >3 million.
+    console.log(JSON.stringify({ paragraphs, updates: 100, lexedChars: chars, elapsedMs: performance.now() - start }));
+    expect(chars).toBeLessThan(30_000); // About 25,000 chars; the old full lexer reads over 800,000.
     chars = 0;
     r.segments(text + "\n\n[ref]: https://example.com", true);
     expect(chars).toBeGreaterThan(text.length);
@@ -133,16 +136,33 @@ test("settle holds back what isn't readable yet and closes what's still open", (
     for (const [text, want] of cases) expect({ text, got: settle(text) }).toEqual({ text, got: want });
 });
 
-test("reveal drains a burst over a short lag, never crawls, and stops at the end of a word", () => {
-    // 140 characters waiting: about a seventh of them in a 16ms frame.
-    expect(revealStep(140, 16, 0).chars).toBe(16);
+test("reveal drains a burst at one speed by its deadline, never crawls, and stops at the end of a word", () => {
+    // 140 characters waiting and 140ms to let them out: a seventh of them in a 16ms frame.
+    expect(revealStep(140, 16, 0, 140).chars).toBe(16);
+    // Halfway there, the same speed: the rest over what's left of the time (not a share of what's left).
+    expect(revealStep(70, 16, 0, 70).chars).toBe(16);
+    // The deadline passed (a frame came late): all of it.
+    expect(revealStep(500, 16, 0, -5).chars).toBe(500);
+    // A burst comes out evenly and is all out by its deadline.
+    let backlog = 600, left = LAG_MS, carry = 0;
+    const steps: number[] = [];
+    while (backlog > 0) {
+        const step = revealStep(backlog, 16, carry, left);
+        steps.push(step.chars);
+        backlog -= step.chars; carry = step.carry; left -= 16;
+    }
+    expect(steps.length).toBeLessThanOrEqual(Math.ceil(LAG_MS / 16));
+    // (The last frame takes what's left: less.)
+    const even = steps.slice(0, -1);
+    expect(Math.max(...even) - Math.min(...even)).toBeLessThanOrEqual(1);
+    expect(steps.at(-1)!).toBeLessThanOrEqual(even[0]!);
     // A little left: the minimum pace, the fraction carried to the next frame.
-    const slow = revealStep(3, 16, 0);
+    const slow = revealStep(3, 16, 0, 1000);
     expect(slow.chars).toBe(1);
     expect(slow.carry).toBeGreaterThan(0.4);
-    expect(revealStep(3, 16, slow.carry).chars).toBe(1);
+    expect(revealStep(3, 16, slow.carry, 1000).chars).toBe(1);
     // Never more than is waiting.
-    expect(revealStep(2, 64, 0.9)).toEqual({ chars: 2, carry: 0 });
+    expect(revealStep(2, 64, 0.9, 1000)).toEqual({ chars: 2, carry: 0 });
     expect(revealEnd("The engine takes", 0, 5)).toBe(10);
     expect(revealEnd("The engine takes", 0, 3)).toBe(3);
     // A long word (a URL) comes in pieces.

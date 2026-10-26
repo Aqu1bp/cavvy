@@ -22,8 +22,8 @@
 /* base.css still carries the pre-glass .popover/.menu-* rules; these load later and replace them. */
 .popover {
     z-index: 60;
-    border-radius: 16px;
-    padding: 5px;
+    border-radius: calc(16 * var(--sp));
+    padding: calc(5 * var(--sp));
     background: var(--sheen), var(--ctl-strong);
     -webkit-backdrop-filter: blur(20px) saturate(1.9);
     backdrop-filter: blur(20px) saturate(1.9);
@@ -50,8 +50,8 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 7px;
-    padding: 7px 10px 4px;
+    gap: calc(7 * var(--sp));
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(4 * var(--sp));
     font-size: 0.821rem;
     font-weight: 600;
     color: var(--fg-3);
@@ -61,11 +61,11 @@
 .menu-item.compact {
     display: flex;
     align-items: center;
-    gap: 9px;
+    gap: calc(9 * var(--sp));
     width: 100%;
-    min-height: 32px;
-    padding: 7px 10px;
-    border-radius: 10px;
+    min-height: calc(32 * var(--sp));
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp));
+    border-radius: calc(10 * var(--sp));
     text-align: left;
     color: var(--fg);
     font-size: 0.929rem;
@@ -77,7 +77,7 @@
 .menu-item > svg:first-child,
 .menu-item.compact > svg:first-child {
     flex: none;
-    margin: 0 2px;
+    margin: 0 calc(2 * var(--sp));
     color: var(--fg-2);
 }
 
@@ -138,10 +138,10 @@
 
 .menu-item kbd {
     margin-left: auto;
-    height: 18px;
-    min-width: 18px;
-    padding: 0 5px;
-    border-radius: 5px;
+    height: calc(18 * var(--sp));
+    min-width: calc(18 * var(--sp));
+    padding: 0 calc(5 * var(--sp));
+    border-radius: calc(5 * var(--sp));
     font-size: 0.786rem;
     background: var(--hover);
     color: var(--fg-3);
@@ -149,12 +149,12 @@
 
 .menu-sep {
     height: 0.5px;
-    margin: 4px 6px;
+    margin: calc(4 * var(--sp)) calc(6 * var(--sp));
     background: var(--line);
 }
 
 .menu-note {
-    padding: 6px 10px;
+    padding: calc(6 * var(--sp)) calc(10 * var(--sp));
     font-size: 0.857rem;
     color: var(--fg-3);
     overflow: hidden;
@@ -165,8 +165,8 @@
 
 /* Switch: 38×22, the knob springs across. */
 .toggle {
-    width: 38px;
-    height: 22px;
+    width: calc(38 * var(--sp));
+    height: calc(22 * var(--sp));
     border-radius: var(--pill);
     background: var(--press);
     transition: background 200ms;
@@ -181,30 +181,30 @@
 }
 
 .toggle-knob {
-    width: 18px;
-    height: 18px;
-    top: 2px;
-    left: 2px;
+    width: calc(18 * var(--sp));
+    height: calc(18 * var(--sp));
+    top: calc(2 * var(--sp));
+    left: calc(2 * var(--sp));
     transition: transform 260ms var(--spring);
 }
 
 .toggle.on .toggle-knob {
-    transform: translateX(16px);
+    transform: translateX(calc(16 * var(--sp)));
 }
 
 /* Segmented: a pill track with the chosen segment raised on it. */
 .segmented {
     display: inline-flex;
     gap: 0;
-    padding: 3px;
+    padding: calc(3 * var(--sp));
     border-radius: var(--pill);
     background: var(--sheet-2);
     box-shadow: inset 0 0 0 0.5px var(--line);
 }
 
 .segmented button {
-    height: 26px;
-    padding: 0 12px;
+    height: calc(26 * var(--sp));
+    padding: 0 calc(12 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.929rem;
     font-weight: 500;
@@ -214,8 +214,8 @@
 }
 
 .segmented.seg-sm button {
-    height: 24px;
-    padding: 0 10px;
+    height: calc(24 * var(--sp));
+    padding: 0 calc(10 * var(--sp));
     font-size: 0.857rem;
 }
 
@@ -245,7 +245,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 16px;
+    padding: calc(16 * var(--sp));
     background: color-mix(in srgb, var(--sheet) 22%, transparent);
     -webkit-backdrop-filter: blur(5px);
     backdrop-filter: blur(5px);
@@ -260,9 +260,9 @@
 .dialog {
     display: flex;
     flex-direction: column;
-    max-height: min(82vh, calc(100vh - 32px));
+    max-height: min(82vh, calc(100vh - 32 * var(--sp)));
     overflow: hidden;
-    border-radius: 22px;
+    border-radius: calc(22 * var(--sp));
     background: var(--sheen), var(--ctl-strong);
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--ctl-hi);
     color: var(--fg);
@@ -282,8 +282,8 @@
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    gap: 12px;
-    padding: 18px 14px 0 18px;
+    gap: calc(12 * var(--sp));
+    padding: calc(18 * var(--sp)) calc(14 * var(--sp)) 0 calc(18 * var(--sp));
 }
 
 .dialog-title {
@@ -294,7 +294,7 @@
 }
 
 .dialog-sub {
-    margin-top: 4px;
+    margin-top: calc(4 * var(--sp));
     font-size: 0.929rem;
     line-height: 1.45;
     color: var(--fg-3);
@@ -302,9 +302,9 @@
 }
 
 .dialog-close {
-    width: 26px;
-    height: 26px;
-    margin-top: -2px;
+    width: calc(26 * var(--sp));
+    height: calc(26 * var(--sp));
+    margin-top: calc(-2 * var(--sp));
     border-radius: var(--pill);
     color: var(--fg-3);
 }
@@ -317,9 +317,9 @@
 .dialog-body {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: calc(12 * var(--sp));
     min-height: 0;
-    padding: 14px 18px 18px;
+    padding: calc(14 * var(--sp)) calc(18 * var(--sp)) calc(18 * var(--sp));
     overflow-y: auto;
     line-height: 1.45;
 }
@@ -335,13 +335,13 @@
 }
 
 .dialog-foot {
-    padding: 0 18px 18px;
+    padding: 0 calc(18 * var(--sp)) calc(18 * var(--sp));
 }
 
 .delete-dialog {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
 }
 
 .delete-dialog p {
@@ -353,15 +353,15 @@
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: 8px;
-    padding-top: 2px;
+    gap: calc(8 * var(--sp));
+    padding-top: calc(2 * var(--sp));
     min-width: 0;
 }
 
 /* Controls inside dialogs and Settings: pills, per the mockup's .btn. */
 :is(.dialog, .settings-page) .btn {
-    height: 30px;
-    padding: 0 14px;
+    height: calc(30 * var(--sp));
+    padding: 0 calc(14 * var(--sp));
     border: 0;
     border-radius: var(--pill);
     font-size: 0.929rem;
@@ -374,8 +374,8 @@
 }
 
 :is(.dialog, .settings-page) .btn.sm {
-    height: 26px;
-    padding: 0 11px;
+    height: calc(26 * var(--sp));
+    padding: 0 calc(11 * var(--sp));
     font-size: 0.857rem;
 }
 
@@ -417,10 +417,10 @@
 
 /* Fields: on the sheet, a hairline inside, the accent when focused. */
 :is(.dialog, .settings-page) .input {
-    height: 32px;
+    height: calc(32 * var(--sp));
     border: 0;
-    border-radius: 10px;
-    padding: 0 11px;
+    border-radius: calc(10 * var(--sp));
+    padding: 0 calc(11 * var(--sp));
     background: var(--sheet);
     box-shadow: inset 0 0 0 0.5px var(--line), inset 0 0 0 1px color-mix(in srgb, var(--line) 50%, transparent);
     color: var(--fg);
@@ -429,9 +429,9 @@
 
 :is(.dialog, .settings-page) textarea.input {
     height: auto;
-    min-height: 120px;
-    padding: 10px 12px;
-    border-radius: 12px;
+    min-height: calc(120 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
+    border-radius: calc(12 * var(--sp));
     line-height: 1.5;
 }
 
@@ -452,23 +452,23 @@
 
 :is(.dialog, .settings-page) input[type="checkbox"],
 :is(.dialog, .settings-page) input[type="radio"] {
-    width: 16px;
-    height: 16px;
+    width: calc(16 * var(--sp));
+    height: calc(16 * var(--sp));
     margin: 0;
     flex: none;
     accent-color: var(--accent);
 }
 
 .dialog .panel-empty {
-    padding: 14px 4px;
+    padding: calc(14 * var(--sp)) calc(4 * var(--sp));
     color: var(--fg-3);
 }
 
 /* ---- Command palette (⌘K) ------------------------------------------- */
 
 .dialog.palette {
-    max-height: min(560px, 76vh);
-    padding: 6px;
+    max-height: min(560 * var(--sp), 76vh);
+    padding: calc(6 * var(--sp));
 }
 
 .dialog.palette .dialog-body {
@@ -480,9 +480,9 @@
 .pal-in {
     display: flex;
     align-items: center;
-    gap: 10px;
-    height: 46px;
-    padding: 0 12px;
+    gap: calc(10 * var(--sp));
+    height: calc(46 * var(--sp));
+    padding: 0 calc(12 * var(--sp));
     flex: none;
     font-size: 1.071rem;
 }
@@ -509,8 +509,8 @@
 .pal-in kbd,
 .pal-end kbd {
     height: auto;
-    padding: 3px 5px;
-    border-radius: 5px;
+    padding: calc(3 * var(--sp)) calc(5 * var(--sp));
+    border-radius: calc(5 * var(--sp));
     font: 500 0.786rem/1 var(--font-ui);
     background: var(--hover);
     color: var(--fg-3);
@@ -518,16 +518,16 @@
 
 .pal-list {
     min-height: 0;
-    max-height: min(420px, 60vh);
+    max-height: min(420 * var(--sp), 60vh);
     overflow-y: auto;
-    padding-bottom: 2px;
+    padding-bottom: calc(2 * var(--sp));
 }
 
 .pal-h {
     display: flex;
     align-items: center;
-    gap: 7px;
-    padding: 7px 10px 4px;
+    gap: calc(7 * var(--sp));
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(4 * var(--sp));
     font-size: 0.821rem;
     font-weight: 600;
     color: var(--fg-3);
@@ -535,13 +535,13 @@
 
 .pal-row {
     display: grid;
-    grid-template-columns: 20px minmax(0, 1fr) auto;
+    grid-template-columns: calc(20 * var(--sp)) minmax(0, 1fr) auto;
     align-items: center;
-    gap: 9px;
+    gap: calc(9 * var(--sp));
     width: 100%;
-    min-height: 38px;
-    padding: 7px 10px;
-    border-radius: 10px;
+    min-height: calc(38 * var(--sp));
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp));
+    border-radius: calc(10 * var(--sp));
     text-align: left;
     color: var(--fg);
 }
@@ -582,8 +582,8 @@
 .pal-end {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    max-width: 220px;
+    gap: calc(6 * var(--sp));
+    max-width: calc(220 * var(--sp));
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -594,18 +594,18 @@
 .pal-l mark {
     color: inherit;
     background: color-mix(in srgb, var(--accent) 22%, transparent);
-    border-radius: 3px;
+    border-radius: calc(3 * var(--sp));
     padding: 0 1px;
 }
 
 .pal-empty {
-    padding: 16px 12px 14px;
+    padding: calc(16 * var(--sp)) calc(12 * var(--sp)) calc(14 * var(--sp));
     color: var(--fg-3);
 }
 
 /* Below the list: message search still reading older sessions, or stopped before all were. */
 .pal-note {
-    padding: 8px 10px 4px;
+    padding: calc(8 * var(--sp)) calc(10 * var(--sp)) calc(4 * var(--sp));
     font-size: 0.821rem;
     color: var(--fg-3);
 }
@@ -620,10 +620,10 @@
     z-index: 26;
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: calc(4 * var(--sp));
     height: 38px;
-    max-width: calc(100% - 24px);
-    padding: 0 4px 0 12px;
+    max-width: calc(100% - 24 * var(--sp));
+    padding: 0 calc(4 * var(--sp)) 0 calc(12 * var(--sp));
     border-radius: var(--pill);
     background: var(--ctl-strong);
     animation: ov-pop 260ms var(--spring);
@@ -637,9 +637,9 @@
 
 .find-bar.glass input {
     flex: 1;
-    width: 180px;
+    width: calc(180 * var(--sp));
     min-width: 0;
-    margin-left: 4px;
+    margin-left: calc(4 * var(--sp));
     border: 0;
     outline: 0;
     background: transparent;
@@ -657,8 +657,8 @@
 }
 
 .find-bar.glass .find-count {
-    min-width: 52px;
-    margin-right: 4px;
+    min-width: calc(52 * var(--sp));
+    margin-right: calc(4 * var(--sp));
     padding: 0;
     text-align: right;
     font-size: 0.857rem;
@@ -674,8 +674,8 @@
 .find-btn {
     display: inline-grid;
     place-items: center;
-    width: 24px;
-    height: 24px;
+    width: calc(24 * var(--sp));
+    height: calc(24 * var(--sp));
     flex: none;
     border-radius: var(--pill);
     color: var(--fg-2);
@@ -700,142 +700,638 @@
 
 /* ---- Settings: plugins --------------------------------------------- */
 
-/* Read like the Providers page: rows in rounded grouped lists. */
-.plg-bar {
+/* Discover is a catalog to scan: category filters, then cards (a mark tinted by category, name and maker,
+   two lines of summary, one Install). Installed and Marketplaces are lists to manage. The category hue is
+   the only colour; everything else is ink. */
+.pg-bar {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: 8px;
-    margin: 22px 0 10px;
+    gap: calc(10 * var(--sp));
+    margin: calc(22 * var(--sp)) 0 calc(16 * var(--sp));
 }
 
 .plg-n {
-    margin-left: 2px;
+    margin-left: calc(2 * var(--sp));
     color: var(--fg-3);
     font-variant-numeric: tabular-nums;
 }
 
-.plg-search {
+.pg-search {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: calc(7 * var(--sp));
+    width: min(calc(250 * var(--sp)), 100%);
+    height: calc(32 * var(--sp));
+    padding: 0 calc(5 * var(--sp)) 0 calc(11 * var(--sp));
+    border-radius: var(--pill);
+    background: var(--sheet-2);
+    box-shadow: inset 0 0 0 0.5px var(--line);
     color: var(--fg-3);
 }
 
-.settings-page .plg-search .input {
-    width: 160px;
-    height: 28px;
-    border-radius: var(--pill);
+.pg-search:focus-within {
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 60%, transparent);
 }
 
-/* Consecutive rows make one rounded group. */
-.plg-row {
+.pg-search input {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    outline: 0;
+    background: none;
+    font: inherit;
+    color: var(--fg);
+}
+
+.pg-search input::placeholder {
+    color: var(--fg-3);
+}
+
+/* Categories: quiet pills, the hue as a dot, the count after. */
+.pg-cats {
     display: flex;
-    align-items: flex-start;
-    gap: 12px;
-    padding: 12px 14px;
-    background: var(--group);
-    box-shadow: inset 0.5px 0 0 var(--line), inset -0.5px 0 0 var(--line);
+    gap: calc(6 * var(--sp));
+    margin: 0 0 calc(14 * var(--sp));
+    padding: 1px;
+    overflow-x: auto;
+    scrollbar-width: none;
 }
 
-.plg-row + .plg-row {
-    border-top: 0.5px solid var(--line);
+.pg-cats button {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    gap: calc(6 * var(--sp));
+    height: calc(28 * var(--sp));
+    padding: 0 calc(11 * var(--sp));
+    border-radius: var(--pill);
+    font-weight: 500;
+    white-space: nowrap;
+    color: var(--fg-2);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+    transition: background var(--dur-fast), color var(--dur-fast);
 }
 
-.plg-row:not(.plg-row + .plg-row) {
-    border-radius: 12px 12px 0 0;
-    box-shadow: inset 0.5px 0 0 var(--line), inset -0.5px 0 0 var(--line), inset 0 0.5px 0 var(--line);
+.pg-cats button:hover:not(.on) {
+    background: var(--hover);
+    color: var(--fg);
 }
 
-.plg-row:not(:has(+ .plg-row)) {
-    border-radius: 0 0 12px 12px;
-    box-shadow: inset 0.5px 0 0 var(--line), inset -0.5px 0 0 var(--line), inset 0 -0.5px 0 var(--line);
+.pg-cats button.on {
+    background: var(--fg);
+    color: var(--sheet);
+    box-shadow: none;
 }
 
-.plg-row:not(.plg-row + .plg-row):not(:has(+ .plg-row)) {
-    border-radius: 12px;
+.pg-cats button span {
+    font-size: 0.821rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-3);
+}
+
+.pg-cats button.on span {
+    color: color-mix(in srgb, var(--sheet) 70%, transparent);
+}
+
+.pg-cats i,
+.pg-cat i,
+.pg-facts i {
+    flex: none;
+    width: calc(7 * var(--sp));
+    height: calc(7 * var(--sp));
+    border-radius: 50%;
+    background: var(--h);
+}
+
+/* A plugin's mark: its category's icon on the category's tint, or its maker's logo filling the tile. */
+.pg-mark {
+    position: relative;
+    display: inline-grid;
+    place-items: center;
+    flex: none;
+    border-radius: calc(10 * var(--sp));
+    overflow: hidden;
+    color: var(--h);
+    background: color-mix(in srgb, var(--h) 13%, var(--sheet));
+    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--h) 28%, transparent);
+}
+
+[data-theme="dark"] .pg-mark {
+    color: color-mix(in srgb, var(--h) 70%, white);
+    background: color-mix(in srgb, var(--h) 22%, var(--sheet));
+}
+
+.pg-mark img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.pg-mark.logo,
+[data-theme="dark"] .pg-mark.logo {
+    background: #fff;
+}
+
+.pg-mark.logo::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.1);
+    pointer-events: none;
+}
+
+.pg-mark.mk,
+[data-theme="dark"] .pg-mark.mk {
+    width: calc(32 * var(--sp));
+    height: calc(32 * var(--sp));
+    color: var(--fg-2);
+    background: var(--sheet-2);
     box-shadow: inset 0 0 0 0.5px var(--line);
 }
 
-.plg-main {
+.pg-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: calc(10 * var(--sp));
+}
+
+.pg-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: calc(10 * var(--sp));
+    padding: calc(14 * var(--sp));
+    border-radius: calc(14 * var(--sp));
+    background: var(--group);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+    cursor: pointer;
+    outline: 0;
+    transition: box-shadow var(--dur-fast), background var(--dur-fast);
+}
+
+.pg-card:hover {
+    background: color-mix(in srgb, var(--group) 70%, var(--sheet-2));
+    box-shadow: inset 0 0 0 0.5px var(--line-strong);
+}
+
+.pg-card:has(.pg-open:focus-visible) {
+    box-shadow: inset 0 0 0 0.5px var(--line), 0 0 0 2px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+/* The name is the card's button: it reads as the name, and its hit area covers the card. */
+.pg-open {
+    display: block;
+    max-width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    font-weight: 600;
+    color: inherit;
+    text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+    outline: none;
+}
+
+.pg-open::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+}
+
+/* Install sits above the stretched hit area. */
+.pg-install {
+    position: relative;
+    z-index: 1;
+}
+
+.pg-top {
+    display: flex;
+    align-items: center;
+    gap: calc(11 * var(--sp));
+    min-width: 0;
+}
+
+.pg-id {
     flex: 1;
     min-width: 0;
 }
 
-.plg-title {
+.pg-id b,
+.pg-id h3 {
+    display: block;
+    margin: 0;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.pg-id span {
+    display: block;
+    margin-top: 1px;
+    font-size: 0.857rem;
+    color: var(--fg-3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.pg-card p {
+    display: -webkit-box;
+    flex: 1;
+    margin: 0;
+    font-size: 0.893rem;
+    line-height: 1.5;
+    color: var(--fg-2);
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.pg-foot {
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
-    gap: 6px;
+    justify-content: space-between;
+    gap: calc(8 * var(--sp));
 }
 
-.plg-name {
-    font-weight: 500;
-}
-
-.plg-row.off .plg-name,
-.plg-row.off .plg-desc {
+.pg-cat {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    font-size: 0.857rem;
     color: var(--fg-3);
 }
 
-.plg-desc,
-.plg-meta {
-    margin-top: 2px;
+.pg-install {
+    height: calc(26 * var(--sp));
+}
+
+.pg-note {
+    margin-top: calc(16 * var(--sp));
+}
+
+/* Installed and marketplaces: rows in one rounded group. */
+.pg-scope {
+    display: flex;
+    align-items: center;
+    gap: calc(7 * var(--sp));
+    margin: 0 calc(4 * var(--sp)) calc(10 * var(--sp));
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+.pg-scope svg {
+    flex: none;
+}
+
+.pg-scope b {
+    font-weight: 600;
+    color: var(--fg-2);
+}
+
+.pg-list {
+    border-radius: calc(12 * var(--sp));
+    background: var(--group);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+}
+
+.pg-row {
+    display: flex;
+    align-items: center;
+    gap: calc(12 * var(--sp));
+    padding: calc(12 * var(--sp)) calc(10 * var(--sp)) calc(12 * var(--sp)) calc(14 * var(--sp));
+}
+
+.pg-row + .pg-row {
+    border-top: 0.5px solid var(--line);
+}
+
+.pg-row.off .pg-mark {
+    filter: grayscale(1);
+    opacity: 0.6;
+}
+
+.pg-row.off .pg-rname b {
+    color: var(--fg-2);
+}
+
+.pg-row > .toggle,
+.pg-row > .hb,
+.pg-row > .btn {
+    flex: none;
+}
+
+.pg-rmain {
+    flex: 1;
+    min-width: 0;
+}
+
+.pg-rname {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+}
+
+.pg-rname b {
+    font-weight: 600;
+}
+
+.pg-ver {
+    font-size: 0.821rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    color: var(--fg-3);
+}
+
+.pg-prob {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    gap: calc(4 * var(--sp));
+    height: calc(19 * var(--sp));
+    padding: 0 calc(7 * var(--sp));
+    border-radius: var(--pill);
+    font-size: 0.786rem;
+    font-weight: 600;
+    white-space: nowrap;
+    color: var(--warn);
+    background: var(--warn-bg);
+}
+
+.pg-prob.err {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.pg-rmeta {
+    margin-top: calc(2 * var(--sp));
     font-size: 0.857rem;
     line-height: 1.4;
     color: var(--fg-3);
     overflow-wrap: anywhere;
 }
 
-.plg-warn,
-.plg-err {
-    margin-top: 3px;
-    font-size: 0.821rem;
-    color: var(--warn);
+.pg-rmeta code {
+    font: 0.821rem var(--font-mono);
+    color: var(--fg-2);
+}
+
+.pg-rprob {
+    margin-top: calc(6 * var(--sp));
+    font-size: 0.857rem;
+    line-height: 1.45;
+    color: var(--fg-2);
     overflow-wrap: anywhere;
 }
 
-.plg-err {
+.pg-rprob.err {
     color: var(--danger);
 }
 
-.plg-actions {
+.pg-after {
     display: flex;
     align-items: center;
-    gap: 6px;
-    flex: none;
-    padding-top: 1px;
+    gap: calc(10 * var(--sp));
+    margin: calc(12 * var(--sp)) calc(4 * var(--sp)) 0;
 }
 
-.plg-actions .select {
-    width: auto;
+.pg-h {
+    margin-top: calc(18 * var(--sp));
 }
 
-.plg-empty {
+.pg-add {
     display: flex;
     align-items: center;
-    gap: 14px;
-    padding: 18px 16px;
-    margin-top: 4px;
-    border-radius: 12px;
+    gap: calc(8 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(8 * var(--sp)) calc(8 * var(--sp)) calc(14 * var(--sp));
+    border-radius: calc(12 * var(--sp));
     background: var(--group);
     box-shadow: inset 0 0 0 0.5px var(--line);
+}
+
+.pg-add:focus-within {
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+.pg-add label {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    gap: calc(9 * var(--sp));
+    min-width: 0;
     color: var(--fg-3);
 }
 
-.plg-empty > div {
+.pg-add input {
     flex: 1;
+    min-width: 0;
+    height: calc(30 * var(--sp));
+    border: 0;
+    outline: 0;
+    background: none;
+    font: 0.893rem var(--font-mono);
+    color: var(--fg);
 }
 
-.plg-empty-title {
-    color: var(--fg);
+.pg-add input::placeholder {
+    color: var(--fg-3);
+}
+
+.pg-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: calc(40 * var(--sp)) calc(20 * var(--sp)) calc(36 * var(--sp));
+    border-radius: calc(14 * var(--sp));
+    text-align: center;
+    background: var(--group);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+}
+
+.pg-add + .pg-empty {
+    margin-top: calc(12 * var(--sp));
+}
+
+.pg-eic {
+    display: grid;
+    place-items: center;
+    width: calc(44 * var(--sp));
+    height: calc(44 * var(--sp));
+    margin-bottom: calc(12 * var(--sp));
+    border-radius: calc(12 * var(--sp));
+    background: var(--sheet-2);
+    color: var(--fg-2);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+}
+
+.pg-empty b {
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.pg-empty p {
+    max-width: 46ch;
+    margin: calc(6 * var(--sp)) 0 0;
+    line-height: 1.5;
+    color: var(--fg-3);
+}
+
+.pg-eact {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: calc(8 * var(--sp));
+    margin-top: calc(16 * var(--sp));
+}
+
+.pg-load {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    padding: calc(30 * var(--sp)) calc(4 * var(--sp));
+    color: var(--fg-3);
+}
+
+/* A plugin's details. */
+.pg-dlg .pg-top {
+    gap: calc(14 * var(--sp));
+}
+
+.pg-dlg h3 {
+    font-size: 1.214rem;
+}
+
+.pg-dlg .pg-full {
+    margin: calc(14 * var(--sp)) 0 calc(12 * var(--sp));
+    line-height: 1.55;
+    color: var(--fg-2);
+}
+
+.pg-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: calc(6 * var(--sp)) calc(14 * var(--sp));
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+.pg-facts > * {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+}
+
+.pg-facts a {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+.pg-facts a:hover {
+    text-decoration: underline;
+}
+
+.pg-sh {
+    margin: calc(18 * var(--sp)) 0 calc(8 * var(--sp));
+    font-size: 0.857rem;
+    font-weight: 600;
+    color: var(--fg-3);
+}
+
+.pg-scs {
+    display: grid;
+    gap: calc(2 * var(--sp));
+    padding: calc(3 * var(--sp));
+    border-radius: calc(14 * var(--sp));
+    background: var(--sheet-2);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+}
+
+.pg-sc {
+    display: flex;
+    align-items: flex-start;
+    gap: calc(10 * var(--sp));
+    padding: calc(9 * var(--sp)) calc(11 * var(--sp));
+    border-radius: calc(11 * var(--sp));
+    text-align: left;
+}
+
+.pg-sc:hover:not(.on) {
+    background: var(--hover);
+}
+
+.pg-sc.on {
+    background: var(--seg-on);
+    box-shadow: 0 0 0 0.5px var(--line), 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.pg-sc:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.pg-sc .rd {
+    flex: none;
+    width: calc(14 * var(--sp));
+    height: calc(14 * var(--sp));
+    margin-top: calc(2 * var(--sp));
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 1.5px var(--fg-4);
+}
+
+.pg-sc.on .rd {
+    box-shadow: inset 0 0 0 calc(4 * var(--sp)) var(--accent);
+}
+
+.pg-sc b {
+    display: block;
     font-weight: 500;
-    margin-bottom: 2px;
+}
+
+.pg-sc span span {
+    display: block;
+    margin-top: 1px;
+    font-size: 0.857rem;
+    line-height: 1.4;
+    color: var(--fg-3);
+}
+
+.pg-sub {
+    margin: calc(8 * var(--sp)) calc(4 * var(--sp)) 0;
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+.pg-warn {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    margin: calc(12 * var(--sp)) 0 calc(4 * var(--sp));
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+.pg-warn svg {
+    flex: none;
 }
 
 :where(.main[data-narrow~="600"]) {
-    .plg-row {
-        flex-direction: column;
+    .pg-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .pg-search {
+        width: 100%;
     }
 }
 
@@ -844,7 +1340,7 @@
 .commit-dialog {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: calc(12 * var(--sp));
 }
 
 .commit-dialog p {
@@ -854,11 +1350,11 @@
 .commit-files {
     display: flex;
     flex-direction: column;
-    gap: 2px;
-    max-height: 200px;
+    gap: calc(2 * var(--sp));
+    max-height: calc(200 * var(--sp));
     overflow: auto;
-    padding: 4px;
-    border-radius: 12px;
+    padding: calc(4 * var(--sp));
+    border-radius: calc(12 * var(--sp));
     background: var(--sheet);
     box-shadow: inset 0 0 0 0.5px var(--line);
 }
@@ -866,9 +1362,9 @@
 .commit-file {
     display: flex;
     align-items: center;
-    gap: 9px;
-    padding: 6px 8px;
-    border-radius: 8px;
+    gap: calc(9 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(8 * var(--sp));
+    border-radius: calc(8 * var(--sp));
     overflow-wrap: anywhere;
 }
 
@@ -882,7 +1378,7 @@
 }
 
 .commit-message-label {
-    margin-bottom: -6px;
+    margin-bottom: calc(-6 * var(--sp));
     font-size: 0.857rem;
     font-weight: 600;
     color: var(--fg-2);
@@ -890,7 +1386,7 @@
 
 .dialog .commit-dialog textarea.input {
     width: 100%;
-    min-height: 130px;
+    min-height: calc(130 * var(--sp));
     resize: vertical;
     font: 0.929rem/1.5 var(--font-mono);
 }
@@ -898,12 +1394,12 @@
 /* Short windows: the message box gives up height first, so the footer stays in reach. */
 @media (max-height: 560px) {
     .dialog .commit-dialog textarea.input {
-        min-height: 72px;
-        height: 84px;
+        min-height: calc(72 * var(--sp));
+        height: calc(84 * var(--sp));
     }
 
     .commit-files {
-        max-height: 120px;
+        max-height: calc(120 * var(--sp));
     }
 }
 
@@ -911,7 +1407,7 @@
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
 }
 
 .commit-warning {
@@ -920,12 +1416,12 @@
 
 .commit-error {
     margin: 0;
-    padding: 10px 12px;
-    max-height: 180px;
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
+    max-height: calc(180 * var(--sp));
     overflow: auto;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-    border-radius: 12px;
+    border-radius: calc(12 * var(--sp));
     background: color-mix(in srgb, var(--danger) 8%, var(--sheet));
     box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--danger) 30%, transparent);
     color: var(--danger);
@@ -938,18 +1434,18 @@
 .rw-list {
     display: flex;
     flex-direction: column;
-    gap: 2px;
-    max-height: 220px;
+    gap: calc(2 * var(--sp));
+    max-height: calc(220 * var(--sp));
     overflow-y: auto;
-    margin: 0 -4px;
+    margin: 0 calc(-4 * var(--sp));
 }
 
 .rw-item {
     display: flex;
     align-items: center;
-    gap: 9px;
-    padding: 7px 10px;
-    border-radius: 10px;
+    gap: calc(9 * var(--sp));
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp));
+    border-radius: calc(10 * var(--sp));
     color: var(--fg-2);
     text-align: left;
     min-width: 0;
@@ -987,9 +1483,9 @@
 .rw-plan {
     display: flex;
     flex-direction: column;
-    gap: 5px;
-    padding: 10px 12px;
-    border-radius: 12px;
+    gap: calc(5 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
+    border-radius: calc(12 * var(--sp));
     background: var(--sheet);
     box-shadow: inset 0 0 0 0.5px var(--line);
     font-size: 0.893rem;
@@ -1002,7 +1498,7 @@
 .rw-file {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: calc(7 * var(--sp));
     min-width: 0;
     font-size: 0.857rem;
     color: var(--fg-2);
@@ -1031,7 +1527,7 @@
 }
 
 .rw-file.warn > svg {
-    margin-top: 2px;
+    margin-top: calc(2 * var(--sp));
 }
 
 /* A question or a problem that needs an answer before going on. */
@@ -1039,10 +1535,10 @@
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: 10px;
-    margin-top: 4px;
-    padding: 10px 12px;
-    border-radius: 12px;
+    gap: calc(10 * var(--sp));
+    margin-top: calc(4 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
+    border-radius: calc(12 * var(--sp));
     background: color-mix(in srgb, var(--danger) 9%, var(--sheet));
     box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--danger) 28%, transparent);
     color: var(--danger);
@@ -1051,7 +1547,7 @@
 }
 
 .rw-confirm > span {
-    flex: 1 1 220px;
+    flex: 1 1 calc(220 * var(--sp));
     min-width: 0;
 }
 
@@ -1062,13 +1558,13 @@
 .wt-form {
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: calc(14 * var(--sp));
 }
 
 .wt-field {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     min-width: 0;
 }
 
@@ -1097,7 +1593,7 @@
 .wt-location {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     min-width: 0;
 }
 
@@ -1114,13 +1610,13 @@
 }
 
 .wt-sep {
-    margin-left: -6px;
+    margin-left: calc(-6 * var(--sp));
     font-size: 0.857rem;
     color: var(--fg-3);
 }
 
 .wt-location .input {
-    flex: 1 0 140px;
+    flex: 1 0 calc(140 * var(--sp));
 }
 
 .wt-path {
@@ -1134,13 +1630,13 @@
 }
 
 .wt-ignored svg {
-    margin-top: 2px;
+    margin-top: calc(2 * var(--sp));
 }
 
 .wt-ignored ul {
-    margin: 6px 0 2px;
-    padding-left: 18px;
-    max-height: 160px;
+    margin: calc(6 * var(--sp)) 0 calc(2 * var(--sp));
+    padding-left: calc(18 * var(--sp));
+    max-height: calc(160 * var(--sp));
     overflow-y: auto;
     overflow-wrap: anywhere;
 }
@@ -1152,7 +1648,7 @@
 
 .fp-bar {
     display: flex;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     align-items: center;
 }
 
@@ -1166,10 +1662,10 @@
 }
 
 .fp-list {
-    height: 300px;
+    height: calc(300 * var(--sp));
     overflow-y: auto;
-    padding: 4px;
-    border-radius: 12px;
+    padding: calc(4 * var(--sp));
+    border-radius: calc(12 * var(--sp));
     background: var(--sheet);
     box-shadow: inset 0 0 0 0.5px var(--line);
 }
@@ -1177,10 +1673,10 @@
 .fp-item {
     display: flex;
     align-items: center;
-    gap: 9px;
+    gap: calc(9 * var(--sp));
     width: 100%;
-    padding: 7px 10px;
-    border-radius: 10px;
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp));
+    border-radius: calc(10 * var(--sp));
     min-width: 0;
 }
 
@@ -1197,8 +1693,8 @@
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 10px;
-    padding: 22px 22px 18px;
+    gap: calc(10 * var(--sp));
+    padding: calc(22 * var(--sp)) calc(22 * var(--sp)) calc(18 * var(--sp));
 }
 
 .trust-dialog h2 {
@@ -1213,8 +1709,8 @@
 }
 
 .trust-path {
-    padding: 6px 10px;
-    border-radius: 8px;
+    padding: calc(6 * var(--sp)) calc(10 * var(--sp));
+    border-radius: calc(8 * var(--sp));
     background: var(--sheet);
     box-shadow: inset 0 0 0 0.5px var(--line);
     overflow-wrap: anywhere;
@@ -1223,10 +1719,10 @@
 .trust-dialog .trust-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
     align-self: stretch;
     justify-content: flex-end;
-    margin-top: 6px;
+    margin-top: calc(6 * var(--sp));
 }
 
 /* ---- MCP servers dialog ---- */
@@ -1234,9 +1730,9 @@
 .mcp-card {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 14px 16px;
-    border-radius: 14px;
+    gap: calc(8 * var(--sp));
+    padding: calc(14 * var(--sp)) calc(16 * var(--sp));
+    border-radius: calc(14 * var(--sp));
     background: var(--sheet);
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 35%, transparent);
 }
@@ -1244,18 +1740,18 @@
 .mcp-card-head {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
     min-width: 0;
 }
 
 .mcp-card .dialog-actions {
-    margin-top: 4px;
+    margin-top: calc(4 * var(--sp));
 }
 
 .mcp-facts {
     display: grid;
     grid-template-columns: max-content minmax(0, 1fr);
-    gap: 6px 14px;
+    gap: calc(6 * var(--sp)) calc(14 * var(--sp));
     font-size: 0.857rem;
 }
 
@@ -1279,31 +1775,31 @@
 .mcp-arg {
     display: inline-block;
     max-width: 100%;
-    padding: 1px 6px;
-    border-radius: 6px;
+    padding: 1px calc(6 * var(--sp));
+    border-radius: calc(6 * var(--sp));
     background: var(--sheet-2);
     box-shadow: inset 0 0 0 0.5px var(--line);
 }
 
 .mcp-args {
     margin: 0;
-    padding-left: 22px;
+    padding-left: calc(22 * var(--sp));
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: calc(3 * var(--sp));
 }
 
 .mcp-names {
     display: inline-flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 4px;
+    gap: calc(4 * var(--sp));
 }
 
 .mcp-note {
     display: flex;
     align-items: flex-start;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
     font-size: 0.857rem;
     color: var(--fg-3);
 }
@@ -1314,14 +1810,14 @@
 
 .mcp-note svg {
     flex: none;
-    margin-top: 2px;
+    margin-top: calc(2 * var(--sp));
 }
 
 .mcp-error {
     color: var(--danger);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-    max-height: 160px;
+    max-height: calc(160 * var(--sp));
     overflow-y: auto;
 }
 
@@ -1330,7 +1826,7 @@
 .script-field {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     min-width: 0;
 }
 
@@ -1349,14 +1845,14 @@
     font-size: 0.857rem;
     color: var(--danger);
     background: color-mix(in srgb, var(--danger) 9%, var(--sheet));
-    border-radius: 10px;
-    padding: 8px 10px;
+    border-radius: calc(10 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
     overflow-wrap: anywhere;
 }
 
 .script-icons {
     display: flex;
-    gap: 4px;
+    gap: calc(4 * var(--sp));
 }
 
 /* ---- Push and pull request dialog ------------------------------- */
@@ -1364,7 +1860,7 @@
 
 /* ---- Plans: read, save, or implement in a worktree (PlanDialogs, ArchiveDialog) ---- */
 .plan-dialog-body {
-    max-height: min(60vh, 520px);
+    max-height: min(60vh, 520 * var(--sp));
 }
 
 .plan-note {
@@ -1375,10 +1871,10 @@
 .plan-note-box {
     display: flex;
     align-items: flex-start;
-    gap: 10px;
+    gap: calc(10 * var(--sp));
     margin: 0;
-    padding: 10px 12px;
-    border-radius: 12px;
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
+    border-radius: calc(12 * var(--sp));
     background: var(--sheet);
     box-shadow: inset 0 0 0 0.5px var(--line);
     color: var(--fg-2);
@@ -1388,21 +1884,21 @@
 
 .plan-note-box svg {
     flex: none;
-    margin-top: 2px;
+    margin-top: calc(2 * var(--sp));
 }
 
 .plan-modes {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
 }
 
 .plan-mode {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    height: 30px;
-    padding: 0 12px 0 10px;
+    gap: calc(6 * var(--sp));
+    height: calc(30 * var(--sp));
+    padding: 0 calc(12 * var(--sp)) 0 calc(10 * var(--sp));
     border-radius: var(--pill);
     background: var(--ctl-strong);
     box-shadow: inset 0 0 0 0.5px var(--ctl-stroke);
@@ -1427,14 +1923,14 @@
 .run-sheet {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: calc(10 * var(--sp));
 }
 
 .run-wait {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 12px 0;
+    gap: calc(10 * var(--sp));
+    padding: calc(12 * var(--sp)) 0;
 }
 
 .run-results {
@@ -1443,7 +1939,7 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    border-radius: 12px;
+    border-radius: calc(12 * var(--sp));
     background: var(--sheet);
     box-shadow: inset 0 0 0 0.5px var(--line);
     overflow: hidden;
@@ -1452,8 +1948,8 @@
 .run-results li {
     display: flex;
     align-items: flex-start;
-    gap: 10px;
-    padding: 10px 12px;
+    gap: calc(10 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
     min-width: 0;
 }
 
@@ -1471,13 +1967,13 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: calc(3 * var(--sp));
 }
 
 .run-name {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: calc(6 * var(--sp));
     font-weight: 500;
     min-width: 0;
 }
@@ -1496,7 +1992,7 @@
 .check-row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: calc(8 * var(--sp));
     font-size: 0.929rem;
     color: var(--fg-2);
     cursor: default;
@@ -1511,9 +2007,9 @@
 .wt-setup {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding: 10px 12px;
-    border-radius: 12px;
+    gap: calc(6 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
+    border-radius: calc(12 * var(--sp));
     background: var(--sheet);
     box-shadow: inset 0 0 0 0.5px var(--line);
     font-size: 0.857rem;
@@ -1529,32 +2025,181 @@
 
 /* ---- Image viewer -------------------------------------------------- */
 
-/* The picture alone: no glass card around it. */
+/* The picture alone on a dimmed, blurred window: no glass card around it. Its
+   size is set inline (lib/image-view.ts); the max sizes are for before it's known. */
+.dialog-backdrop:has(> .image-viewer) {
+    padding: 0;
+    background: rgba(12, 14, 20, 0.32);
+    -webkit-backdrop-filter: blur(14px) saturate(1.2);
+    backdrop-filter: blur(14px) saturate(1.2);
+    animation: ov-fade var(--dur-panel) var(--ease-out);
+}
+
+[data-theme="dark"] .dialog-backdrop:has(> .image-viewer) {
+    background: rgba(0, 0, 0, 0.5);
+}
+
 .dialog.image-viewer {
-    width: auto !important;
-    max-width: calc(100vw - 32px);
-    max-height: calc(100vh - 32px);
+    width: 100% !important;
+    height: 100%;
+    max-width: none;
+    max-height: none;
     background: transparent;
     box-shadow: none;
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
     border-radius: 0;
     overflow: visible;
+    animation: none;
 }
 
 .image-viewer .dialog-body {
+    height: 100%;
     padding: 0;
-    display: flex;
-    justify-content: center;
     overflow: visible;
 }
 
-.image-viewer img {
-    display: block;
-    max-width: calc(100vw - 32px);
-    max-height: calc(100vh - 32px);
-    object-fit: contain;
+.iv {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    outline: none;
+}
+
+/* Fitted, the frame is centred; at 1:1 the stage scrolls, and margin: auto keeps a side that fits centred. */
+.iv-stage {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    overflow: hidden;
+}
+
+.iv.zoomed .iv-stage {
+    overflow: auto;
+}
+
+.iv-frame {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    margin: auto;
+}
+
+.iv-img {
+    position: relative;
+    flex: none;
+    overflow: hidden;
     border-radius: var(--r-card);
     box-shadow: var(--pop-shadow);
+    outline: none;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.iv-img img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    max-width: 92vw;
+    max-height: 88vh;
+    -webkit-user-drag: none;
+}
+
+/* The whole image, over the preview until it's decoded; in its own layer, so WebKit decodes it off the UI thread. */
+.iv-whole {
+    will-change: transform;
+}
+
+.iv-preview + .iv-whole {
+    position: absolute;
+    inset: 0;
+}
+
+.iv-img:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+}
+
+.iv-img.can-zoom {
+    cursor: zoom-in;
+}
+
+.iv.zoomed .iv-img img {
+    max-width: none;
+    max-height: none;
+}
+
+.iv.zoomed .iv-img {
+    border-radius: 0;
+    box-shadow: none;
     cursor: zoom-out;
+}
+
+.iv.grabbing .iv-img {
+    cursor: grabbing;
+}
+
+/* Name and pixel size under the picture; over it at the bottom while it's at 1:1. */
+.iv-caption,
+.iv-step {
+    background: var(--sheen), var(--ctl-strong);
+    -webkit-backdrop-filter: blur(20px) saturate(1.9);
+    backdrop-filter: blur(20px) saturate(1.9);
+    box-shadow: var(--pop-shadow), inset 0 1px 0 var(--ctl-hi);
+}
+
+.iv-caption {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    max-width: 92vw;
+    height: calc(26 * var(--sp));
+    padding: 0 calc(11 * var(--sp));
+    border-radius: var(--pill);
+    font-size: 0.821rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-2);
+    white-space: nowrap;
+}
+
+.iv-count {
+    flex: none;
+    color: var(--fg-3);
+}
+
+.iv.zoomed .iv-caption {
+    position: fixed;
+    bottom: calc(14 * var(--sp));
+    left: 50%;
+    transform: translateX(-50%);
+}
+
+.iv-step {
+    position: absolute;
+    top: 50%;
+    display: grid;
+    place-items: center;
+    width: calc(34 * var(--sp));
+    height: calc(34 * var(--sp));
+    margin-top: calc(-17 * var(--sp));
+    border-radius: 50%;
+    color: var(--fg-2);
+    transition: color var(--dur-fast), opacity var(--dur-fast);
+}
+
+.iv-step.prev {
+    left: calc(14 * var(--sp));
+}
+
+.iv-step.next {
+    right: calc(14 * var(--sp));
+}
+
+.iv-step:hover:not(:disabled) {
+    color: var(--fg);
+}
+
+.iv-step:disabled {
+    opacity: 0.35;
 }

@@ -44,8 +44,10 @@ describe("CLI account folder protections", () => {
                 expect(check("Grep", { pattern: ".", path: root }, mode).behavior).toBe("deny");
             }
         }
-        expect(check("Grep", { pattern: ".", path: outside }).behavior).toBe("deny");
+        // A folder that merely holds an account is searched as without accounts (#375); the account is hidden in it.
+        expect(check("Grep", { pattern: ".", path: outside }).behavior).toBe("allow");
         expect(checker.hiddenFromSearch("Grep", join(folder, "auth.json"))).toBe("protected");
+        expect(checker.hiddenFromSearch("Grep", outside)).toBeUndefined();
         expect(checker.isProtectedArea(outside)).toBe(true);
         expect(checker.isProtectedArea(join(folder, "backups"))).toBe(true);
     });
@@ -53,11 +55,14 @@ describe("CLI account folder protections", () => {
     test("shell paths, search roots, globs, quoting, redirects and aliases cannot expose accounts", () => {
         for (const command of [
             "cat alias/auth.json", "cat alias/.clau''de.json", "cat alias/*", "cat alias/.*",
-            `rg . '${outside}'`, `find '${outside}' -type f`, `cd '${folder}' && cat auth.json`,
+            `rg . '${folder}'`, `find '${folder}' -type f`, `cd '${folder}' && cat auth.json`,
             `python -c 'open("${folder}/auth.json").read()'`, `echo x > '${folder}/auth.json'`,
             `cat '${dirname(folder)}'/per*/auth.json`,
         ]) expect(check("Bash", { command }, "bypassPermissions").behavior).toBe("deny");
-        expect(accountTarget("rg marker", outside)).toBe(true);
+        expect(accountTarget("rg marker", folder)).toBe(true);
+        // Searches of a folder that merely holds an account decide as without accounts (#375).
+        for (const command of [`rg . '${outside}'`, `find '${outside}' -type f`, `ls -la '${outside}'`]) expect(check("Bash", { command }, "bypassPermissions").behavior).toBe("allow");
+        expect(accountTarget("rg marker", outside)).toBe(false);
         expect(accountTarget("cat source.ts", workspace)).toBe(false);
     });
 
@@ -92,7 +97,6 @@ describe("CLI account folder protections", () => {
 test("only effective Default credentials are protected, including symlinked missing homes", async () => {
     const { accountFolders } = await import("../src/providers/accounts");
     const { claudePermissions } = await import("../src/backends/claude-code");
-    const { claudeAccountSandbox, accountPermissionConfig } = await import("../src/backends/account-permissions");
     const previous = [process.env.CLAUDE_CONFIG_DIR, process.env.CODEX_HOME];
     const link = join(workspace, "default-homes");
     symlinkSync(outside, link);
@@ -122,13 +126,6 @@ test("only effective Default credentials are protected, including symlinked miss
             const deny = claudePermissions({ deny: [], ask: [], root: workspace }).deny;
             expect(deny).toContain(`Read(/${secret})`);
             expect(deny).not.toContain(`Read(/${canonical}/**)`);
-            expect(claudeAccountSandbox()!.filesystem.denyRead).toContain(secret);
-            expect(claudeAccountSandbox()!.filesystem.denyWrite).toContain(secret);
-            expect(claudeAccountSandbox()!.filesystem.denyRead).not.toContain(canonical);
-            for (const profile of Object.values(accountPermissionConfig([])!)) {
-                expect((profile as any).filesystem[secret]).toBe("deny");
-                expect((profile as any).filesystem[canonical]).toBeUndefined();
-            }
             // Resolve individual credential-file symlinks as well as home aliases.
             mkdirSync(canonical);
             const target = join(outside, `${name}-credential`);
@@ -137,8 +134,7 @@ test("only effective Default credentials are protected, including symlinked miss
             expect(check("Read", { file_path: target }).behavior).toBe("deny");
             expect(accountTarget(`cat '${target}'`, workspace)).toBe(true);
             expect(sandboxPolicy([workspace], { harnessHome: isolated.home }).unreadable).toContain(target);
-            expect(claudeAccountSandbox()!.filesystem.denyRead).toContain(target);
-            for (const profile of Object.values(accountPermissionConfig([])!)) expect((profile as any).filesystem[target]).toBe("deny");
+            expect(claudePermissions({ deny: [], ask: [], root: workspace }).deny).toContain(`Read(/${target})`);
         }
     } finally {
         [process.env.CLAUDE_CONFIG_DIR, process.env.CODEX_HOME] = previous;
@@ -167,7 +163,7 @@ test("account ancestors inside writable roots cannot be renamed, while siblings 
 });
 
 
-test("searches with explicit unrelated targets do not inherit cwd account containment", () => {
+test("searches and listings name an account only by what they name, wherever they start (#375)", () => {
     const unrelated = join(outside, "public");
     mkdirSync(unrelated);
     for (const command of [
@@ -182,12 +178,15 @@ test("searches with explicit unrelated targets do not inherit cwd account contai
         `ls --ignore '*.ts' '${unrelated}'`, `rsync -a --exclude '*.ts' '${unrelated}' /tmp/copy`,
         `tar -cf /tmp/copy.tar --exclude '*.ts' '${unrelated}'`,
     ]) expect({ command, blocked: accountTarget(command, outside) }).toEqual({ command, blocked: false });
-    for (const command of ["ls", "ls -la", "ls -w 80", "ls -T 8", "tree", "find -type f", "rg marker", "rg -g '*.ts' marker", "rg -e marker", "rg --files", "rg --context 2 marker", "rg --color always marker", "rg --files --color never", "grep -R marker", "fd marker", "ag --depth 2 marker", "ack --max-count 2 marker", "fd --max-results 1 marker", "ls --width 80", "tree --sort name"]) {
-        expect(accountTarget(command, outside)).toBe(true);
+    // A cwd, or an operand, that merely holds an account is searched as without accounts.
+    for (const command of ["ls", "ls -la", "ls -w 80", "ls -T 8", "tree", "find -type f", "rg marker", "rg -g '*.ts' marker", "rg -e marker", "rg --files", "rg --context 2 marker", "rg --color always marker", "rg --files --color never", "grep -R marker", "fd marker", "ag --depth 2 marker", "ack --max-count 2 marker", "fd --max-results 1 marker", "ls --width 80", "tree --sort name", `rg marker '${outside}'`, `find '${outside}' -type f`]) {
+        expect({ command, blocked: accountTarget(command, outside) }).toEqual({ command, blocked: false });
     }
-    for (const command of [`ls '${folder}'`, `rg marker '${outside}'`, `find '${outside}' -type f`, `ls '${unrelated}' '${folder}'`]) {
-        expect(accountTarget(command, outside)).toBe(true);
+    // Naming the account, starting in it, or a pattern that can match into it still counts.
+    for (const command of [`ls '${folder}'`, `ls '${unrelated}' '${folder}'`, "rg marker personal", "cat */auth.json", "ls * | xargs cat", "find * -exec cat {} +"]) {
+        expect({ command, blocked: accountTarget(command, outside) }).toEqual({ command, blocked: true });
     }
+    for (const command of ["ls", "rg marker", "find -type f"]) expect(accountTarget(command, folder)).toBe(true);
 });
 
 

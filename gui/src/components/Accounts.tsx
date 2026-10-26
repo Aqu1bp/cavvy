@@ -1,9 +1,9 @@
 import "../styles/accounts.css";
-import { createSignal, createUniqueId, For, onMount, Show } from "solid-js";
+import { createEffect, createSignal, createUniqueId, For, onMount, Show } from "solid-js";
 import { Check, ExternalLink, MoreHorizontal } from "lucide-solid";
 import type { AccountInfo, ProviderInfo } from "@shared/protocol";
 import { refreshModels, refreshProviders, rpc } from "../state/app";
-import { terminalActions } from "../state/ui";
+import { addAccountFor, setAddAccountFor, terminalActions } from "../state/ui";
 import { openExternal } from "../lib/platform";
 import { Menu } from "./ui/Menu";
 import { Dialog } from "./ui/Dialog";
@@ -55,6 +55,16 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
         await refreshProviders();
     };
     onMount(() => { if (installed() && (p.provider.configured || accounts().length > 1)) void refresh().catch((e) => setActionError(message(e))); });
+    let section: HTMLElement | undefined;
+    // "Add account…" in the model picker: open the form here, in view.
+    createEffect(() => {
+        if (addAccountFor() !== p.provider.id) return;
+        setAddAccountFor(undefined);
+        if (!installed()) return;
+        setActionError(undefined);
+        setAdding(true);
+        requestAnimationFrame(() => section?.scrollIntoView({ block: "nearest" }));
+    });
     const work = async (fn: () => Promise<void>, fail = setActionError) => {
         if (busy()) return;
         setBusy(true); fail(undefined);
@@ -126,7 +136,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
     };
     // Under the name: what's missing, or the one account's email.
     const sub = () => !installed() ? "Not installed" : !p.provider.configured ? "Not set up" : single()?.email;
-    return <section class="cli-prov" aria-label={p.provider.name}>
+    return <section ref={section} class="cli-prov" aria-label={p.provider.name}>
         <div class="prov-line">
             <span class="prov-logo"><ProviderIcon id={p.provider.id} name={p.provider.name} size={18} /></span>
             <div class="prov-lab">
@@ -170,9 +180,9 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                 <For each={accounts()}>{(a) => {
                     let anchor: HTMLButtonElement | undefined;
                     // The email names an account best; a named account keeps its name beside it.
-                    const meta = () => [a.email && a.id !== "default" ? a.name : undefined, planLabel(a.plan), accountStatus(a)].filter(Boolean).join(" · ");
+                    const meta = () => [a.email && a.id !== "default" ? a.name : undefined, planLabel(a.plan), accountStatus(a), a.sharing ? "Not all shared" : undefined].filter(Boolean).join(" · ");
                     return <div class="account-row" role="listitem" classList={{ open: menu() === a.id }}>
-                        <div class="account-identity" title={a.description}>
+                        <div class="account-identity" title={[a.description, a.sharing].filter(Boolean).join("\n") || undefined}>
                             <span class="account-name truncate">{a.email ?? a.name}</span>
                             <Show when={meta()}><span class="account-meta truncate">{meta()}</span></Show>
                         </div>
@@ -192,7 +202,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                 <details class="account-advanced" open={advanced()} onToggle={(e) => setAdvanced(e.currentTarget.open)}>
                     <summary>Use an existing folder</summary>
                     <input id={`${uid}-folder`} class="input mono" aria-label="Account folder" aria-invalid={error()?.field === "folder"} aria-describedby={`${uid}-folder-help${error()?.field === "folder" ? ` ${uid}-folder-error` : ""}`} value={folder()} maxLength={1024} disabled={busy()} onInput={(e) => { setFolder(e.currentTarget.value); setError(undefined); }} placeholder="/path/to/cli-home" />
-                    <span id={`${uid}-folder-help`} class="account-hint">Leave blank and Harness makes a separate folder.</span>
+                    <span id={`${uid}-folder-help`} class="account-hint">Leave blank and Harness makes a folder that shares Default's settings and history. An existing folder is used as it is.</span>
                     <Show when={error()?.field === "folder"}><span id={`${uid}-folder-error`} class="account-error" role="alert">{error()?.message}</span></Show>
                 </details>
                 <Show when={error()?.field === "form"}><span class="account-error" role="alert">{error()?.message}</span></Show>
@@ -204,8 +214,11 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
         </Show>
         <Show when={actionError()}><span class="account-error account-note" role="alert">{actionError()}</span></Show>
         <Dialog open={help()} onClose={() => setHelp(false)} title={`${p.provider.name} accounts`} width={420}>
-            <p>Add an account to keep separate sign-ins, for example personal and work. Each one signs in on its own in the CLI terminal, and its folder keeps separate settings and history.</p>
-            <p>{p.provider.id === "claude-code" ? "Claude Console sign-in without an API key is stored outside this folder and is not isolated per account." : "A new Codex home does not inherit your settings or MCP servers."}</p>
+            <p>Add an account to keep separate sign-ins, for example personal and work. Each one signs in on its own in the CLI terminal.</p>
+            <p>{p.provider.id === "claude-code"
+                ? "A folder Harness makes links Default's settings, CLAUDE.md, rules, skills, agents, commands, plugins and history, so only the sign-in differs; settings.json isn't shared while it sets a sign-in (an API key, apiKeyHelper or cloud provider). MCP servers added for your user are kept with each sign-in and are not shared. Claude Console sign-in without an API key is stored outside this folder and is not isolated per account."
+                : "A folder Harness makes links everything in Default's Codex home, including config.toml, MCP servers, skills and history, except the sign-in (auth.json and secrets), the model list and .env."}</p>
+            <p>An existing folder you choose is used as it is, with nothing linked.</p>
         </Dialog>
         <Show when={removing()}>{(a) => <Dialog open onClose={() => { if (!busy()) setRemoving(undefined); }} title={`Remove ${a().name}?`} width={460}>
             <p>{a().managed && !a().invalid ? "Delete the Harness-created folder" : "Forget this account and leave its folder untouched"}: <code class="account-path">{a().folder}</code>?</p>

@@ -36,7 +36,8 @@ export function hasProviderIcon(id: string): boolean {
     return id in MARKS;
 }
 
-export function ProviderIcon(p: { id: string; name?: string; size?: number; class?: string }) {
+/** `label`: what a screen reader says it is (the provider's name); without one it's decoration. */
+export function ProviderIcon(p: { id: string; name?: string; size?: number; class?: string; label?: string }) {
     const size = () => p.size ?? 16;
     const mark = () => MARKS[p.id];
     const uid = createUniqueId();
@@ -44,7 +45,7 @@ export function ProviderIcon(p: { id: string; name?: string; size?: number; clas
         <Show
             when={mark()}
             fallback={
-                <span class={`provider-mono ${p.class ?? ""}`} style={{ width: `${size()}px`, height: `${size()}px`, "font-size": `${Math.round(size() * 0.42)}px` }} aria-hidden="true">
+                <span class={`provider-mono ${p.class ?? ""}`} style={{ width: `calc(${size()} * var(--sp))`, height: `calc(${size()} * var(--sp))`, "font-size": `calc(${Math.round(size() * 0.42)} * var(--sp))` }} role={p.label ? "img" : undefined} aria-label={p.label} aria-hidden={p.label ? undefined : "true"}>
                     {(p.name ?? p.id).replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase()}
                 </span>
             }
@@ -57,7 +58,9 @@ export function ProviderIcon(p: { id: string; name?: string; size?: number; clas
                     viewBox={m().viewBox}
                     fill={m().mono ? "currentColor" : undefined}
                     fill-rule={m().evenodd ? "evenodd" : undefined}
-                    aria-hidden="true"
+                    role={p.label ? "img" : undefined}
+                    aria-label={p.label}
+                    aria-hidden={p.label ? undefined : "true"}
                     innerHTML={m().body.replaceAll("$ID", `pi${uid}-`)}
                 />
             )}

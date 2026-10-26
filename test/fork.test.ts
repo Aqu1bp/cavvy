@@ -57,7 +57,7 @@ describe("the fork's file", () => {
         // Selected after the earlier turn: settings follow the source now, not the cut.
         s.setAccount("claude-code", "work");
         s.setAccount("codex", "personal");
-        for (const provider of ["claude-code", "codex"]) s.setBackendSession(provider, `${provider}-shared`, 4, `/accounts/${provider}`);
+        for (const provider of ["claude-code", "codex"]) s.setBackendSession(provider, `${provider}-shared`, 4, { folder: `/accounts/${provider}` });
         const f = forkSession(s, { cut });
         f.release();
         const reopened = Session.load(f.path);
@@ -66,27 +66,29 @@ describe("the fork's file", () => {
             expect(reopened.accountId("codex")).toBe("personal");
             for (const provider of ["claude-code", "codex"]) {
                 const shared = { id: `${provider}-shared`, synced: 4, fork: true };
-                expect(reopened.backendSession(provider, `/accounts/${provider}`)).toEqual(shared);
-                expect(s.backendSession(provider, `/accounts/${provider}`)).toEqual(shared);
+                expect(reopened.backendSession(provider, { folder: `/accounts/${provider}` })).toEqual(shared);
+                expect(s.backendSession(provider, { folder: `/accounts/${provider}` })).toEqual(shared);
                 expect(readFileSync(f.path, "utf8")).toContain(`"folder":"/accounts/${provider}"`);
             }
         } finally { reopened.release(); s.release(); }
     });
 
-    test.each(["claude-code", "codex"])("%s: an account switch or replacement folder cannot reuse a shared session", (provider) => {
+    test.each(["claude-code", "codex"])("%s: an account switch or replacement folder cannot reuse a shared session elsewhere; it's kept for its own home, still shared", (provider) => {
         const s = original();
         s.setAccount(provider, "work");
-        s.setBackendSession(provider, "shared", 6, "/accounts/work");
+        s.setBackendSession(provider, "shared", 6, { folder: "/accounts/work" });
         for (const change of ["selection", "folder"]) {
             const f = forkSession(s, { cut: 6 });
-            expect(f.backendSession(provider, "/accounts/work")?.fork).toBe(true);
+            expect(f.backendSession(provider, { folder: "/accounts/work" })?.fork).toBe(true);
             if (change === "selection") f.setAccount(provider, "personal");
-            expect(f.backendSession(provider, "/accounts/other")).toBeUndefined();
+            expect(f.backendSession(provider, { folder: "/accounts/other" })).toBeUndefined();
             f.release();
             const reopened = Session.load(f.path);
-            expect(reopened.backendSession(provider, "/accounts/work")).toBeUndefined();
+            expect(reopened.backendSession(provider, { folder: "/accounts/other" })).toBeUndefined();
+            // Parked for its home (#413): back there, it's forked natively, never continued in place.
+            expect(reopened.backendSession(provider, { folder: "/accounts/work" })).toEqual({ id: "shared", synced: 6, fork: true });
             reopened.release();
-            expect(s.backendSession(provider, "/accounts/work")?.id).toBe("shared");
+            expect(s.backendSession(provider, { folder: "/accounts/work" })?.id).toBe("shared");
         }
         s.release();
     });

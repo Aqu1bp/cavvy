@@ -85,9 +85,13 @@ export interface DiffComments {
     remove: (id: string) => void;
 }
 
-type DiffProps = { diff: FileDiff; maxLines?: number; header?: boolean; headerAction?: JSX.Element; split?: boolean; class?: string; comments?: DiffComments };
+type DiffProps = { diff: FileDiff; maxLines?: number; header?: boolean; headerAction?: JSX.Element; split?: boolean; oneSide?: boolean; windowed?: boolean; class?: string; comments?: DiffComments };
 
-/** `headerAction`: a control at the end of the header (e.g. "Open in editor"). */
+/**
+ * `headerAction`: a control at the end of the header (e.g. "Open in editor"). `oneSide`: a new or deleted
+ * file (lib/review-stack.ts oneSided), drawn unified with one line-number column rather than an empty one.
+ * `windowed`: draw only the rows near the view (the review pane's diffs, which take comments, always are).
+ */
 export function DiffView(p: DiffProps) {
     return <RenderBoundary raw={() => p.diff}><DiffViewContent {...p} /></RenderBoundary>;
 }
@@ -454,8 +458,8 @@ function DiffViewContent(p: DiffProps) {
     // with spacers standing in for the rest. WebKit pays for every drawn row's positioned cells on each
     // frame of a scroll, so a 1,500-line diff drawn whole scrolls at a few frames a second. Rows a
     // selection, a comment being written or changed, or the focus is in stay drawn wherever they are.
-    /** Fixed for the view's life, like `commentable`: the review pane's diffs; the transcript's are short. */
-    const windowed = commentable;
+    /** Fixed for the view's life, like `commentable`: the review pane's diffs (another worktree's too, which take no comments); the transcript's are short. */
+    const windowed = commentable || untrack(() => Boolean(p.windowed));
     type Unit = Row | Pair;
     type Gap = { gap: true; from: number; to: number };
     /** What's drawn one after another: rows, or pairs side by side, each with the comments under it. */
@@ -938,16 +942,22 @@ function DiffViewContent(p: DiffProps) {
                                 "gap" in r ? (
                                     <Spacer gap={r} />
                                 ) : r.kind === "sep" ? (
-                                    <div class="dl sep" data-u={windowed ? unitIndex().get(r) : undefined}>
+                                    <div class={p.oneSide ? "dl sep one" : "dl sep"} data-u={windowed ? unitIndex().get(r) : undefined}>
                                         <span class="ln" />
-                                        <span class="ln" />
+                                        {p.oneSide ? undefined : <span class="ln" />}
                                         <span class="txt">{r.text}</span>
                                     </div>
                                 ) : r.kind === "line" ? (
                                     <>
-                                        <div class={`dl ${r.line.t}`} data-i={r.idx} data-u={windowed ? unitIndex().get(r) : undefined}>
-                                            <span class="ln" data-g={r.idx}>{r.line.a ?? ""}</span>
-                                            <span class="ln" data-g={r.idx}>{r.line.b ?? ""}</span>
+                                        <div class={`dl ${r.line.t}${p.oneSide ? " one" : ""}`} data-i={r.idx} data-u={windowed ? unitIndex().get(r) : undefined}>
+                                            {p.oneSide ? (
+                                                <span class="ln" data-g={r.idx}>{r.line.b ?? r.line.a ?? ""}</span>
+                                            ) : (
+                                                <>
+                                                    <span class="ln" data-g={r.idx}>{r.line.a ?? ""}</span>
+                                                    <span class="ln" data-g={r.idx}>{r.line.b ?? ""}</span>
+                                                </>
+                                            )}
                                             <Code class="txt" row={r} />
                                         </div>
                                         {commentable && hasSlot(r.idx) ? <Slot idx={r.idx} /> : undefined}
@@ -956,9 +966,9 @@ function DiffViewContent(p: DiffProps) {
                             }
                         </For>
                         <Show when={widestText()}>
-                            <div class="dl dv-sizer" aria-hidden="true" data-find-skip>
+                            <div class={p.oneSide ? "dl dv-sizer one" : "dl dv-sizer"} aria-hidden="true" data-find-skip>
                                 <span class="ln" />
-                                <span class="ln" />
+                                {p.oneSide ? undefined : <span class="ln" />}
                                 <span class="txt">{widestText()}</span>
                             </div>
                         </Show>

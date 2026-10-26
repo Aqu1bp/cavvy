@@ -5,6 +5,7 @@
 import { createEffect, createRoot, createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import { setNativeTheme } from "../lib/platform";
+import { scaled } from "../lib/text-size";
 import { appearanceOf, migratePrefs, PREF_DEFAULTS, showAppearance, type Appearance, type Prefs } from "./prefs-core";
 
 export { ACCENTS, CHAT_WIDTHS, PREF_DEFAULTS, type AccentId, type ContrastId, type GlassId, type Prefs, type Scheme, type TintId } from "./prefs-core";
@@ -26,6 +27,9 @@ export const [prefs, setPrefs] = createStore<Prefs>(load());
 const media = typeof matchMedia !== "undefined" ? matchMedia("(prefers-color-scheme: dark)") : undefined;
 const [systemDark, setSystemDark] = createSignal(media?.matches ?? false);
 media?.addEventListener("change", (e) => setSystemDark(e.matches));
+
+/** `n` px at text size 14, at the text size showing: what calc(n * var(--sp)) is in CSS (tokens.css). */
+export const sp = (n: number) => scaled(n, prefs.fontSize);
 
 /** The scheme actually showing. */
 export function activeTheme(): "light" | "dark" {

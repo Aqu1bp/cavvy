@@ -2,17 +2,17 @@
 // for a moment and clear of the tool capsule, rather than over the content.
 // At most two show (state/app.ts queues the rest); pointing at one, or focusing
 // it, holds its timer, so an Undo can't slip away under the cursor.
+// Errors never show here: they're cards by the composer (ErrorCards.tsx).
 
 import { For, Match, onCleanup, Show, Switch } from "solid-js";
-import { CircleAlert, CircleCheck, Info, TriangleAlert, X } from "lucide-solid";
-import { dismissToast, pauseToast, runToastChoice, toast, toasts, type Toast } from "../state/app";
-import { copyText } from "../lib/platform";
+import { CircleCheck, Info, TriangleAlert, X } from "lucide-solid";
+import { dismissToast, pauseToast, runToastChoice, toasts, type Toast } from "../state/app";
 import { titleBarBox } from "../state/ui";
 
 export function ToastItem(p: { toast: Toast }) {
     const t = () => p.toast;
     onCleanup(() => {
-        // Failed actions move to the alert region, replacing their old DOM node.
+        // A failed action makes its toast an error card, which replaces this one.
         pauseToast(t().id, "hover", false);
         pauseToast(t().id, "focus", false);
     });
@@ -27,9 +27,6 @@ export function ToastItem(p: { toast: Toast }) {
             }}
         >
             <Switch fallback={<Info size={15} />}>
-                <Match when={t().level === "error"}>
-                    <CircleAlert size={15} />
-                </Match>
                 <Match when={t().level === "warn"}>
                     <TriangleAlert size={15} />
                 </Match>
@@ -50,17 +47,6 @@ export function ToastItem(p: { toast: Toast }) {
                     </button>
                 )}
             </For>
-            <Show when={t().level === "error"}>
-                <button
-                    class="link-btn"
-                    onClick={async () => {
-                        const copied = await copyText(t().message);
-                        toast(copied ? "Copied error" : "Couldn't copy error", copied ? "success" : "info");
-                    }}
-                >
-                    Copy
-                </button>
-            </Show>
             <button class="icon-btn" onClick={() => dismissToast(t().id)} aria-label="Dismiss">
                 <X size={13} />
             </button>
@@ -73,9 +59,6 @@ export function Toasts() {
     const px = (v: number | undefined) => (v === undefined ? undefined : `${v}px`);
     return (
         <div class="toasts" style={{ "--bar-start": px(titleBarBox()?.start), "--bar-end": px(titleBarBox()?.end), "--bar-top": px(titleBarBox()?.top) }}>
-            <div class="toast-region" role="alert" aria-live="assertive" aria-relevant="additions text">
-                <For each={toasts.filter((t) => t.level === "error")}>{(t) => <ToastItem toast={t} />}</For>
-            </div>
             <div class="toast-region" role="status" aria-live="polite" aria-relevant="additions text">
                 <For each={toasts.filter((t) => t.level !== "error")}>{(t) => <ToastItem toast={t} />}</For>
             </div>

@@ -169,24 +169,78 @@ test("native CLI turns select their account and deny account folders in their ow
     expect(claudePermissions({ deny: [], ask: [], root }).deny).toContain(`Read(/${folder}/**)`);
     const claudeArgs = starts()[0].argv;
     const settings = JSON.parse(claudeArgs[claudeArgs.indexOf("--settings") + 1]);
-    expect(settings.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, autoAllowBashIfSandboxed: false, filesystem: { disabled: false } });
-    expect(settings.sandbox.filesystem.denyRead).toContain(folder);
-    expect(settings.sandbox.filesystem.denyWrite).toContain(folder);
-    expect(settings.sandbox.filesystem.denyRead).toContain(join(realpathSync(root), "personal"));
-    expect(settings.permissions.ask).toContain("Bash");
+    for (const denied of [folder, join(realpathSync(root), "personal")]) expect(settings.permissions.deny).toContain(`Read(/${denied}/**)`);
+    // Codex takes its standard sandbox for the mode: no permission profiles of Harness's (#375).
     const received = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line).received).filter(Boolean);
     const thread = received.find((message) => message.method === "thread/start").params;
     const turn = received.find((message) => message.method === "turn/start").params;
-    expect(received.find((message) => message.method === "initialize").params.capabilities).toEqual({ experimentalApi: true });
-    expect(thread.sandbox).toBeUndefined();
-    expect(thread.permissions).toBe("harness_accounts_write");
-    for (const denied of [folder, codexFolder]) expect(thread.config["permissions.harness_accounts_write"].filesystem[denied]).toBe("deny");
-    expect(thread.config["permissions.harness_accounts_write"].extends).toBe(":workspace");
-    expect(turn.sandboxPolicy).toBeUndefined();
-    expect(turn.permissions).toBe("harness_accounts_write");
+    expect(thread.sandbox).toBe("workspace-write");
+    expect(thread.permissions).toBeUndefined();
+    expect(JSON.stringify(thread.config ?? {})).not.toContain("harness_accounts");
+    expect(turn.sandboxPolicy).toBeDefined();
+    expect(turn.permissions).toBeUndefined();
 });
 
-test("Claude account sandbox stays on for read-only delegates and Bypass", async () => {
+test("Codex's initialize, thread and turn parameters are the same with and without named accounts (#375)", async () => {
+    process.env.FAKE_SCENARIO = "silent";
+    const codex = BUILTIN_PROVIDERS.find((p) => p.id === "codex")!;
+    let n = 0;
+    const params = async (accountId: string, live: boolean, mode: import("../src/permissions/modes").PermissionMode) => {
+        rmSync(log, { force: true });
+        const backend = createBackend(codex);
+        const turn = fakeTurn("codex");
+        const key = `parity-${n++}`;
+        Object.assign(turn, { accountId, sessionKey: key, mode, ...(live ? {} : { liveSessions: false }) });
+        turn.session.mode = () => mode;
+        expect((await backend.runTurn(turn)).reason).toBe("done");
+        await backend.release?.(key);
+        const received = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line).received).filter(Boolean);
+        const pick = (method: string) => received.find((message) => message.method === method)?.params;
+        return { initialize: pick("initialize"), thread: pick("thread/start"), turn: pick("turn/start") };
+    };
+    const saved = readAgentConfig("codex")?.accounts;
+    try {
+        for (const live of [false, true]) {
+            for (const mode of ["default", "auto", "bypassPermissions"] as const) {
+                saveAgentConfig("codex", { accounts: [] });
+                saveAgentConfig("claude-code", { accounts: [] });
+                const without = await params("default", live, mode);
+                expect(without.thread.sandbox).toBeDefined();
+                saveAgentConfig("codex", { accounts: saved });
+                saveAgentConfig("claude-code", { accounts: [{ id: "personal", name: "Personal", folder, managed: false }] });
+                expect({ live, mode, ...(await params("default", live, mode)) }).toEqual({ live, mode, ...without });
+                // A named account only changes CODEX_HOME.
+                expect({ live, mode, ...(await params("personal", live, mode)) }).toEqual({ live, mode, ...without });
+            }
+        }
+    } finally {
+        saveAgentConfig("codex", { accounts: saved });
+        saveAgentConfig("claude-code", { accounts: [{ id: "personal", name: "Personal", folder, managed: false }] });
+    }
+}, 30_000);
+
+test("Claude Code's spawned settings have no account sandbox or forced Bash ask, in any mode (#375)", async () => {
+    process.env.FAKE_SCENARIO = "silent";
+    const backend = createBackend(BUILTIN_PROVIDERS.find((p) => p.id === "claude-code")!);
+    for (const mode of ["auto", "bypassPermissions"] as const) {
+        for (const accountId of ["default", "personal"]) {
+            const turn = fakeTurn("claude-code");
+            Object.assign(turn, { mode, accountId, sessionKey: `claude-${mode}-${accountId}` });
+            turn.session.mode = () => mode;
+            expect((await backend.runTurn(turn)).reason).toBe("done");
+            await backend.release?.(turn.sessionKey);
+        }
+    }
+    expect(starts()).toHaveLength(4);
+    for (const start of starts()) {
+        const settings = JSON.parse(start.argv[start.argv.indexOf("--settings") + 1]);
+        expect(settings.sandbox).toBeUndefined();
+        expect(settings.permissions.ask).not.toContain("Bash");
+        expect(settings.permissions.deny).toContain(`Read(/${folder}/**)`);
+    }
+});
+
+test("read-only delegates keep their own Bash ask, with no account sandbox, in Bypass too", async () => {
     process.env.FAKE_SCENARIO = "silent";
     const backend = createBackend(BUILTIN_PROVIDERS.find((p) => p.id === "claude-code")!);
     for (const readOnly of [false, true]) {
@@ -196,25 +250,25 @@ test("Claude account sandbox stays on for read-only delegates and Bypass", async
         turn.readOnly = readOnly;
         expect((await backend.runTurn(turn)).reason).toBe("done");
     }
-    for (const start of starts()) {
-        const settings = JSON.parse(start.argv[start.argv.indexOf("--settings") + 1]);
-        expect(settings.sandbox.enabled).toBe(true);
-        expect(settings.sandbox.filesystem.denyRead).toContain(folder);
-        expect(settings.sandbox.filesystem.denyWrite).toContain(folder);
-        expect(settings.sandbox.allowUnsandboxedCommands).toBe(false);
-        expect(settings.permissions.ask).toContain("Bash");
-    }
+    const [full, readOnly] = starts().map((start) => JSON.parse(start.argv[start.argv.indexOf("--settings") + 1]));
+    expect(full.sandbox).toBeUndefined();
+    expect(full.permissions.ask).not.toContain("Bash");
+    expect(readOnly.sandbox).toEqual({ autoAllowBashIfSandboxed: false });
+    expect(readOnly.permissions.ask).toContain("Bash");
+    for (const settings of [full, readOnly]) expect(settings.permissions.deny).toContain(`Read(/${folder}/**)`);
 });
 
-test("Codex fails closed if it cannot apply account protections, even with delegation enabled", async () => {
+test("a Codex that refuses the delegation config falls back without it, named accounts or not", async () => {
     process.env.FAKE_REJECT_CONFIG = "1";
+    process.env.FAKE_SCENARIO = "silent";
     const backend = createBackend(BUILTIN_PROVIDERS.find((p) => p.id === "codex")!);
     const turn = fakeTurn("codex");
+    turn.liveSessions = false;
     turn.orchestrator = { name: "harness", url: "http://127.0.0.1:1", authorization: "fake", tools: [], instructions: "fake", toolTimeoutSec: 1 };
-    expect((await backend.runTurn(turn)).reason).toBe("error");
+    expect((await backend.runTurn(turn)).reason).toBe("done");
     const received = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line).received).filter(Boolean);
-    expect(received.filter((message) => message.method === "thread/start")).toHaveLength(1);
-    expect(received.some((message) => message.method === "turn/start")).toBe(false);
+    expect(received.filter((message) => message.method === "thread/start")).toHaveLength(2);
+    expect(received.some((message) => message.method === "turn/start")).toBe(true);
 });
 
 

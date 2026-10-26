@@ -8,7 +8,7 @@
      .app      the window. data-rail: docked (beside the sheet) or overlay
                (a drawer over it, below 900px), always set; .rail-off while
                the sidebar preference hides a docked rail; data-railopen
-               (the drawer), data-insp, data-inspmode (dock|float),
+               (the drawer), data-insp, data-inspmode (dock|float|fill),
                data-inspshort, data-term, data-tmax, data-settings
      .win-rail the rail column (Sidebar, or SettingsNav in Settings)
      .sheet    the sheet's grid
@@ -85,9 +85,9 @@
     padding-left: var(--win-pad);
 }
 
-/* The window drags by its edges: this lies under the rail and the sheet, so
-   only the gaps around them take the drag (the rail's top and the title bar
-   are drag regions of their own). */
+/* The window moves by its edges: this lies under the rail and the sheet, so
+   only the gaps around them take the drag (data-window-drag). The whole top
+   strip moves it too, whatever is on it (lib/window-drag.ts). */
 .win-drag {
     position: absolute;
     inset: 0;
@@ -179,7 +179,7 @@
     top: var(--win-pad);
     bottom: var(--win-pad);
     width: var(--rail-w);
-    border-radius: 14px;
+    border-radius: calc(14 * var(--sp));
     transform: translateX(calc(-100% - 16px));
 }
 
@@ -297,10 +297,10 @@
     top: 54px;
     right: 8px;
     bottom: var(--insp-bottom);
-    width: min(var(--insp-w), calc(100% - 16px));
+    width: min(var(--insp-w), calc(100% - 16 * var(--sp)));
     grid-template-columns: minmax(0, 1fr);
     border-left: 0;
-    border-radius: 12px;
+    border-radius: calc(12 * var(--sp));
     box-shadow: var(--pop-shadow);
     transform: translateX(calc(100% + 16px));
     transition: transform var(--dur-panel) var(--ease), bottom var(--dur-panel) var(--ease);
@@ -308,6 +308,29 @@
 
 [data-inspmode="float"][data-insp="on"] .insp {
     transform: none;
+}
+
+/* A diff reader too wide to dock fills the sheet under the title bar, ending above the composer like a
+   floating one. The conversation behind it would show only as a cut-off strip under the title bar, so it's hidden;
+   Find and a jump to a message close the reader first (lib/layout.ts coversConversation). */
+[data-inspmode="fill"] .insp {
+    grid-area: auto;
+    position: absolute;
+    z-index: 9;
+    top: 54px;
+    left: 8px;
+    right: 8px;
+    bottom: var(--insp-bottom);
+    grid-template-columns: minmax(0, 1fr);
+    border-left: 0;
+    border-radius: calc(12 * var(--sp));
+    box-shadow: var(--pop-shadow);
+    transition: bottom var(--dur-panel) var(--ease);
+    animation: rise var(--dur-panel) var(--ease);
+}
+
+[data-inspmode="fill"] .main .transcript-wrap {
+    visibility: hidden;
 }
 
 .insp-resizer {
@@ -348,15 +371,15 @@
 /* Not connected: a small note under the title bar. */
 .main > .banner {
     position: absolute;
-    top: calc(var(--bar-h) + 6px);
+    top: calc(var(--bar-h) + 6 * var(--sp));
     left: 50%;
     transform: translateX(-50%);
     z-index: 7;
     display: flex;
     align-items: center;
-    gap: 8px;
-    height: 30px;
-    padding: 0 14px;
+    gap: calc(8 * var(--sp));
+    height: calc(30 * var(--sp));
+    padding: 0 calc(14 * var(--sp));
     border-radius: var(--pill);
     font-size: 0.857rem;
     font-weight: 500;
@@ -367,7 +390,7 @@
 }
 
 .main > .banner + .banner {
-    top: calc(var(--bar-h) + 42px);
+    top: calc(var(--bar-h) + 42 * var(--sp));
 }
 
 .hb:active:not(:disabled),

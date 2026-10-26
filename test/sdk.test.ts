@@ -1061,7 +1061,7 @@ describe("found in the Codex review", () => {
             const { findSession, Session } = await import("../src/agent/session");
             const file = findSession(cwd, id)!;
             const s = Session.load(file);
-            const native = s.backendSession("claude-code", s.backendFolder("claude-code"))?.id;
+            const native = s.backendSession("claude-code", s.backendPlace("claude-code"))?.id;
             s.release();
             expect(native).toBeTruthy();
             const before = readFileSync(file, "utf-8");

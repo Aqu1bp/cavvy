@@ -158,6 +158,20 @@ export function summaryFits(input: unknown): boolean {
 /** A popup waits at most this long for its summary: it never holds the popup up. */
 export const SUMMARY_TIMEOUT_MS = 5_000;
 
+/**
+ * A model's summary as one line for the popup, which labels it "AI summary:" itself:
+ * whitespace collapsed, quotes around it and its own leading "Summary:" (any case,
+ * markdown-bold too) taken off.
+ */
+export function cleanSummary(text: string): string {
+    let s = text.replace(/\s+/g, " ").trim();
+    for (let prev = ""; prev !== s; ) {
+        prev = s;
+        s = s.replace(/^["'`]+|["'`]+$/g, "").replace(/^[*_]{0,2}summary[*_]{0,2}\s*:\s*[*_]{0,2}\s*/i, "").trim();
+    }
+    return s;
+}
+
 /** A command worth summarizing: long, or more than one line. */
 export function needsSummary(command: string): boolean {
     return command.length > 100 || command.includes("\n");
@@ -181,7 +195,7 @@ export function parseVerdict(text: string): ClassifierVerdict | undefined {
         // "escalate" is what an older prompt asked for: a no either way.
         const decision = j.decision === "allow" ? "allow" : j.decision === "block" || j.decision === "escalate" ? "block" : undefined;
         if (!decision) return undefined;
-        const summary = typeof j.summary === "string" ? j.summary.replace(/\s+/g, " ").trim().slice(0, 200) : "";
+        const summary = typeof j.summary === "string" ? cleanSummary(j.summary).slice(0, 200) : "";
         return { decision, reason: String(j.reason ?? "").slice(0, 300), ...(summary ? { summary } : {}) };
     } catch {
         return undefined;
@@ -367,7 +381,7 @@ export class AutoClassifier {
         try {
             const prompt = `Working directory: ${c.cwd}\n\n<action tool="${c.toolName}">\n${quote(action)}\n</action>`;
             const text = await Promise.race([this.complete(SUMMARY_SYSTEM, prompt, stop, { review: "fast" }), deadline]);
-            const line = text.replace(/\s+/g, " ").trim().replace(/^["'`]+|["'`]+$/g, "").slice(0, 200);
+            const line = cleanSummary(text).slice(0, 200);
             return line || undefined;
         } catch {
             return undefined;

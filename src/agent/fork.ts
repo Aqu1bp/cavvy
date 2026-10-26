@@ -16,7 +16,7 @@ import { randomBytes } from "crypto";
 import { APP_VERSION } from "../config/paths";
 import { textOf, type Message } from "../providers/types";
 import { redact } from "../util/redact";
-import { hold, letGo, newSessionId, redactedJson, Session, type ForkOrigin, type Line, type SessionMeta } from "./session";
+import { hold, letGo, newSessionId, placeFields, redactedJson, Session, type ForkOrigin, type Line, type SessionMeta } from "./session";
 
 /**
  * Which of the original's records the fork copies, up to where it's cut. The
@@ -37,6 +37,7 @@ const COPIED: Record<Line["t"], boolean> = {
     title: false,
     usage: false,
     backend: false,
+    parked: false,
     notice: true,
     import: true,
     subagent: false,
@@ -220,6 +221,8 @@ export function forkSession(original: Session, o: ForkOptions): Session {
     // only once the original has saved that it won't continue it in place (a crash right after
     // the fork is written mustn't let it), so marked before the fork exists.
     const shared = o.shareBackends === false ? [] : [...original.backends].filter(([p, b]) => b.synced <= o.cut && original.markBackendForked(p));
+    // The threads parked for other accounts' places (#413) as well, so the fork goes back to them as the original would.
+    const parked = o.shareBackends === false ? [] : original.parkedBackends().filter((p) => p.session.synced <= o.cut && original.markParkedForked(p));
     const model = o.model ?? original.model;
     const lines: Line[] = [
         { t: "meta", id, cwd: original.meta.cwd, createdAt: Date.now(), version: APP_VERSION, system: original.meta.system, forkOf },
@@ -228,7 +231,8 @@ export function forkSession(original: Session, o: ForkOptions): Session {
         ...(model ? [{ t: "model" as const, model }] : []),
         ...(original.fastMode !== undefined ? [{ t: "fastMode" as const, enabled: original.fastMode }] : []),
         ...Object.entries(original.accounts).map(([provider, id]) => ({ t: "account" as const, provider, id })),
-        ...shared.map(([provider, b]) => ({ t: "backend" as const, provider, id: b.id, synced: b.synced, fork: true, ...(b.unsent ? { unsent: b.unsent } : {}), folder: original.backendFolder(provider) })),
+        ...shared.map(([provider, b]) => ({ t: "backend" as const, provider, id: b.id, synced: b.synced, fork: true, ...(b.unsent ? { unsent: b.unsent } : {}), ...placeFields(original.backendPlace(provider)) })),
+        ...parked.map((p) => ({ t: "parked" as const, provider: p.provider, id: p.session.id, synced: p.session.synced, fork: true, ...(p.session.unsent ? { unsent: p.session.unsent } : {}), folder: p.place.folder, ...(p.place.history ? { history: p.place.history } : {}) })),
     ];
 
     // Claimed before it exists, so no other process opens it half way.

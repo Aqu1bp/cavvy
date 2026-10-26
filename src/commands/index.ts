@@ -69,7 +69,7 @@ import { rewindCommand } from "./rewind";
 import { GoalController, goalClearedNotice, goalSummary, parseGoalCommand } from "../agent/goal";
 import { checkAgentCli, vendorOf, type AgentCliStatus } from "../backends/index";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
-import { account, addAccount, holdLogin, listAccounts } from "../providers/accounts";
+import { account, accountSharingWarning, addAccount, holdLogin, listAccounts } from "../providers/accounts";
 import { loginCommand as accountLoginCommand } from "../backends/account-login";
 import { clockTime, limitAccountLabel, limitLines } from "../backends/limits";
 import { describeJob, shortTime } from "../agent/schedule";
@@ -519,7 +519,7 @@ async function signInCliAccount(app: App, provider: string, id: string) {
     try {
         selected = account(provider, id);
         const command = accountLoginCommand(provider, selected.id);
-        // Not spawnSync: running CLI children's account-folder watchers must keep checking while the user signs in.
+        // Not spawnSync: running turns and CLI children must keep going while the user signs in.
         await app.screen.suspend(async () => {
             await Bun.spawn(command.argv, { cwd: app.cwd, env: command.env, stdio: ["inherit", "inherit", "inherit"] }).exited;
         });
@@ -536,14 +536,13 @@ async function addCliAccount(app: App, provider: string) {
     if (id === undefined) return;
     const name = await app.showDialog(new InputDialog({ title: "Account name", placeholder: "Personal" }));
     if (name === undefined) return;
-    const folder = await app.showDialog(new InputDialog({ title: "Account folder (optional)", header: [theme.muted("Leave empty for a private folder in Harness's accounts directory."), theme.muted("A new folder starts with separate CLI settings and history.")], placeholder: "/absolute/path" }));
+    const folder = await app.showDialog(new InputDialog({ title: "Account folder (optional)", header: [theme.muted("Leave empty for a folder in Harness's accounts directory that shares Default's settings and history."), theme.muted("An existing folder is used as it is.")], placeholder: "/absolute/path" }));
     if (folder === undefined) return;
-    // As in the desktop app: CLI children keep the protections they started with, so wait for them.
-    // Checked after the dialogs, with no await before the account is added.
-    await app.yieldIdleCompaction();
-    if (app.busy || app.agent?.hasCliChild()) throw new Error("Add accounts once running responses and CLI background tasks finish, so CLI protections can be refreshed.");
+    // An account only selects a CLI's folder (#375): what's running goes on as it is.
     const selected = addAccount(provider, { id: id.trim(), name: name.trim(), ...(folder.trim() ? { folder: folder.trim() } : {}) }, [app.cwd]);
     app.notice(`Created ${selected.name}: ${selected.folder}`);
+    const sharing = accountSharingWarning(provider, selected.id);
+    if (sharing) app.notice(sharing, "warn");
     if (provider === "claude-code") app.notice("Claude Console sign-ins without an API key are stored outside the config folder and are not isolated per account.", "warn");
     await signInCliAccount(app, provider, selected.id);
 }
@@ -565,10 +564,10 @@ async function pickAccount(app: App, providers: string[]) {
         label: a.name, value: `${provider}:${a.id}`, group: getProvider(provider)!.name,
         description: a.folder || "The CLI's normal configuration", detail: app.session.accountId(provider) === a.id ? "current" : undefined,
     })));
-    const choice = await app.showDialog(new SelectDialog<string>({ title: "Session account", items, searchable: true, footer: [theme.muted("A switch starts a new CLI thread with this conversation as context."), theme.muted("Add one: /login claude-code add or /login codex add")] })) as string | undefined;
+    const choice = await app.showDialog(new SelectDialog<string>({ title: "Session account", items, searchable: true, footer: [theme.muted("Harness-made accounts share history: a switch among them and Default resumes the CLI session."), theme.muted("Another account starts a new CLI thread with this conversation as context."), theme.muted("Add one: /login claude-code add or /login codex add")] })) as string | undefined;
     if (choice) {
         const [provider, id] = choice.split(":");
-        app.setAccount(provider!, id!);
+        await app.setAccount(provider!, id!);
     }
 }
 

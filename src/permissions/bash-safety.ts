@@ -54,8 +54,16 @@ export interface CommandAnalysis {
     redirects: string[];
     /** The operator after the last command, if the line ends with one (`cmd &`). */
     trailing?: string;
-    /** A here-document (`<<EOF`): its lines aren't commands, though they're split as if they were. */
+    /**
+     * A here-document (`<<EOF`). analyzeCommand's commands are those of both
+     * readings: its lines taken as data up to the delimiter, as the shell does,
+     * and split as if they were commands (shellCommands has the first alone).
+     */
     heredoc?: true;
+    /** A here-document whose delimiter never comes: the rest of the line is its data. */
+    heredocOpen?: true;
+    /** Where the here-documents' data lines are, without their delimiter lines: [start, end) (shell reading only). */
+    heredocBodies?: [number, number][];
     /** A command of redirections alone, which isn't in `commands`. */
     bareRedirect?: true;
 }
@@ -103,16 +111,90 @@ function plainBraceParam(cmd: string, i: number): boolean {
     return /^(#?[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[#?@*!$-])$/.test(cmd.slice(i + 2, close));
 }
 
-/** Tokenise and split on control operators, respecting quotes and escapes. */
+/**
+ * Tokenise and split on control operators, respecting quotes and escapes.
+ *
+ * With a here-document the line has two readings, and the commands are those
+ * of both: its data taken as data up to the delimiter, as the shell does, and
+ * split as if it were commands. The first is what runs; the second keeps what
+ * deny rules and the other protective checks always saw. Neither alone is
+ * enough for them: a quote in the data (`cat '`) would pair with a later one
+ * and hide the real command after the delimiter from the second, and a
+ * delimiter misread would hide data that runs (`bash <<EOF`) from the first.
+ * What approves a command (allow rules, the read-only check, the rules a
+ * popup offers) reads it as the shell does: shellCommands.
+ */
 export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis {
+    if (discovery) return scan(cmd, true, true);
+    const lexed = scan(cmd, false, false);
+    // The readings differ only from the first here-document on, which both see.
+    if (!lexed.heredoc) return lexed;
+    const shell = scan(cmd, false, true);
+    // A delimiter whose end can't be known (`<<$(x)`, `<<$'EOF'`): where its data ends, neither reading
+    // can say, and a quote in the data can still pair with a later one in both. So each line is also
+    // read on its own, quotes ending with it: what runs after the data is a command in one of the three.
+    const lines: SimpleCommand[] = [];
+    const lineRedirects: string[] = [];
+    if (shell.heredocUncertain) {
+        let at = 0;
+        for (const line of cmd.split("\n")) {
+            const a = scan(line, false, false);
+            for (const c of a.commands) lines.push({ ...c, spans: c.spans.map(([from, to]): [number, number] => [from + at, to + at]) });
+            lineRedirects.push(...a.redirects);
+            at += line.length + 1;
+        }
+    }
+    const key = (c: SimpleCommand) => JSON.stringify([c.spans, c.argv]);
+    const seen = new Set<string>();
+    const commands = [...shell.commands, ...lexed.commands, ...lines].filter((c) => !seen.has(key(c)) && seen.add(key(c))).sort((x, y) => (x.spans[0]?.[0] ?? 0) - (y.spans[0]?.[0] ?? 0));
+    return {
+        commands,
+        hasSubstitution: lexed.hasSubstitution || shell.hasSubstitution,
+        writesFiles: lexed.writesFiles || shell.writesFiles,
+        unparsable: lexed.unparsable || shell.unparsable,
+        unsafeExpansion: lexed.unsafeExpansion || shell.unsafeExpansion,
+        redirects: [...new Set([...lexed.redirects, ...shell.redirects, ...lineRedirects])],
+        ...(shell.trailing !== undefined ? { trailing: shell.trailing } : {}),
+        heredoc: true,
+        ...(shell.heredocOpen ? { heredocOpen: true as const } : {}),
+        ...(lexed.bareRedirect || shell.bareRedirect ? { bareRedirect: true as const } : {}),
+    };
+}
+
+/**
+ * The command as the shell reads it: a here-document's lines are data up to
+ * its delimiter, not commands. A delimiter it can't read for certain (empty,
+ * or with `$` or a backtick) makes it unparsable, so nothing approves it.
+ * Only for what approves a command; checks that refuse or flag one use
+ * analyzeCommand, which sees both readings.
+ */
+export function shellCommands(cmd: string): CommandAnalysis {
+    const lexed = scan(cmd, false, false);
+    return lexed.heredoc ? scan(cmd, false, true) : lexed;
+}
+
+/**
+ * `consume`: take each here-document's lines as data up to its delimiter.
+ * `discovery` (which consumes too) also keeps that data as the stdin of the
+ * command it's for, and takes here-strings' and input redirections' words
+ * out of the command's arguments.
+ */
+function scan(cmd: string, discovery: boolean, consume: boolean): CommandAnalysis & { heredocUncertain?: true } {
     const pending: { delimiter: string; tabs: boolean; quoted: boolean; scripts: string[] }[] = [];
     let stdinScripts: string[] = [];
     const fdScripts = new Map<number, string[]>();
+    let heredocOpen = false;
+    let heredocUnclear = false;
+    const heredocBodies: [number, number][] = [];
     const consumeHeredocs = (start: number): number => {
         let pos = start;
         for (const doc of pending) {
             let data = "";
+            let ended = false;
+            const from = pos;
+            let dataEnd = pos;
             while (pos < cmd.length) {
+                dataEnd = pos;
                 let value = "";
                 let newline = false;
                 // Unquoted heredocs join escaped newlines before checking their
@@ -128,8 +210,24 @@ export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis 
                     break;
                 }
                 if (doc.tabs) value = value.replace(/^\t+/, "");
-                if (value === doc.delimiter) break;
+                if (value === doc.delimiter) { ended = true; break; }
                 data += value + (newline ? "\n" : "");
+            }
+            if (!ended) {
+                heredocOpen = true;
+                dataEnd = pos;
+            }
+            const raw = cmd.slice(from, dataEnd);
+            heredocBodies.push([from, dataEnd]);
+            // The shell expands an unquoted document's data: `$(…)` and backticks in it run.
+            // It joins escaped newlines first (`$\⏎(…)` is `$(…)`), so both the lines as written and joined are read.
+            if (!doc.quoted) {
+                for (const body of [raw, data]) {
+                    if (/`|\$\(/.test(body)) hasSubstitution = true;
+                    for (let k = body.indexOf("$"); k >= 0; k = body.indexOf("$", k + 1)) {
+                        if (body[k + 1] === "[" || (body[k + 1] === "{" && !plainBraceParam(body, k))) unsafeExpansion = true;
+                    }
+                }
             }
             doc.scripts.push(data);
         }
@@ -160,6 +258,8 @@ export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis 
     let lastOp: string | undefined;
     let redirectMayFail = false;
     let heredoc = false;
+    /** Where the last `<` that's an operator was: one escaped or quoted (`\\<<<EOF`) isn't part of a `<<<`. */
+    let lessOp = -2;
     /** A command that's only redirections (`2>/dev/null 1>&9`): it has a status of its own, though no words. */
     let bareRedirect = false;
     /** What the word starts with so far: nothing yet, a known character, or a glob or expansion. */
@@ -213,6 +313,11 @@ export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis 
     for (let i = 0; i < cmd.length; i++) {
         const c = cmd[i]!;
         const n = cmd[i + 1];
+        // The next character once escaped newlines are joined, as the shell joins them before it reads
+        // `$(`, `${`, `$[` or `<(` (`$\⏎(touch x)` is `$(touch x)`). Only the checks that flag a line use it.
+        let nj = n;
+        for (let k = i + 1; cmd[k] === "\\" && cmd[k + 1] === "\n"; k += 2) nj = cmd[k + 2];
+        const joined = nj !== n;
         if (quote === "'") {
             if (c === "'") quote = null;
             else {
@@ -238,8 +343,8 @@ export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis 
             }
             if (c === '"') quote = null;
             else {
-                if (c === "`" || (c === "$" && n === "(")) hasSubstitution = true;
-                if (c === "$" && (n === "[" || (n === "{" && !plainBraceParam(cmd, i)))) unsafeExpansion = true;
+                if (c === "`" || (c === "$" && nj === "(")) hasSubstitution = true;
+                if (c === "$" && (nj === "[" || (nj === "{" && (joined || !plainBraceParam(cmd, i))))) unsafeExpansion = true;
                 if (expansionAt(i)) wordExpands = true;
                 lead(expansionAt(i));
                 word += c;
@@ -291,10 +396,12 @@ export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis 
             text += c;
             continue;
         }
-        if (c === "`" || (c === "$" && n === "(") || ((c === "<" || c === ">") && n === "(")) {
+        if (c === "`" || (c === "$" && nj === "(") || ((c === "<" || c === ">") && nj === "(")) {
             hasSubstitution = true;
         }
-        if (c === "$" && (n === "[" || (n === "{" && !plainBraceParam(cmd, i)))) unsafeExpansion = true;
+        if (c === "$" && (nj === "[" || (nj === "{" && (joined || !plainBraceParam(cmd, i))))) unsafeExpansion = true;
+        // `$\⏎'…'` is still ANSI-C quoting, `$\⏎"…"` still a locale string.
+        if (c === "$" && joined && (nj === "'" || nj === '"')) unsafeExpansion = true;
         if (c === "(" || c === ")") unsafeExpansion = true;
         // Only space, tab and newline separate words: to the shell `\r`, `\v` and Unicode spaces are letters.
         if (c === "{" && /^\{[^ \t\n;|&{}]*(,|\.\.)[^ \t\n;|&{}]*\}/.test(cmd.slice(i))) unsafeExpansion = true;
@@ -302,7 +409,7 @@ export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis 
             // comment to end of line
             while (i < cmd.length && cmd[i] !== "\n") i++;
             endCommand(i < cmd.length ? "\n" : undefined);
-            if (discovery && pending.length) i = consumeHeredocs(i + 1);
+            if (consume && pending.length) i = consumeHeredocs(i + 1);
             continue;
         }
         if (c === ";" || c === "\n" || c === "|" || c === "&") {
@@ -318,10 +425,13 @@ export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis 
             let op = doubled ? c + c : c;
             if (c === ";" && cmd[i + 1] === "&") { op += "&"; i++; }
             endCommand(op);
-            if (discovery && c === "\n" && pending.length) i = consumeHeredocs(i + 1);
+            if (consume && c === "\n" && pending.length) i = consumeHeredocs(i + 1);
             continue;
         }
         if (c === ">" || c === "<") {
+            // The 2nd and 3rd `<` of a here-string (`<<<EOF`) follow an operator `<`.
+            const inHereString = c === "<" && lessOp === i - 1;
+            if (c === "<") lessOp = i;
             const redirectFd = /^\d+$/.test(word) && !wordQuoted ? Number(word) : c === "<" ? 0 : 1;
             // Only the last redirection of stdin supplies the interpreter's input.
             // Other descriptors and superseded heredocs still have data to skip.
@@ -336,7 +446,7 @@ export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis 
             endWord();
             if (c === "<") {
                 redirectMayFail = true;
-                if (n === "<" && cmd[i - 1] !== "<" && cmd[i + 2] !== "<") heredoc = true;
+                if (n === "<" && !inHereString && cmd[i + 2] !== "<") heredoc = true;
             }
             if (discovery) {
                 let j = i + 1;
@@ -376,6 +486,34 @@ export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis 
                 text += cmd.slice(i, j + raw.length);
                 i = j + raw.length - 1;
                 continue;
+            }
+            // `<<EOF`, `<<-EOF`: its lines up to the delimiter are data. Also where `<<` may not be one
+            // (`$((1<<2))`, a subshell): what that line flags already keeps it from being approved, and
+            // analyzeCommand still has its lines as commands for the checks that refuse. Never inside a
+            // here-string: `<<<EOF` is the word EOF, and its 2nd and 3rd `<` aren't a here-document.
+            if (consume && !discovery && c === "<" && n === "<" && cmd[i + 2] !== "<" && !inHereString) {
+                const tabs = cmd[i + 2] === "-";
+                let j = i + (tabs ? 3 : 2);
+                while (cmd[j] === " " || cmd[j] === "\t" || (cmd[j] === "\\" && cmd[j + 1] === "\n")) j += cmd[j] === "\\" ? 2 : 1;
+                const raw = cmd.slice(j).match(/^(?:"[^"\\]*(?:\\[\s\S][^"\\]*)*"|'[^']*'|`[^`\n]*`|\\[\s\S]|[^ \t\n;|&<>"'`\\])+/)?.[0] ?? "";
+                const delim = raw ? scan(raw, false, false) : undefined;
+                const value = delim?.commands[0]?.argv[0];
+                const quoted = /['"\\]/.test(raw.replace(/\\\n/g, ""));
+                // A delimiter that's certain: a word, as written, with no expansion or parenthesis in it.
+                const certain = delim && value !== undefined && /^\S+$/.test(value) && !delim.unparsable && delim.commands.length === 1 && delim.commands[0]!.argv.length === 1 && !/[$`()]/.test(raw);
+                // bash, zsh and sh take one with `$` or backticks as it's written (`<<$X` ends at a line `$X`):
+                // read so, though never approved. Parentheses and spaces in it can't be read at all, nor
+                // `$'…'` and `$"…"`, which some shells decode (`<<$'EOF'` ends at EOF in bash) and others don't.
+                // For those, analyzeCommand also reads the line a line at a time (see there).
+                const literal = certain || !raw || /[()]/.test(raw) || /\$['"]/.test(raw) || /\s/.test(raw.replace(/`[^`\n]*`/g, "")) ? undefined : raw.replace(/\\(.)/gs, "$1").replace(/['"]/g, "");
+                if (!certain) heredocUnclear = true;
+                const delimiter = certain ? value : literal;
+                if (delimiter !== undefined) {
+                    pending.push({ delimiter, tabs, quoted, scripts: [] });
+                    text += cmd.slice(i, j + raw.length);
+                    i = j + raw.length - 1;
+                    continue;
+                }
             }
             // Where the redirection ends when nothing after the operator is an argument (`>&2`, `>/dev/null`).
             let end = i;
@@ -423,9 +561,19 @@ export function analyzeCommand(cmd: string, discovery = false): CommandAnalysis 
         mark(i, i + 1);
         text += c;
     }
-    const unparsable = quote !== null;
+    const unparsable = quote !== null || heredocUnclear;
     endCommand();
-    return { commands, hasSubstitution, writesFiles, unparsable, unsafeExpansion, redirects, ...(lastOp !== undefined ? { trailing: lastOp } : {}), ...(heredoc ? { heredoc: true as const } : {}), ...(bareRedirect ? { bareRedirect: true as const } : {}) };
+    // A here-document on the last line, with no line after it for data: its delimiter never comes.
+    if (consume && pending.length) heredocOpen = true;
+    return {
+        commands, hasSubstitution, writesFiles, unparsable, unsafeExpansion, redirects,
+        ...(lastOp !== undefined ? { trailing: lastOp } : {}),
+        ...(heredoc ? { heredoc: true as const } : {}),
+        ...(heredocOpen ? { heredocOpen: true as const } : {}),
+        ...(heredocUnclear ? { heredocUncertain: true as const } : {}),
+        ...(heredocBodies.length ? { heredocBodies } : {}),
+        ...(bareRedirect ? { bareRedirect: true as const } : {}),
+    };
 }
 
 /**
@@ -670,6 +818,16 @@ const KNOWN_CLIS = new Set([
     "perl", "lua", "zig", "tar", "zip", "unzip", "gzip", "rsync", "ffmpeg", "bash", "zsh", "sh",
 ]);
 const VERSION_FLAGS = new Set(["--version", "-V", "--help", "-h"]);
+/**
+ * The version or help flags that, for that program, aren't: they read a script
+ * from stdin and run it (`bash -h <<EOF`, `… | zsh -V`): to the shells they're
+ * options (bash's -h remembers command locations), and python's -v is verbose.
+ * Checked by running each flag here with stdin left open: these waited for it,
+ * and ran a script given there. dash, which is sh on Debian and Ubuntu, takes
+ * -V as its vi option (bash only rejects -V, so it's no loss there).
+ */
+const NOT_VERSION_FLAGS: Record<string, string[]> = { bash: ["-h", "-V"], sh: ["-h", "-V"], zsh: ["-h", "-V"], npx: ["-V"], python: ["-v"], python3: ["-v"] };
+const versionFlag = (base: string, flag: string) => !NOT_VERSION_FLAGS[base]?.includes(flag);
 const INTERPRETER_VERSION_FLAGS = new Set(["--version", "-v", "-V", "--help", "-h"]);
 
 const positional = (args: string[]) => args.filter((a) => !a.startsWith("-") || a === "-");
@@ -828,7 +986,7 @@ export function isReadOnlySimple(argv0: string[]): boolean {
     if (slash >= 0 && !SYSTEM_BIN.has(prog.slice(0, slash))) return false;
     const base = prog.slice(slash + 1);
     const args = argv.slice(1);
-    if (args.length === 1 && VERSION_FLAGS.has(args[0]!) && (READ_ONLY_PROGRAMS.has(base) || TWO_WORD.has(base) || KNOWN_CLIS.has(base))) return true;
+    if (args.length === 1 && VERSION_FLAGS.has(args[0]!) && versionFlag(base, args[0]!) && (READ_ONLY_PROGRAMS.has(base) || TWO_WORD.has(base) || KNOWN_CLIS.has(base))) return true;
     // `printf -v 'a[$(cmd)]' x`: zsh evaluates the subscript.
     if (base === "printf" && args.some((a) => /^-[a-zA-Z]*v/.test(a))) return false;
     // zsh's stat builtin (zmodload zsh/stat) stores into the array -A or -H names: `stat -A 'a[$(cmd)]' f`.
@@ -862,7 +1020,7 @@ export function isReadOnlySimple(argv0: string[]): boolean {
     if (base === "gh") return ["status"].includes(args[0] ?? "") || (["pr", "issue", "run", "repo", "release"].includes(args[0] ?? "") && ["list", "view", "status", "diff", "checks"].includes(args[1] ?? ""));
     if (base === "brew") return ["list", "info", "search", "outdated", "deps", "--prefix", "config"].includes(args[0] ?? "");
     if (base === "pip" || base === "pip3") return ["list", "show", "freeze"].includes(args[0] ?? "");
-    if (base === "node" || base === "python" || base === "python3" || base === "ruby") return args.length === 1 && INTERPRETER_VERSION_FLAGS.has(args[0]!);
+    if (base === "node" || base === "python" || base === "python3" || base === "ruby") return args.length === 1 && INTERPRETER_VERSION_FLAGS.has(args[0]!) && versionFlag(base, args[0]!);
     // `env CMD` runs CMD; only the bare form just prints.
     if (base === "env") return args.length === 0;
     // `command -v x` and `-V` say what x is without running it. Its options come
@@ -886,9 +1044,9 @@ export function isReadOnlyCommand(cmd: string): boolean {
  * read-only agent, so it can drop or replace just that), or undefined.
  */
 export function notReadOnly(cmd: string): string | undefined {
-    const a = analyzeCommand(cmd);
+    const a = shellCommands(cmd);
     const clip = (s: string) => (s.length > 120 ? s.slice(0, 117) + "…" : s).replace(/\s+/g, " ");
-    if (a.unparsable) return "its quotes aren't closed";
+    if (a.unparsable) return a.heredoc ? "its quotes aren't closed, or its here-document's delimiter can't be read for certain" : "its quotes aren't closed";
     if (a.hasSubstitution) return /\$\(\(/.test(cmd) && !/`|\$\((?!\()|<\(/.test(cmd) ? "it has $((…)) arithmetic, which the checks don't follow (it can run commands)" : "it runs a command inside $(…), backticks or <(…)";
     if (a.writesFiles) return `it writes to ${clip(a.redirects[0] || "a file")} with a > redirect`;
     if (a.unsafeExpansion) return "it has an expansion that can run code or change its words: unquoted parentheses (a subshell or glob qualifier), braces, $'…' or ${…} with an operator";
@@ -1324,8 +1482,43 @@ function anyCase(re: RegExp): RegExp {
 const CREDENTIAL_STORE = anyCase(/\.harness\/(credentials|providers)\.json/);
 const STARTUP_FILE = anyCase(/>\s*~\/\.(bash|zsh)(rc|_profile|env)|>\s*~\/\.profile/);
 
-/** Returns a reason if the command matches a known-catastrophic pattern. */
-export function dangerousReason(cmd: string, depth = 0): string | undefined {
+/** Programs that only read or copy their input, whatever their options: a here-document's data stays data with them (not sort: --compress-program runs one). */
+const DATA_READERS = new Set(["cat", "tee", "wc", "head", "tail", "uniq", "cut", "tr", "nl", "grep", "egrep", "fgrep"]);
+
+/** Files whose contents run later: shell startup files, anything in a .git, the harness's and agent CLIs' configuration. */
+const RUNS_LATER = anyCase(/(^|\/)\.(bash(rc|_profile|_login|_logout|env|_aliases)|zsh(rc|env|_profile)|zprofile|zlogin|zlogout|profile|kshrc|mkshrc|envrc)$|(^|\/)\.git(\/|$)|(^|\/)\.(harness|claude|codex)(\/|$)|(^|\/)\.mcp\.json$|(^|\/)(crontab|\.config\/(fish|git|nvim|systemd|autostart)|Library\/LaunchAgents)(\/|$)/);
+
+/**
+ * The line with its here-documents' data blanked (lines kept), when that data
+ * can only be data: where it ends is certain, the line has nothing the checks
+ * don't follow, and each program on it is one of DATA_READERS, by name and
+ * run directly (`cat <<EOF | sh` or `bash <<EOF` runs it). Otherwise undefined.
+ */
+export function withoutHeredocData(cmd: string): string | undefined {
+    const a = shellCommands(cmd);
+    if (!a.heredoc || !a.heredocBodies || a.unparsable || a.heredocOpen || a.hasSubstitution || a.unsafeExpansion || a.bareRedirect) return undefined;
+    if (!a.commands.every((c) => DATA_READERS.has(c.argv[0] ?? "") && !c.expands?.includes(0) && !c.globbed?.includes(0))) return undefined;
+    // Data written where something runs it later is code: a shell startup file, a git hook or
+    // config, the agents' configuration. Whatever writes it there (`>`, `>>`, `tee -a`, uniq's OUTPUT).
+    const targets = [...a.redirects, ...a.commands.filter((c) => c.argv[0] === "tee" || c.argv[0] === "uniq").flatMap((c) => c.argv.slice(1).filter((w) => !w.startsWith("-")))];
+    if (targets.some((t) => RUNS_LATER.test(t) || [t, ...spellings(t)].some((s) => RUNS_LATER.test(s)))) return undefined;
+    let t = cmd;
+    for (const [from, to] of a.heredocBodies) t = t.slice(0, from) + t.slice(from, to).replace(/[^\n]/g, " ") + t.slice(to);
+    // Blanking must leave what runs as it was, word for word and place for place.
+    const same = (x: CommandAnalysis) => JSON.stringify(x.commands.map((c) => [c.argv, c.spans, c.after ?? ""]));
+    const b = shellCommands(t);
+    return !b.heredocOpen && !b.unparsable && same(b) === same(a) ? t : undefined;
+}
+
+/**
+ * Returns a reason if the command matches a known-catastrophic pattern.
+ * A here-document's data counts only when something may run it.
+ */
+export function dangerousReason(cmd: string, depth = 0, dataBlanked = false): string | undefined {
+    if (!dataBlanked) {
+        const t = withoutHeredocData(cmd);
+        if (t !== undefined) return dangerousReason(t, depth, true);
+    }
     const said = withoutMessages(cmd);
     for (const text of [said, ...programsSpelled(said)]) for (const [re, reason] of DANGEROUS) if (re.test(text)) return reason;
     const spelled = [said, ...spellings(said)];
@@ -1347,31 +1540,21 @@ export function dangerousReason(cmd: string, depth = 0): string | undefined {
 /** What sensitiveTarget() calls a project's .env file. */
 export const ENV_FILE = "a .env file";
 
-function recursiveGrep(args: string[]): boolean {
-    return args.some((a, i) => /^-[^-]*[rR]/.test(a) || /^--(recursive|dereference-recursive|directories=recurse)$/.test(a) || ((a === "-d" || a === "--directories") && args[i + 1] === "recurse"));
-}
-
 /** Search operands and file-valued options, keeping patterns and formatting values out of path checks. */
 function accountSearchArgs(program: string, args: string[]) {
-    if (program === "find") {
-        const first = args.find((a) => !["-H", "-L", "-P"].includes(a));
-        return { paths: args, files: [], cwd: first === undefined || /^[-!(]/.test(first), flags: args };
-    }
+    if (program === "find") return { paths: args, files: [], flags: args };
     const listing = program === "ls" || program === "tree";
     const grep = /^(grep|egrep|fgrep)$/.test(program);
     const valued = program === "rg" ? RG_VALUE_SHORT : grep ? SEARCH_OPTIONS.grep!.valued + "dD" : program === "ls" ? "ITw" : program === "tree" ? "LPIo" : program === "fd" ? "eEtdj" : "";
     const longValued = program === "rg" ? RG_VALUE_LONG : grep ? SEARCH_OPTIONS.grep!.longValued : new Set(["glob", "iglob", "include", "exclude", "ignore", "hide", "type", "extension", "max-depth", "threads"]);
-    const knownFlags = program === "rg" ? SEARCH_OPTIONS.rg!.flags : grep ? SEARCH_OPTIONS.grep!.flags : program === "ls" ? "ABCFGHLOPRSTUW@abcdefghiklmnopqrstuwx1" : program === "tree" ? "adfFlpqrstuxACDSQNhv" : "";
     const operands: string[] = [];
     const files: string[] = [];
     const flags: string[] = [];
     let pattern = listing;
     let end = false;
-    let uncertain = false;
     const value = (name: string, v: string | undefined) => {
         if (/^(rg|grep|egrep|fgrep|ag|ack)$/.test(program) && ["e", "f", "regexp", "file"].includes(name)) pattern = true;
         if (v !== undefined && ["f", "file", "exclude-from", "ignore-file", "pre"].includes(name)) files.push(v);
-        if ((name === "d" || name === "directories") && v === "recurse") flags.push("--recursive");
     };
     for (let i = 0; i < args.length; i++) {
         const a = args[i]!;
@@ -1386,9 +1569,7 @@ function accountSearchArgs(program: string, args: string[]) {
                 // grep's optional long values only follow '='.
                 const v = eq >= 0 ? a.slice(eq + 1) : grep && ["color", "colour", "context"].includes(name) ? undefined : args[++i];
                 value(name, v);
-            } else if (program !== "rg" && !grep) uncertain = true;
-            // rg/grep's unknown long flags do not turn explicit paths into a cwd search.
-            // Other tools retain the conservative fallback for options we cannot parse.
+            }
             continue;
         }
         for (let k = 1; k < a.length; k++) {
@@ -1398,13 +1579,9 @@ function accountSearchArgs(program: string, args: string[]) {
                 value(ch, k + 1 < a.length ? a.slice(k + 1) : args[++i]);
                 break;
             }
-            if (!knownFlags.includes(ch) && !/\d/.test(ch)) uncertain = true;
         }
     }
-    const paths = operands.slice(pattern ? 0 : 1);
-    // Plain grep without files reads stdin; recursive grep defaults to cwd.
-    const cwd = (!grep || recursiveGrep(flags)) && (uncertain || paths.length === 0);
-    return { paths, files, cwd, flags };
+    return { paths: operands.slice(pattern ? 0 : 1), files, flags };
 }
 
 /** Copying or archiving a directory reads its descendants even without naming them. */
@@ -1569,13 +1746,13 @@ function namesAccount(cmd: string, cwd: string): boolean {
         const executes = program === "find" ? args.some((a) => /^-(exec|execdir|ok|okdir|delete)$/.test(a))
             : program === "fd" ? flags.some((a) => /^-[xX]$|^--exec(?:-batch)?$/.test(a))
             : program === "rg" && flags.includes("--pre");
-        const namesOnly = !executes && (/^(ls|tree|find|fd)$/.test(program) || (program === "rg" && flags.includes("--files")));
-        const contents = executes || (namesOnly && accountListingConsumer(analysis.commands, index)) || recursive
-            || (/^(rg|ag|ack)$/.test(program) && !namesOnly) || (/^(grep|egrep|fgrep)$/.test(program) && recursiveGrep(flags));
+        // A listing a later stage reads or runs (`ls dir/* | xargs cat`) reads what its patterns match.
+        const namesOnly = !executes && !accountListingConsumer(analysis.commands, index) && (/^(ls|tree|find|fd)$/.test(program) || (program === "rg" && flags.includes("--files")));
         if (dirs.some((d) => touches(d, d))) return true;
-        if (parsed?.cwd && dirs.some((d) => touches(d, d, true, contents, namesOnly))) return true;
+        // Copies and archives take everything under a folder. A search or listing of a folder that merely holds an
+        // account decides as with no accounts (#375): what it names, or a pattern in it can match, counts.
         for (const word of operands) {
-            if (dirs.some((d) => touches(word, d, search || contents, contents, namesOnly))) return true;
+            if (dirs.some((d) => touches(word, d, recursive, recursive, namesOnly))) return true;
         }
         for (const word of direct) {
             if (dirs.some((d) => touches(word, d))) return true;
@@ -2431,7 +2608,9 @@ const TWO_WORD = new Set(["git", "npm", "pnpm", "yarn", "bun", "cargo", "go", "d
 
 /** Suggest prefix rules for each simple command (`npm run test:*`). */
 export function suggestBashRules(cmd: string): string[] {
-    const a = analyzeCommand(cmd);
+    const a = shellCommands(cmd);
+    // Rules come from what runs, never a here-document's data. When where its data ends isn't certain, none.
+    if (a.heredoc && (a.unparsable || a.heredocOpen)) return [];
     const out: string[] = [];
     for (const c of a.commands) {
         const argv = effectiveArgv(c.argv);

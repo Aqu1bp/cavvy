@@ -850,6 +850,47 @@ button.fold:hover { color: var(--accent); }
 @keyframes toastin { from { opacity: 0; transform: translateY(-12px) scale(0.96); } }
 @keyframes toastout { to { opacity: 0; transform: translateY(-8px) scale(0.97); } }
 
+/* ---------- A turn's changes ----------------------------------------- */
+/* One place: its files. A worktree says which (and its commits) under the head. Several places: a row
+   each, the session's folder first, then the busiest, with who worked there; four, then "N more". */
+.tc { margin: 10px 0 14px; }
+.tc-h { gap: 8px; }
+.tc-h > .ic { color: var(--fg-2); }
+.tc-title { font-weight: 600; }
+.tc-sub { color: var(--fg-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.tc-h .a, .tc-h .d { font-size: 12px; }
+.tc-btn { height: 26px; padding: 0 11px; border-radius: var(--pill); font-size: 12px; font-weight: 600; color: var(--fg-2); background: var(--ctl-strong); box-shadow: inset 0 0 0 0.5px var(--ctl-stroke); flex: none; white-space: nowrap; transition: color 140ms, transform 160ms var(--ease); }
+.tc-btn:hover { color: var(--fg); }
+.tc-btn:active { transform: scale(0.96); }
+.tc-place-chip { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 40%; height: 24px; padding: 0 9px 0 7px; border-radius: var(--pill); font: 11.5px var(--mono); color: var(--fg-2); background: var(--hover); }
+.tc-place-chip .ic { color: var(--fg-3); flex: none; }
+@container main (max-width: 560px) { .tc-place-chip .trunc { display: none; } .tc-place-chip { padding: 0 6px; } }
+.tc-rows { display: flex; flex-direction: column; padding: 4px 6px 6px; border-top: 0.5px solid var(--line); }
+.tc-frow { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border-radius: 8px; font: 12px var(--mono); color: var(--fg); text-align: left; min-width: 0; }
+.tc-frow:hover { background: var(--hover); }
+.tc-frow .dir { color: var(--fg-3); }
+.tc-frow .a, .tc-frow .d { font: 600 11.5px var(--font); }
+.tc-tag { font: 600 10.5px var(--font); color: var(--add-fg); background: var(--add-bg); padding: 1px 6px; border-radius: var(--pill); flex: none; }
+.tc-more { align-self: flex-start; height: 26px; padding: 0 8px; margin-top: 2px; border-radius: var(--pill); font-size: 12px; color: var(--fg-3); }
+.tc-more:hover { color: var(--fg); background: var(--hover); }
+.tc-place { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto 52px 58px 46px auto; align-items: center; column-gap: 10px; min-height: 44px; padding: 4px 4px 4px 8px; border-radius: 10px; }
+.tc-place + .tc-place { box-shadow: inset 0 0.5px 0 var(--line); }
+.tc-place:hover { background: var(--hover); }
+.tc-pi { color: var(--fg-3); display: grid; place-items: center; }
+.tc-pn { display: flex; flex-direction: column; min-width: 0; }
+.tc-pname { font-weight: 500; color: var(--fg); }
+.tc-own { margin-left: 7px; font-size: 11px; font-weight: 500; color: var(--fg-3); }
+.tc-br { font: 11.5px var(--mono); color: var(--fg-3); }
+.tc-who { display: flex; gap: 4px; justify-content: flex-end; min-width: 0; max-width: 230px; }
+.tc-ag { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px 0 6px; border-radius: var(--pill); font-size: 11.5px; color: var(--fg-2); background: var(--hover); min-width: 0; max-width: 120px; }
+.tc-ag .pi { flex: none; }
+.tc-ag.more { padding: 0 7px; }
+.tc-pf { font-size: 12px; color: var(--fg-3); text-align: right; font-variant-numeric: tabular-nums; }
+.tc-place .a, .tc-place .d { font-size: 12px; text-align: right; }
+.tc-note { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-top: 0.5px solid var(--line); font-size: 12px; color: var(--fg-3); cursor: help; }
+@container main (max-width: 640px) { .tc-ag .trunc, .tc-pf { display: none; } .tc-ag { padding: 0 5px; } .tc-place { grid-template-columns: 18px minmax(0, 1fr) auto 0 auto auto auto; } }
+@container main (max-width: 480px) { .tc-who { display: none; } }
+
 /* ---------- Mockup controls (not part of the design) ------------------- */
 .mock { position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 100; display: flex; align-items: center; gap: 6px; padding: 5px 6px 5px 14px; border-radius: var(--pill); font-size: 12px; color: var(--fg); white-space: nowrap; max-width: calc(100vw - 16px); overflow-x: auto; scrollbar-width: none; }
 .mock .lab { color: var(--fg-3); font-weight: 600; margin-right: 4px; }

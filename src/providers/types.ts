@@ -73,6 +73,11 @@ export interface UserMessage {
         imagesRefused?: string[];
         /** State at a compaction boundary, restored before replaying later tool calls. */
         compactedState?: { todos: TodoItem[]; approvedPlan?: string };
+        /**
+         * A reminder that sends again messages a CLI's turn ended before taking (TurnSink.undelivered, #438): their
+         * words as stored. A catch-up that has those messages already leaves it out, or they'd go twice.
+         */
+        resends?: string[];
     };
 }
 

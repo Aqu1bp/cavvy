@@ -32,6 +32,8 @@ export function createComposerDraft(key: () => string, wasDeleted: (key: string)
     });
 
     const capture = () => ({ key: key(), draft: draft() });
+    /** What was sent is still what's in the box: nothing typed or attached since, and no other draft shown. */
+    const holds = (submitted: ReturnType<typeof capture>) => !disposed && key() === submitted.key && draft() === submitted.draft;
     const clearSent = (submitted: ReturnType<typeof capture>, keepAttachments = false) => {
         // Local commands never send the files, so leave them ready for the next message.
         const cleared = keepAttachments ? { text: "", attachments: submitted.draft.attachments } : empty();
@@ -42,7 +44,7 @@ export function createComposerDraft(key: () => string, wasDeleted: (key: string)
             composerStorage.setDraft(submitted.key, "");
         }
         // Each edit replaces the draft, so a late retry cannot clear newer typing or attachments.
-        if (!disposed && key() === submitted.key && draft() === submitted.draft) {
+        if (holds(submitted)) {
             setDraft(cleared);
             composerStorage.setDraft(submitted.key, "");
         }
@@ -60,5 +62,5 @@ export function createComposerDraft(key: () => string, wasDeleted: (key: string)
         setDraft((d) => ({ ...d, attachments: typeof value === "function" ? value(d.attachments) : value }));
         keep(key());
     };
-    return { text: () => draft().text, setText, attachments: () => draft().attachments, setAttachments, capture, clearSent };
+    return { text: () => draft().text, setText, attachments: () => draft().attachments, setAttachments, capture, clearSent, holds };
 }

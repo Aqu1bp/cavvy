@@ -2,6 +2,7 @@ import { createEffect, createSignal, onCleanup, onMount, Show, type JSX } from "
 import { Portal } from "solid-js/web";
 import { mountMenu, type MenuBehavior } from "../../lib/menu";
 import { placePopover, type PopoverPlace } from "../../lib/popover";
+import { sp } from "../../state/prefs";
 import { settingsTab } from "../../state/ui";
 
 export interface PopoverProps {
@@ -15,13 +16,44 @@ export interface PopoverProps {
     /** Preferred side; flips when there's no room. */
     placement?: "top" | "bottom";
     align?: "start" | "end";
+    /** Its width (default 320), and the heights below, in px at text size 14: they follow the text (`sp`). */
     width?: number;
     /** Its tallest (default 560); a longer list scrolls inside. */
     maxHeight?: number;
     /** How short it can get, scrolling, and still stay on the preferred side (default: its full height). */
     minHeight?: number;
     class?: string;
+    /** Fade out on close: a still copy of the panel, which no one can focus or click, goes after the real one has. */
+    exit?: boolean;
     children: JSX.Element;
+}
+
+/**
+ * The closing copy: the real panel is gone already (focus is back on the anchor, its keys
+ * are off), so the copy is only a picture of it. Scrolled lists keep their place; a detached
+ * element reads 0, so the positions come from its scroll events.
+ */
+function fadeOut(el: HTMLElement, scrolled: Map<Element, number>) {
+    const doc = el.ownerDocument;
+    if (doc.documentElement.dataset.motion === "instant" || doc.defaultView?.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const ghost = el.cloneNode(true) as HTMLElement;
+    for (const n of [ghost, ...ghost.querySelectorAll("[id]")]) n.removeAttribute("id");
+    ghost.removeAttribute("role");
+    ghost.setAttribute("aria-hidden", "true");
+    ghost.inert = true;
+    ghost.classList.add("closing");
+    doc.body.append(ghost);
+    if (scrolled.size) {
+        const from = [...el.querySelectorAll("*")];
+        const to = ghost.querySelectorAll("*");
+        for (const [n, top] of scrolled) {
+            const copy = n === el ? ghost : to[from.indexOf(n)];
+            if (copy) copy.scrollTop = top;
+        }
+    }
+    const done = () => ghost.remove();
+    ghost.addEventListener("animationend", (e) => e.target === ghost && done());
+    setTimeout(done, 400);
 }
 
 /** A floating panel next to an anchor, in a portal so no overflow clips it. */
@@ -34,8 +66,8 @@ export function Popover(p: PopoverProps) {
         if (!a) return;
         const r = p.point ? { top: p.point.y, bottom: p.point.y, left: p.point.x, right: p.point.x } : a.getBoundingClientRect();
         // Its own height once rendered, so a tall menu opens on the side it fits.
-        const need = Math.min(el?.scrollHeight || 220, p.maxHeight ?? 560);
-        setPos(placePopover(r, { width: p.width ?? 320, least: Math.min(need, p.minHeight ?? need), placement: p.placement ?? "bottom", align: p.point ? "start" : p.align, vw: window.innerWidth, vh: window.innerHeight }));
+        const need = Math.min(el?.scrollHeight || 220, sp(p.maxHeight ?? 560));
+        setPos(placePopover(r, { width: sp(p.width ?? 320), least: Math.min(need, p.minHeight === undefined ? need : sp(p.minHeight)), placement: p.placement ?? "bottom", align: p.point ? "start" : p.align, vw: window.innerWidth, vh: window.innerHeight }));
     };
 
     createEffect(() => {
@@ -76,11 +108,26 @@ export function Popover(p: PopoverProps) {
         });
     });
 
+    // Tracked while open, for fadeOut.
+    const scrolled = new Map<Element, number>();
+    const onScroll = (e: Event) => scrolled.set(e.target as Element, (e.target as Element).scrollTop);
+
     return (
         <Show when={p.open}>
+            {(() => {
+                if (p.exit) {
+                    scrolled.clear();
+                    onCleanup(() => el && fadeOut(el, scrolled));
+                }
+                return null;
+            })()}
             <Portal>
                 <div
-                    ref={el}
+                    ref={(e) => {
+                        el = e;
+                        // Scroll doesn't bubble: the lists inside are heard in the capture phase.
+                        if (p.exit) e.addEventListener("scroll", onScroll, true);
+                    }}
                     role={p.role}
                     aria-label={p.label}
                     tabIndex={p.behavior ? -1 : undefined}
@@ -89,8 +136,8 @@ export function Popover(p: PopoverProps) {
                         left: `${pos()?.left ?? -9999}px`,
                         top: pos()?.top !== undefined ? `${pos()!.top}px` : undefined,
                         bottom: pos()?.bottom !== undefined ? `${pos()!.bottom}px` : undefined,
-                        width: `${p.width ?? 320}px`,
-                        "max-height": `${Math.min(pos()?.maxHeight ?? 480, p.maxHeight ?? 560)}px`,
+                        width: `${pos()?.width ?? sp(p.width ?? 320)}px`,
+                        "max-height": `${Math.min(pos()?.maxHeight ?? 480, sp(p.maxHeight ?? 560))}px`,
                     }}
                     data-side={pos()?.bottom !== undefined ? "top" : "bottom"}
                     data-align={!p.point && p.align === "end" ? "end" : "start"}

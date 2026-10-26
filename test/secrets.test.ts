@@ -191,7 +191,8 @@ describe("RequestSecret and Bash", () => {
         // 600,000 characters is what the preview keeps; 8 MiB is where one line stops being held whole and only its ends are kept.
         // Either way the whole value reaches redaction, so its marker shows and no piece of it does.
         const straddle = (filler: string) => `${filler}; printf %s "$(printf %s "$CAP_TOKEN" | cut -c1-6)"; sleep 0.3; printf '%s\n' "$(printf %s "$CAP_TOKEN" | cut -c7-)"`;
-        for (const filler of ["yes aaaaaaaaa | head -c 599997", "head -c 599997 /dev/zero | tr '\\0' a", `head -c ${OUTPUT_FILE_LIMIT - 3} /dev/zero | tr '\\0' a`]) {
+        // Filler in 1,000-character lines, so the last line break is near the cap (shorter lines only add redaction work), and with none.
+        for (const filler of [`yes "$(head -c 999 /dev/zero | tr '\\0' a)" | head -c 599997`, "head -c 599997 /dev/zero | tr '\\0' a", `head -c ${OUTPUT_FILE_LIMIT - 3} /dev/zero | tr '\\0' a`]) {
             progress.length = 0;
             const r = await bash(ctx, straddle(filler));
             expect(r.content).toContain("aaaaaaaaa");

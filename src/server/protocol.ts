@@ -202,13 +202,131 @@ export interface AgentRun {
     replayed?: boolean;
 }
 
-export interface NoticeBlock {
+export interface NoticeBlock extends NoticeData {
     t: "notice";
     id: string;
     level: "info" | "warn" | "error";
+    /** What it says (under `title`, when it has one). Plain text; `code` in backticks reads as code. */
     text: string;
     /** One short line each, folded under the text (TurnNotice.details). */
     details?: string[];
+}
+
+/**
+ * What a notice is, beyond its text (#426), so it's drawn as what it is rather than as a sentence. Every field is
+ * optional: a notice from before these (a plain string) is an info line, a warning or an error by its level.
+ */
+export interface NoticeData {
+    /** What the notice shows, where it isn't the message as said (a titled warning's body; Codex's words, without "Codex: "). */
+    text?: string;
+    /** The agent CLI that said it ("claude-code", "codex"): its logo is the icon, in place of a "Codex:" prefix. */
+    source?: string;
+    /** A short title (a warning's pill, an error card's sentence): `text` is then what folds under it. */
+    title?: string;
+    /** A link the CLI gave with it (its docs). */
+    link?: string;
+    /** An account switch: one line between turns. */
+    account?: NoticeAccount;
+    /**
+     * Tasks a switch's restart stopped, said after its line was no longer the latest (a message came since): a line
+     * of their own, which switches nothing.
+     */
+    stopped?: NoticeStopped;
+    /** A plan limit: reached (warn), on credits (warn, `credits`), or stopping the turn (error). */
+    limit?: NoticeLimit;
+}
+
+/** A background task an account switch's restart stopped. */
+export interface StoppedTask {
+    /** Its description (Claude Code's Bash `description`), or its command, cut short (Codex's have no description). */
+    label: string;
+    /** The whole command, when it isn't the label. */
+    command?: string;
+}
+
+/**
+ * A session's switch to another account of an agent CLI. Switches with no message between them are one notice,
+ * the latest (Session.recordSwitch), with every task they stopped.
+ */
+export interface NoticeAccount {
+    provider: string;
+    /** The CLI's name ("Claude Code"). */
+    cli: string;
+    /** The account's display name. */
+    name: string;
+    /**
+     * native: the same CLI session goes on, resumed natively (the account shares its history). returned: the earlier
+     * thread this account finds is picked up again. handoff: a new thread is handed the conversation.
+     */
+    how: "native" | "returned" | "handoff";
+    /** A handoff from a native session the new account can't resume. */
+    dropped?: true;
+    stopped?: StoppedTask[];
+}
+
+/** Background tasks an account switch's restart stopped, on a line of their own (NoticeData.stopped). */
+export interface NoticeStopped {
+    provider: string;
+    /** The CLI's name ("Claude Code"). */
+    cli: string;
+    tasks: StoppedTask[];
+}
+
+/** A plan limit an account of an agent CLI reached. */
+export interface NoticeLimit {
+    provider: string;
+    accountId: string;
+    /** The account's display name. */
+    name: string;
+    /** The window that's reached ("5-hour", "Weekly"), when known. */
+    window?: string;
+    /** When it resets (ms), when known. */
+    resetsAt?: number;
+    /** Past it, turns go on, billed to credits. */
+    credits?: true;
+}
+
+/** "resumed", "new thread": how a switch's conversation goes on, in a word. */
+export function switchWord(how: NoticeAccount["how"]): string {
+    return how === "handoff" ? "new thread" : "resumed";
+}
+
+/** What a switch's word means, for its tooltip and a screen reader. */
+export function switchMeaning(a: NoticeAccount): string {
+    const said =
+        a.how === "native"
+            ? "Same session, resumed: this account shares its history."
+            : a.how === "returned"
+              ? "Its earlier thread on this account is picked up again, with what happened since."
+              : `New thread: this conversation was handed over${a.dropped ? " (this account doesn't share the earlier thread)" : ""}.`;
+    return `Switched to ${a.cli} · ${a.name}. ${said}`;
+}
+
+/** The tasks a switch stopped, for a tooltip: each by its description, then its command (Codex's are their command). */
+export function stoppedTasksTip(provider: string, tasks: StoppedTask[]): string {
+    const line = (t: StoppedTask) => (provider === "codex" ? `$ ${t.command ?? t.label}` : t.command ? `${t.label}\n  $ ${t.command}` : t.label);
+    return ["Stopped by the switch's restart:", ...tasks.map(line)].join("\n");
+}
+
+/** A switch as one line of text (the terminal, a copy, find): "Codex · Second · resumed", then what it stopped. */
+export function accountNoticeText(a: NoticeAccount): string {
+    const line = `${a.cli} · ${a.name} · ${switchWord(a.how)}`;
+    const stopped = a.stopped ?? [];
+    if (!stopped.length) return line;
+    return `${line}\n${stoppedText(stopped)}`;
+}
+
+/** What a switch stopped, in a line: "Stopped: <its description>", or "3 tasks stopped". */
+export function stoppedText(tasks: StoppedTask[]): string {
+    return tasks.length === 1 ? `Stopped: ${tasks[0]!.label}` : `${tasks.length} tasks stopped`;
+}
+
+/**
+ * A CLI's model catalog (its models, and their effort and speed options) is listed by its starting account only:
+ * said where a session on another account picks a model.
+ */
+export function catalogSentence(cli: string, source: string, selected: string): string {
+    return `${cli}'s model list, with each model's effort and speed options, comes from its starting account (${source}); ${selected} may not offer all of them.`;
 }
 
 export interface CompactBlock {
@@ -440,12 +558,15 @@ export interface PlanLink {
     /** What the branch started from, as the user named it (the commit when they didn't). */
     base?: string;
     at: number;
+    /** The plan it carried out: the planning session's ExitPlanMode call (PlanRef.id). Missing from older links. */
+    plan?: string;
 }
 export type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus };
 
 /**
  * A queued message: "steer" joins the running turn at its next step, "queue" waits for it to end,
- * "turn" must wait (images, files, commands), "held" came back after a restart and waits for the user.
+ * "turn" must wait (images, files, commands), "held" waits for the user: it came back after a restart, or the
+ * session's CLI account was removed (queuedWhy says so; picking an account sends it).
  */
 export type QueuedMode = "steer" | "queue" | "turn" | "held";
 
@@ -495,6 +616,11 @@ export interface GoalState {
 
 export interface SessionState {
     accounts?: Record<string, string>;
+    /**
+     * The CLI (its provider id) whose account this session used was removed, and messages wait for the user to pick
+     * another (#410): the model picker opens on its accounts. Unset once one is picked, or nothing waits.
+     */
+    accountNeeded?: string;
     id: string;
     cwd: string;
     projectName: string;
@@ -514,6 +640,12 @@ export interface SessionState {
     /** The spinner line: what it's doing right now. */
     activity?: { label: string; since: number; detail?: string; /** An idle compaction: what the user does next takes over from it. */ idle?: boolean };
     contextTokens: number;
+    /**
+     * Context, in tokens, at which this session compacts on its own: an agent CLI's auto-compact setting for
+     * this model and account (Claude Code's /autocompact window, Codex's model_auto_compact_token_limit), or
+     * Harness's own threshold. Absent when compaction is off here, or the CLI decides.
+     */
+    compactAt?: number;
     cost: number;
     /** Some usage had no known price: `cost` leaves it out (it isn't free). */
     costUnknown?: boolean;
@@ -895,6 +1027,8 @@ export interface AccountInfo {
     plan?: string;
     /** Signed in with an API key: usage is billed to that key, so there's no plan to show. */
     apiKey?: boolean;
+    /** A Harness-made account's folder keeps some entries of its own instead of linking Default's. */
+    sharing?: string;
 }
 
 export interface ProviderInfo {
@@ -957,6 +1091,12 @@ export interface LimitWindow {
     /** When it resets (ms since the epoch), when known. */
     resetsAt?: number;
     reached?: boolean;
+    /**
+     * Only on a window of another metered limit than the plan's own (a Codex model's): whether
+     * that limit's credits carry turns past it (PlanLimits.credits is the plan's own). False
+     * stops there, whatever the plan's credits.
+     */
+    credits?: boolean;
 }
 
 /** Where the user's plan stands with an agent CLI (Claude Code, Codex): per account, not per session. */
@@ -969,8 +1109,23 @@ export interface PlanLimits {
     reached?: boolean;
     /** When the reached limit resets (ms), when known. */
     resetsAt?: number;
+    /**
+     * Past a reached limit, turns go on, billed to credits: Codex's credits, Claude Code's extra
+     * usage. False when the CLI said they won't (none, or a turn stopped on the limit anyway);
+     * absent when it didn't say. A flag only: no balance or amount is ever kept.
+     */
+    credits?: boolean;
     /** When it was reported (ms). */
     at: number;
+}
+
+/**
+ * A reached limit that turns go on past, using credits: the plan's credits
+ * carry them, and no reached window (`reachedNow`, by index: the meter's own
+ * view of which still are) is another limit's that has none.
+ */
+export function usingCredits(l: PlanLimits, reached: boolean, reachedNow: (i: number) => boolean = (i) => Boolean(l.windows[i]?.reached)): boolean {
+    return reached && l.credits === true && !l.windows.some((w, i) => w.credits === false && reachedNow(i));
 }
 
 /** The ranges the Usage view offers, in days. */
@@ -1036,6 +1191,39 @@ export interface UsageSummary {
     approxPriced?: number;
     /** Why not everything was read (too many sessions, too much to read in time). */
     truncated?: string;
+}
+
+/** A commit on main the installed desktop app doesn't have yet. */
+export interface AppUpdateChange {
+    hash: string;
+    subject: string;
+}
+
+/** Whether the desktop app, built from a checkout (scripts/update-desktop.ts), is behind origin/main, and its update if one is running. */
+export interface AppUpdateInfo {
+    /** Why this copy can't update itself (not the installed desktop app, no record of the checkout it came from); nothing else is set. */
+    unavailable?: string;
+    /** The installed build's commit, short. */
+    installed?: string;
+    /** main's latest commit when last checked, short. */
+    latest?: string;
+    /** main has something the installed build doesn't. */
+    available: boolean;
+    /** Changes on main since the installed build, newest first: the first 20 of `behind`. */
+    changes: AppUpdateChange[];
+    behind: number;
+    /** What's odd about the installed build, when there's no plain list: built with uncommitted changes, or from a branch. */
+    note?: string;
+    checkedAt?: number;
+    checking: boolean;
+    /** An update running: since when, and the last line it printed. `restarting`: built and installed, Harness restarts next. */
+    updating?: { startedAt: number; line: string; restarting: boolean };
+    /** The last check failed (couldn't fetch main, say): the rest is as of the fetch before. */
+    error?: string;
+    /** The last update failed, or installed without the app restarting: what happened. Cleared when one starts. */
+    failed?: string;
+    /** The last update's output. */
+    log?: string;
 }
 
 export interface RewindTargetInfo {
@@ -1115,6 +1303,28 @@ export interface GitChangesInfo extends ChangesInfo {
     /** Changed files not listed; `moreAtLeast` when even the count was cut short. */
     more: number;
     moreAtLeast?: boolean;
+    /** A turn's: the other worktrees of the repository it worked in (TurnPlace), as they were when it ended. */
+    places?: TurnPlace[];
+}
+
+/**
+ * Another worktree of the session's repository that a turn worked in (it changed, or appeared, during the
+ * turn): its branch against the main branch, committed or not, as the diff reader shows it there, when the
+ * turn ended. Counts are missing when they couldn't be read in time.
+ */
+export interface TurnPlace {
+    /** The worktree's folder, as `git worktree list` gives it. */
+    path: string;
+    branch?: string;
+    /** The branch it's compared with. */
+    base?: string;
+    files?: number;
+    added?: number;
+    removed?: number;
+    /** Commits on it since it left the base. */
+    commits?: number;
+    /** The files with the most lines changed, the most first. `pathToken`: the name hides a registered value (GitFileDiff.pathToken). */
+    top?: { path: string; change: "added" | "modified" | "deleted"; added: number; removed: number; pathToken?: string }[];
 }
 
 /** A confirmation snapshot; the server rechecks the destination and HEAD before publishing. */
@@ -1196,6 +1406,8 @@ export interface GuiSettings {
     /** Compact long conversations left idle (true, the default: one-hour caches; "always": five-minute ones too). */
     idleCompaction?: boolean | "always";
     webSearch?: string;
+    /** The Browser tools and pane (false turns them off; true, the default, is stored as unset). */
+    browser?: boolean;
     allowBypass?: boolean;
     /** A message sent while a turn runs: steer it (default) or wait for it to end. */
     followUpBehavior?: FollowUpMode;
@@ -1241,9 +1453,62 @@ export interface ProjectScripts {
 }
 
 // ---------------------------------------------------------------------------
+// The browser (src/browser): a session's tabs, seen and driven from the GUI's Browser pane.
+
+/** The modifier keys held during an input, as the bits of a BrowserInput's `modifiers` (Input.dispatchKeyEvent's). */
+export const BROWSER_MODIFIERS = { Alt: 1, Control: 2, Meta: 4, Shift: 8 } as const;
+
+/** What a person did in the pane, in the page's CSS pixels. */
+export type BrowserInput =
+    /** `buttons`: MouseEvent.buttons (left 1, right 2, middle 4) held after the event. */
+    | { kind: "mouse"; type: "move" | "down" | "up"; x: number; y: number; button?: "left" | "middle" | "right"; buttons?: number; clickCount?: number; modifiers?: number }
+    | { kind: "wheel"; x: number; y: number; deltaX: number; deltaY: number; modifiers?: number }
+    | { kind: "key"; type: "down" | "up"; key: string; code: string; modifiers?: number }
+    /** Text as it is (a paste, an input method's result), not keys. */
+    | { kind: "text"; text: string };
+
+/** Who is driving a tab: the agent, the person watching, or neither yet. */
+export type BrowserOwner = "agent" | "human" | "none";
+
+export interface BrowserTabInfo {
+    id: number;
+    title: string;
+    url: string;
+    loading: boolean;
+    owner: BrowserOwner;
+    canGoBack: boolean;
+    canGoForward: boolean;
+    crashed: boolean;
+    /** A confirm or prompt waiting for an answer. */
+    dialog?: { type: string; message: string; defaultPrompt?: string };
+}
+
+/**
+ * Where a session's browser stands. `idle`: nothing started yet (it starts with the first page).
+ * `unavailable`: there's no browser to start, and `error` says how to fix that. `crashed`: it ended unexpectedly;
+ * the next page starts a new one.
+ */
+export interface BrowserState {
+    status: "idle" | "starting" | "ready" | "unavailable" | "crashed";
+    error?: string;
+    tabs: BrowserTabInfo[];
+    active?: number;
+}
+
+/** What the pane's address bar and tab strip can ask for. */
+export type BrowserCommand = "goto" | "back" | "forward" | "reload" | "new_tab" | "switch_tab" | "close_tab";
+
+// ---------------------------------------------------------------------------
 // Events
 
 export type ServerEvent =
+    /** A session's browser changed: its tabs, who drives them, or whether it runs (sent to the windows that have the session open). */
+    | { type: "browser.state"; sessionId: string; state: BrowserState }
+    /**
+     * A frame of the current tab, for a window watching it (browser.watch), sent after it acknowledges receipt of the last (browser.ack).
+     * `data`: a JPEG frame, base64 on the legacy RPC connection; `width` and `height`: the page's size in CSS pixels, which a click's coordinates are in.
+     */
+    | { type: "browser.frame"; sessionId: string; frameId: string; tab: number; data: string; width: number; height: number }
     /**
      * `pos`: where in the shell's output this ends (the window gives it back to
      * terminal.attach). `reset`: the window's screen is to be reset before `data`,
@@ -1278,7 +1543,9 @@ export type ServerEvent =
     /** An agent CLI reported where the user's plan stands. */
     | { type: "limits"; limits: PlanLimits }
     /** The keybindings file was saved, created or deleted. */
-    | { type: "keybindings.changed"; keybindings: KeybindingsFile };
+    | { type: "keybindings.changed"; keybindings: KeybindingsFile }
+    /** The desktop app's update state changed: a check finished, an update started, moved on or ended. */
+    | { type: "app.update"; info: AppUpdateInfo };
 
 // ---------------------------------------------------------------------------
 // Requests
@@ -1337,6 +1604,24 @@ export interface Methods {
     "terminal.ack": { params: { id: string; chars: number }; result: null };
     "terminal.resize": { params: { id: string; cols: number; rows: number }; result: null };
     "terminal.close": { params: { id: string }; result: null };
+    /** The session's browser: where it stands, with its tabs. It starts with the first page, not with this. */
+    "browser.state": { params: { id: string }; result: BrowserState };
+    /**
+     * The window shows the session's current tab, in a pane of this size (CSS pixels; `scale`: device pixels per CSS pixel):
+     * the page takes that size, and frames come as browser.frame until browser.unwatch. Another call with a new size resizes.
+     */
+    "browser.watch": { params: { id: string; width: number; height: number; scale: number }; result: BrowserState };
+    "browser.unwatch": { params: { id: string }; result: null };
+    /** The window has received this frame; decoding independently retains only the latest waiting picture. */
+    "browser.ack": { params: { id: string; frameId: string }; result: null };
+    /** What the person did in the pane; it takes the tab from the agent (a pointer only moving doesn't). */
+    "browser.input": { params: { id: string; tab?: number; input: BrowserInput }; result: null };
+    /** The address bar and the tab strip: the person opening or leaving a page takes the tab. */
+    "browser.command": { params: { id: string; command: BrowserCommand; url?: string; tab?: number }; result: BrowserState };
+    /** The person gives the tab back to the agent. */
+    "browser.handBack": { params: { id: string; tab?: number }; result: null };
+    /** The person answers a confirm or prompt the page is showing. */
+    "browser.dialog": { params: { id: string; accept: boolean; text?: string; tab?: number }; result: null };
     /** After scripts.run, once the window has sent what was typed while it opened: the script's command may be typed now. */
     "terminal.arm": { params: { id: string }; result: null };
     /**
@@ -1507,12 +1792,20 @@ export interface Methods {
     "plugins.list": { params: { cwd?: string }; result: PluginsInfo };
     /** Change plugins or marketplaces. Fetching (git, npm) happens before it answers; every open folder reloads after. */
     "plugins.action": { params: PluginActionParams; result: PluginsInfo & { message: string } };
+    /** A plugin maker's logo: their GitHub account's avatar (fetched by the server, as the GUI loads no outside images), or null. */
+    "plugins.logo": { params: { owner: string }; result: { mediaType: string; data: string } | null };
     "settings.get": { params: { cwd?: string }; result: GuiSettings };
     "settings.update": { params: { patch: GuiSettings }; result: GuiSettings };
     /** The agent CLIs' plan limits known so far: the last ones saved before the server started, then any newer report. */
     "limits.get": { params: Record<string, never>; result: PlanLimits[] };
     /** Tokens and cost per provider and model, from the session transcripts. */
     "usage.summary": { params: { days: UsageDays }; result: UsageSummary };
+    /** Whether the desktop app is behind origin/main, as of the last check. */
+    "app.update.get": { params: Record<string, never>; result: AppUpdateInfo };
+    /** Fetch origin/main now and compare it with the installed build. */
+    "app.update.check": { params: Record<string, never>; result: AppUpdateInfo };
+    /** Build and install main (scripts/update-desktop.ts), then restart the app. It runs on its own: progress comes as app.update events. */
+    "app.update.start": { params: Record<string, never>; result: AppUpdateInfo };
     /**
      * The session's folder's MCP servers, read again from settings and
      * .mcp.json (so what the terminal's /mcp did shows), each with what it

@@ -36,11 +36,20 @@ export function sleepSeconds(command: unknown): number | undefined {
     return s > 0 ? s : undefined;
 }
 
-export function tokens(n: number): string {
-    if (n < 1000) return String(n);
-    if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
-    if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
-    return `${(n / 1_000_000).toFixed(n < 10_000_000 ? 1 : 0)}M`;
+const TOKEN_UNITS = [["k", 1e3], ["M", 1e6], ["B", 1e9], ["T", 1e12]] as const;
+
+/**
+ * 999 · 9.9k · 12k · 1.0M · 854M · 1.2B: rounding rolls over to the next unit, never "1000k" or "1000M".
+ * `digits`: that many significant digits instead (the Usage view's total: "1.27B").
+ */
+export function tokens(n: number, digits?: number): string {
+    if (n < 1000) return String(Math.round(n));
+    let i = 0;
+    while (i < TOKEN_UNITS.length - 1 && n >= TOKEN_UNITS[i + 1]![1]) i++;
+    const fmt = (x: number) => (digits ? String(Number(x.toPrecision(digits))) : x < 9.95 ? x.toFixed(1) : String(Math.round(x)));
+    let s = fmt(n / TOKEN_UNITS[i]![1]);
+    if (Number(s) >= 1000 && i < TOKEN_UNITS.length - 1) s = fmt(n / TOKEN_UNITS[++i]![1]);
+    return s + TOKEN_UNITS[i]![0];
 }
 
 export function usd(n: number): string {

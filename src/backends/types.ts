@@ -5,6 +5,7 @@
 // sends it the prompt, shows what it does and answers its permission prompts.
 
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
+import type { NativeGoal } from "../agent/goal";
 import type { ImagePart, ModelInfo, PdfPart, ProviderClient, Usage } from "../providers/types";
 import type { PermissionMode } from "../permissions/modes";
 import type { Effort } from "../config/settings";
@@ -14,7 +15,7 @@ import type { HookConfig } from "../config/settings";
 import type { HookEvent, HookOutcome, HookResult } from "../agent/hooks";
 import type { Skill } from "../agent/skills";
 import type { ClaudeAgentDefinition } from "./claude-agents";
-import type { PlanLimits } from "../server/protocol";
+import type { NoticeData, PlanLimits } from "../server/protocol";
 import type { BackgroundTaskInfo } from "./live/info";
 
 /** A permission prompt raised by the backend's own permission system. */
@@ -119,7 +120,7 @@ export interface SteerMessage {
 export type SessionEvent =
     /** `accountId`: the account the CLI process reporting it signed in with (it can differ from the session's selection now). */
     | { type: "background_task"; task: BackgroundTaskInfo; accountId?: string }
-    | { type: "notice"; level: "info" | "warn" | "error"; message: string }
+    | { type: "notice"; level: "info" | "warn" | "error"; message: string; /** What it is, for the GUI to draw (#426); `message` stays the whole of it, as text. */ data?: NoticeData }
     /** Something the CLI did outside any turn (a background sub-agent's steps, its Agent call ending): shown where it belongs (by its call's id). */
     | { type: "event"; event: AgentEvent };
 
@@ -203,7 +204,8 @@ export interface TurnSink {
     /**
      * Drained messages the backend never received (its turn ended before it took
      * them). They're in the transcript already; the host saves them for the next
-     * turn, so they reach it even after a restart. Never one with attachments: that
+     * turn, so they reach it even after a restart, with their images (a prompt's,
+     * kept by the backend: #438). Never a queued message with attachments: that
      * stays queued until it goes (SteerMessage.settle).
      */
     undelivered?(messages: SteerMessage[]): void;
@@ -342,8 +344,16 @@ export interface BackendResult {
     backgroundStopped?: string[];
     /** The session in resumeId couldn't be resumed (gone, or another folder's). */
     resumeFailed?: boolean;
+    /**
+     * Known not to have reached the CLI's session: an error before the prompt went (its process didn't start or
+     * exited first, it isn't signed in where that's checked before the prompt goes), the CLI's own no (Codex answering
+     * turn/start with an error), or a stop (aborted) before the prompt was sent. Not set when the CLI took the prompt
+     * and then failed (it keeps that prompt in its session, #407), nor when that isn't known (Codex gone while
+     * turn/start waited for its answer): those count as delivered.
+     */
+    refused?: boolean;
     /** It stopped on the plan's usage limit; `resetsAt` (ms) when the backend said when that lifts. */
-    limit?: { resetsAt?: number };
+    limit?: { resetsAt?: number; /** The window that's reached ("5-hour"), when known. */ window?: string };
 }
 
 export interface AgentBackendClient extends ProviderClient {
@@ -368,6 +378,13 @@ export interface AgentBackendClient extends ProviderClient {
     sendNow?(sessionKey: string, text: string): boolean;
     /** Restart a session's live CLI process (it didn't answer an interrupt): what runs under it stops. */
     restart?(sessionKey: string): Promise<void>;
+    /**
+     * The session switched to another model (#412): the CLI's own goal, if it's going on, is paused in the CLI kept
+     * for the session, so it starts no turns of its own for it, and one it started for it is stopped. Its background
+     * work goes on. Returns the goal as paused, or undefined when there was none going on (or no CLI running). Throws
+     * when the CLI didn't take the pause.
+     */
+    pauseGoal?(sessionKey: string): Promise<NativeGoal | undefined>;
     /**
      * A wake the session won't take over (it's on another model) that carries no report (a Claude Code monitor's
      * event: only the turn it starts sees its output): what that turn said, once it has ended (however long that
