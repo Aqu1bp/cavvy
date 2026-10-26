@@ -519,6 +519,11 @@ class ClaudeTurn {
      * notification, so a turn that starts before it (a queued message's) doesn't take their report (#308).
      */
     private unnotified = new Set<string>();
+    /**
+     * Of those, ones whose notification came while a prompt of ours was unanswered: its turn may not have started
+     * yet, and doesn't take their report, so they're kept until it's answered.
+     */
+    private notifiedEarly = new Set<string>();
     /** What each sub-agent said last: its report, when nothing else carries one. */
     private lastWords = new Map<string, string>();
     /** Each sub-agent's token count as Claude Code last reported it. */
@@ -1224,6 +1229,11 @@ class ClaudeTurn {
                     this.commandWaitingSince.clear();
                     this.busy = false;
                     const ours = this.answers(m);
+                    // Our prompts are answered: a report whose notification came meanwhile is due after this turn.
+                    if (!this.unanswered.size) {
+                        for (const id of this.notifiedEarly) this.unnotified.delete(id);
+                        this.notifiedEarly.clear();
+                    }
                     this.onResult(m, ours);
                     if (ours && !this.unanswered.size) this.answered = true;
                     this.syncBackground();
@@ -1423,7 +1433,9 @@ class ClaudeTurn {
             }
             case "task_notification": {
                 this.commandWaitingSince.delete(m.task_id);
-                this.unnotified.delete(m.task_id);
+                // Its report turn follows; a prompt's turn that was already waiting goes before it (notifiedEarly).
+                if (this.unanswered.size && this.unnotified.has(m.task_id)) this.notifiedEarly.add(m.task_id);
+                else this.unnotified.delete(m.task_id);
                 if (typeof m.task_id === "string" && typeof m.status === "string") this.taskEnds.set(m.task_id, m.status);
                 // A sub-agent finished (in the foreground, this comes before its Agent call's result). It
                 // ran even if nothing of it showed. A later one replaces what this one said (the report it
