@@ -6,9 +6,10 @@
 //   bun run desktop:update --check         only say what's new since the installed build
 //   bun run desktop:update --force         build and install even if nothing's new
 //   bun run desktop:update --no-restart    install only; a running Harness carries on
+//   bun run desktop:update --from-app      as the app runs it (src/server/app-update.ts): restarts it from outside
 //
-// Run from Harness's own terminal, it builds and installs while Harness runs,
-// then restarts it from outside, so quitting Harness doesn't stop the update.
+// Run from Harness's own terminal or the app's Update button, it builds and installs
+// while Harness runs, then restarts it from outside, so quitting Harness doesn't stop the update.
 // The worktree keeps its build products, so after the first update only what
 // changed is rebuilt.
 
@@ -17,7 +18,7 @@ import { existsSync, realpathSync, writeFileSync } from "fs";
 import { userInfo } from "os";
 import { join, resolve } from "path";
 import { harnessHome } from "../src/config/paths";
-import { readInstallRecord } from "./desktop-install-record";
+import { appSourceDir, capUpdate, lockUpdate, noPromptGit, readInstallRecord, UPDATE_CAP_MS } from "../src/config/desktop-install";
 
 if (process.platform !== "darwin") {
     console.error("desktop:update is for macOS. Elsewhere, bun run desktop:build makes the installers.");
@@ -28,10 +29,11 @@ const args = process.argv.slice(2);
 const check = args.includes("--check");
 const force = args.includes("--force");
 const restart = !args.includes("--no-restart");
+const fromApp = args.includes("--from-app");
 const root = resolve(import.meta.dir, "..");
 // Absolute, and handed to the installer as such: it runs in the worktree, where a relative HARNESS_HOME would mean somewhere else.
 const home = harnessHome();
-const source = join(home, "app-source");
+const source = appSourceDir();
 const REF = "origin/main";
 
 function git(cwd: string, ...a: string[]): { ok: boolean; out: string; err: string } {
@@ -39,14 +41,18 @@ function git(cwd: string, ...a: string[]): { ok: boolean; out: string; err: stri
     return { ok: r.exitCode === 0, out: r.stdout.toString().trimEnd(), err: r.stderr.toString().trim() };
 }
 
-/** Runs it with its output in this terminal; exits if it fails. */
-function run(cmd: string[], cwd: string) {
-    const r = Bun.spawnSync(cmd, { cwd, env: { ...process.env, HARNESS_HOME: home }, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
-    if (r.exitCode !== 0) process.exit(r.exitCode ?? 1);
+/** Runs it with its output in this terminal; exits if it fails, or takes longer than `timeoutMs`. */
+function run(cmd: string[], cwd: string, o: { timeoutMs?: number; env?: Record<string, string> } = {}) {
+    const r = Bun.spawnSync(cmd, { cwd, env: { ...process.env, HARNESS_HOME: home, ...o.env }, stdin: "inherit", stdout: "inherit", stderr: "inherit", timeout: o.timeoutMs });
+    if (r.exitCode === 0) return;
+    if (r.signalCode && o.timeoutMs) console.error(`${cmd.slice(0, 2).join(" ")} took longer than ${Math.round(o.timeoutMs / 1000)}s.`);
+    process.exit(r.exitCode || 1);
 }
 
 // Into origin/main by name: a remote whose fetch refspec leaves main out would only fill FETCH_HEAD.
-run(["git", "fetch", "--quiet", "origin", `+refs/heads/main:refs/remotes/${REF}`], root);
+// From the app there's no one to type a password or passphrase: it fails instead of waiting for one.
+const noPrompts = fromApp ? noPromptGit(process.env, git(root, "config", "--get", "core.sshCommand").out || undefined) : undefined;
+run(["git", "fetch", "--quiet", "origin", `+refs/heads/main:refs/remotes/${REF}`], root, { timeoutMs: 120_000, env: noPrompts });
 const resolved = git(root, "rev-parse", "--verify", `${REF}^{commit}`);
 if (!resolved.ok) {
     console.error(`Fetched, but ${REF} isn't a commit here: ${resolved.err}`);
@@ -73,6 +79,15 @@ else if (known) {
 } else if (installed) console.log(`The installed build (${installed.commit.slice(0, 7)}${installed.dirty ? ", with uncommitted changes" : ""}) isn't on main; main is at ${short}.`);
 else console.log(`No record of which build is installed; main is at ${short}.`);
 if (check) process.exit(0);
+
+// One update at a time, from the app or a terminal. From the app, one that hangs is stopped in the end, even with the
+// app gone; its watchdog holds the lock until all of it has ended.
+const lock = lockUpdate();
+if ("holder" in lock) {
+    console.error(`An update is already running${lock.holder ? ` (process ${lock.holder})` : ""}. Let it finish, or stop it, then try again.`);
+    process.exit(1);
+}
+if (fromApp) capUpdate(process.pid, UPDATE_CAP_MS / 1000, 5, lock.fd);
 
 // The worktree: made on the first update, moved to main's latest on each one after. The forced checkout throws away
 // changes, so it's only ever done in the worktree made here, which carries a marker in its own git directory: never
@@ -112,8 +127,8 @@ if (existsSync(source)) {
 }
 console.log(`Building ${short} in ${source}…`);
 
-// Inside Harness's terminal, quitting Harness would end this process with it: install first, then restart from outside.
-const inHarness = process.env.TERM_PROGRAM === "Harness";
+// Inside Harness (its terminal, or its Update button), quitting Harness could end this process with it: install first, then restart from outside.
+const inHarness = fromApp || process.env.TERM_PROGRAM === "Harness";
 run([process.execPath, "--no-env-file", `--config=${join(source, "bunfig.toml")}`, join(source, "scripts", "install-desktop.ts"), ...(restart && !inHarness ? [] : ["--no-restart"])], source);
 if (restart && inHarness) {
     const { productName, identifier } = (await Bun.file(join(source, "desktop", "src-tauri", "tauri.conf.json")).json()) as { productName: string; identifier: string };

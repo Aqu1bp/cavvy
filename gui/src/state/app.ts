@@ -5,7 +5,7 @@
 import { batch, createEffect, createRoot, createSignal } from "solid-js";
 import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store";
 import { planLimitKey, type PlanLimits } from "@shared/protocol";
-import type { GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
+import type { AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
 import { credentials, focused, notify, isTauri, showWindow, windowKey } from "../lib/platform";
@@ -219,6 +219,8 @@ export interface AppState {
     seen: Record<string, number>;
     /** The agent CLIs' plan limits, by provider and account: the account's, shared by its sessions. */
     limits: Record<string, PlanLimits>;
+    /** The desktop app's updates from main (Settings → About, and the rail's Update button while there's one). */
+    update?: AppUpdateInfo;
 }
 
 const SEEN_KEY = "harness.seen";
@@ -592,6 +594,10 @@ export async function refreshLimits() {
     setApp("limits", reconcile(Object.fromEntries(limits.map((l) => [planLimitKey(l.provider, l.accountId), l]))));
 }
 
+export async function refreshUpdate() {
+    setApp("update", reconcile(await rpc.call("app.update.get", {})));
+}
+
 let keybindingsLoaded = false;
 export async function refreshKeybindings() {
     const { fatal } = applyKeybindingsFile(await rpc.call("keybindings.get", {}));
@@ -723,6 +729,9 @@ function onEvent(ev: ServerEvent) {
         case "keybindings.changed":
             keybindingsChanged(ev.keybindings);
             return;
+        case "app.update":
+            setApp("update", reconcile(ev.info));
+            return;
         case "models.changed":
             void refreshProviders().catch(() => undefined);
             // A fetch in flight gets the new list anyway.
@@ -810,6 +819,8 @@ export function start() {
                 await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders(), refreshKeybindings().catch(() => undefined)]);
                 void refreshModels().catch(() => undefined);
                 void refreshLimits().catch(() => undefined);
+                // A server from before app.update.get has nothing to say: no update state, no button.
+                void refreshUpdate().catch(() => undefined);
                 // After a reconnect, the open sessions start over from fresh snapshots.
                 for (const h of [...handles.values()]) if (!h.ready()) await rpc.call("session.open", { id: h.id }).then(adopt, (e) => reopenFailed(h.id, e));
                 await restoreActiveSession();

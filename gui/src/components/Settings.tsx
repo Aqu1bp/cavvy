@@ -3,18 +3,22 @@
 // when it's been changed.
 
 import { createEffect, createMemo, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
-import { AlertTriangle, ArrowLeft, ChartColumn, ChevronDown, CircleAlert, Copy, ExternalLink, FolderOpen, Info, Keyboard, Minus, Palette, Plug, Plus, Puzzle, RotateCcw, SlidersHorizontal, X } from "lucide-solid";
+import { AlertTriangle, ArrowLeft, ChartColumn, ChevronDown, CircleAlert, Copy, Download, ExternalLink, FolderOpen, Info, Keyboard, Minus, Palette, Plug, Plus, Puzzle, RotateCcw, SlidersHorizontal, X } from "lucide-solid";
 import { MODE_LABELS, type FollowUpMode, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
 import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
+import { reconcile } from "solid-js/store";
+import { now } from "../lib/clock";
+import { updateView } from "../lib/app-update";
 import { connectCli, editors, refreshEditors } from "../state/actions";
 import { ACCENTS, CHAT_WIDTHS, prefs, PREF_DEFAULTS, setPrefs, type AccentId, type Scheme } from "../state/prefs";
 import { setSettingsTab, settingsTab, type SettingsTab } from "../state/ui";
-import { canReveal, copyText, mod, openExternal, os, revealPath } from "../lib/platform";
+import { canReveal, copyText, isTauri, mod, openExternal, os, revealPath } from "../lib/platform";
 import { keybindingsFile, keymap, withShortcut } from "../state/keybindings";
 import { ACTIONS, CONTEXTS, KEYBINDINGS_DOCS, formatKeys } from "../../../src/keybindings/core";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { Accounts } from "./Accounts";
+import { createUpdateAction } from "./UpdateAction";
 import { MessageText } from "./ErrorCards";
 import { commandIn } from "../lib/error-text";
 import { ModeIcon, MODES } from "./ModePicker";
@@ -867,25 +871,96 @@ function Shortcuts() {
     );
 }
 
+/**
+ * The desktop app updating itself from main (src/server/app-update.ts): what's
+ * new since this build, and Update & restart. The build runs while you work;
+ * Harness restarts once it's installed. Only the desktop app shows why it can't
+ * (a browser's server never updates an app).
+ */
+function Updates() {
+    const working = () => app.sessions.filter((s) => s.status === "running").length;
+    const v = createMemo(() => updateView(app.update, working(), now()));
+    const [asking, setAsking] = createSignal(false);
+    const u = () => app.update!;
+    const SHOWN = 6;
+    // The same as the rail's icon: asks first while sessions are working.
+    const update = createUpdateAction();
+    async function check() {
+        setAsking(true);
+        try {
+            setApp("update", reconcile(await rpc.call("app.update.check", {})));
+        } catch (e) {
+            reportError(e);
+        } finally {
+            setAsking(false);
+        }
+    }
+    return (
+        <Show when={v() && (isTauri || !app.update?.unavailable) ? v() : undefined}>
+            {(v) => (
+                <Section title="Updates" class="upd-group">
+                    <Row title={v().title} desc={v().detail} class={`upd-row ${u().updating ? "running" : ""}`}>
+                        <Show when={!v().busy && v().action} fallback={<Show when={v().busy}><Spinner size={16} class="upd-spin" /></Show>}>
+                            {(a) => (
+                                <Show when={a() === "update"} fallback={<button class="btn sm" disabled={asking()} onClick={() => void check()}>Check now</button>}>
+                                    <button class="btn primary sm" disabled={update.pending()} onClick={update.request}>
+                                        <Download size={14} /> Update &amp; restart
+                                    </button>
+                                </Show>
+                            )}
+                        </Show>
+                    </Row>
+                    <Show when={v().warn}>
+                        <div class="upd-warn"><AlertTriangle size={13} /> {v().warn}</div>
+                    </Show>
+                    <Show when={!u().updating && u().changes?.length}>
+                        <ul class="upd-changes" aria-label="New on main">
+                            <For each={u().changes.slice(0, SHOWN)}>{(c) => <li><code>{c.hash}</code><span class="truncate">{c.subject}</span></li>}</For>
+                            <Show when={u().behind > SHOWN}><li class="upd-more">and {u().behind - SHOWN} more</li></Show>
+                        </ul>
+                    </Show>
+                    <Show when={!u().updating && u().failed}>
+                        <div class="upd-error" role="alert">
+                            <CircleAlert size={14} />
+                            <span>{u().failed}</span>
+                            <Show when={canReveal && u().log}><button class="btn ghost sm" onClick={() => void revealPath(u().log!)}>Show log</button></Show>
+                        </div>
+                    </Show>
+                    <Show when={!u().updating && u().error}>
+                        <div class="upd-error" role="alert">
+                            <CircleAlert size={14} />
+                            <span>{u().error}</span>
+                        </div>
+                    </Show>
+                    <update.Confirm />
+                </Section>
+            )}
+        </Show>
+    );
+}
+
 function About() {
     return (
-        <Section>
-            <Row title="Version">
-                <span class="set-val">{app.hello?.version ?? "—"}</span>
-            </Row>
-            <Row title="Protocol">
-                <span class="set-val">{app.hello?.protocol ?? "—"}</span>
-            </Row>
-            <Row title="Data">
-                <span class="set-val">{app.hello?.home ?? "—"}</span>
-            </Row>
-            <Row title="Platform">
-                <span class="set-val">{app.hello?.platform ?? "—"}</span>
-            </Row>
-            <Row title="Connection">
-                <span class="set-val">{app.conn}</span>
-            </Row>
-        </Section>
+        <>
+            <Updates />
+            <Section title={app.update && (isTauri || !app.update.unavailable) ? "Details" : undefined}>
+                <Row title="Version">
+                    <span class="set-val">{app.hello?.version ?? "—"}</span>
+                </Row>
+                <Row title="Protocol">
+                    <span class="set-val">{app.hello?.protocol ?? "—"}</span>
+                </Row>
+                <Row title="Data">
+                    <span class="set-val">{app.hello?.home ?? "—"}</span>
+                </Row>
+                <Row title="Platform">
+                    <span class="set-val">{app.hello?.platform ?? "—"}</span>
+                </Row>
+                <Row title="Connection">
+                    <span class="set-val">{app.conn}</span>
+                </Row>
+            </Section>
+        </>
     );
 }
 

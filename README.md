@@ -479,6 +479,8 @@ bun run desktop:update     # macOS: the latest main into /Applications, restarte
 
 `desktop:update` keeps the app on the latest `main` without pulling into your checkout: it fetches `origin/main`, lists what's new since the installed build, builds it in a worktree of its own (`~/.harness/app-source`) and installs it the same way. Nothing new, nothing to do; `--check` only lists what's new, `--force` rebuilds anyway. It works from Harness's own terminal too: it installs while Harness runs, then restarts it.
 
+Once installed that way, the app updates itself: it checks `origin/main` every few hours, and when there's something new a download icon shows beside Settings. One click runs `desktop:update` in the background (its output in `~/.harness/logs/app-update.log`) while you keep working, and Harness restarts once the new build is installed; it asks first only if sessions are working. Settings → About lists what's new. `bun run gui:demo --update` walks through it with a stand-in build.
+
 Building it needs Rust ([rustup](https://rustup.rs)) and, on Linux, the WebKitGTK headers (`libwebkit2gtk-4.1-dev build-essential libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev` on Debian and Ubuntu). To distribute it on macOS, sign and notarize the app, sidecar included.
 
 Using it:

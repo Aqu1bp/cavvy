@@ -958,6 +958,32 @@
     margin-top: calc(2 * var(--sp));
 }
 
+/* Beside Settings while the desktop app has an update from main: just an icon,
+   whose look says how it stands. Ready: the accent, on a tint of it. Building or
+   restarting: a spinner, nothing to click. Failed: red, click to try again. */
+.side-foot .upd-btn {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.side-foot .upd-btn:hover {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.side-foot .upd-btn.busy {
+    background: transparent;
+    cursor: default;
+}
+
+.side-foot .upd-btn.failed {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 13%, transparent);
+}
+
+.side-foot .upd-btn.failed:hover {
+    background: color-mix(in srgb, var(--danger) 20%, transparent);
+}
+
 /* ---- Settings: its sections take the list's place ---------------------- */
 
 .sidebar.settings-nav .set-back-wrap {

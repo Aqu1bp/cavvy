@@ -35,6 +35,7 @@ import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModel
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
 import { checkAgentPlan, vendorOf, type AgentCliStatus } from "../backends/index";
 import { loadPlanLimits, savePlanLimits } from "./limits-store";
+import { AppUpdates } from "./app-update";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
@@ -365,6 +366,8 @@ export class Engine {
 
     private readonly unregisterAccountRoots: () => void;
     private stopKeybindings?: () => void;
+    /** The desktop app updating itself from main: only the installed app does. */
+    private readonly updates = new AppUpdates({ emit: (info) => this.broadcast({ type: "app.update", info }) });
 
     constructor(private o: EngineOptions = {}) {
         this.fallbackModel = o.fallbackModel;
@@ -382,6 +385,7 @@ export class Engine {
         void this.checkPlans();
         // Every window applies a save of the keybindings file at once.
         this.stopKeybindings = watchKeybindings((r) => this.broadcast({ type: "keybindings.changed", keybindings: { path: keybindingsPath(), ...r } }));
+        this.updates.start();
         this.reopenScheduled();
         purgeTrash();
         this.purgeTimer = setInterval(() => purgeTrash(), PURGE_EVERY_MS);
@@ -416,6 +420,7 @@ export class Engine {
         const terminalsStopped = this.terminals.stop();
         clearInterval(this.purgeTimer);
         this.stopKeybindings?.();
+        this.updates.stop();
         for (const t of this.unloadTimers.values()) clearTimeout(t);
         this.unloadTimers.clear();
         await Promise.all([...this.runtimes.values()].map((r) => r.close().catch(() => undefined)).concat([...this.closing.values()]));
@@ -2588,6 +2593,12 @@ export class Engine {
                 return [...this.limits.values()];
             case "usage.summary":
                 return usageSummary(usageDays(p.days), Date.now(), [...this.limits.values()]);
+            case "app.update.get":
+                return this.updates.get();
+            case "app.update.check":
+                return await this.updates.check();
+            case "app.update.start":
+                return await this.updates.update();
             default:
                 throw new RpcError(`Unknown method ${String(method)}`, "unknown_method");
         }

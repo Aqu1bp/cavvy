@@ -4,6 +4,8 @@
 //
 //   bun run gui:demo                 then open the printed link
 //   bun run gui:demo --port 4600 --token <16+ characters>    a link that stays the same: http://127.0.0.1:4600/#token=<token>
+//   bun run gui:demo --update        the desktop app's Update button, with main 7 changes ahead (scripts/demo-update.ts)
+//   bun run gui:demo --update fail   the same, with a build that fails
 //
 // Prompts with "sso" or "demo" walk through reading, editing (with approvals)
 // and running tests; "question", "plan" and "todo" show those flows; the
@@ -22,6 +24,7 @@ import { join, resolve } from "path";
 import { startMockLlm } from "./mock-llm";
 import { createDemoProject } from "./demo-project";
 import { startDemoSite } from "./demo-site";
+import { createDemoUpdate } from "./demo-update";
 
 const args = process.argv.slice(2);
 const arg = (n: string) => {
@@ -53,6 +56,7 @@ for (const [name, text] of Object.entries(demoSkills)) {
 const repo = resolve(import.meta.dir, "..");
 const port = arg("--port") ?? "4600";
 const env: Record<string, string> = { ...(process.env as Record<string, string>), HARNESS_HOME: home, HARNESS_NO_KEYCHAIN: "1" };
+if (args.includes("--update")) Object.assign(env, createDemoUpdate(root, home, arg("--update") === "fail"));
 if (arg("--token")) env.HARNESS_GUI_TOKEN = arg("--token")!;
 const extra = arg("--dev-origin") ? ["--dev-origin", arg("--dev-origin")!] : [];
 const proc = Bun.spawn(["bun", "--no-env-file", `--config=${join(repo, "bunfig.toml")}`, join(repo, "src/index.ts"), "serve", "--port", port, ...extra], {

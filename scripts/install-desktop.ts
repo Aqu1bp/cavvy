@@ -16,10 +16,10 @@
 // certificate it keeps to the one the installed copy has; to pick another,
 // set HARNESS_SIGNING_IDENTITY to its name or SHA-1 (security find-identity -v -p codesigning).
 
-import { accessSync, constants, existsSync, readdirSync, rmSync } from "fs";
+import { accessSync, constants, existsSync, readdirSync } from "fs";
 import { homedir, userInfo } from "os";
 import { join, resolve } from "path";
-import { writeInstallRecord } from "./desktop-install-record";
+import { replaceBundle, writeInstallRecord } from "../src/config/desktop-install";
 
 if (process.platform !== "darwin") {
     console.error("desktop:install is for macOS. Elsewhere, bun run desktop:build makes the installers.");
@@ -181,8 +181,8 @@ if (restart) {
     }
 }
 
-rmSync(dest, { recursive: true, force: true });
-run(["ditto", built, dest], root);
+// Copied beside the installed app, then swapped in: an install stopped part way leaves the app as it was.
+replaceBundle(built, dest, (from, to) => run(["ditto", from, to], root));
 console.log(`Installed ${dest}`);
 writeInstallRecord(root, dest);
 if (restart) run(["open", dest], root);

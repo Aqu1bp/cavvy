@@ -5,9 +5,10 @@
 // waiting on you are pinned above them all, under Needs you, until answered.
 
 import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack } from "solid-js";
-import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronsUpDown, ChevronUp, CircleAlert, Folder, FolderPlus, Hand, Layers, ListFilter, MessageSquareText, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
+import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronsUpDown, ChevronUp, CircleAlert, Download, Folder, FolderPlus, Hand, Layers, ListFilter, MessageSquareText, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread, refreshSessions, reportError } from "../state/app";
+import { createUpdateAction } from "./UpdateAction";
 import { archive, archiveSessions, askToDelete, chooseProject, newSession, openProject, openWaiting, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { agentFocus, setDeleteRequest, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
@@ -23,7 +24,8 @@ import { isTauri, os } from "../lib/platform";
 import { Menu } from "./ui/Menu";
 import { rowMenuKey } from "../lib/menu";
 import { ProviderIcon } from "./ui/ProviderIcon";
-import { Logo } from "./ui/bits";
+import { Logo, Spinner } from "./ui/bits";
+import { updateView } from "../lib/app-update";
 import { actionOf, shortcut, withShortcut } from "../state/keybindings";
 
 /** Cards shown before "Show more". */
@@ -246,6 +248,28 @@ function PlanGauge(p: { plan: RailPlan }) {
             </svg>
             <ProviderIcon id={p.plan.provider} name={p.plan.name} size={11} />
         </span>
+    );
+}
+
+/**
+ * Beside Settings while the desktop app has an update from main, or one is running: one click updates it, and Harness
+ * restarts once the new build is installed. Its look says how it stands (the accent: ready; a spinner: building or
+ * restarting; red: the last one failed, click to try again), its tooltip the rest. Settings → About has the detail.
+ */
+function UpdateButton() {
+    const rail = () => updateView(app.update, 0)?.rail;
+    const update = createUpdateAction();
+    return (
+        <>
+            <Show when={rail()}>
+                {(r) => (
+                    <button class={`hb lg upd-btn ${r().state}`} title={r().label} aria-label={r().label} aria-disabled={r().state === "busy" || update.pending() || undefined} onClick={update.request}>
+                        {r().state === "busy" ? <Spinner size={15} /> : <Download size={16} />}
+                    </button>
+                )}
+            </Show>
+            <update.Confirm />
+        </>
     );
 }
 
@@ -965,6 +989,7 @@ export function Sidebar() {
                 <Show when={plans().length} fallback={<span class="grow" />}>
                     <PlanRow plans={plans()} />
                 </Show>
+                <UpdateButton />
                 <button class="hb lg" title={withShortcut("Settings", "app:settings")} aria-label="Settings" onClick={() => setSettingsTab("general")}>
                     <Settings size={16} />
                 </button>
